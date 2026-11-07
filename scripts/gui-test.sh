@@ -21,11 +21,28 @@
 # node_modules state. The npm cache (~/.npm) is shared across worktrees and
 # warm, so `npm ci --prefer-offline` completes in ~1s offline.
 #
-# This is intentionally a STANDALONE checkpoint helper and is NOT wired into
-# verify.sh: the merge gate keeps its own inlined `npm ci && npm run typecheck
-# && npm test` in the gui block. Keeping them separate avoids making this file a
-# load-bearing verify-pipeline artifact (scripts/verify-pipeline-guard.sh). The
-# commands are kept equivalent by convention; if the gui block's command shape
+# SCRATCH COPIES OF gui/: this script always provisions and tests the gui/
+# beside its own scripts/ directory (REPO_ROOT comes from BASH_SOURCE, not the
+# cwd), so it cannot be pointed at a copy of gui/ elsewhere (a `cp -r` or
+# `git archive` copy). For a full checkout or worktree, run THAT checkout's
+# scripts/gui-test.sh, from any cwd. For a bare gui/ copy, run the same
+# `npm ci --prefer-offline --no-audit --no-fund` (step 1 below) inside the
+# copy: it rebuilds node_modules from package-lock.json, workspace links such
+# as @reify/shared-utils included. Then run `npm test` (its pretest hook, which
+# regenerates src/editor/reifyParser.js, needs the lezer-generator that npm ci
+# installed) or `npx vitest run <file>`, which skips that hook and so can test
+# a stale parser: after editing reify.grammar in the copy, use `npm test`.
+# Do not recover a copy by hand-deleting node_modules (root or
+# packages/*/node_modules) and running `npm install`: that path has crashed
+# npm's arborist ("Cannot read properties of null (reading 'edgesOut')") and
+# left no node_modules/.bin/vitest. If a copy looks broken, re-run `npm ci`.
+#
+# This remains a STANDALONE checkpoint helper — the merge gate does not call it,
+# and it is not itself a verify-pipeline artifact. But the two no longer stay
+# equivalent by convention alone: since task 7630 both this script and the gate's
+# gui block invoke the SAME vitest runner, scripts/gui-vitest-run.sh, which IS a
+# load-bearing verify-pipeline artifact. The provisioning and typecheck steps
+# around it are still duplicated here by design; if the gui block's command shape
 # changes materially, update this script to match.
 
 set -euo pipefail
@@ -85,12 +102,11 @@ if [ "$DO_TYPECHECK" -eq 1 ]; then
     npm run typecheck
 fi
 
-# 3. Vitest. `npm test` = `vitest run`, whose `pretest` hook regenerates the
-#    lezer parser (build:grammar) — which is why node_modules must exist first.
-#    Forward any args after `--` to vitest via `npm test -- <args>`.
-echo "==> gui-test: npm test (vitest run)..."
-if [ "${#VITEST_ARGS[@]}" -gt 0 ]; then
-    npm test -- "${VITEST_ARGS[@]}"
-else
-    npm test
-fi
+# 3. Vitest, via the SHARED runner that verify.sh's gui block also calls, so
+#    the two cannot drift (task 7630). The runner wraps `npm test` (= `vitest
+#    run`, whose `pretest` hook regenerates the lezer parser via build:grammar —
+#    which is why node_modules must exist first) and adds the bounded,
+#    signature-gated retry of the worker->host RPC starvation flake. It resolves
+#    its own paths, so calling it from here needs no cwd assumption.
+echo "==> gui-test: vitest run (via scripts/gui-vitest-run.sh)..."
+"$SCRIPT_DIR/gui-vitest-run.sh" "${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}"

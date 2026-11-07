@@ -12,9 +12,11 @@
 #
 # Options:
 #   --landed-commit SHA      (Required for normal refresh) Assert that the
-#                            advancing target's git worktree HEAD == SHA.
+#                            advancing target's git worktree HEAD == SHA AND
+#                            that SHA is an ancestor of refs/heads/main.
 #                            Provenance guard (inv.9): refuses WIP lanes
-#                            (uncommitted tracked changes) and mismatched HEADs.
+#                            (uncommitted tracked changes), mismatched HEADs
+#                            and unlanded commits.
 #                            Not used by --check-frag.
 #   --check-frag             Read-only defrag check: print verdict token (ok |
 #                            reseed-due) + max per-file extent count to stdout;
@@ -33,10 +35,22 @@
 #
 # Refresh mechanics:
 #   1. Provenance guard (inv.9): refuse if advancing worktree is dirty (uncommitted
-#      tracked changes) or --landed-commit <sha> is absent / mismatched vs HEAD.
+#      tracked changes), --landed-commit <sha> is absent / mismatched vs HEAD,
+#      or <sha> is not an ancestor of refs/heads/main.
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
+#   2b.Prune unconsulted units from the staging copy: one call to the sibling
+#      scripts/prune-unconsulted-target.sh --prune-dead-unit-records on
+#      <base_dir>.gen.<N>.partial/debug (debug only, 7-day window, atime probed
+#      on the advancing dir). A dead compile unit loses its deps files, its
+#      depth-1 .dwo shards and its .fingerprint record; a unit with a build/
+#      dir keeps its record and shards. A failure at any stage, or a missing
+#      sibling, aborts the refresh before the partial→gen rename. Rule, skips
+#      and exit codes: that script's header. Its victim_bytes is apparent
+#      here: reflinked extents stay shared with the advancing source until
+#      that drops them too.
+#      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -80,6 +94,8 @@
 
 set -euo pipefail
 
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
@@ -100,8 +116,10 @@ Usage: $(basename "$0") <advancing_target_dir> <base_dir> [OPTIONS]
 
   Options:
     --landed-commit SHA      (Required for refresh) Assert advancing worktree
-                             HEAD == SHA; refuses WIP lanes (uncommitted tracked
-                             changes) and head mismatches. Not used by --check-frag.
+                             HEAD == SHA and that SHA has landed (is an ancestor
+                             of ${LANDED_REF}); refuses WIP lanes (uncommitted
+                             tracked changes), head mismatches and unlanded
+                             commits. Not used by --check-frag.
     --check-frag             Read-only: print "ok N" or "reseed-due N" (extent count).
     --frag-threshold N       Extent threshold for --check-frag (default: 64).
     --rustflags VALUE        RUSTFLAGS stamp written after swap (default: \${RUSTFLAGS:-}).
@@ -121,6 +139,7 @@ FRAG_THRESHOLD=64
 RUSTFLAGS_VAL="${RUSTFLAGS:-}"
 INVOCATION_VAL=""
 LANDED_COMMIT=""
+readonly LANDED_REF="refs/heads/main"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -240,6 +259,8 @@ BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 #      orchestrator dirty-start semantics from CLAUDE.md)
 #   4. Refuse if --landed-commit is absent
 #   5. Refuse if git rev-parse HEAD != the asserted sha (head mismatch)
+#   6. Refuse if $LANDED_REF does not resolve, or the asserted sha is not an
+#      ancestor of it (committed-but-unlanded work)
 _prov_wt="$(dirname "$ADVANCING_DIR")"
 if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
@@ -256,15 +277,24 @@ if [ -n "$_prov_status" ]; then
     printf '%s\n' "$_prov_dirty_head" | while IFS= read -r _line; do
         err "    $_line"
     done
-    err "Refusing to promote a task lane with WIP. Commit or stash tracked changes first."
+    err "Refusing to promote a task lane with WIP. Commit or clean tracked changes first."
+    # This refusal fires INSIDE a warm lane, so the remedy it names is read by
+    # exactly the population that filled the shared WIP stack. Naming the reason
+    # here (not just the remedy) is the point: that stack is ONE ref in the one
+    # shared .git — it is not per-worktree — so parking WIP there hands it to
+    # every other lane on the host (esc-5785-6). Wording deliberately avoids the
+    # bare verb, which tests/infra/test_refresh_warm_base.sh Block I pins.
+    err "  Do NOT park it on the shared LIFO WIP ref either: that ref lives in the one"
+    err "  shared .git and is not per-worktree, so every lane on this host shares it."
+    err "  Rule and reach: CLAUDE.md, \"Warm lanes\"."
     exit 1
 fi
 if [ -z "$LANDED_COMMIT" ]; then
     err "Provenance guard: --landed-commit <sha> is required (provenance assertion missing)."
-    err "  Pass the confirmed landed HEAD sha:"
-    err "    --landed-commit \$(git -C <lane_worktree> rev-parse HEAD)"
+    err "  Pass the sha of a commit already on $LANDED_REF that is also the advancing worktree's HEAD:"
+    err "    --landed-commit <sha>    (check: git merge-base --is-ancestor <sha> $LANDED_REF)"
     err "This assertion prevents task-lane WIP and ensures the advancing HEAD is known."
-    err "Only the merge lane (at confirmed landed HEAD) may advance the base."
+    err "Only a clean worktree at a commit already landed on $LANDED_REF may advance the base."
     exit 1
 fi
 _prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>/dev/null)"
@@ -276,12 +306,38 @@ if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
     err "HEAD mismatch: pass the correct landed commit sha via --landed-commit."
     exit 1
 fi
-info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
+_prov_main="$(git -C "$_prov_wt" rev-parse --verify --quiet "${LANDED_REF}^{commit}" 2>/dev/null || true)"
+if [ -z "$_prov_main" ]; then
+    err "Provenance guard: $LANDED_REF does not resolve in the advancing worktree's repository."
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+_prov_ancestry_rc=0
+git -C "$_prov_wt" merge-base --is-ancestor "$LANDED_COMMIT" "$_prov_main" || _prov_ancestry_rc=$?
+if [ "$_prov_ancestry_rc" -gt 1 ]; then
+    err "Provenance guard: could not evaluate whether --landed-commit is an ancestor of $LANDED_REF (git rc=$_prov_ancestry_rc)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+if [ "$_prov_ancestry_rc" -eq 1 ]; then
+    err "Provenance guard: --landed-commit has not landed: it is not an ancestor of $LANDED_REF (inv.9)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Only a commit already landed on $LANDED_REF may advance the base;"
+    err "committed-but-unlanded lane work must not. Refusing to swap."
+    exit 1
+fi
+info "Provenance guard: OK (worktree clean, HEAD=$_prov_head, landed on $LANDED_REF)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
 # State variables set during the swap; used by the trap for targeted recovery.
-_SWAP_PRIOR_LINK=""    # prior symlink target (if base was a symlink pre-swap)
-_SWAP_BOOTSTRAP_DIR="" # if bootstrap renamed a real base dir to a gen dir
+_SWAP_PRIOR_LINK=""     # prior symlink target (if base was a symlink pre-swap)
+_SWAP_BOOTSTRAP_DIR=""  # if bootstrap renamed a real base dir to a gen dir
 
 _cleanup_on_exit() {
     local exit_code=$?
@@ -358,6 +414,13 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
     exit 1
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
+
+# Step 3b: prune unconsulted units from the staging copy (header item 2b).
+# Called plainly, with no `if` or `||`, so set -e aborts on any failure (a
+# missing sibling included) before the rename below; the EXIT trap then drops
+# the partial.
+"$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 --prune-dead-unit-records \
+    --atime-probe "$ADVANCING_DIR" "${_new_gen_partial}/debug"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

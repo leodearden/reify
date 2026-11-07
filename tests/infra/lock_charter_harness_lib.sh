@@ -58,6 +58,7 @@ cjs
 conf
 cpp
 css
+csv
 cts
 cxx
 diff
@@ -103,8 +104,10 @@ stl
 svg
 template
 timer
+tombstones
 toml
 ts
+tsv
 tsx
 txt
 typed

@@ -30,10 +30,11 @@
 
 use std::sync::atomic::Ordering;
 
-mod common;
+#[path = "common/alloc_counter.rs"]
+mod alloc_counter;
 
 #[global_allocator]
-static GLOBAL: common::alloc_counter::CountingAllocator = common::alloc_counter::CountingAllocator;
+static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocator;
 
 /// Rejected inserts under an existing entity must not allocate a new `String` key.
 ///
@@ -68,7 +69,7 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     assert!(inserted, "warm-up insert must succeed");
 
     // Snapshot after warm-up — all legitimate allocations already counted.
-    let before = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
+    let before = alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
 
     // Now fire 256 rejected inserts.  Each uses a looser tolerance (0.1 >> 0.001),
     // so `ToleranceBucket` short-circuits immediately (existing 0.001 ≤ 0.1 → reject).
@@ -89,7 +90,7 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
         );
     }
 
-    let after = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
+    let after = alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
     let delta = after.saturating_sub(before);
 
     // Safety assumption: `ALLOCATIONS` is process-wide, so an allocation on another

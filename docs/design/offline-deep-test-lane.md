@@ -92,7 +92,8 @@ roles (`verify.sh:288,294,348`).
 
 **Trigger seam.** Reuse the merge worker's existing post-advance callback:
 `on_merge_landed → service_restart.note_merge(task_id, base_sha, head_sha)`
-(`harness.py:3245`, `service_restart.py:156`). Add an `on_post_merge` hook alongside it — full async
+(`harness.py` `on_merge_landed=self._note_merge_all`, `service_restart.py`
+`async def note_merge(`). Add an `on_post_merge` hook alongside it — full async
 context, exact SHAs, fires at the precise advance moment. (Alternative robustness seam: the reify
 `hooks/reference-transaction` main-move log; useful as a fallback when the orchestrator is down,
 e.g. a `scripts/land.sh` landing — but the callback is primary.)
@@ -121,7 +122,9 @@ The system is **contention-dominated** (Phase 0 finding #1: idle cold ≈ 29 min
   box when there's slack (fast runs, tight batches) and yields **completely** the instant a
   normal-class thread (a task lane or the merge gate) is runnable.
 - **Off the merge jobserver.** Phase 0: token hand-off on the shared 32-slot jobserver
-  (`/tmp/reify-jobserver`, `verify.py:1632`) is **priority-blind** — `nice` governs runnable
+  (`/tmp/reify-jobserver`, the reify-side jobserver service's FIFO — dark-factory only
+  passes the jobserver env vars through, in `verify.py`'s `_resolve_verify_env`) is
+  **priority-blind** — `nice` governs runnable
   threads, the jobserver governs *admission*, and a merge `rustc` blocked on a token never gets to
   matter. So the lane must **not** draw from that pool. Its compile demand is ~0 anyway (warm
   worktree, §8); the only real parallelism knob is `cargo nextest --test-threads=N`.
@@ -139,7 +142,7 @@ The system is **contention-dominated** (Phase 0 finding #1: idle cold ≈ 29 min
 2. **Dedup — mandatory.** Because the lane re-runs from head on *every* advance, a suite that stays
    red while a fix is in flight would, naively, spawn a fresh task + escalation on every advance.
    Fingerprint on the **failing-test-set signature** (model on
-   `compute_preexisting_main_break_fingerprint`, `workflow.py:300`, but key on the failing tests,
+   `compute_preexisting_main_break_fingerprint` in `workflow.py`, but key on the failing tests,
    **not** `main_sha` — you want to dedup *across* advances while the same test stays red). While an
    open fix task exists for signature *S*, a new red run with *S* **updates** it (append the new
    suspect commit range); a *different* failing test spawns its own task.
@@ -148,7 +151,7 @@ The system is **contention-dominated** (Phase 0 finding #1: idle cold ≈ 29 min
    IDs + suspect commit range in `metadata`) that the orchestrator dispatches through the standard
    TDD → PR → **merge-gate** loop. This is deliberately **more autonomous than red-main autofix**:
    the post-merge-red-main class is the most-restricted path in the system — B3 *hard-aborts* it and
-   routes to a human (`b3_gate.py:288`, "highest-blast-radius unattended-edit scenario") because it
+   routes to a human (`b3_gate.py`, "highest-blast-radius unattended-edit scenario") because it
    fix-forwards straight onto main. Here the fix is a **normal queued task that goes through the
    gate**, not an unattended main edit, and a numeric-tolerance regression is lower blast-radius than
    a post-merge type-check break — so the human-only model is the wrong fit.

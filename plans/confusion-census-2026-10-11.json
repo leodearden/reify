@@ -1,0 +1,107 @@
+{
+  "record_version": 1,
+  "run_id": "census-reify-20261011",
+  "date": "2026-10-11",
+  "project_id": "reify",
+  "force": false,
+  "method": {
+    "run_id": "census-reify-20261011",
+    "as_of_sha": "a4f35da461bac698e6450d89a10a6212c62f3b47",
+    "since": "none",
+    "evidence": {
+      "window": [
+        "2026-10-04T00:00:00+00:00",
+        "2026-10-11T00:00:00+00:00"
+      ],
+      "sessions_enumerated": 913,
+      "skipped_coded": 49,
+      "skipped_zero_signal": 170,
+      "mined": 60,
+      "ledger_rows": 44
+    },
+    "verification": {
+      "confirmed": 1,
+      "weakened": 0,
+      "refuted": 8,
+      "unverified": 0
+    },
+    "cost": {
+      "miner_calls": 60,
+      "verify_calls": 9,
+      "synthesis_calls": 1,
+      "probe_calls": 3,
+      "embedding_calls": 0,
+      "wall_clock_secs": 4563.763
+    },
+    "inputs_consumed": [],
+    "extra": {
+      "inputs_consumed_note": "this census reads no other instrument's report yet; matching sightings against /review, /hotspot-survey and /review-all findings arrives with the pre-screen (plans/census-incremental-prd.md leaf L6)",
+      "ledger_created_this_run": false,
+      "ledger_state": "ok",
+      "ledger_pruned": 0,
+      "ledger_error": null,
+      "verify_normalisations": {
+        "anchor_rewritten": 0,
+        "anchor_from_remediation": 0,
+        "anchor_from_title": 0,
+        "tag_dropped": 0,
+        "severity_missing": 0,
+        "severity_substituted": 0,
+        "severity_reason_missing": 0,
+        "route_defaulted": 0,
+        "remediation_rejected": 0,
+        "reason_missing": 0
+      }
+    }
+  },
+  "mining": {
+    "batch_stats": [
+      {
+        "index": 0,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.75,
+        "saturated": false,
+        "status": "ok"
+      },
+      {
+        "index": 1,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.9,
+        "saturated": true,
+        "status": "ok"
+      },
+      {
+        "index": 2,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.9,
+        "saturated": true,
+        "status": "ok"
+      }
+    ],
+    "stop_reason": "saturated",
+    "max_batches": 50
+  },
+  "verify_coverage": {
+    "novel": 9,
+    "offered": 9,
+    "cap": 150
+  },
+  "mass_rejection": null,
+  "dropped_verdicts": [],
+  "matrix_md": "| origin \\ manifested | unknown |\n| --- | --- |\n| unknown | 1 |\n",
+  "synthesis_md": "## Census of verified confusion findings \u2014 2026-10-11\n\nOne cluster was verified in this period. It rests on one sighting.\n\n### Cluster 1 \u2014 Infra shell test helpers cannot be invoked in isolation (low severity)\n\n**Anchor:** `tests/infra/test_verify_scope.sh`\n**Area:** `tests/infra` shell test harness invocability\n**Sightings:** 1 (session `bd4e18dd-55c4-449c-9512-c9259e93e13f`; origin and manifesting phase both unknown)\n**Route:** mechanical\n**Verdict tags:** heuristic 13 (files make internal sense in isolation), heuristic 6 (well-defined purpose for each entity), `kind:confusion`\n\n**What was observed.** An agent wanted to run a single helper from `tests/infra/test_verify_scope.sh`. The file offers no way to do that, so the agent cut the helper's definition out with a `sed` line range and `eval`-ed it inside a nested `bash -c`. The helper body contains `rm`. Claude Code could not statically vet the generated script and held the command for manual approval:\n\n> This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.\n\nA non-interactive agent cannot grant that approval, so the call stalled.\n\n**What the verification established.** `tests/infra/test_verify_scope.sh` is a top-level linear script. Its helpers (`make_fixture`, `plan_for`, `plan_for_branch` and others) are interleaved with executable top-level statements, and the file installs a `cleanup()` trap that runs `rm -rf`. There is no function-selection argument and no guard that lets the file be sourced without running the test body. Consequently the only route to exercising one helper is extraction via `sed`/`eval`. The approval prompt itself originates in Claude Code's own dangerous-removal check, which is not part of this tree; the tree's contribution is the missing entry point that pushes agents toward the extraction.\n\n**Reading against the quality definition.** The finding turns on heuristic 13, files make internal sense in isolation: the helpers cannot be understood or exercised apart from the surrounding linear script because defining them and running the test are the same act of reading the file. It also touches heuristic 6, well-defined purpose for each entity: the file is simultaneously a helper library and a test body, a purpose that cannot be stated without \"and\". No other heuristic was verified against this finding, and no claim is made here about other `tests/infra` members beyond the one anchored file.\n\n**Severity.** Low. The extraction is a convenience for running one helper; the whole script runs normally through its wrapper and the gate, so the cost is contained to agents attempting partial invocation.\n\n**Recorded remediation (mechanical).** In `tests/infra/test_verify_scope.sh`, add a guard so that sourcing the file only defines its helpers and skips the test body and the cleanup trap. An agent could then `source` the file and call one function directly, with no `sed`/`eval` extraction and no `bash -c` wrapper for the approval check to refuse.\n\n### Observations across the census\n\nWith a single cluster and a single sighting, no cross-cluster pattern can be stated. The one recurring shape worth noting for future censuses, as an observation and not a diagnosis, is that the confusion manifested as a tooling refusal (the dangerous-removal prompt) while the verified cause lay in file structure (no sourceable entry point). Future findings whose evidence is a tool-side refusal may warrant the same check: whether the tree's structure left the agent no vetted path.\n\n### Proposed codebook changes (not applied; act on by hand)\n\n- Consider adding or confirming a codebook entry under the `tests/infra shell test harness invocability` area capturing the pattern \"linear test script with no source-without-run guard forces `sed`/`eval` extraction of helpers\", tagged `h13`, `h6`, `kind:confusion`, severity low, route mechanical, anchored at `tests/infra/test_verify_scope.sh`. This is a suggestion for a human to weigh against the existing codebook contents; nothing in this report is applied automatically.",
+  "filed_ticket_ids": [
+    "tkt_0RVNE0AE34M1XJT96K394VDHJN",
+    "tkt_0RVNE0AF3ECSB6ZE7EWQE43VRC"
+  ],
+  "cross_project_tickets": [],
+  "dry_run": null,
+  "withheld": [],
+  "cost_note": "invoke calls: sonnet miner=60, sonnet verify=9, fable synthesis=1, haiku headroom-probe=3"
+}

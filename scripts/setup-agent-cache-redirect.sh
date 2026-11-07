@@ -69,9 +69,13 @@
 # Environment:
 #   REIFY_AGENT_CACHE_ROOT  Parent of the redirect destinations (default: /tmp)
 #   REIFY_TMPFILES_DIR      tmpfiles.d dir to write (default: /etc/tmpfiles.d)
-#   REIFY_MAIN_CHECKOUT     Stable checkout the installed unit's ExecStart is
-#                           pinned to (default: /home/leo/src/reify) — see
-#                           install_boot_unit()
+#   REIFY_MAIN_CHECKOUT     OVERRIDE for the stable checkout the installed
+#                           unit's ExecStart is pinned to.  When unset, that
+#                           path is DERIVED from git by
+#                           scripts/lib_main_checkout.sh; if the derivation
+#                           fails, or names a tree holding no executable copy of
+#                           this script, the unit falls back to the invoking
+#                           copy and says so — see install_boot_unit()
 #   CARGO_HOME              Seed source root  (default: $HOME/.cargo)
 #   npm_config_cache        Seed source root  (default: $HOME/.npm)
 #   XDG_CONFIG_HOME         User config dir   (default: $HOME/.config)
@@ -504,7 +508,20 @@ EOF
 # reclaimed and re-seeded.  From then on every boot fails with status=203/EXEC
 # and the redirect is never re-seeded — and because nothing Requires= this
 # unit, that failure is completely silent.  $self is kept only as the fallback
-# for a checkout that is not the configured main one (a contributor clone).
+# for a checkout whose main checkout cannot be resolved, or that resolves to a
+# tree holding no executable copy (a contributor clone).
+#
+# WHAT THE MOVE ONTO THE SHARED RESOLVER COSTS ON THIS HOST, so the trade is
+# recorded rather than discovered later: before task 6864 an unset
+# REIFY_MAIN_CHECKOUT meant the hardcoded /home/leo/src/reify, so on the reify
+# host the pin was UNCONDITIONAL — no derivation existed that could fail.  It is
+# now derived, and a derivation failure (git missing from PATH in whatever
+# context setup-dev.sh runs under, an unreadable repo, this script copied
+# outside any worktree, an anchor failing the resolver's --show-toplevel
+# round-trip) degrades to $self — a warm-lane path, i.e. exactly the 203/EXEC
+# shape above.  Accepted because the degrade is ANNOUNCED: the fallback warn
+# names the remedy (set REIFY_MAIN_CHECKOUT), where the old hardcoded
+# default was silently wrong on every host that was not this one.
 #
 # `Before=orchestrator-reify.service` inline — matching sccache.service in
 # setup-dev.sh's install_build_services() — orders the re-seed ahead of the
@@ -535,7 +552,7 @@ EOF
 # cost, now nondeterministic and on the critical path rather than off it.
 # Half a minute of deterministic boot latency is the cheaper side of that trade.
 install_boot_unit() {
-    local unit_dir unit_path self stable unit_exec
+    local unit_dir unit_path self stable unit_exec script_dir main_checkout remedy
 
     # Bus probe, same shape as setup-dev.sh's install_build_services() caller:
     # a CI box or container has no --user bus and must skip cleanly.
@@ -548,15 +565,90 @@ install_boot_unit() {
     # resolve a relative one against.
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+    # WHERE THE STABLE MAIN CHECKOUT COMES FROM (task 6864): the shared resolver
+    # in scripts/lib_main_checkout.sh, which setup-dev.sh's
+    # install_build_services() already uses for the same purpose.  It honours
+    # $REIFY_MAIN_CHECKOUT verbatim when set and otherwise DERIVES the answer
+    # from git, so a contributor clone or a relocated tree resolves to its own
+    # real main checkout instead of a hardcoded host path that does not exist
+    # there.  Sourced from $(dirname "$self") rather than a second
+    # ${BASH_SOURCE[0]} dance: $self is already absolute and symlink-resolved
+    # just above, so its dirname is the correct per-invocation anchor.
+    #
+    # Sourced HERE and not at top level on purpose: --seed-only returns before
+    # this function is ever reached, so the unprivileged boot path stays
+    # bit-for-bit unchanged (test_agent_cache_redirect.sh H16-H21).
+    #
+    # THE THREE GUARDS BELOW ARE NOT EQUALLY LOAD-BEARING, and the difference is
+    # measured (by deleting each in turn and re-running Part C of
+    # tests/infra/test_host_global_unit_pinning.sh) rather than assumed:
+    #
+    #   `2>/dev/null || true` on the CALL — MANDATORY.  This script runs under
+    #     `set -euo pipefail`, and reify_main_checkout returns non-zero when it
+    #     cannot resolve; an assignment from an unguarded command substitution
+    #     inherits that status and ABORTS a deliberately fail-open provisioning
+    #     step, taking setup-dev.sh's whole run with it.  Dropping it reds C6.
+    #
+    #   `declare -F` — REDUNDANT, kept for intent.  It reads as the guard for a
+    #     lib that is present and readable and sources cleanly but defines
+    #     nothing (source guard already satisfied by an exported
+    #     _REIFY_LIB_MAIN_CHECKOUT_SH_SOURCED, a renamed function, a truncated
+    #     file).  But the `|| true` above already absorbs the resulting
+    #     command-not-found into an empty string, so deleting `declare -F`
+    #     leaves Part C — C9 included, which is the case built for exactly that
+    #     shape — entirely green.  Kept because it states the intent, and
+    #     because setup-dev.sh's install_build_services() spells it the same way.
+    #
+    #   `|| true` on the SOURCE — likewise redundant against every state Part C
+    #     reaches (deleting it leaves the Part green), because a lib that
+    #     sources at all returns 0.  It guards the shape the tests do not model:
+    #     a lib that FAILS mid-source (syntax error, a trailing command that
+    #     exits non-zero).  Cheap, unproven, retained.
+    #
+    # Do not "simplify" by deleting the first one on the strength of the other
+    # two — it is the only one of the three that is doing work.
+    script_dir="$(dirname "$self")"
+    main_checkout=""
+    if [ -r "$script_dir/lib_main_checkout.sh" ]; then
+        # shellcheck source=scripts/lib_main_checkout.sh
+        . "$script_dir/lib_main_checkout.sh" || true
+    fi
+    if declare -F reify_main_checkout >/dev/null 2>&1; then
+        main_checkout="$(reify_main_checkout "$script_dir" 2>/dev/null || true)"
+    fi
+
     # Prefer the stable main checkout over the invoking one; fall back to $self
     # (and say so) when this is not that checkout, so a contributor clone still
     # gets a working unit rather than one pointed at a path they do not have.
-    stable="${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}/scripts/setup-agent-cache-redirect.sh"
-    if [ -x "$stable" ]; then
+    #
+    # The empty guard is not belt-and-braces: an unresolved $main_checkout
+    # interpolated unconditionally yields the ROOT-RELATIVE
+    # `/scripts/setup-agent-cache-redirect.sh`, a file that exists nowhere.  The
+    # -x guard means the UNIT is still correct either way — it falls back to
+    # $self — but the warn would name that nonsensical path instead of saying
+    # the resolution failed.  `${main_checkout:-<unresolved>}` is setup-dev.sh's
+    # exact idiom for the same condition; the two host-global installers must
+    # not give an operator two vocabularies for one thing.
+    #
+    # NOT gated on `$main_checkout != <invoking checkout>`: when the invoking
+    # checkout IS the main one but carries no executable copy, the unit is still
+    # about to be pinned at a tree that cannot run it, and a `!=` gate would
+    # swallow exactly that case.  See setup-dev.sh's install_build_services().
+    stable=""
+    [ -n "$main_checkout" ] && stable="$main_checkout/scripts/setup-agent-cache-redirect.sh"
+    if [ -n "$stable" ] && [ -x "$stable" ]; then
         unit_exec="$stable"
     else
         unit_exec="$self"
-        _warn "no executable at the stable main-checkout path ($stable) — pinning the boot unit at the invoking copy instead: $self"
+        # `<unresolved>` on its own tells an operator what failed but not what
+        # to do about it, and the unit they are left with is the ephemeral one.
+        # Name the remedy in the same breath — but ONLY on the unresolved
+        # branch: when the derivation succeeded and the tree simply holds no
+        # executable copy, setting the override changes nothing.
+        remedy=""
+        [ -n "$main_checkout" ] || \
+            remedy=" — set REIFY_MAIN_CHECKOUT to a checkout holding an executable copy to pin it at a stable path"
+        _warn "no executable at the stable main-checkout path (${main_checkout:-<unresolved>}) — pinning the boot unit at the invoking copy instead: ${self}${remedy}"
     fi
 
     unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"

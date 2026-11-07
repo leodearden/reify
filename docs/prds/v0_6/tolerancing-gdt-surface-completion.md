@@ -1,6 +1,6 @@
 # PRD: `std.tolerancing` §7 GD&T / Surface / ISO-grade completion
 
-**Status:** Draft · **Author session:** 2026-06-03 · **Milestone:** v0_6
+**Status: SHIPPED.** All 5 decomposition leaves have landed — α #4265, β #4266, γ #4267, δ #3116, ε #4268; the zone-REGION follow-up #4269 was absorbed by `gdt-geometric-zones-and-containment.md` (its γ+δ). **Author session:** 2026-06-03 · **Milestone:** v0_6 · shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its gap descriptions, substrate measurements and anchors are dated 2026-06-03 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — code and examples cite §7 as leaf provenance only; the shipped `std.tolerancing` surface is stated by `docs/reify-stdlib-reference.md` §7, reconciled by ε #4268.
 **Closes:** gap-register `docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md` cluster **P13 tolerancing** (all 7 rows).
 **Source doc:** `docs/reify-stdlib-reference.md` §7 (`std.tolerancing`).
 **Substrate file under change:** `crates/reify-compiler/stdlib/tolerancing.ri` (+ a new `crates/reify-stdlib/src/tolerancing.rs` builtin module).
@@ -35,7 +35,7 @@ Every mechanism this PRD introduces names its consumer:
 
 | Mechanism | Consumer |
 |---|---|
-| `iso_it_tolerance(grade, nominal_min, nominal_max)` builtin (new, `tolerancing.rs`) | `ISOToleranceGrade.tolerance_value` let → `reify eval` prints the IT-grade tolerance width (e.g. IT7@Ø50 = 25µm) |
+| `iso_it_tolerance(nominal_min, nominal_max, grade)` builtin (new, `tolerancing.rs`) | `ISOToleranceGrade.tolerance_value` let → `reify eval` prints the IT-grade tolerance width (e.g. IT7@Ø50 = 25µm) |
 | `effective_tolerance_zone(tol_value, material_condition, departure)` builtin (new) | `GeometricTolerance.nominal_zone` let **and** the redefined `Conforms` predicate |
 | `GeometricTolerance.nominal_zone` derived let | A designer reads the material-condition-expanded zone width via `reify eval`; `Conforms` asserts on it |
 | `Conforms` constraint-def (redefined, GD&T-aware) | A designer writes `constraint Conforms(tolerance: my_position, measured_deviation: 0.05mm)`; `reify check` passes/fails — and a deviation that **fails under RFS passes under MMC** because of the bonus, an observable expansion |
@@ -58,7 +58,11 @@ already evaluate (verified — see §3):
 Mirrors `stackup.rs`: a `pub fn eval_tolerancing(name, args) -> Option<Value>` added to the
 `eval_builtin` dispatch chain in `lib.rs`, plus a `diagnose` classifier for the `Undef` path.
 
-- **`iso_it_tolerance(grade: Int, nominal_min: Length, nominal_max: Length) -> Length`** —
+- **`iso_it_tolerance(nominal_min: Length, nominal_max: Length, grade: Int) -> Length`** —
+  *Amended 2026-08-07 (task #6091): this signature was ratified grade-first as
+  `iso_it_tolerance(grade, nominal_min, nominal_max)` by task #4265 and was flipped to the
+  subject-first order shown above by the 2026-08-07 ruling. The code has not drifted from
+  this table; the table records the superseded order here so the amendment is traceable.* —
   ISO 286-1 standard-tolerance-unit lookup. Computes the standard tolerance unit
   `i = 0.45·∛D + 0.001·D` (µm, `D` = geometric mean of the size-range bounds in mm) and
   multiplies by the IT-grade factor. **Supported envelope:** IT5–IT18, nominal sizes ≤ 500 mm
@@ -73,7 +77,7 @@ Mirrors `stackup.rs`: a `pub fn eval_tolerancing(name, args) -> Option<Value>` a
 ### 2.2 `crates/reify-compiler/stdlib/tolerancing.ri` (the declarative surface)
 
 - `GeometricTolerance` trait: add `let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)` and the documented default `material_condition : MaterialCondition = MaterialCondition.RFS`. The 18 GD&T structures **inherit** `nominal_zone` (precedent: `Physical.mass` is inherited by refining structures) — no per-structure re-declaration needed.
-- `ISOToleranceGrade`: replace `param tolerance_value : Length` with `let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)` (derived, not a passthrough param).
+- `ISOToleranceGrade`: replace `param tolerance_value : Length` with `let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)` (derived, not a passthrough param).
 - `Conforms` constraint-def: redefine from the trivial `tolerance_value > 0` to a GD&T-aware predicate `effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation` over a `param tolerance : GeometricTolerance` (trait-typed constraint param — compiler-accepted), with `measured_deviation : Length = 0mm` and `feature_departure : Length = 0mm`.
 - `require_finish(feature: Real, finish: SurfaceFinish) -> Bool` `.ri` free fn: body `finish.value > 0mm` (well-formedness predicate usable in `constraint` position).
 - `SurfaceFinish`: add `direction : SurfaceDirection = SurfaceDirection.Multidirectional` and `process : String = ""` defaults.

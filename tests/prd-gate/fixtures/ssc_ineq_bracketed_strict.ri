@@ -1,0 +1,17 @@
+module ssc_ineq_bracketed_strict
+// PRD EVIDENCE — docs/prds/v0_6/solution-set-completeness.md (leaf delta; BT8).
+// The #5711 shape: a strict auto bracketed only by inequalities. The
+// uniqueness probe reflects to the far side of the DEFAULT box (auto_params
+// carry bounds: None unconditionally), so the perturbed re-solve fails, and
+// verify_uniqueness's non-convergence arm returns TRUE -- turning "no evidence"
+// into a uniqueness claim.
+// AFTER: Partial{ProbeOnly} -- locally unique, global uniqueness unverified.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure SscIneqBracketedStrict {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length >= 8mm
+    constraint self.rod.length <= 40mm
+}

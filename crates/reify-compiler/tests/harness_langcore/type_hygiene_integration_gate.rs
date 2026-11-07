@@ -13,7 +13,7 @@
 //! **Row ownership:** each §10 row is tested in exactly ONE canonical file; this
 //! gate owns the compile-time rows.  Runtime/eval rows (2, 4b, 6, 7b, 8, 9, 13,
 //! 14) live in `crates/reify-eval/tests/type_hygiene_integration_gate.rs`; the
-//! CLI row (12) lives in `crates/reify-cli/tests/cli_type_hygiene_strict.rs`.
+//! CLI row (12) lives in `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`.
 //!
 //! # §10 boundary-test table + row→owner cross-reference
 //!
@@ -32,7 +32,7 @@
 //! | 9   | body_mass_props(b) no-Material warn + water UNCHANGED        | `reify-eval/tests/type_hygiene_integration_gate.rs`                   |
 //! | 10  | scalar override of tensor-defaulted trait param → mismatch   | `row_10_scalar_override_of_tensor_defaulted_param_errors`             |
 //! | 11  | compatible same-type override conforms                       | `row_11_tensor_typed_override_of_tensor_defaulted_param_conforms`     |
-//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/cli_type_hygiene_strict.rs`                  |
+//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`                  |
 //! | 13  | distinct indeterminacy messages                              | `reify-eval/tests/type_hygiene_integration_gate.rs`                   |
 //! | 14  | RNEA identical post-κ                                        | `reify-eval/tests/type_hygiene_integration_gate.rs`                   |
 

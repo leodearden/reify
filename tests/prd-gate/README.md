@@ -4,6 +4,55 @@ Executable capability probes for PRD §4 D1 (`scripts/prd-capability-check.py`).
 Consumed by γ/D3 (decompose-phase verification workflow) and dark-factory D4
 (dispatch-time substrate re-diff).
 
+## Where fixtures live (standard, Leo 2026-08-21)
+
+**A committed `.ri` fixture that exists as PRD or capability-manifest evidence lives
+here, in `tests/prd-gate/fixtures/`.** Cite it by **full repo-relative path**
+(`tests/prd-gate/fixtures/<name>.ri`) everywhere — probe sets, capability manifests,
+PRD prose and task `metadata.files`. Bare `fixtures/<name>.ri` and bare stems are
+unresolvable by machine and must not be used.
+
+`docs/prds/**/fixtures/` is **DEPRECATED**. It grew as a parallel convention and is
+being emptied by task #6431; do not add files there.
+
+The other **four** tiers, keyed on *who consumes the file* rather than who motivated it:
+
+| Tier | Home | Why |
+|---|---|---|
+| Ephemeral decompose-time probe | `/tmp/prd-gate-fixtures/` | never committed; see the `/prd` overlay's `references/grammar-gate.md` |
+| **Committed PRD / manifest evidence** | **`tests/prd-gate/fixtures/`** | executed by probe sets; walked by the GUI grammar ledger; covered by the coupling carve-out |
+| User-facing design that must keep working | `examples/` → `examples/best_practices/` + `INDEX.md` | swept by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` |
+| Purely one crate's test detail, not PRD evidence | `crates/<crate>/tests/fixtures/` | crate-local, no PRD coupling |
+| Language-spec conformance corpus | `crates/reify-spec-conformance/fixtures/<section>/` | run only by the spec-conformance suite's own harness (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2); must-reject fixtures are chartered residents, so no repo-wide walker sweeps it — `corpus_no_bare_scalar` carries a registered exclusion arm |
+
+**A fixture read by a compiled test target does not get special placement — it gets
+registration.** Add its basename to `_RUST_COUPLED_RI_FIXTURES` in `scripts/verify.sh`
+(the list `decide_scope`'s prd-gate fixture arm reads) so an edit to it correctly
+escalates `pre-commit` to the heavy checks. You do not have to remember:
+`tests/infra/test_verify_scope.sh`'s PG-DRIFT scenario re-derives the coupled set from
+`git grep` over tracked sources and turns RED until the fixture is registered. This
+mechanism is the reason this directory is the standard — it exists here and nowhere else.
+
+From the S18 cutover (ζ #9112) there is no list to register in: both coupled sets are
+derived at plan time (PRD `docs/prds/v0_6/verify-structured-plan-and-role-table.md` D6,
+implemented in `scripts/reify_verify/scope.py`). The Rust set comes from tracked `*.rs`
+references, by PG-DRIFT's own predicate; the GUI set from
+`gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. Until then `scripts/verify.sh`
+is still the gate and classifies by its lists, and PG-DRIFT still reds an unregistered
+reference, so keep registering.
+
+Note that fixtures here are **not** required to parse or to pass `reify check`: several
+are deliberately unparseable or deliberately failing, because they are *probe* inputs
+whose expected observation is a rejection. Nothing in the repo compiles this directory
+wholesale.
+
+The tracked-`.ri` parse guard
+(`crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs`) skips this
+directory's undeclared fixtures unread, so adding a fixture stays inert. A fixture listed
+in its `MUST_ERROR_RI_FIXTURES` is read and must keep showing its declared fault; such a
+fixture is Rust-coupled, so it is registered in `scripts/verify.sh`'s
+`_RUST_COUPLED_RI_FIXTURES` like any other (PG-DRIFT reds otherwise).
+
 ## Committed-probe-set format (JSON)
 
 ```json
@@ -11,14 +60,23 @@ Consumed by γ/D3 (decompose-phase verification workflow) and dark-factory D4
     "probes": [
         {
             "capability": "<human name for the capability being probed>",
-            "probe_kind": "grammar" | "check" | "ir",
-            "fixture": "<repo-relative path to the .ri fixture file>",
+            "probe_kind": "grammar" | "check" | "ir" | "value",
+            "fixture": "<repo-relative path to the .ri fixture file>",  // non-empty
             "expected": {
                 "observation": "present" | "absent",
-                "match": {
-                    "exit_code": <int>,          // optional
-                    "stderr_contains": "<str>",  // optional
-                    "stdout_contains": "<str>"   // optional
+                "match": {                       // only the keys the kind reads
+                    "exit_code": <int>,          // check only
+                    "stderr_contains": "<str>",  // check, ir
+                    "stdout_contains": "<str>",  // check only
+
+                    // value kind ONLY — required there, rejected elsewhere
+                    "stdout_value": {
+                        "pattern": "<regex with >=1 capture group>",  // required
+                        "group": <int|str>,      // optional, default 1
+                        "min": <number>,         // optional, inclusive
+                        "max": <number>,         // optional, inclusive
+                        "finite": <bool>         // optional
+                    }
                 }
             }
         }
@@ -26,17 +84,61 @@ Consumed by γ/D3 (decompose-phase verification workflow) and dark-factory D4
 }
 ```
 
-**All `match` fields are optional.** An empty `match: {}` object means "no
-specific criterion" (used for grammar probes, where observation is determined
-by exit code alone).
+`load_probe_set` refuses, as a usage error (exit 64 naming `probe[i]`), any
+probe that would run yet could prove nothing. This list is the one statement of
+those rules; the code's docstrings point here, and its per-kind key table is
+`_MATCH_KEYS_BY_KIND`.
+
+1. **Every kind needs a non-empty `fixture`.** A probe with no target proves
+   nothing.
+2. **Every kind accepts only the `match` keys its observation reads**, as the
+   per-key comments above list them (none for `grammar`). Any other key,
+   misspelt or borrowed from another kind, would be silently ignored, so it is
+   refused.
+3. **A `check` probe needs a constraining key:** an integer `exit_code`, or a
+   non-empty `stderr_contains` / `stdout_contains`. Without one, the predicate
+   holds for every run.
+4. **An `ir` probe expecting `present` needs a non-empty `stderr_contains`.**
+   Without a signature, exit 0 reads ABSENT and any error INDETERMINATE, so the
+   probe can never pass. An `ir` probe expecting `absent` needs none: a clean
+   exit is its claim.
+
+A `grammar` probe's `match` is `{}`: its observation is determined by exit code
+alone. A `value` probe has a mandatory predicate — see
+[`match` predicate semantics](#match-predicate-semantics). Rules 1–3 are PRD
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.3; rule 4 is the `ir`
+counterpart of rule 3.
 
 ## Probe kinds
 
 | `probe_kind` | Command | Observation model |
 |---|---|---|
-| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; "Failed to load language" in stderr → **HARNESS ERROR** |
+| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; a grammar load failure → **HARNESS ERROR** — α parses tree-sitter's load-failure signature once, at its runner boundary, into `harness_failure` (kind `grammar_load`) |
 | `check` | `reify check <fixture>` | `match` predicate satisfied → **PRESENT**; predicate not satisfied → **ABSENT** |
 | `ir` | `reify eval <fixture>` (eval-error proxy) | exit 0 → **ABSENT** (sound by determinism); exit ≠ 0 with asserted `stderr_contains` signature → **PRESENT**; exit ≠ 0 without signature → **INDETERMINATE** → UNPROVABLE |
+| `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 and a capture was read but failed the constraint → **ABSENT**; exit 0 but the `pattern` located nothing → **INDETERMINATE** → UNPROVABLE; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
+
+`value` is asymmetric the opposite way from `ir`: **ABSENT is reserved for a value
+that was actually read.** If nothing was read — a non-zero exit produced no
+output, or the `pattern` located nothing because the output field was renamed or
+the pattern was typo'd — then "the capability is absent" and "the fixture, the
+pattern or the harness is broken" are indistinguishable, and answering ABSENT
+would manufacture a confident negative finding out of a broken probe. Both cases
+are INDETERMINATE, so a mis-aimed `value` probe is UNPROVABLE under *either*
+polarity rather than silently PASSing a pinned `observation: absent`.
+
+### Why `value` exists (task #6876)
+
+`ir` is **exit-code-only on the clean branch**: it returns ABSENT on exit 0
+*before consulting `match` at all*. So a premise of the shape "eval exits 0 **and**
+prints a finite, in-range frequency", bound as `ir` + `observation: absent`, is
+vacuous with respect to the value half — it PASSes on a fixture that printed `0`
+or `undef`, and there was no way to state the other half at all.
+
+`fixtures/value_clean_eval_cells.ri` is the standing evidence: on one exit-0 run
+it prints a correct value, a degenerate `0`, and an `undef`. An `ir`/absent probe
+PASSes on it regardless; `value` probes over the same three cells observe
+PRESENT, ABSENT and ABSENT respectively.
 
 ## Verdicts
 
@@ -48,6 +150,11 @@ by exit code alone).
 | ABSENT | present | **FAIL** |
 | INDETERMINATE | (any) | **UNPROVABLE** |
 
+A fixture that does not exist when the probe launches makes the observation
+INDETERMINATE → **UNPROVABLE** for every kind (exit 2), unless a `harness_failure`
+is set, which is **HARNESS_ERROR** instead. The probe still runs, so its evidence
+is still recorded.
+
 ## Harness exit codes
 
 | Code | Meaning |
@@ -55,15 +162,25 @@ by exit code alone).
 | 0 | All probes PASS |
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
-| 64 | Usage / argument error (`EX_USAGE`) |
-| 70 | Tool / runtime error (`EX_SOFTWARE`) — missing binary, grammar load failure |
+| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: both profile binaries built and `target/.reify-bin-sha` not naming HEAD — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
+| 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
 
 ```bash
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
+REIFY_BIN="$PWD/target/debug/reify" python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+The `REIFY_BIN` form is for when the runner will not choose a binary itself (exit
+64 above). Name a binary built from the commit under test: `REIFY_BIN` is taken
+verbatim, never refused. Binary trust is SHA identity, and
+`scripts/reify-bin-freshness.sh` holds that rule.
+
+Each `--json` record also carries the typed probe outcome: `fixture` (as written
+in the probe set), `fixture_present` and `harness_failure`. The record contract is
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.1.
 
 ## Fixtures
 
@@ -72,19 +189,32 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/arrow_type.ri` | grammar | No arrow-type grammar production (3979 class) — `param f : (Length) -> Length` → tree-sitter exits 1 |
 | `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute("not-an-axis", …)` → `reify check` exits 0, no rejection diagnostic |
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
+| `fixtures/value_clean_eval_cells.ri` | value | #6876 worked example and vacuity evidence — one exit-0 run printing `damping_ratio = 0.018` (in range → PRESENT), `degenerate_ratio = 0` (out of range → ABSENT), `undef_ratio = undef` (not a number → ABSENT). An `ir`/absent probe PASSes on all three. |
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
 | `fixtures/typeparam_member_access.ri` | check | 4437 — `constraint item.length > 5mm` (type-param bounded) → exit 1, "member access not yet supported: .length" |
 | `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → was tree-sitter exit 1 (MISSING "}"); **removed from corpus** (grammar production landed — probe flipped PASS) |
 | `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → was exit 0 with panic in stderr; **removed from corpus** (task 4954 gave geometry lets first-class value cells — cross-sub `let` access now resolves via `ValueRef`, not `CrossSubGeometryRef` — probe flipped PASS) |
 | `fixtures/scalar_codomain_mismatch.ri` | check | 4375 — `field def f : Length -> Scalar` → exit 1, "codomain mismatch" |
+| `fixtures/struct_ctor_conformance_pose_at_selector_field.ri` | check | §7 row 1 (task δ/5306) — `PressureLoad(face: frame3(...))` on the real stdlib `Option<FaceSelector>` field → was exit 0 + `warning:`; after δ flipped `CTOR_FIELD_CONFORMANCE_SEVERITY` to Error, exit 1 with the pose-vs-set hint |
+| `fixtures/struct_ctor_conformance_int_at_string_field.ri` | check | §7 row 2 (task δ/5306) — `Widget(label: 42)` at a `String` field → was exit 0 + `warning:`; now exit 1, "argument 'label' has type 'Int' but param 'label' requires type 'String'" |
+| `fixtures/struct_ctor_conformance_string_at_selector_field.ri` | check | §7 row 3 (task δ/5306) — `PressureLoad(face: "x_max")` disallow-string → was exit 0 + `warning:`; now exit 1, "requires selector type 'FaceSelector'", deliberately WITHOUT the pose hint |
+| `fixtures/struct_ctor_conformance_unknown_field.ri` | check | §7 row 11 (task δ/5306) — `Widget(labl: "x")` typo'd named argument → was exit 0 + `warning:`; now exit 1, `E_CTOR_UNKNOWN_FIELD` |
+| `fixtures/struct_ctor_conformance_over_arity.ri` | check | §7 row 12 (task δ/5306) — surplus positional arg on a 1-param ctor → was exit 0 + `warning:`; now exit 1, `E_CTOR_ARITY` |
 
 ## Committed probe sets
 
 | File | Description |
 |---|---|
-| `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
+| `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `ProbeKind`, so a new kind reds until the example covers it. |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 | `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
+| `struct-ctor-conformance-probe-set.json` | §7 boundary-row CLI gate for the struct-ctor field-type-conformance PRD (task δ/5306) — 5 rows, **all PASS**, every one `probe_kind: check` with `exit_code: 1`. Rows 1/2/3 are the α type surface (pose-vs-set, Int→String, disallow-string), rows 11/12 the ε structural codes (`E_CTOR_UNKNOWN_FIELD`, `E_CTOR_ARITY`). Each `capability` states the PRE state (exit 0, "All constraints satisfied.") alongside the POST assertion. Gated by `tests/infra/test_prd_gate_struct_ctor_conformance.sh` (all-PASS, reify-binary skip-guarded; no grammar probe, so no tree-sitter substrate guard). C3's span-at-the-offending-argument is NOT assertable here — `reify check` prints neither label nor span nor code — and stays a Rust-level assertion in `struct_ctor_field_conformance_tests.rs`. |
+| `generic-enum-type-arg-retention-beta-probe-set.json` | PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` leaf β (#8014) — 1 row, POST state (FAIL before β): overload tier-3 wildcard narrowing, `getar_wildcard_headed_arg_silent.ri` must exit 1 with "no matching overload for fl(". The binder-form row lives in the delta set: it needs δ's placeholder-typed binder (Leo, esc-8014-3, 2026-10-01). |
+| `generic-enum-type-arg-retention-gamma-probe-set.json` | Same PRD leaf γ (#8015) — 1 row, POST state (FAIL today): args-aware enum-compat oracle, `getar_result_arg_mismatch_assign_silent.ri` exits 1 with "argument 'b' has type". Row-scoped so γ's delivered check does not depend on δ. |
+| `generic-enum-type-arg-retention-epsilon2-probe-set.json` | Same PRD leaf ε2 (#8016) — 2 rows: `getar_decl_match_applied_param_rejected.ri` POST exit 0 (FAIL today) + `getar_decl_match_let_construct_ok.ri` regression guard (PASS today, must stay). |
+| `generic-enum-type-arg-retention-alpha2-probe-set.json` | Same PRD leaf α2 (#8013) — 1 row, POST state (FAIL today): a bare `param r : Result` annotation is rejected with the arity diagnostic (R2). |
+| `generic-enum-type-arg-retention-delta-probe-set.json` | Same PRD leaf δ (#8018) — 5 rows, POST state (4 FAIL + 1 UNPROVABLE today): construction emits `Type::Applied` — S-1 `E_FALLBACK_TYPE`, S-3 "expects type", 4031 recursive conflict "bound to both", U-1 `getar_fn_param_rejects_construct.ri` exit 0 with `W.v = 0.001 m`, S-4 binder form `getar_wildcard_placeholder_binder_silent.ri` exits 1 "no matching overload for hb(" (moved from the beta set, esc-8014-3). |
+| `generic-enum-type-arg-retention-epsilon-probe-set.json` | Same PRD leaf ε (#8019) — 3 rows, POST state, DEBUG-PROFILE ONLY: run with `REIFY_BIN=target/debug/reify` (the release binary already passes them, so the default binary selection is vacuous here); R5 match result-type rule over placeholder-typed first arms. |
 
 ## `match` predicate semantics
 
@@ -95,6 +225,37 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 - `exit_code`: the process exit code must equal this integer
 - `stderr_contains`: this string must appear in stderr
 - `stdout_contains`: this string must appear in stdout
+
+### `stdout_value` (value probes only)
+
+`re.search(pattern, stdout)` → take `group` (default `1`) → parse it as a float →
+apply the bounds. A failure at the *parse* or *bounds* step makes the observation
+ABSENT; a failure to locate the capture at all makes it INDETERMINATE (see the
+probe-kinds table above). Two invariants
+are enforced at **load** time, so a malformed predicate is a usage error (exit
+64) rather than a silently-passing probe:
+
+1. **A `value` probe must carry a constraint.** `pattern` alone locates a number
+   and asserts nothing about it, so `stdout_value` without at least one of
+   `min` / `max` / `finite` is rejected — as is a `pattern` with no capture
+   group, an uncompilable `pattern`, a `group` the pattern does not define, and
+   a misspelled constraint key.
+2. **Finiteness is structural, not opt-in.** `float("inf") >= 0.01` is `True` in
+   Python, so a bounds-only check would admit `inf`. Every capture must parse as
+   a *finite* float regardless of whether `finite` is set; `finite: true` is
+   simply how you say "a finite number, bounds irrelevant". `finite: false` is
+   **rejected**, not honoured: it reads as an opt-out the predicate does not
+   offer, so a probe written that way would assert the opposite of what it says.
+
+`exit_code` / `stderr_contains` / `stdout_contains` are **rejected** on a `value`
+probe: exit 0 is structural to the kind, and a stdout assertion belongs in
+`pattern`. Conversely `stdout_value` is rejected on a `grammar`/`check`/`ir`
+probe, where nothing would ever evaluate it — armed but vacuous.
+
+A `value` result carries its evidence: both the text renderer (a `value:` line)
+and `--json` (a `value_observation` object, present on value rows only) report
+which token was captured and which constraint it failed, so "captured `0`, below
+`min`" is distinguishable from "the pattern never matched".
 
 ## Historical-false-premise regression corpus (δ)
 

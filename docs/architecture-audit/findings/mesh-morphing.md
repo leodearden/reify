@@ -6,11 +6,13 @@
 **Mechanism count:** 18
 **Gap count:** 11 (WIRED count: 7)
 
+> **Update 2026-10-01 (task 7276):** Gap 3 / M-002 (`vertex_to_vertex` always-empty) is RESOLVED by task 3590; the other mechanisms' States below were not re-audited by this edit.
+
 ## Top concerns
 
 - **Gap 1 — engine wiring is the chokepoint.** Every algorithm primitive (Stage A, Stage B, eligibility, boundary-BC translation, Laplacian quick-pass, elasticity morph, quality check, stiffness rules, MorphOptions) is **WIRED** inside `reify-mesh-morph`. None of it is invoked from anywhere outside the crate. The VolumeMesh realization path in `crates/reify-eval/src/engine_build.rs::dispatch_volume_mesh` only dispatches between Tet and Swept; there is no morph-or-remesh branch. The user-visible promise ("morphing is automatic; user does not opt in") is unfulfillable today. Task 2947 (PRD task #10) is pending and is the load-bearing integration; until it lands the crate is essentially shelf-ware.
 - **Gap 2 — no real OCCT Projector, no real BoundaryAssociation producer.** The `Projector` trait and `BoundaryAssociation` struct are well-shaped, but **no concrete `impl Projector` exists** anywhere in the workspace (only a `RecordingProjector` in `boundary.rs` tests), and the Gmsh/OCCT surface-mesh paths do not emit `NodeAttachment` data — `BoundaryAssociation::associate` is never called from outside `mesh-morph`'s own tests. Even if task 2947 lands, it has no way to populate the boundary association or invoke a real closest-point projector. These two missing producers are silent prerequisites the PRD glosses over by deferring them to "follow-on tasks accompanying #10 or #7".
-- **Gap 3 — `CorrespondenceMap::vertex_to_vertex` is structurally always-empty in v0.2.** The boundary module documents this explicitly (`boundary.rs:130-140`) — any `OnVertex` node returns `ProjectionFailure::MissingCorrespondence`. Any tet mesh where a P1 vertex node lands on a B-rep vertex would fail to morph today. The PRD does not call this out; Phase 3 must decide whether v0.3 morph runs only on meshes with zero on-vertex nodes (very restrictive) or whether vertex correspondence is added.
+- ~~**Gap 3 — `CorrespondenceMap::vertex_to_vertex` is structurally always-empty in v0.2.** The boundary module documents this explicitly (`boundary.rs:130-140`) — any `OnVertex` node returns `ProjectionFailure::MissingCorrespondence`. Any tet mesh where a P1 vertex node lands on a B-rep vertex would fail to morph today. The PRD does not call this out; Phase 3 must decide whether v0.3 morph runs only on meshes with zero on-vertex nodes (very restrictive) or whether vertex correspondence is added.~~ **RESOLVED by task 3590 (mesh-morphing-phase-2 §3.2 β, commit `0bac6c0210`, 2026-05-17):** `stage_b_eligible` populates `vertex_to_vertex` via `match_one_kind` (`crates/reify-eval/src/morph_stage_b.rs`), so `OnVertex` nodes now project in `compute_dirichlet_bcs`. Stale downstream prose and the inert reify-mesh-morph tripwire retired by task 7276.
 - **Gap 4 — FEA-warm-start preservation depends on engine wiring that owns warm-state plumbing.** The PRD's compounding-win narrative ("FEA warm-start state preserved across morph") is asserted but unverified. Task 2952 (warm-start regression) is pending; it gates on 2947. Until then the "preserves element-to-DOF mapping" claim is **only documented**, not pinned. Note that the PRD says "morph is essentially `solve_elastic_static` called with loads=[], supports=boundary_displacements" — that very `solve_elastic_static` runtime entry point is **GR-001 FICTION** (structure-ctor runtime eval for `Support`/`Load`) — but mesh-morph sidesteps it by composing reify-solver-elastic primitives directly (no stdlib `fn` call). So GR-001 does NOT transitively block mesh-morph algorithmically; it only blocks any user-visible `morph()` exposure that runs through stdlib FEA.
 
 ## Mechanisms
@@ -25,11 +27,11 @@
 
 ### M-002: Stage B — persistent-naming bijection check + CorrespondenceMap
 
-- **State:** PARTIAL
-- **Failure mode:** F2 (mechanism exists but is missing a load-bearing sub-mechanism)
-- **Evidence:** `crates/reify-eval/src/morph_stage_b.rs:46` (`CorrespondenceMap`); `vertex_to_vertex` field is **structurally always-empty in v0.2** (documented at lines 140, 176-177; pinned by tests at lines 435-436, 470-471, 505-506).
-- **Blocks:** any morph of meshes whose surface nodes attach to B-rep vertices (PRD task #5's `OnVertex` branch always returns `ProjectionFailure::MissingCorrespondence`).
-- **Note:** Face-to-face and edge-to-edge correspondence work; vertex correspondence is a v0.2 known-empty hole that the PRD does not flag. Phase 3 must decide: restrict morph eligibility to meshes with zero on-vertex surface nodes, or fill the vertex bijection.
+- **State:** WIRED (was PARTIAL; resolved by task 3590, commit `0bac6c0210`, 2026-05-17)
+- **Failure mode:** ~~F2 (mechanism exists but is missing a load-bearing sub-mechanism)~~ N/A
+- **Evidence:** ~~`crates/reify-eval/src/morph_stage_b.rs:46` (`CorrespondenceMap`); `vertex_to_vertex` field is **structurally always-empty in v0.2** (documented at lines 140, 176-177; pinned by tests at lines 435-436, 470-471, 505-506).~~ **RESOLVED by task 3590:** `stage_b_eligible` (`crates/reify-eval/src/morph_stage_b.rs`) fills `vertex_to_vertex` through the shared `match_one_kind` helper; pinned in-crate by `stage_b_eligible_populates_vertex_to_vertex_when_vertex_attrs_present` (reify-eval) and at the consumer seam by `compute_dirichlet_bcs_snaps_vertex_attached_node_through_stage_b_vertex_correspondence` (reify-mesh-morph `src/boundary.rs`, task 7276).
+- **Blocks:** ~~any morph of meshes whose surface nodes attach to B-rep vertices (PRD task #5's `OnVertex` branch always returns `ProjectionFailure::MissingCorrespondence`).~~ N/A
+- **Note:** ~~Face-to-face and edge-to-edge correspondence work; vertex correspondence is a v0.2 known-empty hole that the PRD does not flag. Phase 3 must decide: restrict morph eligibility to meshes with zero on-vertex surface nodes, or fill the vertex bijection.~~ **Decided:** fill the vertex bijection, per `docs/prds/v0_3/mesh-morphing-phase-2.md` (§3.2 β = task 3590); face, edge and vertex correspondence all work.
 
 ### M-003: Combined eligibility predicate `morph_eligible`
 
@@ -161,7 +163,7 @@
 
 ## Cross-PRD breadcrumbs
 
-- **`persistent-naming-v2.md` (v0.2)** — `TopologyAttributeTable` + `CorrespondenceMap.face_to_face`/`edge_to_edge` are wired (task 2590 done; selector resolution complete per task 2652). `vertex_to_vertex` is the documented-empty hole — this would surface as a gap in any v0.2 PNv2 audit too.
+- **`persistent-naming-v2.md` (v0.2)** — `TopologyAttributeTable` + `CorrespondenceMap.face_to_face`/`edge_to_edge` are wired (task 2590 done; selector resolution complete per task 2652). ~~`vertex_to_vertex` is the documented-empty hole — this would surface as a gap in any v0.2 PNv2 audit too.~~ **RESOLVED by task 3590:** `vertex_to_vertex` is populated since commit `0bac6c0210` (2026-05-17).
 - **`structural-analysis-fea.md` (v0.3)** — task 2925 (`ReprKind::VolumeMesh`) is the realization-path gate; mesh-morph's `morph()` operates on `VolumeMesh` directly. The FEA solver primitives mesh-morph composes (`element_stiffness`, `assemble_global_stiffness`, `apply_dirichlet_row_elimination`, `solve_cg`) all live in `reify-solver-elastic` and are wired. Mesh-morph does **not** transitively block on GR-001 because it composes solver primitives directly rather than routing through stdlib `solve_elastic_static`.
 - **`persistent-fea-cache.md` (v0.3)** — the PRD explicitly says this PRD's earlier "caching morphed meshes with morph provenance" note should be removed. **Did not check** the persistent-fea-cache PRD to verify the removal landed; out of scope.
 - **`mesh-morph-nearest-cached.md` (v0.4 stub)** — PRD names this stub as the deferred follow-on; **the stub file does not exist in `docs/prds/v0_4/`** (ls confirms: only `a-posteriori-error-estimation.md`, `fea-gui-rendering-shells.md`, `structural-analysis-shells.md`). Minor ORPHAN-shaped issue: PRD names a follow-on that has not been filed.
@@ -172,7 +174,7 @@
 
 - Eleven of the eighteen mechanisms are gaps; **ten of those eleven are gated on task 2947 (engine wiring, PRD task #10)**. Phase 3 should treat 2947 as a single rate-limiter mechanism rather than ten independent decisions.
 - Three of the eleven gaps are independent of 2947 in their own right:
-  - **M-002** (vertex_to_vertex always empty): a PNv2-shape decision Phase 3 must make first
+  - ~~**M-002** (vertex_to_vertex always empty): a PNv2-shape decision Phase 3 must make first~~ **RESOLVED by task 3590** (commit `0bac6c0210`): the vertex bijection was filled
   - **M-005** (BoundaryAssociation producer absent on Gmsh side): a kernel-adapter decision
   - **M-006** (no concrete OCCT Projector): a kernel-adapter decision
 - The PRD does NOT have GR-001 (struct-ctor runtime eval) as a transitive blocker because the morph algorithm composes FEA primitives directly, not via stdlib `fn solve_elastic_static`. This is a happy surprise; it means morph could ship without any stdlib-side ergonomics for `Support`/`Load`/`LoadCase`/`MaterialName`.

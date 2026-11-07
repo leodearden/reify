@@ -8,7 +8,7 @@
 // Expected: exit 0, zero ERROR nodes.
 //
 // NOTE: this is a PARSE fixture, not a compile fixture. It deliberately lives outside
-// examples/ so it is not swept by crates/reify-compiler/tests/examples_smoke.rs.
+// examples/ so it is not swept by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs.
 
 module test.dimensioned_construction_strictness
 

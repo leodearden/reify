@@ -21,7 +21,7 @@ pub mod wedge;
 pub use bar::{BarSection, element_stiffness_bar_p1};
 pub use global::{
     AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
-    detect_orphan_dofs,
+    assemble_stiffness, detect_orphan_dofs,
 };
 // Task 4986 (C-3): realized-VolumeMesh -> global stiffness dispatcher (Tet
 // P1/P2, Hex, Wedge). See `volume` module docs.

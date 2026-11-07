@@ -3,20 +3,24 @@
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
+mod detached_unit;
+mod fault_diagnosis;
+
+use fault_diagnosis::{
+    MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
+};
+
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.node_text($child)),
-                $self.span($child),
-            );
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -67,6 +71,14 @@ pub fn parse_with_prelude_enums<'a>(
     let mut lowering = Lowering::with_prelude_enums(source, prelude_enum_names);
     lowering.lower_source_file(root);
 
+    // INV-SF-7 (#7094): report member-list bodies where a member silently
+    // absorbed the following line. All logic lives in `member_continuation`;
+    // this stays a call site so the merge surface against the pending
+    // `ts_parser.rs` work on `task/5392` is one hunk.
+    for (span, message) in crate::member_continuation::check_member_continuations(root) {
+        lowering.push_error(message, span);
+    }
+
     let content_hash = ContentHash::of_str(source);
 
     ParsedModule {
@@ -91,7 +103,7 @@ pub fn parse_with_prelude_enums<'a>(
 /// tree-walk pattern used elsewhere in this file.
 ///
 /// Uses the same `is_error() || is_missing()` predicate as the test-only
-/// `count_errors` helper (ts_parser.rs test module) and the production guards
+/// `count_errors` helper (`ts_parser::tests`) and the production guards
 /// in struct/connect lowering — keeping the predicate shape canonical.
 ///
 /// Returns `None` only when the subtree contains no ERROR or MISSING node.
@@ -132,6 +144,28 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     }
 }
 
+/// A short, single-line excerpt of `text`, safe to interpolate into a diagnostic message.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+/// the node in question can span an entire declaration. Truncates at the first newline,
+/// then to at most 40 characters, appending an ellipsis when anything was cut.
+///
+/// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+/// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+fn bounded_excerpt(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let (first_line, had_newline) = match text.find('\n') {
+        Some(i) => (&text[..i], true),
+        None => (text, false),
+    };
+    match first_line.char_indices().nth(MAX_CHARS) {
+        Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+        None if had_newline => format!("{first_line}…"),
+        None => first_line.to_string(),
+    }
+}
+
 /// Classification of an out-of-range numeric literal parse result.
 ///
 /// Used by [`Lowering::classify_number_range`] and consumed by
@@ -153,6 +187,25 @@ struct Lowering<'a> {
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<&'a str>,
+    /// Module-namespace bindings introduced by this file's `import`
+    /// declarations, collected in the SAME order-independent first pass as
+    /// `known_enums` (task 5495 μ). Only `ImportKind::Aliased` (the alias) and
+    /// `ImportKind::Module` (the final path segment) contribute — see
+    /// `collect_import_bindings` for why the entity-binding kinds do not.
+    /// Read by `lower_namespaced_call`'s qualifier gate.
+    namespace_bindings: HashSet<String>,
+    /// The names this file's imports bind NON-namespace-wise, each mapped to the
+    /// `ImportKind` that bound it (task 5495 μ). Populated by the same
+    /// `collect_import_bindings` pass, from exactly the three kinds
+    /// `namespace_bindings` deliberately skips — `Entity`, `EntityAliased` and
+    /// `Destructured`.
+    ///
+    /// This map is what lets `lower_namespaced_call` tell "this name is bound,
+    /// but as an entity" from "this name is not bound at all". Both are
+    /// rejections, but only the latter is fixed by declaring an import: telling
+    /// an author who wrote `import a.b.Widget` to "declare one as `import
+    /// <path>.Widget`" hands back the line they already wrote.
+    entity_bindings: HashMap<String, ImportKind>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
     /// Structured module path from a top-of-file `module a.b.c` declaration.
@@ -184,6 +237,8 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
             known_enums,
+            namespace_bindings: HashSet::new(),
+            entity_bindings: HashMap::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
         }
@@ -192,6 +247,249 @@ impl<'a> Lowering<'a> {
     /// Push a parse error diagnostic.
     fn push_error(&self, message: String, span: SourceSpan) {
         self.errors.borrow_mut().push(ParseError { message, span });
+    }
+
+    /// Push a parse error for a faulty subtree, narrowing the span to the first
+    /// ERROR/MISSING descendant so the diagnostic points at the fault itself
+    /// rather than at the whole enclosing construct.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392: when a subtree carries an ERROR or MISSING node the lowered
+    /// AST no longer corresponds to the source, so the construct must be refused
+    /// loudly rather than lowered best-effort. Dropping it silently is what let a
+    /// missing `;` in a function body evaporate a `let` binding and change the
+    /// program's value with no diagnostic at all.
+    ///
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
+    /// multi-line slice of source is what made these diagnostics unreadable and
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
+    ///
+    /// When the anchor is a detached unit suffix, [`Self::with_detached_unit_hint`] appends a
+    /// remedy.
+    fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
+        let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
+        let message = self.with_detached_unit_hint(message.into(), anchor);
+        self.push_error(message, self.span(anchor));
+    }
+
+    /// `message` with [`detached_unit::remedy_hint`] appended when `fault` is a unit detached
+    /// from its number (`1000.0 N/m`, rejected on purpose by docs/prds/unit-expressions.md
+    /// §3.1, task #7190), else `message` unchanged. The one append rule shared by every place
+    /// a fault becomes a message; the hint quotes through [`bounded_excerpt`].
+    fn with_detached_unit_hint(&self, mut message: String, fault: tree_sitter::Node) -> String {
+        if let Some(hint) = detached_unit::remedy_hint(fault, self.source, bounded_excerpt) {
+            message.push_str(&hint);
+        }
+        message
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
+    }
+
+    /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
+    /// caused tree-sitter's recovery to fuse two statements.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    ///
+    /// The former behaviour spanned the WHOLE `ERROR` node and interpolated its entire source
+    /// slice into the message. For the shape this task exists to fix, that meant one
+    /// four-line diagnostic covering an entire `fn` declaration — and for a file with two
+    /// broken sibling fns, ONE diagnostic covering BOTH, which is how the error came to be
+    /// reported against an unrelated later line.
+    ///
+    /// Span choice, measured on the t9 shape
+    /// `fn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}`:
+    /// the enclosing ERROR spans the whole declaration; the first fault descendant sits on
+    /// the ABSORBED line, one row too late; only the `let` token sits on the ABSORBING line
+    /// — the line a user must actually edit. Spanning `[let_token.start, fault.start)` also
+    /// highlights exactly the text that was silently fused.
+    ///
+    /// Emits one diagnostic per ABSORBING `let`, not per `ERROR` node: recovery collapses
+    /// several broken declarations into one node (see [`faults_strictly_inside`]), so a
+    /// first-fault-only report silently drops every later declaration's break. Deduplicating by
+    /// anchoring `let` keeps the recovery debris around a single break from multiplying into
+    /// several diagnostics for the same missing separator.
+    ///
+    /// `context` (`"source file"`, `"structure body"`, `"trait body"`) names only the DISPATCH
+    /// ARM, not the construct the fault is in — the t9 shape reaches this method as a
+    /// `"source file"` ERROR yet the fault is inside a function body — so it is used only in
+    /// the generic arm's message. The separator arm instead earns its "in function body"
+    /// wording from [`fault_diagnosis::LetAnchor::in_fn_body`], which is a property of the
+    /// anchoring `let` itself.
+    ///
+    /// The CST-walking half of this — innermost-fault selection, the `let` anchor table and
+    /// its search, and the [`MAX_DIAGNOSTICS`] budget — lives in [`fault_diagnosis`]; what
+    /// stays here is the policy that reads those facts and decides which fault earns which
+    /// message, which is the only part that needs `self`.
+    fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
+        let mut faults = faults_strictly_inside(node);
+        if faults.is_empty() {
+            // An `ERROR` leaf with nothing broken below it is its own single fault.
+            faults.push(node);
+        }
+
+        // Hoisted out of the fault loop: one walk for the whole `ERROR` node, then a binary
+        // search per fault. Re-walking the subtree per fault made a badly broken file cost
+        // O(faults × nodes) on the LSP's per-keystroke path.
+        let let_anchors = collect_let_anchors(node);
+
+        // Classify every fault before emitting any of it, so the budget can be spent on the
+        // reports worth keeping rather than on whichever faults the walk reached first.
+        // `located` holds `(absorbing let start byte, fault node)` deduplicated per `let`;
+        // `generic` holds the faults no `let` explains, deduplicated per ROW. Both stay in
+        // source order because `faults` is. Each is bounded by `MAX_DIAGNOSTICS` at emission,
+        // and the dedupe keys are few enough that a linear `contains` beats a set.
+        let mut located: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut generic: Vec<tree_sitter::Node> = Vec::new();
+
+        for fault in faults {
+            // Two conditions must BOTH hold before a missing `;` is a supportable diagnosis.
+            //
+            // The fault must sit on a LATER LINE than the `let` — that fusing of two lines is
+            // the whole mechanism (see `collect_let_anchors`). Once recovery has derailed at
+            // the first fault, later debris can land on the same line as an entirely
+            // well-formed binding; measured on
+            // `structure T { fn f(..) { let x0 = 1 <NL> x0 * 2 } let v = 1 }`, tree-sitter emits
+            // a second `ERROR` at `v`, whose nearest preceding `let` is the well-formed
+            // `let v = 1`.
+            //
+            // And the `let` must be a FUNCTION-BODY binding. Only `fn_let_binding` requires a
+            // `;`; a structure/module member `let` is newline-separated, so telling a user to
+            // add a separator there names a construct that is not a function body and demands
+            // an edit the grammar rejects.
+            //
+            // Either way the failure is the same point-at-an-unrelated-line defect this method
+            // exists to remove, so such a fault falls through to the generic branch instead:
+            // honest about the debris, silent about a cause it cannot support.
+            let anchoring_let = last_let_anchor_before(&let_anchors, fault.start_byte())
+                .filter(|a| a.in_fn_body && fault.start_position().row > a.row);
+            match anchoring_let {
+                Some(let_tok) => {
+                    if !located.iter().any(|(anchor, _)| *anchor == let_tok.start_byte) {
+                        located.push((let_tok.start_byte, fault));
+                    }
+                }
+                // No `let` to blame — the fault itself is the report, span-narrowed and with
+                // no source echo (mechanism M3), deduplicated per ROW rather than once per
+                // `ERROR` node. Recovery collapses several independently-broken declarations
+                // into ONE node (see `faults_strictly_inside`), so a once-per-node report
+                // drops every later declaration's break — the same silent-drop defect the
+                // located arm exists to remove, on the arm that has no `let` to blame. A row
+                // is the unit a user edits, so per-row still collapses the debris around a
+                // single break into one report.
+                None => {
+                    let row = fault.start_position().row;
+                    if !generic.iter().any(|f| f.start_position().row == row) {
+                        generic.push(fault);
+                    }
+                }
+            }
+        }
+
+        // Located reports get FIRST claim on the budget: one that names a cause and points at
+        // the line to edit outranks one that can only say "something is broken here".
+        // Measured on the 24-broken-function corpus
+        // (`a_file_of_broken_functions_is_bounded_and_says_so`): the debris of the first break
+        // fans out across seven rows, so spending the budget in walk order left ONE located
+        // report and seven generic ones — the cap REPLACING the report rather than bounding it.
+        let located_kept = located.len().min(MAX_DIAGNOSTICS);
+        let generic_kept = generic.len().min(MAX_DIAGNOSTICS - located_kept);
+
+        // Re-sorted by position before emission: prioritising by kind is a budget decision,
+        // not a reason to hand a reader diagnostics out of source order. Stable, so faults
+        // sharing a start byte keep their walk order.
+        let mut reports: Vec<(usize, String, SourceSpan)> =
+            Vec::with_capacity(located_kept + generic_kept);
+        for &(anchor, fault) in &located[..located_kept] {
+            reports.push((
+                anchor,
+                "missing ';' after `let` binding in function body".to_string(),
+                SourceSpan::new(anchor as u32, fault.start_byte() as u32),
+            ));
+        }
+        for &fault in &generic[..generic_kept] {
+            reports.push((
+                fault.start_byte(),
+                self.with_detached_unit_hint(format!("syntax error in {context}"), fault),
+                self.span(fault),
+            ));
+        }
+        reports.sort_by_key(|(start, _, _)| *start);
+        for (_, message, span) in reports {
+            self.push_error(message, span);
+        }
+
+        // Truncation is announced, and anchored at the EARLIEST fault declined — not at
+        // `node`, whose span is the blob location this method exists to eliminate.
+        let first_declined = located[located_kept..]
+            .iter()
+            .map(|&(_, fault)| fault)
+            .chain(generic[generic_kept..].iter().copied())
+            .min_by_key(|fault| fault.start_byte());
+        if let Some(fault) = first_declined {
+            self.push_error(
+                format!("syntax error in {context} (further errors suppressed)"),
+                self.span(fault),
+            );
+        }
+    }
+
+    /// Lower a `function_definition` / `function_signature` subtree, refusing it outright
+    /// when it carries a CST fault and guaranteeing that such a fault always produces at
+    /// least one diagnostic.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392. Two properties, both required:
+    ///
+    /// - **Refusal.** A faulty subtree yields `None`, so the caller never pushes a
+    ///   declaration whose AST disagrees with its source. This matches what every other
+    ///   member kind already gets from `check_and_lower!`; the fn arms were the sole
+    ///   exception, which is how a nested MISSING node evaporated a `let` binding in
+    ///   silence.
+    /// - **Loudness.** The inner lowering is still run FIRST, purely for its diagnostics,
+    ///   so specific, well-located messages it already emits (e.g. "syntax error in type
+    ///   argument list", or the fn-body separator diagnostics) are preserved verbatim.
+    ///   `push_fault_error` fires only as a backstop, when that pass stayed silent — a
+    ///   blanket pre-emptive guard would REPLACE the precise message with a vague one.
+    ///
+    /// A well-formed bodyless `function_signature` is not faulty and lowers unchanged to
+    /// `body: None`.
+    fn lower_function_checked(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        if !(node.is_error() || node.has_error()) {
+            return self.lower_function(node);
+        }
+        let before = self.errors.borrow().len();
+        // Run for diagnostics only; the result is deliberately discarded.
+        let _ = self.lower_function(node);
+        if self.errors.borrow().len() == before {
+            self.push_fault_error(node, "syntax error in function definition");
+        }
+        None
     }
 
     /// Extract the source text for a node.
@@ -209,11 +507,18 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// A short, single-line excerpt of a node's source text, safe to interpolate into a
+    /// diagnostic message: [`bounded_excerpt`] of the node's text.
+    fn snippet(&self, node: tree_sitter::Node) -> String {
+        bounded_excerpt(self.node_text(node))
+    }
+
     /// Emit a diagnostic for an unexpected named child in a lowering context.
     ///
     /// Skips anonymous tokens and extras (comments). For named, non-extra
     /// children that don't match any expected arm, pushes an error with the
-    /// child's kind and source text.
+    /// child's kind and a BOUNDED excerpt of its source text (see [`Self::snippet`] —
+    /// INV-SF-7, task #5392). The `unexpected '<kind>' in <context>` prefix is unchanged.
     fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
         if child.is_named() && !child.is_extra() {
             self.push_error(
@@ -221,7 +526,7 @@ impl<'a> Lowering<'a> {
                     "unexpected '{}' in {}: {}",
                     child.kind(),
                     context,
-                    self.node_text(child)
+                    self.snippet(child)
                 ),
                 self.span(child),
             );
@@ -298,13 +603,17 @@ impl<'a> Lowering<'a> {
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
         // First pass: collect enum names for disambiguation of member_access
-        // vs EnumAccess in expressions. This enables order-independent declarations.
+        // vs EnumAccess in expressions, and the module-namespace bindings this
+        // file's imports introduce. This enables order-independent declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "enum_declaration"
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums.insert(self.node_text(name_node));
+            }
+            if child.kind() == "import_declaration" {
+                self.collect_import_bindings(child);
             }
         }
 
@@ -337,7 +646,9 @@ impl<'a> Lowering<'a> {
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let cfg_predicates = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_import(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "import", self.lower_import(child))
+                    {
                         decl.annotations = annotations;
                         decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
@@ -351,10 +662,17 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                // task #5392: routed through `lower_function_checked` so a faulty subtree is
+                // refused AND diagnosed, like every sibling arm's `check_and_lower!`. Without
+                // that guard a `function_definition` carrying a nested MISSING node (e.g.
+                // `fn f(x: Int) -> Int { let y = ; x }`) lowered cleanly with the malformed
+                // binding silently dropped — zero diagnostics for a module whose values no
+                // longer match its source.
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_function(child) {
+                    if let Some(mut decl) = self.lower_function_checked(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
@@ -394,7 +712,9 @@ impl<'a> Lowering<'a> {
                 "unit_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_unit(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "unit declaration", self.lower_unit(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
                     }
@@ -402,7 +722,9 @@ impl<'a> Lowering<'a> {
                 "type_alias_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_type_alias(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "type alias", self.lower_type_alias(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::TypeAlias(decl));
                     }
@@ -410,7 +732,9 @@ impl<'a> Lowering<'a> {
                 "joint_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_joint(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "joint definition", self.lower_joint(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Joint(decl));
                     }
@@ -441,7 +765,12 @@ impl<'a> Lowering<'a> {
                             cfg.span,
                         );
                     }
-                    if let Some(decl) = self.lower_default_decl(child) {
+                    if let Some(decl) = check_and_lower!(
+                        self,
+                        child,
+                        "default declaration",
+                        self.lower_default_decl(child)
+                    ) {
                         self.declarations.push(Declaration::Default(decl));
                     }
                 }
@@ -464,7 +793,9 @@ impl<'a> Lowering<'a> {
                     // of the `path` (import_path) field — mirrors lower_import's
                     // segment-collection loop.
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(path_node) = child.child_by_field_name("path") {
+                    if !self.refuse_if_faulty(child, "module declaration")
+                        && let Some(path_node) = child.child_by_field_name("path")
+                    {
                         let mut segments = Vec::new();
                         let mut seg_cursor = path_node.walk();
                         for seg in path_node.children(&mut seg_cursor) {
@@ -507,14 +838,151 @@ impl<'a> Lowering<'a> {
                     // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.diagnose_error_node(child, "source file");
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
         }
+    }
+
+    /// Record the module-namespace binding, if any, that one
+    /// `import_declaration` introduces (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
+    ///
+    /// D-7 defines the qualifier of a qualified reference as the import's
+    /// binding name — the alias if `as` was used, else the final path segment —
+    /// so exactly two of the five `ImportKind`s contribute:
+    ///
+    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
+    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
+    ///
+    /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
+    /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
+    /// (from `import a.b.Widget`) is a method call on an entity — syntax Reify
+    /// does not have, and a hard parse error before μ — so binding those kinds
+    /// would reopen a narrower version of the very hole this gate closes.
+    ///
+    /// Those three kinds are still recorded, in `entity_bindings`, mapped to the
+    /// `ImportKind` that bound them. They must not qualify a call, but they are
+    /// not UNBOUND either, and the two cases need different remedies: only the
+    /// wholly-unbound one is fixed by declaring an import. Both maps are filled
+    /// from the same `lower_import` call, so a name can never be classified one
+    /// way here and another way by the import system.
+    ///
+    /// The name recorded is the one the AUTHOR WRITES, which for `EntityAliased`
+    /// is the alias (`import a.b.Widget as W` is used as `W`), not the entity.
+    ///
+    /// The classification is obtained by CALLING `lower_import` and matching the
+    /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
+    /// CST: the uppercase-final-segment heuristic then has exactly one
+    /// implementation and this gate cannot drift from what the import system
+    /// actually binds. The second call is pure — `lower_import` pushes no
+    /// diagnostic — so no error is duplicated by lowering the node twice.
+    ///
+    /// Called from `lower_source_file`'s FIRST pass, the same order-independent
+    /// pass that seeds `known_enums`, so an `import parts as pp` written after
+    /// the structure that uses `pp.Pulley()` still binds.
+    ///
+    /// **A refused import binds too.** This pass does not ask whether the second
+    /// pass will accept the import. One whose CST carries a nested fault is refused
+    /// there with a single `invalid import:` diagnostic, yet the names its
+    /// recoverable parts declare (`pp` in `import a.1.b as pp`, `C` in
+    /// `import a.b.{C D}`) are recorded here. Skipping them would report each use of
+    /// `pp` a second time as unbound, advising the author to declare
+    /// `import <path> as pp`, which is the very line being refused. The bindings
+    /// are best effort, which is safe because the module already carries an error.
+    ///
+    /// **Per-file by construction: nothing outside the file seeds these
+    /// bindings.** `known_enums` takes an external seed
+    /// (`parse_with_prelude_enums`) because enum names are pub DEFS, which cross
+    /// module boundaries; a namespace binding never does. The qualifier is the
+    /// importing file's OWN binding name (docs/prds/v0_6/stdlib-namespace.md
+    /// NS-Q1 / D-7), and a `pub import` re-exports its target's pub defs, not
+    /// its binding (docs/prds/v0_6/resolution-unification.md D-7). So `import
+    /// std.prelude` binds `prelude` alone: what the facade re-exports is reached
+    /// as `prelude.Name` or unqualified, never as `units.Name`.
+    fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
+        let Some(import) = self.lower_import(node) else {
+            return;
+        };
+        let namespace_binding = match &import.kind {
+            ImportKind::Aliased { alias } => Some(alias.clone()),
+            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
+            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
+            ImportKind::Destructured(_) => None,
+        };
+        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
+            self.namespace_bindings.insert(binding);
+            return;
+        }
+
+        let entity_names: Vec<String> = match &import.kind {
+            ImportKind::Entity(entity) => vec![entity.clone()],
+            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
+            ImportKind::Destructured(names) => names.clone(),
+            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
+        };
+        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
+            self.entity_bindings.insert(name, import.kind.clone());
+        }
+    }
+
+    /// How a diagnostic should describe the NON-namespace binding an import made
+    /// for a name, per `ImportKind` (task 5495 μ).
+    ///
+    /// Kept per-kind rather than a flat "an entity" so the message reflects what
+    /// the author actually wrote — an `import a.b.Widget as W` reader needs to
+    /// be told `W` is their own alias, not hunt for a `W` in the module.
+    ///
+    /// Total over all five kinds rather than `unreachable!` on the two
+    /// namespace-binding ones: `collect_import_bindings` never records those
+    /// here, but a diagnostic path is the last place that should be able to
+    /// panic if that ever changes.
+    fn entity_binding_note(kind: &ImportKind) -> String {
+        match kind {
+            // The qualifier IS the entity name here, so naming it again would
+            // only repeat the word the message already quoted.
+            ImportKind::Entity(_) => "an entity name".to_string(),
+            ImportKind::EntityAliased { entity, .. } => {
+                format!("an alias for the entity name `{entity}`")
+            }
+            ImportKind::Destructured(_) => "an entity name destructured from it".to_string(),
+            ImportKind::Aliased { .. } | ImportKind::Module => "an entity name".to_string(),
+        }
+    }
+
+    /// The trailing caveat for the two `ImportKind`s whose entity-ness was
+    /// INFERRED rather than written, so the author whose module happens to have
+    /// a capitalised path segment has a next step (task 5495 μ).
+    ///
+    /// `lower_import` classifies a ≥2-segment import by the CAPITALISATION of
+    /// its final segment: `import geometry.Shapes` is `Entity("Shapes")` and
+    /// `import geometry.Shapes as sh` is `EntityAliased`, so neither binds a
+    /// namespace and `Shapes.Circle()` / `sh.Circle()` are rejected above — with
+    /// a confident explanation that is simply WRONG if `Shapes` is a module.
+    /// Without this sentence the author has no workaround, because their code is
+    /// not in fact wrong. The heuristic predates μ; μ is the first feature that
+    /// turns it into a user-visible hard error. Resolving module-vs-entity from
+    /// the actual module graph instead of from capitalisation is ν's (task 5505)
+    /// — see the `entity_bindings` note and PRD D-7.
+    ///
+    /// `Destructured` gets NO caveat: `import a.b.{C, D}` names its entities
+    /// explicitly, so capitalisation played no part and mentioning it would be
+    /// noise. The two namespace-binding kinds never reach this path.
+    fn entity_binding_capitalisation_hint(kind: &ImportKind) -> String {
+        let segment = match kind {
+            ImportKind::Entity(entity) => entity,
+            ImportKind::EntityAliased { entity, .. } => entity,
+            ImportKind::Destructured(_) | ImportKind::Aliased { .. } | ImportKind::Module => {
+                return String::new();
+            }
+        };
+        format!(
+            ". If `{segment}` names a MODULE rather than an entity, note that the \
+             final path segment is classified by capitalisation — a capitalised one \
+             is always read as an entity name — so it has to be lowercase to bind a \
+             namespace"
+        )
     }
 
     fn lower_import(&self, node: tree_sitter::Node) -> Option<ImportDecl> {
@@ -535,7 +1003,13 @@ impl<'a> Lowering<'a> {
         let alias_node = node.child_by_field_name("alias");
 
         let (path, kind) = if let Some(items) = items_node {
-            // Destructured: `import a.b.{C, D}`
+            // Destructured: `import a.b.{C, D}` — canonical per the
+            // `import_path` production in `docs/reify-language-spec.md` §15
+            // "Grammar Summary".
+            //
+            // The `items`/`alias` FIELDS are what select the ImportKind here,
+            // which is why the brace list stays a field on `import_declaration`
+            // rather than folding into `import_path` as the spec EBNF nests it.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();
@@ -802,11 +1276,80 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// Dot-join a `namespaced_name` node's `binding` and `name` CST fields.
+    ///
+    /// Returns `None` if `node` is not a `namespaced_name` or is missing either
+    /// field (only reachable on an error-recovery tree).
+    ///
+    /// **Encoding contract for the resolution phase (task ν).** A qualified
+    /// reference rides DOT-JOINED in the existing `String` name slots —
+    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`,
+    /// `ExprKind::FunctionCall { name }` — with no new AST variant, because `.`
+    /// is not a legal identifier character and `name.contains('.')` is therefore
+    /// an unambiguous discriminator for ν's rewrite. Rationale and alternatives:
+    /// PRD `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7.
+    ///
+    /// Joining the two FIELDS — rather than reading the node's source text — is
+    /// what normalises interior whitespace, so `pp . Pulley` yields exactly
+    /// `"pp.Pulley"` and ν's discriminator never has to cope with a spaced
+    /// variant. Pinned by `qualified_type_whitespace_is_normalised` and
+    /// `sub_structure_name_whitespace_is_normalised` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **Pre-ν loudness is per-POSITION, not blanket** — pinned end-to-end
+    /// (the exit status a user observes AND the diagnostic text) by the
+    /// `reify check` regression cases in
+    /// `crates/reify-cli/tests/harness_cli/cli_check_qualified_ref_positions.rs`
+    /// (task #6499). Read those before softening either diagnostic here:
+    ///
+    /// - TYPE position is loud on its own: `param p : obj.width` answers
+    ///   `error: unresolved type: obj.width` (exit 1).
+    /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
+    ///   `error: sub-component "s" references unknown structure "obj.width"`
+    ///   (exit 1).
+    /// - EXPRESSION position is NOT, because the compiler has no unknown-function
+    ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
+    ///   by `lower_namespaced_call`'s import-binding guard for an undeclared
+    ///   qualifier, and by module resolution (`error: module 'parts' not found`,
+    ///   exit 1) for a declared binding whose module is absent.
+    ///
+    /// That leaves exactly one silent case — declared binding, module resolves,
+    /// member does not — which is resolution work and therefore ν's (task 5505).
+    /// See `lower_namespaced_call` for the two-guard sequence.
+    fn namespaced_name_text(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "namespaced_name" {
+            return None;
+        }
+        let binding = node.child_by_field_name("binding")?;
+        let name = node.child_by_field_name("name")?;
+        Some(self.dot_join(binding, name))
+    }
+
+    /// The ONE implementation of μ's dot-join, shared by the two rules that
+    /// produce a qualified name — `namespaced_name_text` (type + `sub`
+    /// position, joining `binding`/`name`) and `lower_namespaced_call`
+    /// (expression position, joining the callee's `object`/`member`).
+    ///
+    /// The two CST rules have different field NAMES, so they cannot share a
+    /// single entry point — but the encoding contract the whole of μ rests on
+    /// is this join, and it must not drift between the two halves. Extracted
+    /// for exactly the reason `lower_call_arguments` gives the argument walk
+    /// exactly one implementation.
+    ///
+    /// Joining the two nodes' texts — rather than reading the parent's source
+    /// text — is what normalises interior whitespace, so both `pp . Pulley` and
+    /// `pp . Pulley()` yield exactly `"pp.Pulley"`.
+    fn dot_join(&self, first: tree_sitter::Node, second: tree_sitter::Node) -> String {
+        format!("{}.{}", self.node_text(first), self.node_text(second))
+    }
+
     /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
-    /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
+    /// qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`),
+    /// and namespaced references through an import binding (`pp.Pulley`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type,
+            // namespaced_name, identifier)
             let child = node.child(0).unwrap_or(node);
             if child.kind() == "function_type" {
                 return self.lower_function_type(child);
@@ -816,6 +1359,17 @@ impl<'a> Lowering<'a> {
             }
             if child.kind() == "qualified_type" {
                 return self.lower_qualified_type(child);
+            }
+            // Namespaced reference `pp.Pulley` (task 5495 μ) — see
+            // `namespaced_name_text` for the dot-joined encoding contract.
+            if let Some(dotted) = self.namespaced_name_text(child) {
+                return TypeExpr {
+                    kind: TypeExprKind::Named {
+                        name: dotted,
+                        type_args: vec![],
+                    },
+                    span: self.span(child),
+                };
             }
             // bare identifier
             TypeExpr {
@@ -832,6 +1386,15 @@ impl<'a> Lowering<'a> {
         } else if node.kind() == "qualified_type" {
             self.lower_qualified_type(node)
         } else {
+            // NOTE: no un-wrapped `namespaced_name` arm here, deliberately.
+            // `namespaced_name` occurs in exactly two grammar positions: as a
+            // `type_expr` arm (handled above, through the wrapper) and as a
+            // `sub_declaration`'s `structure_name`. The `structure_name` field
+            // has exactly two readers — `lower_sub`, which calls
+            // `namespaced_name_text` on the node itself, and
+            // `lower_match_arm_decl_arm`, which reads it as raw text — so
+            // neither routes a bare `namespaced_name` here. An arm for it would
+            // be unreachable-and-untested code on a hot lowering path.
             // treat as bare identifier
             TypeExpr {
                 kind: TypeExprKind::Named {
@@ -1522,14 +2085,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
@@ -1540,10 +2110,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -1923,18 +2490,42 @@ impl<'a> Lowering<'a> {
         let mut let_bindings = Vec::new();
 
         // Collect fn_let_binding children (zero for the expression form).
+        //
+        // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+        // task #5392: a binding that fails to lower is REPORTED, never dropped. The former
+        // `if kind == "fn_let_binding" && let Some(..)` shape had no else arm, so a
+        // malformed binding vanished from the AST with no diagnostic — the module then
+        // evaluated to a value its source never described.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "fn_let_binding"
-                && let Some(let_decl) = self.lower_fn_let_binding(child)
-            {
-                let_bindings.push(let_decl);
+            if child.kind() == "fn_let_binding" {
+                match self.lower_fn_let_binding(child) {
+                    Some(let_decl) => let_bindings.push(let_decl),
+                    None => self.push_fault_error(child, "invalid let binding in function body"),
+                }
             }
         }
 
         // The result expression is the 'result' field — present in both arms.
-        let result_node = node.child_by_field_name("result")?;
-        let result_expr = self.lower_expr(result_node)?;
+        // Same INV-SF-7 rule: a body we cannot lower is refused with a diagnostic, not
+        // returned as a bare `None` that the caller silently discards.
+        let Some(result_node) = node.child_by_field_name("result") else {
+            self.push_fault_error(node, "function body has no result expression");
+            return None;
+        };
+        // Distinct from the arm above, and reported only as a backstop. Here the result node
+        // EXISTS and merely failed to lower, so "has no result expression" would be factually
+        // wrong; and `lower_expr` has usually already pushed a more specific, better-located
+        // message, which this must not duplicate. Same growth check as
+        // `lower_function_checked`: speak only when the inner pass stayed silent.
+        let before = self.errors.borrow().len();
+        let lowered = self.lower_expr(result_node);
+        let Some(result_expr) = lowered else {
+            if self.errors.borrow().len() == before {
+                self.push_fault_error(result_node, "invalid result expression in function body");
+            }
+            return None;
+        };
 
         Some(FnBody {
             let_bindings,
@@ -1975,43 +2566,53 @@ impl<'a> Lowering<'a> {
         let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "trait_member" {
-                // trait_member is a choice node wrapping the actual member, annotation, or pragma.
-                if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "annotation" {
-                        if let Some(annotation) = self.lower_annotation(inner) {
-                            pending_annotations.push(annotation);
-                        }
-                    } else if inner.kind() == "pragma" {
-                        // Annotations before a pragma are consumed/dropped — no defined semantics.
-                        let _ = std::mem::take(&mut pending_annotations);
-                        if let Some(pragma) = self.lower_pragma(inner) {
-                            pragmas.push(pragma);
-                        }
-                    } else {
-                        // Drain pending annotations before lowering the member.
-                        let annotations = std::mem::take(&mut pending_annotations);
-                        if let Some(mut member) = self.lower_member(inner) {
-                            // Attach drained annotations to Fn members only — the only
-                            // trait-member kind with a downstream deprecation consumer
-                            // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
-                            // drain-and-drop: no annotation semantics are defined for them yet.
-                            //
-                            // Note: the drain-and-attach *pattern* mirrors lower_members
-                            // (line ~2145), but the *target kind* is inverted — lower_members
-                            // attaches to Param/Let while here we attach to Fn.
-                            if let MemberDecl::Fn(ref mut f) = member {
-                                f.annotations = annotations;
+            match child.kind() {
+                "trait_member" => {
+                    // trait_member is a choice node wrapping the actual member, annotation, or
+                    // pragma.
+                    if let Some(inner) = child.named_child(0) {
+                        if inner.kind() == "annotation" {
+                            if let Some(annotation) = self.lower_annotation(inner) {
+                                pending_annotations.push(annotation);
                             }
-                            members.push(member);
+                        } else if inner.kind() == "pragma" {
+                            // Annotations before a pragma are consumed/dropped — no defined
+                            // semantics.
+                            let _ = std::mem::take(&mut pending_annotations);
+                            if let Some(pragma) = self.lower_pragma(inner) {
+                                pragmas.push(pragma);
+                            }
+                        } else {
+                            // Drain pending annotations before lowering the member.
+                            let annotations = std::mem::take(&mut pending_annotations);
+                            if let Some(mut member) = self.lower_member(inner) {
+                                // Attach drained annotations to Fn members only — the only
+                                // trait-member kind with a downstream deprecation consumer
+                                // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
+                                // drain-and-drop: no annotation semantics are defined for them yet.
+                                //
+                                // Note: the drain-and-attach *pattern* mirrors `lower_members`,
+                                // but the *target kind* is inverted — `lower_members` attaches
+                                // to Param/Let while here we attach to Fn.
+                                if let MemberDecl::Fn(ref mut f) = member {
+                                    f.annotations = annotations;
+                                }
+                                members.push(member);
+                            }
                         }
                     }
                 }
-            } else {
-                // Non-trait_member child (e.g. an ERROR recovery node or punctuation token):
-                // drain any pending annotations so they cannot leak past a malformed member
-                // onto the next valid member. Mirrors the "ERROR" arm in lower_members (~line 2134).
-                let _ = std::mem::take(&mut pending_annotations);
+                "ERROR" => {
+                    // INV-SF-7 parse-is-value-faithful (docs/legibility/design-invariants.md),
+                    // #7809: the twin of `lower_members`' arm.
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.diagnose_error_node(child, "trait body");
+                }
+                _ => {
+                    // Header tokens, braces and comments: drain pending annotations so they
+                    // cannot leak onto the next valid member.
+                    let _ = std::mem::take(&mut pending_annotations);
+                }
             }
         }
         (members, pragmas)
@@ -2084,13 +2685,27 @@ impl<'a> Lowering<'a> {
                 "relate block",
                 self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
+            "sketch_block" => check_and_lower!(
+                self,
+                child,
+                "sketch block",
+                self.lower_sketch_block(child).map(MemberDecl::Sketch)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
             // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
             // or `fn req(self) -> T` (bodyless function_signature).
+            //
+            // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+            // task #5392: this was the ONE member kind without a `has_error()` guard, so a
+            // fault inside a member fn body evaporated silently. Routed through
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
+            // `function_signature` is well-formed and lowers to `body: None` as before —
+            // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
-                self.lower_function(child).map(MemberDecl::Fn)
+                self.lower_function_checked(child).map(MemberDecl::Fn)
             }
             "port_declaration" => check_and_lower!(
                 self,
@@ -2137,10 +2752,7 @@ impl<'a> Lowering<'a> {
                 self.lower_forall_statement(child)
             ),
             "ERROR" => {
-                self.push_error(
-                    format!("syntax error: {}", self.node_text(child)),
-                    self.span(child),
-                );
+                self.diagnose_error_node(child, "structure body");
                 None
             }
             _ => None,
@@ -2171,10 +2783,18 @@ impl<'a> Lowering<'a> {
                 "ERROR" => {
                     // Consume pending annotations so they don't leak past a syntax error.
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                    // task #5392. This arm SHADOWS `lower_member`'s own `"ERROR"` arm: an
+                    // `ERROR` child is matched here and never reaches it, so converting only
+                    // that one left every member-position fault reporting the old
+                    // blob-spanning, source-echoing message. Measured before this change, a
+                    // member fn whose `let` was missing its `;` reported
+                    // `2:3: syntax error: fn f(i: Int) -> Real {\n…` — five lines of echoed
+                    // source, anchored to the `fn` header rather than the absorbing `let`, and
+                    // swallowing the following member. A member fn collapses into an `ERROR`
+                    // here exactly as a top-level one collapses in `lower_source_file`, so it
+                    // gets the same let-anchored treatment.
+                    self.diagnose_error_node(child, "structure body");
                 }
                 _ => {
                     // Drain pending annotations before lowering the member.
@@ -2285,10 +2905,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -2518,16 +3136,53 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let struct_node = node.child_by_field_name("structure_name")?;
-        let structure_name = self.node_text(struct_node).to_string();
+        // DERIVED arm first — `sub b = mirror of a across <plane> { … }` /
+        // `sub b = image of a under <transform> { … }`
+        // (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+        //
+        // This branch MUST precede the `structure_name` lookup below. That
+        // lookup is a `?` early return, and the derived arm has no
+        // `structure_name` field at all — so reaching it would silently DROP
+        // the entire declaration: `lower_sub` returns None, the member never
+        // lands in the AST, and the user sees a `sub` that parsed cleanly and
+        // then vanished with no diagnostic.
+        if let Some(derivation_node) = node.child_by_field_name("derivation") {
+            return self.lower_derived_sub(node, name, derivation_node);
+        }
 
-        // Detect collection form: `sub name : List<StructName>`
-        // by checking for the "List" keyword token among children.
+        let struct_node = node.child_by_field_name("structure_name")?;
+        // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
+        // is joined from its `binding`/`name` CST fields so interior whitespace
+        // is normalised — see `namespaced_name_text` for the encoding contract
+        // that ν's resolution-phase fixup reads.
+        let structure_name = self
+            .namespaced_name_text(struct_node)
+            .unwrap_or_else(|| self.node_text(struct_node).to_string());
+
+        // Detect collection form: `sub name : List<StructName>` by looking for
+        // the anonymous `'List'` keyword token among the DIRECT children. An
+        // anonymous token's `kind()` IS its literal text, so `kind() == "List"`
+        // matches exactly the collection arm's keyword and nothing else.
+        //
+        // A `self.node_text(child) == "List"` fallback used to sit alongside the
+        // kind check; it was removed as part of task α (indexed-sub
+        // instantiation) because it matched ANY direct child whose source text
+        // happens to be `List` — a `pose` expression that is the bare identifier
+        // `List`, and, once α added the indexer clause, a binder named `List`
+        // (`sub xs[List in 0..4] = Foo(a: 1)`) or a domain that is the bare
+        // identifier `List` (`sub xs[i in List] = Foo(a: 1)`). Any of those
+        // silently flipped an *instantiation* into the collection form, which
+        // discards `type_args` and skips the `named_argument_list` loop below.
+        // The fallback was never load-bearing: the keyword token is always a
+        // direct child with kind `"List"`, pinned by
+        // `sub_decl_specialization_body_parser_tests::sub_decl_cst_shape_for_list_collection`
+        // and by the `List`-named binder/domain cases in
+        // `indexed_sub_instantiation_parser_tests`.
         let mut is_collection = false;
         {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "List" || self.node_text(child) == "List" {
+                if child.kind() == "List" {
                     is_collection = true;
                     break;
                 }
@@ -2694,6 +3349,110 @@ impl<'a> Lowering<'a> {
             .map(|n| self.lower_relation_members(n))
             .unwrap_or_default();
 
+        // Lower the optional indexer clause `[<binder> in <domain>]` from the
+        // instantiation arm (indexed-sub-instantiation.md §3.1, task α). The
+        // grammar exposes the two halves as the named fields "binder" and
+        // "domain"; both are absent on the other arms, so both lower to None
+        // there. The binder keeps its own narrow span (an unused-binder
+        // diagnostic must underline the binder alone).
+        //
+        // The two halves are lowered JOINTLY, not independently, so the
+        // both-`Some`-or-both-`None` pairing invariant documented on
+        // `SubDecl::index_binder` is enforced by this code rather than merely
+        // asserted: the grammar admits the clause as one indivisible
+        // `optional(seq(…))`, but `lower_expr` can still return `None` (an
+        // unhandled node kind, or a nested lowering failure), which an
+        // independent `.and_then(…)` would turn into a half-populated
+        // `Some(binder)` / `None(domain)` pair. β types the domain and may
+        // reasonably `expect(...)` the pair; a half-populated `SubDecl` would be
+        // a latent panic there. So a failed domain lowering drops BOTH halves
+        // and emits a diagnostic instead of silently degrading to a plain sub.
+        //
+        // Domain lowering uses plain `lower_expr`, NOT `lower_binding_value`:
+        // unlike `at <pose>`, the domain is not an `auto` binding site. α stores
+        // it syntactically only — checking it is a `Range<Int>` is task β's.
+        let (index_binder, index_domain) = match (
+            node.child_by_field_name("binder"),
+            node.child_by_field_name("domain"),
+        ) {
+            (Some(binder_node), Some(domain_node)) => match self.lower_expr(domain_node) {
+                Some(domain) => {
+                    // TODO(#5482): delete this interim rejection when β wires
+                    // the count cell.
+                    //
+                    // The pair is still POPULATED above and below — the AST
+                    // contract is what β builds on, so this diagnostic is a
+                    // guard, not a lowering failure. Without it α would leave a
+                    // silent-miscompile window open: the clause lowers, nothing
+                    // reads it, and the declaration elaborates to exactly ONE
+                    // instance with the binder resolving against nothing.
+                    //
+                    // Reported as an ERROR rather than a warning because the
+                    // parse layer has no warning channel at all
+                    // (`reify_ast::decl::ParseError` is `{message, span}`, no
+                    // severity field), and error matches the pre-α baseline
+                    // where this very source was a hard parse error. Emitting a
+                    // lowering-pass semantic rejection over this channel is the
+                    // established shape in this file — cf. `unknown port
+                    // direction` and `unsupported forall body kind`.
+                    //
+                    // Spanned binder-start..domain-end: the two named fields
+                    // are the stable, field-derived way to reach the clause
+                    // interior. `self.span(node)` would underline the whole
+                    // sub, and the `[`/`]` tokens are anonymous.
+                    self.push_error(
+                        format!(
+                            "indexed sub instantiation `sub {name}[{} in …]` is not yet \
+                             elaborated (#5482): the indexer clause parses but no compiler \
+                             pass reads it, so this declares exactly ONE `{name}` instance \
+                             rather than one per index. Remove the indexer clause until \
+                             indexed-sub elaboration (#5482) lands.",
+                            self.node_text(binder_node),
+                        ),
+                        SourceSpan::new(
+                            binder_node.start_byte() as u32,
+                            domain_node.end_byte() as u32,
+                        ),
+                    );
+                    (
+                        Some(SpannedIdent {
+                            name: self.node_text(binder_node).to_string(),
+                            span: self.span(binder_node),
+                        }),
+                        Some(domain),
+                    )
+                }
+                // Distinct from the rejection above, and deliberately so: this
+                // arm reports a MALFORMED domain and drops the pair; that one
+                // reports a well-formed but unelaborated clause and KEEPS it.
+                //
+                // Reachable on a clean CST, not only on ERROR recovery: the
+                // domain `a.(b)` is an `instance_qualified_access`, which the
+                // grammar admits with ANY `$._expression` inside the parens and
+                // `lower_instance_qualified_access` then rejects for the missing
+                // `::`, returning None. Pinned by
+                // `malformed_indexer_domain_is_reported_and_drops_both_halves`
+                // in reify-syntax's harness_syntax::indexed_sub_instantiation
+                // parser tests.
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid indexer domain for `sub {name}[{} in …]`: the domain \
+                             expression could not be lowered",
+                            self.node_text(binder_node),
+                        ),
+                        self.span(domain_node),
+                    );
+                    (None, None)
+                }
+            },
+            // A half-present field pair is unreachable through the grammar (the
+            // clause is one indivisible `optional(seq(…))`); it can only arise
+            // on an ERROR CST node, which already surfaces its own diagnostic.
+            // Dropping both halves keeps the pairing invariant total.
+            _ => (None, None),
+        };
+
         Some(SubDecl {
             name,
             structure_name,
@@ -2707,9 +3466,267 @@ impl<'a> Lowering<'a> {
             is_aux,
             is_priv: self.has_priv_keyword(node),
             pose_expr,
+            index_binder,
+            index_domain,
             relate_relations,
+            // The derived arm returns early from `lower_sub` above, so this
+            // construction site is reached only by the three non-derived arms.
+            derivation: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower the DERIVED `sub` arm into a `SubDecl` carrying a `SubDerivation`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// Split out of `lower_sub` rather than inlined because the derived arm
+    /// shares almost nothing with the other three: no `structure_name`, no
+    /// constructor args, no type args, no specialization body. Every one of
+    /// those fields is set to its empty value here, upholding the discriminator
+    /// invariant documented on `SubDecl::derivation` AT THE SINGLE PRODUCER.
+    ///
+    /// `at <pose>` and the inline relate-block are still lowered: placement of
+    /// a derived sub is derived, so an explicit `at` is an error — but it is
+    /// `E_DERIVED_SUB_EXPLICIT_AT` (T8), A-beta's (#6616) COMPILE-scope
+    /// diagnostic, per the D3-adversary ownership ruling. Rejecting it here
+    /// would pre-empt T8 with a worse message.
+    ///
+    /// No interim "not yet elaborated" rejection is emitted, deliberately
+    /// unlike the indexed-sub `#5482` case above. There is no silent-miscompile
+    /// window to close here: a derived `SubDecl` carries an EMPTY
+    /// `structure_name`, so the compiler's unknown-structure path rejects it
+    /// loudly rather than elaborating it to something wrong. MEASURED on
+    /// `tests/prd-gate/fixtures/adt_mirror_of_arm.ri`, that rejection reads
+    /// `error: sub-component "unit_b" references unknown structure ""` — no
+    /// panic and no miscompile, so the safety argument holds, but the empty
+    /// quotes point nowhere useful. Giving that path a derived-aware message is
+    /// COMPILE-scope work and therefore A-beta's (#6616), which deletes the
+    /// whole interval by elaborating the arm.
+    fn lower_derived_sub(
+        &mut self,
+        node: tree_sitter::Node,
+        name: String,
+        derivation_node: tree_sitter::Node,
+    ) -> Option<SubDecl> {
+        // JOINT lowering, the discipline already documented on `index_binder`:
+        // if the derivation cannot be lowered whole, `lower_sub_derivation`
+        // pushes a diagnostic and returns None, and the declaration is dropped
+        // rather than emitted with a half-populated `SubDerivation`.
+        let derivation =
+            self.lower_sub_derivation(derivation_node, node.child_by_field_name("body"), &name)?;
+
+        let pose_expr = node
+            .child_by_field_name("pose")
+            .and_then(|n| self.lower_binding_value(n));
+        let relate_relations = node
+            .child_by_field_name("relations")
+            .map(|n| self.lower_relation_members(n))
+            .unwrap_or_default();
+
+        Some(SubDecl {
+            name,
+            // ── the discriminator invariant, upheld here ──
+            structure_name: String::new(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            body: None,
+            spec_param_overrides: Vec::new(),
+            keyed_members: Vec::new(),
+            // ── fields the derived arm genuinely carries ──
+            where_clause: None,
+            is_aux: self.has_aux_keyword(node),
+            is_priv: self.has_priv_keyword(node),
+            pose_expr,
+            index_binder: None,
+            index_domain: None,
+            relate_relations,
+            derivation: Some(Box::new(derivation)),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a `sub_derivation` node plus its sibling `derived_body`.
+    ///
+    /// Returns None — after pushing a diagnostic — when the plane/transform
+    /// operand fails to lower, so a caller never sees a `SubDerivation` whose
+    /// constructor is missing its operand.
+    ///
+    /// `body_node` is PASSED IN rather than reached by hopping up to
+    /// `derivation_node.parent()`: the only caller already holds the
+    /// `sub_declaration` node, and an upward hop would couple this helper to
+    /// where it is mounted AND fail open — a parent that is ever not the
+    /// `sub_declaration` (a future wrapper node, an alias) would silently yield
+    /// a `SubDerivation` with no overrides, dispositions or members, which is
+    /// exactly the half-lowering the `None` return above exists to prevent.
+    fn lower_sub_derivation(
+        &mut self,
+        derivation_node: tree_sitter::Node,
+        body_node: Option<tree_sitter::Node>,
+        sub_name: &str,
+    ) -> Option<SubDerivation> {
+        let prototype_node = derivation_node.child_by_field_name("prototype")?;
+        let prototype = SpannedIdent {
+            name: self.node_text(prototype_node).to_string(),
+            // The prototype token's OWN span, not the derivation's: A-beta's
+            // unknown / non-sibling / cyclic-prototype diagnostics underline
+            // exactly it.
+            span: self.span(prototype_node),
+        };
+
+        // The two alternatives are distinguished by which operand field the
+        // grammar produced — `plane` for `mirror … across`, `transform` for
+        // `image … under`. Both are mandatory in their own alternative, so a
+        // missing operand means an ERROR CST node.
+        let kind = if let Some(plane_node) = derivation_node.child_by_field_name("plane") {
+            match self.lower_expr(plane_node) {
+                Some(plane) => SubDerivationKind::Mirror { plane },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid mirror plane for `sub {sub_name} = mirror of {} across …`: \
+                             the plane expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else if let Some(transform_node) = derivation_node.child_by_field_name("transform") {
+            match self.lower_expr(transform_node) {
+                Some(transform) => SubDerivationKind::Image { transform },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid image transform for `sub {sub_name} = image of {} under …`: \
+                             the transform expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else {
+            return None;
+        };
+
+        let mut param_overrides: Vec<SubParamOverride> = Vec::new();
+        let mut param_resets: Vec<SpannedIdent> = Vec::new();
+        let mut dispositions: Vec<SubDisposition> = Vec::new();
+        let mut members: Vec<MemberDecl> = Vec::new();
+
+        if let Some(body_node) = body_node {
+            let mut cursor = body_node.walk();
+            for child in body_node.named_children(&mut cursor) {
+                match child.kind() {
+                    "derived_param_assignment" => {
+                        let Some(name_node) = child.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let Some(value_node) = child.child_by_field_name("value") else {
+                            continue;
+                        };
+                        let param = SpannedIdent {
+                            name: self.node_text(name_node).to_string(),
+                            span: self.span(name_node),
+                        };
+                        if value_node.kind() == "default_reset" {
+                            // `<param> = default` RESETS to the prototype's
+                            // declared default. It carries no expression at
+                            // all, so it goes to `param_resets`, not to
+                            // `param_overrides` under a sentinel value.
+                            param_resets.push(param);
+                        } else if let Some(value) = self.lower_binding_value(value_node) {
+                            // `lower_binding_value`, not `lower_expr`, so
+                            // `auto` / `auto(free)` overrides lower to
+                            // `ExprKind::Auto` exactly as on the
+                            // specialization arm.
+                            param_overrides.push(SubParamOverride {
+                                name: param,
+                                value,
+                                // The grammar's `optional(field('guard', …))`
+                                // tail, lowered through the SAME helper every
+                                // other guarded declaration uses. Stored, never
+                                // dropped: an override the source made
+                                // CONDITIONAL must not reach A-beta looking
+                                // unconditional.
+                                guard: self.lower_where_clause(child),
+                            });
+                        }
+                    }
+                    "keep_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Keep) {
+                            dispositions.push(d);
+                        }
+                    }
+                    "exclude_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Exclude) {
+                            dispositions.push(d);
+                        }
+                    }
+                    // `let_declaration` / `constraint_declaration`.
+                    _ => {
+                        if let Some(member) = self.lower_member(child) {
+                            members.push(member);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(SubDerivation {
+            kind,
+            prototype,
+            param_overrides,
+            param_resets,
+            dispositions,
+            members,
+            span: self.span(derivation_node),
+        })
+    }
+
+    /// Lower one `keep_disposition` / `exclude_disposition` node.
+    ///
+    /// The `kind` is passed in rather than re-derived from `node.kind()` so the
+    /// two call sites above stay the single place the mapping is stated.
+    fn lower_disposition(
+        &mut self,
+        node: tree_sitter::Node,
+        kind: SubDispositionKind,
+    ) -> Option<SubDisposition> {
+        let path_node = node.child_by_field_name("path")?;
+        let mut path = Vec::new();
+        let mut cursor = path_node.walk();
+        for segment in path_node.named_children(&mut cursor) {
+            if segment.kind() == "identifier" {
+                // Each segment carries its OWN span so A-beta's
+                // unresolvable-path diagnostic underlines the failing hop.
+                path.push(SpannedIdent {
+                    name: self.node_text(segment).to_string(),
+                    span: self.span(segment),
+                });
+            }
+        }
+        if path.is_empty() {
+            // Only reachable on an ERROR CST node — the grammar makes
+            // `disposition_path` at least one identifier. That node surfaces
+            // its own diagnostic; dropping the disposition here keeps a
+            // path-less entry out of the AST.
+            return None;
+        }
+        // RESERVED (PRD §3.3/§11): parsed and stored, no v1 meaning.
+        let using_plane = node
+            .child_by_field_name("plane")
+            .and_then(|n| self.lower_expr(n));
+        Some(SubDisposition {
+            kind,
+            path,
+            using_plane,
+            span: self.span(node),
         })
     }
 
@@ -2719,6 +3736,74 @@ impl<'a> Lowering<'a> {
     fn lower_relate_block(&self, node: tree_sitter::Node) -> Option<RelateDecl> {
         Some(RelateDecl {
             relations: self.lower_relation_members(node),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a `sketch_block` CST node into a [`SketchDecl`]
+    /// (constrained-2d-sketch α, task 5506; PRD
+    /// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+    ///
+    /// Infallible-`Some` in the same shape as [`Self::lower_relate_block`]:
+    /// fallibility is carried by the `check_and_lower!` at the dispatch site, so
+    /// an ERROR-bearing block pushes a diagnostic and yields `None` rather than a
+    /// partially-lowered member.
+    ///
+    /// # Body mapping
+    ///
+    /// The grammar admits exactly two body child kinds. Each maps onto an
+    /// EXISTING `MemberDecl` variant rather than a new sketch-specific one — a
+    /// second new variant would re-open the whole exhaustiveness blast radius
+    /// (10 src + 9 test matches) for zero gain:
+    ///
+    ///   * `let_declaration` → `MemberDecl::Let` via [`Self::lower_let`]. `aux`
+    ///     detection is NOT reimplemented here: `lower_let` already calls
+    ///     `has_aux_keyword` and sets `LetDecl.is_aux`, which is exactly PRD §5
+    ///     D12's construction-geometry marking.
+    ///   * `relation_member` → a single-expression `MemberDecl::Relate`, the
+    ///     same bare-expression shape `relate { }` already uses, so γ can reuse
+    ///     `check_relate_relations` verbatim.
+    ///
+    /// Members are collected in SOURCE ORDER and left UNCLASSIFIED: PRD §7 C2's
+    /// entity/constraint split is semantic (it depends on what each call
+    /// resolves to) and belongs to γ.
+    ///
+    /// A body child that lowers to `None` is skipped rather than substituted, so
+    /// the member count is a faithful record of what actually lowered.
+    fn lower_sketch_block(&mut self, node: tree_sitter::Node) -> Option<SketchDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "let_declaration" => {
+                    if let Some(decl) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(decl));
+                    }
+                }
+                "relation_member" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        members.push(MemberDecl::Relate(RelateDecl {
+                            relations: vec![expr],
+                            span: self.span(child),
+                            content_hash: self.content_hash(child),
+                        }));
+                    }
+                }
+                // Anonymous tokens (`sketch`, the braces) and the `name`
+                // identifier. Nothing else is grammatically reachable here.
+                _ => {}
+            }
+        }
+
+        Some(SketchDecl {
+            name,
+            members,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -2864,10 +3949,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -2999,10 +4081,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -3216,6 +4295,28 @@ impl<'a> Lowering<'a> {
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
+            // Positional `auto(<expr>)` in call-argument position
+            // (constrained-2d-sketch α, task 5506; PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §5 D6). It IS the named
+            // form `auto(seed = <expr>)`, so it lowers to the existing
+            // `ExprKind::Auto` shape rather than a new variant, and every Auto
+            // consumer keeps working unchanged. Outside sketch scope that shape
+            // is rejected loudly by reify-compiler `expr.rs`'s
+            // `reject_auto_in_arg_list` (E_AUTO_NOT_AT_BINDING_SITE), pinned by
+            // cases (l)-(n) of `harness_auto_binding/auto_not_at_binding_site_tests.rs`.
+            // `free` is always false: the grammar's `auto_seed` rule admits only
+            // the parenthesized-expression form (rationale: that rule in
+            // grammar.js).
+            "auto_seed" => node
+                .child_by_field_name("seed")
+                .and_then(|seed_node| self.lower_expr(seed_node))
+                .map(|seed| Expr {
+                    kind: ExprKind::Auto {
+                        free: false,
+                        params: vec![("seed".to_string(), seed)],
+                    },
+                    span: self.span(node),
+                }),
             "quantity_literal" => self.lower_quantity_literal(node),
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
@@ -3228,6 +4329,7 @@ impl<'a> Lowering<'a> {
             }),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
+            "namespaced_call" => self.lower_namespaced_call(node),
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
@@ -3650,7 +4752,12 @@ impl<'a> Lowering<'a> {
             is_aux: false,
             is_priv: false,
             pose_expr: None,
+            index_binder: None,
+            index_domain: None,
             relate_relations: Vec::new(),
+            // The match-arm sub grammar is `sub name : structure_name` only —
+            // no derivation clause is reachable here.
+            derivation: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -3868,9 +4975,12 @@ impl<'a> Lowering<'a> {
     ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
     ///      carries an `op` field (the `^`), but is uniquely identified by the
     ///      presence of `base` + `exponent` fields.
-    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
-    ///      operator's source TEXT, not node kind: the `op` field aliases the two
-    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///   2. **Mul/Div** — `left op right`, left-associative. The `op` field is an
+    ///      anonymous `*` or `/` node: `grammar.js` aliases the scanner's
+    ///      `UNIT_MUL_OP` / `UNIT_DIV_OP` to those kinds, and `·` (U+00B7) is a
+    ///      scanner spelling of `*` (#5784). No source text between the operands
+    ///      is read, so a comment there (an `extra`) cannot reach the operator;
+    ///      this replaces the comment-strip pass that resolved #6952.
     ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
     ///      transparently (no `Paren` variant — parens carry no semantics); a
     ///      `unit_name` child becomes [`UnitExpr::Unit`].
@@ -3889,27 +4999,24 @@ impl<'a> Lowering<'a> {
             return Some(UnitExpr::Pow(Box::new(base), exponent));
         }
 
-        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
-        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
-        //    `child_by_field_name` does NOT expose — so detect the arm by the
-        //    `left`+`right` fields and read the operator from the source slice
-        //    between the two operands. Units are contiguous (no whitespace inside
-        //    a unit_expr), so that slice is exactly `*` or `/`.
+        // 2. Mul/Div: `left op right`; the operator is the `op` node's kind.
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
+            let op_node = node.child_by_field_name("op")?;
             let left = self.lower_unit_expr(left_node)?;
             let right = self.lower_unit_expr(right_node)?;
-            let op_text = self
-                .source
-                .get(left_node.end_byte()..right_node.start_byte())?;
-            return if op_text.contains('/') {
-                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
-            } else if op_text.contains('*') {
-                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
-            } else {
-                None
+            return match op_node.kind() {
+                "*" => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+                "/" => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+                other => {
+                    self.push_error(
+                        format!("unrecognized unit operator `{other}` in unit expression"),
+                        self.span(node),
+                    );
+                    None
+                }
             };
         }
 
@@ -4085,6 +5192,52 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let (args, arg_names) = self.lower_call_arguments(node);
+
+        Some(Expr {
+            kind: ExprKind::FunctionCall { name, args, arg_names },
+            span: self.span(node),
+        })
+    }
+
+    /// Walk a call node's `argument_list` child and lower every argument,
+    /// returning `(args, arg_names)` as two parallel vectors (`arg_names[i]` is
+    /// `None` for a positional argument).
+    ///
+    /// Both call nodes built from `callTail($)` in the grammar share this walk —
+    /// `function_call` (`plain(1)`) and `namespaced_call` (`pp.compute(1,
+    /// scale: 2)`, task 5495 μ). Having ONE walk is what keeps the qualified and
+    /// unqualified paths at exact parity: a change to named/positional handling
+    /// cannot land on one and miss the other. Pinned by
+    /// `qualified_call_named_and_positional_args_at_parity` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **A REJECTED ARGUMENT KEEPS ITS SLOT.** Dropping it would silently shift
+    /// the arity of the enclosing call and re-label every argument after it:
+    /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
+    /// this was fixed, with `3` sliding into position 1. That matters even
+    /// though the enclosing parse always carries an error: the lowered AST is
+    /// observable independently of the diagnostics, so a consumer that inspects
+    /// it without bailing on the error list still reads the mis-arity'd call.
+    /// This is a lowering-local contract — it does not rest on how any
+    /// downstream crate grades the accompanying diagnostic. (Task #5392 later
+    /// made `reify_compiler`'s `forward_parse_errors` push an ERROR rather than
+    /// the WARNING this comment once cited as the motivating hazard; the
+    /// invariant is unchanged, because it never depended on that severity.)
+    /// The slot is filled with `ExprKind::Undef`, whose documented job is exactly
+    /// this (it absorbs the type cascade via `Type::Error`), and any label the
+    /// argument carried is preserved so `args`/`arg_names` stay length-matched
+    /// and aligned.
+    ///
+    /// The placeholder is pushed ONLY when the failed lowering also pushed a
+    /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
+    /// or `block_comment` extra sitting inside the parens, or a node kind
+    /// `lower_expr` does not dispatch — and those must keep dropping out, or
+    /// `f(1, /* c */ 2)` would become a three-argument call on a CLEAN parse.
+    /// Measuring the diagnostic count around each argument is what separates the
+    /// two cases without a second "is this an argument slot" predicate that could
+    /// drift from the grammar (task 5495 μ, amendment; review suggestion #7).
+    fn lower_call_arguments(&self, node: tree_sitter::Node) -> (Vec<Expr>, Vec<Option<String>>) {
         let mut args = Vec::new();
         let mut arg_names = Vec::new();
         let mut cursor = node.walk();
@@ -4092,13 +5245,169 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
+                    let errors_before = self.errors.borrow().len();
                     if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
                         arg_names.push(arg_name);
                         args.push(expr);
+                    } else if self.errors.borrow().len() > errors_before {
+                        arg_names.push(self.call_argument_label(arg_child));
+                        args.push(Expr {
+                            kind: ExprKind::Undef,
+                            span: self.span(arg_child),
+                        });
                     }
                 }
             }
         }
+        (args, arg_names)
+    }
+
+    /// The label of an `argument_list` child that FAILED to lower, so a
+    /// placeholder can keep both parallel vectors aligned (task 5495 μ).
+    ///
+    /// `Some(name)` for a `named_argument` whose `value` was rejected — the
+    /// label itself parsed fine and dropping it would turn a named argument into
+    /// a positional one — and `None` for everything else.
+    fn call_argument_label(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "named_argument" {
+            return None;
+        }
+        node.child_by_field_name("name")
+            .map(|name| self.node_text(name).to_string())
+    }
+
+    /// Lower a `namespaced_call` — a call through an import binding,
+    /// `pp.Pulley()` / `pp.compute(1, scale: 2)` (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2, D-7).
+    ///
+    /// Emits the ORDINARY `ExprKind::FunctionCall` — the same variant the
+    /// unqualified path uses — with the qualifier carried DOT-JOINED in the
+    /// existing `name` slot and the arguments produced by the shared
+    /// `lower_call_arguments` walk. No new `ExprKind` variant: see
+    /// `namespaced_name_text` for the full encoding contract handed to the
+    /// resolution phase (task ν), of which this is the expression-position half.
+    ///
+    /// The qualifier is joined from the callee's `object`/`member` CST FIELDS
+    /// via the shared `dot_join`, so `pp . Pulley()` normalises to exactly
+    /// `"pp.Pulley"` — the same single implementation `namespaced_name_text`
+    /// uses for the type-position form.
+    ///
+    /// **Two guards, in this order.** Guard 1 checks the callee's SHAPE; guard 2
+    /// checks that its qualifier is a DECLARED import binding. The order is
+    /// load-bearing: a mis-shaped callee (`a.b.c()`, `arr[0].g()`) has no single
+    /// qualifier to name, so it must reach guard 1 first and keep that guard's
+    /// own wording.
+    ///
+    /// **Callee-shape guard (D-7 / PRD §9).** `grammar.js`'s `namespaced_call`
+    /// rule takes a full `member_access` as its callee (an inline `identifier
+    /// '.' identifier` would collide with `member_access` as a reduce-reduce
+    /// ambiguity), and the `member_access` rule's `object` field is in turn a
+    /// full `_expression`. So the callee's object is not necessarily a binding
+    /// identifier: a 3+-segment path (`a.b.c()`, object = `member_access`)
+    /// reaches here, and so does any other postfix chain (`arr[0].g()`, object =
+    /// `index_access`; `f(1).g()`, object = `function_call`). Every one of those
+    /// is rejected at lowering, worded around what is actually checked — the
+    /// callee must be a simple `binding.Name` — with the out-of-scope sentence
+    /// appended ONLY for the dotted-path case it describes. Rejection is
+    /// unchanged in kind: every one of these forms was an error before μ and
+    /// still is, now with a message instead of an anonymous ERROR node. The
+    /// rejection lowers nothing, so no fabricated multi-segment name reaches the
+    /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
+    /// member is dropped rather than half-built. All three rejections in this
+    /// function name the GR-040 no-method-call rule, whatever the receiver shape
+    /// (pinned by `tests/harness_syntax_lowering/method_call_rejection_lowering_tests.rs`).
+    ///
+    /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
+    /// two-segment `ident.ident(args)`, not only the import-qualified ones.
+    /// Without this guard μ turns hard parse errors into SILENCE: `obj.width()`,
+    /// `self.w()` and `totally.undefined_thing(1, 2)` were all `Parse error …
+    /// exit 1` before μ, and measured as exit 0 after it, because the compiler
+    /// has no unknown-function diagnostic behind `ExprKind::FunctionCall`.
+    /// Lowering is the first layer that knows the import set
+    /// (`namespace_bindings`, seeded by `collect_import_bindings` in
+    /// `lower_source_file`'s order-independent first pass), so the gate lives
+    /// here rather than on any of the three grammar surfaces — none of which
+    /// knows the imports, and restricting the callee inline would reintroduce the
+    /// reduce-reduce ambiguity with `member_access` described above.
+    ///
+    /// It runs strictly AFTER the callee-shape guard so that guard's diagnostics
+    /// are untouched, and shares its rejection shape: one `push_error` spanning
+    /// the callee, then `return None`.
+    ///
+    /// After both guards, exactly one silence remains in expression position: a
+    /// DECLARED binding whose module resolves but whose member does not. That is
+    /// resolution work by definition and therefore ν's (task 5505) — pinned as an
+    /// executable case by `declared_binding_with_unknown_member_is_left_to_resolution`
+    /// rather than assumed closed. A declared binding whose module is ABSENT is
+    /// already loud downstream (`error: module 'parts' not found`, exit 1).
+    ///
+    /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
+    /// here: they stay `member_access`, indistinguishable from `self.width` at
+    /// parse time, and their disambiguation is deferred to ν exactly as
+    /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
+    fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        const NO_METHOD_CALL_SYNTAX: &str = "Reify has no method-call syntax";
+
+        let callee = node.child_by_field_name("callee")?;
+        let object = callee.child_by_field_name("object")?;
+        let member = callee.child_by_field_name("member")?;
+
+        if object.kind() != "identifier" {
+            let scope_note = if object.kind() == "member_access" {
+                "; bare full-path qualification is out of scope \
+                 (docs/prds/v0_6/stdlib-namespace.md §9)"
+            } else {
+                ""
+            };
+            self.push_error(
+                format!(
+                    "unsupported qualified call `{callee_text}(...)`: the callee of a \
+                     qualified call must be a simple `binding.Name(...)` through an \
+                     `import ... as binding` alias, but `{object_text}` is not a binding \
+                     name{scope_note}. {NO_METHOD_CALL_SYNTAX}, so `{member_text}` cannot \
+                     be called on it",
+                    callee_text = self.node_text(callee),
+                    object_text = self.node_text(object),
+                    member_text = self.node_text(member),
+                ),
+                self.span(callee),
+            );
+            return None;
+        }
+
+        let qualifier = self.node_text(object);
+        if !self.namespace_bindings.contains(qualifier) {
+            let callee_text = self.node_text(callee);
+            let message = match self.entity_bindings.get(qualifier) {
+                // Bound — but as an ENTITY name, so "declare an import" is not
+                // the remedy: one IS declared. Handing `import a.b.Widget` back
+                // the advice "declare one as `import <path>.Widget`" is worse
+                // than silence, because it is the line already in the file.
+                Some(kind) => format!(
+                    "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
+                     namespace: an import in this file binds `{qualifier}`, but as \
+                     {binding_note}, and the qualifier of a qualified call must be a \
+                     module namespace. {NO_METHOD_CALL_SYNTAX}, so this cannot \
+                     be a call on the entity `{qualifier}`{capitalisation_hint}",
+                    binding_note = Self::entity_binding_note(kind),
+                    capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
+                ),
+                // Not bound at all — today's message, verbatim.
+                None => format!(
+                    "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
+                     of a qualified call must be a module namespace bound by an import, but \
+                     no import in this file binds `{qualifier}` — declare one as \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. \
+                     {NO_METHOD_CALL_SYNTAX}, so this cannot be a call on a value named \
+                     `{qualifier}`"
+                ),
+            };
+            self.push_error(message, self.span(callee));
+            return None;
+        }
+
+        let name = self.dot_join(object, member);
+        let (args, arg_names) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::FunctionCall { name, args, arg_names },
@@ -4192,18 +5501,13 @@ impl<'a> Lowering<'a> {
         let base = self.lower_expr(base_node)?;
         let selector = self.node_text(selector_node).to_string();
 
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        // The shared `callTail($)` argument walk — same helper `function_call`,
+        // `namespaced_call` and `trait_method_call` use, so all four call
+        // surfaces inherit its slot-preservation invariant: a rejected argument
+        // leaves an `Undef` placeholder rather than shifting this call's arity.
+        // Ad-hoc selectors don't bind named arguments, so the labels are
+        // discarded (unchanged behaviour); only `args`' arity and indexing.
+        let (args, _) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::AdHocSelector {
@@ -4290,24 +5594,19 @@ impl<'a> Lowering<'a> {
     fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
         let callee_node = node.child_by_field_name("callee")?;
 
-        // Collect positional args from the `argument_list` child (same logic as
-        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Collect positional args through the SHARED `callTail($)` walk
+        // `lower_call_arguments` — the one implementation `function_call`,
+        // `namespaced_call` and `ad_hoc_selector` also use, so no call surface
+        // can drift from the others. The invariant this inherits: a rejected
+        // argument leaves an `ExprKind::Undef` placeholder in its own slot
+        // rather than being dropped, because dropping it would shift this
+        // call's arity and slide every later argument down a position (task
+        // 5495 μ, amendment).
         // Trait method calls don't use named-arg binding, so any named-arg label is
         // silently dropped — only the value expression is retained.  Named-arg syntax
         // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
         // so dropping the label here is correct and expected.
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        let (args, _) = self.lower_call_arguments(node);
 
         match callee_node.kind() {
             "qualified_access" => {
@@ -4504,2340 +5803,4 @@ fn decode_string_escapes(raw: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper: count ERROR nodes in a tree-sitter tree.
-    fn count_errors(node: tree_sitter::Node) -> usize {
-        let mut count = if node.is_error() || node.is_missing() {
-            1
-        } else {
-            0
-        };
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            count += count_errors(child);
-        }
-        count
-    }
-
-    fn parse_bracket() -> ParsedModule {
-        let source = reify_test_support::bracket_source();
-        parse(source, ModulePath::single("bracket"))
-    }
-
-    #[test]
-    fn ts_parse_produces_correct_structure() {
-        let module = parse_bracket();
-        assert!(
-            module.errors.is_empty(),
-            "expected no errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        assert_eq!(structure.name, "Bracket");
-        assert_eq!(structure.members.len(), 10);
-
-        let params: Vec<_> = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Param(_)))
-            .collect();
-        let lets: Vec<_> = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Let(_)))
-            .collect();
-        let constraints: Vec<_> = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Constraint(_)))
-            .collect();
-
-        assert_eq!(params.len(), 5, "expected 5 params");
-        assert_eq!(lets.len(), 2, "expected 2 lets");
-        assert_eq!(constraints.len(), 3, "expected 3 constraints");
-
-        // Verify member names in order
-        let names: Vec<String> = structure
-            .members
-            .iter()
-            .map(|m| match m {
-                MemberDecl::Param(p) => format!("param:{}", p.name),
-                MemberDecl::Let(l) => format!("let:{}", l.name),
-                MemberDecl::Constraint(_) => "constraint".into(),
-                MemberDecl::ConstraintInst(ci) => format!("constraint_inst:{}", ci.name),
-                MemberDecl::Sub(s) => format!("sub:{}", s.name),
-                MemberDecl::Minimize(_) => "minimize".into(),
-                MemberDecl::Maximize(_) => "maximize".into(),
-                MemberDecl::GuardedGroup(_) => "guarded_group".into(),
-                MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
-                MemberDecl::Port(p) => format!("port:{}", p.name),
-                MemberDecl::Connect(_) => "connect".into(),
-                MemberDecl::Chain(_) => "chain".into(),
-                MemberDecl::MetaBlock(_) => "meta".into(),
-                MemberDecl::ForallConnect(_) => "forall_connect".into(),
-                MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
-                MemberDecl::Relate(_) => "relate".into(),
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => format!("fn:{}", f.name),
-            })
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "param:width",
-                "param:height",
-                "param:thickness",
-                "param:fillet_radius",
-                "param:hole_diameter",
-                "let:volume",
-                "constraint",
-                "constraint",
-                "constraint",
-                "let:body",
-            ]
-        );
-    }
-
-    /// Helper to get structure members from bracket parse.
-    fn bracket_members() -> Vec<MemberDecl> {
-        let module = parse_bracket();
-        match module.declarations.into_iter().next().unwrap() {
-            Declaration::Structure(s) => s.members,
-            _ => panic!("expected Structure"),
-        }
-    }
-
-    #[test]
-    fn quantity_literal_80mm() {
-        let members = bracket_members();
-        let width = match &members[0] {
-            MemberDecl::Param(p) => p,
-            _ => panic!("expected Param"),
-        };
-        assert_eq!(width.name, "width");
-        match &width.default.as_ref().unwrap().kind {
-            ExprKind::QuantityLiteral { value, unit } => {
-                assert!((value - 80.0).abs() < f64::EPSILON);
-                assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
-            }
-            other => panic!("expected QuantityLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn number_literal_4() {
-        // In `constraint thickness < width / 4`, the `4` is a number literal
-        let members = bracket_members();
-        // constraints[1] is `constraint thickness < width / 4`
-        let constraint = match &members[7] {
-            MemberDecl::Constraint(c) => c,
-            _ => panic!("expected Constraint"),
-        };
-        // expr is `thickness < width / 4`
-        match &constraint.expr.kind {
-            ExprKind::BinOp { right, .. } => {
-                // right is `width / 4`
-                match &right.kind {
-                    ExprKind::BinOp {
-                        right: inner_right, ..
-                    } => match &inner_right.kind {
-                        ExprKind::NumberLiteral { value: v, .. } => {
-                            assert!((v - 4.0).abs() < f64::EPSILON);
-                        }
-                        other => panic!("expected NumberLiteral(4), got {:?}", other),
-                    },
-                    other => panic!("expected BinOp, got {:?}", other),
-                }
-            }
-            other => panic!("expected BinOp, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn function_call_box() {
-        let members = bracket_members();
-        // Last member: `let body = box(width, height, thickness)`
-        let body = match &members[9] {
-            MemberDecl::Let(l) => l,
-            _ => panic!("expected Let"),
-        };
-        assert_eq!(body.name, "body");
-        match &body.value.kind {
-            ExprKind::FunctionCall { name, args, .. } => {
-                assert_eq!(name, "box");
-                assert_eq!(args.len(), 3);
-                assert!(matches!(&args[0].kind, ExprKind::Ident(n) if n == "width"));
-                assert!(matches!(&args[1].kind, ExprKind::Ident(n) if n == "height"));
-                assert!(matches!(&args[2].kind, ExprKind::Ident(n) if n == "thickness"));
-            }
-            other => panic!("expected FunctionCall, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn binary_ops_left_associative() {
-        let members = bracket_members();
-        // `let volume = width * height * thickness`
-        let volume = match &members[5] {
-            MemberDecl::Let(l) => l,
-            _ => panic!("expected Let"),
-        };
-        assert_eq!(volume.name, "volume");
-        // Should be ((width * height) * thickness)
-        match &volume.value.kind {
-            ExprKind::BinOp { op, left, right } => {
-                assert_eq!(op, "*");
-                // right is "thickness"
-                assert!(matches!(&right.kind, ExprKind::Ident(n) if n == "thickness"));
-                // left is (width * height)
-                match &left.kind {
-                    ExprKind::BinOp {
-                        op: inner_op,
-                        left: ll,
-                        right: lr,
-                    } => {
-                        assert_eq!(inner_op, "*");
-                        assert!(matches!(&ll.kind, ExprKind::Ident(n) if n == "width"));
-                        assert!(matches!(&lr.kind, ExprKind::Ident(n) if n == "height"));
-                    }
-                    other => panic!("expected inner BinOp, got {:?}", other),
-                }
-            }
-            other => panic!("expected BinOp, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn comparison_with_quantity() {
-        let members = bracket_members();
-        // `constraint thickness > 2mm`
-        let constraint = match &members[6] {
-            MemberDecl::Constraint(c) => c,
-            _ => panic!("expected Constraint"),
-        };
-        match &constraint.expr.kind {
-            ExprKind::BinOp { op, left, right } => {
-                assert_eq!(op, ">");
-                assert!(matches!(&left.kind, ExprKind::Ident(n) if n == "thickness"));
-                match &right.kind {
-                    ExprKind::QuantityLiteral { value, unit } => {
-                        assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
-                    }
-                    other => panic!("expected QuantityLiteral, got {:?}", other),
-                }
-            }
-            other => panic!("expected BinOp, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn spans_are_valid_and_cover_source_text() {
-        let source = reify_test_support::bracket_source();
-        let module = parse(source, ModulePath::single("bracket"));
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!("expected Structure"),
-        };
-
-        // Structure spans entire source
-        assert_eq!(structure.span.start, 0);
-        assert_eq!(structure.span.end as usize, source.len());
-
-        // All member spans are non-empty, within source, and contain expected keywords
-        for (i, m) in structure.members.iter().enumerate() {
-            let span = match m {
-                MemberDecl::Param(p) => p.span,
-                MemberDecl::Let(l) => l.span,
-                MemberDecl::Constraint(c) => c.span,
-                MemberDecl::ConstraintInst(ci) => ci.span,
-                MemberDecl::Sub(s) => s.span,
-                MemberDecl::Minimize(m) => m.span,
-                MemberDecl::Maximize(m) => m.span,
-                MemberDecl::GuardedGroup(g) => g.span,
-                MemberDecl::AssociatedType(a) => a.span,
-                MemberDecl::Port(p) => p.span,
-                MemberDecl::Connect(c) => c.span,
-                MemberDecl::Chain(c) => c.span,
-                MemberDecl::MetaBlock(m) => m.span,
-                MemberDecl::ForallConnect(f) => f.span,
-                MemberDecl::ForallConstraint(f) => f.span,
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(g) => g.span,
-                MemberDecl::Relate(r) => r.span,
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => f.span,
-            };
-            assert!(span.start < span.end, "member {} span empty", i);
-            assert!(
-                (span.end as usize) <= source.len(),
-                "member {} span overflows",
-                i
-            );
-
-            let text = &source[span.start as usize..span.end as usize];
-            match m {
-                MemberDecl::Param(p) => {
-                    assert!(
-                        text.starts_with("param"),
-                        "param member {} text: {:?}",
-                        i,
-                        text
-                    );
-                    assert!(text.contains(&p.name), "param {} name in text", i);
-                }
-                MemberDecl::Let(l) => {
-                    assert!(text.starts_with("let"), "let member {} text: {:?}", i, text);
-                    assert!(text.contains(&l.name), "let {} name in text", i);
-                }
-                MemberDecl::Constraint(_) => {
-                    assert!(
-                        text.starts_with("constraint"),
-                        "constraint member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::Sub(s) => {
-                    assert!(text.starts_with("sub"), "sub member {} text: {:?}", i, text);
-                    assert!(text.contains(&s.name), "sub {} name in text", i);
-                }
-                MemberDecl::Minimize(_) => {
-                    assert!(
-                        text.starts_with("minimize"),
-                        "minimize member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::Maximize(_) => {
-                    assert!(
-                        text.starts_with("maximize"),
-                        "maximize member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::GuardedGroup(_) => {
-                    assert!(
-                        text.starts_with("where"),
-                        "guarded_group member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::AssociatedType(a) => {
-                    assert!(
-                        text.starts_with("type"),
-                        "associated_type member {} text: {:?}",
-                        i,
-                        text
-                    );
-                    assert!(text.contains(&a.name), "associated_type {} name in text", i);
-                }
-                MemberDecl::Port(p) => {
-                    assert!(
-                        text.starts_with("port"),
-                        "port member {} text: {:?}",
-                        i,
-                        text
-                    );
-                    assert!(text.contains(&p.name), "port {} name in text", i);
-                }
-                MemberDecl::Connect(_) => {
-                    assert!(
-                        text.starts_with("connect"),
-                        "connect member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::Chain(_) => {
-                    assert!(
-                        text.starts_with("chain"),
-                        "chain member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::MetaBlock(_) => {
-                    assert!(
-                        text.starts_with("meta"),
-                        "meta member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::ConstraintInst(ci) => {
-                    assert!(
-                        text.starts_with("constraint"),
-                        "constraint_inst member {} text: {:?}",
-                        i,
-                        text
-                    );
-                    assert!(
-                        text.contains(&ci.name),
-                        "constraint_inst {} name in text",
-                        i
-                    );
-                }
-                MemberDecl::ForallConnect(_) => {
-                    assert!(
-                        text.starts_with("forall"),
-                        "forall_connect member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                MemberDecl::ForallConstraint(_) => {
-                    assert!(
-                        text.starts_with("forall"),
-                        "forall_constraint member {} text: {:?}",
-                        i,
-                        text
-                    );
-                }
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(_) => {}
-                MemberDecl::Relate(_) => {}
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => {
-                    assert!(
-                        text.starts_with("fn"),
-                        "fn member {} text: {:?}",
-                        i,
-                        text
-                    );
-                    assert!(text.contains(&f.name), "fn {} name in text", i);
-                }
-            }
-        }
-
-        // Expression spans are valid
-        if let MemberDecl::Param(p) = &structure.members[0] {
-            let def_span = p.default.as_ref().unwrap().span;
-            let def_text = &source[def_span.start as usize..def_span.end as usize];
-            assert_eq!(def_text, "80mm", "width default text");
-
-            let ty_span = p.type_expr.as_ref().unwrap().span;
-            let ty_text = &source[ty_span.start as usize..ty_span.end as usize];
-            assert_eq!(ty_text, "Length", "width type text");
-        }
-    }
-
-    #[test]
-    fn content_hashes_computed_from_source_text() {
-        let source = reify_test_support::bracket_source();
-        let module = parse(source, ModulePath::single("bracket"));
-
-        // Module content hash = hash of entire source
-        assert_eq!(
-            module.content_hash,
-            ContentHash::of_str(source),
-            "module hash"
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!("expected Structure"),
-        };
-
-        // Structure content hash = hash of structure node's source text (not entire file)
-        assert_ne!(
-            structure.content_hash,
-            ContentHash(0),
-            "structure hash should be non-zero"
-        );
-
-        // Each member content hash = hash of its source text slice
-        for (i, m) in structure.members.iter().enumerate() {
-            let (span, hash) = match m {
-                MemberDecl::Param(p) => (p.span, p.content_hash),
-                MemberDecl::Let(l) => (l.span, l.content_hash),
-                MemberDecl::Constraint(c) => (c.span, c.content_hash),
-                MemberDecl::ConstraintInst(ci) => (ci.span, ci.content_hash),
-                MemberDecl::Sub(s) => (s.span, s.content_hash),
-                MemberDecl::Minimize(m) => (m.span, m.content_hash),
-                MemberDecl::Maximize(m) => (m.span, m.content_hash),
-                MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
-                MemberDecl::AssociatedType(a) => (a.span, a.content_hash),
-                MemberDecl::Port(p) => (p.span, p.content_hash),
-                MemberDecl::Connect(c) => (c.span, c.content_hash),
-                MemberDecl::Chain(c) => (c.span, c.content_hash),
-                MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
-                MemberDecl::ForallConnect(f) => (f.span, f.content_hash),
-                MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
-                MemberDecl::Relate(r) => (r.span, r.content_hash),
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => (f.span, f.content_hash),
-            };
-            let text = &source[span.start as usize..span.end as usize];
-            assert_eq!(
-                hash,
-                ContentHash::of_str(text),
-                "member {} hash from source text",
-                i
-            );
-        }
-
-        // All param hashes should be unique
-        let param_hashes: Vec<ContentHash> = structure
-            .members
-            .iter()
-            .filter_map(|m| match m {
-                MemberDecl::Param(p) => Some(p.content_hash),
-                _ => None,
-            })
-            .collect();
-        for (i, h1) in param_hashes.iter().enumerate() {
-            for (j, h2) in param_hashes.iter().enumerate() {
-                if i != j {
-                    assert_ne!(h1, h2, "params {} and {} have same hash", i, j);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn error_recovery_partial_parse() {
-        let source = r#"structure Broken {
-    param width: Length = 80mm
-    param !!!invalid!!!
-    param height: Length = 100mm
-}"#;
-        let module = parse(source, ModulePath::single("broken"));
-
-        // Should have parse errors
-        assert!(
-            !module.errors.is_empty(),
-            "expected errors for malformed input"
-        );
-
-        // Should also have recovered declarations
-        assert!(
-            !module.declarations.is_empty(),
-            "expected partial declarations"
-        );
-
-        if let Declaration::Structure(s) = &module.declarations[0] {
-            assert_eq!(s.name, "Broken");
-            // Should have at least some valid members (width and/or height)
-            let valid_params: Vec<_> = s
-                .members
-                .iter()
-                .filter_map(|m| match m {
-                    MemberDecl::Param(p) => Some(&p.name),
-                    _ => None,
-                })
-                .collect();
-            assert!(
-                !valid_params.is_empty(),
-                "expected at least some valid params, got none"
-            );
-        } else {
-            panic!("expected Structure declaration");
-        }
-    }
-
-    #[test]
-    fn parse_deterministic() {
-        // Parsing the same source twice produces identical output.
-        let source = reify_test_support::bracket_source();
-        let m1 = parse(source, ModulePath::single("bracket"));
-        let m2 = parse(source, ModulePath::single("bracket"));
-
-        assert_eq!(m1.content_hash, m2.content_hash);
-        assert_eq!(m1.declarations.len(), m2.declarations.len());
-        assert_eq!(m1.errors.len(), m2.errors.len());
-
-        let s1 = match &m1.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!(),
-        };
-        let s2 = match &m2.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!(),
-        };
-
-        assert_eq!(s1.name, s2.name);
-        assert_eq!(s1.span, s2.span);
-        assert_eq!(s1.content_hash, s2.content_hash);
-        assert_eq!(s1.members.len(), s2.members.len());
-
-        for (i, (m_a, m_b)) in s1.members.iter().zip(s2.members.iter()).enumerate() {
-            let (hash_a, span_a) = match m_a {
-                MemberDecl::Param(p) => (p.content_hash, p.span),
-                MemberDecl::Let(l) => (l.content_hash, l.span),
-                MemberDecl::Constraint(c) => (c.content_hash, c.span),
-                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
-                MemberDecl::Sub(s) => (s.content_hash, s.span),
-                MemberDecl::Minimize(m) => (m.content_hash, m.span),
-                MemberDecl::Maximize(m) => (m.content_hash, m.span),
-                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
-                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
-                MemberDecl::Port(p) => (p.content_hash, p.span),
-                MemberDecl::Connect(c) => (c.content_hash, c.span),
-                MemberDecl::Chain(c) => (c.content_hash, c.span),
-                MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
-                MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
-                MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
-                MemberDecl::Relate(r) => (r.content_hash, r.span),
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => (f.content_hash, f.span),
-            };
-            let (hash_b, span_b) = match m_b {
-                MemberDecl::Param(p) => (p.content_hash, p.span),
-                MemberDecl::Let(l) => (l.content_hash, l.span),
-                MemberDecl::Constraint(c) => (c.content_hash, c.span),
-                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
-                MemberDecl::Sub(s) => (s.content_hash, s.span),
-                MemberDecl::Minimize(m) => (m.content_hash, m.span),
-                MemberDecl::Maximize(m) => (m.content_hash, m.span),
-                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
-                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
-                MemberDecl::Port(p) => (p.content_hash, p.span),
-                MemberDecl::Connect(c) => (c.content_hash, c.span),
-                MemberDecl::Chain(c) => (c.content_hash, c.span),
-                MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
-                MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
-                MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
-                MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
-                MemberDecl::Relate(r) => (r.content_hash, r.span),
-                // Produced by lower_function (task 3937).
-                MemberDecl::Fn(f) => (f.content_hash, f.span),
-            };
-            assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
-            assert_eq!(span_a, span_b, "member {} span determinism", i);
-        }
-    }
-
-    #[test]
-    fn parse_minimize_declaration() {
-        let source = r#"structure S {
-    param volume: Length = 100mm
-    minimize volume
-}"#;
-        let module = parse(source, ModulePath::single("test_min"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        // Should have 2 members: param + minimize
-        assert_eq!(structure.members.len(), 2);
-
-        match &structure.members[1] {
-            MemberDecl::Minimize(m) => {
-                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "volume"));
-            }
-            other => panic!("expected Minimize, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_maximize_declaration() {
-        let source = r#"structure S {
-    param thickness: Length = 5mm
-    maximize thickness
-}"#;
-        let module = parse(source, ModulePath::single("test_max"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        assert_eq!(structure.members.len(), 2);
-
-        match &structure.members[1] {
-            MemberDecl::Maximize(m) => {
-                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "thickness"));
-            }
-            other => panic!("expected Maximize, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_minimize_complex_expression() {
-        let source = r#"structure S {
-    param width: Length = 80mm
-    param height: Length = 100mm
-    minimize width * height
-}"#;
-        let module = parse(source, ModulePath::single("test_min_complex"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        match &structure.members[2] {
-            MemberDecl::Minimize(m) => match &m.expr.kind {
-                ExprKind::BinOp { op, .. } => assert_eq!(op, "*"),
-                other => panic!("expected BinOp(*), got {:?}", other),
-            },
-            other => panic!("expected Minimize, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_minimize_with_other_members() {
-        let source = r#"structure S {
-    param w: Length = 80mm
-    param h: Length = 100mm
-    let vol = w * h
-    constraint w > 0mm
-    minimize w
-}"#;
-        let module = parse(source, ModulePath::single("test_min_mixed"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        // 2 params + 1 let + 1 constraint + 1 minimize = 5 members
-        assert_eq!(structure.members.len(), 5);
-
-        // Verify minimize is present alongside other members
-        assert!(
-            structure
-                .members
-                .iter()
-                .any(|m| matches!(m, MemberDecl::Minimize(_))),
-            "should contain a Minimize member"
-        );
-        assert!(
-            structure
-                .members
-                .iter()
-                .any(|m| matches!(m, MemberDecl::Constraint(_))),
-            "should contain a Constraint member"
-        );
-    }
-
-    #[test]
-    fn minimize_span_and_hash() {
-        let source = r#"structure S {
-    param x: Length = 5mm
-    minimize x
-}"#;
-        let module = parse(source, ModulePath::single("test_min_span"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-
-        match &structure.members[1] {
-            MemberDecl::Minimize(m) => {
-                // Span should cover the full "minimize x" text
-                let text = &source[m.span.start as usize..m.span.end as usize];
-                assert!(text.starts_with("minimize"), "span text: {:?}", text);
-                assert!(
-                    text.contains("x"),
-                    "span text should contain 'x': {:?}",
-                    text
-                );
-
-                // Content hash should match the source text of the node
-                assert_eq!(
-                    m.content_hash,
-                    ContentHash::of_str(text),
-                    "content_hash should match source text"
-                );
-            }
-            other => panic!("expected Minimize, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_enum_declaration() {
-        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Length = 5mm }";
-        let module = parse(source, ModulePath::single("test_enum"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 2);
-
-        match &module.declarations[0] {
-            Declaration::Enum(e) => {
-                assert_eq!(e.name, "Direction");
-                let variant_names: Vec<&str> =
-                    e.variants.iter().map(|v| v.name.as_str()).collect();
-                assert_eq!(variant_names, vec!["In", "Out", "Bidi"]);
-            }
-            other => panic!("expected Enum, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_enum_access_expression() {
-        let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
-        let module = parse(source, ModulePath::single("test_enum_access"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let structure = module
-            .declarations
-            .iter()
-            .find_map(|d| match d {
-                Declaration::Structure(s) => Some(s),
-                _ => None,
-            })
-            .expect("expected a structure");
-
-        let let_decl = match &structure.members[0] {
-            MemberDecl::Let(l) => l,
-            other => panic!("expected Let, got {:?}", other),
-        };
-        assert_eq!(let_decl.name, "d");
-        match &let_decl.value.kind {
-            ExprKind::EnumAccess { type_name, variant } => {
-                assert_eq!(type_name, "Direction");
-                assert_eq!(variant, "In");
-            }
-            other => panic!("expected EnumAccess, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_enum_missing_name_is_error() {
-        let source = "enum { }";
-        let module = parse(source, ModulePath::single("test_enum_err"));
-        assert!(
-            !module.errors.is_empty(),
-            "expected parse errors for malformed enum"
-        );
-    }
-
-    // ── parse_with_prelude_enums (task 2525) ────────────────────────────────
-
-    /// Helper: locate the first `EnumAccess` expression in a parsed module's
-    /// structure declarations.  Returns the matched `(type_name, variant)`
-    /// pair, or `None` if no `EnumAccess` is present.
-    ///
-    /// Visits members in declaration order via `visit_structure_member_root_exprs`,
-    /// which yields `Param` defaults before `Let` values within the same structure.
-    /// A `Param` default carrying an `EnumAccess` will therefore be returned if it
-    /// appears before any `Let` with an `EnumAccess`.
-    fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
-        let mut result = None;
-        crate::visit_structure_member_root_exprs(module, |expr| {
-            if result.is_none()
-                && let ExprKind::EnumAccess { type_name, variant } = &expr.kind
-            {
-                result = Some((type_name.clone(), variant.clone()));
-            }
-        });
-        result
-    }
-
-    /// (a) When `parse_with_prelude_enums` is given an enum name that is NOT
-    /// declared in the source, `Foo.Bar` must lower to `EnumAccess { type_name: "Foo", variant: "Bar" }`
-    /// rather than `MemberAccess { object: Ident("Foo"), member: "Bar" }`.
-    /// This is the core behavior change motivated by task 2525: prelude enums
-    /// must participate in EnumAccess disambiguation.
-    #[test]
-    fn parse_with_prelude_enums_resolves_prelude_only_enum() {
-        let source = "structure S { let v = Foo.Bar }";
-        let module = parse_with_prelude_enums(
-            source,
-            ModulePath::single("test_prelude_enum"),
-            &["Foo"],
-        );
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let (type_name, variant) = find_first_enum_access(&module)
-            .expect("expected at least one EnumAccess in parsed module");
-        assert_eq!(type_name, "Foo");
-        assert_eq!(variant, "Bar");
-    }
-
-    /// (b) When the same enum name appears in BOTH `prelude_enum_names` and
-    /// the source's own `enum_declaration`, no parse error fires (the parser
-    /// does not policed prelude/source name overlap), and the disambiguation
-    /// still resolves `Foo.Bar` to `EnumAccess`.  This pins the contract that
-    /// duplicate-prelude/source enum names are tolerated at parse time and
-    /// left to downstream name resolution to handle.
-    #[test]
-    fn parse_with_prelude_enums_dedupes_overlap_with_source_enum() {
-        let source = "enum Foo { Bar, Baz }\nstructure S { let v = Foo.Bar }";
-        let module = parse_with_prelude_enums(
-            source,
-            ModulePath::single("test_prelude_overlap"),
-            &["Foo"],
-        );
-        assert!(
-            module.errors.is_empty(),
-            "parse errors should be empty even when prelude and source share an enum name: {:?}",
-            module.errors
-        );
-
-        let (type_name, variant) = find_first_enum_access(&module)
-            .expect("expected at least one EnumAccess in parsed module");
-        assert_eq!(type_name, "Foo");
-        assert_eq!(variant, "Bar");
-    }
-
-    /// (c) `parse_with_prelude_enums(source, path, &[])` must be
-    /// observationally equivalent to `parse(source, path)`.  This is a
-    /// regression guard that pins the empty-prelude case so the wrapper never
-    /// drifts away from the unparameterized `parse` behavior.
-    #[test]
-    fn parse_with_prelude_enums_empty_slice_equivalent_to_parse() {
-        let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
-        let path = ModulePath::single("test_empty_prelude");
-
-        let from_parse = parse(source, path.clone());
-        let from_prelude = parse_with_prelude_enums(source, path, &[]);
-
-        // Same parse-error count and same content_hash captures observational
-        // equivalence at the `ParsedModule` level.
-        assert_eq!(
-            from_parse.errors.len(),
-            from_prelude.errors.len(),
-            "empty-slice prelude must produce the same parse error count as parse()"
-        );
-        assert_eq!(
-            from_parse.content_hash, from_prelude.content_hash,
-            "empty-slice prelude must produce the same content_hash as parse()"
-        );
-        assert_eq!(
-            from_parse.declarations.len(),
-            from_prelude.declarations.len(),
-            "empty-slice prelude must produce the same declaration count as parse()"
-        );
-
-        // Both must locate the same `Direction.In` EnumAccess.
-        let from_parse_access = find_first_enum_access(&from_parse).expect("parse() EnumAccess");
-        let from_prelude_access =
-            find_first_enum_access(&from_prelude).expect("parse_with_prelude_enums() EnumAccess");
-        assert_eq!(from_parse_access, from_prelude_access);
-    }
-
-    /// (d) Regression guard for the `HashSet<&'a str>` borrow-through contract
-    /// (task 2558).  Pins two invariants:
-    ///
-    /// 1. Functional correctness when the same `static` prelude slice is reused
-    ///    across two consecutive `parse_with_prelude_enums` calls
-    ///    (lifetime-mixing regression: both calls must resolve correctly without
-    ///    interference from a prior call's internal state).
-    /// 2. Mixed-source resolution: in the second call a source-declared enum
-    ///    (`SourceEnum`) and a prelude-supplied enum (`PreludeEnumB`) must BOTH
-    ///    lower to `EnumAccess` in the same parse.
-    ///
-    /// Note: the API accepts `&[&'a str]` (source-lifetime bound, task 4108);
-    /// non-`'static` borrowed names are accepted and covered by
-    /// `parse_with_prelude_enums_accepts_non_static_borrowed_names`.  The
-    /// no-allocation guarantee is a manual profiling check (per task description),
-    /// not encoded here.
-    #[test]
-    fn parse_with_prelude_enums_borrows_static_names_across_calls() {
-        static PRELUDE: &[&str] = &["PreludeEnumA", "PreludeEnumB"];
-
-        // First call — prelude-only enum (no source enum declarations).
-        let source1 = "structure S1 { let v = PreludeEnumA.X }";
-        let module1 = parse_with_prelude_enums(
-            source1,
-            ModulePath::single("test_borrow_call1"),
-            PRELUDE,
-        );
-        assert!(
-            module1.errors.is_empty(),
-            "call 1 parse errors: {:?}",
-            module1.errors
-        );
-        let (type1, variant1) =
-            find_first_enum_access(&module1).expect("call 1: expected EnumAccess");
-        assert_eq!(type1, "PreludeEnumA");
-        assert_eq!(variant1, "X");
-
-        // Second call — source-declared enum + prelude enum, same PRELUDE slice.
-        // Both PreludeEnumB.Z and SourceEnum.Y must resolve to EnumAccess.
-        let source2 =
-            "enum SourceEnum { Y }\nstructure S2 { let v = PreludeEnumB.Z\n let w = SourceEnum.Y }";
-        let module2 = parse_with_prelude_enums(
-            source2,
-            ModulePath::single("test_borrow_call2"),
-            PRELUDE,
-        );
-        assert!(
-            module2.errors.is_empty(),
-            "call 2 parse errors: {:?}",
-            module2.errors
-        );
-
-        // Collect all EnumAccess root-expr values from S2 via the shared visitor.
-        let mut accesses: Vec<(String, String)> = Vec::new();
-        crate::visit_structure_member_root_exprs(&module2, |expr| {
-            if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
-                accesses.push((type_name.clone(), variant.clone()));
-            }
-        });
-        assert!(
-            accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
-            "expected PreludeEnumB.Z → EnumAccess; got: {:?}",
-            accesses
-        );
-        assert!(
-            accesses.contains(&("SourceEnum".to_string(), "Y".to_string())),
-            "expected SourceEnum.Y → EnumAccess; got: {:?}",
-            accesses
-        );
-    }
-
-    /// (e) Compile-level regression guard for the lifetime relaxation (task 4108).
-    /// Proves that `parse_with_prelude_enums` accepts a name slice whose
-    /// elements are borrowed from a non-`'static` local allocation.
-    ///
-    /// Under the OLD `&[&'static str]` bound this test DOES NOT COMPILE:
-    /// the compiler rejects `&names` because `names: Vec<&str>` borrows from
-    /// `owned: Vec<String>` — a local, non-`'static` value.  After step-2
-    /// relaxes the bound to `&[&'a str]` the test compiles and passes.
-    ///
-    /// Runtime behavior (EnumAccess disambiguation for a non-`'static` name)
-    /// is already covered by `parse_with_prelude_enums_resolves_prelude_only_enum`
-    /// with the same source pattern; this test's sole new capability under test
-    /// is accepting a non-`'static` borrow.
-    #[test]
-    fn parse_with_prelude_enums_accepts_non_static_borrowed_names() {
-        let owned: Vec<String> = vec!["Foo".to_string()];
-        let names: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
-        let module = parse_with_prelude_enums(
-            "structure S { let v = Foo.Bar }",
-            ModulePath::single("test_nonstatic"),
-            &names,
-        );
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        let (type_name, variant) =
-            find_first_enum_access(&module).expect("expected EnumAccess from non-static names");
-        assert_eq!(type_name, "Foo");
-        assert_eq!(variant, "Bar");
-    }
-
-    #[test]
-    fn tree_sitter_parses_bracket_source_without_errors() {
-        let source = reify_test_support::bracket_source();
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-
-        let tree = parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        assert_eq!(root.kind(), "source_file");
-        assert_eq!(
-            count_errors(root),
-            0,
-            "Expected zero ERROR nodes, got tree:\n{}",
-            root.to_sexp()
-        );
-    }
-
-    // ── Collection literal tests ──────────────────────────
-
-    /// Helper: parse a source string wrapping an expression in a structure let,
-    /// and return the ExprKind of the let's value.
-    fn parse_let_expr(source: &str) -> ExprKind {
-        let module = parse(source, ModulePath::single("test"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-        let let_decl = match &structure.members[0] {
-            MemberDecl::Let(l) => l,
-            other => panic!("expected Let, got {:?}", other),
-        };
-        let_decl.value.kind.clone()
-    }
-
-    #[test]
-    fn parse_list_literal_three_elements() {
-        let kind = parse_let_expr("structure S { let x = [1, 2, 3] }");
-        match kind {
-            ExprKind::ListLiteral(elems) => {
-                assert_eq!(elems.len(), 3);
-                assert!(
-                    matches!(&elems[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&elems[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&elems[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
-                );
-            }
-            other => panic!("expected ListLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_list_literal_empty() {
-        let kind = parse_let_expr("structure S { let x = [] }");
-        match kind {
-            ExprKind::ListLiteral(elems) => {
-                assert_eq!(elems.len(), 0);
-            }
-            other => panic!("expected ListLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_set_literal_three_elements() {
-        let kind = parse_let_expr("structure S { let x = set{1, 2, 3} }");
-        match kind {
-            ExprKind::SetLiteral(elems) => {
-                assert_eq!(elems.len(), 3);
-                assert!(
-                    matches!(&elems[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&elems[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&elems[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
-                );
-            }
-            other => panic!("expected SetLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_set_literal_empty() {
-        let kind = parse_let_expr("structure S { let x = set{} }");
-        match kind {
-            ExprKind::SetLiteral(elems) => {
-                assert_eq!(elems.len(), 0);
-            }
-            other => panic!("expected SetLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_map_literal_two_entries() {
-        let kind = parse_let_expr(r#"structure S { let x = map{"a" => 1, "b" => 2} }"#);
-        match kind {
-            ExprKind::MapLiteral(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[0].0.kind, ExprKind::StringLiteral(s) if s == "a"));
-                assert!(
-                    matches!(&entries[0].1.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
-                );
-                assert!(matches!(&entries[1].0.kind, ExprKind::StringLiteral(s) if s == "b"));
-                assert!(
-                    matches!(&entries[1].1.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
-                );
-            }
-            other => panic!("expected MapLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_map_literal_empty() {
-        let kind = parse_let_expr("structure S { let x = map{} }");
-        match kind {
-            ExprKind::MapLiteral(entries) => {
-                assert_eq!(entries.len(), 0);
-            }
-            other => panic!("expected MapLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_index_access_number() {
-        let kind = parse_let_expr("structure S { let x = items[0] }");
-        match kind {
-            ExprKind::IndexAccess { object, index } => {
-                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "items"));
-                assert!(
-                    matches!(&index.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 0.0).abs() < f64::EPSILON)
-                );
-            }
-            other => panic!("expected IndexAccess, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_index_access_string_key() {
-        let kind = parse_let_expr(r#"structure S { let x = m["key"] }"#);
-        match kind {
-            ExprKind::IndexAccess { object, index } => {
-                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "m"));
-                assert!(matches!(&index.kind, ExprKind::StringLiteral(s) if s == "key"));
-            }
-            other => panic!("expected IndexAccess, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_nested_list_literals() {
-        let kind = parse_let_expr("structure S { let x = [[1, 2], [3, 4]] }");
-        match kind {
-            ExprKind::ListLiteral(outer) => {
-                assert_eq!(outer.len(), 2);
-                match &outer[0].kind {
-                    ExprKind::ListLiteral(inner) => {
-                        assert_eq!(inner.len(), 2);
-                        assert!(
-                            matches!(&inner[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
-                        );
-                        assert!(
-                            matches!(&inner[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
-                        );
-                    }
-                    other => panic!("expected inner ListLiteral, got {:?}", other),
-                }
-                match &outer[1].kind {
-                    ExprKind::ListLiteral(inner) => {
-                        assert_eq!(inner.len(), 2);
-                        assert!(
-                            matches!(&inner[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
-                        );
-                        assert!(
-                            matches!(&inner[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 4.0).abs() < f64::EPSILON)
-                        );
-                    }
-                    other => panic!("expected inner ListLiteral, got {:?}", other),
-                }
-            }
-            other => panic!("expected outer ListLiteral, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_collection_in_let_context() {
-        let source = "structure S { let x = [1, 2, 3] }";
-        let module = parse(source, ModulePath::single("test"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-        assert_eq!(structure.members.len(), 1);
-        let let_decl = match &structure.members[0] {
-            MemberDecl::Let(l) => l,
-            other => panic!("expected Let, got {:?}", other),
-        };
-        assert_eq!(let_decl.name, "x");
-        assert!(matches!(&let_decl.value.kind, ExprKind::ListLiteral(elems) if elems.len() == 3));
-    }
-
-    #[test]
-    fn parse_collections_no_regression_on_bracket() {
-        let module = parse_bracket();
-        assert!(
-            module.errors.is_empty(),
-            "expected no errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-        let structure = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got {:?}", other),
-        };
-        assert_eq!(structure.name, "Bracket");
-        assert_eq!(
-            structure.members.len(),
-            10,
-            "expected 10 members (5 params, 2 lets, 3 constraints)"
-        );
-        let params = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Param(_)))
-            .count();
-        let lets = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Let(_)))
-            .count();
-        let constraints = structure
-            .members
-            .iter()
-            .filter(|m| matches!(m, MemberDecl::Constraint(_)))
-            .count();
-        assert_eq!(params, 5, "expected 5 params");
-        assert_eq!(lets, 2, "expected 2 lets");
-        assert_eq!(constraints, 3, "expected 3 constraints");
-    }
-
-    // ── Function definition tests ─────────────────────────────────
-
-    #[test]
-    fn parse_simple_function_definition() {
-        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
-        let module = parse(source, ModulePath::single("test_fn"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-
-        let f = match &module.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got {:?}", other),
-        };
-        assert_eq!(f.name, "area");
-        assert!(!f.is_pub);
-        assert_eq!(f.params.len(), 2);
-        assert_eq!(f.params[0].name, "w");
-        assert!(
-            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
-        );
-        assert_eq!(f.params[1].name, "h");
-        assert!(
-            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
-        );
-        assert!(f.return_type.is_some());
-        assert!(
-            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Length")
-        );
-        assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
-        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
-    }
-
-    #[test]
-    fn parse_pub_function_with_conditional() {
-        let source = "pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }";
-        let module = parse(source, ModulePath::single("test_pub_fn"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-
-        let f = match &module.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got {:?}", other),
-        };
-        assert!(f.is_pub);
-        assert_eq!(f.name, "clamp");
-        assert_eq!(f.params.len(), 3);
-        assert_eq!(f.params[0].name, "x");
-        assert!(
-            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Real")
-        );
-        assert_eq!(f.params[1].name, "lo");
-        assert_eq!(f.params[2].name, "hi");
-        assert!(f.return_type.is_some());
-        assert!(
-            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real")
-        );
-        assert!(matches!(
-            &f.body.as_ref().unwrap().result_expr.kind,
-            ExprKind::Conditional { .. }
-        ));
-    }
-
-    #[test]
-    fn parse_function_with_let_bindings() {
-        let source = "fn f(x: Real) -> Real { let y = x * 2; y + 1 }";
-        let module = parse(source, ModulePath::single("test_fn_let"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-        assert_eq!(module.declarations.len(), 1);
-
-        let f = match &module.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got {:?}", other),
-        };
-        assert_eq!(f.params.len(), 1);
-        assert_eq!(f.body.as_ref().unwrap().let_bindings.len(), 1);
-        assert_eq!(f.body.as_ref().unwrap().let_bindings[0].name, "y");
-        assert!(
-            matches!(&f.body.as_ref().unwrap().let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
-        );
-        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
-    }
-
-    #[test]
-    fn parse_function_with_type_parameters() {
-        let source = "fn identity<T>(x: T) -> T { x }";
-        let module = parse(source, ModulePath::single("test_fn_tp"));
-        assert!(
-            module.errors.is_empty(),
-            "parse errors: {:?}",
-            module.errors
-        );
-
-        let f = match &module.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got {:?}", other),
-        };
-        assert_eq!(f.type_params.len(), 1);
-        assert_eq!(f.type_params[0].name, "T");
-        assert!(f.type_params[0].bounds.is_empty());
-
-        // Also test with bounds
-        let source2 = "fn add<T: Numeric>(a: T, b: T) -> T { a + b }";
-        let module2 = parse(source2, ModulePath::single("test_fn_tp2"));
-        assert!(
-            module2.errors.is_empty(),
-            "parse errors: {:?}",
-            module2.errors
-        );
-
-        let f2 = match &module2.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got {:?}", other),
-        };
-        assert_eq!(f2.type_params.len(), 1);
-        assert_eq!(f2.type_params[0].name, "T");
-        assert_eq!(f2.type_params[0].bounds, vec!["Numeric"]);
-    }
-
-    // ── Ad-hoc selector tests ─────────────────────────────
-
-    #[test]
-    fn parse_ad_hoc_selector_basic() {
-        let kind = parse_let_expr(r#"structure S { let x = port @ face("top") }"#);
-        match kind {
-            ExprKind::AdHocSelector {
-                base,
-                selector,
-                args,
-            } => {
-                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
-                assert_eq!(selector, "face");
-                assert_eq!(args.len(), 1);
-                assert!(matches!(&args[0].kind, ExprKind::StringLiteral(s) if s == "top"));
-            }
-            other => panic!("expected AdHocSelector, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_ad_hoc_selector_no_args() {
-        let kind = parse_let_expr("structure S { let x = port @ default() }");
-        match kind {
-            ExprKind::AdHocSelector {
-                base,
-                selector,
-                args,
-            } => {
-                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
-                assert_eq!(selector, "default");
-                assert_eq!(args.len(), 0);
-            }
-            other => panic!("expected AdHocSelector, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_ad_hoc_selector_multiple_args() {
-        let kind = parse_let_expr("structure S { let x = port @ point(1, 2, 3) }");
-        match kind {
-            ExprKind::AdHocSelector {
-                base,
-                selector,
-                args,
-            } => {
-                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
-                assert_eq!(selector, "point");
-                assert_eq!(args.len(), 3);
-                assert!(
-                    matches!(&args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&args[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
-                );
-                assert!(
-                    matches!(&args[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
-                );
-            }
-            other => panic!("expected AdHocSelector, got {:?}", other),
-        }
-    }
-
-    // ── lower_connect_body direct tests ─────────────────────────────
-    //
-    // These tests call lower_connect_body directly, bypassing the
-    // check_and_lower! guard that normally preempts body-level
-    // diagnostics when has_error() propagates to the connect_statement.
-
-    /// Helper: parse source with tree-sitter and find the first node of a given kind.
-    fn find_node_by_kind<'a>(
-        node: tree_sitter::Node<'a>,
-        kind: &str,
-    ) -> Option<tree_sitter::Node<'a>> {
-        if node.kind() == kind {
-            return Some(node);
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(found) = find_node_by_kind(child, kind) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    /// Generic helper: parse source, find the first node of `kind`, run `lower_fn`
-    /// on it via a fresh `Lowering`, and return collected errors.
-    ///
-    /// The closure pattern avoids lifetime issues: `tree_sitter::Node` borrows from
-    /// `Tree`, so both must live inside the same scope — the closure receives them
-    /// without the caller needing to hold the `Tree`.
-    fn lower_node_directly<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
-    where
-        F: FnOnce(&mut Lowering, tree_sitter::Node),
-    {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-        assert!(
-            !root.has_error(),
-            "source '{}' should parse without errors — grammar regression?",
-            source,
-        );
-
-        let node = find_node_by_kind(root, kind)
-            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
-
-        let mut lowering = Lowering::new(source);
-        lower_fn(&mut lowering, node);
-        lowering.errors.into_inner()
-    }
-
-    /// Like `lower_node_directly`, but skips the clean-parse assertion.
-    /// Use for tests that deliberately feed malformed source to exercise
-    /// error-handling code paths.
-    fn lower_node_with_errors<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
-    where
-        F: FnOnce(&mut Lowering, tree_sitter::Node),
-    {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let node = find_node_by_kind(root, kind)
-            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
-
-        let mut lowering = Lowering::new(source);
-        lower_fn(&mut lowering, node);
-        lowering.errors.into_inner()
-    }
-
-    /// Helper: parse source, find the connect_body node, call lower_connect_body
-    /// directly (bypassing check_and_lower!), and return the errors.
-    fn lower_body_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "connect_body", |l, n| {
-            l.lower_connect_body(n);
-        })
-    }
-
-    /// Like `lower_body_directly`, but skips the clean-parse assertion.
-    fn lower_body_with_errors(source: &str) -> Vec<ParseError> {
-        lower_node_with_errors(source, "connect_body", |l, n| {
-            l.lower_connect_body(n);
-        })
-    }
-
-    #[test]
-    #[should_panic(expected = "should parse without errors")]
-    fn lower_node_directly_rejects_source_with_parse_errors() {
-        // Deliberately broken source: `{ >= }` produces parse errors.
-        // lower_node_directly should panic because root.has_error() is true.
-        lower_body_directly("structure S { port a : out T  port b : in T  connect a -> b { >= } }");
-    }
-
-    #[test]
-    fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
-        // NOTE: we use `: BoltSet` to specify a connector_type before the brace
-        // block, making `{` unambiguously the start of connect_body.  Without
-        // the connector_type, the new variant_construction GLR fork (task α,
-        // data-carrying-enums) keeps both a variant_construction fork and the
-        // connect_body fork alive after `b {`; even though `>=` immediately
-        // kills the variant_construction fork, GLR error recovery may orphan
-        // `{ … }` as a member-level ERROR node rather than a connect_body,
-        // causing `find_node_by_kind("connect_body")` to fail.  The connector
-        // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_connect_body_malformed_param_emits_diagnostic() {
-        // `{ grade = }` produces a connect_param_assignment with has_error().
-        // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for malformed param, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("connect parameter")),
-            "expected error mentioning 'connect parameter', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_connect_body_malformed_mapping_emits_diagnostic() {
-        // `{ shaft -> }` produces a port_mapping with has_error().
-        // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for malformed mapping, got none"
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("port mapping")),
-            "expected error mentioning 'port mapping', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_connect_body_extras_not_flagged() {
-        // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. The source is syntactically valid, so zero errors is the
-        // correct assertion (not just "no 'unexpected' errors").
-        let errors = lower_body_directly(
-            "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
-        );
-        assert!(
-            errors.is_empty(),
-            "expected no errors for syntactically valid connect body with comment, got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_connect_body_anonymous_tokens_not_flagged() {
-        // An empty connect body `{ }` has only anonymous tokens (braces).
-        // The named-children iteration must skip them without producing errors.
-        let errors = lower_body_directly(
-            "structure S { port a : out T  port b : in T  connect a -> b { } }",
-        );
-        assert!(
-            errors.is_empty(),
-            "expected no errors for empty connect body (anonymous tokens only), got: {:?}",
-            errors
-        );
-    }
-
-    /// Deliberately passes a `constraint_definition` node to `lower_connect_body`
-    /// to exercise the catch-all branch. The constraint_definition has 3 named
-    /// children (identifier, param_declaration, constraint_def_predicate), none of
-    /// which match any connect_body arm — so the catch-all should fire for each.
-    #[test]
-    fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        let source = "constraint def Eq { param x: Length  x > 0 }";
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        assert!(
-            !root.has_error(),
-            "source should parse without errors — grammar regression?"
-        );
-
-        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
-            panic!("no constraint_definition node found in parse tree — grammar regression?");
-        };
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_connect_body(constraint_node);
-        let errors = lowering.errors.borrow();
-        assert!(
-            errors.len() >= 3,
-            "expected at least 3 diagnostics (one per named child: identifier, \
-             param_declaration, constraint_def_predicate), got {}: {:?}",
-            errors.len(),
-            errors
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected at least one error containing 'unexpected', got: {:?}",
-            errors
-        );
-    }
-
-    // ── Port body defensive catch-all tests ────────────────────
-
-    /// Helper: parse source, find the port_body node, call lower_port_body
-    /// directly (bypassing check_and_lower!), and return the errors.
-    fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "port_body", |l, n| {
-            l.lower_port_body(n);
-        })
-    }
-
-    /// Like `lower_port_body_directly`, but skips the clean-parse assertion.
-    fn lower_port_body_with_errors(source: &str) -> Vec<ParseError> {
-        lower_node_with_errors(source, "port_body", |l, n| {
-            l.lower_port_body(n);
-        })
-    }
-
-    #[test]
-    fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_port_body_catch_all_emits_for_unexpected_named_children() {
-        // Pass a constraint_definition node to lower_port_body. Its named
-        // children (identifier, param_declaration, constraint_def_predicate)
-        // don't match any port_body arm and should hit the catch-all.
-        let source = "constraint def Eq { param x: Length  x > 0 }";
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        assert!(
-            !root.has_error(),
-            "source should parse without errors — grammar regression?"
-        );
-
-        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
-            panic!("no constraint_definition node found in parse tree — grammar regression?");
-        };
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_port_body(constraint_node);
-        let errors = lowering.errors.borrow();
-        assert!(
-            errors.len() >= 2,
-            "expected at least 2 diagnostics (identifier and constraint_def_predicate \
-             are unexpected in port body; param_declaration is handled), got {}: {:?}",
-            errors.len(),
-            errors
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected at least one error containing 'unexpected', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_port_body_extras_not_flagged() {
-        // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. The source is syntactically valid, so zero errors is the
-        // correct assertion (not just "no 'unexpected' errors").
-        let errors = lower_port_body_directly(
-            "structure S { port a : in T { /* comment */ param x: Length = 1 } }",
-        );
-        assert!(
-            errors.is_empty(),
-            "expected no errors for syntactically valid port body with comment, got: {:?}",
-            errors
-        );
-    }
-
-    // ── Constraint def defensive catch-all tests ───────────────
-
-    /// Helper: parse source, find the constraint_definition node, call
-    /// lower_constraint_def directly, and return the errors.
-    fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "constraint_definition", |l, n| {
-            l.lower_constraint_def(n);
-        })
-    }
-
-    #[test]
-    fn lower_constraint_def_catch_all_emits_for_unexpected_named_children() {
-        // Pass a structure_definition node to lower_constraint_def. Its named
-        // children (sub_declaration, port_declaration, connect_declaration)
-        // don't match constraint_def arms and should hit the catch-all.
-        // We use structure_definition because it has a "name" field (required
-        // by lower_constraint_def) and body children outside constraint scope.
-        let source = "structure S { port a : in T { param x: Length = 1 }  sub b = T() }";
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        assert!(
-            !root.has_error(),
-            "source should parse without errors — grammar regression?"
-        );
-
-        let Some(struct_node) = find_node_by_kind(root, "structure_definition") else {
-            panic!("no structure_definition node found in parse tree — grammar regression?");
-        };
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_constraint_def(struct_node);
-        let errors = lowering.errors.borrow();
-        assert!(
-            errors.len() >= 2,
-            "expected at least 2 diagnostics (port_declaration, sub_declaration \
-             at minimum), got {}: {:?}",
-            errors.len(),
-            errors
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected at least one error containing 'unexpected', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_constraint_def_extras_not_flagged() {
-        // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. The source is syntactically valid, so zero errors is the
-        // correct assertion (not just "no 'unexpected' errors").
-        let errors = lower_constraint_def_directly(
-            "constraint def Eq { /* comment */ param x: Length  x > 0 }",
-        );
-        assert!(
-            errors.is_empty(),
-            "expected no errors for syntactically valid constraint def with comment, got: {:?}",
-            errors
-        );
-    }
-
-    // ── Source file defensive catch-all tests ──────────────────
-
-    #[test]
-    fn lower_source_file_catch_all_emits_for_unexpected_named_children() {
-        // Pass a structure_definition node to lower_source_file. Its named
-        // children (identifier, param_declaration, port_declaration, etc.)
-        // don't match any top-level declaration kind and should hit the catch-all.
-        let source = "structure S { param x: Length = 1  port a : in T { param y: Length = 2 } }";
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let struct_node = find_node_by_kind(root, "structure_definition")
-            .expect("no structure_definition node found in parse tree");
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_source_file(struct_node);
-        let errors = lowering.errors.borrow();
-        assert!(
-            !errors.is_empty(),
-            "expected diagnostics for unexpected named children in source file catch-all, got none"
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected at least one error containing 'unexpected', got: {:?}",
-            errors
-        );
-    }
-
-    #[test]
-    fn lower_source_file_extras_not_flagged() {
-        // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a source file with a block comment before a
-        // valid structure produces no errors mentioning "unexpected".
-        let source = "/* comment */\nstructure S { param x: Length = 1 }";
-        let module = parse(source, ModulePath::single("test"));
-        assert!(
-            !module
-                .errors
-                .iter()
-                .any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
-            module.errors
-        );
-    }
-
-    // ── Doc comment extraction tests ─────────────────────────
-
-    #[test]
-    fn doc_comment_on_structure_is_extracted() {
-        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = 1\n}";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got: {other:?}"),
-        };
-        assert_eq!(decl.doc.as_deref(), Some("A bracket for mounting."));
-    }
-
-    #[test]
-    fn multi_line_doc_comment_joined() {
-        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Length = 1\n}";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got: {other:?}"),
-        };
-        assert_eq!(decl.doc.as_deref(), Some("Line one.\nLine two."));
-    }
-
-    #[test]
-    fn no_doc_comment_yields_none() {
-        let src = "structure S {\n  param x: Length = 1\n}";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got: {other:?}"),
-        };
-        assert!(decl.doc.is_none());
-    }
-
-    #[test]
-    fn regular_comment_not_treated_as_doc() {
-        let src = "// Just a comment\nstructure S {\n  param x: Length = 1\n}";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Structure(s) => s,
-            other => panic!("expected Structure, got: {other:?}"),
-        };
-        assert!(
-            decl.doc.is_none(),
-            "regular // comment should not be a doc comment"
-        );
-    }
-
-    #[test]
-    fn doc_comment_on_fn_is_extracted() {
-        let src = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Function(f) => f,
-            other => panic!("expected Function, got: {other:?}"),
-        };
-        assert_eq!(decl.doc.as_deref(), Some("Compute area."));
-    }
-
-    #[test]
-    fn doc_comment_on_enum_is_extracted() {
-        let src = "/// Direction enum.\nenum Dir { In, Out }";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Enum(e) => e,
-            other => panic!("expected Enum, got: {other:?}"),
-        };
-        assert_eq!(decl.doc.as_deref(), Some("Direction enum."));
-    }
-
-    #[test]
-    fn doc_comment_on_trait_is_extracted() {
-        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Length\n}";
-        let module = parse(src, ModulePath::single("test"));
-        let decl = match &module.declarations[0] {
-            Declaration::Trait(t) => t,
-            other => panic!("expected Trait, got: {other:?}"),
-        };
-        assert_eq!(decl.doc.as_deref(), Some("A rigid body."));
-    }
-
-    // PRD v0.6 D5: single-sided range lowering (task 3914 / ζ).
-    // Grammar (task 3911) names the prefix fields `op` and `bound`.
-    // Discriminator: two-sided has `lower`/`upper` fields; single-sided has `op`/`bound` fields.
-    #[test]
-    fn single_sided_range_gt_lower_exclusive() {
-        // `>2mm` => Range { lower: Some(2mm), upper: None, lower_inclusive: false, upper_inclusive: true }
-        let kind = parse_let_expr("structure S { let r = >2mm }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(upper.is_none(), "upper should be None for `>2mm`");
-                assert!(!lower_inclusive, "lower should be exclusive for `>`");
-                assert!(upper_inclusive, "absent upper_inclusive should be vacuous true");
-                let lower_expr = lower.expect("lower should be Some for `>2mm`");
-                match lower_expr.kind {
-                    ExprKind::QuantityLiteral { value, unit } => {
-                        assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
-                    }
-                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
-                }
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn single_sided_range_gte_lower_inclusive() {
-        // `>=2mm` => Range { lower: Some(2mm), upper: None, lower_inclusive: true, upper_inclusive: true }
-        let kind = parse_let_expr("structure S { let r = >=2mm }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(upper.is_none(), "upper should be None for `>=2mm`");
-                assert!(lower_inclusive, "lower should be inclusive for `>=`");
-                assert!(upper_inclusive, "absent upper_inclusive should be vacuous true");
-                let lower_expr = lower.expect("lower should be Some for `>=2mm`");
-                match lower_expr.kind {
-                    ExprKind::QuantityLiteral { value, unit } => {
-                        assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
-                    }
-                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
-                }
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn single_sided_range_lt_upper_exclusive() {
-        // `<100MPa` => Range { lower: None, upper: Some(100MPa), lower_inclusive: true, upper_inclusive: false }
-        let kind = parse_let_expr("structure S { let r = <100MPa }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(lower.is_none(), "lower should be None for `<100MPa`");
-                assert!(lower_inclusive, "absent lower_inclusive should be vacuous true");
-                assert!(!upper_inclusive, "upper should be exclusive for `<`");
-                let upper_expr = upper.expect("upper should be Some for `<100MPa`");
-                match upper_expr.kind {
-                    ExprKind::QuantityLiteral { value, unit } => {
-                        assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
-                    }
-                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
-                }
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn single_sided_range_lte_upper_inclusive() {
-        // `<=100MPa` => Range { lower: None, upper: Some(100MPa), lower_inclusive: true, upper_inclusive: true }
-        let kind = parse_let_expr("structure S { let r = <=100MPa }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(lower.is_none(), "lower should be None for `<=100MPa`");
-                assert!(lower_inclusive, "absent lower_inclusive should be vacuous true");
-                assert!(upper_inclusive, "upper should be inclusive for `<=`");
-                let upper_expr = upper.expect("upper should be Some for `<=100MPa`");
-                match upper_expr.kind {
-                    ExprKind::QuantityLiteral { value, unit } => {
-                        assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
-                    }
-                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
-                }
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn two_sided_range_inclusive_regression() {
-        // `2mm..10mm` => Range { lower: Some, upper: Some, lower_inclusive: true, upper_inclusive: true }
-        // Guards that the existing two-sided path is not broken by the single-sided branch.
-        let kind = parse_let_expr("structure S { let r = 2mm..10mm }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(lower.is_some(), "lower should be Some for two-sided range");
-                assert!(upper.is_some(), "upper should be Some for two-sided range");
-                assert!(lower_inclusive, "lower should be inclusive for `..`");
-                assert!(upper_inclusive, "upper should be inclusive for `..`");
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn two_sided_range_exclusive_upper_regression() {
-        // `0mm..<10mm` => Range { lower: Some, upper: Some, lower_inclusive: true, upper_inclusive: false }
-        // Guards that the `..<` exclusive-upper detection loop is not broken.
-        let kind = parse_let_expr("structure S { let r = 0mm..<10mm }");
-        match kind {
-            ExprKind::Range {
-                lower,
-                upper,
-                lower_inclusive,
-                upper_inclusive,
-            } => {
-                assert!(lower.is_some(), "lower should be Some for two-sided range");
-                assert!(upper.is_some(), "upper should be Some for two-sided range");
-                assert!(lower_inclusive, "lower should be inclusive for `..<`");
-                assert!(!upper_inclusive, "upper should be exclusive for `..<`");
-            }
-            other => panic!("expected ExprKind::Range, got {:?}", other),
-        }
-    }
-
-    // ── Unit tests for decode_string_escapes (suggestion 2 coverage) ──────────
-
-    /// An unrecognized escape sequence (e.g. `\r`, `\0`) drops the backslash
-    /// and keeps only the character.  This pins the "lenient" behavior
-    /// documented in the `decode_string_escapes` doc-comment.
-    ///
-    /// Concretely: `\X` where X is not `n`, `t`, `\\`, or `"` → emit X,
-    /// drop the backslash.  This is data-lossy but intentional for α.
-    #[test]
-    fn decode_string_escapes_unknown_escape_drops_backslash() {
-        // `\r` → 'r' (backslash dropped, character kept)
-        assert_eq!(decode_string_escapes("x\\ry"), "xry");
-        // `\0` → '0'
-        assert_eq!(decode_string_escapes("\\0z"), "0z");
-        // `\s` → 's'
-        assert_eq!(decode_string_escapes("a\\sb"), "asb");
-    }
-
-    /// A lone `\` at the very end of a chunk (no following character) is
-    /// silently dropped — the `None => {}` branch in `decode_string_escapes`.
-    ///
-    /// This is reachable on highly-malformed input (e.g. the external scanner
-    /// consumed a lone `\` at EOF inside a string literal).  Pinning the
-    /// behavior here prevents a silent regression if the semantics ever change.
-    #[test]
-    fn decode_string_escapes_trailing_backslash_is_silently_dropped() {
-        // A chunk ending with a lone backslash: the backslash disappears.
-        assert_eq!(decode_string_escapes("x\\"), "x");
-        assert_eq!(decode_string_escapes("\\"), "");
-    }
-
-    // ── Unit test for lower_interpolated_string robustness (suggestion 3) ─────
-
-    /// Directly exercises `lower_interpolated_string` with a malformed empty
-    /// hole `{}` to verify the function-level robustness fix, *bypassing*
-    /// `check_and_lower!` (which fires at the `let_declaration` level and
-    /// prevents the function from being called in the full-pipeline path).
-    ///
-    /// Verifies that:
-    /// 1. The function returns `Some(...)` — the string is NOT silently dropped.
-    /// 2. A diagnostic is emitted for the MISSING-expr hole.
-    /// 3. The surviving literal parts remain in the result.
-    #[test]
-    fn lower_interpolated_string_malformed_hole_produces_diagnostic() {
-        let source = r#"structure S { let v = "x {} y" }"#;
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        // Find the interpolated_string node (has_error due to the empty hole).
-        let interp_node = find_node_by_kind(root, "interpolated_string")
-            .expect("interpolated_string node must be present in CST");
-        assert!(
-            interp_node.has_error(),
-            "the interpolated_string node must have has_error=true for this test to be meaningful"
-        );
-
-        // Call lower_interpolated_string directly, bypassing check_and_lower!
-        let lowering = Lowering::new(source);
-        let result = lowering.lower_interpolated_string(interp_node);
-        let errors = lowering.errors.into_inner();
-
-        // The string must NOT be silently dropped (Some returned, not None).
-        let expr = result
-            .expect("lower_interpolated_string must return Some even for a malformed hole");
-
-        // At least one diagnostic for the bad hole.
-        assert!(
-            !errors.is_empty(),
-            "expected at least one diagnostic for MISSING-expr hole, got none"
-        );
-
-        // The surrounding literal chunks survive; the bad hole is skipped.
-        match &expr.kind {
-            ExprKind::InterpolatedString(parts) => {
-                let literal_count = parts
-                    .iter()
-                    .filter(|p| matches!(p, StringPart::Literal(_)))
-                    .count();
-                assert!(
-                    literal_count >= 2,
-                    "expected at least 2 surviving literal parts, got: {:?}",
-                    parts
-                );
-            }
-            other => panic!("expected InterpolatedString, got {:?}", other),
-        }
-    }
-
-    /// Robustness guard: `qualified_type_recovery_base` must return a flat,
-    /// bounded `Named` over the whole-node text — NOT dispatch back through
-    /// `lower_type_expr_node` — so that the error-recovery (`None`) arm of
-    /// `lower_qualified_type` does not recurse into itself and overflow the
-    /// stack in release builds.
-    ///
-    /// The source is valid (the `qualified_type` node is real); we pass that
-    /// real node to `qualified_type_recovery_base` to exercise the helper on
-    /// a concrete CST node without needing an unreachable baseless node.
-    #[test]
-    fn qualified_type_recovery_base_is_bounded_named() {
-        let source = "structure def S { param m : Coupling<Prismatic>::MotionValue }";
-
-        // Parse with the raw tree-sitter API to get the CST directly.
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("set_language failed");
-        let tree = ts_parser
-            .parse(source, None)
-            .expect("parse returned None");
-        let root = tree.root_node();
-
-        // Walk the CST to locate the qualified_type node (reuses the helper
-        // already defined in this test module at line 5764).
-        let qnode = find_node_by_kind(root, "qualified_type")
-            .expect("expected a qualified_type node in the CST");
-
-        // Build the lowering context.
-        let lowering = Lowering::new(source);
-
-        // Call the recovery helper directly.  Asserting a flat Named over the
-        // whole-node text (not a QualifiedAssoc) is the discriminating signal
-        // that the helper does NOT re-dispatch through lower_type_expr_node.
-        let result = lowering.qualified_type_recovery_base(qnode);
-
-        match result.kind {
-            TypeExprKind::Named { name, type_args } => {
-                assert_eq!(
-                    name, "Coupling<Prismatic>::MotionValue",
-                    "recovery base must be the raw whole-node text"
-                );
-                assert!(
-                    type_args.is_empty(),
-                    "recovery base must have empty type_args (no parsing), got: {:?}",
-                    type_args
-                );
-            }
-            other => panic!(
-                "expected TypeExprKind::Named (bounded flat recovery), got {:?}",
-                other
-            ),
-        }
-    }
-}
+mod tests;

@@ -1,0 +1,20 @@
+// M-WASTE PRD baseline (§2.3, §5 B14): a parent auto, through a let, sizes a sub's geometry.
+module mwaste_parent_auto_to_sub
+
+structure def Plate : Physical {
+    param w : Length = 100mm
+    param l : Length = 200mm
+    param t : Length = 3mm
+    param geometry : Solid = box(w, l, t)
+    param material : Material = Material(name: "Steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let ez : Length = dot(bbox_size(bounding_box(geometry)), vec3(0, 0, 1))
+}
+
+structure def Panel {
+    param thin : Bool = auto
+    constraint thin
+    let thick = if thin then 2mm else 6mm
+    sub a = Plate(w: 100mm, l: 200mm, t: thick)
+    let za : Length = self.a.ez
+    let ma = self.a.mass
+}

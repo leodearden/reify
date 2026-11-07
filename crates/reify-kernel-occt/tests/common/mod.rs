@@ -1,20 +1,57 @@
-//! Shared assertion helpers for local-feature (fillet/chamfer) integration tests.
+//! Shared helpers for the `harness_occt_measurement` integration tests:
+//! local-feature (fillet/chamfer) assertions, bounding-box query parsing,
+//! JSON-Point3 (xyz) query parsing, and triangle-winding / AABB-centre
+//! mesh-orientation helpers.
 //!
-//! Extracted from `fillet_with_history_integration.rs` and
-//! `chamfer_with_history_integration.rs` to eliminate byte-for-byte duplication
-//! of the edge-buffer assertion blocks (h)–(l). Future history-record additions
-//! (e.g. result_subshape_index sentinels) require only a single edit here rather
-//! than dual edits with drift risk.
+//! This file is a retained `tests/` SIBLING, not a member of any harness module
+//! dir, and exactly ONE harness root declares it — `harness_occt_measurement.rs`,
+//! via the bare `mod common;` that the kLOC guard's Section 6 sanctions. Task
+//! #7466 split `harness_occt` along precisely that boundary: the modules that
+//! consume these helpers moved to `harness_occt_measurement/` and took the
+//! include with them, so `harness_occt/` no longer sees `common::` at all and
+//! must not start (with no `mod common;` in that root, a `crate::common` use
+//! there fails to build). Declaring this file from a second root would compile a
+//! duplicate copy into that binary and charge its lines twice under the cap.
+//!
+//! The local-feature assertions were extracted from
+//! `harness_occt_measurement/fillet_with_history_integration.rs` and
+//! `harness_occt_measurement/chamfer_with_history_integration.rs` to eliminate
+//! byte-for-byte duplication of the edge-buffer assertion blocks (h)–(l). Future
+//! history-record additions (e.g. result_subshape_index sentinels) require only a
+//! single edit here rather than dual edits with drift risk.
 //!
 //! Block (g) mirrors the silent_drop_count invariant from
-//! `boolean_op_history_integration.rs` (parity, not extraction).
+//! `harness_occt/boolean_op_history_integration.rs` (parity, not extraction).
+//! That one sits on the OTHER side of the #7466 seam — it consumes nothing from
+//! this file, which is why it stayed behind — so the two are kept in parity by
+//! hand, and neither can drift into a compile error that flags it.
+//!
+//! The bounding-box half ([`BBox`], [`parse_bbox`]) consolidates seven
+//! hand-rolled `GeometryQuery::BoundingBox` JSON parsers that had accumulated
+//! across what is now `tests/harness_occt_measurement/` — a duplication finding
+//! filed during task 5377's reviewer-amendment pass and resolved by task 5893.
+//! The wire-format contract, and why the parser is deliberately not
+//! `serde_json`-based, are stated ONCE on [`parse_bbox`]; do not restate either
+//! here.
+//!
+//! The JSON-Point3 half ([`Xyz`], [`parse_xyz`], [`xyz_of`]) does the same for
+//! the `{"x":_,"y":_,"z":_}` format shared by the Centroid / EdgeTangent /
+//! FaceNormal / FaceNormalAt / ClosestPointOnShape queries — a duplication
+//! finding filed during task 5893's review and resolved by task 5937. Its
+//! wire-format and strictness contracts are likewise stated ONCE, on
+//! [`parse_xyz`].
+//!
+//! The mesh-orientation section ([`assert_outward_wound`],
+//! [`assert_supplied_normals_agree_with_winding`]) holds the one
+//! outward-orientation policy for tessellated convex solids, built on the
+//! private [`tri_winding_normal`] / [`aabb_centre`] primitives.
 
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{
     DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
 };
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, Value};
 
 /// Private trait implemented by both [`HistoryRecord`] and [`DeletedRecord`]
 /// so that [`assert_records_in_range`] can operate on slices of either type.
@@ -278,9 +315,9 @@ pub fn run_local_feature_reports_face_records<F>(
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_SIDE_M),
-            height: Value::Real(BOX_SIDE_M),
-            depth: Value::Real(BOX_SIDE_M),
+            size_x: Value::Real(BOX_SIDE_M),
+            size_y: Value::Real(BOX_SIDE_M),
+            size_z: Value::Real(BOX_SIDE_M),
         })
         .expect("box should build");
 
@@ -406,9 +443,9 @@ pub fn run_local_feature_rejects_non_solid_input<F, T>(
 {
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box should build");
 
@@ -475,4 +512,966 @@ pub fn assert_local_feature_rejects_non_solid_input<T>(
              got {other:?}"
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bounding-box JSON parsing (task 5893)
+// ---------------------------------------------------------------------------
+
+/// The six extents returned by `GeometryQuery::BoundingBox`, parsed from the
+/// kernel's wire string by [`parse_bbox`].
+///
+/// Field names match the JSON keys, so a call site can destructure exactly the
+/// axes it cares about: `let BBox { zmin, zmax, .. } = ...`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // fields only read from has_occt integration-test binaries
+pub struct BBox {
+    pub xmin: f64,
+    pub ymin: f64,
+    pub zmin: f64,
+    pub xmax: f64,
+    pub ymax: f64,
+    pub zmax: f64,
+}
+
+/// Parse the bounding-box string returned by `GeometryQuery::BoundingBox`.
+///
+/// Wire format:
+/// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`
+///
+/// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
+/// is trimmed, and unrecognised keys are ignored. A repeated key takes
+/// last-wins; empty or whitespace-only input recognises no key at all and so
+/// takes the missing-field panic below.
+///
+/// **Deliberately NOT `serde_json`-based**, even though `serde_json` is already
+/// a dev-dependency of this crate. This is the canonical statement of that
+/// decision — every other mention in this module points here. The producer (the
+/// `GeometryQuery::BoundingBox` arm of `OcctKernel::query` in `src/lib.rs`)
+/// builds this string with a single `format!` that passes each component
+/// through `f64` **Display**, which is not a JSON number encoder: a non-finite
+/// extent is emitted as the bare token `inf` / `-inf` / `NaN`, which strict JSON
+/// forbids and `serde_json::from_str` rejects outright, while
+/// `<f64 as FromStr>` accepts exactly those tokens. Unbounded extents are live
+/// in this harness — `extrude_infinite_integration.rs` asserts `is_finite()`
+/// precisely because the op under test is unbounded before clipping — so a
+/// JSON-strict parser would degrade that assertion's failure mode from "x/y
+/// bbox extents should all be finite" into an opaque "failed to parse as JSON".
+///
+/// # Panics
+///
+/// - naming the absent field, if any of the six keys is missing. This is the
+///   canonical statement of the strictness decision — every other mention in
+///   this module points here. It is the stricter of the two behaviours found
+///   among the seven parsers this consolidates: silently yielding `f64::NAN`
+///   would make a downstream `(zmax - zmin).abs() < tol` quietly evaluate
+///   false, surfacing a malformed kernel response as a confusing geometry
+///   assertion rather than a parse failure.
+/// - quoting the offending pair and the full input, if a value does not parse
+///   as `f64` or a pair carries no `:` separator.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn parse_bbox(s: &str) -> BBox {
+    const NAMES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
+    let mut fields: [Option<f64>; 6] = [None; 6];
+
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        // `splitn` always yields at least one item, so the key is always present.
+        let key = parts.next().unwrap_or_default().trim().trim_matches('"');
+        let Some(slot) = NAMES.iter().position(|n| *n == key) else {
+            continue; // unrecognised key (e.g. a future extension): ignore
+        };
+        let raw = parts
+            .next()
+            .unwrap_or_else(|| panic!("bbox pair {pair:?} has no ':' separator, in {s:?}"));
+        let val: f64 = raw.trim().parse().unwrap_or_else(|e| {
+            panic!("bbox pair {pair:?} has a non-numeric value ({e}), in {s:?}")
+        });
+        fields[slot] = Some(val);
+    }
+
+    let get = |i: usize| -> f64 {
+        fields[i].unwrap_or_else(|| panic!("bbox is missing the {} field, in {s:?}", NAMES[i]))
+    };
+    BBox {
+        xmin: get(0),
+        ymin: get(1),
+        zmin: get(2),
+        xmax: get(3),
+        ymax: get(4),
+        zmax: get(5),
+    }
+}
+
+impl BBox {
+    /// Per-axis extents `(xmax - xmin, ymax - ymin, zmax - zmin)`.
+    #[allow(dead_code)] // only called from has_occt integration-test binaries
+    pub fn spans(&self) -> (f64, f64, f64) {
+        (
+            self.xmax - self.xmin,
+            self.ymax - self.ymin,
+            self.zmax - self.zmin,
+        )
+    }
+
+    /// True when all six components are finite (no `inf`, no `NaN`).
+    ///
+    /// Replaces the per-component `is_finite()` loops that several call sites
+    /// hand-rolled; `BBox`'s `Debug` derive makes the resulting failure message
+    /// strictly more informative than a single offending component.
+    #[allow(dead_code)] // only called from has_occt integration-test binaries
+    pub fn all_finite(&self) -> bool {
+        self.xmin.is_finite()
+            && self.ymin.is_finite()
+            && self.zmin.is_finite()
+            && self.xmax.is_finite()
+            && self.ymax.is_finite()
+            && self.zmax.is_finite()
+    }
+}
+
+/// Unwrap the result of a `GeometryQuery::BoundingBox` query into a [`BBox`].
+///
+/// Takes the already-produced `Result` rather than a kernel plus a handle id
+/// because the call sites use two unrelated kernel types — `OcctKernel`
+/// (`src/lib.rs:3628`) and `OcctKernelHandle` (`src/handle.rs:370`) — with no
+/// `Deref` between them. Both expose
+/// `pub fn query(&self, &GeometryQuery) -> Result<Value, QueryError>`, so
+/// accepting the `Result` lets ONE helper serve both without introducing a
+/// trait or duplicating an accessor per kernel type.
+///
+/// Generic over `E: Debug` rather than hard-coding `QueryError` so this module
+/// need not import reify-ir's error enum, and so a future change to that enum
+/// does not ripple into the shared test module.
+///
+/// # Panics
+///
+/// Panics if the query failed (surfacing the underlying error's `Debug`), or
+/// if it returned any `Value` variant other than `String` (naming the variant
+/// received).
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn bbox_of<E: std::fmt::Debug>(query_result: Result<Value, E>) -> BBox {
+    let value = query_result.expect("BoundingBox query should succeed");
+    match value {
+        Value::String(s) => parse_bbox(&s),
+        other => panic!("expected bbox String, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contract tests for the shared `BBox` / `parse_bbox` helpers above, which
+// consolidate the seven hand-rolled bbox parsers previously scattered across
+// what is now `tests/harness_occt_measurement/`. These `#[test]` fns run as
+// `common::<name>` within the single `harness_occt_measurement` test binary
+// (task 5277 folded the 51 former binaries into one compile unit, so
+// `mod common;` is a normal module of it; task #7466 then split that unit and
+// this file went with its consumers).
+// ---------------------------------------------------------------------------
+
+/// Build a bbox string EXACTLY the way the kernel does
+/// (`crates/reify-kernel-occt/src/lib.rs:3673-3677`): each component goes
+/// through `f64` **Display**, which is not a JSON number encoder.
+fn producer_format(xmin: f64, ymin: f64, zmin: f64, xmax: f64, ymax: f64, zmax: f64) -> String {
+    format!(
+        "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
+        xmin, ymin, zmin, xmax, ymax, zmax
+    )
+}
+
+/// (a) All six fields are recovered from the producer's exact wire format.
+///
+/// Exact `assert_eq!` is the correct assertion here, not a tolerance: every
+/// literal below is a dyadic rational exactly representable in binary64, `f64`
+/// Display emits the shortest round-tripping form, and Rust's `f64: FromStr` is
+/// correctly rounded — so the round-trip is an exact-representation identity.
+#[test]
+fn parse_bbox_reads_all_six_fields() {
+    let s = producer_format(-1.0, -2.5, -0.5, 4.0, 2.5, 0.5);
+    let bb: BBox = parse_bbox(&s);
+    assert_eq!(bb.xmin, -1.0, "xmin from {s}");
+    assert_eq!(bb.ymin, -2.5, "ymin from {s}");
+    assert_eq!(bb.zmin, -0.5, "zmin from {s}");
+    assert_eq!(bb.xmax, 4.0, "xmax from {s}");
+    assert_eq!(bb.ymax, 2.5, "ymax from {s}");
+    assert_eq!(bb.zmax, 0.5, "zmax from {s}");
+}
+
+/// (b) Non-finite extents parse — the contract that distinguishes this helper
+/// from a `serde_json`-based one.
+///
+/// `<f64 as Display>` emits the bare tokens `inf` / `-inf` / `NaN`, which strict
+/// JSON forbids and `serde_json::from_str` rejects outright, while
+/// `<f64 as FromStr>` accepts exactly those tokens. Unbounded extents are live
+/// in this harness: `extrude_infinite_integration.rs` asserts `is_finite()`
+/// precisely because the op under test is unbounded before clipping, and that
+/// assertion is only meaningful if a non-finite bbox reaches it as a number
+/// rather than dying in the parser.
+#[test]
+fn parse_bbox_accepts_non_finite_extents() {
+    let s = producer_format(
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        f64::INFINITY,
+        f64::INFINITY,
+        0.5,
+    );
+    assert!(
+        s.contains("-inf") && s.contains("\"xmax\":inf"),
+        "f64 Display must emit the bare inf/-inf tokens that strict JSON forbids, got {s}"
+    );
+    let bb = parse_bbox(&s);
+    assert!(
+        bb.xmin.is_infinite() && bb.xmin.is_sign_negative(),
+        "xmin should round-trip as -inf, got {}",
+        bb.xmin
+    );
+    assert!(
+        bb.xmax.is_infinite() && bb.xmax.is_sign_positive(),
+        "xmax should round-trip as +inf, got {}",
+        bb.xmax
+    );
+    assert_eq!(bb.zmin, 0.0, "finite fields still parse alongside inf ones");
+    assert_eq!(bb.zmax, 0.5, "finite fields still parse alongside inf ones");
+
+    // NaN is the other Display token strict JSON forbids.
+    let nan = parse_bbox(&producer_format(f64::NAN, 0.0, 0.0, 1.0, 1.0, 1.0));
+    assert!(nan.xmin.is_nan(), "NaN should round-trip, got {}", nan.xmin);
+}
+
+/// (c) Whitespace around `:` / `,` is trimmed, keys parse with or without
+/// surrounding quotes, and an unrecognised extra key is ignored rather than
+/// fatal.
+#[test]
+fn parse_bbox_tolerates_whitespace_and_quoted_keys() {
+    let s = "{ \"xmin\" : -1.0 , ymin: -2.0 , \"zmin\" :-3.0 , \
+             \"xmax\": 1.0 , ymax : 2.0 , \"zmax\" : 3.0 , \"future_key\": 99.0 }";
+    let bb = parse_bbox(s);
+    assert_eq!(bb.xmin, -1.0);
+    assert_eq!(bb.ymin, -2.0);
+    assert_eq!(bb.zmin, -3.0);
+    assert_eq!(bb.xmax, 1.0);
+    assert_eq!(bb.ymax, 2.0);
+    assert_eq!(bb.zmax, 3.0);
+}
+
+/// (d) An absent key PANICS naming the field — it must NOT silently return
+/// `f64::NAN`, which would make a downstream `(zmax - zmin).abs() < tol`
+/// quietly evaluate false and surface a parse failure as a confusing geometry
+/// assertion.
+#[test]
+#[should_panic(expected = "zmax")]
+fn parse_bbox_panics_on_missing_field() {
+    let _ = parse_bbox("{\"xmin\":-1,\"ymin\":-2,\"zmin\":-3,\"xmax\":1,\"ymax\":2}");
+}
+
+/// (e) A non-numeric value panics, naming the offending pair AND quoting the
+/// full input so the malformed kernel response is visible in the failure.
+#[test]
+#[should_panic(expected = "not-a-number")]
+fn parse_bbox_panics_on_unparseable_value() {
+    let _ =
+        parse_bbox("{\"xmin\":-1,\"ymin\":-2,\"zmin\":not-a-number,\"xmax\":1,\"ymax\":2,\"zmax\":3}");
+}
+
+/// A second, distinct `Debug` error type, so [`bbox_of`]'s `E: Debug`
+/// genericity is exercised by two real instantiations rather than merely
+/// asserted in a doc comment. Stands in for `QueryError`, which this module
+/// deliberately does not import.
+#[derive(Debug)]
+#[allow(dead_code)] // field 0 is read only through the derived Debug impl
+struct FakeQueryError(&'static str);
+
+/// (a) `bbox_of` unwraps a successful `Value::String` query into the same
+/// `BBox` that `parse_bbox` yields for that string, for two different error
+/// types.
+#[test]
+fn bbox_of_unwraps_ok_string() {
+    let s = producer_format(-1.0, -2.0, -3.0, 1.0, 2.0, 3.0);
+    let expected = BBox {
+        xmin: -1.0,
+        ymin: -2.0,
+        zmin: -3.0,
+        xmax: 1.0,
+        ymax: 2.0,
+        zmax: 3.0,
+    };
+
+    // E = String
+    let via_string = bbox_of(Ok::<_, String>(Value::String(s.clone())));
+    assert_eq!(via_string, expected);
+    assert_eq!(via_string, parse_bbox(&s), "bbox_of must agree with parse_bbox");
+
+    // E = FakeQueryError — a second instantiation of the `E: Debug` parameter,
+    // which is what lets one helper serve both `OcctKernel::query` and
+    // `OcctKernelHandle::query`.
+    let via_other = bbox_of(Ok::<_, FakeQueryError>(Value::String(s)));
+    assert_eq!(via_other, expected);
+}
+
+/// (b) A failed query panics with the fixed prefix the seven call sites used.
+#[test]
+#[should_panic(expected = "BoundingBox query should succeed")]
+fn bbox_of_panics_on_query_error() {
+    let _ = bbox_of(Err::<Value, _>(FakeQueryError("kernel exploded")));
+}
+
+/// (b, cont.) …and that panic surfaces the underlying error's `Debug`, so the
+/// kernel's own diagnostic is not swallowed by the shared helper.
+#[test]
+#[should_panic(expected = "kernel exploded")]
+fn bbox_of_error_panic_surfaces_error_debug() {
+    let _ = bbox_of(Err::<Value, _>(FakeQueryError("kernel exploded")));
+}
+
+/// (c) A non-`String` `Value` panics naming the received variant, preserving
+/// the `panic!("expected bbox String, got {:?}", other)` behaviour of the five
+/// call sites that match on `Value::String` today.
+#[test]
+#[should_panic(expected = "Real")]
+fn bbox_of_panics_on_non_string_value() {
+    let _ = bbox_of(Ok::<_, String>(Value::Real(1.0)));
+}
+
+/// (d) `spans()` returns per-axis extents.
+///
+/// Endpoints are chosen so every difference is exact in binary64, so
+/// `assert_eq!` is the correct assertion — no tolerance is needed or
+/// appropriate for a pure subtraction of representable values.
+#[test]
+fn bbox_spans_returns_per_axis_extents() {
+    let bb = BBox {
+        xmin: -1.0,
+        ymin: -2.5,
+        zmin: 0.5,
+        xmax: 3.0,
+        ymax: 2.5,
+        zmax: 4.5,
+    };
+    let (dx, dy, dz) = bb.spans();
+    assert_eq!(dx, 4.0, "x span");
+    assert_eq!(dy, 5.0, "y span");
+    assert_eq!(dz, 4.0, "z span");
+}
+
+/// (e) `all_finite()` is true only when every one of the six components is
+/// finite. This is the predicate that replaces `sweep_guided_integration.rs`'s
+/// per-component `is_finite()` loop, so it must reject an `inf` or a `NaN` in
+/// ANY position, not just the first.
+#[test]
+fn bbox_all_finite_discriminates() {
+    let finite = BBox {
+        xmin: -1.0,
+        ymin: -2.0,
+        zmin: -3.0,
+        xmax: 1.0,
+        ymax: 2.0,
+        zmax: 3.0,
+    };
+    assert!(finite.all_finite(), "an all-finite box is all_finite");
+
+    let cases = [
+        ("xmin=-inf", BBox { xmin: f64::NEG_INFINITY, ..finite }),
+        ("ymin=+inf", BBox { ymin: f64::INFINITY, ..finite }),
+        ("zmin=NaN", BBox { zmin: f64::NAN, ..finite }),
+        ("xmax=+inf", BBox { xmax: f64::INFINITY, ..finite }),
+        ("ymax=NaN", BBox { ymax: f64::NAN, ..finite }),
+        ("zmax=-inf", BBox { zmax: f64::NEG_INFINITY, ..finite }),
+    ];
+    for (label, bad) in cases {
+        assert!(
+            !bad.all_finite(),
+            "a box with {label} must not be all_finite, got {bad:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON-Point3 (xyz) parsing (task 5937)
+//
+// Consolidates six hand-rolled `{"x":_,"y":_,"z":_}` parsers that had
+// accumulated across what is now `tests/harness_occt_measurement/` — three
+// standalone functions
+// (`topology_extract_integration.rs`'s and `shell_open_curated_faces.rs`'s
+// `parse_xyz`, `sweep_guided_integration.rs`'s `parse_centroid`) and three
+// inline decodes (in `closest_point_on_shape_integration.rs`,
+// `analytic_datum_tests.rs` and `face_differential_integration.rs`'s
+// `geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal`),
+// mirroring how task 5893 consolidated the bounding-box parsers above.
+//
+// TWO COPIES ARE DELIBERATELY LEFT IN PLACE — this is settled judgement, not an
+// unfinished sweep:
+//
+//  1. `parse_centroid_json` — a unit-test helper that merely lives in `src/`,
+//     NOT production code — CANNOT be migrated: it sits inside `src/lib.rs`'s
+//     `#[cfg(all(test, has_occt))] mod tests`, so it compiles into the
+//     *unit*-test crate, whereas this module compiles into the
+//     *integration*-test crate, a separate compilation unit that `src/` cannot
+//     import. Task 5893 left the adjacent `parse_bbox_field` in place for
+//     exactly this reason; that is precedent, not oversight. The genuine
+//     production parser for this wire format is `reify-eval`'s
+//     `topology_selectors::parse_xyz_value`, a different crate with a `Result`
+//     rather than panic contract, out of scope here.
+//
+//  2. `face_differential_integration.rs`'s hand-rolled `serde_json` decode in
+//     `face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face`
+//     is NOT migrated by design. That decode IS the cross-check contract of the
+//     assertion it serves: it pins the typed helper against the JSON-encoded
+//     production query path using an INDEPENDENT decoder, so routing both sides
+//     through one shared parser would hollow the assertion out. The site
+//     carries its own do-not-consolidate marker.
+//
+// Consequently `serde_json` REMAINS a required dev-dependency of this crate.
+// ---------------------------------------------------------------------------
+
+/// A point/direction triple returned by the kernel's JSON-Point3 queries,
+/// parsed from the wire string by [`parse_xyz`].
+///
+/// Field names match the JSON keys, so a call site can destructure exactly the
+/// axes it cares about: `let Xyz { z, .. } = ...`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // fields only read from has_occt integration-test binaries
+pub struct Xyz {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// Parse the JSON-Point3 string returned by the kernel's point/direction
+/// queries.
+///
+/// Wire format: `{"x":<f>,"y":<f>,"z":<f>}`, shared by five query variants —
+/// `Centroid`, `EdgeTangent`, `FaceNormal`, `FaceNormalAt` and
+/// `ClosestPointOnShape`, all of which route through this crate's
+/// `centroid_json` or an identical `format!`.
+///
+/// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
+/// is trimmed, and unrecognised keys are ignored. A repeated key takes
+/// last-wins; empty or whitespace-only input recognises no key at all and so
+/// takes the missing-field panic below.
+///
+/// **Deliberately NOT `serde_json`-based**, even though `serde_json` is already
+/// a dev-dependency of this crate. The producer `centroid_json` is a single
+/// `format!` that passes each component through `f64` **Display**, which is not
+/// a JSON number encoder: a non-finite component is emitted as the bare token
+/// `inf` / `-inf` / `NaN`, which strict JSON forbids and `serde_json::from_str`
+/// rejects outright, while `<f64 as FromStr>` accepts exactly those tokens. The
+/// constraint follows from the producer's formatting alone — unlike the bbox
+/// format, no harness site currently produces a non-finite centroid, tangent or
+/// normal, so see [`parse_bbox`] for the case where unbounded values are live
+/// in this harness and the distinction is load-bearing today.
+///
+/// # Panics
+///
+/// - naming the absent field, if any of `x` / `y` / `z` is missing. This adopts
+///   the strictest of the behaviours found among the parsers it consolidates:
+///   `sweep_guided_integration.rs`'s silently defaulted a missing key to
+///   `f64::NAN`, which would make a downstream `(z - target).abs() < tol`
+///   quietly evaluate false, surfacing a malformed kernel response as a
+///   confusing geometry assertion rather than a parse failure.
+/// - quoting the offending pair and the full input, if a value does not parse
+///   as `f64` or a pair carries no `:` separator.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn parse_xyz(s: &str) -> Xyz {
+    const NAMES: [&str; 3] = ["x", "y", "z"];
+    let mut fields: [Option<f64>; 3] = [None; 3];
+
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        // `splitn` always yields at least one item, so the key is always present.
+        let key = parts.next().unwrap_or_default().trim().trim_matches('"');
+        let Some(slot) = NAMES.iter().position(|n| *n == key) else {
+            continue; // unrecognised key (e.g. a future extension): ignore
+        };
+        let raw = parts
+            .next()
+            .unwrap_or_else(|| panic!("xyz pair {pair:?} has no ':' separator, in {s:?}"));
+        let val: f64 = raw.trim().parse().unwrap_or_else(|e| {
+            panic!("xyz pair {pair:?} has a non-numeric value ({e}), in {s:?}")
+        });
+        fields[slot] = Some(val);
+    }
+
+    let get = |i: usize| -> f64 {
+        fields[i].unwrap_or_else(|| panic!("xyz is missing the {} field, in {s:?}", NAMES[i]))
+    };
+    Xyz {
+        x: get(0),
+        y: get(1),
+        z: get(2),
+    }
+}
+
+/// Unwrap the result of a JSON-Point3 query into an [`Xyz`].
+///
+/// Takes the already-produced `Result`, and is generic over `E: Debug` rather
+/// than hard-coding `QueryError`, for the reasons stated once on [`bbox_of`].
+/// It diverges from that helper in one respect only, stated here:
+///
+/// `query_label` names the query variant (e.g. `"Centroid"`, `"FaceNormal"`)
+/// and is interpolated into BOTH panic paths below, where [`bbox_of`] uses a
+/// fixed message. That helper's call sites all issued
+/// `GeometryQuery::BoundingBox`, whereas this wire format is shared by five
+/// variants, so a fixed string would erase which query failed. The eval-side
+/// production parser for this same format
+/// (`reify_eval::topology_selectors::parse_xyz_value`) threads such a label for
+/// the same reason.
+///
+/// See [`parse_xyz`] for the wire-format and strictness contracts.
+///
+/// # Panics
+///
+/// Panics if the query failed (naming `query_label` and surfacing the
+/// underlying error's `Debug`), or if it returned any `Value` variant other
+/// than `String` (naming both `query_label` and the variant received).
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn xyz_of<E: std::fmt::Debug>(query_result: Result<Value, E>, query_label: &str) -> Xyz {
+    // `unwrap_or_else` rather than `.expect(...)`: `expect` prints the error's
+    // Debug but cannot interpolate `query_label`, and both must appear together.
+    let value =
+        query_result.unwrap_or_else(|e| panic!("{query_label} query should succeed, got {e:?}"));
+    match value {
+        Value::String(s) => parse_xyz(&s),
+        other => panic!("expected {query_label} JSON-Point3 String, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contract tests for the shared `Xyz` / `parse_xyz` helpers above. Like the
+// bbox ones, these `#[test]` fns run as `common::<name>` within the single
+// `harness_occt_measurement` test binary.
+// ---------------------------------------------------------------------------
+
+/// Build a JSON-Point3 string EXACTLY the way this crate's `centroid_json`
+/// does: each component goes through `f64` **Display**, which is not a JSON
+/// number encoder.
+fn producer_format_xyz(x: f64, y: f64, z: f64) -> String {
+    format!("{{\"x\":{},\"y\":{},\"z\":{}}}", x, y, z)
+}
+
+/// (a) All three fields are recovered from the producer's exact wire format.
+///
+/// Exact `assert_eq!` is the correct assertion here, not a tolerance: every
+/// literal below is a dyadic rational exactly representable in binary64, `f64`
+/// Display emits the shortest round-tripping form, and Rust's `f64: FromStr` is
+/// correctly rounded — so the round-trip is an exact-representation identity.
+#[test]
+fn parse_xyz_reads_all_three_fields() {
+    let s = producer_format_xyz(-1.0, 2.5, -0.5);
+    let p: Xyz = parse_xyz(&s);
+    assert_eq!(p.x, -1.0, "x from {s}");
+    assert_eq!(p.y, 2.5, "y from {s}");
+    assert_eq!(p.z, -0.5, "z from {s}");
+}
+
+/// (b) Non-finite components parse — the contract that distinguishes this
+/// helper from a `serde_json`-based one; see [`parse_xyz`] for why.
+///
+/// The assertion on the raw string comes first deliberately: it pins the
+/// PRODUCER's `f64` Display formatting, not merely this parser's tolerance, so
+/// the test fails if someone later swaps `centroid_json` to a real JSON
+/// encoder.
+#[test]
+fn parse_xyz_accepts_non_finite_components() {
+    let s = producer_format_xyz(f64::NEG_INFINITY, f64::INFINITY, f64::NAN);
+    assert!(
+        s.contains("\"x\":-inf") && s.contains("\"y\":inf"),
+        "f64 Display must emit the bare inf/-inf tokens that strict JSON forbids, got {s}"
+    );
+    let p = parse_xyz(&s);
+    assert!(
+        p.x.is_infinite() && p.x.is_sign_negative(),
+        "x should round-trip as -inf, got {}",
+        p.x
+    );
+    assert!(
+        p.y.is_infinite() && p.y.is_sign_positive(),
+        "y should round-trip as +inf, got {}",
+        p.y
+    );
+    assert!(p.z.is_nan(), "NaN should round-trip, got {}", p.z);
+}
+
+/// (c) Whitespace around `:` / `,` is trimmed, keys parse with or without
+/// surrounding quotes, and an unrecognised extra key is ignored rather than
+/// fatal.
+#[test]
+fn parse_xyz_tolerates_whitespace_and_quoted_keys() {
+    let s = "{ \"x\" : -1.0 , y: 2.0 , \"z\" :-3.0 , \"future_key\": 99.0 }";
+    let p = parse_xyz(s);
+    assert_eq!(p.x, -1.0);
+    assert_eq!(p.y, 2.0);
+    assert_eq!(p.z, -3.0);
+}
+
+/// (d) An absent key PANICS naming the field — it must NOT silently return
+/// `f64::NAN`, which is what `sweep_guided_integration.rs`'s parser did; see
+/// [`parse_xyz`] for why that default was rejected.
+#[test]
+#[should_panic(expected = "z")]
+fn parse_xyz_panics_on_missing_field() {
+    let _ = parse_xyz("{\"x\":1,\"y\":2}");
+}
+
+/// (e) A non-numeric value panics, naming the offending pair AND quoting the
+/// full input so the malformed kernel response is visible in the failure.
+#[test]
+#[should_panic(expected = "not-a-number")]
+fn parse_xyz_panics_on_unparseable_value() {
+    let _ = parse_xyz("{\"x\":1,\"y\":not-a-number,\"z\":3}");
+}
+
+/// (a) `xyz_of` unwraps a successful `Value::String` query into the same `Xyz`
+/// that `parse_xyz` yields for that string, for two different error types.
+///
+/// Reuses the [`FakeQueryError`] declared above for the bbox tests rather than
+/// introducing a second stand-in.
+#[test]
+fn xyz_of_unwraps_ok_string() {
+    let s = producer_format_xyz(-1.0, 2.0, -3.0);
+    let expected = Xyz {
+        x: -1.0,
+        y: 2.0,
+        z: -3.0,
+    };
+
+    // E = String
+    let via_string = xyz_of(Ok::<_, String>(Value::String(s.clone())), "Centroid");
+    assert_eq!(via_string, expected);
+    assert_eq!(via_string, parse_xyz(&s), "xyz_of must agree with parse_xyz");
+
+    // E = FakeQueryError — a second instantiation of the `E: Debug` parameter,
+    // which is what lets one helper serve both `OcctKernel::query` and
+    // `OcctKernelHandle::query`.
+    let via_other = xyz_of(Ok::<_, FakeQueryError>(Value::String(s)), "Centroid");
+    assert_eq!(via_other, expected);
+}
+
+/// (b) A failed query panics NAMING THE QUERY — the behaviour `query_label`
+/// exists for; see [`xyz_of`] for why it diverges from [`bbox_of`]'s fixed
+/// message.
+#[test]
+#[should_panic(expected = "FaceNormal")]
+fn xyz_of_error_panic_names_the_query() {
+    let _ = xyz_of(
+        Err::<Value, _>(FakeQueryError("kernel exploded")),
+        "FaceNormal",
+    );
+}
+
+/// (c) …and that same panic surfaces the underlying error's `Debug`, so the
+/// kernel's own diagnostic is not swallowed by the shared helper.
+#[test]
+#[should_panic(expected = "kernel exploded")]
+fn xyz_of_error_panic_surfaces_error_debug() {
+    let _ = xyz_of(
+        Err::<Value, _>(FakeQueryError("kernel exploded")),
+        "FaceNormal",
+    );
+}
+
+/// (d) A non-`String` `Value` panics naming the received variant, preserving
+/// the `panic!("expected ... String, got {other:?}")` behaviour of the call
+/// sites this consolidates.
+#[test]
+#[should_panic(expected = "Real")]
+fn xyz_of_panics_on_non_string_value() {
+    let _ = xyz_of(Ok::<_, String>(Value::Real(1.0)), "Centroid");
+}
+
+// ---------------------------------------------------------------------------
+// Mesh-orientation assertions (task #7307)
+// ---------------------------------------------------------------------------
+
+/// Assert that every triangle of `mesh` is OUTWARD-wound: over the
+/// position-welded canonical vertices ([`Mesh::weld_positions`]), the winding
+/// normal ([`tri_winding_normal`]) must have a strictly positive dot product
+/// with (triangle centroid − [`aabb_centre`]).
+///
+/// This is the check that observes orientation. `Mesh::validate`'s Closed +
+/// ConsistentWinding obligations are a directed-edge invariant that a
+/// consistently INWARD mesh satisfies exactly as well as an outward one.
+///
+/// Valid only for a CONVEX solid whose interior contains its AABB centre (a
+/// box, cylinder, cone or sphere does; a corner tetrahedron does not). For a
+/// non-convex solid, a correctly outward-wound triangle can face the centre.
+///
+/// `what` is interpolated into every panic message so a failure names the
+/// fixture that regressed; `#[track_caller]` points it at the calling test.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+#[track_caller]
+pub fn assert_outward_wound(mesh: &Mesh, what: &str) {
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "{what}: index count must be a multiple of 3"
+    );
+    let (canon_verts, welded) = mesh.weld_positions();
+    let centre = aabb_centre(&canon_verts);
+
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let [ia, ib, ic] = [tri[0], tri[1], tri[2]].map(|i| welded[i as usize] as usize);
+        let [pa, pb, pc] = [ia, ib, ic].map(|i| canon_verts[i].map(f64::from));
+        let normal = tri_winding_normal(pa, pb, pc);
+        let tri_centroid: [f64; 3] = std::array::from_fn(|k| (pa[k] + pb[k] + pc[k]) / 3.0);
+        let outward: [f64; 3] = std::array::from_fn(|k| tri_centroid[k] - centre[k]);
+        let dot = dot3(normal, outward);
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (welded verts {ia},{ib},{ic}) geometric normal from emitted \
+             winding points inward (dot = {dot:.6}); every triangle must be outward-wound"
+        );
+    }
+}
+
+/// Assert that every triangle's averaged supplied per-vertex normal agrees
+/// (dot > 0) with the winding normal of its RAW, unwelded vertices: the
+/// normals a kernel emits (read by shading and export) must point the same
+/// way as its triangles (read by manifold consumers).
+///
+/// # Panics
+///
+/// Also if `mesh.normals` is `None` or not parallel to `mesh.vertices`.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+#[track_caller]
+pub fn assert_supplied_normals_agree_with_winding(mesh: &Mesh, what: &str) {
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "{what}: index count must be a multiple of 3"
+    );
+    let Some(supplied) = mesh.normals.as_deref() else {
+        panic!("{what}: mesh carries no per-vertex normals; tessellate should emit them");
+    };
+    assert_eq!(
+        supplied.len(),
+        mesh.vertices.len(),
+        "{what}: normals array must have same length as vertices array"
+    );
+    let triple = |flat: &[f32], i: u32| -> [f64; 3] {
+        let base = i as usize * 3;
+        [flat[base], flat[base + 1], flat[base + 2]].map(f64::from)
+    };
+
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let [i0, i1, i2] = [tri[0], tri[1], tri[2]];
+        let [pa, pb, pc] = [i0, i1, i2].map(|i| triple(&mesh.vertices, i));
+        let winding_normal = tri_winding_normal(pa, pb, pc);
+        let [na, nb, nc] = [i0, i1, i2].map(|i| triple(supplied, i));
+        let avg_supplied: [f64; 3] = std::array::from_fn(|k| (na[k] + nb[k] + nc[k]) / 3.0);
+        let dot = dot3(winding_normal, avg_supplied);
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (raw verts {i0},{i1},{i2}) supplied normals (avg \
+             [{:.4},{:.4},{:.4}]) disagree with the geometric winding normal (dot = {dot:.6}); \
+             supplied normals must agree with the outward-wound triangles",
+            avg_supplied[0],
+            avg_supplied[1],
+            avg_supplied[2],
+        );
+    }
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The geometric normal of triangle `(pa, pb, pc)` implied by its emitted
+/// winding order: `AB × AC`, right-handed.
+///
+/// Deliberately NOT normalised — its magnitude is twice the triangle's area —
+/// because every caller tests only the sign of a dot product against it.
+fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ]
+}
+
+/// The centre of the axis-aligned bounding box of `verts` — per-axis
+/// `(min + max) / 2`, widened to `f64` — the interior reference point of
+/// [`assert_outward_wound`].
+///
+/// The AABB centre rather than the vertex-cloud mean, because it is robust to
+/// non-uniform vertex density across faces: if a tighter tolerance makes OCCT
+/// add interior tessellation nodes on one face, the vertex mean shifts toward
+/// that denser face while the AABB centre does not move.
+///
+/// `verts` is `[f32; 3]` because that is what `Mesh::weld_positions()` returns.
+///
+/// # Panics
+///
+/// If `verts` is empty. Without the check, the `f64::MAX` / `f64::MIN` seeds
+/// would average to a plausible-looking origin and make the downstream
+/// outward-dot check quietly meaningless.
+#[track_caller]
+fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
+    assert!(
+        !verts.is_empty(),
+        "aabb_centre: empty vertex slice has no bounding box, so it has no centre"
+    );
+    let mut min = [f64::MAX; 3];
+    let mut max = [f64::MIN; 3];
+    for v in verts {
+        for k in 0..3 {
+            let coord = v[k] as f64;
+            if coord < min[k] {
+                min[k] = coord;
+            }
+            if coord > max[k] {
+                max[k] = coord;
+            }
+        }
+    }
+    [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Contract tests for the mesh-orientation helpers above. Like the bbox and
+// xyz ones, these `#[test]` fns run as `common::<name>` within the single
+// `harness_occt_measurement` test binary.
+//
+// Exact `assert_eq!` is the correct assertion throughout, not a tolerance:
+// every input is a small integer, exactly representable in both f32 and f64,
+// and every difference, product and halving of such values is exact in
+// binary64.
+// ---------------------------------------------------------------------------
+
+/// (a) The normal is AB × AC, right-handed in the emitted winding order, and
+/// reversing the winding flips its sign. Every outward-orientation check that
+/// consumes this helper tests only the SIGN of a dot product against it, so
+/// this convention is the load-bearing half of the contract.
+#[test]
+fn tri_winding_normal_is_ab_cross_ac_right_handed() {
+    let (pa, pb, pc) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        [0.0, 0.0, 1.0],
+        "(pa, pb, pc) winds counter-clockwise seen from +z"
+    );
+    assert_eq!(
+        tri_winding_normal(pa, pc, pb),
+        [0.0, 0.0, -1.0],
+        "reversing the winding must flip the normal"
+    );
+}
+
+/// (b) The normal is NOT normalised: its magnitude is twice the triangle's
+/// area, and it depends only on the edge vectors, so translating the triangle
+/// leaves it unchanged.
+#[test]
+fn tri_winding_normal_magnitude_is_twice_area_and_translation_invariant() {
+    let (pa, pb, pc) = ([1.0, 2.0, 3.0], [3.0, 2.0, 3.0], [1.0, 5.0, 3.0]);
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        [0.0, 0.0, 6.0],
+        "AB=(2,0,0), AC=(0,3,0): area 3, so the unnormalised normal is (0,0,6)"
+    );
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        tri_winding_normal([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]),
+        "the same triangle anchored at the origin must give the same normal"
+    );
+}
+
+/// (c) The centre is the midpoint of the per-axis extents, NOT the vertex
+/// mean: three coincident vertices at one corner must not drag it toward
+/// that corner.
+#[test]
+fn aabb_centre_is_extent_midpoint_not_vertex_mean() {
+    let verts: [[f32; 3]; 4] = [
+        [-2.0, -1.0, 0.0],
+        [4.0, 3.0, 8.0],
+        [4.0, 3.0, 8.0],
+        [4.0, 3.0, 8.0],
+    ];
+    assert_eq!(
+        aabb_centre(&verts),
+        [1.0, 1.0, 4.0],
+        "expected the AABB midpoint; the vertex mean would be [2.5, 2.0, 6.0]"
+    );
+}
+
+/// (d) An empty slice has no bounding box and panics, rather than silently
+/// returning the origin that the `f64::MAX` / `f64::MIN` seeds would average to.
+#[test]
+#[should_panic(expected = "empty")]
+fn aabb_centre_panics_on_empty_input() {
+    let _ = aabb_centre(&[]);
+}
+
+/// The regular octahedron with vertices at `±x̂`, `±ŷ`, `±ẑ`: convex, its AABB
+/// centre (the origin) interior, every face wound outward, and every supplied
+/// normal equal to its vertex's outward unit position.
+fn outward_unit_octahedron() -> Mesh {
+    const POSITIONS: [[f32; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+    // One face per octant (sx, sy, sz); its outward normal is (sx, sy, sz).
+    const FACES: [[u32; 3]; 8] = [
+        [0, 2, 4], // + + +
+        [1, 4, 2], // - + +
+        [0, 4, 3], // + - +
+        [0, 5, 2], // + + -
+        [1, 3, 4], // - - +
+        [1, 2, 5], // - + -
+        [0, 3, 5], // + - -
+        [1, 5, 3], // - - -
+    ];
+    let vertices: Vec<f32> = POSITIONS.into_iter().flatten().collect();
+    Mesh {
+        normals: Some(vertices.clone()),
+        vertices,
+        indices: FACES.into_iter().flatten().collect(),
+    }
+}
+
+/// (e) A correctly outward-wound convex mesh with agreeing normals passes both
+/// assertions.
+#[test]
+fn mesh_orientation_assertions_accept_outward_octahedron() {
+    let mesh = outward_unit_octahedron();
+    assert_outward_wound(&mesh, "outward octahedron");
+    assert_supplied_normals_agree_with_winding(&mesh, "outward octahedron");
+}
+
+/// (f) A CONSISTENTLY inward-wound mesh still passes `Mesh::validate` — which
+/// is why [`assert_outward_wound`] exists — and that assertion rejects it.
+#[test]
+#[should_panic(expected = "points inward")]
+fn assert_outward_wound_rejects_consistently_inward_mesh() {
+    let mut mesh = outward_unit_octahedron();
+    for tri in mesh.indices.chunks_exact_mut(3) {
+        tri.swap(1, 2);
+    }
+    mesh.validate(0.0)
+        .expect("a consistently wound closed mesh passes validate whatever its orientation");
+    assert_outward_wound(&mesh, "reversed octahedron");
+}
+
+/// (g) Normals opposing an outward winding are rejected.
+#[test]
+#[should_panic(expected = "disagree with the geometric winding normal")]
+fn assert_supplied_normals_rejects_normals_opposing_winding() {
+    let mut mesh = outward_unit_octahedron();
+    for n in mesh.normals.as_mut().expect("octahedron carries normals") {
+        *n = -*n;
+    }
+    assert_supplied_normals_agree_with_winding(&mesh, "flipped-normal octahedron");
 }

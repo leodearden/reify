@@ -1,8 +1,10 @@
 # PRD: `@solver_hint` content payloads for v0.1
 
 **Status:** v0.1 scope.
+
+> **Superseded in part 2026-10-08 (Leo, esc-5470-5).** `discrete_set` is no longer a stored-only hint: it compiles to the constraint `x in C` (a hard domain) — `docs/prds/v0_6/catalog-membership-constraint.md` γ #8357 — and its catalog may be any in-scope list. `prefer_stock` / `preferred_strategy` remain unconsumed; γ makes them emit a coded "not yet consumed" Warning and decision gate #8360 owns their semantics. The "#276 wired the solver" claim below was never true (audit finding M-008).
 **Spec reference:** `docs/reify-language-spec.md` §12.1.
-**Pre-existing infrastructure:** Tasks **#275** (compiler-side annotation extraction → `SolverHint { kind, collection, span }` on `ValueCellDecl`) and **#276** (solver-side integration through engine + constraint solver) are **done**. `extract_solver_hints` in `crates/reify-compiler/src/annotations.rs` parses the two arg form `@solver_hint("<kind>", <ident>)` and recognises `discrete_set` / `prefer_stock`. Tests exist at `crates/reify-compiler/tests/solver_hint_tests.rs`.
+**Pre-existing infrastructure:** Tasks **#275** (compiler-side annotation extraction → `SolverHint { kind, collection, span }` on `ValueCellDecl`) and **#276** (solver-side integration through engine + constraint solver) are **done**. `extract_solver_hints` in `crates/reify-compiler/src/annotations.rs` parses the two arg form `@solver_hint("<kind>", <ident>)` and recognises `discrete_set` / `prefer_stock`. Tests exist at `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_tests.rs`.
 
 This PRD is about the **payload data the hints reference**: the `<ident>` second arg today resolves to a *name string* but there are no stdlib collections under those names for designs to point at. Without payloads, every realistic `@solver_hint` use site needs to define its own collection — which defeats the point ("standard bolt lengths" should be a stdlib fact, not per-design boilerplate).
 
@@ -27,7 +29,7 @@ Doc comments are mandatory on both collections. They surface in the doc generato
 
 ### 2. Wire-up validation
 
-Add an integration test at `crates/reify-compiler/tests/solver_hint_payload_tests.rs` (or fold into the existing `solver_hint_tests.rs`) that:
+Add an integration test at `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_payload_tests.rs` (or fold into the existing `solver_hint_tests.rs`) that:
 
 - Compiles a small structure annotated `@solver_hint("discrete_set", standard_bolt_lengths) param length : Length = auto` under `compile_with_stdlib` — succeeds, no warnings, the resulting `ValueCellDecl.solver_hints` carries the right `collection` and resolves to a `Vec<Length>` of the expected length when looked up.
 - Same but for `prefer_stock` + `standard_sheet_thicknesses`.
@@ -48,7 +50,7 @@ Add an integration test at `crates/reify-compiler/tests/solver_hint_payload_test
 
 ## Acceptance
 
-- `examples/m11_annotations.ri` (already present) gains a small block that uses both `standard_bolt_lengths` and `standard_sheet_thicknesses` with `@solver_hint`, producing no warnings under `reify check`.
+- `examples/m11_annotations.ri` (already present) gains a small block that uses both `standard_bolt_lengths` and `standard_sheet_thicknesses` with `@solver_hint`, producing no warnings under `reify check`. *(Amended 2026-10-08: after `docs/prds/v0_6/catalog-membership-constraint.md` γ #8357 the `prefer_stock` line emits the coded `SolverHintNotConsumed` Warning by design, and BoltedPanel gains constraints so its now-hard `bolt_length` resolves; γ updates the example and its test.)*
 - The new tests pass.
 - `reify doc` (separate PRD) renders the two collection constants in the stdlib docs page with their doc comments.
 

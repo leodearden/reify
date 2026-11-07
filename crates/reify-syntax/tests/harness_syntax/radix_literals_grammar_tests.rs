@@ -1,7 +1,7 @@
 //! Rust integration tests for task 3910: hex (0x/0X) and binary (0b/0B) integer forms
 //! in `number_literal`.
 //!
-//! User-observable signal: `cargo test -p reify-syntax --test radix_literals_grammar_tests`
+//! User-observable signal: `cargo test -p reify-syntax --test harness_syntax -- radix_literals_grammar_tests::`
 //! passes (GREEN after grammar.js + scanner.c are patched; RED before).
 //!
 //! These tests assert **CST shape only** — the raw tree-sitter tree — and are

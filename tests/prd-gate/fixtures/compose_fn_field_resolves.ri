@@ -1,0 +1,18 @@
+// Fixture (γ decompose-phase premise): compose(f, g) resolves via the typed
+// stdlib .ri generic fn (pub fn compose<A,B,C>(f: Field<B,C>, g: Field<A,B>)
+// -> Field<A,C> in crates/reify-compiler/stdlib/fields.ri) when std.fields is
+// in scope, applied over two fn_field lambdas. Modeled on
+// examples/fields/std_fields_surface.ri (B1 fn_field / B9 compose signals).
+//
+// compose(fn_field(|x| 2.0 * x), fn_field(|x| x + 1.0))(3.0)
+//   = 2.0 * (3.0 + 1.0) = 8.0
+//
+// Expectation: `reify check` exits 0 (resolves premise).
+
+structure def ComposeFnFieldResolves {
+    // compose over two fn_field lambdas, sampled at 3.0 → 8.0
+    let composed_at_3 = sample(compose(fn_field(|x| 2.0 * x), fn_field(|x| x + 1.0)), 3.0)
+
+    constraint composed_at_3 > 7.999
+    constraint composed_at_3 < 8.001
+}

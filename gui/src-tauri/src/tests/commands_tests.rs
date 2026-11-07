@@ -1,6 +1,11 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::tests::test_helpers::cwd_lock;
+use crate::tests::test_helpers::{
+    assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
+    assert_rigid_mass_props_not_final, bounded_bracket_source, cwd_lock,
+    find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
+    rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
+};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::SelectionInfo;
@@ -12,15 +17,23 @@ use crate::engine::EngineSession;
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
+}
+
+/// [`make_session`] with `source` loaded under the module name `bracket`.
+///
+/// The `&str`-parameterized form of [`make_loaded_session`], which is what the ~20
+/// neighbouring tests call; both bodies are this one.
+fn make_loaded_session_from(source: &str) -> EngineSession {
+    let mut session = make_session();
+    session
+        .load_from_source(source, "bracket")
+        .expect("initial load");
+    session
 }
 
 fn make_loaded_session() -> EngineSession {
-    let mut session = make_session();
-    session
-        .load_from_source(bracket_source(), "bracket")
-        .expect("initial load");
-    session
+    make_loaded_session_from(bracket_source())
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -60,7 +73,6 @@ fn app_state_constructible() {
     let session = make_loaded_session();
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -74,7 +86,6 @@ fn app_state_selection_is_accessible() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -94,7 +105,6 @@ fn app_state_selection_multi() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -137,12 +147,12 @@ fn constraint_violation_set_thickness_1mm() {
     let state = {
         let mut session = engine.lock().unwrap();
         session
-            .set_parameter("Bracket.thickness", "1mm")
+            .preview_parameter("Bracket.thickness", "1mm")
             .expect("set thickness should succeed")
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -166,7 +176,7 @@ fn get_source_location_for_width() {
 fn export_writes_file() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -411,13 +421,13 @@ fn constraint_violation_and_recovery() {
 
     // Set thickness=1mm → violates "thickness > 2mm"
     let state = session
-        .set_parameter("Bracket.thickness", "1mm")
+        .preview_parameter("Bracket.thickness", "1mm")
         .expect("set thickness=1mm");
 
     let violated_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .count();
     assert!(
         violated_count >= 1,
@@ -428,7 +438,7 @@ fn constraint_violation_and_recovery() {
     let satisfied_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Satisfied")
+        .filter(|c| c.status == "satisfied")
         .count();
     assert!(
         satisfied_count >= 1,
@@ -437,12 +447,12 @@ fn constraint_violation_and_recovery() {
 
     // Set back to 5mm → all satisfied again
     let state = session
-        .set_parameter("Bracket.thickness", "5mm")
+        .preview_parameter("Bracket.thickness", "5mm")
         .expect("set thickness=5mm");
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "all constraints should be satisfied after restoring thickness=5mm, but {} is {}",
             c.node_id, c.status
         );
@@ -483,6 +493,132 @@ fn end_to_end_export_via_impl() {
     assert!(path.exists(), "exported file should exist");
 }
 
+// --- η export refusal: the three callers of the `EngineSession::export` chokepoint
+// (task 6190) ---
+//
+// The gate lives in `EngineSession::export`; these tests PROVE — rather than assert —
+// that every GUI export caller reaches it, so a refactor giving one its own build path
+// goes red instead of silently reopening the bypass. The shared rationale for the
+// `starts_with` assertions, and the enumeration of the three callers, is argued once in
+// the η cluster header in `engine_tests.rs`.
+
+/// Caller 1 of 3 — `commands::export_impl`, the Tauri command the frontend calls.
+#[test]
+fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::commands::export_impl;
+
+    let engine = Mutex::new(make_loaded_session_from(&bounded_bracket_source()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_bounded.step");
+
+    let err = export_impl(&engine, "step", path.to_str().unwrap()).expect_err(
+        "export_impl must surface the η refusal for a design declaring a \
+         RepresentationWithin bound",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the message reaching the frontend must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 2 of 3 — `mcp_context::TauriToolContext::export`, the MCP tool context.
+///
+/// Load-bearing for a reason caller 1 cannot cover: this one returns
+/// `Result<bool, ToolError>`, so folding the refusal into `Ok(false)` would report a
+/// REFUSED export to the MCP client as a completed one with the diagnostic dropped.
+/// The `match` pins that mapping, not just the message text.
+///
+/// Sited here rather than in its topical home `mcp_context_tests.rs`, which is outside
+/// task 6190's lock footprint; co-locating all three proofs also lets a reader diff the
+/// surfaces' contracts side by side.
+#[test]
+fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::mcp_context::TauriToolContext;
+    use reify_mcp::{ReifyToolContext, ToolError};
+
+    let session = make_loaded_session_from(&bounded_bracket_source());
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_bounded.step");
+
+    let err = ctx
+        .export("step", path.to_str().unwrap())
+        .expect_err("the MCP export tool must surface the η refusal, not report success");
+    match err {
+        ToolError::EngineError(msg) => assert!(
+            msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError LEADING with the \
+             stable E_* token; got: {msg}"
+        ),
+        other => panic!(
+            "a refused export must map to ToolError::EngineError (the engine's own \
+             refusal), not {other:?}"
+        ),
+    }
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 3 of 3 — `debug_server::reify_export_on_engine_and_refresh_baseline`, the
+/// engine-routing core of the `reify_export` AI write tool.
+///
+/// Its own test (`debug_server::tests::write_tools::reify_export_writes_a_non_empty_file`)
+/// covers success only, so without this the third caller's delegation would be the one
+/// unpinned leg of the chokepoint claim. `#[cfg(feature = "gui")]` because
+/// `crate::debug_server` is gated on that feature.
+///
+/// The refusal must also leave the delta baseline untouched: the seam's
+/// `compute_delta` sits after the `?`, so a refused write commits no new state.
+///
+/// The design is loaded from a file and exported beside it because the seam confines
+/// export targets to the open design's directory, a check that precedes η.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
+
+    let dir = tempfile::tempdir().unwrap();
+    let design = dir.path().join("bracket.ri");
+    std::fs::write(&design, bounded_bracket_source()).unwrap();
+    let mut session = make_session();
+    session.load_file(&design).expect("initial load");
+    let engine = Arc::new(Mutex::new(session));
+    let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+        std::sync::Mutex::new(None);
+
+    let path = dir.path().join("ai_bounded.step");
+
+    let err = reify_export_on_engine_and_refresh_baseline(
+        &engine,
+        &last_state,
+        "step",
+        path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("the reify_export write tool must surface the η refusal, not report success");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must reach the AI client LEADING with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+    assert!(
+        last_state.lock().unwrap().is_none(),
+        "a refused export must not refresh the delta baseline — the seam's compute_delta \
+         runs only after a successful write"
+    );
+}
+
 #[test]
 fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
@@ -518,7 +654,7 @@ fn get_mechanism_descriptors_impl_round_trips() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -570,7 +706,7 @@ fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
     // an empty default.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -740,11 +876,11 @@ fn get_initial_state_impl_recovers_from_poisoned_mutex() {
 }
 
 #[test]
-fn set_parameter_impl_recovers_from_poisoned_mutex() {
-    use crate::commands::set_parameter_impl;
+fn preview_parameter_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::preview_parameter_impl;
 
     let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
-    let result = set_parameter_impl(&engine, "Bracket.thickness", "5mm");
+    let result = preview_parameter_impl(&engine, "Bracket.thickness", "5mm");
     assert!(
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
@@ -756,7 +892,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
             .values
             .iter()
             .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5" && v.unit == "mm"),
-        "set_parameter should have applied thickness=5mm after poison recovery"
+        "preview_parameter_impl should have applied thickness=5mm after poison recovery"
     );
 }
 
@@ -764,18 +900,18 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
 /// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
 /// through the same `&Mutex<EngineSession>` session shim the other command
 /// tests use, leaves production evaluation unchanged, and the NEXT
-/// `set_parameter` surfaces the passive would-prune measurement on the returned
+/// `preview_parameter_impl` surfaces the passive would-prune measurement on the returned
 /// `GuiState.demand_prune_measurement`.
 ///
 /// RED until `sync_observed_demand_impl` exists (step-9).
 #[test]
 fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() {
-    use crate::commands::{set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{preview_parameter_impl, sync_observed_demand_impl};
 
     // ── Control: drive the edit through the command shim with NO sync. ────────
     let control = Mutex::new(make_loaded_session());
     let control_state =
-        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
+        preview_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control preview_parameter_impl");
 
     // ── Synced: register the visible realization R0 + the displayed thickness
     //    cell through the COMMAND shim before the edit. No panel constraints, so
@@ -789,7 +925,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     )
     .expect("sync_observed_demand_impl should succeed");
     let synced_state =
-        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+        preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // (a) Zero behavior change through the command path: parameter values are
     //     byte-identical to the no-sync control.
@@ -863,7 +999,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
 /// absent from the projection today, so the `get(..).expect(..)` lookups panic.
 #[test]
 fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_post_refresh() {
-    use crate::commands::{engine_state_json, set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{engine_state_json, preview_parameter_impl, sync_observed_demand_impl};
 
     // Drive an observed-demand slider edit through the command shim (mirrors the
     // pattern at commands_tests.rs:740): register the visible realization R0 + the
@@ -879,7 +1015,7 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
         &[],
     )
     .expect("sync_observed_demand_impl should succeed");
-    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+    preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // Project the engine state through the debug-MCP helper.
     let mut session = synced
@@ -1038,6 +1174,7 @@ fn mesh_stats_json_reports_full_scene_under_selective_demand() {
             "face_count",
             "bounding_box",
             "element_kind_count",
+            "default_visible",
         ] {
             assert!(
                 entry.get(key).is_some(),
@@ -1068,7 +1205,7 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
     let source = include_str!("../../../../examples/fea_shell_flexure.ri");
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(source, "FeaShellFlexure")
         .expect("load_from_source must succeed for fea_shell_flexure.ri");
@@ -1141,6 +1278,113 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
     }
 }
 
+/// A flange whose `body` and `hole` are consumed by the terminal `geometry`
+/// (#5195) beside an `aux` blank (T6) — the shapes whose engine verdict is
+/// hidden-by-default. Material literal as in engine_tests'
+/// `get_entity_tree_consumed_realizations_default_visible_false`.
+const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    aux let blank = cylinder(8mm, 40mm)
+    param geometry : Solid = difference(body, hole)
+}"#;
+
+/// Each mesh entry's `default_visible`, keyed by its `entity_path`.
+fn default_visible_by_path(
+    projection: &serde_json::Value,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    projection["meshes"]
+        .as_array()
+        .expect("meshes must be an array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["entity_path"]
+                    .as_str()
+                    .expect("each mesh must carry an entity_path string")
+                    .to_string(),
+                entry
+                    .get("default_visible")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+/// Both full-scene debug reads report the engine's hidden-by-default verdict
+/// per mesh, joined through the entity tree's realization node for that mesh.
+#[test]
+fn mesh_stats_and_engine_state_report_the_engine_default_visible_verdict_per_mesh() {
+    use crate::commands::{engine_state_json, mesh_stats_json};
+
+    let mut session = make_session();
+    session
+        .load_from_source(AUX_AND_CONSUMED_FLANGE_SRC, "flange")
+        .expect("load");
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+    let path_of = |name: &str| -> String {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+            .entity_path
+            .clone()
+    };
+    let expected = [
+        ("body", false),
+        ("hole", false),
+        ("blank", false),
+        ("geometry", true),
+    ];
+
+    let mesh_stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let engine_state = engine_state_json(&mut session).expect("engine_state_json succeeds");
+
+    for (read, projection) in [("mesh_stats", &mesh_stats), ("engine_state", &engine_state)] {
+        let by_path = default_visible_by_path(projection);
+        for (name, visible) in expected {
+            let path = path_of(name);
+            assert_eq!(
+                by_path.get(&path),
+                Some(&serde_json::json!(visible)),
+                "{read}: mesh {path} ('{name}') must carry default_visible == {visible}; \
+                 got {by_path:?}"
+            );
+        }
+    }
+}
+
+/// Sub-component bodies join too: `MeshData.entity_path` keys the same
+/// realization-node paths the frontend's auto-view joins on, at every depth.
+#[test]
+fn every_nested_composed_mesh_carries_a_boolean_default_visible() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let by_path = default_visible_by_path(&stats);
+
+    assert!(
+        by_path.len() >= 4,
+        "the fixture projects 4 leaf bodies; got {by_path:?}"
+    );
+    for (path, visible) in &by_path {
+        assert!(
+            visible.is_boolean(),
+            "mesh {path} must carry a boolean default_visible (null means no entity-tree \
+             realization node matched its entity_path); got {visible}"
+        );
+    }
+}
+
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
 /// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
 /// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
@@ -1172,7 +1416,7 @@ const SELECTIVE_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
 /// binary fails to compile until step-8 adds it.
 #[test]
 fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
-    use crate::commands::{demand_dispatch_json, set_parameter_impl, sync_demand_impl};
+    use crate::commands::{demand_dispatch_json, preview_parameter_impl, sync_demand_impl};
 
     let body_a_key = "SelectiveMultiBody#realization[0]";
     let body_b_key = "SelectiveMultiBody#realization[1]";
@@ -1186,7 +1430,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
     // Hide body_b (R1): only body_a (R0) is visible/demanded.
     sync_demand_impl(&synced, &[body_a_key.to_string()]).expect("sync_demand_impl should succeed");
     // Slider edit drives the warm selective tessellate (body_b stays pruned).
-    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter");
+    preview_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider preview_parameter_impl");
 
     let mut session = synced
         .into_inner()
@@ -1289,7 +1533,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
 #[test]
 fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     use crate::commands::{
-        demand_dispatch_json, engine_state_json, set_parameter_impl, sync_demand_impl,
+        demand_dispatch_json, engine_state_json, preview_parameter_impl, sync_demand_impl,
         sync_observed_demand_impl,
     };
 
@@ -1315,10 +1559,10 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //    0 ops EACH tick and is absent from the eval-set. ───────────────────────
     let ticks = ["12mm", "16mm", "20mm"];
     for (i, w) in ticks.iter().enumerate() {
-        set_parameter_impl(&session, w_cell, w)
-            .unwrap_or_else(|e| panic!("tick {i}: set_parameter({w}) must succeed: {e}"));
+        preview_parameter_impl(&session, w_cell, w)
+            .unwrap_or_else(|e| panic!("tick {i}: preview_parameter_impl({w}) must succeed: {e}"));
 
-        // `demand_dispatch_json` is a PURE engine read reflecting set_parameter's
+        // `demand_dispatch_json` is a PURE engine read reflecting the edit's
         // internal tessellate — read it BEFORE any re-tessellating projection so
         // body_a's freshly-dirtied dispatch is still visible (a later
         // `engine_state_json` re-tessellate would find body_a cached → 0).
@@ -1400,7 +1644,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
         &[],
     )
     .expect("sync_observed_demand_impl");
-    set_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
+    preview_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
     let obs_es = {
         let mut guard = obs.lock().expect("session lock");
         engine_state_json(&mut guard).expect("engine_state_json")
@@ -1428,7 +1672,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     )
     .expect("un-hide sync_demand");
     // A fresh edit under the now-full cone re-realizes body_b and recomputes sb.
-    set_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
+    preview_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
 
     // (a) body_b re-realizes (dispatch >= 1) and re-enters the eval-set.
     let dd = {
@@ -1461,7 +1705,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //     fresh cold full-scope build at the same param (no stale value).
     let oracle = load_session();
     let oracle_state =
-        set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
+        preview_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
     let oracle_sb = oracle_state
         .values
         .iter()
@@ -1697,7 +1941,7 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let engine = std::sync::Mutex::new(session);
 
     let _guard = cwd_lock().lock().unwrap();
@@ -1719,167 +1963,45 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
-// ── Task 5357 step-5: run_on_large_stack composition guard ───────────────────
+// ── Queued engine-call payloads (task 7442) ──────────────────────────────────
 
-/// Sorted key projection of a keyed `GuiState` collection.
-fn sorted_keys<T>(items: &[T], key: impl Fn(&T) -> &str) -> Vec<String> {
-    let mut keys: Vec<String> = items.iter().map(|i| key(i).to_owned()).collect();
-    keys.sort();
-    keys
-}
-
-/// Assert that two `GuiState`s agree on everything a large-stack relocation
-/// could plausibly change: the identity (and hence cardinality) of every keyed
-/// collection, plus both diagnostics streams.
+/// Compile-time proof that `T` satisfies the bound a queued request's reply
+/// needs.
 ///
-/// Deliberately NOT a whole-`GuiState` `assert_eq!`. The two states here come
-/// from two independently constructed `EngineSession`s, so a full comparison
-/// would also assert run-to-run determinism of every float, every vertex buffer
-/// and every collection's ORDER — none of which is the property under test. If
-/// any `GuiState` field ever became ordering-dependent (e.g. built from a
-/// `HashMap`/`HashSet` walk) or gained a timing/counter field, a full comparison
-/// would go flaky for a reason with nothing to do with `large_stack`, and the
-/// failure would point at the wrong subsystem. These order-insensitive
-/// projections are what actually distinguish "ran on the large-stack thread"
-/// from "ran inline".
-fn assert_same_salient_state(
-    wrapped: &crate::types::GuiState,
-    direct: &crate::types::GuiState,
-    what: &str,
-) {
-    assert_eq!(
-        sorted_keys(&wrapped.files, |f| &f.path),
-        sorted_keys(&direct.files, |f| &f.path),
-        "{what}: the set of loaded file paths must not depend on which thread the compile ran on"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.meshes, |m| &m.entity_path),
-        sorted_keys(&direct.meshes, |m| &m.entity_path),
-        "{what}: the set of realized mesh entity_paths must be identical"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.values, |v| &v.cell_id),
-        sorted_keys(&direct.values, |v| &v.cell_id),
-        "{what}: the set of value cell_ids must be identical"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.constraints, |c| &c.node_id),
-        sorted_keys(&direct.constraints, |c| &c.node_id),
-        "{what}: the set of constraint node_ids must be identical"
-    );
-    assert_eq!(
-        wrapped.compile_diagnostics.len(),
-        direct.compile_diagnostics.len(),
-        "{what}: compile diagnostics count must be identical; wrapped={:?} direct={:?}",
-        wrapped.compile_diagnostics,
-        direct.compile_diagnostics
-    );
-    assert_eq!(
-        wrapped.tessellation_diagnostics.len(),
-        direct.tessellation_diagnostics.len(),
-        "{what}: tessellation diagnostics count must be identical; wrapped={:?} direct={:?}",
-        wrapped.tessellation_diagnostics,
-        direct.tessellation_diagnostics
-    );
-}
+/// `EvalQueue::submit` requires `T: Send + 'static` because the reply crosses
+/// from the ENGINE lane to the awaiting command. This never runs; naming the
+/// types is the assertion.
+fn assert_send_static<T: Send + 'static>() {}
 
-/// `open_file_engine_impl` invoked THROUGH `run_on_large_stack` returns the same
-/// `Ok(GuiState)` as a direct (un-wrapped) call.
+/// Pins `T: Send + 'static` for the payloads the `main.rs` commands submit to
+/// the evaluation queue as engine calls, plus the engine handle each job
+/// captures.
 ///
-/// This proves the large-stack helper composes safely with the real engine /
-/// `with_engine_lock` / compile path when the compile runs on a plain `std`
-/// thread (no tokio-context `blocking_send` issue; identical result). It is the
-/// headless proxy for the un-headless-testable `open_file_engine` / `update_source`
-/// Tauri command wiring (step-6): those commands cannot be built headlessly, so
-/// this exercises the exact `run_on_large_stack(|| open_file_engine_impl(..))`
-/// composition they perform.
+/// `Result<T, String>` follows from `T` (and `String` is `Send + 'static`), so
+/// the payloads are what need naming. If a future command returns something
+/// non-`Send` — an `Rc`, a raw pointer, a borrow — it cannot go through the
+/// queue, and this list is where that shows up as a compile error rather than
+/// as a puzzling error at the call site in `main.rs` (which only builds under
+/// `--features gui`). The request constructors in `commands.rs` and
+/// `mcp_context.rs` need no entry: the lib compiling pins their payloads.
 #[test]
-fn open_file_engine_impl_runs_correctly_through_large_stack() {
-    use crate::commands::open_file_engine_impl;
+fn migrated_command_payloads_are_send_and_static() {
+    use crate::engine::EngineSession;
+    use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, GuiState, MechanismDescriptor};
+    use reify_mcp::SourceLocationInfo;
+    use std::collections::HashMap;
 
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bracket.ri");
-    std::fs::write(&file, bracket_source()).unwrap();
-    // Absolute path → canonicalization needs no cwd change (unlike the relative
-    // sibling test above), so no `cwd_lock` is required.
-    let path = file.to_str().unwrap();
+    assert_send_static::<GuiState>(); // get_def_preview
+    assert_send_static::<Vec<EntityTreeNode>>(); // get_entity_tree
+    assert_send_static::<HashMap<String, EntityIdentity>>(); // get_entity_identity_map
+    assert_send_static::<Vec<MechanismDescriptor>>(); // get_mechanism_descriptors
+    assert_send_static::<SourceLocationInfo>(); // get_source_location
+    assert_send_static::<Option<DefInfo>>(); // get_containing_definition
+    assert_send_static::<Option<String>>(); // get_entity_at_source_location, get_active_fea_case
+    assert_send_static::<()>(); // export, sync_demand, sync_observed_demand
 
-    // Direct (un-wrapped) call on a fresh engine.
-    let engine_direct = Mutex::new(EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    ));
-    let direct = open_file_engine_impl(&engine_direct, path)
-        .expect("direct open_file_engine_impl should succeed");
-
-    // The same call routed through the large-stack helper on an identically
-    // initialized fresh engine. The scoped closure borrows `&engine_wrapped` /
-    // `path` directly — no `Arc` clone, no `'static` bound.
-    let engine_wrapped = Mutex::new(EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    ));
-    let wrapped =
-        crate::large_stack::run_on_large_stack(|| open_file_engine_impl(&engine_wrapped, path))
-            .expect("open_file_engine_impl through run_on_large_stack should succeed");
-
-    // Concrete expected shape (independent of the direct half).
-    assert!(
-        !wrapped.files.is_empty(),
-        "GuiState.files should be non-empty after loading a file on the large stack"
-    );
-    assert!(
-        !wrapped.meshes.is_empty(),
-        "GuiState.meshes should be non-empty after a clean compile on the large stack"
-    );
-    assert!(
-        wrapped.compile_diagnostics.is_empty(),
-        "a clean bracket_source compile on the large stack must emit no compile diagnostics; \
-         got: {:?}",
-        wrapped.compile_diagnostics
-    );
-
-    assert_same_salient_state(&wrapped, &direct, "open_file_engine_impl");
-}
-
-/// `reload_for_watch_impl` invoked THROUGH `run_on_large_stack` returns the same
-/// salient state as a direct (un-wrapped) call.
-///
-/// The sibling of the guard above, for the OTHER half of the step-6 wiring.
-/// TWO distinct call sites perform exactly this composition, and both are
-/// un-headless-testable (they take `tauri::AppHandle` / `tauri::State`):
-/// the frontend-invoked `main.rs::update_source` command, and
-/// `main.rs::create_watcher`'s `FileEvent::Changed` callback — the latter being
-/// the recompile reached on EVERY watch-triggered on-disk reload, i.e. the
-/// highest-frequency of the wrapped compile paths.
-#[test]
-fn reload_for_watch_impl_runs_correctly_through_large_stack() {
-    use crate::commands::reload_for_watch_impl;
-
-    // Direct (un-wrapped) call on a freshly loaded engine.
-    let engine_direct = make_test_engine_for_commands();
-    let direct = reload_for_watch_impl(&engine_direct, "bracket.ri", bracket_source())
-        .expect("direct reload_for_watch_impl should succeed");
-
-    // The same call routed through the large-stack helper on an identically
-    // initialized engine. The scoped closure borrows `&engine_wrapped` directly.
-    let engine_wrapped = make_test_engine_for_commands();
-    let wrapped = crate::large_stack::run_on_large_stack(|| {
-        reload_for_watch_impl(&engine_wrapped, "bracket.ri", bracket_source())
-    })
-    .expect("reload_for_watch_impl through run_on_large_stack should succeed");
-
-    assert!(
-        !wrapped.meshes.is_empty(),
-        "GuiState.meshes should be non-empty after a successful reload on the large stack"
-    );
-    assert!(
-        wrapped.compile_diagnostics.is_empty(),
-        "a successful reload on the large stack must emit no compile diagnostics; got: {:?}",
-        wrapped.compile_diagnostics
-    );
-
-    assert_same_salient_state(&wrapped, &direct, "reload_for_watch_impl");
+    // The handle every queued job captures.
+    assert_send_static::<Arc<Mutex<EngineSession>>>();
 }
 
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
@@ -1901,7 +2023,6 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
 
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -1926,7 +2047,6 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -2012,7 +2132,6 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -2042,11 +2161,190 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
 fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
     Arc::new(Mutex::new(session))
+}
+
+/// [`make_test_engine_for_commands`] with a canonical `.ri` ON DISK: writes
+/// `bracket_source()` to `<tmp>/bracket.ri` and `load_file`s it, so the durable
+/// command has a file to write back to (INV-GUI-3, task 5099 η).
+///
+/// Only the parameter-write tests need one — the in-memory sibling stays the
+/// cheap default for everything else. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the engine is used; the shape is
+/// copied from `engine_tests.rs`'s `writeback_session`.
+fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mutex<EngineSession>>) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, Arc::new(Mutex::new(session)))
+}
+
+#[test]
+fn set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner() {
+    // Why the refusal path builds a SECOND `GuiState` rather than reusing the
+    // one the discard already built. That one was built inside `update_source`,
+    // in the window where `commit_state` had just cleared `compile_failure` and
+    // `last_reload_error` — banners that PREDATE the commit entirely — and
+    // `commit_parameter` restores them only after it returns. Reusing it would
+    // hand the frontend a state carrying no `hot-reload-error` diagnostic while
+    // the engine still holds the error: the defect the engine-level restore
+    // closes, moved one layer out, where no later event corrects it.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, _path, engine) = make_test_engine_on_disk();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let refused = set_parameter_impl(&engine, "Bracket.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        refused.message.contains("Unknown parameter"),
+        "precondition: the refusal must be the unknown-cell rejection, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .as_deref()
+        .expect("a refusal must carry the state the frontend has to render");
+    assert!(
+        restored
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("hot-reload-error")),
+        "the state handed to the frontend must still show the staleness banner \
+         the engine still holds; got: {:?}",
+        restored.compile_diagnostics
+    );
+    assert!(
+        crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the engine must still be stale, so the two agree"
+    );
+}
+
+#[test]
+fn set_parameter_impl_writes_the_value_back_to_the_ri_file() {
+    // The wire name `set_parameter` keeps its spelling and acquires the meaning
+    // it always claimed: setting a parameter is the DURABLE operation. This is
+    // the command the property panel's edit box already calls on Enter/blur, so
+    // re-homing it is what makes typed entry durable with no component change.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = set_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("set_parameter_impl should succeed on a literal-defaulted cell");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_text,
+        bracket_source().replace("80mm", "120mm"),
+        "the durable command must splice exactly the default span, got: {disk_text}"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "the returned GuiState must already report the committed value"
+    );
+}
+
+#[test]
+fn a_refused_set_parameter_hands_back_the_state_that_replaces_the_discarded_preview() {
+    // The emit half of the discard, which the session-level tests cannot reach.
+    // `commit_parameter` discarding a live preview is only half a fix: the
+    // frontend renders from the delta the Tauri layer emits, and that delta is
+    // computed from what THIS function returns. A refusal that returned only a
+    // message would leave the viewport on the preview's geometry and the
+    // property panel on the preview's number while the engine and the disk had
+    // both gone back to 80mm — with no later event to correct it.
+    //
+    // So the assertion is specifically that the restored GuiState RIDES THE
+    // ERROR, not merely that the session discarded internally.
+    use crate::commands::{preview_parameter_impl, set_parameter_impl};
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let previewed = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+    assert!(
+        previewed
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "precondition: the preview must have taken, or this test exercises no discard"
+    );
+
+    // γ's disk-divergence refusal — the most ordinary one a user meets, and the
+    // one an unsaved editor buffer or a watcher that has not re-fired produces.
+    let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let refused = set_parameter_impl(&engine, "Bracket.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        refused
+            .message
+            .contains("no longer matches the source this session compiled"),
+        "precondition: the failure must be the divergence refusal, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .expect("a refusal that discarded a preview must hand back the state that replaced it");
+    let width = restored
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.width")
+        .expect("the restored state must still describe the cell that was refused");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "the state riding the refusal must be the SOURCE value, so the delta the \
+         command layer emits returns the frontend to what the engine now holds — \
+         not the stranded 120mm preview"
+    );
+}
+
+#[test]
+fn preview_parameter_impl_leaves_the_ri_file_untouched() {
+    // Its counterpart, and the reason the split exists: the per-frame command a
+    // slider drag drives must move the viewport without recompiling and
+    // rewriting the design 60 times a second.
+    use crate::commands::preview_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source(),
+        "a preview must leave the canonical .ri byte-identical"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "a preview must still move the eval state so the viewport tracks the drag"
+    );
 }
 
 /// (step-4 GREEN-a) update_source_impl must record staleness when update_source
@@ -2239,6 +2537,72 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
     );
 }
 
+#[test]
+fn reload_for_watch_if_changed_impl_skips_the_sessions_own_source() {
+    // Every durable parameter write rewrites the `.ri` itself, and the
+    // FS-watcher observes that write and hands the same bytes back. Recompiling
+    // them re-derives the state the write already committed and emitted, so a
+    // single user gesture pays for two full recompiles — the cost the
+    // preview/commit split exists to keep to one.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+
+    assert!(
+        reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+            .expect("the echo must not be an error")
+            .is_none(),
+        "content the session already holds must be recognised as its own echo"
+    );
+
+    // The negative control: text that differs is the case the watcher exists
+    // for, and must still recompile.
+    let changed = bracket_source().replace("80mm", "120mm");
+    assert_ne!(changed, bracket_source(), "fixture must actually differ");
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", &changed)
+        .expect("a real external edit must not be an error")
+        .expect("a real external edit must be recompiled, not skipped");
+    assert!(
+        reloaded
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "the recompiled state must carry the external edit"
+    );
+}
+
+#[test]
+fn reload_for_watch_if_changed_impl_still_reloads_identical_text_for_a_stale_session() {
+    // Identical text is a necessary condition for skipping, not a sufficient
+    // one. A recompile also LIFTS the failure banners, so a stale session has
+    // real work to do on byte-identical input — which is precisely what
+    // reverting a broken file back to the last text that compiled looks like
+    // from here. A guard that compared only the text would leave that banner
+    // standing with no later event to clear it.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+        .expect("a stale session's reload must not be an error")
+        .expect("a stale session must recompile even byte-identical text");
+    assert!(
+        reloaded
+            .compile_diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("hot-reload-error")),
+        "the recompile must have lifted the staleness banner; got: {:?}",
+        reloaded.compile_diagnostics
+    );
+    assert!(
+        !crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the session must no longer report itself stale"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Watcher delta surfacing test (task 4153, step-9 RED)
 // ---------------------------------------------------------------------------
@@ -2400,4 +2764,1562 @@ fn set_and_get_active_fea_case_impl_contract() {
         Some("nonexistent_case".to_string()),
         "active case stored as given even if not found in cases map"
     );
+}
+
+// ── Task #5338: Rigid mass-prop cells must survive every GUI load path ────────
+//
+// `TessellateResult` is an INCREMENTAL DELTA (see the DELTA CONTRACT block on
+// `Engine::demand_scoped_unified_pass`). Under the frontend's SELECTIVE demand
+// posture a HASH-EXEMPT realization's kernel ops are skipped, so its auto-derived
+// mass-property cells arrive `Undef` even though their values are unchanged and
+// still correct. These tests drive the REAL production command entry points
+// headlessly (no Tauri runtime) and assert the cells never degrade.
+//
+// Faithfulness note: `check()` turns the cold `full_scope` override back ON
+// (engine_eval.rs), and only `sync_demand` turns it off again — so every reload /
+// recompile is followed here by a fresh `sync_demand_impl`, exactly as the
+// frontend re-syncs demand after each re-render. Without that re-sync the
+// rebuilds would run under full scope and the delta gap would be unreachable.
+
+/// Copy the committed `examples/rigid_mass_props_smoke.ri` fixture into `dir`
+/// so a reload can rewrite it without touching the tracked file. Returns the
+/// path (as a `String`, the shape the watcher/`update_source` commands take)
+/// alongside the original text.
+fn rigid_mass_props_tempfile(dir: &std::path::Path) -> (String, String) {
+    let text = std::fs::read_to_string(rigid_mass_props_fixture_path())
+        .expect("the committed rigid_mass_props_smoke.ri fixture must be readable");
+    let path = dir.join("rigid_mass_props_smoke.ri");
+    std::fs::write(&path, &text).expect("writing the fixture copy should succeed");
+    (path.to_string_lossy().into_owned(), text)
+}
+
+/// Task #5338 (step-3, RED): a watcher-driven reload must not degrade a `: Rigid`
+/// body's auto-derived mass-property cells — neither on the reload build itself
+/// nor on the SELECTIVE-demand re-renders that follow it, which are the states
+/// the GUI actually paints.
+///
+/// `reload_for_watch_impl` is the watcher's exact entry point (main.rs wires the
+/// notify callback straight to it). It routes through `update_source_impl` →
+/// `EngineSession::update_source` → `commit_state` → `build_gui_state`.
+///
+/// GREEN as landed — a regression LOCK, not a reproduction. The task's plan
+/// predicted this would be RED until `commit_state`'s cache clear was narrowed to
+/// `FilePathUpdate::Set`, on the theory that a same-file reload leaves the
+/// realization hash-exempt while the clear has just discarded the retained value.
+/// MEASURED, that cannot happen: `input_cone_hash` is a field on the realization
+/// node inside `eval_state.snapshot.graph`, and `check()` replaces `eval_state`
+/// wholesale, so a recompile resets every hash to `None`. The first selective
+/// tessellate after ANY recompile dispatches and repopulates the cache from a
+/// complete delta; only the SECOND and later ones are hash-exempt, and no
+/// `commit_state` runs between them. Hence the clear stays unconditional (see
+/// `EngineSession::commit_state`) and this test locks the watcher path against
+/// the delta-gap regression that the engine-level test reproduced.
+///
+/// It still earns its keep, and is not vacuous: it is the only coverage that
+/// drives the watcher's REAL entry point end-to-end, and a negative control
+/// (retention fallback removed, i.e. task 5194's snapshot behaviour restored)
+/// puts it RED at "reload#1 re-render 2" — re-render 1 dispatches because the
+/// recompile reset the hash, re-render 2 is hash-exempt.
+///
+/// The second reload carries CHANGED content (`depth = 250mm`) and asserts
+/// `depth` reads `"250"`: that proves the fix refreshes from the fresh delta
+/// rather than replaying a stale cached mass. `depth` is a plain arithmetic cell
+/// resolved by the kernel-less check, not a geometry query — the only magnitude
+/// asserted anywhere in this suite.
+#[test]
+fn rigid_mass_props_survive_watcher_reload() {
+    use crate::commands::{
+        get_initial_state_impl, open_file_engine_impl, reload_for_watch_impl, sync_demand_impl,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, text) = rigid_mass_props_tempfile(dir.path());
+    let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+    // (1) Open through the shared #5193 funnel.
+    let state = open_file_engine_impl(&engine, &path).expect("open_file_engine_impl should succeed");
+    assert_rigid_mass_props_determined(&state, "open_file");
+
+    // (2) The frontend's post-load handshake → SELECTIVE demand.
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the fixture must render at least one realization mesh, else sync_demand \
+         is a no-op and this test is vacuous"
+    );
+    sync_demand_impl(&engine, &keys).expect("sync_demand_impl should succeed");
+
+    // (3) Watcher fires with UNCHANGED content (a touch / no-op save). The reload
+    //     build itself runs under the full scope `check()` restored, so the
+    //     degradation lands on the re-renders that follow it.
+    let state = reload_for_watch_impl(&engine, &path, &text)
+        .expect("reload_for_watch_impl with unchanged content should succeed");
+    assert_rigid_mass_props_determined(&state, "reload#1 (unchanged)");
+
+    sync_demand_impl(&engine, &visible_realization_keys(&state))
+        .expect("sync_demand_impl after reload#1 should succeed");
+    for i in 1..=2 {
+        let state = get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("get_initial_state_impl #{i} after reload#1: {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("reload#1 re-render {i}"));
+    }
+
+    // (4) Watcher fires with CHANGED content — the edit must actually take.
+    let changed = text.replace("param depth : Length = 300mm", "param depth : Length = 250mm");
+    assert_ne!(
+        changed, text,
+        "the depth-param rewrite must actually change the fixture text; the \
+         fixture's `param depth : Length = 300mm` line may have been reworded"
+    );
+    let state = reload_for_watch_impl(&engine, &path, &changed)
+        .expect("reload_for_watch_impl with changed content should succeed");
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` value cell after the changed reload");
+    assert_eq!(
+        depth.value, "250",
+        "depth must read 250 (mm) after the changed reload — proving the reload \
+         took effect rather than replaying a stale cached state; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_determined(&state, "reload#2 (depth=250mm)");
+
+    // (5) …and the re-renders after the changed reload must hold too.
+    sync_demand_impl(&engine, &visible_realization_keys(&state))
+        .expect("sync_demand_impl after reload#2 should succeed");
+    for i in 1..=2 {
+        let state = get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("get_initial_state_impl #{i} after reload#2: {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("reload#2 re-render {i}"));
+    }
+}
+
+/// Task #5338 (step-5): the startup-argv funnel must deliver the SAME contract as
+/// the File-Open funnel.
+///
+/// `main()`'s argv block used to call `EngineSession::load_file` inline and
+/// DISCARD the returned `GuiState`, so `UnresolvedGuiState::resolve` never ran on
+/// that path. Three contract points follow, each asserted below:
+///
+/// (a) the mass-prop cells surface — the argv launch is the entry point the
+///     2026-07-22 dogfood retest reported as broken;
+/// (b) every `files[].path` in the RETURNED state is a canonical ABSOLUTE path —
+///     the #5193 identity contract, produced only by `UnresolvedGuiState::resolve`;
+/// (c) the state agrees with `open_file_engine_impl`'s for the same file — same
+///     `files[].path` set and same value-cell determinacy map — so the two entry
+///     points cannot silently drift apart again.
+///
+/// WHAT (b) DOES NOT SAY. This pins the contract at the FUNNEL boundary, not the
+/// pixels of an argv-launched GUI. `resolve` mutates only the returned `GuiState`,
+/// and `main()` uses that return value for its `Err` arm alone; the frontend's
+/// startup path is `initApp` → `get_initial_state` → `build_gui_state`, which
+/// rebuilds `files[]` from the stem-only `source_map()` keys. So this test stays
+/// green whether or not an argv launch ever paints absolute paths — read it as
+/// "the two funnels agree", never as "the #5193 split is closed end to end". See
+/// `commands::load_initial_file_impl`'s docs for the follow-up that would close it.
+///
+/// RED before the accompanying impl: `commands::load_initial_file_impl` does not
+/// exist, so this does not compile.
+#[test]
+fn load_initial_file_impl_matches_open_file_engine_impl_contract() {
+    use crate::commands::{load_initial_file_impl, open_file_engine_impl};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let canonical = std::fs::canonicalize(&path).expect("fixture copy must canonicalize");
+
+    // ── argv path ──
+    let argv_engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+    let argv_state = load_initial_file_impl(&argv_engine, &canonical)
+        .expect("load_initial_file_impl should succeed for the fixture copy");
+
+    // (a) the headline defect.
+    assert_rigid_mass_props_determined(&argv_state, "argv");
+
+    // (b) the #5193 identity contract, AS PINNED AT THIS FUNNEL's boundary — see
+    //     the "WHAT (b) DOES NOT SAY" paragraph above before reading this as an
+    //     end-to-end guarantee for an argv-launched GUI.
+    assert!(
+        !argv_state.files.is_empty(),
+        "an argv load must report at least one file entry"
+    );
+    for f in &argv_state.files {
+        let p = std::path::Path::new(&f.path);
+        assert!(
+            p.is_absolute(),
+            "the `files[].path` RETURNED by load_initial_file_impl must be an absolute \
+             canonical path (the #5193 contract, produced by UnresolvedGuiState::resolve); \
+             got {:?}",
+            f.path
+        );
+        assert_eq!(
+            p,
+            canonical.as_path(),
+            "the returned `files[].path` must equal the canonicalized fixture path; got {:?}",
+            f.path
+        );
+    }
+
+    // ── File-Open path, same file, freshly seeded session ──
+    let open_engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+    let open_state = open_file_engine_impl(&open_engine, &path)
+        .expect("open_file_engine_impl should succeed for the same fixture copy");
+
+    // (c) the two entry points must agree. Mesh vertex data is excluded: it is
+    //     kernel output, not part of the load contract under test.
+    let argv_files: Vec<&str> = argv_state.files.iter().map(|f| f.path.as_str()).collect();
+    let open_files: Vec<&str> = open_state.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        argv_files, open_files,
+        "argv and File-Open must report the SAME files[].path set for the same file"
+    );
+
+    let determinacy_map = |s: &crate::types::GuiState| -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = s
+            .values
+            .iter()
+            .map(|c| {
+                (
+                    format!("{}.{}", c.entity_path, c.name),
+                    c.determinacy.clone(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        determinacy_map(&argv_state),
+        determinacy_map(&open_state),
+        "argv and File-Open must produce the SAME value-cell determinacy map"
+    );
+}
+
+/// Task #5338 (step-5): a CWD-relative argv spelling must round-trip through
+/// `resolve_initial_file_path` → `load_initial_file_impl`.
+///
+/// This is the full production argv chain: `main()` takes the raw
+/// `std::env::args().nth(1)` string, canonicalises it with
+/// `resolve_initial_file_path`, and hands the result to `load_initial_file_impl`.
+/// Serialised on `cwd_lock()` per the `main_helpers_tests.rs` idiom, since it
+/// mutates the process CWD.
+#[test]
+fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_argv() {
+    use crate::commands::{load_initial_file_impl, resolve_initial_file_path};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let expected = std::fs::canonicalize(&path).expect("fixture copy must canonicalize");
+
+    let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().expect("current_dir");
+    std::env::set_current_dir(dir.path()).expect("set_current_dir into the tempdir");
+    // Resolve while the CWD is the tempdir; restore immediately so a panic in the
+    // assertions below cannot leave the process in the temp directory.
+    let resolved = resolve_initial_file_path("rigid_mass_props_smoke.ri");
+    std::env::set_current_dir(&original).expect("restore current_dir");
+
+    let resolved = resolved.expect("a CWD-relative .ri argv spelling must resolve to Some(path)");
+    assert_eq!(
+        resolved, expected,
+        "resolve_initial_file_path must canonicalise the relative argv spelling"
+    );
+
+    let state = load_initial_file_impl(&engine, &resolved)
+        .expect("load_initial_file_impl should succeed for the resolved relative argv path");
+    assert_rigid_mass_props_determined(&state, "argv (relative spelling)");
+}
+
+/// Task #5338 (step-7) — the headline deliverable: ONE regression matrix over
+/// every GUI entry point that can load or rebuild a `: Rigid` body.
+///
+/// Four rows, each on its own freshly-seeded session and its own tempdir copy of
+/// the fixture, so no row can mask another:
+///
+/// | row              | entry point                                       |
+/// |------------------|---------------------------------------------------|
+/// | `argv`           | `load_initial_file_impl`                          |
+/// | `open_file`      | `open_file_engine_impl`                           |
+/// | `watcher`        | open, then `reload_for_watch_impl`                |
+/// | `warm edit_param`| open, then `preview_parameter_impl(depth, 250mm)`     |
+///
+/// The last row covers the path task 5194's own details flagged as unverified.
+///
+/// Every row then runs the IDENTICAL post-condition sweep:
+///
+/// 1. the state the entry point itself returned;
+/// 2. after `sync_demand_impl` with the keys derived from that state, THREE
+///    successive `get_initial_state_impl` calls — the selective-demand
+///    re-renders the GUI actually paints, and where the hash-exempt delta gap
+///    bites (the second and later ones);
+/// 3. `build_gui_state_full_scene` — the projection the debug-MCP `engine_state`
+///    tool reads (commands.rs `engine_state_json`), i.e. the surface the
+///    2026-07-22 dogfood retest observed. It must agree with the panel.
+///
+/// Each row names itself in the assertion context, so a failure identifies its
+/// entry point without a bisect.
+#[test]
+fn rigid_mass_props_determined_across_all_gui_load_paths() {
+    use crate::commands::{
+        get_initial_state_impl, load_initial_file_impl, open_file_engine_impl,
+        reload_for_watch_impl, preview_parameter_impl, sync_demand_impl,
+    };
+
+    /// How a row gets its first `GuiState`. Each variant is a real production
+    /// entry point; none of them is a test-only shortcut.
+    enum Entry {
+        Argv,
+        OpenFile,
+        Watcher,
+        WarmEditParam,
+    }
+
+    for (row, entry) in [
+        ("argv", Entry::Argv),
+        ("open_file", Entry::OpenFile),
+        ("watcher", Entry::Watcher),
+        ("warm edit_param", Entry::WarmEditParam),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, text) = rigid_mass_props_tempfile(dir.path());
+        let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+        // ── (1) the entry point itself ──
+        let state = match entry {
+            Entry::Argv => {
+                let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+                load_initial_file_impl(&engine, &canonical)
+                    .unwrap_or_else(|e| panic!("[{row}] load_initial_file_impl: {e}"))
+            }
+            Entry::OpenFile => open_file_engine_impl(&engine, &path)
+                .unwrap_or_else(|e| panic!("[{row}] open_file_engine_impl: {e}")),
+            Entry::Watcher => {
+                open_file_engine_impl(&engine, &path)
+                    .unwrap_or_else(|e| panic!("[{row}] open before reload: {e}"));
+                reload_for_watch_impl(&engine, &path, &text)
+                    .unwrap_or_else(|e| panic!("[{row}] reload_for_watch_impl: {e}"))
+            }
+            Entry::WarmEditParam => {
+                open_file_engine_impl(&engine, &path)
+                    .unwrap_or_else(|e| panic!("[{row}] open before edit: {e}"));
+                let edited = preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+                    .unwrap_or_else(|e| panic!("[{row}] preview_parameter_impl: {e}"));
+                let depth = edited
+                    .values
+                    .iter()
+                    .find(|v| v.name == "depth")
+                    .unwrap_or_else(|| panic!("[{row}] expected a `depth` cell after the edit"));
+                assert_eq!(
+                    depth.value, "250",
+                    "[{row}] depth must read 250 (mm) after the warm edit, proving the \
+                     edit took effect rather than replaying a stale state; got {:?}",
+                    depth.value
+                );
+                edited
+            }
+        };
+        assert_rigid_mass_props_determined(&state, &format!("{row}: entry state"));
+
+        // ── (2) the selective-demand re-renders the GUI actually paints ──
+        let keys = visible_realization_keys(&state);
+        assert!(
+            !keys.is_empty(),
+            "[{row}] the entry state must render at least one realization mesh, else \
+             sync_demand is a no-op and this row is vacuous"
+        );
+        sync_demand_impl(&engine, &keys)
+            .unwrap_or_else(|e| panic!("[{row}] sync_demand_impl: {e}"));
+
+        for i in 1..=3 {
+            let state = get_initial_state_impl(&engine)
+                .unwrap_or_else(|e| panic!("[{row}] get_initial_state_impl #{i}: {e}"));
+            assert_rigid_mass_props_determined(&state, &format!("{row}: re-render {i}"));
+        }
+
+        // ── (3) the debug-MCP `engine_state` projection must agree with the panel ──
+        let full_scene = crate::engine_lock::with_engine_lock(&engine, |s| {
+            s.build_gui_state_full_scene()
+        })
+        .and_then(std::convert::identity)
+        .unwrap_or_else(|e| panic!("[{row}] build_gui_state_full_scene: {e}"));
+        assert_rigid_mass_props_determined(&full_scene, &format!("{row}: full-scene debug read"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment — the OTHER half of the retention mechanism.
+//
+// The tests above all call `sync_demand` with the COMPLETE visible key set, so
+// they exercise only RETENTION. These four exercise the two ways retention must
+// NOT fire: the `sync_demand` prune (a hidden entity's cached cells are dropped,
+// arch §8) and the dispatch discriminator (a realization that re-ran and
+// resolved to nothing must not replay its previous value). Without them a
+// regression that deleted the `retain` line, inverted its predicate, or made
+// retention unconditional on `Undef` would leave the whole suite green.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Two INDEPENDENT `: Rigid` bodies — two entities, one realization each — so a
+/// `sync_demand` that names only `RigidBodyA`'s key hides `RigidBodyB` WHOLE.
+/// That is the granularity the prune is exact at (see `EngineSession::sync_demand`
+/// docs), and the granularity a `: Rigid` body's entity-level mass-prop cells
+/// actually live at.
+///
+/// Body A's `depth` is hoisted into a defaulted `param` so a warm `preview_parameter`
+/// can re-dispatch body A while body B stays hash-exempt
+/// (`warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props`). It
+/// is INERT for the consumers that never edit: at load `depth = 300mm`, so the box
+/// receives the same scalar args a literal would give it, and
+/// `compute_realization_upstream_values_hash_from_ops` folds the op's arg VALUES —
+/// the input cone only moves once `preview_parameter` is actually called. That is why
+/// one fixture serves all three consumers; an earlier round carried a second,
+/// literal-armed copy of this source on a constant-cone premise that hoisting does
+/// not in fact disturb.
+const RIGID_TWO_BODY_SRC: &str = r#"structure def RigidBodyA : Rigid {
+    param depth : Length = 300mm
+    param geometry : Solid = box(100mm, 100mm, depth)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+
+structure def RigidBodyB : Rigid {
+    param geometry : Solid = box(50mm, 50mm, 150mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}"#;
+
+/// ONE `: Rigid` entity carrying TWO realizations (the `Rigid`-flavoured twin of
+/// `SELECTIVE_MULTIBODY_SRC`): `geometry` realizes as `#realization[0]`, the
+/// extra `let` box as `#realization[1]`. Hiding just `[1]` is the PARTIAL hide
+/// the entity-granular prune deliberately does not catch.
+const RIGID_TWO_REALIZATION_SRC: &str = r#"structure def RigidTwoRealizations : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let aux = box(50mm, 50mm, 50mm)
+}"#;
+
+/// The subset of `visible_realization_keys` belonging to `entity` — what the
+/// frontend sends after the user hides everything else.
+fn realization_keys_for(state: &crate::types::GuiState, entity: &str) -> Vec<String> {
+    let prefix = format!("{entity}#realization[");
+    let keys: Vec<String> = visible_realization_keys(state)
+        .into_iter()
+        .filter(|k| k.starts_with(&prefix))
+        .collect();
+    assert!(
+        !keys.is_empty(),
+        "expected at least one `{prefix}N]` mesh key; a vacuous key list would make \
+         sync_demand a no-op and the calling test meaningless. Have: {:?}",
+        visible_realization_keys(state)
+    );
+    keys
+}
+
+/// Task #5338 amendment (reviewer suggestion 3) — pins the `sync_demand` PRUNE
+/// predicate, not just the retention it guards.
+///
+/// Sequence: load both bodies, `sync_demand` with BOTH keys and rebuild so BOTH
+/// bodies' mass-prop cells land in `geometry_derived_cache`, then `sync_demand`
+/// with ONLY body A's key and rebuild. Body B is now hidden, so its realization
+/// is neither dispatched nor demanded — arch §8 ("a pruned realization's cached
+/// result is never served as Final") requires its cached cells be dropped rather
+/// than re-surfaced as `determined` / `final`.
+///
+/// Body A must stay Final throughout: the prune must drop the hidden entity's
+/// entries WITHOUT collaterally dropping the visible one's, which is what
+/// distinguishes a correct predicate from `retain(|_, _| false)`.
+#[test]
+fn hidden_rigid_body_mass_props_are_not_served_as_final() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "cold load");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "cold load");
+
+    // (1) BOTH visible: both bodies' cells are cached.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session.build_gui_state().expect("rebuild, both visible");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "both visible");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "both visible");
+
+    // (2) Hide body B. The prune must drop ITS entries and keep body A's.
+    let a_keys = realization_keys_for(&state, "RigidBodyA");
+    session.sync_demand(&a_keys);
+    let state = session.build_gui_state().expect("rebuild, body B hidden");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "body B hidden");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "body B hidden");
+}
+
+/// Task #5338 amendment (reviewer suggestion 1) — `build_gui_state_full_scene`
+/// must not leak a HIDDEN entity's freshly-resolved cells into the retention
+/// cache.
+///
+/// The debug-MCP `engine_state` / `mesh_stats` projection forces `full_scope` for
+/// one build, so `tessellate_snapshot` dispatches EVERY realization — including
+/// hidden ones. Those values bypass the `sync_demand` prune chokepoint entirely.
+/// If they persisted past the read, the very next SELECTIVE rebuild would find
+/// the hidden body's cell `Undef` in the delta, hit the leaked entry, and paint
+/// it `determined` / `final` — the arch §8 violation the prune exists to prevent.
+///
+/// The final assertion is deliberately AFTER the debug read, which is exactly
+/// where `rigid_mass_props_determined_across_all_gui_load_paths` stops and
+/// therefore cannot observe the after-effect.
+#[test]
+fn full_scene_debug_read_does_not_leak_hidden_cells_into_the_retention_cache() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
+
+    // Hide body B from the start, so nothing legitimately caches its cells.
+    let a_keys = realization_keys_for(&state, "RigidBodyA");
+    session.sync_demand(&a_keys);
+    let state = session.build_gui_state().expect("selective rebuild");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "before the debug read");
+
+    // The debug read DOES see body B — that is its whole purpose, and asserting
+    // it here proves the full-scope override really did dispatch the hidden
+    // realization (i.e. the leak this test guards against is genuinely reachable).
+    let full_scene = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene");
+    assert_rigid_mass_props_final(&full_scene, "RigidBodyB", "full-scene debug read");
+
+    // …but it must leave no trace in the production posture.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the debug read");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "after the debug read");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "after the debug read");
+}
+
+/// Task #5338 amendment (reviewer suggestion 2) — pins the DOCUMENTED
+/// entity-granular approximation in `EngineSession::sync_demand`.
+///
+/// `ValueCellId` is `(entity, member)` and carries no realization index, so the
+/// prune joins on the entity half only: an entity keeps its cached cells while
+/// ANY of its realizations is visible. Here `RigidTwoRealizations#realization[1]`
+/// (the `aux` box) is hidden while `[0]` stays visible, so the entity's mass-prop
+/// cells are retained.
+///
+/// That is CORRECT for this shape — the mass props derive from `geometry`, i.e.
+/// realization `[0]`, which is still visible and demanded — but it is retention
+/// by entity-level approximation, not by proof that the owning realization is
+/// live. This test exists so the approximation is executable rather than prose:
+/// a future change to realization-granular association should make it fail and
+/// force a conscious update, and `sync_demand`'s "Known limitation" section
+/// should be revised with it.
+#[test]
+fn multi_realization_partial_hide_retains_at_entity_granularity() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_REALIZATION_SRC, "two_realizations")
+        .expect("load_from_source should succeed for the two-realization source");
+
+    let keys = visible_realization_keys(&state);
+    assert!(
+        keys.len() >= 2,
+        "the fixture must render at least TWO realizations of the one entity, else \
+         this test does not exercise a PARTIAL hide at all; got {keys:?}"
+    );
+    session.sync_demand(&keys);
+    let state = session.build_gui_state().expect("rebuild, all visible");
+    assert_rigid_mass_props_final(&state, "RigidTwoRealizations", "all realizations visible");
+
+    // Hide exactly one realization of the entity; the entity itself stays visible.
+    let kept: Vec<String> = keys.iter().take(1).cloned().collect();
+    session.sync_demand(&kept);
+    let state = session
+        .build_gui_state()
+        .expect("rebuild, one realization hidden");
+    assert_rigid_mass_props_final(
+        &state,
+        "RigidTwoRealizations",
+        "one realization hidden (entity still visible)",
+    );
+}
+
+/// Task #5338 amendment (reviewer suggestion 5) — a realization that RE-RAN and
+/// resolved to nothing must not have its previous value replayed as Final.
+///
+/// MEASURED on this branch: the delta encodes a hash-exempt gap and a genuine
+/// degeneration IDENTICALLY, as an explicit `Value::Undef` entry (never an absent
+/// key), so `Undef` alone cannot discriminate. `surface_geometry_derived_cells`
+/// therefore keys on `result.meshes` — the delta's own dispatch record — and
+/// retains only when the cell's realization did NOT run this pass.
+///
+/// The degeneration is induced without OCCT via `MockGeometryKernel`'s
+/// explicit `fail_after_n_dispatches` knob (task #6471,
+/// `rigid_mass_props_session_seeded_then_failing`): handles 1 and 2 are
+/// seeded to succeed, and every query for a handle past id 2 — i.e. anything
+/// a later dispatch allocates — fails explicitly. That is exactly the shape
+/// of a failing kernel query or degenerate geometry in production, and is
+/// encoded in the delta exactly as a hash-exempt gap is.
+///
+/// Reviewer suggestion 4 on task #5338: seed-range STARVATION (leaving
+/// handles past a narrow range unseeded and relying on the generic "no mock
+/// result" fallback) coupled this test to the exact number of kernel
+/// dispatches the production path happens to perform. `MockGeometryKernel`
+/// now supports stating "queries for handles past N fail" directly
+/// (`fail_after_n_dispatches`, `crates/reify-test-support/src/mocks.rs`,
+/// task #6471), so the failure is guaranteed by construction and the test no
+/// longer needs a downstream precondition block inspecting the mock's
+/// operation log to confirm it took effect. Implemented under ticket
+/// `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
+///
+/// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
+/// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
+/// `reason = None`, i.e. a stale value presented as fresh and authoritative.
+#[test]
+fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let (session, dispatch_log) = rigid_mass_props_session_seeded_then_failing(1..=2);
+    let engine = Arc::new(Mutex::new(session));
+
+    // (1) Cold load: the box realizes to seeded handle 1, so the mass props
+    //     resolve and enter the retention cache.
+    let state = crate::commands::open_file_engine_impl(&engine, &path)
+        .expect("open_file_engine_impl should succeed");
+    assert_rigid_mass_props_final(&state, "RigidMassSmoke", "cold load (handle 1)");
+
+    // (2) Selective re-renders with NO edit: the first re-dispatches to seeded
+    //     handle 2, the rest are hash-exempt and served from retention. This half
+    //     must keep working — the amendment NARROWS retention, it does not remove
+    //     it — and it is what makes step (3) a real change of verdict rather than
+    //     a cell that was never Final to begin with.
+    let keys = visible_realization_keys(&state);
+    crate::commands::sync_demand_impl(&engine, &keys).expect("sync_demand_impl");
+    for i in 1..=3 {
+        let state = crate::commands::get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("re-render #{i}, no edit: {e}"));
+        assert_rigid_mass_props_final(
+            &state,
+            "RigidMassSmoke",
+            &format!("re-render {i}, no edit (retention still live)"),
+        );
+    }
+
+    // (3) Warm edit: the realization's input-cone hash CHANGES, so it is
+    //     dispatched — and its geometry queries now hit a handle the mock was
+    //     explicitly configured to fail (`fail_after_n_dispatches(2)` above),
+    //     regardless of which exact handle number the dispatch allocates.
+    let ops_before = dispatch_log.lock().unwrap().len();
+    let state = crate::commands::preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+        .expect("preview_parameter_impl");
+    assert!(
+        dispatch_log.lock().unwrap().len() > ops_before,
+        "the depth edit must have re-DISPATCHED the realization — with no new op the \
+         realization stayed hash-exempt, which is the sibling test's scenario and never \
+         reaches the degeneration guard this test exists to pin"
+    );
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` cell after the edit");
+    assert_eq!(
+        depth.value, "250",
+        "the edit must have taken effect, else this test proves nothing about the \
+         post-dispatch path; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_not_final(&state, "RigidMassSmoke", "after the degenerating edit");
+
+    // (4) …and it must STAY cleared on subsequent re-renders, rather than the
+    //     stale pre-edit value creeping back in on the next hash-exempt pass.
+    for i in 1..=2 {
+        let state = crate::commands::get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("re-render #{i} after the degenerating edit: {e}"));
+        assert_rigid_mass_props_not_final(
+            &state,
+            "RigidMassSmoke",
+            &format!("re-render {i} after the degenerating edit"),
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 2 — the WARM-EDIT half of retention invalidation.
+//
+// `degenerate_geometry_after_rebuild_clears_the_retained_mass_props` above covers
+// the warm edit that DOES re-dispatch (an op-arg edit whose realization then
+// resolves to nothing). The pair below covers the warm edit that does NOT: an
+// edit to a mass input that never reaches a geometry op's scalar args, so the
+// realization stays HASH-EXEMPT, is never dispatched, and the delta can carry no
+// fresh value at all. There the "a fresh delta always wins" half of the retention
+// contract is structurally unavailable, and only an explicit invalidation can stop
+// the pre-edit value being replayed as `determined` / `final`.
+//
+// The second test pins the SCOPE of that invalidation: it must be entity-scoped,
+// never a blunt full clear.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A `: Rigid` body whose `material.density` — and therefore its auto-derived
+/// `mass` (`volume(geometry) * material.density`) and `moment_of_inertia`
+/// (`moment_of_inertia(geometry, body_density)`) — is driven by a param that is
+/// NOT a scalar argument of any geometry op.
+///
+/// `density_scale : Real` rather than a `Density`-typed param is deliberate, but
+/// the ORIGINAL reason has expired. It was that `parse_value_string` (engine.rs)
+/// knew only a five-entry `deg`/`rad`/`mm`/`cm`/`m` table, so a `Density`-typed
+/// param was not editable through `preview_parameter` at all. Task #5757 retired that
+/// table for an index composed from the curated display ladders plus
+/// `reify_core::BUILTIN_UNITS`, and `kg/m^3` now resolves — so a `Density` param
+/// IS editable today.
+///
+/// DO NOT retype this fixture on the strength of that. The `Real` multiplier is
+/// still what this test needs: it is the shape a user actually authors (a
+/// `param body_density` folded into `Material(...)`), and — load-bearing here —
+/// it is a mass input that is NOT a scalar argument of any geometry op, which is
+/// the whole precondition for the #5338 stale-mass defect below. Retyping it
+/// would perturb an unrelated regression lock for no gain.
+///
+/// Note also that a `Density`-typed param would now be subject to #5757's
+/// bare-number gate, so the warm edit below would have to be spelled
+/// `"2kg/m^3"`; `"2.0"` works precisely because this cell is `Real`.
+///
+/// At load `density_scale = 1.0`, so the density is bits-exact `7850.0` — which is
+/// what `with_inertia_tensor_result` keys on (test_helpers.rs) — and the cold load
+/// resolves normally.
+const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid {
+    param depth : Length = 300mm
+    param density_scale : Real = 1.0
+    param geometry : Solid = box(100mm, 100mm, depth)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3 * density_scale, youngs_modulus: 200GPa)
+    constraint depth > 0mm
+}"#;
+
+/// Task #5338 amendment round 2 (reviewer blocking issue) — a warm edit of a
+/// mass input that is not a geometry-op arg must not replay the PRE-EDIT mass as
+/// a fresh, authoritative value.
+///
+/// RED before the accompanying `engine.rs` change, and the chain is entirely
+/// measurable on this branch:
+///
+///  * `preview_parameter` (engine.rs) commits through `core.commit_check`, which
+///    touches only `last_check`. The `geometry_derived_cache.clear()` lives in
+///    `commit_state`, which a warm edit NEVER reaches — so retention survives the
+///    edit untouched.
+///  * `edit_param` mutates the EXISTING snapshot graph in place rather than
+///    rebuilding it, so `RealizationNodeData.input_cone_hash` survives too; and
+///    that hash is a fold over the realization's own geometry-op scalar args ONLY
+///    (`compute_realization_upstream_values_hash_from_ops`, engine_build.rs).
+///    `density_scale` reaches `material.density`, never an op arg.
+///  * Unchanged hash ⇒ HASH-EXEMPT ⇒ dropped from the scheduled seed ⇒ kernel ops
+///    skipped ⇒ no mesh in `result.meshes`, and an explicit `Value::Undef` in
+///    `result.values`.
+///  * In `surface_geometry_derived_cells` the
+///    `Some(Value::Undef) if dispatched_entities.contains(..)` degeneration guard
+///    therefore does NOT fire (the entity was not dispatched), and the
+///    `_ => cache.get(&id)` arm replays the pre-edit mass as `determined` /
+///    `freshness = "final"` / `reason = None`.
+///
+/// That is strictly worse than the pre-#5338 behaviour, where the cell read
+/// `Undef`. Degrading to `Undef` is the fail-safe direction and is what this test
+/// requires.
+///
+/// The PD-constraint assertion is not redundant with the cell assertion: a
+/// re-check driven off a retained pre-edit `moi_principal` is the same stale value
+/// wearing a constraint badge, and `surface_geometry_derived_cells` explicitly
+/// overlays cache-sourced cells into the re-check input.
+#[test]
+fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_DENSITY_SCALE_SRC, "rigid_density_scale")
+        .expect("load_from_source should succeed for the density-scale source");
+    assert_rigid_mass_props_final(&state, "RigidDensityScale", "cold load");
+
+    // (1) The first SELECTIVE rebuild — the pass that stores the realization's
+    //     `input_cone_hash` AND populates the retention cache. Both halves of the
+    //     defect's precondition are established here; without it the edit below
+    //     would simply re-dispatch under full scope and prove nothing.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "RigidDensityScale", "first selective rebuild");
+
+    // (2) The warm edit. `density_scale` doubles the body's density, so every
+    //     mass prop is now wrong by construction — but no geometry op arg moved.
+    let state = session
+        .preview_parameter("RigidDensityScale.density_scale", "2.0")
+        .expect("preview_parameter should succeed for the Real density multiplier");
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.entity_path == "RigidDensityScale" && v.name == "density_scale")
+        .expect("expected a `density_scale` value cell after the edit");
+    let scale_value: f64 = scale.value.parse().unwrap_or_else(|_| {
+        panic!(
+            "expected a numeric `density_scale` cell after the edit; got {:?}",
+            scale.value
+        )
+    });
+    assert_eq!(
+        scale_value, 2.0,
+        "the edit must have taken effect, else this test proves nothing about the \
+         post-edit path; got {:?}",
+        scale.value
+    );
+    assert_rigid_mass_props_not_final(
+        &state,
+        "RigidDensityScale",
+        "after the non-op-arg density edit",
+    );
+    assert_ne!(
+        find_moi_principal_constraint(&state).status,
+        "satisfied",
+        "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
+         Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
+         value wearing a constraint badge"
+    );
+
+    // (3) …and the dropped value must not creep back on the next hash-exempt pass.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the density edit should succeed");
+    assert_rigid_mass_props_not_final(&state, "RigidDensityScale", "rebuild after the density edit");
+}
+
+/// Task #5338 amendment round 2 — pins the SCOPE of the warm-edit invalidation.
+///
+/// Expected GREEN both before and after the accompanying `engine.rs` change: it
+/// exists to forbid the obvious over-correction. A blunt
+/// `geometry_derived_cache.clear()` on every `preview_parameter` would drop every
+/// UNAFFECTED entity's retention too, and those entities stay hash-exempt until
+/// the next recompile — so their mass-prop cells would read `Undef` indefinitely,
+/// which is #5338 itself, re-opened for every body the user did not touch. This
+/// test fails at step (3)'s `RigidBodyB` if that shortcut is ever taken.
+///
+/// Body A's `depth` IS an op arg, so its input-cone hash changes, it dispatches,
+/// and the delta carries fresh values for it — the assertion there is that a
+/// correct invalidation does not break the ordinary re-dispatch path either.
+#[test]
+fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "cold load");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "cold load");
+
+    // (1) Both bodies visible and demanded: both land in the retention cache.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "first selective rebuild");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "first selective rebuild");
+
+    // (2) Edit ONE body's op arg.
+    let state = session
+        .preview_parameter("RigidBodyA.depth", "250mm")
+        .expect("preview_parameter should succeed for body A's depth");
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.entity_path == "RigidBodyA" && v.name == "depth")
+        .expect("expected a `RigidBodyA.depth` value cell after the edit");
+    assert_eq!(
+        depth.value, "250",
+        "the edit must have taken effect; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "edited body (re-dispatched)");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "untouched body (hash-exempt)");
+
+    // (3) …and both must survive the following hash-exempt rebuild.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the depth edit should succeed");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "edited body, next rebuild");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "untouched body, next rebuild");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 3 — the CONTAINED sub-part shape.
+//
+// Every fixture above is a flat, root-level template, where the frontend's mesh
+// key (`Entity#realization[N]`) and the panel cell's `entity_path` are the same
+// string. For a `: Rigid` body reached through containment they are NOT: the mesh
+// key carries the composed CONTAINMENT path (`Asm.part#realization[0]`, built by
+// reify-eval's `surface_realizations` from the dotted path prefix) while the cell
+// keeps the TEMPLATE name (`RigidPart`, since `ValueData.entity_path` is
+// `cell.id.entity` and value cells are template-level). The pair below pins what
+// that mismatch actually costs, measured rather than assumed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A `: Rigid` body reached through containment: `Asm` holds one placed `sub part`
+/// whose type is the `: Rigid` template. Surfaces as mesh key
+/// `Asm.part#realization[0]` with mass-prop cells on entity `RigidPart`.
+///
+/// The placement mirrors `get_entity_tree_aux_sub_inherits_default_visible_false`
+/// (engine_tests.rs), the existing composed-path fixture.
+const RIGID_CONTAINED_SUB_SRC: &str = r#"structure def RigidPart : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+
+structure Asm {
+    sub part : RigidPart at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+}"#;
+
+/// Task #5338 amendment round 3 (reviewer suggestion 1) — a contained `: Rigid`
+/// sub-part under the frontend's REAL key does not reach the retention path at
+/// all, and the degradation is fail-safe.
+///
+/// MEASURED on this branch, and the reason this is a lock rather than a fix:
+/// feeding `sync_demand` the key the frontend actually holds
+/// (`Asm.part#realization[0]`, straight out of `state.meshes`) leaves the pass
+/// dispatching NOTHING — `state.meshes` is EMPTY on the very first selective
+/// rebuild, where the flat fixtures emit every visible body's mesh (see
+/// `contained_rigid_sub_part_retention_works_once_the_demand_key_resolves`, which
+/// runs the SAME source and cold load and differs only in the demand key). So the
+/// composed containment path does not resolve to a realization node in the demand
+/// graph: the cone is empty and the sub-part is not rendered.
+///
+/// The `sync_demand` prune ALSO drops the cached cells there — `visible_entities`
+/// holds `Asm.part`, the cache keys on `RigidPart` — and that is the CORRECT
+/// outcome, not a second bug to fix independently. Retaining them would paint a
+/// `determined` / `final` mass for a body the pass never demanded and the viewport
+/// never drew, i.e. exactly the arch §8 violation ("a pruned realization's cached
+/// result is never served as Final") the prune exists to discharge. Repairing the
+/// join alone, without the upstream key resolution, would therefore make this
+/// WORSE, not better.
+///
+/// The residual is that #5338's retention never applies to contained bodies, which
+/// costs nothing while their selective demand resolves to an empty scene anyway.
+/// Both halves live upstream of this crate (reify-eval's realization-node keying
+/// vs. the composed mesh path), so closing them is filed under ticket
+/// `tkt_0RSRP0RVHF2SMG12S7QB1F9VHT` rather than smuggled into an amendment pass.
+#[test]
+fn contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_CONTAINED_SUB_SRC, "contained_rigid")
+        .expect("load_from_source should succeed for the contained-sub source");
+    // The cold load is full-scope, so the sub-part's mass props resolve normally —
+    // establishing that the cells exist and CAN be Final, which is what makes the
+    // assertions below a change of verdict rather than a cell that never resolved.
+    assert_rigid_mass_props_final(&state, "RigidPart", "cold load (full scope)");
+
+    // The join-key mismatch itself: the mesh key is the composed containment path,
+    // the cells sit on the template name. Pinned explicitly — if reify-eval ever
+    // makes these agree, this assertion is the first thing to go red and the
+    // `sync_demand` limitation doc above it can be retired.
+    let keys = visible_realization_keys(&state);
+    assert_eq!(
+        keys,
+        vec!["Asm.part#realization[0]".to_string()],
+        "the frontend's key for a contained sub-part is the composed containment \
+         path, while its mass-prop cells key on the template name `RigidPart` — \
+         that mismatch is this test's whole premise"
+    );
+
+    session.sync_demand(&keys);
+    for i in 1..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("re-render #{i} under the composed key: {e}"));
+        assert!(
+            state.meshes.is_empty(),
+            "[re-render {i}] MEASURED: the composed key resolves to no realization \
+             node, so the pass dispatches nothing and the scene is empty; got {:?}. \
+             A non-empty scene here means the upstream key gap closed — re-read the \
+             `sync_demand` known-limitation doc before touching the prune",
+            state
+                .meshes
+                .iter()
+                .map(|m| m.entity_path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_rigid_mass_props_not_final(
+            &state,
+            "RigidPart",
+            &format!("re-render {i} under the composed key (nothing demanded)"),
+        );
+    }
+}
+
+/// The positive twin: the retention mechanism is NOT containment-blind — feed
+/// `sync_demand` a key that resolves and a contained sub-part behaves exactly like
+/// a root body.
+///
+/// Same source and same cold load as
+/// `contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key`; the
+/// ONLY difference is the demand key (`RigidPart#realization[0]`, the template-level
+/// form, instead of the composed `Asm.part#realization[0]`). Re-render 1 dispatches
+/// and emits the mesh; re-renders 2-3 are hash-exempt and are served from the
+/// retention cache. That isolates the defect to the KEY, not to the cache's
+/// entity join or to anything containment-specific in `surface_geometry_derived_cells`
+/// — so a future fix belongs at the key seam, and this test says what "fixed" looks
+/// like.
+#[test]
+fn contained_rigid_sub_part_retention_works_once_the_demand_key_resolves() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_CONTAINED_SUB_SRC, "contained_rigid")
+        .expect("load_from_source should succeed for the contained-sub source");
+    assert_rigid_mass_props_final(&state, "RigidPart", "cold load (full scope)");
+
+    session.sync_demand(&["RigidPart#realization[0]".to_string()]);
+
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild under the template-level key");
+    assert!(
+        !state.meshes.is_empty(),
+        "the template-level key must resolve to a demand root — an empty scene here \
+         would make the retention assertions below vacuous"
+    );
+    assert_rigid_mass_props_final(&state, "RigidPart", "first selective rebuild (dispatched)");
+
+    for i in 2..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("re-render #{i} under the template-level key: {e}"));
+        assert_rigid_mass_props_final(
+            &state,
+            "RigidPart",
+            &format!("re-render {i} (hash-exempt, served from retention)"),
+        );
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 3 — the CROSS-MODULE collision `commit_state`'s
+// unconditional clear is documented as guarding against.
+//
+// `commit_state` clears `geometry_derived_cache` on EVERY recompile, and its doc
+// argues that narrowing that to `FilePathUpdate::Set` would be actively unsafe
+// because `load_from_source` also commits with `Preserve` and can carry a
+// DIFFERENT module whose entities collide on `ValueCellId` (entity+member) — two
+// sources each declaring a `Body : Rigid` both key `Body.mass`. Nothing in the
+// suite exercised that, so the argument was prose a maintainer could not check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Module A's `Body : Rigid`: density 7850kg/m^3, the value
+/// `with_inertia_tensor_result` is seeded on (test_helpers.rs), so ALL FOUR
+/// mass-prop cells resolve and enter the retention cache.
+const COLLIDING_BODY_SRC_A: &str = r#"structure def Body : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}"#;
+
+/// Module B's `Body : Rigid` — same entity name, hence the same `ValueCellId`s,
+/// but a different body: half the density, so its `mass` differs from module A's
+/// by construction, and its inertia query is UNANSWERED (the mock keys the
+/// inertia tensor on a bits-exact 7850.0), so its `moment_of_inertia` /
+/// `moi_principal` resolve to `Undef`.
+///
+/// Both halves matter: the first catches a stale `mass` value being replayed, the
+/// second catches a stale tensor being served where module B has no value at all.
+const COLLIDING_BODY_SRC_B: &str = r#"structure def Body : Rigid {
+    param geometry : Solid = box(50mm, 50mm, 50mm)
+    param material : Material = Material(name: "alu", density: 3925kg/m^3, youngs_modulus: 70GPa)
+}"#;
+
+/// The formatted `Body.mass` cell, or a panic naming what was there instead.
+fn mass_value_of(state: &crate::types::GuiState, entity: &str, ctx: &str) -> String {
+    state
+        .values
+        .iter()
+        .find(|v| v.entity_path == entity && v.name == "mass")
+        .unwrap_or_else(|| panic!("[{ctx}] expected a `{entity}.mass` cell"))
+        .value
+        .clone()
+}
+
+/// Task #5338 amendment round 3 (reviewer suggestion 6) — loading a second module
+/// whose entities collide on `ValueCellId` must not replay the first module's
+/// mass-property values.
+///
+/// This is the executable form of the collision `commit_state`'s unconditional
+/// `geometry_derived_cache.clear()` is documented against: `load_from_source`
+/// commits with `Preserve`, so a clear narrowed to `FilePathUpdate::Set` would
+/// carry module A's `Body.mass` / `Body.moment_of_inertia` into module B's panel,
+/// where both cells key identically.
+///
+/// Read what it pins accurately: it locks the OUTCOME (no cross-module replay),
+/// not the clear specifically. MEASURED on this branch — with that `clear()`
+/// deleted this test still passes, because a recompile resets every
+/// `input_cone_hash`, so module B's colliding realization dispatches on the pass
+/// right after the load and the dispatched-entity discriminator drops the retained
+/// entry. The clear is the outer guard for the case the discriminator cannot see
+/// (a colliding realization that dispatches but emits no mesh); that case is not
+/// reachable through this crate's API with the mock kernel, which is why this test
+/// stops where it does. See the `commit_state` comment for the full division of
+/// labour before narrowing anything there.
+#[test]
+fn a_colliding_second_module_does_not_replay_the_first_modules_mass_props() {
+    let mut session = rigid_mass_props_session();
+
+    // (1) Module A, driven all the way into the retention cache: cold load, then
+    //     the selective rebuild that is the only thing that populates it.
+    let state = session
+        .load_from_source(COLLIDING_BODY_SRC_A, "module_a")
+        .expect("load_from_source should succeed for module A");
+    assert_rigid_mass_props_final(&state, "Body", "module A cold load");
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("module A's selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "Body", "module A selective rebuild");
+    let mass_a = mass_value_of(&state, "Body", "module A selective rebuild");
+
+    // (2) Module B, same entity name, different body.
+    let state = session
+        .load_from_source(COLLIDING_BODY_SRC_B, "module_b")
+        .expect("load_from_source should succeed for module B");
+
+    let mass_b = mass_value_of(&state, "Body", "module B cold load");
+    assert_ne!(
+        mass_b, mass_a,
+        "module B's `Body.mass` must be its OWN value, not module A's replayed \
+         through the colliding `ValueCellId` — module B is half the density, so an \
+         equal reading means one module's mass was surfaced onto another's panel"
+    );
+
+    // Module B's inertia query is unanswered, so it HAS no tensor this pass. The
+    // cells must degrade rather than serve module A's.
+    for name in ["moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.entity_path == "Body" && v.name == name)
+            .unwrap_or_else(|| panic!("expected a `Body.{name}` cell after module B's load"));
+        assert!(
+            !(cell.determinacy == "determined" && cell.freshness == "final"),
+            "`Body.{name}` must not be served as a fresh Final value under module B, \
+             which has no tensor for it; got determinacy={:?}, freshness={:?}, \
+             value={:?}",
+            cell.determinacy,
+            cell.freshness,
+            cell.value
+        );
+    }
+
+    // (3) …and the following rebuild must not resurrect them either.
+    let state = session
+        .build_gui_state()
+        .expect("the rebuild after module B's load should succeed");
+    assert_eq!(
+        mass_value_of(&state, "Body", "module B rebuild"),
+        mass_b,
+        "module B's `Body.mass` must be stable across the next rebuild rather than \
+         drifting back toward module A's retained value"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Queued request constructors (task 7442): each engine-touching command as an
+// EvalQueue request, driven through a ManualQueue so the drainer runs here.
+// ---------------------------------------------------------------------------
+
+mod queued_requests {
+    use std::sync::{Arc, Mutex};
+
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::{MockGeometryKernel, bracket_source};
+
+    use super::{make_test_engine_for_commands, make_test_engine_on_disk};
+    use crate::commands::{
+        active_fea_case_evaluation, commit_parameter_edit, disk_reload_edit, editor_source_edit,
+        initial_file_evaluation, initial_state_evaluation, open_file_evaluation,
+        preview_parameter_edit,
+    };
+    use crate::engine::EngineSession;
+    use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
+    use crate::tests::test_helpers::{ManualQueue, Observed, RecordingObserver, settled};
+
+    const WIDTH: &str = "Bracket.width";
+
+    fn order(seq: u64) -> EditOrder {
+        EditOrder { epoch: 1, seq }
+    }
+
+    /// The `(value, unit)` the newest published delta gave `Bracket.width`.
+    fn published_width(observer: &RecordingObserver) -> Option<(String, String)> {
+        observer
+            .published_value(WIDTH)
+            .map(|width| (width.value, width.unit))
+    }
+
+    fn mm(value: &str) -> Option<(String, String)> {
+        Some((value.to_string(), "mm".to_string()))
+    }
+
+    fn fresh_engine() -> Arc<Mutex<EngineSession>> {
+        Arc::new(Mutex::new(EngineSession::new(
+            reify_eval::SolverPosture::SolverFree,
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        )))
+    }
+
+    fn bracket_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("bracket.ri");
+        std::fs::write(&path, bracket_source()).expect("write bracket.ri");
+        path
+    }
+
+    fn read(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).expect("the .ri file should be readable")
+    }
+
+    #[test]
+    fn a_queued_preview_publishes_the_value_and_leaves_the_file_alone() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(preview_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+        assert_eq!(read(&path), bracket_source());
+    }
+
+    #[test]
+    fn a_queued_commit_writes_the_file_and_publishes_the_committed_value() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(read(&path), bracket_source().replace("80mm", "120mm"));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+    }
+
+    /// A refusal discards the preview, so the restored state must ride the
+    /// publish or the viewport stays stranded on the preview.
+    #[test]
+    fn a_refused_queued_commit_replies_err_and_publishes_the_restored_state() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+        let preview = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+        assert_eq!(settled(preview), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+
+        let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+        std::fs::write(&path, external_text).expect("external write should succeed");
+        let commit = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "150mm".into(),
+            order(2),
+        ));
+        rig.executor.run_pending();
+
+        let refusal = settled(commit).expect_err("a diverged file must be refused");
+        assert!(
+            refusal.contains("no longer matches the source this session compiled"),
+            "got: {refusal}"
+        );
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_editor_sync_publishes_the_recompiled_state() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            bracket_source().replace("80mm", "95mm"),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    #[test]
+    fn a_broken_editor_buffer_still_publishes_the_last_good_state_with_an_error() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            "invalid syntax $$$".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        let deltas = rig.observer.deltas();
+        let published = deltas
+            .last()
+            .expect("the last-good state must be published");
+        assert_eq!(published_width(&rig.observer), mm("80"));
+        let diagnostics = published
+            .changed_compile_diagnostics
+            .as_ref()
+            .expect("the delta must carry the compile diagnostics");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == "Error"),
+            "got: {diagnostics:?}"
+        );
+    }
+
+    /// The reload reads the file when it RUNS, so a reload queued behind a long
+    /// evaluation never recompiles stale disk content.
+    #[test]
+    fn a_queued_disk_reload_reads_the_file_when_it_runs() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path.clone()));
+        std::fs::write(&path, bracket_source().replace("80mm", "95mm"))
+            .expect("rewrite should succeed");
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    /// A reload that fails is not silent: the watcher never reads the ticket,
+    /// so the job itself must log.
+    #[test]
+    fn a_failed_disk_reload_is_logged_as_a_warning() {
+        let (dir, _path, engine) = make_test_engine_on_disk();
+        let missing = dir.path().join("does_not_exist.ri");
+        let rig = ManualQueue::new();
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_gui::commands")
+            .build();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, missing));
+        tracing::subscriber::with_default(subscriber, || rig.executor.run_pending());
+
+        assert!(settled(ticket).is_err());
+        assert_eq!(
+            counters[&tracing::Level::WARN].load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+    }
+
+    /// The echo of this session's own durable write recompiles nothing.
+    #[test]
+    fn a_queued_disk_reload_of_the_session_source_publishes_nothing() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert!(rig.observer.deltas().is_empty());
+    }
+
+    /// Slider frames arriving while an earlier request runs: only the newest
+    /// preview runs, and it is the one value the frontend is told about.
+    #[test]
+    fn a_rapid_drag_behind_a_running_request_runs_only_the_newest_preview() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+
+        let running = {
+            let (queue, engine, frames) = (
+                Arc::clone(&rig.queue),
+                Arc::clone(&engine),
+                Arc::clone(&frames),
+            );
+            rig.queue.submit(EvalRequest::engine_call(move || {
+                for seq in 1..=10 {
+                    let value = format!("{}mm", 80 + seq);
+                    let edit = preview_parameter_edit(
+                        Arc::clone(&engine),
+                        WIDTH.into(),
+                        value,
+                        order(seq),
+                    );
+                    frames.lock().expect("frames").push(queue.submit(edit));
+                }
+                Ok(())
+            }))
+        };
+        rig.executor.run_pending();
+
+        assert_eq!(settled(running), Ok(()));
+        for frame in std::mem::take(&mut *frames.lock().expect("frames")) {
+            assert_eq!(settled(frame), Ok(()));
+        }
+        assert_eq!(rig.observer.deltas().len(), 1, "only one preview ran");
+        assert_eq!(published_width(&rig.observer), mm("90"));
+        let engine_width = crate::commands::get_initial_state_impl(&engine)
+            .expect("state")
+            .values
+            .into_iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value);
+        assert_eq!(engine_width.as_deref(), Some("90"));
+    }
+
+    #[test]
+    fn a_queued_file_open_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(open_file_evaluation(
+            fresh_engine(),
+            path.to_string_lossy().into_owned(),
+        ));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the open should succeed");
+        assert_eq!(
+            rig.observer.started_generations(),
+            [published.generation()],
+            "the reply is stamped with the generation the open ran under"
+        );
+        let state = published.state();
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(rig.observer.deltas().len(), 1);
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the load should succeed");
+        let state = published.state();
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_state_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_state_evaluation(make_test_engine_for_commands()));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the state should build");
+        assert!(published.state().values.iter().any(|v| v.cell_id == WIDTH));
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    /// The frontend drops a whole-state reply older than an announced
+    /// generation, so a reply queued behind an edit must be stamped later.
+    #[test]
+    fn a_whole_state_reply_queued_behind_an_edit_is_stamped_later_than_the_edit() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let edit = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        let whole = rig.queue.submit(initial_state_evaluation(engine));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(edit), Ok(()));
+        let published = settled(whole).expect("the state should build");
+        let generations = rig.observer.started_generations();
+        let [edit_generation, reply_generation] = generations[..] else {
+            panic!("expected the edit and the reply to be announced; got {generations:?}");
+        };
+        assert_eq!(published.generation(), reply_generation);
+        assert!(
+            published.generation() > edit_generation,
+            "got {generations:?}"
+        );
+        let width = published
+            .state()
+            .values
+            .iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value.as_str());
+        assert_eq!(width, Some("120"));
+    }
+
+    #[test]
+    fn a_queued_fea_case_switch_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(active_fea_case_evaluation(
+            make_test_engine_for_commands(),
+            "case-a".into(),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(rig.observer.deltas().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_queued_file_open_publishes_from_the_engine_lane() {
+        use crate::large_stack::WORKER_THREAD_NAME;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let observer = Arc::new(RecordingObserver::default());
+        let queue = EvalQueue::on_engine_lane(Arc::new(Mutex::new(None)), observer.clone());
+
+        let published = queue
+            .submit(open_file_evaluation(
+                fresh_engine(),
+                path.to_string_lossy().into_owned(),
+            ))
+            .await
+            .expect("the open should succeed");
+
+        assert!(!published.state().meshes.is_empty());
+        let delta_threads: Vec<_> = observer
+            .observations()
+            .into_iter()
+            .filter(|o| matches!(o.observed, Observed::Delta(_)))
+            .map(|o| o.thread)
+            .collect();
+        assert_eq!(delta_threads, [Some(WORKER_THREAD_NAME.to_string())]);
+    }
 }

@@ -41,15 +41,23 @@ data/queue/*.db*
 data/review-checkpoints/
 data/orchestrator/
 data/audit-runs/
+# verify instrumentation ledger + flaky ledger (machine-written; docs/notes/verify-instrumentation-ledger.md)
+data/verify-logs/
 gui/src-tauri/gen/
 orchestrator.log*
-review/reports/
+# /review's pre-contract report files carry no as_of_sha and are not reports (dark-factory skills/review/SKILL.md §Report home);
+# the contract-shaped review-<run_id>.{json,md} records are tracked.
+review/reports/phase[12]-*.json
+review/reports/summary-*.md
 
 # Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
 tree-sitter-reify/src/parser.c
 tree-sitter-reify/src/grammar.json
 tree-sitter-reify/src/node-types.json
+tree-sitter-reify/src/tree_sitter/
 tree-sitter-reify/src/.grammar_hash.stamp
+tree-sitter-reify/src/.generated_outputs.stamp
+tree-sitter-reify/src/.tmp-*
 tree-sitter-reify/src/.generate.lock
 tree-sitter-reify/src/.generate.lock.d
 
@@ -68,3 +76,10 @@ data/queue/*.db*
 # orchestrator runtime reconciliation DB (live SQLite, not version-controlled) — re #5248
 data/reconciliation/*.db*
 data/.orchestrator/reconciliation/*.db*
+
+# Stray repo-root runs.db decoy. The LIVE orchestrator run store is
+# data/orchestrator/runs.db; a 0-byte /runs.db accreted here and sqlite3
+# returns EMPTY (not an error) for every query against it, so anyone probing
+# the obvious repo-root path silently gets a vacuous "nothing recorded"
+# result. Cost one false RCA finding on 2026-08-05. Never version this path.
+/runs.db

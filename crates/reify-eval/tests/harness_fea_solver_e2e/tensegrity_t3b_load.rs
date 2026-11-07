@@ -23,20 +23,20 @@
 //! `member_force_deltas : List<Force>`, `slack : List<Bool>`, and
 //! `converged : Bool`.
 
+use crate::failed_diagnostics::{assert_mentions, joined_failure_messages, joined_messages};
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::make_simple_engine;
+use reify_ir::{OpaqueState, Value};
+// The `Tensegrity` assembly — the type-id-0 / "Tensegrity" / version-1
+// `StructureInstance` header and the nodes/struts/cables field map — has ONE
+// definition, in `reify_test_support::tensegrity_fixtures`. The two fixtures
+// below are not the triplex, but they are that same structure shape.
+use reify_test_support::tensegrity_fixtures::tensegrity;
+use reify_test_support::{
+    make_simple_engine, meters, point3, read_real_or_scalar, read_real_or_scalar3,
+};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
-
-/// A Length-typed coordinate Scalar (SI metres) — how `point3(..m, ..)` lowers.
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
 
 /// A Force-typed Scalar (SI newtons).
 fn force(n: f64) -> Value {
@@ -44,11 +44,6 @@ fn force(n: f64) -> Value {
         si_value: n,
         dimension: DimensionVector::FORCE,
     }
-}
-
-/// A 3-component `Value::Point` node coordinate (Length scalars).
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
 }
 
 /// A 3-component `Value::Vector` force load (Force scalars).
@@ -72,33 +67,22 @@ fn area(a: f64) -> Value {
     }
 }
 
+/// The T3b golden topology’s members: no struts, and the two cables of the
+/// collinear string `anchor(0) — free(1) — anchor(2)`. Shared by both string
+/// fixtures below, which differ only in whether a fourth ORPHAN node is
+/// appended — that node is touched by no member, so the cables are identical.
+const STRING_CABLES: [[i64; 2]; 2] = [[0, 1], [1, 2]];
+
 /// Collinear two-cable string `anchor(0) — free(1) — anchor(2)` with the free
-/// node at `(L,0,0)` and anchors at the origin and `(2L,0,0)`. `struts: []`,
-/// cables `[[0,1],[1,2]]` — the T3b golden topology.
+/// node at `(L,0,0)` and anchors at the origin and `(2L,0,0)`. No `surfaces`
+/// key — `tensegrity_load` is a line-only solve.
 fn two_cable_string(l: f64) -> Value {
-    let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0),     // node 0 — anchor
-        node(l, 0.0, 0.0),       // node 1 — free
-        node(2.0 * l, 0.0, 0.0), // node 2 — anchor
-    ]);
-    let struts = Value::List(vec![]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
+    let nodes = vec![
+        point3(0.0, 0.0, 0.0),     // node 0 — anchor
+        point3(l, 0.0, 0.0),       // node 1 — free
+        point3(2.0 * l, 0.0, 0.0), // node 2 — anchor
+    ];
+    tensegrity(nodes, &[], &STRING_CABLES, None)
 }
 
 /// Invoke the trampoline with the standard no-realization / no-warm-state args.
@@ -112,25 +96,6 @@ fn call_tensegrity_load(value_inputs: &[Value]) -> ComputeOutcome {
         no_warm_state,
         &CancellationHandle::new(),
     )
-}
-
-/// Extract an f64 from a Scalar (any dimension) or a bare Real.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real component, got {other:?}"),
-    }
-}
-
-/// Crack a 3-component displacement `Value::Vector` into `[f64; 3]`.
-fn vec3(v: &Value) -> [f64; 3] {
-    match v {
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [coord(&c[0]), coord(&c[1]), coord(&c[2])]
-        }
-        other => panic!("expected a 3-component Vector, got {other:?}"),
-    }
 }
 
 // ── step-9: happy path (no-slack transverse load) ────────────────────────────
@@ -189,7 +154,7 @@ fn trampoline_no_slack_transverse_load_solves() {
     assert_eq!(displacements.len(), 3, "expected 3 nodal displacements");
 
     // The user-observable signal: u_y[1] = P_t·L / (2·N0).
-    let u1 = vec3(&displacements[1]);
+    let u1 = read_real_or_scalar3(&displacements[1], "displacements[1]");
     let uy_expected = p_t * l / (2.0 * n0); // 0.01
     assert!(
         (u1[1] - uy_expected).abs() < 1e-9,
@@ -200,7 +165,7 @@ fn trampoline_no_slack_transverse_load_solves() {
     assert!((u1[2]).abs() < 1e-9, "u_z[1] = {} expected 0", u1[2]);
     // Anchored nodes do not move.
     for (i, n) in [0usize, 2].iter().enumerate() {
-        let u = vec3(&displacements[*n]);
+        let u = read_real_or_scalar3(&displacements[*n], &format!("displacements[{n}]"));
         assert!(
             u.iter().all(|c| c.abs() < 1e-9),
             "anchor node {n} (idx {i}) must not move, got {u:?}",
@@ -215,10 +180,10 @@ fn trampoline_no_slack_transverse_load_solves() {
     };
     assert_eq!(member_forces.len(), 2, "expected 2 member forces");
     for (i, f) in member_forces.iter().enumerate() {
+        let force = read_real_or_scalar(f, &format!("member_forces[{i}]"));
         assert!(
-            (coord(f) - n0).abs() < 1e-9,
-            "member_forces[{i}] = {} expected ≈ N0 = {n0}",
-            coord(f),
+            (force - n0).abs() < 1e-9,
+            "member_forces[{i}] = {force} expected ≈ N0 = {n0}",
         );
     }
 
@@ -229,10 +194,10 @@ fn trampoline_no_slack_transverse_load_solves() {
     };
     assert_eq!(deltas.len(), 2, "expected 2 member-force deltas");
     for (i, d) in deltas.iter().enumerate() {
+        let delta = read_real_or_scalar(d, &format!("member_force_deltas[{i}]"));
         assert!(
-            coord(d).abs() < 1e-9,
-            "member_force_deltas[{i}] = {} expected ≈ 0",
-            coord(d),
+            delta.abs() < 1e-9,
+            "member_force_deltas[{i}] = {delta} expected ≈ 0",
         );
     }
 
@@ -263,24 +228,25 @@ fn trampoline_no_slack_transverse_load_solves() {
 /// diagnostic whose message also contains `needle` (proving the specific guard /
 /// `describe()` arm fired, not merely *some* infeasibility).
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
-    match outcome {
-        ComputeOutcome::Failed { diagnostics, .. } => {
-            let joined = diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            assert!(
-                joined.contains("E_TensegrityLoadInfeasible"),
-                "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
-            );
-            assert!(
-                joined.contains(needle),
-                "expected the diagnostic to mention {needle:?}, got: {joined}"
-            );
-        }
-        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
-    }
+    assert_failed_infeasible_needles(outcome, &[needle], &[]);
+}
+
+/// The several-needle form of [`assert_failed_infeasible`], for a guard whose
+/// wording is pinned by more than one needle — including *negative* ones, which
+/// catch a degenerate labelling that every positive needle would still satisfy.
+///
+/// Every needle is checked against ONE flattened diagnostic set, so a caller
+/// invokes the trampoline once and the assertions provably describe the same
+/// message rather than several independently-produced ones. The flattening and
+/// the needle checks live in `tests/common/failed_diagnostics.rs`; the
+/// single-needle form above delegates here.
+fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
+    let joined = joined_failure_messages(outcome);
+    assert!(
+        joined.contains("E_TensegrityLoadInfeasible"),
+        "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
+    );
+    assert_mentions(&joined, must, must_not);
 }
 
 /// (a) Slackening axial load: an axial tip load `P = 3·N0` drives cable `(1,2)`
@@ -330,16 +296,16 @@ fn trampoline_slackening_axial_load_flags_slack() {
         Some(Value::List(fs)) => fs,
         other => panic!("member_forces must be a List, got {other:?}"),
     };
+    let slack_force = read_real_or_scalar(&member_forces[1], "member_forces[1]");
     assert!(
-        coord(&member_forces[1]).abs() < 1e-6,
-        "slack cable (1,2) must report zero force, got {}",
-        coord(&member_forces[1]),
+        slack_force.abs() < 1e-6,
+        "slack cable (1,2) must report zero force, got {slack_force}",
     );
+    let taut_force = read_real_or_scalar(&member_forces[0], "member_forces[0]");
     assert!(
-        (coord(&member_forces[0]) - (n0 + p)).abs() < 1e-6,
-        "taut cable (0,1) must carry N0 + P = {}, got {}",
+        (taut_force - (n0 + p)).abs() < 1e-6,
+        "taut cable (0,1) must carry N0 + P = {}, got {taut_force}",
         n0 + p,
-        coord(&member_forces[0]),
     );
 
     // Reduced single-cable deflection u_x[1] = P·L/(E·A), NOT P·L/(2EA).
@@ -347,7 +313,7 @@ fn trampoline_slackening_axial_load_flags_slack() {
         Some(Value::List(ds)) => ds,
         other => panic!("displacements must be a List, got {other:?}"),
     };
-    let ux1 = vec3(&displacements[1])[0];
+    let ux1 = read_real_or_scalar3(&displacements[1], "displacements[1]")[0];
     let ux_expected = p * l / (e * a); // 0.0015
     assert!(
         (ux1 - ux_expected).abs() < 1e-9,
@@ -446,6 +412,46 @@ fn trampoline_swapped_section_units_is_failed() {
     assert_failed_infeasible(call_tensegrity_load(&value_inputs), "wrong unit");
 }
 
+/// (b5) The `loads` slot is a `List<Vector3<Force>>`, so every *component* of
+/// every entry is unit-checked individually, not just the entry as a whole. A
+/// Length in the y component of the middle entry must surface a located
+/// `E_TensegrityLoadInfeasible` "wrong unit" diagnostic naming `loads[1].y` —
+/// both the offending entry index and the offending component letter, so the
+/// author is told exactly which of the nine numbers is wrong.
+///
+/// Three load entries are supplied for the three nodes of `two_cable_string`,
+/// and corrupting a single *component* leaves that entry count intact, so the
+/// `loads.len() != nodes.len()` guard provably cannot be what fires; `loads` is
+/// cracked at input [4] ahead of every count guard in `run`. The located
+/// `loads[{i}].{x|y|z}` labelling is what this test exists to pin: index 1 (not
+/// 0) distinguishes a real entry index from a hardcoded constant, and component
+/// `y` (not `x`) distinguishes per-component labels from one label copy-pasted
+/// across all three reads. The negative `loads[0]` needle is what rules out the
+/// constant index, which every positive needle would still satisfy — and all
+/// four are checked against ONE invocation's diagnostics, so they provably
+/// describe the same message.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            // loads[1].y is a Length where a Force belongs.
+            Value::Vector(vec![force(0.0), meters(50.0), force(0.0)]),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+    assert_failed_infeasible_needles(
+        call_tensegrity_load(&value_inputs),
+        &["wrong unit", "expected a Force", "loads[1].y"],
+        &["loads[0]"],
+    );
+}
+
 // ── step-13: dedicated solver::tensegrity_load target registration ───────────
 //
 // PRD §11 Q2: the load solver is wired as its OWN ComputeNode target (not an
@@ -500,11 +506,7 @@ fn solver_tensegrity_load_target_is_registered() {
             }
         },
         Err(diags) => {
-            let joined = diags
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
+            let joined = joined_messages(&diags);
             panic!(
                 "solver::tensegrity_load must be a registered ComputeNode target, but \
                  dispatch returned the unregistered-target Err: {joined}"
@@ -528,33 +530,16 @@ fn solver_tensegrity_load_target_is_registered() {
 // end-to-end.
 
 /// Collinear two-cable string with a FREE ORPHAN node 3 at `(5L, 5L, 0)` that is
-/// touched by no member and absent from the supports: `anchor(0) — free(1) —
-/// anchor(2)` plus the isolated node 3. `struts: []`, cables `[[0,1],[1,2]]`.
+/// touched by no member and absent from the supports: [`two_cable_string`]’s
+/// three nodes over the same [`STRING_CABLES`], plus the isolated node 3.
 fn two_cable_string_with_orphan(l: f64) -> Value {
-    let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0),         // 0 — anchor
-        node(l, 0.0, 0.0),           // 1 — free + cabled
-        node(2.0 * l, 0.0, 0.0),     // 2 — anchor
-        node(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
-    ]);
-    let struts = Value::List(vec![]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
+    let nodes = vec![
+        point3(0.0, 0.0, 0.0),         // 0 — anchor
+        point3(l, 0.0, 0.0),           // 1 — free + cabled
+        point3(2.0 * l, 0.0, 0.0),     // 2 — anchor
+        point3(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
+    ];
+    tensegrity(nodes, &[], &STRING_CABLES, None)
 }
 
 /// A free orphan node (referenced by no member, not a support) must surface as

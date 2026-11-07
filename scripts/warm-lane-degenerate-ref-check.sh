@@ -31,10 +31,22 @@
 #   the only thing distinguishing "degenerate, parked on a foreign ancestor"
 #   from "genuinely landed" is whether the tip commit cites ITS OWN task id.
 #
-# The citation predicate mirrors dark-factory orchestrator/git_ops.py's
-# citation regex byte-for-byte: a merge-commit subject `^Merge <prefix><id>
-# into ` OR a `#<id>` reference, both with digit-boundary safety (task/1 does
-# not match "Merge task/10 into main"; #45 does not match #4588).
+# The citation predicate is NOT defined here. It lives in
+# scripts/lib_task_citation.sh, the single copy of a grammar that is normative
+# across the reify/dark-factory seam, which this script sources: a
+# `Merge <prefix><id> into …` line, a conventional-commit subject citing the id
+# (`impl(<id>): …`, dark-factory's kind list), OR a `#<id>` reference, each
+# boundary-safe (task/1 does not match "Merge task/10 into main"; impl(5) does
+# not match impl(50); #45 does not match #4588). Do not re-inline it here — see
+# that file's header, which also records where it agrees with dark-factory.
+#
+# The conventional-commit arm is what makes `landed` reachable for reify's
+# usual tip: a branch whose last commit reads "fix(<id>): …" and is on main.
+# Without it, 81 of the 427 refs this script reported degenerate over the live
+# pool were such tips (2026-09-17, esc-7244-16: every one of the 81 flipped to
+# landed, and no landed ref flipped back) — and dark-factory treats degenerate
+# as "zero task work", downgrading a MARK_DONE recovery to a
+# revert-and-redispatch.
 #
 # Usage — two mutually exclusive modes:
 #
@@ -87,6 +99,15 @@
 # See: docs/design/warm-lane-degenerate-ref-seam.md
 
 set -euo pipefail
+
+# ── the citation grammar (sourced, never re-inlined) ─────────────────────────
+# scripts/lib_task_citation.sh is the SINGLE copy of the "cites task N"
+# grammar; see its header for why that matters across the reify/dark-factory
+# seam. tests/infra/test_lib_task_citation.sh fails if this script grows its
+# own copy of either ERE.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_task_citation.sh
+source "$SCRIPT_DIR/lib_task_citation.sh"
 
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -192,13 +213,10 @@ fi
 # ── shared classify core (single-ref and audit modes both call this) ─────────
 
 # _regex_escape <string>
-# Escapes ERE metacharacters in <string> (anything outside [a-zA-Z0-9_]) so
-# it can be safely interpolated into a `grep -E` pattern as a literal. Guards
-# _cites_task's merge-subject check against a caller-supplied --branch-prefix
-# containing regex metacharacters (e.g. "." or "+"), which would otherwise be
-# interpreted as regex syntax instead of matched literally.
+# Thin local alias for the library's escape, kept so the call sites below read
+# unchanged. See task_citation_regex_escape for the contract.
 _regex_escape() {
-    printf '%s' "$1" | sed -e 's/[^a-zA-Z0-9_]/\\&/g'
+    task_citation_regex_escape "$1"
 }
 
 # BRANCH_PREFIX pre-escaped for safe interpolation into _cites_task's ERE
@@ -206,17 +224,14 @@ _regex_escape() {
 BRANCH_PREFIX_RE="$(_regex_escape "$BRANCH_PREFIX")"
 
 # _cites_task <commit> <id>
-# True iff <commit>'s message cites task <id>: either a merge-commit subject
-# "Merge <prefix><id> into " or a "#<id>" reference, both with digit-boundary
-# safety (task/1 must not match "Merge task/10 into main"; #45 must not match
-# #4588). Mirrors dark-factory orchestrator/git_ops.py's citation regex so
-# both repos agree on "cites task N" byte-for-byte.
+# True iff <commit>'s message cites task <id>. This function owns only the
+# FETCH — resolving <commit> to its message text; the grammar itself lives in
+# scripts/lib_task_citation.sh, which both this script and
+# task-branch-contamination-sweep.sh consult so the two can never drift.
 _cites_task() {
     local commit="$1" id="$2" msg
     msg="$(git -C "$REPO_DIR" log -1 --format=%B "$commit" 2>/dev/null || true)"
-    printf '%s\n' "$msg" | grep -qE "^Merge ${BRANCH_PREFIX_RE}${id} into " && return 0
-    printf '%s\n' "$msg" | grep -qE "(^|[^0-9])#${id}([^0-9]|\$)" && return 0
-    return 1
+    task_citation_message_cites "$msg" "$id" "$BRANCH_PREFIX_RE"
 }
 
 # _classify_ref <id>

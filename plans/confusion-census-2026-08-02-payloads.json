@@ -1,0 +1,618 @@
+[
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] StructuredOutput array field double-wrapped under its own key name, then repeated identically after usage-limit resume",
+    "description": "Asked to emit a top-level object whose field 'tasks' must be an array, the agent instead nested a redundant same-named key around it (`{\"tasks\": {\"tasks\": [...]}}`), producing a schema-validation failure ('/tasks: must be array'). After a usage-limit interruption and resume ('Continue where you left off and complete your task'), the agent reproduced the exact same malformed double-nested structure on the next attempt rather than incorporating the prior tool-error feedback, suggesting the resume lost the immediate correction context from the failed call.\n\nEvidence:\n- StructuredOutput({\"tasks\": {\"tasks\": [{\"files\": [], \"id\": \"4834\"}, {\"files\": [], \"id\": \"4985\"}]}}) -> Output does not match required schema: /tasks: must be array\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] grep exit-code-2 (path/IO error) misdiagnosed as pattern-not-found, retried by varying only the search string",
+    "description": "Two consecutive `grep -rn ... crates/ --include=*.rs` invocations for `topological_sort` both returned exit code 2 (an I/O/argument error distinct from grep's exit 1 'no matches'), yet the agent's only adjustment between attempts was loosening the search pattern (`pub fn` -> `fn`), not investigating whether `crates/` exists relative to cwd or whether the invocation itself was malformed \u2014 consistent with signal_counts showing self_correct: 0 for this session.\n\nEvidence:\n- Bash({\"command\": \"grep -rn \\\"pub fn topological_sort\\\" crates/ --include=*.rs\", ...}) -> Exit code 2 ... Bash({\"command\": \"grep -rn \\\"fn topological_sort\\\" crates/ --include=*.rs\", ...}) -> Exit code 2\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Escalation-watcher script location unknown for non-dark-factory target projects",
+    "description": "The autonomous escalation-watcher startup injection gives the target project's root and escalation queue path (e.g. /home/leo/src/reify) but never states that watcher-rearm.sh is a dark-factory-repo tool, not a script belonging to the target project, nor that it requires DARK_FACTORY_ROOT to be set. The agent had to discover this by trial and error: relative path from reify's cwd (exit 127, not found), guessed absolute path inside reify/scripts/ (still not found), then cd into dark-factory (exit 2, missing DARK_FACTORY_ROOT), before finally exporting the env var and succeeding.\n\nEvidence:\n- scripts/watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Gitignored-file deliverable can never satisfy confirm_plan / TDD pipeline",
+    "description": "A task's sole deliverable is an edit to a gitignored file (tasks.db), which can never produce a commit, so it can never satisfy confirm_plan's non-empty-files requirement \u2014 the architect+implementer TDD pipeline structurally cannot succeed for it, yet nothing prevents such tasks from being filed and dispatched; the gap only surfaces after full pipeline failure and escalation.\n\nEvidence:\n- their sole deliverable is an edit to tasks.db, which is gitignored, so it can never produce a commit or satisfy confirm_plan non-empty-files requirement \u2014 it cannot flow through the architect+implementer TDD pipeline at all and needs direct operator/admin execution outside the orchestrator\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Cross-PRD dependency fields conflated: enforced edges vs informational prose",
+    "description": "Agents can conflate descriptive dependency prose in a task (mentioning another task/project) with an actually-enforced dependency edge; only same-project add_dependency and cross-project metadata.external_deps are honored by the scheduler, while narrative dependency fields are informational only \u2014 an easy source of mis-scoped gate reasoning that required an explicit corrective memory amendment.\n\nEvidence:\n- Amended `real-dep-edges` with a scope correction: same-project \u2192 `add_dependency`; cross-project \u2192 `metadata.external_deps`; prose fields informational only.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Watcher-rearm script requires DARK_FACTORY_ROOT that the watcher's task briefing never supplies",
+    "description": "The escalation-watcher system prompt for a cross-project target (reify) injects `Project root: /home/leo/src/reify` but never sets or mentions `DARK_FACTORY_ROOT` (the separate dark-factory install path required by `scripts/watcher-rearm.sh`). The agent had no way to discover this from its briefing, so it first tried the unset var directly (`ls \"$DARK_FACTORY_ROOT/scripts/watcher-rearm.sh\"` resolved to `/scripts/...`), then after cd'ing into dark-factory still didn't export the var and got the same guard failure, and repeated the identical failing invocation 8 times before finally trying `export DARK_FACTORY_ROOT=...` \u2014 at which point the user interrupted the tool call.\n\nEvidence:\n- DARK_FACTORY_ROOT=\nls: cannot access '/scripts/watcher-rearm.sh': No such file or directory ... watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Symlinked plan.json indirection triggers expensive tree-wide search instead of direct resolution",
+    "description": "Worktree plan.json is a symlink into a separate worktrees/.task-meta/<lane>/ directory holding iterations.jsonl, metadata.json, reviews, verdicts. The agent inspected the symlink but then ran a tree-wide `find` across the whole warm-lanes root looking for iterations.jsonl instead of resolving the symlink target directly, timing out at 2 minutes; it only succeeded after a later `readlink -f` call.\n\nEvidence:\n- === plan.json symlink target ===\nLS: ls | 1 entries (showing 1)\n  /home/leo/src/warm-lanes/worktrees/_lane-18/.task/plan.json\n=== find iterations.jsonl ===\n(Exit code 143, timed out after 2m 0s); resolved later via readlink -f -> /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-18/plan.json\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Foreground polling loop for async completion marker hits hard timeout, discarding the wait",
+    "description": "Agent ran a hand-rolled `until ... grep -qE \"test result|error\\[|warning: unused|panicked|FAILED|error:\" ...` loop directly in foreground Bash to wait on another process's log output instead of using a background/Monitor pattern; the command consumed its full 10-minute timeout without the condition ever resolving, losing all wait progress.\n\nEvidence:\n- Bash({\"command\": \"until [ -n \\\"$(jobs -r)\\\" ] && false || grep -qE \\\"test result|error\\\\[|warning: unused|panicked|FAILED|error:\\\" /tmp/claude-1000/...\"}) -> Exit code 143\nCommand timed out after 10m 0s\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Leak-status oracle unset silently downgrades leaked=0 into a false 'no leaks' signal",
+    "description": "When the warm-lane leak-status oracle (REIFY_LANE_LEAK_STATUS_CMD) is unconfigured, orphaned lanes that cannot be confirmed LEAKED fall back to PRESERVED-OK, so the audit's top-line `leaked=0` conflates 'confirmed clean' with 'leak detection unavailable' (18 lanes sat in `leak_unknown` while `leaked` read zero) \u2014 a reader trusting the headline count alone would misjudge pool health as fine.\n\nEvidence:\n- AUDIT: reclaimable=17 leaked=0 preserved_ok=35 poisoned=0 (pool slots) leak_unknown=18; ... `leaked=0` only because the status oracle (`REIFY_LANE_LEAK_STATUS_CMD`) is unset, so 18 stale ORPHAN lanes can't be confirmed LEAKED and fall back to PRESERVED-OK.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Context-assembly injects cross-project memory results into a task's briefing",
+    "description": "The task's injected '# Context' block (assembled by recon's context assembler per project convention) surfaced fused-memory search results describing entities tied to a different project's task/architecture facts ('Reify v0.1 references the architecture for its design decisions', 'Task #2310's architect plan.json comprehensively covers the test scope...', 'Task 3539 is part of the architect plan') while the session's actual cwd was a warm-lanes worktree (/home/leo/src/warm-lanes/worktrees/_lane-44). The agent's subsequent bash exploration probed for a 'crates/reify-syntax' path with nested 'tests/common/mod.rs' and a root 'Cargo.toml', none of which exist under the actual worktree, producing three chained 'No such file or directory' failures. The co-occurrence of unscoped cross-project memory content in the briefing and a path-probing failure for entities named in that memory content suggests the context block may not have been project-scoped before injection.\n\nEvidence:\n- cd: crates/reify-syntax: No such file or directory ... head: cannot open 'tests/common/mod.rs' for reading: No such file or directory ... cat: Cargo.toml: No such file or directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] TaskOutput polled with a background task_id no longer in the live registry",
+    "description": "Agent called TaskOutput against a task_id that the harness reports as unknown ('No task found with ID'), occurring twice in one session with two different ids \u2014 consistent with polling a background task after it was already reaped/expired or with the id being mistracked rather than freshly captured from the spawning call.\n\nEvidence:\n- TaskOutput({\"block\": false, \"task_id\": \"bxsneeh3y\", \"timeout\": 10000}) -> <tool_use_error>No task found with ID: bxsneeh3y</tool_use_error>\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Blocked sleep+tail poll fallback into repeated-Read retry loop",
+    "description": "Agent needed to wait for a background Bash task to finish and issued a chained `sleep 90; tail -30 <output>; echo ---END---` command to poll it, which the sandbox's anti-polling guard blocked outright (guidance: use Monitor with an until-loop, or run_in_background for a command you started). Rather than switching to the correct wait primitive, the agent fell back to manually re-invoking Read on the same task output file three times in a row as an ad hoc substitute for a blocking wait, rather than any properly gated wait mechanism.\n\nEvidence:\n- Blocked: sleep 90 followed by: tail -30 /tmp/claude-1000/.../tasks/bhe8f93zr.output echo \"---END---\". To wait for a condition, use Monitor with an until-loop... Do not chain shorter sleeps to work around this block.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Warm-lane task-meta iteration state assumed present but absent",
+    "description": "Agent expected per-lane task-meta artifacts (iterations.jsonl under .task-meta/<lane>/) to exist by convention for a warm-lane worktree, but the file/path was missing, producing a tool_error (exit 2) and repeated not-found signals across a wide turn span while it kept probing for iteration state\n\nEvidence:\n- ls -la /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-1/\\necho \"---iterations---\"\\ncat /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-1/iterations.jsonl 2>/dev/null -> Exit code 2; (turn 80) does not exist; (turn 136) no such file or directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Sleep-chain polling of background task output blocked by guard",
+    "description": "Agent tries to poll a background task's output file by chaining `sleep 45; echo ...; tail ...` in one Bash call, which trips the harness's anti-sleep-chaining guard. The agent has to discover mid-task that Monitor (for until-loops) or run_in_background is the sanctioned wait mechanism instead.\n\nEvidence:\n- Blocked: sleep 45 followed by: echo \"=== interim tail ===\" tail -6 ... To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] grep with 2>/dev/null conflates 'no matches' with a real path/argument error",
+    "description": "The agent piped grep's stderr to /dev/null while searching for a symbol across directories, so when grep exited 2 (a real error, e.g. a bad/nonexistent search path) it was indistinguishable from a normal 'no matches' exit 1 \u2014 the agent couldn't see why the search came back empty and retried by narrowing the path set rather than diagnosing the actual error.\n\nEvidence:\n- grep -rn \"merge_functions\" /home/leo/src/warm-lanes/worktrees/_lane-30/crates/ /home/leo/src/warm-lanes/worktrees/_lane-30/src 2>/dev/null -> Exit code 2\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] watcher-rearm.sh CEILING timeout retried 5x with only cosmetic changes, ending in user interrupt",
+    "description": "After DARK_FACTORY_ROOT was correctly set, watcher-rearm.sh with --timeout 3600 repeatedly exited 124 with WATCHER_REARM_OUTCOME: CEILING. Rather than diagnosing what CEILING meant or changing strategy, the agent re-ran the identical long-running invocation five times over ~120 turns, each time only appending one more id to the exclude file, until the user had to manually reject/interrupt the tool call to break the loop.\n\nEvidence:\n- WATCHER_REARM_OUTCOME: CEILING exit=124\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] watcher-rearm.sh CEILING outcome forces redundant manual polling",
+    "description": "The bounded foreground wait script (watcher-rearm.sh) exits 124 with only a generic 'WATCHER_REARM_OUTCOME: CEILING' message when its timeout elapses, giving no signal about whether escalations actually arrived or queue state changed. The agent compensates by manually polling get_pending_escalations at both level 1 and level 2 (4x each) in addition to re-invoking the rearm script itself (8x with shrinking timeouts: 3600s, 3600s, 1199s), producing a redundant dual-mechanism retry loop instead of trusting one bounded-wait primitive.\n\nEvidence:\n- WATCHER_REARM_OUTCOME: CEILING exit=124 (x3) alongside mcp__escalation__get_pending_escalations x4 for level 1 and x4 for level 2, and Bash x8 re-invoking watcher-rearm.sh with shrinking timeouts\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Cross-repo escalation adjudicated together but attribution diverged, needing later correction",
+    "description": "Two escalations flagged as 'same class' (reify esc-5669-5, esc-5632-15) were investigated and filed together, but the initial write mis-attributed esc-5632-15's cause to the wrong Dark Factory task; the user had to direct a later amendment to DF 3113 to correct the attribution.\n\nEvidence:\n- File the new task, do the amendment to DF 3113 correcting the 5632 attribution. /reflect\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Escalation progressed without wiring the cross-repo dependency edge, requiring backfill and re-pend",
+    "description": "The cross-repo escalation (reify esc-5669-5) was worked without first adding a dependency edge to the owning Dark Factory task (3260); the user had to separately direct a backfill for 5632, addition of the missing cross-repo dependency, and re-pending 5669 before both escalations could actually be cleared.\n\nEvidence:\n- Do the backfill for 5632. Add a cross-repo depth between 5669 and Dark Factory 3260, and re-pend 5669. Clear both escalations.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Agent chains sleep+tail to poll a background task's output file instead of using Monitor/run_in_background",
+    "description": "When waiting on a dispatched background task to finish, the agent defaults to a raw shell `sleep N; tail ...` chain rather than the harness's supported wait primitives, tripping the anti-polling guard and losing a turn to the rejection instead of making progress.\n\nEvidence:\n- Bash({\"command\": \"sleep 240; tail -c 2000 /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-10/f55e1318-d9b4-4eaf-9b18-1db58362fba2/tasks/b8r84exwv.output; echo \\\"[eof]\\\"\"}) -> <tool_use_error>Blocked: sleep 240 followed by: tail -c 2000 ... echo \"[eof]\". To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.</tool_use_error>\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution",
+    "description": "A `git commit -m \"$(cat <<'EOF' ... EOF)\"` command was passed to a background-command runner that re-parses the string via `eval`; because the commit message body contained literal '(' characters (e.g. \"(relate-block pattern, single canonical surface)\"), eval's re-tokenization broke the heredoc's quoting and threw a bash syntax error before the intended command ever ran.\n\nEvidence:\n- /bin/bash: eval: line 1: syntax error near unexpected token `('  ... git commit -m \"$(cat <<'EOF' docs(prd): constrained 2D sketching \u2014 sketch blocks, libslvs solve, profile handoff (B10) ...\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Concurrent background commit retries collide on git index.lock with no serialization",
+    "description": "After pivoting to direct-to-main commits for PRD artifacts, the agent issued multiple overlapping background Bash invocations (wait-for-lock, retry-commit, commit-now) against the same working tree. Because nothing serialized or cancelled the prior attempt before starting the next, the retries collided on a live .git/index.lock, failed with exit 128, and one in-flight attempt had to be forcibly killed.\n\nEvidence:\n- fatal: Unable to create '/home/leo/src/reify/.git/index.lock': File exists. Another git process seems to be running in this repository ... Background command \"Wait for git index.lock to clear\" failed with exit code 1\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] ScheduleWakeup used as a generic sleep/poll primitive without its required `prompt` field",
+    "description": "Agent tried to delay resumption while waiting on a backgrounded cargo test build by calling ScheduleWakeup with only delaySeconds and reason, unaware the tool requires a `prompt` param tied to /loop dynamic-mode re-invocation; outside a /loop context this produced a hard validation error instead of the intended wait.\n\nEvidence:\n- ScheduleWakeup({\"delaySeconds\": 240, \"reason\": \"Waiting for the backgrounded cargo test build...\"}) -> `prompt` is required when `stop` is not true.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Usage-limit resume re-triggers already-completed expensive work",
+    "description": "After a usage-limit interruption, the resume prompt ('Continue where you left off and complete your task') carries no record of exactly what had already finished. The agent responded by re-running the full eval test suite from scratch ('Re-run full eval tests' via cargo test -p reify-eval --tests), and the user had to reject the tool call and interrupt to stop it.\n\nEvidence:\n- Your previous run was interrupted by a usage limit. Continue where you left off and complete your task. [...] Re-run full eval tests [...] The user doesn't want to proceed with this tool use [...] STOP what you are doing and wait for the user to tell you how to proceed.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Foreground bounded-wait watcher re-arm dies at exit 137, agent blindly retries instead of switching to background",
+    "description": "The escalation-watcher L1 re-arm loop uses a single foreground Bash call with a long timeout (560000ms wrapping an internal --timeout 540 watcher process) to block-wait for the next escalation. The foreground process is killed (exit code 137) before the intended window completes, but rather than recognizing this as a structural mismatch between foreground Bash execution limits and long block-waits, the agent just reissues the identical command 21 times, then continues reissuing it 4 more times while only accumulating additional --exclude-id flags \u2014 never switching to a background-task wait pattern that would survive the same reaping.\n\nEvidence:\n- Bash({\"command\": \"...uv run --project escalation python -m escalation.watcher --queue-dir /home/leo/src/reify/data/escalations --level 1 --exclude-id...\"}) -> Exit code 137 ... Bash x21: ...\"description\": \"Bounded foreground wait for next L1 (re-arm)\", \"timeout\": 560000 ... Bash x4: ...--exclude-id esc-5167-1 --exclude-id esc-__merge_resource_leak__-7 --exclude-id esc-__merge_resource_leak__-9 --timeout 540\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Watcher script path resolved relative to target project cwd instead of dark-factory tooling root",
+    "description": "An autonomous escalation-watcher session running with cwd=/home/leo/src/reify (a target project, not dark-factory itself) invoked scripts/watcher-rearm.sh as a relative path, assuming the rearm script lives under the target project's own scripts/ dir. It actually lives in the dark-factory repo. The agent burned three failed attempts (bare relative path, then explicit reify-rooted path, then an unset $DARK_FACTORY_ROOT) before landing on the correct `export DARK_FACTORY_ROOT=/home/leo/src/dark-factory && cd \"$DARK_FACTORY_ROOT\"` form \u2014 at which point the user interrupted the tool call.\n\nEvidence:\n- /bin/bash: line 1: scripts/watcher-rearm.sh: No such file or directory ... DARK_FACTORY_ROOT= ... ls: cannot access '/scripts/watcher-rearm.sh': No such file or directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Ad-hoc sleep+tail polling for background task output blocked by guard",
+    "description": "Agent tried to wait for a background task's output by chaining sleep 45 with a tail read instead of using the Monitor until-loop or run_in_background wait pattern, tripping the DF sleep-chaining guard.\n\nEvidence:\n- Blocked: sleep 45 followed by: tail -20 /tmp/claude-1000/-home-leo-src-reify/b020e966-fba7-4156-ae53-5fc493427ca7/tasks/b8wo0qqvs.output. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Write attempted before Read on handoff digest file",
+    "description": "Agent attempted to Write an AFK handoff digest without first reading the target file in this session, tripping the Write tool's read-before-write guard mid-handoff.\n\nEvidence:\n- File has not been read yet. Read it first before writing to it.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Bounded-wait watcher timeout (exit 124) recurs as tool_error",
+    "description": "escalation.watcher's bounded poll (--timeout 540) exits 124 by design whenever no new escalation arrives inside the window; run 13 times back-to-back in one session with only the --exclude-id list changing between calls, each exit is scored as a tool_error even though the command is behaving exactly as intended. The signal inflates the session's error count and produces retry-loop noise (Bash x7, x3) that isn't actual agent confusion \u2014 it's the watcher doing its job.\n\nEvidence:\n- uv run --project escalation python -m escalation.watcher --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 540 --exclude-id ... -> Exit code 124 (x13)\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target",
+    "description": "An autonomous escalation-watcher session was launched against an external target project (/home/leo/src/reify) without DARK_FACTORY_ROOT set in its environment. The first attempt to call scripts/watcher-rearm.sh failed outright (exit 2: 'DARK_FACTORY_ROOT must be set to a valid directory'), forcing the agent to fall back to a filesystem-wide `find` for anything named dark-factory*, which surfaced multiple decoy paths (tmp mergesim/worktree-check dashboards, a hotfix branch checkout, an archived eval worktree, several stale /var/tmp orchestrator logs) before it could resolve the correct root and retry.\n\nEvidence:\n- watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Bounded rearm wait re-issued identically after hitting its own ceiling",
+    "description": "watcher-rearm.sh's 3600s bounded wait ran to its full ceiling with no new escalations (exit 124, 'WATCHER_REARM_OUTCOME: CEILING exit=124'). The agent then re-issued the exact same 3600s foreground wait command again rather than adjusting strategy or checking remaining rotation budget (ROTATION_HOURS=4.0, so two consecutive full-hour blocking waits consume half the session's allotted time) \u2014 the second call was rejected/interrupted by the user before it could run.\n\nEvidence:\n- WATCHER_REARM_OUTCOME: CEILING exit=124\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced",
+    "description": "`.task/plan.json` is a symlink into `.task-meta/<lane>/plan.json`; `ls -la` shows the symlink present, but `wc -c` and `head -c` against it both produce no output and the command exits 1 \u2014 silently masking a missing or empty plan file behind a symlink that appears healthy under a plain listing, discovered while an agent resumed a session interrupted by a usage limit and needed to check the task's plan state.\n\nEvidence:\n- plan.json -> /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-44/plan.json\\n=== plan.json size ===\\n=== head ===\\n(exit code 1, no output from wc -c or head -c)\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired",
+    "description": "The path-scope guard (darkfactorypathscopeviolation) tripped mid-session when the project-scoped escalation watcher reached for a cross-project resource path (a shared warm-lane worktree pool outside its own project root). Rather than treating the trip as a hard scope boundary, the agent apparently read it as a wrong-path bug: dozens of turns later it re-issued essentially the same cross-project check with a 'corrected' mount path, requiring the user to manually reject the tool call and halt the session.\n\nEvidence:\n- Check warm-lane pool headroom with correct mount path\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Digest mislabels injected memory-hint Context block as a User Correction",
+    "description": "The session digest lists turn 3 under the 'User Corrections' heading, but its content is a tool-injected '# Context' / '## Project Context' memory-search-results dump, not an actual user correction \u2014 and all structured signal_counts (tool_error, self_correct, not_found, df_guard, interrupt) are zero, so the heading appears populated by a heuristic that conflates system/tool context injection with a genuine user correction signal.\n\nEvidence:\n- (turn 3) # Context\n\n## Project Context\n\n{\n  \"results\": [\n    {\n      \"id\": \"23f746c4-01a0-4e7b-931d-6eb56bccda6c\",\n      \"content\": \"Reify v0.1 references the architecture for its design decisions.\"\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Cross-project memory context leaks assumed file paths into an unrelated worktree",
+    "description": "The dispatched agent's injected `# Context` block (assembled by recon Stage 1, per project convention) contained unscoped Graphiti facts about a different project's structure (Reify's architecture, `dry_run_proposals`, tasks 4543/2310/3539) alongside facts relevant to the current warm-lanes task. The agent appears to have generalized from that cross-project context and attempted `cd crates/reify-runtime` inside the warm-lanes worktree, a path that doesn't exist there, burning a turn on a not-found error.\n\nEvidence:\n- cd crates/reify-runtime && ... -> Exit code 1\n/bin/bash: line 1: cd: crates/reify-runtime: No such file or directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Escalation-watcher session spawned without DARK_FACTORY_ROOT set, forcing a filesystem-wide find that times out",
+    "description": "The rotation-limit injection for an autonomous escalation-watcher gives the target project's root and escalation queue path (reify) but never sets/passes DARK_FACTORY_ROOT, the dark-factory install location needed to invoke scripts/watcher-rearm.sh. The agent has to discover it via `find / -maxdepth 4 -iname \"dark-factory*\"`, which returns 7 candidate directories and times out at the 2-minute Bash limit before even finishing, before the agent picks /home/leo/src/dark-factory by inference.\n\nEvidence:\n- DARK_FACTORY_ROOT=\\n...find | 7 entries (showing 7)\\n  /tmp/tmpz0iis4pw/dark-factory\\n  ...\\n  /home/leo/src/dark-factory\\n...\\nCommand timed out after 2m 0s\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/",
+    "description": "Agent first looked for the lane's task-meta directory directly under the warm-lanes root (`/home/leo/src/warm-lanes/.task-meta/_lane-42/`), which does not exist; the actual layout nests it under `worktrees/.task-meta/_lane-42/`, one level down from where the agent expected it.\n\nEvidence:\n- ls -la /home/leo/src/warm-lanes/.task-meta/_lane-42/ 2>/dev/null -> Exit code 2 ... ls -la /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-42/ ... LS: ls | 6 entries\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)",
+    "description": "Agent had no reliable prior for where per-lane task-metadata sidecars live in the warm-lane pool: first probed a path treating `.task-meta` as a sibling of `worktrees/` (`/home/leo/src/warm-lanes/.task-meta/_lane-25/`), which failed with ENOENT \u2014 but stderr was redirected to /dev/null so the failure reason was invisible, only a bare exit code 2. The agent didn't retry the correct nested path (`/home/leo/src/warm-lanes/worktrees/.task-meta/_lane-25/`) until turn 36, 15 turns later, wasting exploration on the wrong directory shape.\n\nEvidence:\n- ls -la /home/leo/src/warm-lanes/.task-meta/_lane-25/ 2>/dev/null -> Exit code 2 (turn 21); cd /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-25/ && ls -la succeeds at turn 36\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection",
+    "description": "The autonomous escalation-watcher system prompt injects the target project's root (\"Project root: /home/leo/src/reify\") but not DARK_FACTORY_ROOT, the separate variable scripts/watcher-rearm.sh needs to locate the orchestrator repo itself. The agent's first invocation supplied only the reify queue-dir and got exit 2; it had to discover and export DARK_FACTORY_ROOT itself before the command would even attempt to run, conflating 'project being watched' with 'repo the watcher tooling lives in'.\n\nEvidence:\n- watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Memory-search context bleeds architecture facts from another project's path layout into the working session",
+    "description": "The dispatched task's injected `# Context` block (from a fused-memory search) returned Graphiti facts about a different codebase's architecture and test scope (Task 2310/3539/4543, 'crates/reify-eval' architect-plan references) while the session's actual cwd was a warm-lanes task worktree. The agent acted on the retrieved path (`cd crates/reify-eval/tests`) without verifying it existed in the live worktree, producing two consecutive 'No such file or directory' errors.\n\nEvidence:\n- Bash({\"command\": \"cd crates/reify-eval/tests && grep -rn -- \\\"--test \\\" harness_kernel_realization harness_selective_demand ...) -> Exit code 1\n/bin/bash: line 1: cd: crates/reify-eval/tests: No such file or directory\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Autonomous role assumes unrestricted default toolset",
+    "description": "The escalation-watcher role prompt (rotation-limit banner injected by supervisor) tells the agent it is an autonomous watcher expected to 'emit your digest as the final message and exit cleanly' but does not disclose that this role's toolset is restricted; the agent reached for Write to persist the digest and got 'Write exists but is not enabled in this context,' wasting a turn at the exact end-of-rotation moment where output delivery matters most.\n\nEvidence:\n- Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work",
+    "description": "When a task's remaining work gets absorbed into a successor task, the dependency edge from the successor back to the original (soon-to-be-cancelled) task is not automatically re-pointed or removed, leaving a stale-but-still-blocking edge that the agent must manually detect and fix before cancelling \u2014 otherwise the successor is silently stranded on a cancelled dependency.\n\nEvidence:\n- Confirmed a real stranding risk: **5612 depends on [5590, 5607]**. 5590 is done, but 5607 is about to be `cancelled` \u2014 and 5612 now *owns* the promotion work itself, so that edge is both stale and blocking. Let me fix it before cancelling.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Default 2-minute Bash timeout kills mid-flight diagnostic/audit commands used for unblock investigations",
+    "description": "Investigation commands (worktree listing, warm-lane-audit.sh) run long enough to exceed the harness's default 2-minute foreground Bash timeout, getting killed with exit 143 mid-audit; useful output is produced before the kill but the command is not marked as needing an extended timeout up front, forcing re-runs or partial-evidence reasoning.\n\nEvidence:\n- Command timed out after 2m 0s\n=== worktree holding task/5607 ===\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] watcher-rearm.sh invocation requires dark-factory cwd + DARK_FACTORY_ROOT, undiscoverable from target-project context",
+    "description": "The escalation-watcher session runs with cwd set to the target project (/home/leo/src/reify), but scripts/watcher-rearm.sh only exists in the dark-factory repo and additionally requires DARK_FACTORY_ROOT to be exported even after cd'ing there. Neither requirement is surfaced until the agent burns two failed attempts (relative-path 'No such file or directory', then a terse 'must be set to a valid directory') \u2014 there's no upfront guidance in the watcher's injected instructions pointing at the correct invocation form.\n\nEvidence:\n- turn 24: scripts/watcher-rearm.sh: No such file or directory (cwd=/home/leo/src/reify); turn 36: watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory (cwd=/home/leo/src/dark-factory, env unset)\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Fragile grep-into-sed line-range construction",
+    "description": "Agent built a compound bash command piping `grep -n 'pattern' | head` output as one leg and a second `grep -n 'other-pattern'` result directly into `sed -n \"$(...)\"` to slice a function body, without validating the extracted line-number(s) first; the substitution produced a bare comma (empty/malformed range) and sed failed with 'unknown command: `,'' instead of returning the intended code section, forcing a retry with a more careful extraction.\n\nEvidence:\n- sed -n \"$(grep -n 'fn eval_module\\|fn eval_value...) -> Exit code 1 ... sed: -e expression #1, char 1: unknown command: `,'\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Autonomous watcher conflates interactive auto-memory (Write-tool markdown files) with project fused-memory MCP writes",
+    "description": "While running as a dispatched/autonomous escalation-watcher (no interactive Write tool enabled), the agent formatted a finding as an auto-memory-style file (YAML frontmatter matching the interactive session's local `memory/*.md` convention) and called the generic `Write` tool to persist it, instead of the project's `mcp__fused-memory__add_memory` tool. The two memory subsystems share vocabulary (\"memory\", frontmatter-with-name/description) but are structurally distinct \u2014 one is a local file written via a filesystem tool available only in interactive sessions, the other is an MCP call always available to any dark-factory agent \u2014 and the agent picked the wrong one for its execution context, losing the write (tool_use_error) with no visible fallback to the correct tool.\n\nEvidence:\n- Write({\"content\": \"---\\nname: project_warm_lane_resume_refault_leaked_checkout\\n...\"}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Agent probes undocumented .task-meta/<lane>/iterations.jsonl path and gets exit code 2",
+    "description": "No documented API/tool surfaces a task's own iteration history inside a warm-lane worktree, so the agent falls back to guessing a raw filesystem path (.task-meta/<lane>/iterations.jsonl) under the sibling warm-lanes checkout; the path is absent or inaccessible from the worktree context, producing a bare tool_error with no fallback or self-correction visible.\n\nEvidence:\n- Bash({\"command\": \"ls /home/leo/src/warm-lanes/.task-meta/_lane-21/ 2>/dev/null && tail -c 3000 /home/leo/src/warm-lanes/.task-meta/_lane-21/iterations.jsonl 2>/dev/null\"...}) -> Exit code 2\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Read tool offset param called with slice-range syntax",
+    "description": "Agent formatted the Read tool's offset argument as a two-value range (\"offset\": 185, 210) instead of discrete offset/limit integers, producing invalid JSON and a failed tool call \u2014 suggests a mental model of offset as a Python-slice-style range pair rather than the tool's actual offset+limit schema.\n\nEvidence:\n- Read({\"__unparsedToolInput\": {\"raw\": \"{\\\"file_path\\\": \\\".../ty.rs\\\", \\\"offset\\\": 185, 210, \\\"limit\\\": 25}\\\"}}) -> InputValidationError: Read was called with input that could not be parsed as JSON.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Per-lane task-meta iterations.jsonl missing at expected path",
+    "description": "Agent looked up a per-lane iteration log at worktrees/.task-meta/<lane>/iterations.jsonl and found it absent, consistent with warm-lane task-meta artifacts not being reliably written or keyed per lane.\n\nEvidence:\n- Read({\"file_path\": \"/home/leo/src/warm-lanes/worktrees/.task-meta/_lane-53/iterations.jsonl\"}) -> File does not exist.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] No cross-session visibility into which concurrent sessions own which blocked tasks",
+    "description": "The interactive agent had no way to see that other concurrently-running unblock sessions/subagents were already handling tasks 5548/5585/5599, forcing the user to manually intervene and tell the agent to stand down to avoid duplicate or conflicting remediation on the same escalations.\n\nEvidence:\n- multiple unblocks are already running and I can't keep track of which ones are handling which tasks, so leave 5548/5585/5599 and their escalations untouched. I'll do another pass once all sessions have completed\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Chained sleep+poll for background task output tripped by anti-chaining guard",
+    "description": "Agent issued `sleep 60; tail -30 <task output file>` to poll a background compiler-test run, triggering the harness guard against chained sleep commands. This indicates the agent's default polling instinct is sleep-then-check rather than reaching for Monitor's until-loop or run_in_background, even though the task was already running in the background (evidenced by the .output file path under /tmp/claude-*/tasks/).\n\nEvidence:\n- Bash({\"command\": \"sleep 60; tail -30 /tmp/claude-1000/.../tasks/b7do7ui2b.output\", ...}) -> Blocked: sleep 60 followed by: tail -30 ... To wait for a condition, use Monitor with an until-loop\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Warm-lane task bootstrap missing plan.json",
+    "description": "The orchestrated-task agent's very first tool call reads `.task/plan.json` from its assigned warm-lane worktree and gets 'File does not exist', meaning the lane was handed to the agent before task metadata was fully materialized in it \u2014 the agent then proceeds without its plan context.\n\nEvidence:\n- Read({\"file_path\": \".../_lane-33/.task/plan.json\"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-33.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Sandbox blocks naive sleep+check polling chains",
+    "description": "Agent's default habit for waiting on a background task is to chain `sleep N; tail ...` in one Bash call; the sandbox guard rejects this outright rather than the agent knowing up front to use Monitor or run_in_background, so the workaround is discovered reactively via an error instead of being part of the agent's initial plan.\n\nEvidence:\n- Blocked: sleep 90 followed by: echo \"--- interim output ---\" tail -25 ... To wait for a condition, use Monitor with an until-loop ... Do not chain shorter sleeps to work around this block.\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Bash `rg` invocation fails \u2014 ripgrep binary absent from worktree environment",
+    "description": "Agent shells out to `rg` directly via Bash (rather than the dedicated Grep tool) assuming ripgrep is installed on PATH; the warm-lane task worktree lacks the binary entirely, so every direct-rg command fails outright instead of falling back gracefully.\n\nEvidence:\n- error: 'rg' not found\nhint: Install ripgrep: https://github.com/BurntSushi/ripgrep\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Grep tool rejects PCRE look-around \u2014 agent assumes full PCRE regex support",
+    "description": "After the Bash `rg` path failed, the agent switched to the built-in Grep tool but wrote a pattern using negative look-behind, assuming PCRE-style regex support; the tool's default (non-PCRE2) rg engine rejects look-around syntax outright, so the search fails a second time via a different root cause than the first.\n\nEvidence:\n- rg: regex parse error:\n    (?:(?<![A-Za-z0-9_])(rotate_around|revolve_full|revolve|line_segment|arc|helix)\\s*\\()\n       ^^^^\nerror: look-around, including look-ahead and look-behind, is not supported\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  },
+  {
+    "project_root": "/home/leo/src/reify",
+    "title": "[legibility census] Foreground build reproduction killed by harness timeout before yielding the real error",
+    "description": "Agent ran `cargo build -p reify-eval --lib` synchronously in a warm-lane worktree to reproduce a target failure; the build did not finish inside the harness's 10-minute foreground window and was SIGTERM-killed (exit 143), so the agent received only a timeout artifact and never saw the actual compiler output it was trying to capture, leaving it unable to distinguish a genuine hang from an ordinarily-slow cold build.\n\nEvidence:\n- Bash({\"command\": \"echo \\\"=== reproduce: build reify-eval lib only ===\\\" && cargo build -p reify-eval --lib 2>&1 | tail -25; echo \\\"=== exit code: ${PIPESTATUS[0]} ===\\\"\"...}) -> Exit code 143\nCommand timed out after 10m 0s\n\nObserved in 1 sighting(s) (project: reify).",
+    "task_kind": "normal",
+    "priority": "medium",
+    "metadata": {
+      "source": "legibility_census",
+      "origin_project_id": "reify"
+    }
+  }
+]

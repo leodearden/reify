@@ -1,68 +1,9 @@
-use std::hash::{Hash, Hasher};
-
-/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
-/// Used for staleness detection — not for security.
-fn content_hash(path: &std::path::Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
-///
-/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
-///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
-///      If the child emits anything to stdout, Cargo would misinterpret it.
-///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
-///      the pipe after try_wait() returns Some(status), but if the child writes
-///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
-///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
-///
-/// tree-sitter generate writes its useful diagnostics to stderr, which is
-/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the process.
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
+// The build-script logic shared with `tests/build_logic_tests.rs`.
+//
+// A build script cannot be `use`d by a test target, and the old workaround —
+// hand-copying this logic into the test file — is how `#6992` shipped: the
+// replica was green while this file was wrong. One source, two include sites.
+include!("build_support.rs");
 
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
@@ -79,139 +20,119 @@ fn run_tree_sitter_generate() {
     }
 }
 
-/// The expected output files that tree-sitter generate produces.
-const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
-
-/// Check if regeneration is needed based on content hash staleness.
-/// Returns true if any output file is missing, stamp file is missing,
-/// or stamp hash doesn't match the provided grammar hash.
+/// The exact set of files whose bytes end up inside `libtree_sitter_reify.a`:
+/// the two translation units handed to `cc::Build`, plus the headers they include.
 ///
-/// The caller must compute `grammar_hash` once and pass it here as well as
-/// to the stamp-write step — this avoids a TOCTOU race where grammar.js
-/// could change between the staleness check and the stamp write.
-fn needs_generate(
-    grammar_hash: &str,
-    stamp_path: &std::path::Path,
-    output_paths: &[&std::path::Path],
-) -> bool {
-    // Must regenerate if any output file is missing.
-    for path in output_paths {
-        if !path.exists() {
-            return true;
+/// Paths are package-root-relative and sorted by byte order, matching
+/// `scripts/tree-sitter-freshness.sh --list-inputs` exactly. The two sides must
+/// agree byte-for-byte or every freshness check is meaningless, so this is the
+/// SINGLE enumeration used by both the watch-directive loop and the stamp writer
+/// below — they cannot drift.
+///
+/// Headers come from a sorted `read_dir` rather than a hardcoded
+/// alloc.h/array.h/parser.h list: a hardcoded list is exactly how this defect
+/// class recurs (someone adds a header, nothing watches it). See `#5629`.
+///
+/// Reads the disk at call time, so call it after generation.
+fn compilation_inputs() -> Vec<String> {
+    let mut headers: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("src/tree_sitter") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".h") {
+                headers.push(format!("src/tree_sitter/{}", name));
+            }
         }
     }
-    // Must regenerate if stamp file is missing.
-    let stamp_content = match std::fs::read_to_string(stamp_path) {
-        Ok(s) => s,
-        Err(_) => return true,
-    };
-    // Must regenerate if grammar hash differs from stamp.
-    stamp_content.trim() != grammar_hash
+    headers.sort();
+
+    let mut inputs = vec!["src/parser.c".to_string(), "src/scanner.c".to_string()];
+    inputs.extend(headers);
+    inputs
 }
 
-/// Check whether the shell-script stamp (`src/.grammar_hash.stamp`) already
-/// confirms that the generated outputs match the current `grammar.js`.
+/// Attest what was just compiled.
 ///
-/// The shell script (`scripts/tree-sitter-generate.sh`) writes a SHA-256 hash
-/// of `grammar.js` into `src/.grammar_hash.stamp` every time it regenerates.
-/// When `verify.sh` runs the script first — which it always does — and the
-/// script says "up to date", the stamp is guaranteed to reflect the current
-/// grammar.  In that case, re-running `tree-sitter generate` from the build
-/// script is redundant and, on a loaded host, risks timing out.
+/// Writes a per-file SHA-256 manifest — `<hash>  <relpath>` lines, sorted by
+/// relpath — to `$OUT_DIR/tree_sitter_inputs.stamp`, i.e. right beside the
+/// `libtree_sitter_reify.a` this build script just produced. Called only after
+/// `cc::Build::compile` returns, and `compile` panics on failure, so a stamp
+/// sitting next to an archive ATTESTS that archive was built from these bytes.
 ///
-/// Returns `true` (safe to skip generation) only when ALL of:
-///   1. Every expected output file exists.
-///   2. `src/.grammar_hash.stamp` contains a non-empty hash string.
-///   3. `sha256sum grammar.js` matches that hash exactly.
-///   4. No output file is newer than the shell stamp (a newer output file
-///      would indicate it was partially overwritten by a failed generate run).
+/// Content identity is the point: `cargo:rerun-if-changed` is an mtime
+/// comparison, and warm-lane seeding bulk-stamps sources to 2020-01-01 while the
+/// CoW-cloned build outputs carry seed-time (task `#5630`), so "newer than" says
+/// nothing useful there. Only these hashes distinguish "built from these bytes"
+/// from "merely newer".
 ///
-/// Any failure in this chain (missing stamp, `sha256sum` unavailable, hash
-/// mismatch, or suspiciously-new output file) returns `false` so the caller
-/// falls back to regenerating.
-fn shell_stamp_is_current(
-    grammar_path: &std::path::Path,
-    output_paths: &[&std::path::Path],
-) -> bool {
-    // 1. All expected output files must exist.
-    for path in output_paths {
-        if !path.exists() {
-            return false;
-        }
-    }
-    // 2. Shell-script stamp must exist and contain a non-empty hash.
-    let shell_stamp_path = std::path::Path::new("src/.grammar_hash.stamp");
-    let shell_stamp = match std::fs::read_to_string(shell_stamp_path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let expected_hash = shell_stamp.trim();
-    if expected_hash.is_empty() {
-        return false;
-    }
-    // 3. Compute SHA-256 of grammar.js via sha256sum and compare.
-    //    sha256sum on a single small file is near-instant (<10 ms); no timeout needed.
-    let output = match std::process::Command::new("sha256sum")
-        .arg(grammar_path)
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return false, // sha256sum unavailable; fall back to generation
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let stdout = match String::from_utf8(output.stdout) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    // sha256sum output format: "<hash>  <filename>\n"
-    let computed_hash = stdout.split_whitespace().next().unwrap_or("");
-    if computed_hash != expected_hash {
-        return false;
-    }
-    // 4. Guard against partially-overwritten output files: if any output file
-    //    is newer than the shell stamp, a previous (failed) generate attempt
-    //    may have left truncated content.  In that case, force regeneration.
-    let stamp_mtime = match std::fs::metadata(shell_stamp_path)
-        .and_then(|m| m.modified())
-    {
-        Ok(t) => t,
-        Err(_) => return true, // Can't stat stamp; assume it's fine
-    };
-    for path in output_paths {
-        let file_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(_) => continue, // Can't stat output; skip this check
-        };
-        if file_mtime > stamp_mtime {
-            // Output file is newer than the shell stamp — likely corrupted.
-            eprintln!(
-                "tree-sitter-reify: {:?} is newer than the shell stamp; forcing regeneration",
-                path
-            );
-            return false;
-        }
-    }
-    true
-}
+/// TWO failure shapes, and they get OPPOSITE treatments (`#5629` amendment pass):
+///
+///   NO HASHER ON THIS HOST (`sha256_of` -> `Ok(None)`) writes the literal
+///   `UNAVAILABLE` rather than omitting the stamp. Nothing on this host can ever
+///   attest anything, so an ABSENT stamp — which reads as "unproven", i.e. stale —
+///   would make `scripts/tree-sitter-freshness.sh ensure` force a rebuild on every
+///   single run, forever. `UNAVAILABLE` instead maps to a clean per-dir skip.
+///
+///   THIS FILE WOULD NOT HASH (`sha256_of` -> `Err(())`) writes NO stamp, and
+///   removes any stamp already there. The sentinel must NOT be reachable this way:
+///   it permanently disables attestation for this fingerprint dir (cargo never
+///   rebuilds a dormant dir, so the stamp is never rewritten) and propagates
+///   through CoW lane seeding — a silent, permanent hole from one unreadable file
+///   or one fork-pressure spike. An absent stamp is the honest state: UNPROVEN,
+///   hence stale, which `ensure` self-heals on the next run. A stale stamp left in
+///   place beside a NEWER archive would be worse still — an active mis-attestation.
+///   The condition is announced via `cargo:warning=` naming the file, because a
+///   silently unattestable archive is exactly what this whole guard exists to
+///   prevent. This is the same call the shell half makes: `ts_fingerprint` refuses
+///   to emit a partial manifest and hard-fails naming the path.
+///
+/// A write failure warns but never fails the build.
+fn write_inputs_stamp(out_dir: &str) {
+    let stamp_path = std::path::Path::new(out_dir).join("tree_sitter_inputs.stamp");
 
-/// Verify that all expected output files exist after generation.
-/// Panics with a clear message naming whichever file is missing.
-fn verify_outputs(src_dir: &std::path::Path) {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
+    let mut manifest = String::new();
+    let mut no_hasher = false;
+    for rel in compilation_inputs() {
+        match sha256_of(&rel) {
+            Ok(Some(hash)) => manifest.push_str(&format!("{}  {}\n", hash, rel)),
+            // Host-wide: no hasher exists, so no later input can fare better.
+            Ok(None) => {
+                no_hasher = true;
+                break;
+            }
+            // File-scoped: leave the archive UNPROVEN rather than minting the
+            // permanent sentinel, and clear any prior stamp so nothing here
+            // attests bytes this build did not compile.
+            Err(()) => {
+                println!(
+                    "cargo:warning=tree-sitter-reify: could not hash {} (sha256sum/shasum is \
+                     on PATH but failed on it); writing no {} — the archive stays UNPROVEN and \
+                     scripts/tree-sitter-freshness.sh ensure will force a rebuild next run",
+                    rel,
+                    stamp_path.display()
+                );
+                match std::fs::remove_file(&stamp_path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => eprintln!(
+                        "warning: failed to remove stale {}: {}",
+                        stamp_path.display(),
+                        e
+                    ),
+                }
+                return;
+            }
         }
     }
-    if !missing.is_empty() {
-        panic!(
-            "tree-sitter generate succeeded but these output files are missing: {}. \
-             Check tree-sitter CLI version.",
-            missing.join(", ")
-        );
+
+    let content = if no_hasher {
+        "UNAVAILABLE\n".to_string()
+    } else {
+        manifest
+    };
+
+    if let Err(e) = std::fs::write(&stamp_path, content) {
+        eprintln!("warning: failed to write {}: {}", stamp_path.display(), e);
     }
 }
 
@@ -220,10 +141,12 @@ fn main() {
     let parser_path = src_dir.join("parser.c");
     let grammar_path = std::path::Path::new("grammar.js");
 
-    // Re-run if the grammar source changes.
-    // Note: we do NOT watch src/parser.c — it's a generated output managed by
-    // this build script. Watching it would cause double execution.
+    // The compiled inputs are watched too, after generation (below).
     println!("cargo:rerun-if-changed=grammar.js");
+    // The shared staleness logic is `include!`d, not a separate crate, so
+    // cargo does not learn about it from the module graph — it must be
+    // declared here or an edit to the predicates never re-runs them.
+    println!("cargo:rerun-if-changed=build_support.rs");
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> =
@@ -238,24 +161,84 @@ fn main() {
     // where grammar.js could change between the two reads.
     let grammar_hash = content_hash(grammar_path);
 
-    if needs_generate(&grammar_hash, &stamp_path, &output_refs) {
+    if needs_generate(&grammar_hash, &stamp_path, &output_refs, src_dir) {
         // Fast-path: if the shell script already validated the outputs, skip
         // `tree-sitter generate` (which can take >60 s on a loaded build host).
         // This is safe: cargo's `rerun-if-changed=grammar.js` guarantees the
         // build script only re-runs when grammar.js actually changes, so if we
         // land here with a fresh OUT_DIR stamp but a valid shell stamp, the
         // outputs are already current.
-        if !shell_stamp_is_current(grammar_path, &output_refs) {
+        if !shell_stamp_is_current(grammar_path, &output_refs, src_dir) {
+            // Hash grammar.js BEFORE generating, exactly as `grammar_hash`
+            // above and as `scripts/tree-sitter-generate.sh` do (it captures
+            // `GRAMMAR_HASH` before taking the lock and writes it after). The
+            // stamp must describe the grammar the generator actually consumed;
+            // a hash taken AFTER a >60 s `tree-sitter generate` describes
+            // whatever landed in the meantime.
+            let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
-            verify_outputs(src_dir);
+            verify_outputs(src_dir).unwrap_or_else(|msg| panic!("{msg}"));
+            // Re-attest what was just generated (`#6992`, Hole B). Before this,
+            // build.rs could regenerate parser.c and leave
+            // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a
+            // later merge or checkout restoring that grammar made the stamp
+            // match again, and it then actively vouched for a parser the current
+            // grammar never produced. Whatever regenerates must re-attest.
+            //
+            // Re-hash and require the two to AGREE (`#6992` amendment pass).
+            // `tree-sitter generate` can run for over a minute, and an
+            // interactive edit / cargo-watch / a merge landing in that window
+            // makes grammar.js(B) the thing we would stamp while parser.c and
+            // the outputs manifest describe A. That pair is SELF-CONSISTENT and
+            // therefore permanently green: the next build sees the OUT_DIR
+            // content hash differ, but `shell_stamp_is_current` then finds
+            // sha256(grammar.js) == the grammar stamp AND the manifest matching
+            // parser.c, skips generation, and links parser.c(A) against
+            // grammar.js(B) forever — the very false GREEN this task removes,
+            // through a narrower window. On disagreement write NEITHER stamp:
+            // the outputs stay unproven and the next build regenerates.
+            match (grammar_sha_before, sha256_of_path(grammar_path)) {
+                (Ok(Some(before)), Ok(Some(after))) if before == after => {
+                    write_shell_stamps(src_dir, &before)
+                }
+                (Ok(Some(_)), Ok(Some(_))) => eprintln!(
+                    "tree-sitter-reify: {} changed while `tree-sitter generate` \
+                     was running; leaving the shell stamps unwritten (the \
+                     outputs stay unproven and the next build will regenerate)",
+                    grammar_path.display()
+                ),
+                // No hasher, or a grammar.js that would not hash: write NO
+                // stamp rather than a wrong one. The outputs stay UNPROVEN, so
+                // the next build regenerates — the safe direction, and the same
+                // call `write_inputs_stamp` makes.
+                _ => eprintln!(
+                    "tree-sitter-reify: could not hash {}; leaving the shell \
+                     stamps unwritten (the outputs stay unproven and the next \
+                     build will regenerate)",
+                    grammar_path.display()
+                ),
+            }
         }
         // Write the OUT_DIR stamp whether we regenerated or bypassed —
         // subsequent build-script invocations will hit the fast path in
         // `needs_generate` and skip everything.
-        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
-            eprintln!("warning: failed to write stamp file: {}", e);
-        });
+        write_out_dir_grammar_stamp(&stamp_path, &grammar_hash);
+    }
+
+    // Watch every compiled input (`#5629`, esc-5392-1). cargo narrows a build
+    // script's watch set to EXACTLY the emitted rerun-if-changed list, and `cc`
+    // emits none (task #5784), so an unwatched input can be edited or deleted
+    // with no rerun while the old libtree_sitter_reify.a stays linked.
+    //
+    // That includes src/parser.c and src/tree_sitter/*.h, which the generate
+    // above writes (the headers are untracked since #9741). Watching an output
+    // costs one bounded extra run after a regeneration
+    // (test_gating_predicates_converge_after_one_regeneration) and buys a
+    // rebuild when one is deleted. Emitted AFTER generation so a fresh clone's
+    // headers are in the set (test_build_rs_restores_deleted_generated_headers).
+    for rel in compilation_inputs() {
+        println!("cargo:rerun-if-changed={}", rel);
     }
 
     let mut c_config = cc::Build::new();
@@ -267,4 +250,8 @@ fn main() {
     c_config.file(&parser_path);
     c_config.file("src/scanner.c");
     c_config.compile("tree_sitter_reify");
+
+    // compile() panics on failure, so reaching here means libtree_sitter_reify.a
+    // was written. Record WHAT it was built from, beside the archive itself.
+    write_inputs_stamp(&out_dir);
 }

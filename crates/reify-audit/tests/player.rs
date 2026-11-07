@@ -11,9 +11,8 @@
 //! puntested.rs convention.
 //!
 //! All tests use in-memory rusqlite + MockJCodemunchOps + MockGitOps so they
-//! remain hermetic. PLAYER is repo-wide (ignores task_metadata/target_task_id/
-//! window), so task_metadata is empty and target_task_id/window/now/
-//! producer_branch are all None.
+//! remain hermetic. PLAYER is repo-wide (ignores the task corpus and the
+//! target), so each context is a bare `AuditContext::new` with no builders.
 
 mod player {
 
@@ -22,7 +21,6 @@ use reify_audit::{
     Severity, player,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Build a LayerViolation with the given fields.
@@ -61,17 +59,7 @@ mod tests {
             "rule[0]: reify_ast::parser → reify_eval::engine",
         )]);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
 
@@ -123,17 +111,7 @@ mod tests {
         let git = MockGitOps::new();
         let jc = MockJCodemunchOps::new();
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
         assert!(
@@ -172,17 +150,7 @@ mod tests {
 
         jc.set_layer_violations(violations.clone());
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
 
@@ -210,6 +178,40 @@ mod tests {
                 i,
                 v.from_file,
                 findings[i].evidence
+            );
+        }
+    }
+
+    /// A `get_layer_violations` query that FAILED is not a clean ruleset.
+    /// PLAYER's one query is its whole sweep, so the failure replaces the
+    /// run's result with exactly one Low `PLayerViolationUnexamined` naming
+    /// the tool and the failure.
+    #[test]
+    fn a_failed_layer_violations_query_reports_player_unexamined_not_clean() {
+        const TIMEOUT: &str = "read body: timed out reading response";
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.fail_layer_violations(TIMEOUT);
+
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
+
+        let findings = player::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a failed query must yield exactly one finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PLayerViolationUnexamined, "got {f:?}");
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "", "PLAYER is repo-wide; got {f:?}");
+        for needle in ["get_layer_violations", TIMEOUT] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the failed tool and the \
+                 failure); got {:?}",
+                f.summary
             );
         }
     }

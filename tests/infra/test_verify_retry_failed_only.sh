@@ -8,7 +8,9 @@
 #       from the DF-written filter file, under a tree-OID eligibility gate with
 #       loud full-fallback (tree drift / no subset / subset too large).
 #   β — run_all.sh honors REIFY_RUN_ALL_MEMBER_SUBSET (per-member narrowing).
-#   γ — the gui block forwards REIFY_GUI_RETRY_SPECS as `npm test -- <specs>`.
+#   γ — the gui block forwards REIFY_GUI_RETRY_SPECS to the vitest runner as
+#       `../scripts/gui-vitest-run.sh <specs>` (task 7630 moved this leaf off a
+#       bare `npm test --`; the runner still reaches vitest via `npm test`).
 #
 # δ delivers the ONE genuinely-new cross-suite runtime signal on top of them:
 # the @@REIFY_RETRY_SCOPE=failed_only@@ HONEST MARKER (PRD §4.4 / INV-6). At
@@ -31,7 +33,7 @@
 #     per-suite counts + fallback-SUPPRESSION (the only new δ behavior).
 #   - LOCKS (green-on-arrival integration regression, the raison d'être of an
 #     INTEGRATION-GATE): B1 (α's nextest subset shape), B4 (β's run_all member
-#     count reflected in the marker), B5 (γ's `npm test -- <specs>`) all cohere
+#     count reflected in the marker), B5 (γ's `gui-vitest-run.sh <specs>`) all cohere
 #     with the marker on the MERGED α/β/γ contract.
 # It does NOT re-assert α's `-E test(=…)` fragment grammar in isolation.
 #
@@ -338,10 +340,11 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
 fi
 
 # B5 (locks γ): with REIFY_GUI_RETRY_SPECS set (PLAN_CC) the gui plan line
-# forwards `npm test -- <specs>` (== vitest run <specs>) rather than a bare
-# `npm test` — visible in --print-plan, host-independent.
-assert "B5: gui plan line forwards 'npm test -- $GSPEC1 $GSPEC2' (locks γ, not a bare npm test)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF -- "npm test -- $2 $3"' \
+# forwards `../scripts/gui-vitest-run.sh <specs>` (the runner forwards them on to
+# `npm test -- <specs>` == vitest run <specs>) rather than a bare, unfiltered
+# runner invocation — visible in --print-plan, host-independent.
+assert "B5: gui plan line forwards '../scripts/gui-vitest-run.sh $GSPEC1 $GSPEC2' (locks γ, not a bare runner)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "../scripts/gui-vitest-run.sh $2 $3"' \
     _ "$PLAN_CC" "$GSPEC1" "$GSPEC2"
 
 # B4 (locks β): the marker's run_all count (PLAN_CB) equals the

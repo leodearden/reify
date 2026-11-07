@@ -1,22 +1,39 @@
 //! Tests for build.rs pure logic functions.
 //!
-//! Since build.rs is compiled as a standalone build script by cargo,
-//! its functions cannot be imported by test targets. This file
-//! re-implements the pure logic (content hashing, staleness detection,
-//! output verification) to validate correctness.
+//! Since build.rs is compiled as a standalone build script by cargo, its
+//! functions cannot be `use`d by a test target. The historical workaround was
+//! to HAND-COPY them here — and that is precisely how `#6992` shipped: a green
+//! 1879-line suite exercising a private replica while the real build script
+//! carried the defect.
+//!
+//! So the staleness primitives now live in ONE file, `../build_support.rs`,
+//! and both `build.rs` and this test target `include!` it. A test that passes
+//! here is a statement about the code cargo actually runs.
+//!
+//! Every build.rs function this file exercises comes from that shared file, so
+//! redefining one here is a duplicate-definition compile error, not a silent
+//! replica.
+//!
+//! DO NOT ASSERT ON build.rs's OR build_support.rs's SOURCE TEXT HERE. A
+//! `contains("write_shell_stamps(")`-style scan is satisfied by a comment or a
+//! commented-out line — delete the real call, keep its explanation above it,
+//! and the test stays green — and its negative form pins one SPELLING, so
+//! `rel.ends_with("parser.c")` reintroduces a defect that
+//! `!contains("rel == \"src/parser.c\"")` was watching for.
+//!
+//! Routing such a scan through the comment-stripper this file already owns
+//! (`find_bare_build_rs_violations`) was considered and REJECTED: it closes the
+//! comment-satisfiability half and leaves the spelling-variance half — the
+//! deeper of the two — exactly as open, while making the result look guarded.
+//! Contracts about what build.rs DOES belong in
+//! `tests/infra/test_tree_sitter_pipeline.sh`, whose subjects are runtime
+//! values: the directives cargo actually captured in
+//! `target/*/build/tree-sitter-reify-*/output`, and the stamp bytes on disk
+//! after a real `cargo build` (`#6992` review). Source scans of THIS file's own
+//! text are a different thing and stay — they pin this file's conventions.
+include!("../build_support.rs");
 
-use std::hash::{Hash, Hasher};
 use std::path::Path;
-
-/// Duplicates the content_hash logic from build.rs for testability.
-/// Returns hex-encoded u64 hash of file contents.
-fn content_hash(path: &Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
 
 #[test]
 fn test_content_hash_deterministic() {
@@ -48,9 +65,6 @@ fn test_content_hash_changes_on_modification() {
     );
 }
 
-/// The expected output files that tree-sitter generate produces.
-const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
-
 /// Absolute path to this test file, resolved at compile time via CARGO_MANIFEST_DIR.
 /// Used by source-level regression tests that read this file's own contents.
 const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs");
@@ -68,46 +82,37 @@ fn read_self_source() -> String {
     std::fs::read_to_string(THIS_FILE).expect("should be able to read this test file via THIS_FILE")
 }
 
-/// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
-/// and returns the src_dir path. Deduplicates setup across stamp/output tests.
+/// Creates base/src/ holding placeholders for every file a COMPLETED generate
+/// leaves behind — all EXPECTED_OUTPUTS and all GENERATED_HEADERS — and returns
+/// the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
     let src_dir = base.join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    for name in EXPECTED_OUTPUTS.iter().chain(GENERATED_HEADERS) {
+        let path = src_dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"placeholder").unwrap();
     }
     src_dir
 }
 
-/// Duplicates stamp-write logic from build.rs for testability.
-/// Writes the grammar hash to the stamp file, warning on failure instead of panicking.
-fn stamp_write(stamp_path: &Path, grammar_hash: &str) {
-    std::fs::write(stamp_path, grammar_hash).unwrap_or_else(|e| {
-        eprintln!(
-            "cargo:warning=Failed to write stamp file {}: {}",
-            stamp_path.display(),
-            e
-        );
-    });
-}
-
-/// Duplicates needs_generate logic from build.rs for testability.
-/// Returns true if regeneration is needed based on content hash staleness.
-/// The caller passes a pre-computed grammar hash to avoid TOCTOU races.
-fn needs_generate(grammar_hash: &str, stamp_path: &Path, output_paths: &[&Path]) -> bool {
-    // Must regenerate if any output file is missing.
-    for path in output_paths {
-        if !path.exists() {
-            return true;
-        }
-    }
-    // Must regenerate if stamp file is missing.
-    let stamp_content = match std::fs::read_to_string(stamp_path) {
-        Ok(s) => s,
-        Err(_) => return true,
-    };
-    // Must regenerate if grammar hash differs from stamp.
-    stamp_content.trim() != grammar_hash
+/// `make_populated_src_dir` plus the `.generated_outputs.stamp` attesting the
+/// bytes it just wrote — i.e. the state a COMPLETED generate leaves behind.
+///
+/// Since `#6992` a fixture that merely CREATES the outputs no longer reaches the
+/// "up to date" verdict: no stamp may vouch for a `src/` tree it has no content
+/// evidence for. Tests asserting the legitimate fast path therefore need this;
+/// tests asserting staleness deliberately do not.
+///
+/// Callers must gate on `hasher_available()` first — without a hasher there is
+/// no manifest to write, and the fast path is unreachable by construction.
+fn make_attested_src_dir(base: &Path) -> std::path::PathBuf {
+    let src_dir = make_populated_src_dir(base);
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+    src_dir
 }
 
 #[test]
@@ -123,13 +128,16 @@ fn test_needs_generate_true_when_no_stamp() {
 
     let hash = content_hash(&grammar);
     assert!(
-        needs_generate(&hash, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs, &src_dir),
         "must regenerate when stamp file is missing"
     );
 }
 
 #[test]
 fn test_needs_generate_false_when_stamp_matches() {
+    if !hasher_available() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let grammar = dir.path().join("grammar.js");
     std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
@@ -137,14 +145,18 @@ fn test_needs_generate_false_when_stamp_matches() {
     // Write matching hash to stamp file
     let hash = content_hash(&grammar);
     std::fs::write(&stamp, &hash).unwrap();
-    // Create all 3 output files
-    let src_dir = make_populated_src_dir(dir.path());
+    // Create all 3 output files, attested by the manifest a real generate leaves.
+    let src_dir = make_attested_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
+    // Step-3 case (c): the FULLY CONSISTENT state. The OUT_DIR stamp matches the
+    // grammar hash AND the outputs match the manifest minted from their own
+    // bytes, so the fast path must survive — a fix that always regenerates would
+    // be a different bug, not a cure.
     assert!(
-        !needs_generate(&hash, &stamp, &output_refs),
-        "must NOT regenerate when stamp matches and all outputs exist"
+        !needs_generate(&hash, &stamp, &output_refs, &src_dir),
+        "must NOT regenerate when the stamp matches and the outputs match their manifest"
     );
 }
 
@@ -163,7 +175,7 @@ fn test_needs_generate_true_when_stamp_stale() {
 
     let hash = content_hash(&grammar);
     assert!(
-        needs_generate(&hash, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs, &src_dir),
         "must regenerate when stamp hash differs from current grammar hash"
     );
 }
@@ -185,27 +197,41 @@ fn test_needs_generate_true_when_output_missing() {
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
     assert!(
-        needs_generate(&hash, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs, &src_dir),
         "must regenerate when any output file is missing"
     );
 }
 
-/// Duplicates verify_outputs logic from build.rs for testability.
-/// Returns Err with a message naming the missing file(s).
-fn verify_outputs(src_dir: &Path) -> Result<(), String> {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
+#[test]
+fn test_needs_generate_true_when_a_generated_header_is_missing() {
+    // The transition state `#9741` creates: git deletes the formerly tracked
+    // headers on update while parser.c and every stamp survive and still attest.
+    if !hasher_available() {
+        return;
     }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "tree-sitter generate succeeded but these output files are missing: {}",
-            missing.join(", ")
-        ))
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let stamp = dir.path().join("stamp.hash");
+    let hash = content_hash(&grammar);
+    std::fs::write(&stamp, &hash).unwrap();
+    let src_dir = make_attested_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        !needs_generate(&hash, &stamp, &output_refs, &src_dir),
+        "control: the fully consistent state must take the fast path"
+    );
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            needs_generate(&hash, &stamp, &output_refs, &src_dir),
+            "must regenerate when the generated header {header} is missing, \
+             or scanner.c/parser.c fail to compile against it"
+        );
+        std::fs::write(&path, b"placeholder").unwrap();
     }
 }
 
@@ -213,259 +239,134 @@ fn verify_outputs(src_dir: &Path) -> Result<(), String> {
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
     let src_dir = make_populated_src_dir(dir.path());
-    assert!(
-        verify_outputs(&src_dir).is_ok(),
+    assert_eq!(
+        verify_outputs(&src_dir),
+        Ok(()),
         "all files present should verify ok"
     );
 
-    // Remove each file in turn and verify it's detected as missing.
+    // Remove each file in turn: the error names exactly that file.
     for name in EXPECTED_OUTPUTS {
         let path = src_dir.join(name);
         std::fs::remove_file(&path).unwrap();
         let err = verify_outputs(&src_dir).unwrap_err();
         assert!(
             err.contains(name),
-            "error message should name the missing file '{}', got: {}",
+            "error should name the missing file '{}', got: {}",
             name,
             err
         );
-        // Restore for next iteration
+        for present in EXPECTED_OUTPUTS.iter().filter(|p| *p != name) {
+            assert!(
+                !err.contains(present),
+                "error must not name '{}', which is still present, got: {}",
+                present,
+                err
+            );
+        }
+        std::fs::write(&path, b"placeholder").unwrap();
+    }
+
+    // Remove all of them: the error names every one.
+    for name in EXPECTED_OUTPUTS {
+        std::fs::remove_file(src_dir.join(name)).unwrap();
+    }
+    let err = verify_outputs(&src_dir).unwrap_err();
+    for name in EXPECTED_OUTPUTS {
+        assert!(
+            err.contains(name),
+            "error should name every missing file, '{}' absent from: {}",
+            name,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_verify_outputs_names_a_missing_generated_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    assert_eq!(
+        verify_outputs(&src_dir),
+        Ok(()),
+        "control: a completed generate must verify"
+    );
+
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        let err = verify_outputs(&src_dir)
+            .expect_err("a generate that left a header missing must not verify");
+        assert!(
+            err.contains(header),
+            "error should name the missing header '{header}', got: {err}"
+        );
+        for present in EXPECTED_OUTPUTS {
+            assert!(
+                !err.contains(present),
+                "error must not name '{present}', which is still present, got: {err}"
+            );
+        }
         std::fs::write(&path, b"placeholder").unwrap();
     }
 }
 
 #[test]
-fn test_no_redundant_rerun_if_changed() {
-    // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-    assert!(
-        !build_rs.contains("rerun-if-changed=src/parser.c"),
-        "build.rs must NOT contain 'rerun-if-changed=src/parser.c' — \
-         src/parser.c is a generated output managed by build.rs itself. \
-         Watching it causes double execution."
-    );
-}
-
-/// Find the Err(e) arm in source code using brace-depth tracking.
-/// Returns the slice from `Err(e) =>` through the arm's closing `}`.
-/// Tracks brace depth, skipping braces inside double-quoted string literals
-/// so that format strings like `format!("hint: '}}'")` don't fool the counter.
-fn find_err_arm_braced(source: &str) -> Option<&str> {
-    let err_start = source.find("Err(e) =>")?;
-    let after_arrow = &source[err_start..];
-
-    // Find the opening brace of the arm body.
-    let brace_offset = after_arrow.find('{')?;
-    let body_start = err_start + brace_offset;
-
-    let bytes = source.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = body_start;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                // Skip string literal contents — braces inside strings don't count.
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2; // skip escaped character (e.g. \")
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break; // closing quote
-                    }
-                    i += 1;
-                }
-            }
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&source[err_start..=i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
+fn test_gating_predicates_converge_after_one_regeneration() {
+    // Watching a file this build script WRITES costs one extra build-script run
+    // after each genuine regeneration: cargo sees parser.c newer than its
+    // recorded reference and re-runs. The old exclusion comment called that
+    // "double execution" as if it were a loop. It is not — the extra run finds
+    // both stamps current, writes nothing, and the run after it is clean.
+    //
+    // Pinned behaviourally so a bounded cost cannot silently become an unbounded
+    // one: evaluate the gating predicates twice in a row from a regenerated
+    // state and require the second evaluation to ask for no regeneration.
+    if !hasher_available() {
+        return;
     }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'converge'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let out_stamp = out_dir.join("grammar_hash.stamp");
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    let grammar_hash = content_hash(&grammar);
 
-    None // unbalanced braces
-}
+    // Round 1: nothing is attested yet, so both predicates must ask for a
+    // generate. Non-vacuity guard for round 2.
+    assert!(
+        needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
+        "round 1 must want a regeneration, or round 2 proves nothing"
+    );
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "round 1 must not report the shell stamps as current"
+    );
 
-/// Duplicates run_with_timeout logic from build.rs for testability.
-/// Returns Ok(()) on success, Err(message) on failure or timeout.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::time::{Duration, Instant};
+    // The regeneration itself: outputs verified, then BOTH shell stamps and the
+    // OUT_DIR stamp written — exactly what build.rs's branch does.
+    let sha = sha256_of_path(&grammar).unwrap().unwrap();
+    write_shell_stamps(&src_dir, &sha);
+    write_out_dir_grammar_stamp(&out_stamp, &grammar_hash);
 
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
+    // Round 2: settled. And round 3, so "settled" is a fixed point rather than
+    // an alternation.
+    for round in 2..=3 {
+        assert!(
+            !needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
+            "round {round}: the gating predicates must converge — watching a \
+             build-script output may cost ONE extra run, never a loop"
+        );
+        assert!(
+            shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+            "round {round}: the shell stamps written by the regeneration must \
+             read back as current"
+        );
     }
-}
-
-#[test]
-fn test_try_wait_error_path_kills_child() {
-    // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
-    // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-
-    // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
-    // This precisely captures the arm body without the fragility of a fixed-size window.
-    let err_arm = find_err_arm_braced(&build_rs)
-        .expect("build.rs should contain an Err(e) arm in try_wait match");
-
-    assert!(
-        err_arm.contains("child.kill()"),
-        "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Window: {}",
-        err_arm
-    );
-    assert!(
-        err_arm.contains("child.wait()"),
-        "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Window: {}",
-        err_arm
-    );
-}
-
-#[test]
-fn test_err_arm_extraction_not_fooled_by_format_braces() {
-    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
-    // This demonstrates the fragility of the naive .find('}') approach and validates
-    // that find_err_arm_braced handles it correctly.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                return Err(format!("Error: '{}'", e));
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    "#;
-
-    // The naive .find('}') approach finds the '}' inside the format string,
-    // not the arm's closing brace.
-    let err_start = source.find("Err(e) =>").unwrap();
-    let err_section = &source[err_start..];
-    let naive_end = err_section.find('}').unwrap();
-    let naive_slice = &err_section[..=naive_end];
-
-    // The naive approach misses child.kill() and child.wait() because they
-    // appear after the format string's '}'.
-    assert!(
-        !naive_slice.contains("child.kill()"),
-        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
-    );
-
-    // The brace-depth tracker with string-literal awareness captures the full arm.
-    let braced = find_err_arm_braced(source).expect("should find Err(e) arm");
-    assert!(
-        braced.contains("child.kill()"),
-        "find_err_arm_braced should capture child.kill(). Got: {}",
-        braced
-    );
-    assert!(
-        braced.contains("child.wait()"),
-        "find_err_arm_braced should capture child.wait(). Got: {}",
-        braced
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_simple() {
-    // Simple match block with Err(e) arm — no format strings or nested braces.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("error: {}", e));
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm in simple match block");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "extracted arm should contain child.kill(). Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "extracted arm should contain child.wait(). Got: {}",
-        arm
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_skips_format_braces() {
-    // Err(e) arm contains format!() with '}}' (Rust escaped brace) BEFORE child.kill()/child.wait().
-    // The '}}' in source text is two literal '}' characters — the naive brace counter
-    // decrements depth to 0 at the first '}', stopping before child.kill()/child.wait().
-    // A string-literal-aware tracker must skip braces inside "..." to extract the full arm.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let msg = format!("err={}, hint: '}}' escapes", e);
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(msg);
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm with format strings");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "brace-depth tracker must not stop at format string braces. Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "brace-depth tracker must capture full arm past format strings. Got: {}",
-        arm
-    );
 }
 
 #[test]
@@ -524,16 +425,104 @@ fn test_subprocess_timeout_kills_hung_process() {
     );
 }
 
+/// Whether this test binary's own descriptor `fd` is /dev/null, compared by
+/// device and inode exactly as the shell's `-ef` does. On /dev/null a
+/// discarded child descriptor and an inherited one are the same file, so the
+/// stdio probes below cannot tell them apart.
+#[cfg(target_os = "linux")]
+fn own_fd_is_dev_null(fd: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::metadata(format!("/proc/self/fd/{fd}")),
+        std::fs::metadata("/dev/null"),
+    ) {
+        (Ok(own), Ok(null)) => own.dev() == null.dev() && own.ino() == null.ino(),
+        _ => false,
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_run_with_timeout_discards_child_stdout() {
+    assert!(
+        !own_fd_is_dev_null(1),
+        "precondition: this test binary's own stdout is /dev/null, so a \
+         discarded and an inherited child stdout are indistinguishable; rerun \
+         without redirecting stdout to /dev/null"
+    );
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/1 -ef /dev/null ] && ! [ /dev/fd/1 -ef "/proc/$PPID/fd/1" ]"#,
+        ],
+        10,
+    );
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stdout must be discarded (/dev/null, not the build script's own \
+         stdout): cargo parses build-script stdout for `cargo:` directives, and a \
+         pipe nobody drains can deadlock"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_run_with_timeout_inherits_child_stderr() {
+    assert!(
+        !own_fd_is_dev_null(2),
+        "precondition: this test binary's own stderr is /dev/null, so an \
+         inherited and a discarded child stderr are indistinguishable; rerun \
+         without redirecting stderr to /dev/null"
+    );
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/2 -ef "/proc/$PPID/fd/2" ] && ! [ /dev/fd/2 -ef /dev/null ]"#,
+        ],
+        10,
+    );
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stderr must be the build script's own stderr, so `tree-sitter \
+         generate` diagnostics stay visible"
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_nonzero_exit_code() {
+    let err = run_with_timeout("sh", &["-c", "exit 97"], 10).unwrap_err();
+    assert!(
+        err.contains("exit code 97"),
+        "a failing child's error should carry its exit code 97, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_spawn_failure() {
+    let missing = "reify-no-such-binary-8553";
+    let err = run_with_timeout(missing, &[], 10).unwrap_err();
+    assert!(
+        err.contains(missing),
+        "a spawn failure should name the binary '{}', got: {}",
+        missing,
+        err
+    );
+}
+
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
 // on Windows the readonly attribute does NOT block creating files within the directory.
-fn test_stamp_write_failure_no_panic() {
+fn test_out_dir_grammar_stamp_write_failure_does_not_panic() {
     if is_root() {
         eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
         return;
     }
-    // Verify that stamp_write does not panic when the destination is read-only.
-    // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
+    // A write failure on the OUT_DIR stamp warns instead of panicking.
     let dir = tempfile::tempdir().unwrap();
     let readonly_dir = dir.path().join("readonly");
     std::fs::create_dir_all(&readonly_dir).unwrap();
@@ -549,7 +538,7 @@ fn test_stamp_write_failure_no_panic() {
     let stamp_path = readonly_dir.join("grammar_hash.stamp");
 
     // Should not panic — just warn
-    stamp_write(&stamp_path, "somehash");
+    write_out_dir_grammar_stamp(&stamp_path, "somehash");
 
     // Verify the stamp was NOT written (write should have failed)
     assert!(
@@ -559,8 +548,8 @@ fn test_stamp_write_failure_no_panic() {
 }
 
 #[test]
-fn test_stamp_write_exact_content() {
-    // Validates that stamp_write produces exact hash bytes with no trailing
+fn test_out_dir_grammar_stamp_exact_content() {
+    // Validates that the OUT_DIR stamp holds exact hash bytes with no trailing
     // whitespace, newline, or other content corruption. Since needs_generate
     // uses .trim() when reading, corruption would be silently masked without
     // this direct content assertion.
@@ -568,12 +557,12 @@ fn test_stamp_write_exact_content() {
     let stamp_path = dir.path().join("grammar_hash.stamp");
     let hash = "a1b2c3d4e5f60708";
 
-    stamp_write(&stamp_path, hash);
+    write_out_dir_grammar_stamp(&stamp_path, hash);
 
     let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
     assert_eq!(
         raw_content, hash,
-        "stamp_write must produce exact hash bytes — no trailing newline, whitespace, or BOM. \
+        "the OUT_DIR stamp must hold exact hash bytes — no trailing newline, whitespace, or BOM. \
          Got {:?}, expected {:?}",
         raw_content, hash
     );
@@ -583,10 +572,13 @@ fn test_stamp_write_exact_content() {
 fn test_stamp_path_is_profile_independent() {
     // Prove that staleness detection is purely hash-driven and works identically
     // across different OUT_DIR paths (simulating debug vs release profiles).
+    if !hasher_available() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let grammar = dir.path().join("grammar.js");
     std::fs::write(&grammar, b"module.exports = grammar({name: 'test'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
+    let src_dir = make_attested_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -601,18 +593,18 @@ fn test_stamp_path_is_profile_independent() {
     // Write matching stamp to both profiles
     let debug_stamp = debug_out.join("grammar_hash.stamp");
     let release_stamp = release_out.join("grammar_hash.stamp");
-    stamp_write(&debug_stamp, &hash);
+    write_out_dir_grammar_stamp(&debug_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
-    stamp_write(&release_stamp, &hash);
+    write_out_dir_grammar_stamp(&release_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
 
     // Both profiles report no regeneration needed
     assert!(
-        !needs_generate(&hash, &debug_stamp, &output_refs),
+        !needs_generate(&hash, &debug_stamp, &output_refs, &src_dir),
         "debug profile: must NOT regenerate when stamp matches"
     );
     assert!(
-        !needs_generate(&hash, &release_stamp, &output_refs),
+        !needs_generate(&hash, &release_stamp, &output_refs, &src_dir),
         "release profile: must NOT regenerate when stamp matches"
     );
 
@@ -620,11 +612,11 @@ fn test_stamp_path_is_profile_independent() {
     std::fs::write(&grammar, b"module.exports = grammar({name: 'changed'});").unwrap();
     let new_hash = content_hash(&grammar);
     assert!(
-        needs_generate(&new_hash, &debug_stamp, &output_refs),
+        needs_generate(&new_hash, &debug_stamp, &output_refs, &src_dir),
         "debug profile: must regenerate after grammar change"
     );
     assert!(
-        needs_generate(&new_hash, &release_stamp, &output_refs),
+        needs_generate(&new_hash, &release_stamp, &output_refs, &src_dir),
         "release profile: must regenerate after grammar change"
     );
 }
@@ -633,10 +625,13 @@ fn test_stamp_path_is_profile_independent() {
 fn test_stamp_shared_across_simulated_profiles() {
     // Prove that identical hash content at any stamp location yields identical
     // staleness decisions, and that stamp presence is per-location.
+    if !hasher_available() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let grammar = dir.path().join("grammar.js");
     std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
+    let src_dir = make_attested_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -652,31 +647,31 @@ fn test_stamp_shared_across_simulated_profiles() {
     let stamp_2 = out_dir_2.join("grammar_hash.stamp");
 
     // Write stamp to only OUT_DIR_1
-    stamp_write(&stamp_1, &hash);
+    write_out_dir_grammar_stamp(&stamp_1, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
 
     // OUT_DIR_1 has matching stamp — no regeneration needed
     assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs),
+        !needs_generate(&hash, &stamp_1, &output_refs, &src_dir),
         "OUT_DIR_1: must NOT regenerate when stamp matches"
     );
     // OUT_DIR_2 has no stamp — regeneration needed
     assert!(
-        needs_generate(&hash, &stamp_2, &output_refs),
+        needs_generate(&hash, &stamp_2, &output_refs, &src_dir),
         "OUT_DIR_2: must regenerate when stamp is absent"
     );
 
     // Now write the same stamp to OUT_DIR_2
-    stamp_write(&stamp_2, &hash);
+    write_out_dir_grammar_stamp(&stamp_2, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
 
     // Both locations now report no regeneration needed
     assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs),
+        !needs_generate(&hash, &stamp_1, &output_refs, &src_dir),
         "OUT_DIR_1: still must NOT regenerate"
     );
     assert!(
-        !needs_generate(&hash, &stamp_2, &output_refs),
+        !needs_generate(&hash, &stamp_2, &output_refs, &src_dir),
         "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
     );
 }
@@ -973,7 +968,6 @@ fn test_unix_permission_tests_have_root_guard() {
 fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
-    // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
     //
     // Design decision: the two assertions below enforce a semantic (not syntactic) invariant:
     //   (1) errors must not be silently discarded (no `let _ = set_permissions`)
@@ -1876,4 +1870,511 @@ fn test_no_bare_relative_self_path_reads() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+// ── Generated-output manifest primitives (`#6992`) ───────────────────────────
+//
+// The three stamps in this pipeline used to attest only `grammar.js`:
+// `src/.grammar_hash.stamp` and `$OUT_DIR/grammar_hash.stamp` both said "the
+// grammar hashes to X" and then let a merely-EXISTING `src/parser.c` ride along
+// on that claim. A merge that restores an older grammar.js beside a parser.c
+// generated from a newer one therefore produces a stamp that actively vouches
+// for the wrong parser, and the mtime heuristic that was supposed to catch it
+// is erased by warm-lane seeding (every file in this lane is stamped
+// `Jan 1 2020`, so `output_mtime > stamp_mtime` is universally false).
+//
+// The cure is a manifest that names the generated outputs by CONTENT. These
+// tests drive the shared primitives from `build_support.rs` — the same code
+// `build.rs` runs — never a replica.
+
+/// True when this host can hash at all.
+///
+/// Mirrors `sha256_of`'s three-outcome contract: `Ok(None)` is the host-wide
+/// "no sha256sum and no shasum" fact, and every manifest assertion below is
+/// vacuous there. Skipping is the honest response — a panic would report an
+/// environment gap as a defect.
+fn hasher_available() -> bool {
+    matches!(sha256_of(BUILD_RS), Ok(Some(_)))
+}
+
+/// Render a manifest naming `rels` inside `src_dir`, hashing each from disk.
+///
+/// Deliberately hashes the REAL bytes rather than accepting a caller-supplied
+/// digest: a fixture that can mint an arbitrary hash proves nothing about the
+/// predicate under test.
+fn render_manifest_for(src_dir: &Path, rels: &[&str]) -> String {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for rel in rels {
+        let hash = sha256_of_path(&src_dir.join(rel))
+            .expect("fixture file must hash")
+            .expect("hasher_available() was checked first");
+        entries.push((hash, (*rel).to_string()));
+    }
+    outputs_manifest_render(&entries)
+}
+
+/// `src_dir/.generated_outputs.stamp` path — the sibling stamp under test.
+fn outputs_stamp_of(src_dir: &Path) -> std::path::PathBuf {
+    src_dir.join(OUTPUTS_STAMP_NAME)
+}
+
+#[test]
+fn test_outputs_manifest_render_is_sorted_and_byte_shaped() {
+    // The format is REUSED from write_inputs_stamp (build.rs) verbatim:
+    // "<hash>  <relpath>\n" lines, sorted by relpath, two spaces. Both the
+    // Rust and the shell halves parse it, so the bytes are the contract.
+    let rendered = outputs_manifest_render(&[
+        ("cccc".to_string(), "parser.c".to_string()),
+        ("aaaa".to_string(), "grammar.json".to_string()),
+        ("bbbb".to_string(), "node-types.json".to_string()),
+    ]);
+    assert_eq!(
+        rendered, "aaaa  grammar.json\nbbbb  node-types.json\ncccc  parser.c\n",
+        "manifest must be sorted by relpath and use the two-space separator"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_parse_round_trips_render() {
+    let entries = vec![
+        ("aaaa".to_string(), "grammar.json".to_string()),
+        ("bbbb".to_string(), "node-types.json".to_string()),
+        ("cccc".to_string(), "parser.c".to_string()),
+    ];
+    let parsed = outputs_manifest_parse(&outputs_manifest_render(&entries))
+        .expect("a rendered manifest must parse");
+    assert_eq!(parsed, entries, "render -> parse must be lossless");
+}
+
+#[test]
+fn test_outputs_manifest_matches_true_for_untouched_outputs() {
+    // (a) The legitimate fast path: a manifest minted from the outputs on disk
+    // must verify against those same outputs. Without this, the fix would be a
+    // permanent regeneration loop rather than a staleness detector.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+
+    assert!(
+        outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest minted from these exact bytes must verify"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_after_one_byte_mutation() {
+    // (b) THE DEFECT, reduced to one byte: parser.c no longer matches what the
+    // manifest recorded. Content is the only signal that survives warm-lane
+    // mtime normalization, so this is the assertion the whole task rests on.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+
+    let parser = src_dir.join("parser.c");
+    let mut bytes = std::fs::read(&parser).unwrap();
+    bytes[0] ^= 0x01;
+    std::fs::write(&parser, &bytes).unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a single mutated byte in parser.c must invalidate the manifest"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_when_manifest_missing() {
+    // (c) No manifest is UNPROVEN, and unproven must read as stale. The old
+    // code treated the absence of evidence as evidence of freshness.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "an absent manifest must never vouch for the outputs beside it"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_when_an_expected_output_is_unlisted() {
+    // (d) A manifest covering 2 of the 3 outputs attests nothing about the
+    // third — so it must not verify. A per-entry loop with no set check would
+    // pass here, which is exactly the hole being closed.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, &["grammar.json", "node-types.json"]),
+    )
+    .unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest that omits parser.c must not verify the output set"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_unexpected_relpath() {
+    // (e) The other half of the set check: an entry outside EXPECTED_OUTPUTS
+    // means the manifest describes a different output set than the one this
+    // build script produces, so it cannot be trusted for this one.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(src_dir.join("stowaway.c"), b"placeholder").unwrap();
+
+    let mut rels: Vec<&str> = EXPECTED_OUTPUTS.to_vec();
+    rels.push("stowaway.c");
+    std::fs::write(
+        outputs_stamp_of(&src_dir),
+        render_manifest_for(&src_dir, &rels),
+    )
+    .unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "a manifest naming a file outside EXPECTED_OUTPUTS must not verify"
+    );
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_malformed_line_without_panicking() {
+    // (f) A truncated write (killed generate, full disk) must produce a plain
+    // FALSE, never a panic: this predicate runs inside a build script, where a
+    // panic is a hard build failure rather than a recoverable regeneration.
+    if !hasher_available() {
+        return;
+    }
+    for corrupt in [
+        "not-a-manifest-line\n",
+        "deadbeef\n",
+        "deadbeef parser.c\n",
+        "  parser.c\n",
+        "deadbeef  \n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = make_populated_src_dir(dir.path());
+        std::fs::write(outputs_stamp_of(&src_dir), corrupt).unwrap();
+        assert!(
+            !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+            "malformed manifest {:?} must read as stale, not as current",
+            corrupt
+        );
+        assert!(
+            outputs_manifest_parse(corrupt).is_none(),
+            "malformed manifest {:?} must fail to parse rather than panic",
+            corrupt
+        );
+    }
+}
+
+#[test]
+fn test_outputs_manifest_matches_false_on_empty_manifest() {
+    // (g) An empty file is the classic crash-mid-write residue: created by the
+    // open, never filled. It names no outputs, so it proves nothing.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::write(outputs_stamp_of(&src_dir), "").unwrap();
+
+    assert!(
+        !outputs_manifest_matches(&outputs_stamp_of(&src_dir), &src_dir),
+        "an empty manifest must not verify the outputs beside it"
+    );
+}
+
+// ── Hole D: the OUT_DIR stamp used to vouch by EXISTENCE alone (`#6992`) ─────
+//
+// `needs_generate` compared `$OUT_DIR/grammar_hash.stamp` against the grammar
+// hash and then required only that the three outputs EXIST. Two routine lane
+// operations break that inference:
+//
+//   * `git clean -xfd -e target` at lane acquire deletes the untracked
+//     `src/parser.c` while preserving `target/`;
+//   * CoW seeding can pair a `target/` cloned from one base with a `src/`
+//     checked out from another.
+//
+// In both cases the surviving OUT_DIR stamp attests a `src/` tree it never saw.
+
+#[test]
+fn test_needs_generate_true_when_outputs_disagree_with_their_manifest() {
+    // (a) The measured shape: grammar.js unchanged, OUT_DIR stamp matching it,
+    // all three outputs present — and parser.c's bytes belonging to a DIFFERENT
+    // generate. Existence is satisfied; content is not.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let src_dir = make_attested_src_dir(dir.path());
+
+    // parser.c now holds bytes the manifest never recorded.
+    std::fs::write(src_dir.join("parser.c"), b"parser.c from another grammar").unwrap();
+
+    let stamp = dir.path().join("stamp.hash");
+    let hash = content_hash(&grammar);
+    std::fs::write(&stamp, &hash).unwrap();
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        needs_generate(&hash, &stamp, &output_refs, &src_dir),
+        "the OUT_DIR stamp must not vouch for outputs whose bytes contradict their manifest"
+    );
+}
+
+#[test]
+fn test_needs_generate_true_when_outputs_manifest_is_absent() {
+    // (b) A `src/` tree with no manifest is UNPROVEN — the CoW-seeded /
+    // git-cleaned shape. A fresh OUT_DIR stamp beside it is evidence about
+    // grammar.js, and about nothing else.
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+
+    let stamp = dir.path().join("stamp.hash");
+    let hash = content_hash(&grammar);
+    std::fs::write(&stamp, &hash).unwrap();
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        needs_generate(&hash, &stamp, &output_refs, &src_dir),
+        "an absent outputs manifest must force regeneration, not be read as freshness"
+    );
+}
+
+// ── Holes A and C: the shell stamp vouched by grammar-hash alone, and the
+//    mtime guard that was supposed to catch it is erased by warm lanes ────────
+//
+// `shell_stamp_is_current` returned "safe to skip generation" on four
+// conditions, of which only the first three were real:
+//
+//   1. every expected output EXISTS                     (existence, not content)
+//   2. `src/.grammar_hash.stamp` is non-empty
+//   3. `sha256sum grammar.js` equals it                 (about grammar.js only)
+//   4. no output file is NEWER than the stamp           (inert in a warm lane)
+//
+// Nothing in that chain looks at parser.c's bytes. Condition 4 was the only
+// intended guard, and `scripts/seed-warm-lane.sh` bulk-stamps every non-target/
+// file to 2020-01-01 — measured in this very lane, where `ls -la
+// tree-sitter-reify/src/` shows `Jan  1  2020` on every entry. With all mtimes
+// equal, `file_mtime > stamp_mtime` is universally false and condition 4 can
+// never fire.
+//
+// Every case below forces the mtimes explicitly rather than inheriting the
+// lane's, so the reproduction holds on a cold host too.
+
+/// Recursively collect every regular file under `root`, dotfiles included.
+fn collect_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// Stamp EVERY file under `root` to an identical 2020-01-01 mtime, reproducing
+/// what `scripts/seed-warm-lane.sh` does to a lane.
+///
+/// Returns false when `touch` is unavailable — an environment gap, so callers
+/// skip rather than fail. Deliberately not `#[cfg(unix)]`-gated: that attribute
+/// would pull the test into `test_unix_permission_tests_have_root_guard`'s set,
+/// which requires an `is_root()` guard these tests have no use for.
+fn normalize_mtimes_to_2020(root: &Path) -> bool {
+    let mut files = Vec::new();
+    collect_files(root, &mut files);
+    if files.is_empty() {
+        return false;
+    }
+    let mut cmd = std::process::Command::new("touch");
+    cmd.arg("-d").arg("2020-01-01 00:00:00");
+    for f in &files {
+        cmd.arg(f);
+    }
+    let ok = matches!(cmd.status(), Ok(st) if st.success());
+    if !ok {
+        return false;
+    }
+    // The reproduction is only meaningful if the mtimes really are identical —
+    // otherwise a future `touch` behaviour change would silently turn these
+    // tests back into the mtime-ordering world they exist to rule out.
+    let mut seen: Option<std::time::SystemTime> = None;
+    for f in &files {
+        let Ok(m) = std::fs::metadata(f).and_then(|m| m.modified()) else {
+            return false;
+        };
+        match seen {
+            None => seen = Some(m),
+            Some(first) => assert_eq!(
+                first, m,
+                "fixture precondition: every file must carry the SAME mtime, or the \
+                 warm-lane state is not reproduced"
+            ),
+        }
+    }
+    true
+}
+
+/// A package-root-shaped fixture: `grammar.js` beside a `src/` holding the three
+/// outputs, `.grammar_hash.stamp` carrying the REAL sha256 of grammar.js, and —
+/// when `attest` is set — `.generated_outputs.stamp` describing those outputs.
+///
+/// `None` when this host cannot hash; the assertions are vacuous there.
+fn make_shell_stamp_fixture(
+    attest: bool,
+) -> Option<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
+    if !hasher_available() {
+        return None;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'measured'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let sha = sha256_of_path(&grammar).ok()??;
+    std::fs::write(src_dir.join(GRAMMAR_STAMP_NAME), &sha).unwrap();
+    if attest {
+        std::fs::write(
+            outputs_stamp_of(&src_dir),
+            render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
+        )
+        .unwrap();
+    }
+    Some((dir, grammar, src_dir))
+}
+
+/// The three output paths inside `src_dir`, in `EXPECTED_OUTPUTS` order.
+fn output_paths_of(src_dir: &Path) -> Vec<std::path::PathBuf> {
+    EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect()
+}
+
+#[test]
+fn test_shell_stamp_not_current_when_parser_c_is_from_another_grammar() {
+    // (a) THE MEASURED STATE, and the direct regression for both measurements.
+    //
+    // build.rs can regenerate parser.c without ever touching
+    // src/.grammar_hash.stamp (it shells out to `tree-sitter generate` and stops
+    // there), so parser.c(B) can sit beside a stamp still reading sha256(A). A
+    // later merge that restores grammar.js == A makes the stamp match AGAIN —
+    // and it now actively vouches for the wrong parser. Every mtime is identical,
+    // so the old condition 4 sees nothing.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    std::fs::write(
+        src_dir.join("parser.c"),
+        b"parser.c generated from grammar B",
+    )
+    .unwrap();
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "a grammar-hash match must not vouch for a parser.c whose bytes contradict \
+         the generated-outputs manifest"
+    );
+}
+
+#[test]
+fn test_shell_stamp_current_survives_identical_mtimes() {
+    // (b) The legitimate warm-lane fast path must SURVIVE. Content agrees on
+    // every axis and every mtime is 2020-01-01 — the ordinary state of a seeded
+    // lane. A fix that regenerated here would trade a false GREEN for a
+    // permanent `tree-sitter generate` on every build.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "the fast path must survive when the grammar hash AND the output manifest \
+         both agree, whatever the mtimes say"
+    );
+}
+
+#[test]
+fn test_shell_stamp_not_current_without_an_outputs_manifest() {
+    // (c) A correct .grammar_hash.stamp beside outputs nothing has attested is
+    // exactly the shape a `git clean -xfd -e target` / CoW-seeded lane produces.
+    // Unproven must read as stale.
+    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(false) else {
+        return;
+    };
+    if !normalize_mtimes_to_2020(dir.path()) {
+        return;
+    }
+
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    assert!(
+        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "an absent .generated_outputs.stamp must force regeneration"
+    );
+}
+
+#[test]
+fn test_shell_stamp_not_current_when_a_generated_header_is_missing() {
+    // Both shell stamps describe grammar.js and the grammar-derived outputs, so
+    // they survive git deleting the formerly tracked headers (`#9741`). They
+    // must not vouch for a `src/` tree that cannot compile.
+    let Some((_dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "control: the attested state must read as current"
+    );
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+            "the shell stamps must not read as current while the generated \
+             header {header} is missing"
+        );
+        std::fs::write(&path, b"placeholder").unwrap();
+    }
 }

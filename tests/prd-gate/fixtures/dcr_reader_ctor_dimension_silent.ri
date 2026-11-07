@@ -21,8 +21,29 @@ module dcr_reader_ctor_dimension_silent
 //   * `FDMCouponOverride.ex : Option<Pressure>` (fdm_correlations.ri:242)
 //     accepts a LENGTH; `opt_f64` (as_printed_material.rs:317) reads it as Pa.
 //
-// This file must EVAL CLEAN (exit 0) today. After ε/ζ/η each of these must exit
-// 1 with `ArgDimensionMismatch` naming the builtin and the field.
+// At decompose this file EVALUATED CLEAN (exit 0), and ε/ζ/η were each to make
+// their binding exit 1 with a coded Error naming the builtin and the field.
+// Since δ (#5306) every wrong-dimension binding already exits 1 at CHECK time,
+// on the ctor-conformance chokepoint recorded below. That exit 1 is NOT ε's,
+// ζ's or η's signal.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, four Errors:
+//   * ArgTypeMismatch, MassProperties.mass on `mass_wrong_dim`: Scalar[m] at
+//     Mass;
+//   * ArgTypeMismatch, ZVShaper.target_frequency on `shaper_wrong_dim`:
+//     rad·s^-1 at s^-1;
+//   * ArgTypeMismatch, AsPrintedOptions.line_width on `printed_bare`: Real at
+//     Scalar[m];
+//   * ArgTypeMismatch, FDMCouponOverride.ex on `coupon_wrong_dim`: Scalar[m]
+//     at Pressure, through the Option.
+//   `shaper_correct` raises nothing. CHOKEPOINT: compile-time struct-ctor field
+//   conformance. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_ctor_conformance_survey/disposition.rs).
+//   How ε and η (#6922) and ζ (#6941) read their signals instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrReaderCtorDimensionSilent {
     let mass_wrong_dim   = MassProperties(mass: 2m, com: point3(0mm, 0mm, 0mm))

@@ -130,12 +130,12 @@ structure def ClosedFourBarIdyn {
     // MassProperties. COM at each link's frame origin (kept simple; β2 owns the
     // dynamics numbers). The closing body's mass is dynamics-ignored
     // (n_tree = bodies − loop_closures = 5) but must still be distinct.
-    let mp_crank       = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_coupler     = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.20, 0.0, 0.0], [0.0, 0.20, 0.0], [0.0, 0.0, 0.20]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_coupler_tip = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.0, 0.0, 0.02]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_rocker      = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_rocker_tip  = MassProperties(mass: 0.4kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_closing     = MassProperties(mass: 0.3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.005, 0.0, 0.0], [0.0, 0.005, 0.0], [0.0, 0.0, 0.005]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp_crank       = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_coupler     = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.20, 0.0, 0.0], [0.0, 0.20, 0.0], [0.0, 0.0, 0.20]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_coupler_tip = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.0, 0.0, 0.02]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_rocker      = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_rocker_tip  = MassProperties(mass: 0.4kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_closing     = MassProperties(mass: 0.3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.005, 0.0, 0.0], [0.0, 0.005, 0.0], [0.0, 0.0, 0.005]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
 
     // ── Assemble the closed loop ─────────────────────────────────────────────
     // body(m, solid, at) defaults the parent to WORLD; body(m, solid, at, parent)
@@ -193,8 +193,9 @@ structure def ClosedFourBarIdyn {
     let traj = MotionTrajectory(mechanism: 0.0, samples: [sample_0, sample_1])
 
     // Closed-chain inverse dynamics through the landed 4146 bridge, UNCHANGED.
-    // β2 reads this cell: B6 checks the live constraint rank (m_eff=2 from the
-    // loop Jacobian at the assembled config); B7 checks the virtual-work power
+    // β2 reads this cell: B6 checks the live constraint rank (m_eff=3 from the
+    // loop Jacobian at the assembled config: the ω_z orientation closure plus
+    // in-plane v_x, v_y); B7 checks the virtual-work power
     // identity Σ τ_i·q̇_i = J_eff·ω·α ≈ 2.573 W across the two samples.
     // forces: List<List<JointForce>> of shape 2×5 (two samples × 5 tree joints).
     let forces = inverse_dynamics(m, traj)

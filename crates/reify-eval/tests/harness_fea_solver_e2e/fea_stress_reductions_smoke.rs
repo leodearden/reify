@@ -11,7 +11,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{DimensionVector, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -33,14 +33,17 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 ///   I1 = σ, I2 = 0, I3 = 0
 ///
 /// Note: I2/I3 are zero for the uniaxial case (off-diagonals all zero,
-/// only σ_xx ≠ 0).  Dimension pinning for I2 (PRESSURE²) and I3
-/// (PRESSURE³) is covered by the hydrostatic unit test in analysis.rs
-/// (nonzero values with explicit dimension asserts).
+/// only σ_xx ≠ 0), so this fixture cannot pin their dimensions — a zero
+/// satisfies a dimension assert for any dimension. That pinning lives in the
+/// hydrostatic unit test in analysis.rs and, end-to-end, in
+/// `INVARIANT_POWERS_FIXTURE` below (non-degenerate diag(2,3,5) MPa).
 ///
 /// Also includes `let i1_val = inv.i1` to exercise `.ri` field-access on
 /// the `StressInvariants` struct (suggestion 4 / task-2884 amendment) and
-/// confirm no `TypeKindMismatch` fires when the eval value `Scalar<PRESSURE>`
-/// is stored under the `Real`-placeholder field type from the struct def.
+/// confirm no `TypeKindMismatch` fires. As of task #6092 the struct def
+/// declares the real dimensions (`i1 : Pressure`), so the declared and
+/// produced types now AGREE; before that, the field was a `Real` placeholder
+/// holding a `Scalar<PRESSURE>`. The guard is still load-bearing either way.
 const UNIAXIAL_FIXTURE: &str = r#"
 structure def StressReductionsFixture {
     let stress  = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
@@ -350,14 +353,20 @@ fn safety_factor_uniaxial_evals_to_real_250() {
 
 /// Reading `inv.i1` from `.ri` DSL must NOT trigger `TypeKindMismatch`.
 ///
-/// The `StressInvariants` struct def declares `param i1 : Real` (a
-/// dimension-agnostic placeholder following the `AnalysisResult` convention
-/// in `analysis.ri`), while the runtime builtin produces `Value::Scalar<PRESSURE>`
+/// The `StressInvariants` struct def declares `param i1 : Pressure` (task
+/// #6092), matching the `Value::Scalar<PRESSURE>` the runtime builtin produces
 /// for a dimensioned input tensor.  This test confirms that the `let i1_val =
-/// inv.i1` field-access expression in `.ri` stores the eval result (`Scalar<PRESSURE>`)
-/// without panicking — verifying that the `let`-cell path does NOT run the
+/// inv.i1` field-access expression in `.ri` stores the eval result without
+/// panicking — verifying that the `let`-cell path does NOT run the
 /// `value_type_kind_matches` type-kind check (which applies only to
 /// param-override injections, not computed `let` cells).
+///
+/// That `let`-cell property is what the test actually pins, and it is
+/// independent of the declared field type — which is why the test survived the
+/// #6092 retype unchanged. Only its rationale moved: from "a `Scalar` stored
+/// under a `Real` placeholder" to "declared and produced dimensions agree".
+/// The `Value::Real` arm below is therefore still reachable and still correct:
+/// a dimensionless input tensor collapses to `Real` in the producer.
 #[test]
 fn stress_invariants_field_access_i1_does_not_type_kind_mismatch() {
     let result = run_fixture();
@@ -400,5 +409,162 @@ fn stress_invariants_field_access_i1_does_not_type_kind_mismatch() {
             "inv.i1 field access returned Undef — field not found or TypeKindMismatch path taken"
         ),
         other => panic!("inv.i1 field access must be Scalar or Real, got {other:?}"),
+    }
+}
+
+// ── StressInvariants dimensioned field typing (task 6092) ────────────────────
+
+/// `.ri` fixture: a NON-DEGENERATE diagonal stress tensor, diag(2, 3, 5) MPa,
+/// whose invariants flow into `fn` params demanding `Pressure` / `Pressure2` /
+/// `Pressure3`.
+///
+/// Deliberately not the `UNIAXIAL_FIXTURE` above: that one has I2 = I3 = 0, and
+/// a zero passes a dimension assert for ANY dimension — it cannot distinguish a
+/// correct PRESSURE²/PRESSURE³ from a dropped or wrong one (which is why the
+/// uniaxial arms hedge by accepting `Real(0)` too). diag(2,3,5) is non-zero at
+/// every slot, so this fixture pins the dimension AND cross-checks the
+/// producer's invariant arithmetic in closed form:
+///
+///   I1 = tr(σ)      = 2 + 3 + 5      = 10 MPa   → 1.0e7  Pa
+///   I2 = Σ 2×2 minors = 2·3 + 3·5 + 2·5 = 31 MPa²  → 3.1e13 Pa²
+///   I3 = det(σ)     = 2 · 3 · 5      = 30 MPa³  → 3.0e19 Pa³
+///
+/// The `takes_p*` wrappers are the load-bearing part: overload resolution is
+/// what makes the DECLARED field type observable end-to-end.
+const INVARIANT_POWERS_FIXTURE: &str = r#"
+fn takes_p(p : Pressure) -> Pressure { p }
+fn takes_p2(p : Pressure2) -> Pressure2 { p }
+fn takes_p3(p : Pressure3) -> Pressure3 { p }
+
+structure def InvariantPowersFixture {
+    let stress = matrix([[2.0e6Pa, 0.0Pa,   0.0Pa],
+                         [0.0Pa,   3.0e6Pa, 0.0Pa],
+                         [0.0Pa,   0.0Pa,   5.0e6Pa]])
+
+    let inv = stress_invariants(stress)
+    let p1  = takes_p(inv.i1)
+    let p2  = takes_p2(inv.i2)
+    let p3  = takes_p3(inv.i3)
+}
+"#;
+
+/// `.ri` fixture: the same invariants over a DIMENSIONLESS tensor.
+///
+/// Regression guard for the one genuine hazard in the retype — see
+/// `stress_invariants_dimensionless_input_still_yields_real_fields`.
+const DIMENSIONLESS_INVARIANTS_FIXTURE: &str = r#"
+structure def DimensionlessInvariantsFixture {
+    let stress = matrix([[2.0, 0.0, 0.0],
+                         [0.0, 3.0, 0.0],
+                         [0.0, 0.0, 5.0]])
+
+    let inv = stress_invariants(stress)
+    let a   = inv.i1
+    let b   = inv.i2
+    let c   = inv.i3
+}
+"#;
+
+/// Compile + eval `source`, asserting the eval stage itself emitted no
+/// Error-severity diagnostics. (`parse_and_compile_with_stdlib` already asserts
+/// the compile stage is clean and panics otherwise.)
+fn eval_clean(source: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errs: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "eval must produce no Error-severity diagnostics; got: {:?}",
+        errs
+    );
+    result
+}
+
+/// Relative-tolerance compare. The expected values here are closed-form exact
+/// integers scaled by a power of ten, so this is f64 hygiene — not uncertainty
+/// about the value.
+fn assert_close(actual: f64, expected: f64, what: &str) {
+    let rel = (actual - expected).abs() / expected.abs();
+    assert!(
+        rel < 1e-9,
+        "{what}: expected ~{expected:e}, got {actual:e} (relative error {rel:e})"
+    );
+}
+
+/// Acceptance test (task 6092), eval side: dimensioned invariants must flow
+/// through `fn` params declared `Pressure` / `Pressure2` / `Pressure3` and
+/// arrive with both the right dimension and the right value.
+///
+/// This is what certifies the retype is DECLARATION-side only: no eval-engine
+/// or producer change is involved, yet the values marshal through unchanged.
+#[test]
+fn stress_invariants_dimensioned_fields_flow_into_pressure_power_fn_params() {
+    let result = eval_clean(INVARIANT_POWERS_FIXTURE);
+
+    let dim1 = DimensionVector::PRESSURE;
+    let dim2 = dim1.mul(&DimensionVector::PRESSURE);
+    let dim3 = dim2.mul(&DimensionVector::PRESSURE);
+
+    // (cell, expected dimension, expected SI value, closed-form justification)
+    let cases: [(&str, DimensionVector, f64, &str); 3] = [
+        ("p1", dim1, 1.0e7, "I1 = tr = 2+3+5 = 10 MPa"),
+        ("p2", dim2, 3.1e13, "I2 = 2·3+3·5+2·5 = 31 MPa²"),
+        ("p3", dim3, 3.0e19, "I3 = det = 2·3·5 = 30 MPa³"),
+    ];
+
+    for (member, expected_dim, expected_val, why) in cases {
+        let id = ValueCellId::new("InvariantPowersFixture", member);
+        let got = result.values.get(&id).unwrap_or_else(|| {
+            panic!("InvariantPowersFixture.{member} cell missing from eval result")
+        });
+
+        match got {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *dimension, expected_dim,
+                    "{member} ({why}) must carry the exact expected dimension, got {dimension:?}"
+                );
+                assert_close(*si_value, expected_val, &format!("{member} ({why})"));
+            }
+            other => panic!("{member} ({why}) must be Value::Scalar, got {other:?}"),
+        }
+    }
+}
+
+/// Regression guard (task 6092): a DIMENSIONLESS stress tensor must still work.
+///
+/// This is the one real hazard in retyping the fields away from `Real`. The
+/// producer collapses to `Value::Real` for a dimensionless input
+/// (`Value::from_real_scalar(v, DIMENSIONLESS)`), so at runtime a `Real` is
+/// handed to a field now DECLARED `Pressure`. That is fine — field access reads
+/// the `StructureInstance` fields map, and `value_type_kind_matches` runs only
+/// on param-override injection, which these default-less params never take —
+/// but "fine" deserves a pin rather than an assumption.
+#[test]
+fn stress_invariants_dimensionless_input_still_yields_real_fields() {
+    let result = eval_clean(DIMENSIONLESS_INVARIANTS_FIXTURE);
+
+    for (member, expected) in [("a", 10.0_f64), ("b", 31.0_f64), ("c", 30.0_f64)] {
+        let id = ValueCellId::new("DimensionlessInvariantsFixture", member);
+        let got = result.values.get(&id).unwrap_or_else(|| {
+            panic!("DimensionlessInvariantsFixture.{member} cell missing from eval result")
+        });
+
+        match got {
+            Value::Real(v) => assert_close(*v, expected, &format!("dimensionless {member}")),
+            other => panic!(
+                "dimensionless {member} must stay Value::Real({expected}) after the retype, \
+                 got {other:?}"
+            ),
+        }
     }
 }

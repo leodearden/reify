@@ -1,5 +1,17 @@
 # Capability Manifest — fea-result-model.md
 
+> **AS-AUTHORED GATE ARTIFACT (2026-05-30; R3b rows added 2026-06-24, R1 rows and the REVOKED
+> grammar rows amended 2026-08) — do not refresh.** This manifest records the
+> **pre-decomposition** evidence check that cleared this PRD's leaves to queue; its ✅ / ⏳ / ⛔
+> verdicts are statements about *binding quality at author time*, not about landed state. All 17
+> leaves have since landed (α #4084 … κ #2968, the bracket #2930, and #4163) — see the parent PRD's
+> SHIPPED header. Consequently its "today" phrasings, its "⏳ X delivers" bindings and its hard
+> `file:line` anchors are author-time provenance and have drifted; for example, the R3b row's
+> `classify_degenerate` was replaced by `find_degenerate_tet` in #8254. Rewriting them would
+> destroy the record of what was actually gated. The two REVOKED grammar rows (η, 2930) defer to
+> the parent PRD's §6 decision 5, which is LIVE and names the current owner. Parent:
+> `docs/prds/v0_4/fea-result-model.md`.
+
 Mechanizes G3 + G6 per leaf (overlay → *Capability Manifest — reify evidence forms*). Each task's user-observable/RED signal is decomposed into asserted capabilities, each bound to evidence ∈ `{grep:file:line-wired | producer:task-upstream | grammar-fixture:parses | floor:bound>X | field-population}`. A binding resolving to `{declared-only | test-only | producer-absent | producer-downstream | fixture-ERROR | bound≤floor}` **blocks** queueing until resolved.
 
 Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, `scalar_channels: HashMap::new()`, `displaced_positions: None`). Evidence current as of 2026-05-30; G3 fixtures `/tmp/prd-gate-fixtures/fea-result-model-{1,2}.ri` parse with 0 ERROR nodes.
@@ -71,7 +83,8 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 | `solve_load_cases` real per-case results | `producer:R1-upstream` | ⏳ via R1 |
 | `envelope_von_mises` / `envelope_max_principal` | `grep:reify-stdlib/src/fea.rs:47-48` wired | ✅ |
 | **field-population**: per-case Sampled fields | `producer:α-upstream` | ⏳ via α |
-| grammar `minimize … where …`, `face(body,…)` | `grammar-fixture:fea-result-model-2.ri` (0 ERROR) | ✅ |
+| grammar `face(body,…)` | `grep:crates/reify-compiler/src/units.rs:262,379` (topology selector) | ✅ |
+| ~~grammar `minimize … where …`~~ | ~~`grammar-fixture:fea-result-model-2.ri` (0 ERROR)~~ — **PARSE-ONLY evidence; REVOKED 2026-08-25** | ⛔ the guard is silently discarded by the compiler (zero constraints, zero diagnostics). Use a bare `minimize` + separate `constraint` member. See PRD §6 decision #5's correction; owner task **6575** |
 | **bracket-geometry** solve + face-selector BC semantics | `producer:P1/P2/3429` (structural-analysis-fea) — **arbitrary geometry** | ⛔ → ship the **prismatic multi-case** variant now; bracket-geometry variant **gated** (split or hold) |
 
 ## θ — 3026 GUI case-picker dropdown  *(leaf)*
@@ -88,7 +101,9 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 |---|---|---|
 | `@optimized` solve_load_cases + `compute_targets/multi_case.rs` trampoline | NEW — R1 delivers (per 3005 architect dry_run Option A); `compute_targets/mod.rs` registry `grep:reify-eval/src/compute_targets/mod.rs:29` | ⏳ R1 delivers |
 | real per-case ElasticResult | `producer:α-upstream` | ⏳ via α |
-| `realization_entries` cache instrumentation | referenced by 3005 architect dry_run (`engine.cache_stats().realization_entries`) | ✅ |
+| `realization_entries` cache instrumentation | `producer:4152` — `CacheStats.realization_entries` + ungated `Engine::cache_stats()`; wiring pinned on the Mock kernel by `tests/tolerance_wiring_e2e.rs`, and on a real OCCT+gmsh FEA path by the un-ignored `non_prismatic_two_case_build_realizes_body_exactly_once` in `tests/solve_elastic_static_body_e2e.rs`. Counts realization-CACHE entries, so it moves only where a demanded-tolerance contract exists. | ✅ |
+| B9 re-mesh avoidance (one realization shared across 2 cases) | `producer:4152` — GREEN (not ignored): `non_prismatic_two_case_build_realizes_body_exactly_once` in `tests/solve_elastic_static_body_e2e.rs` asserts a `realization_entries` delta of exactly 1 for a 2-case body solve, a one-case control matching that delta (so the 2nd case adds ZERO entries), and exactly one `(VolumeMesh, Gmsh)` realization. | ✅ |
+| B9 end-to-end (per-case results off the shared realization) | `producer:4152` — GREEN (not ignored): `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` in `tests/solve_elastic_static_body_e2e.rs` asserts a 2-entry `cases` map whose cases each carry real Sampled `displacement`/`stress` off the one shared realization, converge, and stay independent (`overload.max_von_mises > operating.max_von_mises`); the re-mesh-avoidance half is split out green, row above. Its finiteness bar is §3's, stated as #6154's bucket split: `assert_cylinder_grid_miss_measurement` pins the §7a grid to `[4, 4, 7]`, reconciles the miss report against the raw buffer (so a ±inf — or a MIXED part-NaN grid point — fails), pins that `stress` marks the SAME points out-of-solid as `displacement`, and hard-asserts that every one of the 84 of 112 nodes the closed form places outside `r = 50 mm` carries the sentinel, so a weakening fails loudly. Plus one liveness clause per field, `any(is_finite)`, since an ALL-sentinel field would otherwise pass (the helper leaves the excess-miss direction logged, not asserted — #6200's territory). NOT `all(is_finite)`, which would contradict the `displacement` field-contract row ("finite at grid points inside the solid, `NaN` outside"); PRD §11 Q2 records that resolution as #5951's, and that the sentinel was not weakened, not clamped, and `tol` not widened. | ✅ |
 | `LoadCase`/`MultiCaseResult` types | `producer:3004` | ✅ |
 
 ## R2 — per-Support/per-Load source-span provenance (re-home from 2929)  *(leaf: B10)*
@@ -139,7 +154,8 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 
 | Capability | Evidence | Status |
 |---|---|---|
-| grammar `minimize mass(body) where max(von_mises(fea.stress)) < yield`, `face(body,…)` | `grammar-fixture:fea-result-model-2.ri` (0 ERROR); `minimize_declaration` `grep:tree-sitter-reify/grammar.js:548` | ✅ |
+| grammar `face(body,…)` | `grep:crates/reify-compiler/src/units.rs:262,379` (topology selector) | ✅ |
+| ~~grammar `minimize mass(body) where max(von_mises(fea.stress)) < yield`~~ | ~~`grammar-fixture:fea-result-model-2.ri` (0 ERROR); `grep:tree-sitter-reify/grammar.js:548`~~ — **PARSE-ONLY evidence; REVOKED 2026-08-25.** A grammar `grep` and a 0-ERROR parse prove the form is *accepted*, never that it is *implemented* | ⛔ all three clauses broken: `where` silently discarded (**6575**), `max(von_mises(Field))` dimension-mismatches (**6577**), `mass(body)` is not a callable. See PRD §6 decision #5's correction |
 | `max(von_mises(stress))` predicate | `producer:β-upstream` + `producer:α-upstream` | ⏳ via α/β |
 | **arbitrary-geometry solve on realized bracket + face-selector BC** | `producer:P1=4091 / P2=4092 / A=4093 / 3429` (structural-analysis-fea) — **filed + wired upstream 2026-05-30** (`2930 → {A,P1,P2}`; `P2→P1`; `A→2881/2882`) | ✅ resolved (DAG-direction holds; gated until the chain lands) |
 | `param thickness : Length = auto` | `grep` valid at param-default (overlay note); `grammar-fixture:fea-result-model-2.ri` | ✅ |

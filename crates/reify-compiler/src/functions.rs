@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::fn_return_check::{FnOwner, reconcile_fn_return};
 use crate::types::TopologyTemplate;
 
 /// Push the appropriate unresolved-type diagnostic for a fn signature position.
@@ -37,6 +38,25 @@ fn push_signature_type_error(
                 .with_label(DiagnosticLabel::new(span, "unknown type name")),
         );
     }
+}
+
+/// Merge a module's declared `fn` names and structure names into the ONE
+/// callable vocabulary read by the terminal first-arg fallback.
+///
+/// Rationale, and why the two inputs stay separate upstream:
+/// [`crate::scope::CompilationScope::declared_callable_names`].
+///
+/// Called once per PHASE, not once per function: the result is a module
+/// invariant, and every scope built below merely borrows it.
+pub(crate) fn declared_callable_names(
+    declared_fn_names: &HashSet<String>,
+    structure_names: &HashSet<String>,
+) -> HashSet<String> {
+    declared_fn_names
+        .iter()
+        .chain(structure_names.iter())
+        .cloned()
+        .collect()
 }
 
 /// The signature-level result of compiling a `fn` declaration: everything that
@@ -127,9 +147,7 @@ pub(crate) fn resolve_fn_signature(
         // The return-type resolution below installs its own separately-
         // scoped `EnumNameScope` (result-fallback Layer-B substrate,
         // return-position sibling of this param-position scope).
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         for p in &fn_def.params {
             let (ty, resolved) = match resolve_type_expr_with_aliases_kinded(
                 &p.type_expr,
@@ -190,9 +208,7 @@ pub(crate) fn resolve_fn_signature(
         // `Option<Color>`). Scoped to this block — dropped before the function
         // body is compiled below — so body compilation is byte-for-byte
         // unchanged.
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         match &fn_def.return_type {
             Some(te) => {
                 match resolve_type_expr_with_aliases_kinded(
@@ -241,7 +257,9 @@ pub(crate) fn resolve_fn_signature(
                     }
                 }
             }
-            None => Type::dimensionless_scalar(), // default return type
+            // An un-annotated return type defaults to `Real`; `reconcile_fn_return`
+            // reports a body that contradicts that default.
+            None => Type::dimensionless_scalar(),
         }
     };
 
@@ -276,18 +294,21 @@ pub(crate) fn resolve_fn_signature(
 /// module's own AUTHORITATIVE structure templates built so far (task 5494);
 /// there is no mirror/skeleton template registry any more.
 ///
-/// `functions` is the prior-siblings table used for call resolution inside the
-/// defaults and the body.
+/// `functions` is the call-resolution table for the defaults and the body.
+/// `declared_callable_names` is the module's order-independent callable
+/// vocabulary (task #5371), borrowed onto both scopes.
 ///
 /// Returns `None` (with a diagnostic) for a bodyless trait fn.  Signature-level
 /// diagnostics are NOT re-emitted here — [`resolve_fn_signature`] already
 /// emitted them exactly once.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function_with_signature(
     fn_def: &reify_ast::FnDef,
     sig: &FnSignature,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     structure_names: &HashSet<String>,
+    declared_callable_names: &HashSet<String>,
     template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -311,6 +332,10 @@ pub(crate) fn compile_function_with_signature(
     // same-module structure declared BELOW this fn" and report the latter as an
     // ordering error instead of silently degrading to a generic FunctionCall.
     neutral_scope.set_local_structure_names(structure_names);
+    // Neutral for VALUE bindings, not for the module's declared vocabulary: a
+    // default like `= helper(1.0)` compiles against the same partially-grown
+    // `functions` table as the body below, so it must be answered the same way.
+    neutral_scope.declared_callable_names = Some(declared_callable_names);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -375,6 +400,10 @@ pub(crate) fn compile_function_with_signature(
         scope.set_template_registry(reg);
     }
     scope.set_local_structure_names(structure_names);
+    // The module's declared callable vocabulary — see
+    // `CompilationScope::declared_callable_names` for why this body needs it.
+    // Borrowed, never merged here: the caller builds it once per pass.
+    scope.declared_callable_names = Some(declared_callable_names);
     for (name, ty) in &sig.params {
         scope.register(name, ty.clone());
     }
@@ -447,7 +476,7 @@ pub(crate) fn compile_function_with_signature(
         ContentHash::combine_all(all_hashes)
     };
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: sig.name.clone(),
         doc: sig.doc.clone(),
         is_pub: sig.is_pub,
@@ -462,7 +491,9 @@ pub(crate) fn compile_function_with_signature(
         annotations: sig.annotations.clone(),
         optimized_target: sig.optimized_target.clone(),
         type_params: sig.type_params.clone(),
-    })
+    };
+    reconcile_fn_return(fn_def, FnOwner::Free, &compiled, diagnostics);
+    Some(compiled)
 }
 
 /// Compile a `fn` declaration end to end: resolve its signature, then its param
@@ -480,6 +511,7 @@ pub(crate) fn compile_function(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    declared_callable_names: &HashSet<String>,
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -497,6 +529,7 @@ pub(crate) fn compile_function(
         enum_defs,
         functions,
         structure_names,
+        declared_callable_names,
         prelude_template_registry,
         diagnostics,
     )
@@ -753,9 +786,22 @@ pub(crate) fn compile_assoc_function(
         params.push((p.name.clone(), ty));
     }
 
+    // Only the STRUCTURE half of the callable vocabulary here — see
+    // `CompilationScope::declared_callable_names`. The absent fn half is a
+    // decision, not an omission: conformance runs after `phase_functions`, so
+    // the `functions` table these bodies resolve against is already COMPLETE
+    // and a call to any declared fn resolves instead of falling through.
+    // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
+    // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
+    //
+    // Borrowed outright rather than merged with an empty fn set: the merge
+    // would reproduce `structure_names` byte-for-byte at every call.
+    let declared_callables = Some(structure_names);
+
     // Compile default expressions in a neutral scope (definition-time semantics,
     // matching `compile_function`). The `self` receiver never carries a default.
-    let neutral_scope = CompilationScope::new(&fn_def.name);
+    let mut neutral_scope = CompilationScope::new(&fn_def.name);
+    neutral_scope.declared_callable_names = declared_callables;
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -796,6 +842,7 @@ pub(crate) fn compile_assoc_function(
     // Body scope with all params (including the `self` receiver) registered so a
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
+    scope.declared_callable_names = declared_callables;
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -860,7 +907,7 @@ pub(crate) fn compile_assoc_function(
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: fn_def.name.clone(),
         doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
@@ -875,31 +922,30 @@ pub(crate) fn compile_assoc_function(
         annotations,
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
-    })
+    };
+    reconcile_fn_return(fn_def, FnOwner::Conformer, &compiled, diagnostics);
+    Some(compiled)
 }
 
-/// Resolve a type name in field context. Unlike resolve_type_name, unresolved
-/// names become StructureRef (geometric domain types like Point3, Vector3)
-/// but a diagnostic warning is emitted so the user knows the type was not
-/// resolved from the built-in set.
+/// Resolve a type name in field context. Builtins, aliases, declared structures
+/// (StructureRef) and declared traits (TraitObject) resolve normally; only a name
+/// none of those hold (e.g. bare `Point3`/`Vector3`) coerces to StructureRef with
+/// a warning.
 pub(crate) fn resolve_field_type_name(
     name: &str,
     span: reify_core::SourceSpan,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let empty_params = HashSet::new();
-    // Field types do not currently resolve trait or structure names into
-    // TraitObject/StructureRef via the unified resolver path; pass empty sets
-    // so behavior is unchanged for fields.
-    let empty_structs: HashSet<String> = HashSet::new();
-    let empty_traits: HashSet<String> = HashSet::new();
     resolve_type_with_aliases(
         name,
         &empty_params,
         alias_registry,
-        &empty_structs,
-        &empty_traits,
+        structure_names,
+        trait_names,
     )
     .unwrap_or_else(|| {
         diagnostics.push(
@@ -919,11 +965,13 @@ pub(crate) fn resolve_field_type_name(
 /// `implicitly_converts_to` is intentionally direction-sensitive and does NOT
 /// include Int→Real widening (that rule lives in `type_compatible`, which is
 /// symmetric by design). Field codomain checks are directional (body → declared),
-/// but whole-number float literals are typed as `Int` by the expression compiler,
-/// so we must also accept `Int` where `Real` is declared. Encoding this in a
-/// dedicated predicate avoids repeating the widening rule at each call site —
-/// a future change to widening semantics (e.g. `Int→Scalar[dimensionless]`) needs
-/// updating only here.
+/// but bare integer-form literals (e.g. `1`, no `.`/`e`/`E` in the source token)
+/// are typed as `Int` by the expression compiler — see
+/// `reify_ast::decl::classify_number_literal` — so a field body like `{ 1 }`
+/// declared `Real` needs the same widening. We must also accept `Int` where
+/// `Real` is declared. Encoding this in a dedicated predicate avoids repeating
+/// the widening rule at each call site — a future change to widening semantics
+/// (e.g. `Int→Scalar[dimensionless]`) needs updating only here.
 fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
     implicitly_converts_to(body_ty, codomain_ty)
         || (matches!(body_ty, Type::Int)
@@ -936,6 +984,8 @@ pub(crate) fn compile_field(
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
     // Resolve domain and codomain types. A structurally-invalid type-expr (e.g.
@@ -951,6 +1001,8 @@ pub(crate) fn compile_field(
             name.as_str(),
             field_def.domain_type.span,
             alias_registry,
+            structure_names,
+            trait_names,
             diagnostics,
         ),
         reify_ast::TypeExprKind::DimensionalOp { .. } => {
@@ -1030,6 +1082,8 @@ pub(crate) fn compile_field(
             name.as_str(),
             field_def.codomain_type.span,
             alias_registry,
+            structure_names,
+            trait_names,
             diagnostics,
         ),
         reify_ast::TypeExprKind::DimensionalOp { .. } => {
@@ -1918,7 +1972,15 @@ mod tests {
         for domain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
             let field = ds_field(domain.clone(), ds_named("Length"));
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            let compiled = compile_field(
+                &field,
+                &[],
+                &[],
+                &TypeAliasRegistry::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut diags,
+            );
             assert!(
                 compiled.domain_type.is_error(),
                 "field domain {:?} must resolve to Type::Error, got: {:?}",
@@ -1953,7 +2015,15 @@ mod tests {
         for codomain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
             let field = ds_field(ds_named("Length"), codomain.clone());
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            let compiled = compile_field(
+                &field,
+                &[],
+                &[],
+                &TypeAliasRegistry::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut diags,
+            );
             assert!(
                 compiled.codomain_type.is_error(),
                 "field codomain {:?} must resolve to Type::Error, got: {:?}",
@@ -1993,7 +2063,15 @@ mod tests {
         // Arrow as field DOMAIN (codomain a valid Named type).
         let field = ds_field(ds_function_type(), ds_named("Length"));
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        let compiled = compile_field(
+            &field,
+            &[],
+            &[],
+            &TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut diags,
+        );
         assert!(
             compiled.domain_type.is_error(),
             "arrow field domain must be Type::Error (poison, #4657 CONVERT), got: {:?}",
@@ -2003,7 +2081,15 @@ mod tests {
         // Arrow as field CODOMAIN (domain a valid Named type).
         let field = ds_field(ds_named("Length"), ds_function_type());
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        let compiled = compile_field(
+            &field,
+            &[],
+            &[],
+            &TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut diags,
+        );
         assert!(
             compiled.codomain_type.is_error(),
             "arrow field codomain must be Type::Error (poison, #4657 CONVERT), got: {:?}",

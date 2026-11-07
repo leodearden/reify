@@ -7,10 +7,19 @@
 //! each bead carries its centerline polyline, extrusion width/height, a
 //! structural [`BeadRole`], its owning layer index + layer-Z, the nominal
 //! extruder temperature, and the active speed; the toolpath additionally
-//! records in-layer and inter-layer bead adjacency. The downstream θ
-//! `FDMPrint` constitutive mapping consumes this graph (and owns the mm→SI
-//! conversion — this module stores native G-code millimetres / mm·min⁻¹
-//! exactly as parsed, losslessly).
+//! records in-layer and inter-layer bead adjacency.
+//!
+//! This module stores native G-code millimetres / mm·min⁻¹ / °C exactly as
+//! parsed, losslessly: it is a *parser* output that owes fidelity to its
+//! source, and `serialize_toolpath_canonical` renders those values at 6
+//! decimals in a determinism golden. The native units stop here — each consumer
+//! converts for itself, so this is not a regime anyone else inherits:
+//!
+//!   * [`crate::r0`] — the Rust-side consumer that builds the constitutive
+//!     field — reads these fields as millimetres and applies its own `MM_TO_M`;
+//!   * `reify_eval::compute_targets::fdm_slice::toolpath_to_value` — the
+//!     DSL-visible projection — converts to SI at the marshalling boundary and
+//!     is the canonical statement of that regime (see its doc comment).
 //!
 //! # Why this lives here and not in reify-gcode
 //!
@@ -87,10 +96,10 @@ pub fn role_from_prusaslicer_type(type_str: &str) -> Option<BeadRole> {
 /// constant `(role, width, height, layer)`.
 ///
 /// **Units are native G-code millimetres** (coordinates, `width`, `height`,
-/// `layer_z`) and **mm·min⁻¹** (`speed`), stored exactly as parsed — no SI
-/// conversion happens here. The downstream θ `FDMPrint` mapping owns the
-/// mm→SI conversion when it builds the constitutive field (Plan §"Design
-/// Decisions": lossless, faithful-to-source representation).
+/// `layer_z`), **mm·min⁻¹** (`speed`) and **°C** (`nominal_temp`), stored
+/// exactly as parsed — no SI conversion happens here (Plan §"Design Decisions":
+/// lossless, faithful-to-source representation). Each consumer converts for
+/// itself; see the module doc for the two that do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bead {
     /// Ordered deposited centerline polyline in mm; the first point is the
@@ -107,8 +116,14 @@ pub struct Bead {
     /// Z height of the owning layer in mm.
     pub layer_z: f64,
     /// Nominal extruder temperature in °C active when the bead was laid down
-    /// (last `M104`/`M109` `S` value).
-    pub nominal_temp: f64,
+    /// (last `M104`/`M109` `S` value before the bead's pen-down).
+    ///
+    /// `None` when no `M104`/`M109` `S` value preceded the pen-down, so no
+    /// temperature was observed. `Some(0.0)` is a genuine 0 °C setpoint (e.g.
+    /// heater-off `M104 S0`), not the absence of one. The DSL projection of
+    /// the two cases is stated on
+    /// `reify_eval::compute_targets::fdm_slice::toolpath_to_value`.
+    pub nominal_temp: Option<f64>,
     /// Active feedrate in mm·min⁻¹ when the bead began extruding.
     pub speed: f64,
 }
@@ -265,7 +280,7 @@ pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError
             "M83" => sweep.e_relative = true,
             "M104" | "M109" => {
                 if let Some(s) = parse_s_param(line) {
-                    sweep.temp = s;
+                    sweep.temp = Some(s);
                 }
             }
             // Unknown G/M codes (G21, G28, M73, M201, …) are skipped.
@@ -295,7 +310,7 @@ struct BeadBuilder {
     role: BeadRole,
     layer_index: usize,
     layer_z: f64,
-    nominal_temp: f64,
+    nominal_temp: Option<f64>,
     speed: f64,
 }
 
@@ -327,8 +342,9 @@ struct Sweep {
     xyz_absolute: bool,
     /// Active feedrate in mm·min⁻¹.
     feedrate: f64,
-    /// Nominal extruder temperature in °C (last `M104`/`M109` `S`).
-    temp: f64,
+    /// Nominal extruder temperature in °C (last `M104`/`M109` `S`); `None`
+    /// until the first such command is seen.
+    temp: Option<f64>,
     /// Active structural role (`None` ⇒ extrusions skipped).
     role: Option<BeadRole>,
     /// Active extrusion width in mm (`;WIDTH:`).
@@ -356,7 +372,7 @@ impl Sweep {
             e_relative: true,
             xyz_absolute: true,
             feedrate: 0.0,
-            temp: 0.0,
+            temp: None,
             role: None,
             width: 0.0,
             height: 0.0,
@@ -1113,7 +1129,7 @@ G1 X20 Y20 E1.2
         assert!((bead.width - 0.45).abs() < EPS, "width from ;WIDTH:");
         assert!((bead.height - 0.2).abs() < EPS, "height from ;HEIGHT:");
         assert!((bead.layer_z - 0.2).abs() < EPS, "layer_z from G1 Z move");
-        assert!((bead.nominal_temp - 210.0).abs() < EPS, "temp from M104 S");
+        assert_eq!(bead.nominal_temp, Some(210.0), "temp from M104 S");
         assert!(
             (bead.speed - 1800.0).abs() < EPS,
             "speed = active feedrate (G1 F1800), got {}",
@@ -1133,6 +1149,84 @@ G1 X20 Y20 E1.2
         assert_eq!(layer.index, 0);
         assert!((layer.z - 0.2).abs() < EPS, "layer z = 0.2");
         assert_eq!(layer.bead_indices, vec![0], "bead 0 belongs to layer 0");
+    }
+
+    // ── nominal temperature observation ──────────────────────────────────────
+
+    /// [`SINGLE_PERIMETER`] with its `M104` line replaced by `temp_line`
+    /// (`""` drops it, leaving a G-code with no temperature command at all).
+    fn single_perimeter_with_temp_line(temp_line: &str) -> String {
+        format!(
+            "\
+M83
+{temp_line}
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 F1800
+G1 X20 Y10 E1.2
+G1 X20 Y20 E1.2
+"
+        )
+    }
+
+    #[test]
+    fn temperature_less_gcode_leaves_nominal_temp_unobserved() {
+        let tp = parse_prusaslicer_gcode(&single_perimeter_with_temp_line(""))
+            .expect("snippet must parse");
+
+        assert!(!tp.beads.is_empty(), "the snippet deposits beads");
+        for bead in &tp.beads {
+            assert_eq!(
+                bead.nominal_temp, None,
+                "no M104/M109 was seen, so no temperature was observed"
+            );
+        }
+    }
+
+    #[test]
+    fn m104_s0_before_extrusion_is_an_observed_zero_setpoint() {
+        let tp = parse_prusaslicer_gcode(&single_perimeter_with_temp_line("M104 S0"))
+            .expect("snippet must parse");
+
+        assert!(!tp.beads.is_empty(), "the snippet deposits beads");
+        for bead in &tp.beads {
+            assert_eq!(
+                bead.nominal_temp,
+                Some(0.0),
+                "heater-off M104 S0 is an observed setpoint, not the absence of one"
+            );
+        }
+    }
+
+    #[test]
+    fn beads_before_the_first_temperature_command_stay_unobserved() {
+        let gcode = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.2
+G1 X30 Y30 F9000
+M109 S215
+G1 X40 Y30 E1.2
+";
+        let tp = parse_prusaslicer_gcode(gcode).expect("snippet must parse");
+
+        assert_eq!(tp.beads.len(), 2, "the travel splits two beads");
+        assert_eq!(
+            tp.beads[0].nominal_temp, None,
+            "bead 0 is laid down before any temperature command"
+        );
+        assert_eq!(
+            tp.beads[1].nominal_temp,
+            Some(215.0),
+            "bead 1 follows M109 S215"
+        );
     }
 
     // ── step-5: bead segmentation ────────────────────────────────────────────
@@ -1726,7 +1820,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: layer_idx,
                     layer_z: z,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 });
             }
@@ -1779,7 +1873,7 @@ G1 X30 Y10 E1.0
                 role: BeadRole::Perimeter,
                 layer_index: 0,
                 layer_z: 0.2,
-                nominal_temp: 210.0,
+                nominal_temp: Some(210.0),
                 speed: 9000.0,
             };
             assert_matches_reference("single", &[b]);
@@ -1792,12 +1886,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.0, 0.45, 0.2], [10.0, 0.45, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("same-layer-near", &beads);
@@ -1809,12 +1903,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.0, 5.0, 0.2], [10.0, 5.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("same-layer-far", &beads);
@@ -1827,12 +1921,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.4], [10.0, 0.0, 0.4]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 1, layer_z: 0.4, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 1, layer_z: 0.4, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("consec-layer-adjacent", &beads);
@@ -1844,12 +1938,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.6], [10.0, 0.0, 0.6]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 2, layer_z: 0.6, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 2, layer_z: 0.6, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("skip-2-layers", &beads);
@@ -1863,12 +1957,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[-0.5, 0.0, 0.2], [0.0, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.3, 0.0, 0.2], [0.8, 0.0, 0.2]],
                     width: 0.45, height: 0.2, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("cell-boundary", &beads);
@@ -1882,12 +1976,12 @@ G1 X30 Y10 E1.0
                 Bead {
                     centerline: vec![[0.0, 0.0, 0.5], [10.0, 0.0, 0.5]],
                     width: 0.2, height: 0.5, role: BeadRole::Perimeter,
-                    layer_index: 0, layer_z: 0.5, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 0, layer_z: 0.5, nominal_temp: Some(210.0), speed: 9000.0,
                 },
                 Bead {
                     centerline: vec![[0.0, 0.0, 1.0], [10.0, 0.0, 1.0]],
                     width: 0.2, height: 0.5, role: BeadRole::Perimeter,
-                    layer_index: 1, layer_z: 1.0, nominal_temp: 210.0, speed: 9000.0,
+                    layer_index: 1, layer_z: 1.0, nominal_temp: Some(210.0), speed: 9000.0,
                 },
             ];
             assert_matches_reference("tall-layer", &beads);
@@ -1926,7 +2020,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: 0,
                     layer_z: 0.2,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 },
                 Bead {
@@ -1937,7 +2031,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: 0,
                     layer_z: 0.2,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 },
             ];
@@ -1953,7 +2047,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: 0,
                     layer_z: 0.2,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 },
                 Bead {
@@ -1963,7 +2057,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: 0,
                     layer_z: 0.2,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 },
             ];
@@ -2090,7 +2184,7 @@ G1 X30 Y10 E1.0
                     role: BeadRole::Perimeter,
                     layer_index: layer_idx,
                     layer_z: z,
-                    nominal_temp: 210.0,
+                    nominal_temp: Some(210.0),
                     speed: 9000.0,
                 });
             }

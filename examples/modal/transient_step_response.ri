@@ -10,13 +10,13 @@
 //   envelope(t) ∝ exp(-ζ₁·ω₁·t)
 //
 // where (ζ₁, ω₁ = 2π·f₁) are the fundamental mode's damping ratio and angular
-// frequency. The e2e test at crates/reify-eval/tests/modal_transient_e2e.rs
-// reads ζ₁ and ω₁ from THIS solve's own `result.modes[0]` and asserts the tip
-// series' measured decay constant matches ζ₁·ω₁ within 5%. Because the check is
-// self-referential, absolute frequency accuracy is irrelevant — so this fixture
-// runs at the lighter `ElementOrder.P1` (no P2 mesh cost; plan design-dec-3/4),
-// unlike the P2 accuracy fixtures cantilever_beam_modes.ri /
-// simply_supported_beam_modes.ri.
+// frequency. The e2e test at
+// crates/reify-eval-fea-tests/tests/modal_transient_e2e.rs reads ζ₁ and ω₁
+// from THIS solve's own `result.modes[0]` and asserts the tip series' measured
+// decay constant matches ζ₁·ω₁ within 5%. Because the check is self-referential,
+// absolute frequency accuracy is irrelevant — so this fixture runs at the
+// lighter `ElementOrder.P1` (no P2 mesh cost; plan design-dec-3/4), unlike the
+// P2 accuracy fixtures cantilever_beam_modes.ri / simply_supported_beam_modes.ri.
 //
 // Geometry / material / BC are the shared 200×10×2 mm AISI 1045 steel cantilever
 // (clamped at the x_min root), identical to cantilever_beam_modes.ri. The Z axis
@@ -26,7 +26,7 @@
 // queries it (both resolve geometry-free to the same fundamental-mode antinode
 // node until task 4122 lands selector→mesh-node resolution; plan design-dec-3).
 //
-// Damping: `RayleighDamping(alpha: 0, beta: 0.0003)` gives a per-mode ratio
+// Damping: `RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)` gives a per-mode ratio
 // ζ_i = (α + β·ω_i²)/(2·ω_i) = β·ω_i/2. For the fundamental (f₁ ≈ 44.7 Hz at P1,
 // ω₁ ≈ 281 rad/s) that is ζ₁ ≈ 0.042 (lightly under-damped → the Duhamel exact
 // path), decaying ~26.5 %/period. The 2nd Z-bending mode (ω ≈ 6.3·ω₁) damps
@@ -39,13 +39,16 @@
 // auto-selects the exact Duhamel recurrence; ω₁·dt ≈ 0.056 keeps the discrete
 // peak-sampling error far below 5 %.
 //
-// Type-coercion notes (identical to cantilever_beam_modes.ri):
+// Type-coercion notes (same pattern as cantilever_beam_modes.ri):
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
 //   - boundary_conditions accepts the List<FixedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
-//   - ModalOptions args are POSITIONAL (name: labels are cosmetic, bound in
-//     declaration order); every param up to `element_order` is spelled out so the
-//     trailing reference_direction / element_order land in the right slots.
+//   - ModalOptions args bind BY NAME (task 4522), so a MISSPELLED label is the
+//     hazard: the typo'd arg never claims its intended param — for `damping`,
+//     that loses the Rayleigh ζ₁ > 0 this fixture's decay envelope depends on.
+//     Every param is written out purely so a typo stays visible under review.
+//     What the compiler does with the typo'd arg, and how loudly it says so, are
+//     deliberately NOT restated here; both are pinned in `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
@@ -73,8 +76,8 @@ structure CantileverStepResponse {
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
-        sigma: 0.0,
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0003s),
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),
@@ -119,8 +122,10 @@ structure CantileverStepResponse {
     // Lazy single-location reconstruction: @optimized dispatcher →
     // modal::displacement_at trampoline. Queries the tip in +Z, returning the
     // physical displacement time series u(t_j) = Σ_i (Φ_i[tip]·ẑ)·ξ_i(t_j) as a
-    // List<Real> (PRD §5.2). Invoked as a FREE function (method syntax is not
-    // UFCS in Reify). This is the headline tip ring-down series.
+    // List<Length> in metres (PRD §5.2; dimensioned since #6094 — the √mass
+    // factors in Φ and ξ cancel in the product). Invoked as a FREE function
+    // (method syntax is not UFCS in Reify). This is the headline tip ring-down
+    // series.
     //
     // The query direction is `tip_push.direction` (NOT a bare `vec3(0,0,1)`):
     // `displacement_at` is @optimized, whose overload resolver uses EXACT type

@@ -199,8 +199,8 @@ fn heterogeneous_trampoline_e2e_deflection_differs_from_homogeneous() {
     let data_hetero = extract_displacement_data(&disp_hetero);
     let data_homo   = extract_displacement_data(&disp_homo);
 
-    let defl_hetero = reify_eval::persistent_cache::max_deflection_magnitude(&data_hetero);
-    let defl_homo   = reify_eval::persistent_cache::max_deflection_magnitude(&data_homo);
+    let defl_hetero = reify_compute_contract::max_deflection_magnitude(&data_hetero);
+    let defl_homo   = reify_compute_contract::max_deflection_magnitude(&data_homo);
 
     assert!(
         defl_hetero.is_finite() && defl_hetero > 0.0,
@@ -314,7 +314,9 @@ fn heterogeneous_field_with_gravity_load_emits_warning_absent_for_point_load() {
             version: 1,
             fields: [
                 ("magnitude".to_string(), Value::Real(9.80665)),
-                ("direction".to_string(), Value::List(vec![
+                // Value::Vector mirrors the declared
+                // `Gravity.direction : Vector3<Dimensionless>` (task 5905).
+                ("direction".to_string(), Value::Vector(vec![
                     Value::Real(0.0), Value::Real(0.0), Value::Real(-1.0),
                 ])),
             ].into_iter().collect(),

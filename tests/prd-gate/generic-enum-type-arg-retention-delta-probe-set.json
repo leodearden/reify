@@ -1,0 +1,34 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaves gamma+delta landed, S-1): fallback(Ok { value: 5mm }, \"y\") under a String annotation is REJECTED — the subject's Applied{Result,[Length,?E]} binds T and conflicts with the String default (E_FALLBACK_TYPE). PRE (2026-09-29): exit 0, eval W.v = 0.005 m with static type String.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_fallback_type_mismatch_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "E_FALLBACK_TYPE" } }
+    },
+    {
+      "capability": "POST (leaf delta landed, S-3): Tree<Force> pinned by annotation vs Leaf { value: 1mm } children is REJECTED by the payload-vs-field check once children carry Applied{Tree,[Length]} (E_VARIANT_PAYLOAD_TYPE class, message 'field ... expects type ...'). PRE: exit 0.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_tree_force_leaf_length_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "expects type" } }
+    },
+    {
+      "capability": "POST (leaf delta landed, 4031 recursive case): Node { left: Leaf{1mm}, right: Leaf{1N} } fires E_ENUM_TYPE_ARG_CONFLICT ('type parameter ... bound to both ...') through the existing unify Applied/Applied arm. PRE: exit 0 (generic-data-carrying-enums.md §7.3 recorded this as infeasible under erasure).",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_recursive_conflict_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "bound to both" } }
+    },
+    {
+      "capability": "POST (leaves beta+delta landed, U-1): fn f(r: Result<Length,String>) called as f(Ok { value: 5mm }) RESOLVES — Applied{Result,[Length,?E]} head-unifies with the concrete param under the placeholder rule; eval prints W.v = 0.001 m. PRE: exit 1, 'no matching overload for f(Enum(Result))'.",
+      "probe_kind": "value",
+      "fixture": "tests/prd-gate/fixtures/getar_fn_param_rejects_construct.ri",
+      "expected": { "observation": "present", "match": { "stdout_value": { "pattern": "W\\.v = ([0-9.]+) m", "min": 0.001, "max": 0.001 } } }
+    },
+    {
+      "capability": "POST (leaves beta+delta landed, S-4 binder form): an Err binder typed with the R1 placeholder is not a universal wildcard — hb(e) against hb(b: Bool) is rejected. PRE: check exit 0, eval W.v = false.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_wildcard_placeholder_binder_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "no matching overload for hb(" } }
+    }
+  ]
+}

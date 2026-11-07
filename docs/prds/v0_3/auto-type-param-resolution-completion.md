@@ -1,10 +1,10 @@
 # `auto:` Type-Parameter Resolution — v0.2 Completion Contract
 
-Status: contract completing `docs/prds/v0_2/auto-resolution-backtracking.md`
-(authored 2026-04-28, decomposed into tasks 2659–2664 + 2387/2390/2391 of which
-the DFS library + parser + compile-pipeline call-site all landed). Authored
-2026-06-08 in interactive `/prd` session. B + H (contracts + two-way boundary
-tests). Pending Leo approval before queueing tasks.
+Status: **SHIPPED.** All 8 decomposition leaves have landed — α #4431, β-inject #4432, β #4433,
+γ #4434, δ #4435, ε #4436, ζ #4437, θ #4438 — plus the follow-ups #4596, #4599 and #4616. Contract completing `docs/prds/v0_2/auto-resolution-backtracking.md`; authored 2026-06-08 in an interactive `/prd` session (B + H); shipped-status recorded 2026-10-18.
+**The body below is the AS-AUTHORED design record** — its residual-mechanism measurements, anchors and task-state remarks are dated 2026-06-08 pre-implementation provenance; they are not current statements of fact.
+**LIVE vs AS-AUTHORED:** LIVE — the §4–§7 contracts (L1 monomorphization, L2 per-candidate feasibility, BFS-fallback soundness, L3 value population), which `reify-core` diagnostic rustdoc, the `auto_fallback_soundness` tests and the `examples/auto/` fixtures cite as authority (§5.2, §6.2, §7 as "§δ").
+AS-AUTHORED — §§0–3 and §§8–15.
 
 ## §0 — Purpose and supersession
 
@@ -582,7 +582,7 @@ integration gate; θ supersedes v0.1.
 ### Phase 5 — Reconciliation + M-007 activation (ε)
 
 - **ε — Close 3522 superseded-by-3558; repoint 3751; M-007 real-source test; audit-finding state edits.**
-  - Files: task graph (3522 status, 3751 dep), `docs/architecture-audit/findings/auto-resolution-backtracking.md` (M-002/M-007/M-013/M-014 → WIRED), `reify-compiler/tests/auto_backjumping_real_source.rs` (NEW).
+  - Files: task graph (3522 status, 3751 dep), `docs/architecture-audit/findings/auto-resolution-backtracking.md` (M-002/M-007/M-013/M-014 → WIRED), `reify-compiler/tests/harness_auto_binding/auto_backjumping_real_source.rs` (NEW).
   - Observable signal (LEAF): `auto_backjumping_real_source` passes (real-source backjump, no `MockConstraintChecker`); `grep` shows the finding's M-013 row marked WIRED with this PRD's task IDs; 3751 `depends_on` α (not 3522).
   - Prereqs: α, β (M-007 needs real-checker substitution).
 

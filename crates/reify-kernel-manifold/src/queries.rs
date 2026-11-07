@@ -12,27 +12,24 @@
 //! Task 3625 (KGQ-π) adds the topology selectors and mass properties:
 //! `extract_faces`/`extract_edges` sub-shape enumeration; the per-element
 //! `tri_area` / `tri_unit_normal` / `edge_unit_tangent` / `points_bbox`
-//! helpers; the `canonical_edges` / `triangles_of` / `adjacent_faces` /
-//! `shared_edges` topology helpers; and `mass_properties` (signed-tetrahedron
+//! helpers; the face/edge topology helpers ([`canonical_edges`],
+//! [`PlanarFaceTopology`]); and `mass_properties` (signed-tetrahedron
 //! volume / centroid / inertia integration). Every reply reproduces OCCT's
 //! exact wire format so KGQ-ρ's cross-kernel parity gate reads both kernels
-//! identically. See the semantic-gap note below.
+//! identically. See the face-semantics note below.
 //!
-//! ## Manifold face semantics after task-4262
+//! ## Manifold face semantics
 //!
-//! [`crate::kernel::ManifoldKernel::extract_faces`] now groups coplanar
-//! triangles into **planar faces** via [`coalesce_coplanar_faces`], yielding
-//! **6** sub-handles for a unit cube — matching OCCT's BRep face count and
-//! resolving PRD Open Question §10.5
-//! (`docs/prds/v0_3/kernel-geometry-queries.md`).
+//! [`crate::kernel::ManifoldKernel::extract_faces`] groups coplanar triangles
+//! into **planar faces** via [`coplanar_face_triangle_groups`], yielding **6**
+//! sub-handles for a box — matching OCCT's BRep face count and resolving PRD
+//! Open Question §10.5 (`docs/prds/v0_3/kernel-geometry-queries.md`).
 //!
-//! **Important:** [`adjacent_faces`] and [`shared_edges`] — and the
-//! `GeometryQuery::AdjacentFaces` / `GeometryQuery::SharedEdges` arms — still
-//! operate on the **raw mesh triangle** index space (0..12 for a unit cube).
-//! The `face_index` / `face_a` / `face_b` arguments to those queries are
-//! **raw triangle indices**, NOT handles or indices into the coalesced planar
-//! faces returned by `extract_faces`.  These two index spaces are disjoint;
-//! see the per-arm doc notes in `kernel.rs`.
+//! `GeometryQuery::AdjacentFaces` / `GeometryQuery::SharedEdges` answer in the
+//! index spaces OCCT uses: face indices are positions in `extract_faces` and
+//! edge indices are positions in `extract_edges` ([`canonical_edges`]). Both
+//! come from that one grouping and that one edge enumeration via
+//! [`PlanarFaceTopology`].
 //!
 //! ### `EdgeLength` is BRep-only (no `EdgesByLength` parity)
 //!
@@ -387,7 +384,7 @@ pub(crate) fn geo_equiv(a: &Manifold, b: &Manifold, tolerance: f64) -> bool {
 ///
 /// This is the single extraction entry-point shared by the topology
 /// selectors (`extract_faces` / `extract_edges`, `canonical_edges`,
-/// `triangles_of`) and the mass-property integrator (`mass_properties`),
+/// [`PlanarFaceTopology`]) and the mass-property integrator (`mass_properties`),
 /// so every consumer indexes the same vertex/triangle data identically.
 pub(crate) fn mesh_geometry(m: &Manifold) -> (Vec<[f64; 3]>, Vec<u64>) {
     let (vert_props, n_props, tri_indices) = m.to_mesh_f64();
@@ -405,7 +402,7 @@ pub(crate) fn mesh_geometry(m: &Manifold) -> (Vec<[f64; 3]>, Vec<u64>) {
 
 /// Order an unordered vertex-index pair into a canonical undirected key
 /// `(min, max)`. Shared by [`canonical_edges`] (deduping triangle edges) and
-/// `SharedEdges` (matching a shared vertex-pair to a canonical edge index).
+/// [`tri_edges`] (keying a face's triangle edges for [`PlanarFaceTopology`]).
 #[inline]
 fn undirected(a: u64, b: u64) -> (u64, u64) {
     if a <= b {
@@ -436,8 +433,8 @@ pub(crate) type CanonicalEdges = (Vec<(u64, u64)>, Vec<[[f64; 3]; 2]>);
 /// canonical edge index space of the kernel:
 /// - `extract_edges` stores `endpoints` in this order, so edge sub-handle
 ///   `e` corresponds to `index_pairs[e]`;
-/// - `SharedEdges` maps a shared vertex-pair back to its position `e` in
-///   `index_pairs`.
+/// - [`PlanarFaceTopology`] maps each face's triangle edges to their
+///   positions `e` in `index_pairs`, which `SharedEdges` reports.
 ///
 /// Deriving both queries from this single helper guarantees their edge-index
 /// spaces never drift (mirrors OCCT's single global-edge enumeration).
@@ -457,17 +454,21 @@ pub(crate) fn canonical_edges(verts: &[[f64; 3]], tri_indices: &[u64]) -> Canoni
     (index_pairs, endpoints)
 }
 
-/// The mesh's triangles as vertex-index triplets.
-///
-/// Each consecutive triplet of `tri_indices` (the `to_mesh_f64` flat
-/// corner-index list) becomes one `[v0, v1, v2]`. Shared by `AdjacentFaces`
-/// and `SharedEdges`, which both reason over triangles as vertex-index sets
-/// (their indices into this `Vec` are the "face indices" the queries report).
-pub(crate) fn triangles_of(tri_indices: &[u64]) -> Vec<[u64; 3]> {
-    tri_indices
-        .chunks_exact(3)
-        .map(|t| [t[0], t[1], t[2]])
-        .collect()
+/// The three corner vertex indices of triangle `t` (its position in the
+/// `tri_indices` triplet sequence).
+#[inline]
+fn triangle_corners(tri_indices: &[u64], t: usize) -> [u64; 3] {
+    [
+        tri_indices[3 * t],
+        tri_indices[3 * t + 1],
+        tri_indices[3 * t + 2],
+    ]
+}
+
+/// The xyz corners of triangle `t`, in winding order.
+#[inline]
+fn triangle_xyz(verts: &[[f64; 3]], tri_indices: &[u64], t: usize) -> [[f64; 3]; 3] {
+    triangle_corners(tri_indices, t).map(|v| verts[v as usize])
 }
 
 /// The three undirected edges of a triangle, as canonical `(min, max)`
@@ -481,72 +482,88 @@ fn tri_edges(t: &[u64; 3]) -> [(u64, u64); 3] {
     ]
 }
 
-/// Triangle indices sharing at least one undirected edge with triangle
-/// `face_index` — self excluded, ascending, distinct.
+/// Face/edge incidence of a mesh's coalesced planar faces — the index spaces
+/// `AdjacentFaces` / `SharedEdges` answer in.
 ///
-/// Returns `None` when `face_index` is out of range (the caller maps this to a
-/// `QueryError`). On a closed 2-manifold every triangle has exactly 3 such
-/// neighbours: each of its 3 edges is shared with exactly one other triangle,
-/// and two distinct triangles cannot share two edges without coinciding.
-pub(crate) fn adjacent_faces(triangles: &[[u64; 3]], face_index: usize) -> Option<Vec<usize>> {
-    let target_edges = tri_edges(triangles.get(face_index)?);
-    let mut neighbours: Vec<usize> = Vec::new();
-    for (i, t) in triangles.iter().enumerate() {
-        if i == face_index {
-            continue;
-        }
-        if tri_edges(t).iter().any(|e| target_edges.contains(e)) {
-            neighbours.push(i);
-        }
-    }
-    // Ascending by construction (i increases monotonically; each i pushed at
-    // most once → distinct). The explicit sort makes the contract robust to
-    // any future reordering of the scan.
-    neighbours.sort_unstable();
-    Some(neighbours)
+/// Holds, per face in [`coplanar_face_triangle_groups`] order (= the
+/// `extract_faces` order), the ascending canonical edge indices of its
+/// triangles' edges, i.e. positions in [`canonical_edges`] (= the
+/// `extract_edges` order). Two faces are adjacent iff their edge sets
+/// intersect, and the intersection is their shared boundary. A face's set
+/// also holds its interior triangulation edges (a cube face's diagonal),
+/// which stay out of every other face's set only while the grouping is
+/// exact: on a closed 2-manifold whose planar faces each land in ONE group,
+/// both triangles of an interior edge lie in that one face. The grouping's
+/// known limitations (see [`coplanar_face_triangle_groups`]) break this — a
+/// face split across quantisation buckets yields two mutually adjacent pieces
+/// sharing its interior diagonal, and merged disjoint coplanar patches answer
+/// as one face — so OCCT parity holds only where coalescing is exact.
+pub(crate) struct PlanarFaceTopology {
+    face_edges: Vec<Vec<usize>>,
 }
 
-/// Canonical edge indices shared by triangles `face_a` and `face_b`, ascending.
-///
-/// Returns:
-/// - `Some(empty)` when `face_a == face_b` (a face shares nothing with itself —
-///   the documented design decision, checked before any range validation);
-/// - `None` when either (distinct) index is out of range (the caller maps this
-///   to a `QueryError`);
-/// - otherwise the sorted canonical edge indices of the shared undirected
-///   vertex-pairs.
-///
-/// `index_pairs` is [`canonical_edges`]' enumeration (its position `e` is the
-/// edge index `extract_edges` / `SharedEdges` report); each shared `(min, max)`
-/// pair is mapped to its index by binary search, since `index_pairs` is sorted
-/// ascending. Two distinct triangles share at most one undirected edge, so the
-/// result has length 0 or 1 on a closed 2-manifold — but the general
-/// intersect-and-map logic holds for any triangle pair.
-pub(crate) fn shared_edges(
-    triangles: &[[u64; 3]],
-    index_pairs: &[(u64, u64)],
-    face_a: usize,
-    face_b: usize,
-) -> Option<Vec<usize>> {
-    if face_a == face_b {
-        return Some(Vec::new());
+impl PlanarFaceTopology {
+    pub(crate) fn of_mesh(verts: &[[f64; 3]], tri_indices: &[u64]) -> Self {
+        let (index_pairs, _endpoints) = canonical_edges(verts, tri_indices);
+        let face_edges = coplanar_face_triangle_groups(verts, tri_indices)
+            .into_iter()
+            .map(|triangles| {
+                let mut edges: Vec<usize> = triangles
+                    .into_iter()
+                    .flat_map(|t| tri_edges(&triangle_corners(tri_indices, t)))
+                    .map(|key| {
+                        index_pairs
+                            .binary_search(&key)
+                            .expect("canonical_edges enumerates every triangle edge")
+                    })
+                    .collect();
+                edges.sort_unstable();
+                edges.dedup();
+                edges
+            })
+            .collect();
+        Self { face_edges }
     }
-    let a_edges = tri_edges(triangles.get(face_a)?);
-    let b_edges = tri_edges(triangles.get(face_b)?);
-    let mut out: Vec<usize> = Vec::new();
-    for e in a_edges {
-        if !b_edges.contains(&e) {
-            continue;
-        }
-        // A shared edge must be in the canonical enumeration (every triangle
-        // edge is); binary_search Err is therefore unreachable for a consistent
-        // mesh — skipped defensively rather than panicking.
-        if let Ok(idx) = index_pairs.binary_search(&e) {
-            out.push(idx);
-        }
+
+    pub(crate) fn face_count(&self) -> usize {
+        self.face_edges.len()
     }
-    out.sort_unstable();
-    Some(out)
+
+    /// Faces sharing at least one edge with `face`, self excluded, ascending;
+    /// `None` when `face` is out of range.
+    pub(crate) fn adjacent_faces(&self, face: usize) -> Option<Vec<usize>> {
+        let edges = self.face_edges.get(face)?;
+        let neighbours = self
+            .face_edges
+            .iter()
+            .enumerate()
+            .filter(|&(other, other_edges)| {
+                other != face && !sorted_intersection(edges, other_edges).is_empty()
+            })
+            .map(|(other, _)| other)
+            .collect();
+        Some(neighbours)
+    }
+
+    /// Edges shared by `face_a` and `face_b`, ascending; empty when they are
+    /// the same face. `None` when either index is out of range — checked
+    /// first, as OCCT does, so both kernels reject the same queries.
+    pub(crate) fn shared_edges(&self, face_a: usize, face_b: usize) -> Option<Vec<usize>> {
+        let a = self.face_edges.get(face_a)?;
+        let b = self.face_edges.get(face_b)?;
+        if face_a == face_b {
+            return Some(Vec::new());
+        }
+        Some(sorted_intersection(a, b))
+    }
+}
+
+/// Elements of ascending `a` also in ascending `b`, ascending.
+fn sorted_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
+    a.iter()
+        .copied()
+        .filter(|e| b.binary_search(e).is_ok())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +737,7 @@ pub(crate) fn face_area(tris: &[[[f64; 3]; 3]]) -> f64 {
 /// constituent triangle.
 ///
 /// All triangles in a coalesced face share the same (sign-consistent) normal
-/// by construction: [`coalesce_coplanar_faces`] uses the quantised unit
+/// by construction: [`coplanar_face_triangle_groups`] uses the quantised unit
 /// normal as part of the plane key, so a triangle wound oppositely produces
 /// a **distinct** key and is grouped into a separate face rather than placed
 /// in this one.  Returns `[0,0,0]` if all triangles are degenerate
@@ -752,15 +769,22 @@ pub(crate) fn face_points_bbox(tris: &[[[f64; 3]; 3]]) -> ([f64; 3], [f64; 3]) {
     (min, max)
 }
 
-/// Quantisation tolerance used by [`coalesce_coplanar_faces`] to group mesh
-/// triangles by their supporting plane.  Normals and offsets are rounded to
-/// the nearest multiple of this value (1e-6).
+/// Quantisation tolerance used by [`coplanar_face_triangle_groups`] to group
+/// mesh triangles by their supporting plane.  Normals and offsets are rounded
+/// to the nearest multiple of this value (1e-6).
 ///
 /// 1e-6 comfortably separates the six faces of a unit cube (offsets differ by
 /// 1.0) while tolerating the f32→f64 round-off from Reify's ingest pipeline.
 const PLANE_TOL: f64 = 1e-6;
 
-/// Group mesh triangles into coplanar planar faces.
+/// Quantised plane key `(nx, ny, nz, d)` mapped to the positions of the
+/// triangles on that plane.
+type PlaneGroupMap = std::collections::BTreeMap<(i64, i64, i64, i64), Vec<usize>>;
+
+/// Group mesh triangles into coplanar planar faces — THE face enumeration:
+/// `extract_faces` stores face `f` from group `f` (via
+/// [`coalesce_coplanar_faces`]) and [`PlanarFaceTopology`] indexes faces the
+/// same way.
 ///
 /// For each triangle the supporting **plane key** is
 /// `(quantised(nx), quantised(ny), quantised(nz), quantised(d))` where
@@ -774,13 +798,10 @@ const PLANE_TOL: f64 = 1e-6;
 /// quantised `(i64, i64, i64, i64)` tuple; `BTreeMap` iterates in ascending
 /// lexicographic order, giving deterministic face order across runs.
 ///
-/// Returns one inner `Vec` per planar face; each inner Vec contains the
-/// triangles (`[v0, v1, v2]` in winding order) that share that face's plane.
-/// For a unit cube aligned on integer vertices this yields **6** groups of 2,
-/// matching BRep face cardinality.
-///
-/// Used by [`crate::kernel::ManifoldKernel::extract_faces`] (step-2 of
-/// task-4262) to replace the previous one-triangle-per-face enumeration.
+/// Returns one inner `Vec` per planar face; each inner Vec holds the
+/// positions (in the `tri_indices` triplet sequence, ascending) of the
+/// triangles that share that face's plane. For a unit cube aligned on integer
+/// vertices this yields **6** groups of 2, matching BRep face cardinality.
 ///
 /// ## Known limitations (v0.2)
 ///
@@ -802,24 +823,16 @@ const PLANE_TOL: f64 = 1e-6;
 /// unit cube) are exact and unaffected; rotated or floating-origin faces could
 /// split.  A robust fix would cluster planes by tolerance against existing
 /// buckets (rather than snapping to a fixed grid) and is deferred.
-///
-/// BTreeMap keyed by a quantised plane key `(nx, ny, nz, d)` mapping to the
-/// list of triangles on that plane.  Factored out to keep the type readable.
-type PlaneGroupMap = std::collections::BTreeMap<(i64, i64, i64, i64), Vec<[[f64; 3]; 3]>>;
-
-pub(crate) fn coalesce_coplanar_faces(
+pub(crate) fn coplanar_face_triangle_groups(
     verts: &[[f64; 3]],
     tri_indices: &[u64],
-) -> Vec<Vec<[[f64; 3]; 3]>> {
+) -> Vec<Vec<usize>> {
     let mut groups: PlaneGroupMap = std::collections::BTreeMap::new();
 
     let quant = |f: f64| -> i64 { (f / PLANE_TOL).round() as i64 };
 
-    for chunk in tri_indices.chunks_exact(3) {
-        let v0 = verts[chunk[0] as usize];
-        let v1 = verts[chunk[1] as usize];
-        let v2 = verts[chunk[2] as usize];
-        let tri = [v0, v1, v2];
+    for t in 0..tri_indices.len() / 3 {
+        let tri = triangle_xyz(verts, tri_indices, t);
 
         let n = tri_unit_normal(&tri);
         // Skip degenerate triangles — they have no well-defined plane.
@@ -827,15 +840,31 @@ pub(crate) fn coalesce_coplanar_faces(
             continue;
         }
 
-        // Signed plane offset d = dot(n, v0).
-        let d = n[0] * v0[0] + n[1] * v0[1] + n[2] * v0[2];
-
+        let d = dot3(n, tri[0]);
         let key = (quant(n[0]), quant(n[1]), quant(n[2]), quant(d));
-        groups.entry(key).or_default().push(tri);
+        groups.entry(key).or_default().push(t);
     }
 
     // BTreeMap iterates ascending by key → deterministic face order.
     groups.into_values().collect()
+}
+
+/// The planar faces of [`coplanar_face_triangle_groups`], each as its
+/// triangles' xyz corners (`[v0, v1, v2]` in winding order) — the geometry
+/// [`crate::kernel::ManifoldKernel::extract_faces`] stores per face.
+pub(crate) fn coalesce_coplanar_faces(
+    verts: &[[f64; 3]],
+    tri_indices: &[u64],
+) -> Vec<Vec<[[f64; 3]; 3]>> {
+    coplanar_face_triangle_groups(verts, tri_indices)
+        .into_iter()
+        .map(|triangles| {
+            triangles
+                .into_iter()
+                .map(|t| triangle_xyz(verts, tri_indices, t))
+                .collect()
+        })
+        .collect()
 }
 
 /// Format an xyz vector as the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON
@@ -916,14 +945,12 @@ fn extract_xyz(m: &Manifold) -> Vec<[f64; 3]> {
 
 /// Build a [`Manifold`] directly from the `unit_cube_mesh` test fixture by
 /// replicating the exact f32→f64 / u32→u64 conversion that
-/// [`crate::kernel::ManifoldKernel::ingest_mesh`] performs (kernel.rs:295–313).
+/// [`crate::kernel::ManifoldKernel::ingest_mesh`] performs.
 ///
 /// Exposed at module level (not confined to `mod tests`) so it is reusable
 /// across test modules within this crate without re-deriving the conversion.
-/// Ideally this helper would live in `crate::test_fixtures`; moving it there
-/// requires editing `crates/reify-kernel-manifold/src/test_fixtures.rs`, which
-/// is outside the file scope of task 3612 (KGQ-γ) — deferred per
-/// the KGQ-γ code review.
+/// Ideally this helper would live in `crate::test_fixtures`; it has not been
+/// moved there yet.
 ///
 /// `offset` shifts the [0,1]³ unit cube by (dx, dy, dz) in each axis.
 #[cfg(test)]

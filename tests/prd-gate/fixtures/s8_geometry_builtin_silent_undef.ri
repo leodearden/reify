@@ -1,0 +1,15 @@
+module s8_geometry_builtin_silent_undef
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: beta (geometry-family rejections).
+// Pins: geometry-family builtins that have an eval arm but no diagnose arm
+// (frame3, transform3, vec3, point3) called with wrong-kind arguments; each
+// evaluates to a silent undef today.
+
+structure def S8GeometryBuiltinSilentUndef {
+    let f = frame3(1, 2)
+    let t = transform3("a", "b")
+    let v = vec3("x", "y", "z")
+    let p = point3("x", "y", "z")
+    let f_arity = frame3(1)
+}

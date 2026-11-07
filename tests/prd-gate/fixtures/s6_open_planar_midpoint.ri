@@ -1,0 +1,16 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): open-chain unbound planar joint snapshot (T6)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_open_planar_midpoint
+
+// Probe (seat L, S6): OPEN chain, planar joint UNBOUND -> range-midpoint fallback.
+structure def Kinematic {
+    let j_p = planar(vec3(1, 0, 0), vec3(0, 1, 0),
+                     0mm .. 1000mm, 0mm .. 1000mm,
+                     0rad .. 3.141592653589793rad)
+    let j_r = revolute(vec3(0, 0, 1), 0rad .. 1rad)
+    let m   = body(mechanism(), "plate", j_p)
+    let mr  = body(mechanism(), "arm", j_r)
+    let s_planar_unbound  = snapshot(m, [])
+    let s_planar_bound    = snapshot(m, [bind(j_p, [500mm, 500mm, 1.5707963267948966rad])])
+    let s_revolute_unbound = snapshot(mr, [])
+}

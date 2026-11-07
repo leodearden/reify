@@ -28,6 +28,7 @@ use std::fs;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::compile_program;
 use reify_core::{ModulePath, Severity};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
@@ -59,6 +60,7 @@ impl ConstraintChecker for AlwaysIndeterminate {
                 id: id.clone(),
                 satisfaction: Satisfaction::Indeterminate,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -87,6 +89,7 @@ impl ConstraintChecker for AlwaysViolated {
                 id: id.clone(),
                 satisfaction: Satisfaction::Violated,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -123,6 +126,7 @@ impl ConstraintChecker for CountingIndeterminate {
                 id: id.clone(),
                 satisfaction: Satisfaction::Indeterminate,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -215,29 +219,37 @@ fn compile_with_prelude_context_checked_parity() {
     );
 }
 
-// ─── compile_entry_with_stdlib_cfg_checked parity ─────────────────────────────
+// ─── compile_program checked parity ───────────────────────────────────────────
 
-/// Injecting `AlwaysIndeterminate` through `compile_entry_with_stdlib_cfg_checked`
-/// must produce byte-identical `auto_type_substitution` and diagnostics to the
-/// stub-default `compile_entry_with_stdlib_cfg`.
+/// Injecting `AlwaysIndeterminate` through `compile_program` must produce
+/// byte-identical `auto_type_substitution` and diagnostics to the stub-default
+/// single-file compile: `compile_with_stdlib` plus the module-path declaration
+/// diagnostic that `compile_program` attaches to its entry.
 ///
 /// Uses an empty `CfgSet` and a resolver that points at a temporary directory
 /// with no user modules — the source has no user imports to follow, so the DAG
 /// walk is a no-op and the test exercises only the entry-compile path.
 #[test]
-fn compile_entry_with_stdlib_cfg_checked_parity() {
-    let parsed = parse_auto_source(CELL_DEP_SEAL_SOURCE, "test_checker_inject_cfg");
+fn compile_program_checked_parity() {
+    let stem = "test_checker_inject_cfg";
+    let parsed = parse_auto_source(CELL_DEP_SEAL_SOURCE, stem);
+    let mut stub = reify_compiler::compile_with_stdlib(&parsed);
+    if let Some(diag) =
+        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
+    {
+        stub.diagnostics.push(diag);
+    }
     let dir = tempfile::TempDir::new().expect("tempdir");
     let resolver = ModuleResolver::new(dir.path(), dir.path().join("stdlib"));
-    let cfg = CfgSet::default();
-    let stub = reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, &cfg);
-    let checked = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
-        &parsed,
+    let checked = compile_program(
+        &dir.path().join(format!("{stem}.ri")),
+        CELL_DEP_SEAL_SOURCE,
         &resolver,
-        &cfg,
+        &CfgSet::default(),
         &AlwaysIndeterminate,
-    );
-    assert_parity(&stub, &checked, "compile_entry_with_stdlib_cfg_checked");
+    )
+    .entry;
+    assert_parity(&stub, &checked, "compile_program");
 }
 
 // ─── Constant-constraint divergence ───────────────────────────────────────────
@@ -318,10 +330,9 @@ fn compile_with_stdlib_checked_constant_constraint_diverges() {
 
 // ─── Import-compile asymmetry (architecture §4) ───────────────────────────────
 
-/// Documents the deliberate seam: `compile_entry_with_stdlib_cfg_checked`
-/// threads `checker` into the **entry module's** compile only; imported
-/// modules are compiled via `dag.compile_module` → `compile_with_prelude_refs`
-/// → the **stub** checker.
+/// Documents the deliberate seam: `compile_program` threads `checker` into the
+/// **entry module's** compile only; imported modules are compiled via
+/// `dag.compile_module` with the **stub** checker.
 ///
 /// Regression guard: if a future refactor accidentally threads the real
 /// checker into the DAG-walk import compiles, this test will catch it.
@@ -338,7 +349,7 @@ fn compile_with_stdlib_checked_constant_constraint_diverges() {
 ///   `bearing.ri` is an import, compiled with the stub → its auto: resolves
 ///   → no "no feasible candidates" error surfaces in `assembly`'s diagnostics.
 #[test]
-fn compile_entry_with_stdlib_cfg_checked_import_uses_stub() {
+fn compile_program_import_uses_stub() {
     // bearing.ri: constant-false constraint + auto: slot.
     let bearing_source = r#"
         trait Seal {}
@@ -366,14 +377,14 @@ fn compile_entry_with_stdlib_cfg_checked_import_uses_stub() {
     // Part A: compile bearing.ri AS THE ENTRY with AlwaysViolated.
     // The entry compile path uses the real checker → constant constraint is
     // Violated → GasketSeal rejected → "no feasible candidates" error.
-    let parsed_bearing =
-        reify_compiler::parse_with_stdlib(bearing_source, ModulePath::single("bearing"));
-    let entry_bearing = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
-        &parsed_bearing,
+    let entry_bearing = compile_program(
+        &dir.path().join("bearing.ri"),
+        bearing_source,
         &resolver,
         &cfg,
         &AlwaysViolated,
-    );
+    )
+    .entry;
     let entry_bearing_errors: Vec<_> = diag_tuples(&entry_bearing)
         .into_iter()
         .filter(|(sev, msg)| *sev == Severity::Error && msg.contains("no feasible candidates"))
@@ -386,18 +397,18 @@ fn compile_entry_with_stdlib_cfg_checked_import_uses_stub() {
     );
 
     // Part B: compile assembly.ri AS THE ENTRY with AlwaysViolated.
-    // bearing.ri is compiled as an IMPORT via dag.compile_module →
-    // compile_with_prelude_refs (stub) → constant constraint is Indeterminate
+    // bearing.ri is compiled as an IMPORT via dag.compile_module (stub
+    // checker) → constant constraint is Indeterminate
     // → GasketSeal accepted → bearing's auto: resolves fine.
     // No "no feasible candidates" error should appear in assembly's diagnostics.
-    let parsed_assembly =
-        reify_compiler::parse_with_stdlib(assembly_source, ModulePath::single("assembly"));
-    let entry_assembly = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
-        &parsed_assembly,
+    let entry_assembly = compile_program(
+        &dir.path().join("assembly.ri"),
+        assembly_source,
         &resolver,
         &cfg,
         &AlwaysViolated,
-    );
+    )
+    .entry;
     let import_feasible_errors: Vec<_> = diag_tuples(&entry_assembly)
         .into_iter()
         .filter(|(sev, msg)| *sev == Severity::Error && msg.contains("no feasible candidates"))
@@ -453,6 +464,7 @@ fn non_stub_constraint_checkers_return_false_for_is_compile_time_stub() {
                     id: id.clone(),
                     satisfaction: Satisfaction::Indeterminate,
                     diagnostics: ConstraintDiagnostics::default(),
+                    indeterminate_reason: None,
                 })
                 .collect()
         }

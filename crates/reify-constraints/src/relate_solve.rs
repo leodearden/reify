@@ -18,46 +18,54 @@
 //! (`[t_x, t_y, t_z, rot_x, rot_y, rot_z]`) is measured by central finite
 //! differences, giving an `m × 6` Jacobian block per relation. A relation is
 //! *driving* iff its rows add at least one new independent direction to the running
-//! rank (greedy rank-revealing Gram–Schmidt over normalized rows); otherwise every
-//! row already lies in the span and it joins the redundant remainder. The DOF
-//! accounting falls straight out: `spent = combined rank`, `free = 6 − spent`.
+//! rank (an ordered rank-revealing QR over the rows, [`crate::linalg::RowSpaceQr`]);
+//! otherwise every row already lies in the span and it joins the redundant
+//! remainder. The DOF accounting falls straight out: `spent = combined rank`,
+//! `free = 6 − spent`.
 //!
 //! The {driving, redundant} *counts* and the spent total are order-independent
 //! (any maximal independent subset has the same size); the specific relation that
 //! lands in the remainder may depend on input order, which is immaterial — the
 //! remainder is verified, not solved.
 //!
-//! Hand-rolled small linalg over `≤(rows × 6)` — the Frame Jacobian is tiny, so a
-//! heavy linalg dependency (nalgebra) is unjustified (design §4).
+//! The linear algebra is the in-crate [`crate::linalg`] — the Frame Jacobian is
+//! tiny, so a heavy linalg dependency (nalgebra) is unjustified (design §4).
 //!
 //! ## Driving-set solve (step-10)
 //!
-//! [`solve_frame`] takes the partition's **driving set** over realized datum
-//! [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the Frame to
-//! satisfy every driving relation, returning through the existing
-//! [`SolveResult`](reify_ir::SolveResult) contract (`Solved { values, unique }` /
-//! `Infeasible`). It reuses this module's residual + Jacobian model (the same one
-//! the partition measures): a damped Gauss–Newton (Levenberg–Marquardt) iteration
-//! over the 6-DOF pose, with `λI` damping so a residual gauge freedom (e.g. spin
-//! about the shank axis under concentric+flush) is handled gracefully rather than
-//! tripping a singular normal-equations solve. The 6 solved scalars are assembled
-//! into a [`Value::Frame`]; `unique` reflects whether the Jacobian at the solution
-//! pins all 6 DOF.
+//! [`solve_frame_outcome`] takes the partition's **driving set** over realized
+//! datum [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the
+//! Frame to satisfy every driving relation. The Frame is a
+//! [`LeastSquaresProblem`] over this module's residual + Jacobian model (the same
+//! one the partition measures), solved by [`trust_region::solve`]; a residual
+//! gauge freedom (e.g. spin about the shank axis under concentric+flush) stays at
+//! its seed. A solved Frame comes with its rank and null space ([`Twist`]s); a
+//! failed one with its typed [`SolveFailureCause`].
+//! [`FrameSolveOutcome::into_solve_result`] reads that outcome through the
+//! existing [`SolveResult`] contract.
+//! Both the solve and the partition run in the scaled coordinates of one
+//! [`SolveScaling`] (PRD §7.3).
 //!
 //! **Backend note (see esc-4386-38).** The plan named a libslvs-backed solve
 //! (extending `solvespace.rs`'s `SystemBuilder`). The bound `Slvs_*` C API models
 //! INDEPENDENT point/line coordinates with no rigid-group primitive, so a single
 //! 6-DOF Frame carrying several rigidly-coupled datums cannot be expressed cleanly
-//! there; the self-contained Gauss–Newton over the already-tested residual model
-//! satisfies the same `SolveResult` contract without a second slvs integration.
+//! there; the self-contained trust-region solve over the already-tested residual
+//! model satisfies the same `SolveResult` contract without a second slvs
+//! integration.
 //!
-//! One kernel-defaulted [`RelateTolerance`] knob governs the whole hierarchy
-//! `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law).
+//! The tolerance hierarchy `kernel_local ≤ solver_convergence ≤ assertion/dedup`
+//! (PRD §7.1 coherence law) and the row dimensions it is applied by live in
+//! [`crate::scaling`].
 
 use std::collections::HashMap;
 
-use reify_core::{Diagnostic, ValueCellId};
-use reify_ir::{SolveResult, Value};
+use reify_core::{Diagnostic, DimensionVector, ValueCellId};
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
+
+use crate::linalg::{RankTolerance, RowSpaceQr};
+use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
+use crate::trust_region::{self, LeastSquaresProblem, SolveBudget};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -68,7 +76,8 @@ pub struct FrameUnknown {
     /// The auto sub's instance name (e.g. `"bolt"`).
     pub sub: String,
     /// `auto(free)` — whether this unknown waives the uniqueness check (PRD §7.1
-    /// step 3). When `true`, [`solve_frame`] returns `unique:false` even for a
+    /// step 3). When `true`, [`FrameSolveOutcome::into_solve_result`] returns
+    /// `unique:false` even for a
     /// fully-determined system, and any residual DOF is seeded to a concrete value
     /// (never a free variable) rather than reported as under-determined. When
     /// `false` (strict `auto`), a residual DOF is reported via the `unique:false`
@@ -125,6 +134,24 @@ impl Pose {
         Self::default()
     }
 
+    /// The same placement with its rotation magnitude at most π — `None` when it
+    /// already is: a rotation of `θ` about `â` is the rotation of
+    /// `θ − 2π·round(θ/2π)` about `â`. Keeps the exponential map away from its
+    /// singularity at `|θ| = 2π`, and makes the Frame quaternion's
+    /// `w = cos(θ/2) ≥ 0`.
+    fn rewrapped(&self) -> Option<Self> {
+        let angle = norm3(self.rotation);
+        if angle <= std::f64::consts::PI {
+            return None;
+        }
+        let turns = (angle / std::f64::consts::TAU).round();
+        let wrapped = angle - std::f64::consts::TAU * turns;
+        Some(Self {
+            translation: self.translation,
+            rotation: scale3(self.rotation, wrapped / angle),
+        })
+    }
+
     /// A copy with the `dof`-th Frame DOF nudged by `h` (DOF 0..3 = translation
     /// x/y/z; 3..6 = rotation x/y/z).
     fn perturbed(&self, dof: usize, h: f64) -> Self {
@@ -174,39 +201,42 @@ pub struct RelationPartition {
 
 /// The number of DOF in a rigid Frame unknown.
 const FRAME_DOF: usize = 6;
-/// Central finite-difference step (metres for translation, radians for rotation).
+/// Central finite-difference step, RELATIVE to each unknown's nominal scale: DOF
+/// `j` is perturbed by `FD_STEP · s_j` (PRD §7.3), so the step is dimensionless.
 const FD_STEP: f64 = 1e-6;
-/// Below this norm a Jacobian row is treated as numerically zero (a residual
-/// component insensitive to every DOF — well under the FD noise floor of ~1e-10).
+/// Below this norm a raw Jacobian row is numerically zero (a residual component
+/// insensitive to every DOF — well under the FD noise floor of ~1e-10). Scaled
+/// rows apply it divided by `ε_rel` ([`rank_tolerance`]).
 const ZERO_ROW_FLOOR: f64 = 1e-9;
 
 /// Rank-partition a per-scope relation set at the `witness` config into a driving
 /// set + a redundant remainder, with DOF accounting (ζ step-8).
 ///
-/// `tol` is the rank-revealing tolerance (tied to the solver-convergence tol):
-/// after each Jacobian row is normalized, a Gram–Schmidt residual above `tol`
-/// counts as a new independent direction. See the module docs for the method.
+/// The rank is measured on the SCALED Jacobian of `scaling`, so translation and
+/// rotation columns are commensurate: a row whose normalized remainder outside the
+/// running span exceeds [`SolveScaling::rank_threshold`] counts as a new
+/// independent direction ([`RowSpaceQr`]). See the module docs for the method.
 pub fn partition_driving_set(
     relations: &[RelationInstance],
     frame_unknown: &FrameUnknown,
     witness: &Pose,
-    tol: f64,
+    scaling: &SolveScaling,
 ) -> RelationPartition {
-    let mut basis: Vec<[f64; FRAME_DOF]> = Vec::new();
+    let tolerance = rank_tolerance(scaling);
+    let mut running = RowSpaceQr::new(FRAME_DOF, tolerance);
     let mut driving = Vec::new();
     let mut redundant = Vec::new();
     let mut per_relation = Vec::new();
 
     for (i, rel) in relations.iter().enumerate() {
-        let rows = relation_jacobian(rel, frame_unknown, witness);
+        let (_, rows) = scaled_residual_jacobian(rel, frame_unknown, witness, scaling);
 
         // Individual rank: the rank of this relation's rows on their own (a fresh
-        // basis) — the geometry-measured codimension cross-checked against γ.
-        let mut solo: Vec<[f64; FRAME_DOF]> = Vec::new();
-        let individual_rank = add_rows_rank(&rows, &mut solo, tol) as u32;
+        // factorization) — the geometry-measured codimension cross-checked against γ.
+        let individual_rank = RowSpaceQr::new(FRAME_DOF, tolerance).push_rows(&rows) as u32;
 
         // Contribution to the running rank, in input order.
-        let rank_contribution = add_rows_rank(&rows, &mut basis, tol) as u32;
+        let rank_contribution = running.push_rows(&rows) as u32;
         if rank_contribution > 0 {
             driving.push(i);
         } else {
@@ -221,7 +251,7 @@ pub fn partition_driving_set(
         });
     }
 
-    let spent = basis.len() as u32;
+    let spent = running.rank() as u32;
     let free = (FRAME_DOF as u32).saturating_sub(spent);
     RelationPartition {
         driving,
@@ -232,51 +262,65 @@ pub fn partition_driving_set(
     }
 }
 
-// ── Tolerance hierarchy ──────────────────────────────────────────────────────
+// ── Characteristic length ────────────────────────────────────────────────────
 
-/// The single kernel-defaulted `Length` tolerance knob governing the relate-solve
-/// (PRD §7.1 coherence law). One base length seeds the whole hierarchy
-/// `kernel_local ≤ solver_convergence ≤ assertion/dedup`: the kernel's own datum
-/// realization floor, the solver's residual-convergence target, and the (looser)
-/// post-solve assertion/dedup tolerance. Numeric boundary checks test "within the
-/// solver's convergence tolerance" — a method guarantee — never a hand-picked epsilon.
-#[derive(Debug, Clone, Copy)]
-pub struct RelateTolerance {
-    kernel_local: f64,
-    solver_convergence: f64,
-    assertion: f64,
+/// The [`SolveScaling`] of one relate-scope solve of `unknown` near `witness`.
+///
+/// `L` is PRD §7.3's characteristic length, as decided in §11 Q4: the bounding-box
+/// diagonal of every datum origin (moving operands at `witness`) together with the
+/// moving frame's origin, which is the rotation centre — so `L` is never shorter
+/// than the rotation unknowns' lever arm — and no shorter than the largest
+/// `Length` metric operand.
+pub fn solve_scaling(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    witness: &Pose,
+    tolerance: RelateTolerance,
+) -> SolveScaling {
+    SolveScaling::new(participating_extent(relations, unknown, witness), tolerance)
 }
 
-impl RelateTolerance {
-    /// The kernel-default hierarchy: a `1e-7 m` kernel-local floor (OCCT
-    /// `Precision::Confusion` order), a `1e-6 m` solver-convergence target, and a
-    /// `1e-5 m` assertion/dedup tolerance. Derived from the single base length so
-    /// `kernel_local ≤ solver_convergence ≤ assertion` holds by construction.
-    pub fn kernel_default() -> Self {
-        let kernel_local = 1e-7;
-        Self {
-            kernel_local,
-            solver_convergence: kernel_local * 10.0, // 1e-6 m
-            assertion: kernel_local * 100.0,         // 1e-5 m
+fn participating_extent(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    witness: &Pose,
+) -> f64 {
+    let mut points = vec![witness.translation];
+    let mut longest_length_operand = 0.0_f64;
+    for op in relations.iter().flat_map(|rel| &rel.operands) {
+        if is_datum(&op.datum) {
+            let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
+            let origin = if moving {
+                datum_origin(&transform_datum(&op.datum, witness))
+            } else {
+                datum_origin(&op.datum)
+            };
+            points.extend(origin);
+        } else if let Value::Scalar {
+            si_value,
+            dimension,
+        } = &op.datum
+            && *dimension == DimensionVector::LENGTH
+        {
+            longest_length_operand = longest_length_operand.max(si_value.abs());
         }
     }
+    points.retain(|p| p.iter().all(|c| c.is_finite()));
+    bbox_diagonal(&points).max(longest_length_operand)
+}
 
-    /// The tightest rung — the kernel's local datum-realization floor (metres).
-    pub fn kernel_local(&self) -> f64 {
-        self.kernel_local
-    }
-
-    /// The solver's residual-convergence target (metres / dimensionless). A solve
-    /// that returns [`SolveResult::Solved`] guarantees the relation residual is
-    /// `≤` this value.
-    pub fn solver_convergence(&self) -> f64 {
-        self.solver_convergence
-    }
-
-    /// The (loosest) post-solve assertion/dedup tolerance (metres).
-    pub fn assertion(&self) -> f64 {
-        self.assertion
-    }
+/// The diagonal of the axis-aligned box around `points`; `0.0` when empty.
+fn bbox_diagonal(points: &[[f64; 3]]) -> f64 {
+    let Some(&first) = points.first() else {
+        return 0.0;
+    };
+    let (lo, hi) = points.iter().fold((first, first), |(lo, hi), p| {
+        (
+            std::array::from_fn(|i| lo[i].min(p[i])),
+            std::array::from_fn(|i| hi[i].max(p[i])),
+        )
+    });
+    norm3(sub3(hi, lo))
 }
 
 // ── Driving-set solve ────────────────────────────────────────────────────────
@@ -285,75 +329,147 @@ impl RelateTolerance {
 /// [`SolveResult::Solved`]'s value map (entity = the sub's instance name).
 const POSE_MEMBER: &str = "pose";
 
+/// How a Frame solve ended: the solution, or the typed reason it failed.
+#[derive(Debug, Clone)]
+pub struct FrameSolveOutcome {
+    /// Trial steps taken, accepted or rejected (`0` when the seed already
+    /// converged).
+    pub iterations: u32,
+    /// The solved Frame, or why there is none.
+    pub result: Result<FrameSolution, SolveFailureCause>,
+}
+
+/// A converged Frame solve.
+#[derive(Debug, Clone)]
+pub struct FrameSolution {
+    /// The solved pose.
+    pub pose: Pose,
+    /// How many of the 6 Frame DOF the relations pin at the solution.
+    pub rank: usize,
+    /// A basis of the `6 − rank` rigid motions the relations leave free at the
+    /// solution, as geometric [`Twist`]s (world angular velocity, not exp-map
+    /// chart increments). The basis is not orthonormal in any stated metric.
+    pub null_space: Vec<Twist>,
+}
+
+/// An infinitesimal rigid motion of a Frame: per unit of motion, `translation`
+/// metres of the frame origin and `rotation` radians about the world axis through
+/// that origin (an angular velocity, so its direction IS the rotation axis).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Twist {
+    /// Metres per unit.
+    pub translation: [f64; 3],
+    /// Radians per unit.
+    pub rotation: [f64; 3],
+}
+
+impl FrameSolveOutcome {
+    /// This outcome for the auto Frame `unknown` through the existing
+    /// [`SolveResult`] contract:
+    /// - [`SolveResult::Solved`] — every residual row converged within its own
+    ///   nominal tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method
+    ///   guarantee). `values` maps `ValueCellId::new(unknown.sub, "pose")` to a
+    ///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true`
+    ///   iff the Jacobian at the solution pins all 6 Frame DOF (no residual gauge
+    ///   freedom) and `unknown` is strict `auto`.
+    /// - [`SolveResult::Infeasible`] — the driving relations are certified
+    ///   mutually inconsistent; one diagnostic coded [`SolveFailureCause::code`].
+    /// - [`SolveResult::NoProgress`] — every other [`SolveFailureCause`] (e.g. the
+    ///   budget ran out, the step stalled, or a residual or Jacobian entry evaluated
+    ///   non-finite); the reason renders the cause.
+    // G-allow: SolveResult adapter (strict/auto(free) uniqueness, PRD §7.1 step 3) owned by #6677, whose registry routing of relate-solve consumes it; no production caller until #6677 lands
+    pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
+        match self.result {
+            Ok(solution) => {
+                // `auto(free)` waives the uniqueness check (PRD §7.1 step 3).
+                // Strict `auto` reports `unique:true` only when every Frame DOF is
+                // pinned; a residual surfaces as `unique:false`, the
+                // under-determined signal. Either way the gauge DOF stays at its
+                // concrete seed, never a free variable.
+                let unique = solution.rank == FRAME_DOF && !unknown.free;
+                let mut values = HashMap::new();
+                values.insert(
+                    ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
+                    frame_value(&solution.pose),
+                );
+                SolveResult::Solved { values, unique }
+            }
+            Err(cause @ SolveFailureCause::Infeasible(_)) => SolveResult::Infeasible {
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "the relations on `{}` cannot be satisfied simultaneously — {cause}",
+                        unknown.sub
+                    ))
+                    .with_code(cause.code()),
+                ],
+            },
+            Err(cause) => SolveResult::NoProgress {
+                reason: format!(
+                    "the relations on `{}` were not solved — {cause}",
+                    unknown.sub
+                ),
+            },
+        }
+    }
+}
+
 /// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
-/// satisfied, starting from `seed` (ζ step-10).
-///
-/// Returns through the existing [`SolveResult`] contract:
-/// - [`SolveResult::Solved`] — the relation residual converged `≤ tol` (the method
-///   guarantee). `values` maps `ValueCellId::new(unknown.sub, "pose")` to a
-///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true` iff
-///   the Jacobian at the solution pins all 6 Frame DOF (no residual gauge freedom).
-/// - [`SolveResult::Infeasible`] — the driving relations are mutually inconsistent
-///   (no pose drives the residual below `tol`). Step-16 refines the geometric
-///   minimal-conflict diagnostic; ζ step-10 maps non-convergence to a build-failing
-///   `Infeasible` so the contract is honoured.
-///
-/// `tol` is the solver-convergence tolerance — feed it from
-/// [`RelateTolerance::solver_convergence`].
-pub fn solve_frame(
+/// satisfied, starting from `seed`, by [`trust_region::solve`] in the scaled
+/// coordinates of `scaling`, within `budget`.
+pub fn solve_frame_outcome(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
-    tol: f64,
-) -> SolveResult {
-    match gauss_newton_solve(driving, unknown, seed, tol) {
-        Some((pose, fully_pinned)) => {
-            // `auto(free)` waives the uniqueness check (PRD §7.1 step 3): report
-            // `unique:false` even when all 6 DOF are pinned. Strict `auto` reports
-            // `unique:true` only when the Jacobian pins every Frame DOF — a residual
-            // surfaces as `unique:false`, the under-determined signal. Either way the
-            // solved Frame is fully numeric (the gauge DOF stays at its concrete seed),
-            // never a free variable.
-            let unique = fully_pinned && !unknown.free;
-            let mut values = HashMap::new();
-            values.insert(
-                ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
-                frame_value(&pose),
-            );
-            SolveResult::Solved { values, unique }
+    scaling: &SolveScaling,
+    budget: SolveBudget,
+) -> FrameSolveOutcome {
+    let problem = FrameProblem::new(driving, unknown, scaling);
+    let run = trust_region::solve(
+        &problem,
+        &problem.scaled(seed),
+        budget,
+        rank_tolerance(scaling),
+    );
+    let result = run.outcome.map(|converged| {
+        let pose = problem.pose(&run.x);
+        let null_space = converged
+            .null_space
+            .iter()
+            .map(|z| problem.twist(z, &pose))
+            .collect();
+        FrameSolution {
+            pose,
+            rank: converged.rank,
+            null_space,
         }
-        None => SolveResult::Infeasible {
-            diagnostics: vec![Diagnostic::error(format!(
-                "the relations on `{}` cannot be satisfied simultaneously — \
-                 the driving set is geometrically inconsistent",
-                unknown.sub
-            ))],
-        },
+    });
+    FrameSolveOutcome {
+        iterations: run.iterations,
+        result,
     }
 }
 
-/// The largest absolute residual component over `relations` at `pose` — the
-/// geometry-backed measure of "how far from satisfied" the relation set is. A pose
-/// returned by [`solve_frame`] as `Solved` has `max_relation_residual ≤ tol`. Also
-/// the post-solve assertion primitive reused for the redundant-remainder check
-/// (step-14).
-pub fn max_relation_residual(
+/// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
+/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose
+/// [`solve_frame_outcome`] returns as solved meets the bar
+/// [`SolveScaling::row_tolerance`];
+/// the redundant-remainder re-check applies [`SolveScaling::assertion_rung`].
+pub fn max_relation_exceedance(
     relations: &[RelationInstance],
     unknown: &FrameUnknown,
     pose: &Pose,
+    bar: impl Fn(ResidualUnit) -> f64,
 ) -> f64 {
-    let mut max = 0.0_f64;
-    for rel in relations {
-        for r in relation_residual(rel, unknown, pose) {
-            max = max.max(r.abs());
-        }
-    }
-    max
+    relations
+        .iter()
+        .flat_map(|rel| relation_residual_rows(rel, unknown, pose))
+        .fold(0.0_f64, |max, row| max.max(row.value.abs() / bar(row.unit)))
 }
 
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
-/// (translation + exponential-map rotation), the inverse of the Frame assembly in
-/// [`solve_frame`]. Returns `None` for any other value or a malformed frame.
+/// (translation + exponential-map rotation), the inverse of [`frame_value`].
+/// Returns `None` for any other value or a malformed frame.
+// G-allow: inverse of frame_value; round-trip consumers are the cross-crate tests (reify-constraints relate_solve/relate_scaling tests, reify-eval relate e2e)
 pub fn pose_from_frame(v: &Value) -> Option<Pose> {
     match v {
         Value::Frame { origin, basis } => Some(Pose {
@@ -373,39 +489,65 @@ pub fn pose_from_frame(v: &Value) -> Option<Pose> {
 
 // ── Jacobian assembly ────────────────────────────────────────────────────────
 
-/// The `m × 6` residual Jacobian of `rel` w.r.t. the 6 Frame DOF at `witness`,
-/// by central finite differences. Returns one `[f64; 6]` row per residual
-/// component (empty if the relation has no residual model).
-fn relation_jacobian(
+/// The kind of Frame DOF `dof` (`0..3` translation, `3..6` rotation).
+fn dof_kind(dof: usize) -> UnknownKind {
+    if dof < 3 {
+        UnknownKind::PoseTranslation
+    } else {
+        UnknownKind::PoseRotation
+    }
+}
+
+/// The SCALED residual `r̃_i = r_i / t_i` of `rel` at `x`, each row over the nominal
+/// tolerance of its own unit (PRD §7.3).
+fn scaled_residual(
     rel: &RelationInstance,
     unknown: &FrameUnknown,
-    witness: &Pose,
-) -> Vec<[f64; FRAME_DOF]> {
-    let base = relation_residual(rel, unknown, witness);
-    let m = base.len();
-    if m == 0 {
-        return Vec::new();
-    }
-    let mut jac = vec![[0.0; FRAME_DOF]; m];
+    x: &Pose,
+    scaling: &SolveScaling,
+) -> Vec<f64> {
+    relation_residual_rows(rel, unknown, x)
+        .into_iter()
+        .map(|row| row.value / scaling.row_tolerance(row.unit))
+        .collect()
+}
+
+/// `rel`'s scaled residual at `x` and its `m × 6` Jacobian `J̃` in the scaled
+/// unknowns `x̃_j = x_j / s_j`, by central differences of step `FD_STEP · s_j`.
+/// One `[f64; 6]` row per residual component (both empty if the relation has no
+/// residual model).
+fn scaled_residual_jacobian(
+    rel: &RelationInstance,
+    unknown: &FrameUnknown,
+    x: &Pose,
+    scaling: &SolveScaling,
+) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
+    let residual = scaled_residual(rel, unknown, x, scaling);
+    let mut jac = vec![[0.0; FRAME_DOF]; residual.len()];
     for dof in 0..FRAME_DOF {
-        let rp = relation_residual(rel, unknown, &witness.perturbed(dof, FD_STEP));
-        let rm = relation_residual(rel, unknown, &witness.perturbed(dof, -FD_STEP));
-        if rp.len() != m || rm.len() != m {
+        let h = FD_STEP * scaling.unknown_scale(dof_kind(dof));
+        let rp = scaled_residual(rel, unknown, &x.perturbed(dof, h), scaling);
+        let rm = scaled_residual(rel, unknown, &x.perturbed(dof, -h), scaling);
+        if rp.len() != residual.len() || rm.len() != residual.len() {
             continue;
         }
         for (r, row) in jac.iter_mut().enumerate() {
             row[dof] = (rp[r] - rm[r]) / (2.0 * FD_STEP);
         }
     }
-    jac
+    (residual, jac)
 }
 
-/// Evaluate `rel`'s residual at pose `x`: transform each MOVING datum operand
+/// Evaluate `rel`'s residual rows at pose `x`: transform each MOVING datum operand
 /// (one whose sub is the auto unknown) by `x`, leave anchors fixed, then dispatch
 /// on the relation name. A zero residual means the relation is satisfied at `x`.
-fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -> Vec<f64> {
+fn relation_residual_rows(
+    rel: &RelationInstance,
+    unknown: &FrameUnknown,
+    x: &Pose,
+) -> Vec<ResidualRow> {
     let mut datums: Vec<(Value, bool)> = Vec::new(); // (value, moving)
-    let mut scalar: Option<f64> = None;
+    let mut scalars: Vec<f64> = Vec::new(); // metric operands, in declaration order
     for op in &rel.operands {
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
@@ -416,17 +558,32 @@ fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -
             };
             datums.push((val, moving));
         } else if let Some(s) = op.datum.as_f64() {
-            scalar = Some(s);
+            scalars.push(s);
         }
     }
-    residual_dispatch(&rel.name, &datums, scalar)
+    // `scalar` is the single-metric view every pre-tangent arm was written against.
+    // It is derived as `last()` so it reproduces the previous `scalar = Some(s)`
+    // overwrite byte-for-byte: those relations all carry exactly ONE metric operand,
+    // where first and last coincide. Only `tangent`'s two-radius combos need the
+    // full `scalars` slice, so widening the signature moves no existing behaviour.
+    let scalar = scalars.last().copied();
+    residual_dispatch(&rel.name, &datums, scalar, &scalars)
 }
 
 /// Dispatch a named relation to its residual vector over the (already
 /// pose-transformed) datum operands. `a` is the moving operand, `b` the anchor;
 /// tangent frames are always built from the anchor so they stay fixed under the
 /// Frame perturbation (the Jacobian would otherwise pick up spurious rotation).
-fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) -> Vec<f64> {
+///
+/// `scalar` is the single-metric view (the last metric operand) the one-radius
+/// arms read; `scalars` is the full metric list in declaration order, which only
+/// `tangent`'s two-radius combos need.
+fn residual_dispatch(
+    name: &str,
+    datums: &[(Value, bool)],
+    scalar: Option<f64>,
+    scalars: &[f64],
+) -> Vec<ResidualRow> {
     let Some((a, b)) = pick_ab(datums) else {
         return Vec::new();
     };
@@ -445,8 +602,20 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
             (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
+        // Normalize before the dot, for the reason spelled out on the `angle` arm
+        // below: `dot(da, db)` is the SINE of the misalignment only when both
+        // operands are unit-length, and `dir_of` does not guarantee that. Left
+        // unnormalized the row scales with the operands' magnitudes — harmless to
+        // the solver, whose zero set is magnitude-invariant, but not to the static
+        // verifier, which compares the row against a FIXED dimensionless rung: a
+        // scale-10 direction would inflate the residual tenfold and fail a build
+        // that is geometrically correct. A degenerate zero-length direction has no
+        // orientation ⇒ no residual row.
         "perpendicular" => match (dir_of(a), dir_of(b)) {
-            (Some(da), Some(db)) => vec![dot3(da, db)],
+            (Some(da), Some(db)) => match (unit3(da), unit3(db)) {
+                (Some(ua), Some(ub)) => vec![ResidualRow::dimensionless(dot3(ua, ub))],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
@@ -469,14 +638,19 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
             // one arm sensitive to operand magnitude, so it must normalize. A
             // degenerate zero-length direction has no defined angle ⇒ no residual row.
             (Some(da), Some(db), Some(theta)) => match (unit3(da), unit3(db)) {
-                (Some(ua), Some(ub)) => vec![dot3(ua, ub) - theta.cos()],
+                (Some(ua), Some(ub)) => {
+                    vec![ResidualRow::dimensionless(dot3(ua, ub) - theta.cos())]
+                }
                 _ => Vec::new(),
             },
             _ => Vec::new(),
         },
         "offset" => offset_residual(a, b, scalar),
         "on" => on_residual(datums),
-        // tangent (surface-conditional) and uncurated names contribute no rows.
+        // Operand-pair-conditional (four curated surface combos) and radius-carrying,
+        // so it reads `datums` positionally and takes the full metric list.
+        "tangent" => tangent_residual(datums, scalars),
+        // Uncurated names contribute no rows.
         _ => Vec::new(),
     }
 }
@@ -500,29 +674,188 @@ fn pick_ab(datums: &[(Value, bool)]) -> Option<(&Value, &Value)> {
     Some((a, b))
 }
 
+/// The residual row vector of `rel` evaluated at its operands' **fixed** current
+/// placements — the STATIC witness, for a relate scope with ZERO `at auto` subs.
+///
+/// Nothing moves here: there is no Frame to solve for, only a verdict to render
+/// on the datums as they already sit. Returns the full row vector rather than a
+/// collapsed magnitude, because the caller must distinguish three outcomes, not
+/// two — see (iii).
+///
+/// # (i) Why nominating a "moving" sub does not perturb anything
+///
+/// The witness pose is [`Pose::identity`], under which [`transform_datum`] is a
+/// provable no-op: `rotate` short-circuits on `angle < 1e-12` and returns its
+/// input unchanged, and `transform_point` adds a zero translation. So the datum
+/// nominated as moving is passed through BITWISE. The nomination is a routing
+/// device for [`pick_ab`], not a transformation.
+///
+/// # (ii) Why a sub MUST be nominated — the load-bearing subtlety
+///
+/// It is tempting to pass a sentinel [`FrameUnknown`] naming no real sub, since
+/// by construction nothing moves. That is WRONG, and wrong in both directions.
+/// [`relation_residual_rows`] marks an operand moving iff `op.sub == unknown.sub`, and
+/// [`pick_ab`] then resolves `a` to the first MOVING operand *else*
+/// `datums.first()`, and `b` to the first NON-MOVING operand *else*
+/// `datums.last()`. With zero moving operands, `a` falls through to `datums[0]`
+/// and `b` resolves to the first non-moving operand — which is also `datums[0]`.
+/// The relation is compared against ITSELF:
+///
+/// - `concentric` / `flush` / `coincident` / `fasten` / `parallel` → identically
+///   `0.0`, i.e. every violated relation reported as satisfied; and
+/// - `perpendicular` → `d·d` = 1.0, `antiparallel` → 2.0, `distance` / `offset` →
+///   `|d|`, `angle` → `1 − cos θ` → false VIOLATIONS on correct models.
+///
+/// Only `on` / `tangent`, which read `datums` positionally, would survive it.
+///
+/// Nominating the FIRST datum operand's own sub fixes both: `a` becomes that
+/// first datum (moving, but identity-transformed, so bitwise unchanged) and `b`
+/// the first operand on a DIFFERENT sub — the genuine second operand. When both
+/// operands share one sub (`concentric(a.x, a.y)`) every datum is moving, no
+/// non-moving operand exists, and `pick_ab`'s `datums.last()` fallback is then
+/// CORRECT: last is a genuinely different operand from first.
+///
+/// That last case is why the arity guard below is on the datum COUNT rather than
+/// on the subs being distinct.
+///
+/// # (iii) An EMPTY return means UNVERIFIABLE, never satisfied
+///
+/// Callers MUST NOT read an empty row vector as "no error". It means this
+/// relation has no residual model for its name/operand-kind combination, or did
+/// not have two realized datums to compare, so its satisfaction was not DECIDED —
+/// a fact that has to be said out loud rather than folded into silence
+/// (`docs/legibility/design-invariants.md` INV-SF-3). Two sources:
+///
+/// - an uncurated relation name, or an operand shape `residual_dispatch` does not
+///   model, contributes no rows; and
+/// - fewer than two datum operands (e.g. one failed to realize and is
+///   [`Value::Undef`]) cannot be compared at all. Passing such a relation through
+///   would hit the very self-compare described in (ii) and return four exact
+///   zeros — a *confident* "satisfied" derived from missing input.
+///
+/// Collapsing this to an `f64` would render "unmodelled" and "measured zero"
+/// identically, trading the false green this function exists to kill for a
+/// quieter one.
+///
+/// Purely additive: no existing call site changes, so the auto-ful solve path is
+/// untouched.
+pub fn static_relation_residuals(rel: &RelationInstance) -> Vec<ResidualRow> {
+    // Arity guard — see (iii). Two datum operands are the minimum any residual
+    // form can compare; below that, `pick_ab` would self-compare.
+    if comparable_datum_operands(rel) < 2 {
+        return Vec::new();
+    }
+
+    // The witness sub — see (ii). The first datum operand carrying a sub.
+    let Some(sub) = rel
+        .operands
+        .iter()
+        .find(|op| is_datum(&op.datum) && op.sub.is_some())
+        .and_then(|op| op.sub.clone())
+    else {
+        // Datum operands exist but none names a sub, so no nomination can make
+        // `pick_ab` pick two distinct operands. Unverifiable rather than guessed.
+        return Vec::new();
+    };
+
+    let unknown = FrameUnknown { sub, free: false };
+    relation_residual_rows(rel, &unknown, &Pose::identity())
+}
+
+/// How many of `rel`'s operands are geometric datums a residual form could compare
+/// — the arity [`static_relation_residuals`] guards on.
+///
+/// Public because the empty row vector it produces has two sources (see that
+/// function's (iii)) and a caller that reports "unverifiable" must say WHICH one it
+/// hit. Reading the count here rather than re-deriving a guess keeps the reported
+/// reason DERIVED from the guard that actually fired: the reachable shape is the
+/// `ground(sub)` / `fix(sub)` desugar `fasten(sub.frame, self.frame)`, whose
+/// `self.frame` anchor is not a sub datum — one operand, not two. Reporting that as
+/// "no residual model for `fasten`" would be false (the Frame branch of
+/// [`coincident_residual`] models exactly that pair), and a wrong "why" undercuts
+/// the honest-non-consumption contract the caller exists to uphold.
+pub fn comparable_datum_operands(rel: &RelationInstance) -> usize {
+    rel.operands.iter().filter(|op| is_datum(&op.datum)).count()
+}
+
+// ── Residual rows and their units ────────────────────────────────────────────
+
+/// One residual component with the unit it is measured in.
+///
+/// The unit selects the row's nominal tolerance in the scaled solve and its
+/// assertion rung in the post-solve and static checks, which also have to say what
+/// they measured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResidualRow {
+    pub value: f64,
+    pub unit: ResidualUnit,
+}
+
+impl ResidualRow {
+    /// A row measured in metres.
+    pub fn length(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Length,
+        }
+    }
+
+    /// A row measured in radians.
+    pub fn angle(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Angle,
+        }
+    }
+
+    /// A row that is a pure number.
+    pub fn dimensionless(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Dimensionless,
+        }
+    }
+}
+
+/// Tag every component of `v` with one unit — for the forms whose rows are
+/// dimensionally uniform (a point delta is three lengths; a unit-vector
+/// difference is three pure numbers).
+fn rows_of(v: impl IntoIterator<Item = f64>, unit: ResidualUnit) -> Vec<ResidualRow> {
+    v.into_iter().map(|value| ResidualRow { value, unit }).collect()
+}
+
 // ── Per-relation residual forms ──────────────────────────────────────────────
 
 /// Axis-coincidence (concentric / coincident over Axis), codim 4: 2 direction
 /// (tilt) components + 2 perpendicular-position components, in the anchor's
 /// tangent frame.
-fn axis_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn axis_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (Some((oa, ua)), Some((ob, ub))) = (axis_parts(a), axis_parts(b)) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(ub);
     let off = sub3(oa, ob);
-    vec![dot3(ua, e1), dot3(ua, e2), dot3(off, e1), dot3(off, e2)]
+    vec![
+        ResidualRow::dimensionless(dot3(ua, e1)),
+        ResidualRow::dimensionless(dot3(ua, e2)),
+        ResidualRow::length(dot3(off, e1)),
+        ResidualRow::length(dot3(off, e2)),
+    ]
 }
 
 /// Plane-coincidence (flush / coincident over Plane), codim 3: 2 normal (tilt)
 /// components + the signed offset along the anchor normal.
-fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (Some((oa, na)), Some((ob, nb))) = (plane_parts(a), plane_parts(b)) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(nb);
     let off = sub3(oa, ob);
-    vec![dot3(na, e1), dot3(na, e2), dot3(off, nb)]
+    vec![
+        ResidualRow::dimensionless(dot3(na, e1)),
+        ResidualRow::dimensionless(dot3(na, e2)),
+        ResidualRow::length(dot3(off, nb)),
+    ]
 }
 
 /// Signed direction alignment (parallel / antiparallel / coincident over Direction),
@@ -538,20 +871,23 @@ fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
 /// EVERY config (the third component carries only the sense/radial information, whose
 /// gradient is degenerate at the aligned solution). A degenerate (zero-length) operand
 /// has no defined direction ⇒ no residual rows.
-fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<f64> {
+fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<ResidualRow> {
     match (unit3(da), unit3(db)) {
-        (Some(ua), Some(ub)) => vec![
-            ua[0] - sign * ub[0],
-            ua[1] - sign * ub[1],
-            ua[2] - sign * ub[2],
-        ],
+        (Some(ua), Some(ub)) => rows_of(
+            [
+                ua[0] - sign * ub[0],
+                ua[1] - sign * ub[1],
+                ua[2] - sign * ub[2],
+            ],
+            ResidualUnit::Dimensionless,
+        ),
         _ => Vec::new(),
     }
 }
 
 /// `coincident(D, D)` dispatched by datum kind (Direction 2 / Point 3 / Plane 3 /
 /// Axis 4).
-fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn coincident_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     match (a, b) {
         (Value::Axis { .. }, Value::Axis { .. }) => axis_coincidence_residual(a, b),
         (Value::Plane { .. }, Value::Plane { .. }) => plane_coincidence_residual(a, b),
@@ -565,7 +901,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
             }
         }
         (Value::Point(_), Value::Point(_)) => match (origin_of(a), origin_of(b)) {
-            (Some(pa), Some(pb)) => sub3(pa, pb).to_vec(),
+            (Some(pa), Some(pb)) => rows_of(sub3(pa, pb), ResidualUnit::Length),
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -579,7 +915,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
 /// orientation — so a sub fastened to an anchor solves to the anchor pose (identity for
 /// a `ground(sub)` over `self.frame`). The two blocks are independent (positions vs.
 /// rotations), giving a full rank-6 Jacobian = the (3,3) kinds split.
-fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (
         Value::Frame {
             origin: oa,
@@ -611,18 +947,29 @@ fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
     let Some(drot) = exp_map_from_orientation(&orientation_value(q_rel)) else {
         return Vec::new();
     };
-    vec![dpos[0], dpos[1], dpos[2], drot[0], drot[1], drot[2]]
+    vec![
+        ResidualRow::length(dpos[0]),
+        ResidualRow::length(dpos[1]),
+        ResidualRow::length(dpos[2]),
+        ResidualRow::angle(drot[0]),
+        ResidualRow::angle(drot[1]),
+        ResidualRow::angle(drot[2]),
+    ]
 }
 
 /// `offset(plane_a, plane_b, δ)`, codim 3: 2 normal-alignment components + the
 /// signed offset along the anchor normal minus the target separation `δ`.
-fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
+fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<ResidualRow> {
     let (Some((oa, na)), Some((ob, nb)), Some(d)) = (plane_parts(a), plane_parts(b), scalar) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(nb);
     let off = sub3(oa, ob);
-    vec![dot3(na, e1), dot3(na, e2), dot3(off, nb) - d]
+    vec![
+        ResidualRow::dimensionless(dot3(na, e1)),
+        ResidualRow::dimensionless(dot3(na, e2)),
+        ResidualRow::length(dot3(off, nb) - d),
+    ]
 }
 
 /// `distance(a, b, d)` — the metric separation residual `separation(a, b) − d`,
@@ -639,21 +986,25 @@ fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
 ///   `|(oa − ob)·nb|` (parallel planes), not the origin-to-origin separation.
 /// - **Point–Point and any mixed kinds** → straight origin-to-origin distance
 ///   `|pa − pb|` (correct for points; a documented fallback for mixed operands).
-fn distance_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
+fn distance_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<ResidualRow> {
     let Some(d) = scalar else {
         return Vec::new();
     };
     match (a, b) {
         (Value::Axis { .. }, Value::Axis { .. }) => match (axis_parts(a), axis_parts(b)) {
-            (Some((oa, ua)), Some((ob, ub))) => vec![line_line_distance(oa, ua, ob, ub) - d],
+            (Some((oa, ua)), Some((ob, ub))) => {
+                vec![ResidualRow::length(line_line_distance(oa, ua, ob, ub) - d)]
+            }
             _ => Vec::new(),
         },
         (Value::Plane { .. }, Value::Plane { .. }) => match (plane_parts(a), plane_parts(b)) {
-            (Some((oa, _na)), Some((ob, nb))) => vec![dot3(sub3(oa, ob), nb).abs() - d],
+            (Some((oa, _na)), Some((ob, nb))) => {
+                vec![ResidualRow::length(dot3(sub3(oa, ob), nb).abs() - d)]
+            }
             _ => Vec::new(),
         },
         _ => match (origin_of(a), origin_of(b)) {
-            (Some(pa), Some(pb)) => vec![norm3(sub3(pa, pb)) - d],
+            (Some(pa), Some(pb)) => vec![ResidualRow::length(norm3(sub3(pa, pb)) - d)],
             _ => Vec::new(),
         },
     }
@@ -686,7 +1037,7 @@ fn line_line_distance(oa: [f64; 3], ua: [f64; 3], ob: [f64; 3], ub: [f64; 3]) ->
 /// `on(point, host)` — point incidence; operand order is (point, host). Residual
 /// is the point's deviation off the host: Plane → 1 (signed normal distance),
 /// Axis → 2 (perpendicular offset), Point → 3 (coincidence).
-fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
+fn on_residual(datums: &[(Value, bool)]) -> Vec<ResidualRow> {
     if datums.len() < 2 {
         return Vec::new();
     }
@@ -700,7 +1051,7 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
             let Some((ho, hn)) = plane_parts(host) else {
                 return Vec::new();
             };
-            vec![dot3(sub3(p, ho), hn)]
+            vec![ResidualRow::length(dot3(sub3(p, ho), hn))]
         }
         Value::Axis { .. } => {
             let Some((ho, hd)) = axis_parts(host) else {
@@ -708,13 +1059,160 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
             };
             let (e1, e2) = tangent_frame(hd);
             let off = sub3(p, ho);
-            vec![dot3(off, e1), dot3(off, e2)]
+            vec![
+                ResidualRow::length(dot3(off, e1)),
+                ResidualRow::length(dot3(off, e2)),
+            ]
         }
         Value::Point(_) => match origin_of(host) {
-            Some(hp) => sub3(p, hp).to_vec(),
+            Some(hp) => rows_of(sub3(p, hp), ResidualUnit::Length),
             None => Vec::new(),
         },
         _ => Vec::new(),
+    }
+}
+
+// ── tangent ──────────────────────────────────────────────────────────────────
+
+/// The four curated tangency combos, classified over realized [`Value`] datums.
+///
+/// This is the constraints-side twin of the type-side `TangentCombo` in
+/// `reify_compiler::relation_signatures`, which publishes each combo's ΔDOF. The
+/// two cannot share code — `reify-constraints` is kernel- and compiler-free — so
+/// the binding check between them is end-to-end rather than a table comparison:
+/// `relate_solve_tests` asserts each combo's MEASURED Jacobian rank here equals
+/// the ΔDOF published there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TangentCombo {
+    /// Two cylinders, by their axes.
+    CylCyl,
+    /// A cylinder (axis) resting on a plane, in either operand order.
+    CylPlane,
+    /// A sphere (centre point) resting on a plane, in either operand order.
+    SpherePlane,
+    /// Two spheres, by their centre points.
+    SphereSphere,
+}
+
+/// Classify a `tangent` operand pair. `None` for any other shape — unreachable
+/// from `.ri` because `check_relation_arg_types` rejects it at compile time with
+/// `TangentOperandsUnsupported` (the residual layer cannot fail loudly: no rows
+/// reads as "satisfied", so the gate has to be upstream).
+fn tangent_combo(a: &Value, b: &Value) -> Option<TangentCombo> {
+    match (a, b) {
+        (Value::Axis { .. }, Value::Axis { .. }) => Some(TangentCombo::CylCyl),
+        (Value::Axis { .. }, Value::Plane { .. }) | (Value::Plane { .. }, Value::Axis { .. }) => {
+            Some(TangentCombo::CylPlane)
+        }
+        (Value::Point(_), Value::Plane { .. }) | (Value::Plane { .. }, Value::Point(_)) => {
+            Some(TangentCombo::SpherePlane)
+        }
+        (Value::Point(_), Value::Point(_)) => Some(TangentCombo::SphereSphere),
+        _ => None,
+    }
+}
+
+/// `tangent(a, b, r…)` — surface tangency over the four curated combos, with radii
+/// carried as trailing `Length` operands (`scalars`, in declaration order).
+///
+/// Operands are read POSITIONALLY (like [`on_residual`], not through [`pick_ab`]):
+/// the pair is asymmetric for the plane combos, so which slot is the curved surface
+/// has to come from the call, not from which operand happens to be moving.
+///
+/// Rows per combo:
+/// - **CylCyl** → 1: `line_line_distance(a, b) − |r1 + r2|`. Line distance (not
+///   origin-to-origin) keeps an axial slide along the cylinders out of the metric.
+/// - **CylPlane** → 2: `dot(û_axis, n̂_plane)` and
+///   `dot(o_axis − o_plane, n̂) − r`. The perpendicularity row is what makes this
+///   codimension 2: without it a cylinder could TILT out of tangency at exactly
+///   zero residual while its origin stayed the right distance off the plane.
+/// - **SpherePlane** → 1: `dot(c − o_plane, n̂) − r`.
+/// - **SphereSphere** → 1: `‖pa − pb‖ − |r1 + r2|`.
+///
+/// **Sign convention.** The target separation is `|r1 + r2|`, so two positive radii
+/// mean EXTERNAL tangency and a negative radius means INTERNAL — `|r1 + r2|`
+/// collapses to `|r1 − |r2||` — with no branch in the residual. The two plane rows
+/// are SIGNED (not `.abs()`, as `distance_residual` uses), so the radius sign picks
+/// which side of the plane the surface rests on and the residual stays
+/// differentiable through zero.
+///
+/// Direction operands are unit-normalized before the perpendicularity dot, so that
+/// row is scale-free for a non-unit axis direction or plane normal — the same
+/// reason [`direction_alignment_residual`] and the `angle` arm normalize.
+///
+/// Returns no rows when the combo is unsupported or a required radius is absent.
+/// Both are unreachable from `.ri`: `check_relation_arg_types` rejects the operand
+/// pair and polices the per-combo arity at compile time. The guard stays because a
+/// caller constructing a `RelationInstance` directly is not bound by that gate.
+fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<ResidualRow> {
+    if datums.len() < 2 {
+        return Vec::new();
+    }
+    let (a, b) = (&datums[0].0, &datums[1].0);
+    let Some(combo) = tangent_combo(a, b) else {
+        return Vec::new();
+    };
+    match combo {
+        TangentCombo::CylCyl => {
+            let (Some((oa, ua)), Some((ob, ub)), Some(&r1), Some(&r2)) = (
+                axis_parts(a),
+                axis_parts(b),
+                scalars.first(),
+                scalars.get(1),
+            ) else {
+                return Vec::new();
+            };
+            vec![ResidualRow::length(
+                line_line_distance(oa, ua, ob, ub) - (r1 + r2).abs(),
+            )]
+        }
+        TangentCombo::CylPlane => {
+            // The combo admits either order, so resolve by kind rather than slot.
+            let (axis_v, plane_v) = if matches!(a, Value::Axis { .. }) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let (Some((oa, ua)), Some((op, np)), Some(&r)) =
+                (axis_parts(axis_v), plane_parts(plane_v), scalars.first())
+            else {
+                return Vec::new();
+            };
+            let (Some(uhat), Some(nhat)) = (unit3(ua), unit3(np)) else {
+                return Vec::new(); // a degenerate direction has no defined tangency
+            };
+            vec![
+                ResidualRow::dimensionless(dot3(uhat, nhat)),
+                ResidualRow::length(dot3(sub3(oa, op), nhat) - r),
+            ]
+        }
+        TangentCombo::SpherePlane => {
+            let (centre_v, plane_v) = if matches!(a, Value::Point(_)) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let (Some(c), Some((op, np)), Some(&r)) =
+                (origin_of(centre_v), plane_parts(plane_v), scalars.first())
+            else {
+                return Vec::new();
+            };
+            let Some(nhat) = unit3(np) else {
+                return Vec::new();
+            };
+            vec![ResidualRow::length(dot3(sub3(c, op), nhat) - r)]
+        }
+        TangentCombo::SphereSphere => {
+            let (Some(pa), Some(pb), Some(&r1), Some(&r2)) = (
+                origin_of(a),
+                origin_of(b),
+                scalars.first(),
+                scalars.get(1),
+            ) else {
+                return Vec::new();
+            };
+            vec![ResidualRow::length(norm3(sub3(pa, pb)) - (r1 + r2).abs())]
+        }
     }
 }
 
@@ -770,6 +1268,14 @@ fn origin_of(v: &Value) -> Option<[f64; 3]> {
         Value::Point(_) => vec3_of(v),
         Value::Axis { origin, .. } | Value::Plane { origin, .. } => vec3_of(origin),
         _ => None,
+    }
+}
+
+/// The origin of any datum that has one: [`origin_of`]'s kinds plus a `Frame`.
+fn datum_origin(v: &Value) -> Option<[f64; 3]> {
+    match v {
+        Value::Frame { origin, .. } => vec3_of(origin),
+        _ => origin_of(v),
     }
 }
 
@@ -862,6 +1368,21 @@ fn transform_point(p: [f64; 3], x: &Pose) -> [f64; 3] {
     add3(rotate(x.rotation, p), x.translation)
 }
 
+/// `J_l(θ)·v`, the left Jacobian of the exponential map: how a chart increment
+/// `v` of `θ` moves the rotation, as a world angular velocity —
+/// `J_l = I + (1−cos φ)/φ²·[θ]× + (φ−sin φ)/φ³·[θ]×²` with `φ = |θ|`.
+fn exp_map_left_jacobian(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let angle = norm3(theta);
+    let (a, b) = if angle < 1e-6 {
+        (0.5, 1.0 / 6.0)
+    } else {
+        let sq = angle * angle;
+        ((1.0 - angle.cos()) / sq, (angle - angle.sin()) / (sq * angle))
+    };
+    let once = cross3(theta, v);
+    add3(add3(v, scale3(once, a)), scale3(cross3(theta, once), b))
+}
+
 /// Rotate a 3-vector by the exponential-map vector `theta` (Rodrigues' formula).
 fn rotate(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     let angle = norm3(theta);
@@ -891,271 +1412,152 @@ fn vector_value(v: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
 
-// ── Rank-revealing Gram–Schmidt ──────────────────────────────────────────────
+// ── Rank tolerance ───────────────────────────────────────────────────────────
 
-/// Add `rows` to the orthonormal `basis` one at a time, returning how many were
-/// linearly independent of the running span. Each row is normalized before
-/// Gram–Schmidt so the rank test is purely about direction independence (scale-
-/// and unit-invariant); a row whose post-orthogonalization residual exceeds `tol`
-/// is a new independent direction. Numerically-zero rows are skipped.
-fn add_rows_rank(rows: &[[f64; FRAME_DOF]], basis: &mut Vec<[f64; FRAME_DOF]>, tol: f64) -> usize {
-    let mut added = 0;
-    for row in rows {
-        let n = norm6(row);
-        if n < ZERO_ROW_FLOOR {
-            continue;
+/// The cutoffs a [`RowSpaceQr`] of SCALED Jacobian rows applies under `scaling`:
+/// independence at [`SolveScaling::rank_threshold`], and numerically zero below
+/// the raw [`ZERO_ROW_FLOOR`] over `ε_rel`, the FD-noise cut of an angular or
+/// dimensionless row. A genuine row of those units has norm ~`1/ε_rel` at every
+/// `L`; a genuine metre row has ~`L / row_tolerance(Length)`, which is `1/ε_rel`
+/// above the 1 mm crossover and `L / floor` below it (100 at the default
+/// `kernel_local`). Both stay far above the zero cut.
+fn rank_tolerance(scaling: &SolveScaling) -> RankTolerance {
+    RankTolerance {
+        independence: scaling.rank_threshold(),
+        zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
+    }
+}
+
+// ── The Frame solve as a least-squares problem ───────────────────────────────
+
+/// A relate-scope Frame solve in the scaled unknowns `x̃_j = x_j / s_j` (`s_j`
+/// the DOF's [`SolveScaling::unknown_scale`]) and the scaled residual rows of
+/// every driving relation, stacked in relation order.
+struct FrameProblem<'a> {
+    relations: &'a [RelationInstance],
+    unknown: &'a FrameUnknown,
+    scaling: &'a SolveScaling,
+    /// How many residual rows each relation contributes. A residual form
+    /// branches only on its operands' shapes, so the count is the same at every
+    /// pose; [`LeastSquaresProblem::residual`] asserts it.
+    row_counts: Vec<usize>,
+}
+
+impl<'a> FrameProblem<'a> {
+    fn new(
+        relations: &'a [RelationInstance],
+        unknown: &'a FrameUnknown,
+        scaling: &'a SolveScaling,
+    ) -> Self {
+        let row_counts = relations
+            .iter()
+            .map(|rel| relation_residual_rows(rel, unknown, &Pose::identity()).len())
+            .collect();
+        Self {
+            relations,
+            unknown,
+            scaling,
+            row_counts,
         }
-        let mut v = *row;
-        scale6_inplace(&mut v, 1.0 / n);
-        for b in basis.iter() {
-            let d = dot6(&v, b);
-            for k in 0..FRAME_DOF {
-                v[k] -= d * b[k];
+    }
+
+    /// Each DOF's nominal scale `s_j`, `[translation; rotation]`.
+    fn scales(&self) -> [f64; FRAME_DOF] {
+        std::array::from_fn(|j| self.scaling.unknown_scale(dof_kind(j)))
+    }
+
+    fn scaled(&self, pose: &Pose) -> Vec<f64> {
+        pose.translation
+            .iter()
+            .chain(&pose.rotation)
+            .zip(self.scales())
+            .map(|(x, s)| x / s)
+            .collect()
+    }
+
+    /// `z_j · s_j`: a scaled 6-vector back in each DOF's SI unit.
+    fn unscaled(&self, z: &[f64]) -> [f64; FRAME_DOF] {
+        let s = self.scales();
+        std::array::from_fn(|j| z[j] * s[j])
+    }
+
+    fn pose(&self, x: &[f64]) -> Pose {
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(x);
+        Pose {
+            translation: [tx, ty, tz],
+            rotation: [rx, ry, rz],
+        }
+    }
+
+    /// The rigid motion of the scaled chart increment `z` at `at`: the
+    /// translation increment already moves the frame origin, while the exp-map
+    /// increment `δθ` becomes the world angular velocity `J_l(θ)·δθ`.
+    fn twist(&self, z: &[f64], at: &Pose) -> Twist {
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(z);
+        Twist {
+            translation: [tx, ty, tz],
+            rotation: exp_map_left_jacobian(at.rotation, [rx, ry, rz]),
+        }
+    }
+}
+
+impl LeastSquaresProblem for FrameProblem<'_> {
+    fn dim(&self) -> usize {
+        FRAME_DOF
+    }
+
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        let pose = self.pose(x);
+        let mut residual = Vec::new();
+        for (index, (rel, &expected)) in self.relations.iter().zip(&self.row_counts).enumerate() {
+            let rows = scaled_residual(rel, self.unknown, &pose, self.scaling);
+            assert_eq!(
+                rows.len(),
+                expected,
+                "relation {index} (`{}`) has {} residual rows at {pose:?} but {expected} at \
+                 the identity pose: a residual form's row count must not depend on the pose",
+                rel.name,
+                rows.len()
+            );
+            residual.extend(rows);
+        }
+        residual
+    }
+
+    fn jacobian(&self, x: &[f64]) -> Vec<Vec<f64>> {
+        let pose = self.pose(x);
+        self.relations
+            .iter()
+            .flat_map(|rel| scaled_residual_jacobian(rel, self.unknown, &pose, self.scaling).1)
+            .map(|row| row.to_vec())
+            .collect()
+    }
+
+    /// Wraps the rotation slots `x[3..]`; the translation slots, which no wrap
+    /// changes, keep their bits.
+    fn normalize(&self, x: &mut [f64]) {
+        if let Some(wrapped) = self.pose(x).rewrapped() {
+            x[3..].copy_from_slice(&self.scaled(&wrapped)[3..]);
+        }
+    }
+
+    fn row_source(&self, row: usize) -> ResidualSource {
+        let mut rows_so_far = 0;
+        for (index, count) in self.row_counts.iter().enumerate() {
+            rows_so_far += count;
+            if row < rows_so_far {
+                return ResidualSource::Relation(index);
             }
         }
-        let r = norm6(&v);
-        if r > tol {
-            scale6_inplace(&mut v, 1.0 / r);
-            basis.push(v);
-            added += 1;
-        }
+        panic!("row {row} is past the {rows_so_far} residual rows of the relations")
     }
-    added
-}
-
-// ── Damped Gauss–Newton (Levenberg–Marquardt) over the 6-DOF pose ────────────
-
-/// Maximum LM iterations before declaring non-convergence. The Frame residuals are
-/// near-linear in the pose for the canonical mate set, so feasible systems converge
-/// in a handful of iterations; the cap only bounds genuinely-inconsistent inputs.
-const MAX_SOLVE_ITERS: usize = 200;
-
-/// Drive `unknown`'s pose from `seed` to satisfy `relations` by damped Gauss–Newton.
-///
-/// Returns `Some((pose, unique))` when the residual converges `≤ tol` (`unique` =
-/// "all 6 DOF pinned at the solution"), or `None` when no pose drives the residual
-/// below `tol` within [`MAX_SOLVE_ITERS`]. `λI` damping keeps the normal-equations
-/// solve well-posed even when the Jacobian is rank-deficient (a residual gauge
-/// freedom), so the gauge DOF simply stays near its seed rather than blowing up.
-fn gauss_newton_solve(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    tol: f64,
-) -> Option<(Pose, bool)> {
-    let mut x = pose_to_vec6(seed);
-    let (mut r, mut jac) = combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x));
-
-    // No residual rows at all (empty/row-free driving set) ⇒ nothing to pin; the
-    // seed trivially "satisfies" the (empty) set and leaves all 6 DOF free.
-    if r.is_empty() {
-        return Some((vec6_to_pose(&x), false));
-    }
-
-    let mut cost = sum_sq(&r);
-    let mut lambda = 1e-3_f64;
-
-    for _ in 0..MAX_SOLVE_ITERS {
-        if max_abs(&r) <= tol {
-            let unique = rank_of(&jac, tol) >= FRAME_DOF;
-            return Some((vec6_to_pose(&x), unique));
-        }
-
-        // Normal equations: (JᵀJ + λI) δ = Jᵀr, step is x ← x − δ.
-        let (mut a, g) = normal_equations(&jac, &r);
-        for (i, row) in a.iter_mut().enumerate() {
-            row[i] += lambda;
-        }
-        let delta = match solve6(&a, &g) {
-            Some(d) => d,
-            None => {
-                // Singular even under damping — stiffen and retry.
-                lambda *= 10.0;
-                if lambda > 1e12 {
-                    break;
-                }
-                continue;
-            }
-        };
-
-        let mut x_new = x;
-        for (xi, di) in x_new.iter_mut().zip(delta.iter()) {
-            *xi -= *di;
-        }
-        let (r_new, jac_new) = combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x_new));
-        let cost_new = sum_sq(&r_new);
-
-        if cost_new < cost {
-            // Accept the step; relax damping toward pure Gauss–Newton.
-            x = x_new;
-            r = r_new;
-            jac = jac_new;
-            cost = cost_new;
-            lambda = (lambda * 0.5).max(1e-12);
-        } else {
-            // Reject; stiffen toward gradient descent and retry from the same x.
-            lambda *= 4.0;
-            if lambda > 1e12 {
-                break;
-            }
-        }
-    }
-
-    // Converged on the final iterate?
-    if max_abs(&r) <= tol {
-        Some((vec6_to_pose(&x), rank_of(&jac, tol) >= FRAME_DOF))
-    } else {
-        None
-    }
-}
-
-/// Concatenate every relation's residual + matching Jacobian rows at `pose` into one
-/// `(residual, jacobian)` pair (rows aligned 1:1). Built together so the residual
-/// vector and Jacobian block can never drift in length.
-fn combined_residual_jacobian(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    pose: &Pose,
-) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
-    let mut res = Vec::new();
-    let mut jac = Vec::new();
-    for rel in relations {
-        let rows = relation_jacobian(rel, unknown, pose);
-        let rr = relation_residual(rel, unknown, pose);
-        // `relation_jacobian` sizes itself from `relation_residual` at the same pose,
-        // so the lengths match. Make the invariant LOUD in debug builds so a future
-        // residual/Jacobian length divergence surfaces in tests rather than silently
-        // dropping a constraint (which could spuriously report `Solved`/under-determined);
-        // the `if` keeps release builds defensively guarded.
-        debug_assert_eq!(
-            rows.len(),
-            rr.len(),
-            "relation `{}` residual ({}) and Jacobian ({}) row counts diverged",
-            rel.name,
-            rr.len(),
-            rows.len()
-        );
-        if rows.len() == rr.len() {
-            res.extend(rr);
-            jac.extend(rows);
-        }
-    }
-    (res, jac)
-}
-
-/// The rank of a Jacobian block (number of linearly-independent rows), via the same
-/// rank-revealing Gram–Schmidt the partition uses.
-fn rank_of(jac: &[[f64; FRAME_DOF]], tol: f64) -> usize {
-    let mut basis = Vec::new();
-    add_rows_rank(jac, &mut basis, tol)
-}
-
-/// Form the 6×6 normal matrix `A = JᵀJ` and gradient `g = Jᵀr`.
-fn normal_equations(
-    jac: &[[f64; FRAME_DOF]],
-    r: &[f64],
-) -> ([[f64; FRAME_DOF]; FRAME_DOF], [f64; FRAME_DOF]) {
-    let mut a = [[0.0; FRAME_DOF]; FRAME_DOF];
-    let mut g = [0.0; FRAME_DOF];
-    for (row, &ri) in jac.iter().zip(r.iter()) {
-        for i in 0..FRAME_DOF {
-            g[i] += row[i] * ri;
-            for j in 0..FRAME_DOF {
-                a[i][j] += row[i] * row[j];
-            }
-        }
-    }
-    (a, g)
-}
-
-/// Solve the 6×6 linear system `A x = b` by Gaussian elimination with partial
-/// pivoting. Returns `None` if `A` is numerically singular (a pivot below `1e-18`);
-/// callers stiffen the LM damping and retry. Hand-rolled — no nalgebra (design §4).
-//
-// Index-based by nature: the elimination step writes `m[row]` while reading
-// `m[col]` (col < row), an aliasing that iterator form cannot express without
-// `split_at_mut` gymnastics that would only obscure a textbook algorithm.
-#[allow(clippy::needless_range_loop)]
-fn solve6(
-    a: &[[f64; FRAME_DOF]; FRAME_DOF],
-    b: &[f64; FRAME_DOF],
-) -> Option<[f64; FRAME_DOF]> {
-    let mut m = *a;
-    let mut y = *b;
-
-    for col in 0..FRAME_DOF {
-        // Partial pivot: largest-magnitude entry in this column at/below the diagonal.
-        let mut piv = col;
-        let mut best = m[col][col].abs();
-        for row in (col + 1)..FRAME_DOF {
-            let v = m[row][col].abs();
-            if v > best {
-                best = v;
-                piv = row;
-            }
-        }
-        if best < 1e-18 {
-            return None; // singular
-        }
-        if piv != col {
-            m.swap(col, piv);
-            y.swap(col, piv);
-        }
-        let diag = m[col][col];
-        for row in (col + 1)..FRAME_DOF {
-            let f = m[row][col] / diag;
-            if f != 0.0 {
-                for k in col..FRAME_DOF {
-                    m[row][k] -= f * m[col][k];
-                }
-                y[row] -= f * y[col];
-            }
-        }
-    }
-
-    // Back-substitution.
-    let mut x = [0.0; FRAME_DOF];
-    for col in (0..FRAME_DOF).rev() {
-        let mut s = y[col];
-        for k in (col + 1)..FRAME_DOF {
-            s -= m[col][k] * x[k];
-        }
-        x[col] = s / m[col][col];
-    }
-    Some(x)
-}
-
-fn pose_to_vec6(p: &Pose) -> [f64; FRAME_DOF] {
-    [
-        p.translation[0],
-        p.translation[1],
-        p.translation[2],
-        p.rotation[0],
-        p.rotation[1],
-        p.rotation[2],
-    ]
-}
-
-fn vec6_to_pose(v: &[f64; FRAME_DOF]) -> Pose {
-    Pose {
-        translation: [v[0], v[1], v[2]],
-        rotation: [v[3], v[4], v[5]],
-    }
-}
-
-fn sum_sq(r: &[f64]) -> f64 {
-    r.iter().map(|x| x * x).sum()
-}
-
-fn max_abs(r: &[f64]) -> f64 {
-    r.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 // ── Frame ⇄ Pose assembly ────────────────────────────────────────────────────
 
 /// Assemble a [`Value::Frame`] (origin `Point` + basis `Orientation` quaternion)
 /// from a solved [`Pose`]. The inverse of [`pose_from_frame`].
-fn frame_value(pose: &Pose) -> Value {
+pub fn frame_value(pose: &Pose) -> Value {
     Value::Frame {
         origin: Box::new(point_value(pose.translation)),
         basis: Box::new(orientation_from_exp_map(pose.rotation)),
@@ -1305,18 +1707,4 @@ fn tangent_frame(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     };
     let e2 = cross3(nn, e1);
     (e1, e2)
-}
-
-fn dot6(a: &[f64; FRAME_DOF], b: &[f64; FRAME_DOF]) -> f64 {
-    (0..FRAME_DOF).map(|k| a[k] * b[k]).sum()
-}
-
-fn norm6(a: &[f64; FRAME_DOF]) -> f64 {
-    dot6(a, a).sqrt()
-}
-
-fn scale6_inplace(a: &mut [f64; FRAME_DOF], s: f64) {
-    for x in a.iter_mut() {
-        *x *= s;
-    }
 }

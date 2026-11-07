@@ -222,6 +222,7 @@ impl ConstraintChecker for CountingRealChecker {
                     Satisfaction::Satisfied
                 },
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }

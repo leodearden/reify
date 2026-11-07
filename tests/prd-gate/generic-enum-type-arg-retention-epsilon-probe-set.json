@@ -1,0 +1,22 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaves delta+epsilon landed, R5, DEBUG BINARY REQUIRED: run with REIFY_BIN=target/debug/reify on a rebuilt build — under a release binary this row already passes today and proves nothing): match over Ok{5mm} whose FIRST arm is Err { error: e } => e evaluates to W.v = \"ok\" with no 'unrepresentable cell_type' panic. PRE (2026-09-29 debug): check/eval exit 101, panic TypeParam(\"E\").",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_match_err_first_arm_panics.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 0, "stdout_contains": "All constraints satisfied." } }
+    },
+    {
+      "capability": "POST (leaves delta+epsilon landed, R5 mirror, DEBUG BINARY REQUIRED as above): match over Err{\"bad\"} whose FIRST arm is Ok { value: x } => x evaluates to W.v = 0.001 m. PRE (debug): exit 101, panic TypeParam(\"T\").",
+      "probe_kind": "value",
+      "fixture": "tests/prd-gate/fixtures/getar_match_err_subject_ok_first_panics.ri",
+      "expected": { "observation": "present", "match": { "stdout_value": { "pattern": "W\\.v = ([0-9.]+) m", "min": 0.001, "max": 0.001 } } }
+    },
+    {
+      "capability": "POST (leaf delta landed, P-1 Ok-first form; DEBUG BINARY REQUIRED as above): match over a let-bound Ok{5mm} with the Ok arm first evaluates to W.v = 0.005 m. PRE (debug): exit 101.",
+      "probe_kind": "value",
+      "fixture": "tests/prd-gate/fixtures/getar_match_over_let_construct_panics.ri",
+      "expected": { "observation": "present", "match": { "stdout_value": { "pattern": "W\\.v = ([0-9.]+) m", "min": 0.005, "max": 0.005 } } }
+    }
+  ]
+}

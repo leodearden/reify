@@ -23,6 +23,7 @@ import type { Scene, PerspectiveCamera, MeshStandardMaterial } from 'three';
 import { acceleratedRaycast } from 'three-mesh-bvh';
 import { THEME_TOKENS } from '../theme';
 import { fitCameraToBox } from './fitCamera';
+import { SELECTION_OUTLINE_RENDER_ORDER } from './renderOrder';
 
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
@@ -39,6 +40,8 @@ export interface SelectionOptions {
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null, modifiers: SelectionModifiers) => void;
+  /** Fired with the pointerup event of every gesture classified as a click, modifier clicks included, so another consumer can act on the same gesture without re-implementing click-vs-drag. */
+  onClickGesture?: (event: MouseEvent) => void;
   controls?: { target: { copy: (v: any) => void } };
 }
 
@@ -68,7 +71,7 @@ const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 const SELECTION_COLOR = THEME_TOKENS.selection;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
-  const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
+  const { scene, camera, domElement, getMeshes, onHover, onSelect, onClickGesture, controls } = options;
   const raycaster = new Raycaster();
   (raycaster as any).firstHitOnly = true;
   const ndc = new Vector2();
@@ -143,6 +146,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
       // Read modifiers from the pointerup event (up-time state, since click-intent is confirmed on up)
       const modifiers: SelectionModifiers = { ctrl: me.ctrlKey, shift: me.shiftKey };
       onSelect(entityPath, modifiers);
+      onClickGesture?.(me);
     }
   }
 
@@ -199,6 +203,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const wireGeom = new EdgesGeometry(mesh.geometry);
     const wireMat = new LineBasicMaterial({ color: SELECTION_COLOR });
     const wf = new LineSegments(wireGeom, wireMat);
+    wf.renderOrder = SELECTION_OUTLINE_RENDER_ORDER;
     scene.add(wf);
     wireframes.set(path, wf);
   }

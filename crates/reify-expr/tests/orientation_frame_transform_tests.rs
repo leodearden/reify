@@ -258,7 +258,19 @@ fn axis_angle_negative_angle_reverses_rotation() {
 
 // ── Test 5-6: Euler-to-quaternion ──────────────────────────────────────────
 
-/// orient_euler('xyz', a, b, c) should match composing axis_angle rotations X*Y*Z.
+/// Build a qualified `EulerConvention` enum value, as the compiler lowers
+/// `EulerConvention.<VARIANT>`. Since #6082 this is the SOLE convention form
+/// `orient_euler` accepts — the raw lowercase-string path was removed.
+fn convention(variant: &str) -> Value {
+    Value::Enum {
+        type_name: "EulerConvention".to_string(),
+        variant: variant.to_string(),
+        payload: vec![],
+    }
+}
+
+/// orient_euler(EulerConvention.XYZ, a, b, c) should match composing axis_angle
+/// rotations X*Y*Z.
 #[test]
 fn euler_xyz_matches_sequential_axis_angle() {
     let a = std::f64::consts::FRAC_PI_3; // pi/3
@@ -269,7 +281,7 @@ fn euler_xyz_matches_sequential_axis_angle() {
     let q_euler = eval_builtin(
         "orient_euler",
         &[
-            Value::String("xyz".into()),
+            convention("XYZ"),
             Value::Real(a),
             Value::Real(b),
             Value::Real(c),
@@ -337,7 +349,7 @@ fn euler_different_conventions_produce_different_results() {
     let q_xyz = eval_builtin(
         "orient_euler",
         &[
-            Value::String("xyz".into()),
+            convention("XYZ"),
             Value::Real(a),
             Value::Real(b),
             Value::Real(c),
@@ -346,7 +358,7 @@ fn euler_different_conventions_produce_different_results() {
     let q_zyx = eval_builtin(
         "orient_euler",
         &[
-            Value::String("zyx".into()),
+            convention("ZYX"),
             Value::Real(a),
             Value::Real(b),
             Value::Real(c),

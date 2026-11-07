@@ -104,6 +104,17 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // offset_surface(surface, distance) — no 3-arg overload, unlike offset_curve.
+        "offset_surface" => compile_modify_2arg(
+            "offset_surface",
+            ModifyKind::OffsetSurface,
+            "distance",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // offset_curve(curve, distance)            — 2-arg planar offset (overload 1)
         // offset_curve(curve, distance, reference) — 3-arg reference Surface (overload 2)
         // offset_curve(curve, distance, direction) — 3-arg direction Vector3 (overload 3)
@@ -891,27 +902,62 @@ mod tests {
         }
     }
 
-    /// Assert that `fn_name(target, tail_arg_names[0], tail_arg_names[1], ...)` with a scalar
-    /// `target` param falls back to `GeomRef::Step(0)` (the step_offset when there are no
-    /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Length` in the
-    /// generated source; the call is `fn_name(target, name0, name1, ...)`.
+    /// One tail parameter of a fallback fixture, carrying the dimension its `param`
+    /// declaration is written in.
     ///
-    /// Tail arg values are assigned uniform `Scalar = (i+2)mm` literals regardless of
-    /// real-world semantics (e.g. `draft`'s `angle` would normally be dimensionless and
-    /// `plane` would be a geometry).  This is intentional: the fallback path under test is
-    /// triggered by `target` not being a geometry ref; arg types for tail parameters do not
-    /// affect that path.
-    fn assert_non_geometry_target_fallback(
-        kind: ModifyKind,
-        fn_name: &str,
-        tail_arg_names: &[&str],
-    ) {
-        let param_decls: String = tail_arg_names
+    /// The dimension is DATA on the row rather than inferred from the name: every tail
+    /// argument must satisfy the compile-layer slot at its position (`builtin_signatures`),
+    /// or the fixture reports an `ArgTypeMismatch` that has nothing to do with the fallback
+    /// path under test. `draft`'s `angle` is the one tail argument slotted as an ANGLE
+    /// (PRD 3 leaf ζ, task 5782).
+    #[derive(Clone, Copy)]
+    enum TailParam {
+        Length(&'static str),
+        Angle(&'static str),
+    }
+
+    impl TailParam {
+        fn name(self) -> &'static str {
+            match self {
+                TailParam::Length(name) | TailParam::Angle(name) => name,
+            }
+        }
+
+        fn declaration(self, magnitude: usize) -> String {
+            match self {
+                TailParam::Length(name) => format!("    param {name}: Length = {magnitude}mm\n"),
+                TailParam::Angle(name) => format!("    param {name}: Angle = {magnitude}deg\n"),
+            }
+        }
+    }
+
+    /// The `param` declarations and the call-site argument list for a fixture's tail.
+    fn tail_param_source(tail: &[TailParam]) -> (String, String) {
+        let decls = tail
             .iter()
             .enumerate()
-            .map(|(i, name)| format!("    param {name}: Length = {}mm\n", i + 2))
+            .map(|(i, param)| param.declaration(i + 2))
             .collect();
-        let tail_call = tail_arg_names.join(", ");
+        let call = tail
+            .iter()
+            .map(|param| param.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        (decls, call)
+    }
+
+    /// Assert that `fn_name(target, tail[0], tail[1], ...)` with a scalar `target` param
+    /// falls back to `GeomRef::Step(0)` (the step_offset when there are no prior sub-ops).
+    /// Each [`TailParam`] becomes a `param` declaration in the generated source; the call is
+    /// `fn_name(target, name0, name1, ...)`.
+    ///
+    /// Tail arg values are `(i+2)` in their declared dimension regardless of real-world
+    /// semantics (e.g. `draft`'s `plane` would be a geometry). This is intentional: the
+    /// fallback path under test is triggered by `target` not being a geometry ref; arg
+    /// types for tail parameters do not affect that path, provided each one satisfies its
+    /// compile-layer slot (see [`TailParam`]).
+    fn assert_non_geometry_target_fallback(kind: ModifyKind, fn_name: &str, tail: &[TailParam]) {
+        let (param_decls, tail_call) = tail_param_source(tail);
         let source = format!(
             "structure S {{\n    param target: Length = 5mm\n{decls}    let result = {f}(target, {tail})\n}}",
             f = fn_name,
@@ -983,22 +1029,39 @@ mod tests {
     /// compile error (caught at `cargo check`) to add a variant without also extending `CASES`.
     /// The pattern follows `crates/reify-kernel-occt/src/lib.rs:36` which uses the same idiom to
     /// pin a Rust/C++ floor-constant invariant.
-    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])]
-    {
-        static CASES: &[(ModifyKind, &str, &[&str])] = &[
-            (ModifyKind::Chamfer, "chamfer", &["distance"]),
+    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [TailParam])] {
+        use TailParam::{Angle, Length};
+        static CASES: &[(ModifyKind, &str, &[TailParam])] = &[
+            (ModifyKind::Chamfer, "chamfer", &[Length("distance")]),
             (
                 ModifyKind::ChamferAsymmetric,
                 "chamfer_asymmetric",
-                &["edges", "d1", "d2"],
+                &[Length("edges"), Length("d1"), Length("d2")],
             ),
-            (ModifyKind::Fillet, "fillet", &["radius"]),
-            (ModifyKind::Thicken, "thicken", &["offset"]),
-            (ModifyKind::Shell, "shell", &["thickness"]),
-            (ModifyKind::Draft, "draft", &["angle", "plane"]),
-            (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
-            (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
-            (ModifyKind::OffsetCurve, "offset_curve", &["distance"]),
+            (ModifyKind::Fillet, "fillet", &[Length("radius")]),
+            (ModifyKind::Thicken, "thicken", &[Length("offset")]),
+            (ModifyKind::Shell, "shell", &[Length("thickness")]),
+            (
+                ModifyKind::Draft,
+                "draft",
+                &[Angle("angle"), Length("plane")],
+            ),
+            (ModifyKind::ZoneSlab, "zone_slab", &[Length("width")]),
+            (
+                ModifyKind::OffsetSolid,
+                "offset_solid",
+                &[Length("distance")],
+            ),
+            (
+                ModifyKind::OffsetSurface,
+                "offset_surface",
+                &[Length("distance")],
+            ),
+            (
+                ModifyKind::OffsetCurve,
+                "offset_curve",
+                &[Length("distance")],
+            ),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
         // ModifyKind::VARIANT_COUNT, `cargo check` fails here before any test runs.
@@ -1018,6 +1081,7 @@ mod tests {
             | ModifyKind::Draft
             | ModifyKind::ZoneSlab
             | ModifyKind::OffsetSolid
+            | ModifyKind::OffsetSurface
             | ModifyKind::OffsetCurve => (),
         };
         CASES
@@ -1030,29 +1094,22 @@ mod tests {
         }
     }
 
-    /// Regression-lock helper: verify that `fn_name(target, tail_arg_names[0], ...)` with a
+    /// Regression-lock helper: verify that `fn_name(target, tail[0], ...)` with a
     /// scalar `target` param nested inside `union(sphere(1mm), fn_name(target, ...))` falls back
     /// to `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
     /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
     ///
-    /// Each name in `tail_arg_names` becomes a `param <name>: Length` in the generated source.
-    /// Tail arg values are uniform `Scalar = (i+2)mm` literals — see
-    /// `assert_non_geometry_target_fallback` for the rationale (the fallback path is independent
-    /// of tail arg types).
+    /// Tail params are declared exactly as in `assert_non_geometry_target_fallback` — see it
+    /// for the rationale (the fallback path is independent of tail arg types).
     /// The sphere compiles at step_offset=0 and emits 1 op; the modify call then compiles
     /// at step_offset=1.  Expected ops: [Primitive(Sphere), Modify(<kind>, target=Step(1)),
     /// Boolean(Union, left=Step(0), right=Step(1))].
     fn assert_non_geometry_target_fallback_step_offset_nonzero(
         kind: ModifyKind,
         fn_name: &str,
-        tail_arg_names: &[&str],
+        tail: &[TailParam],
     ) {
-        let param_decls: String = tail_arg_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| format!("    param {name}: Length = {}mm\n", i + 2))
-            .collect();
-        let tail_call = tail_arg_names.join(", ");
+        let (param_decls, tail_call) = tail_param_source(tail);
         let source = format!(
             "structure S {{\n    param target: Length = 5mm\n{decls}    let result = union(sphere(1mm), {f}(target, {tail}))\n}}",
             f = fn_name,
@@ -1587,5 +1644,74 @@ mod tests {
                 "expected at least one diagnostic for 4-arg offset_curve"
             );
         }
+    }
+
+    // ── θ: offset_surface arity / lowering tests ──────────────────────────────
+
+    /// `offset_surface(target, distance)` is recognised by `compile_modify_op`
+    /// and lowered to named args `[target, distance]` via `compile_modify_2arg`
+    /// (mirrors the `offset_solid` / `thicken` 2-arg shape — unlike
+    /// `offset_curve`, `offset_surface` has no 3-arg overload).
+    ///
+    /// RED until step-6 adds `ModifyKind::OffsetSurface` and the
+    /// `offset_surface` dispatch arm in `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_offset_surface_builds_target_distance_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "offset_surface",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op offset_surface should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::OffsetSurface,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "distance"]);
+            }
+            other => panic!("expected Modify(OffsetSurface) with 2 args, got {:?}", other),
+        }
+    }
+
+    /// `offset_surface` accepts only 2 args (target, distance): a 1-arg call
+    /// returns `None` and pushes at least one diagnostic.
+    ///
+    /// RED until step-6 adds the `offset_surface` arm (today the name hits
+    /// the `_ => unreachable!()` fallthrough in `compile_modify_op`).
+    #[test]
+    fn compile_modify_op_offset_surface_rejects_1arg() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let span = SourceSpan::new(10, 20);
+        let result = compile_modify_op(
+            "offset_surface",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for 1-arg offset_surface");
+        assert!(
+            !diagnostics.is_empty(),
+            "expected at least one diagnostic for 1-arg offset_surface"
+        );
     }
 }

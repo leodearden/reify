@@ -23,7 +23,7 @@
 //!
 //! (b) **Classifier e2e** — `classify_swept_body` wired through `Engine::build`
 //!   on realistic `GeomOp` sequences:
-//!   `crates/reify-eval/tests/swept_kind_classifier_e2e.rs`
+//!   `crates/reify-eval/tests/harness_sweep/swept_kind_classifier_e2e.rs`
 //!
 //! (c) **`dispatch_volume_mesh` 8-case truth table** — canonical `force_tet` /
 //!   `require_hex_wedge` diagnostic surface (the "diagnostics" claims in the

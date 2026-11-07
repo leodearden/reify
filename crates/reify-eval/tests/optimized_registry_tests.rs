@@ -668,11 +668,13 @@ structure def S {
             id: dummy_id.clone(),
             satisfaction: Satisfaction::Violated,
             diagnostics: ConstraintDiagnostics::default(),
+            indeterminate_reason: None,
         },
         ConstraintResult {
             id: dummy_id.clone(),
             satisfaction: Satisfaction::Violated,
             diagnostics: ConstraintDiagnostics::default(),
+            indeterminate_reason: None,
         },
     ];
     let mock = BrokenCountOptimizedImpl::new(fixed_results); // 2 results for 1 constraint
@@ -810,6 +812,7 @@ structure def S {
         id: dummy_id.clone(),
         satisfaction: Satisfaction::Violated,
         diagnostics: ConstraintDiagnostics::default(),
+        indeterminate_reason: None,
     }];
     let mock = BrokenCountOptimizedImpl::new(fixed_results);
     let calls = mock.calls_handle();

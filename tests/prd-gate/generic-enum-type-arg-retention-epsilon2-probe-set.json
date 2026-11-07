@@ -1,0 +1,16 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaf epsilon2 landed): a decl-form match over an ANNOTATED generic-enum param (Type::Applied discriminant) lowers. PRE (2026-09-29, both binaries): check exit 1 'match-arm discriminant r has type Result<Scalar[m], String>, expected an enum' — a pre-existing defect, not S1-induced.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_decl_match_applied_param_rejected.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 0, "stdout_contains": "All constraints satisfied." } }
+    },
+    {
+      "capability": "REGRESSION GUARD (must hold before AND after delta): a decl-form match over a LET-BOUND construction keeps lowering. PRE: check exit 0. After delta the let is typed Applied, so this row is what proves epsilon2 landed first.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_decl_match_let_construct_ok.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 0, "stdout_contains": "All constraints satisfied." } }
+    }
+  ]
+}

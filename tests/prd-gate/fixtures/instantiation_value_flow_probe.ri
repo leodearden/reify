@@ -1,0 +1,33 @@
+// PRD evidence fixture: docs/prds/v0_6/instantiation-value-flow.md (#6592 minimal repro).
+// The executable form of contract C1/C2: ONE effective valuation (defaults ⊕ site args)
+// must drive value cells, sub placements, descendant ctor args, and realized geometry.
+//
+// Expected AFTER the PRD lands (boundary rows B1-B4):
+//   m_ovr.marker at x = 377 (300 + 77); an m_ovr.leaf cylinder of half-length 38.5;
+//   m_spec.marker at x = 655; flag at (77, 500) — and ovr_probe = 77 throughout.
+// Observed at authoring (main 041554eae524, 2026-08-26, verified by the dogfood
+// session via reify build + STEP grep AND live GUI mesh_stats):
+//   m_ovr.marker at 310 (template DEFAULT s=10), no k=77 cylinder anywhere,
+//   m_spec.marker at 610 — while flag correctly lands at (77, 500), proving the
+//   VALUE plane carries the override the geometry plane ignores.
+module instantiation_value_flow_probe
+
+pub structure Leaf {
+    param k : Length = 10mm
+    let body = translate(cylinder(2mm, k), 0mm, 0mm, 0mm - k / 2)
+}
+
+pub structure Mid {
+    param s : Length = 10mm
+    let probe_x = s
+    sub leaf   = Leaf(k: s)   at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub marker = Leaf(k: 4mm) at transform3(orient_identity(), vec3(s, 0mm, 0mm))
+}
+
+pub structure Probe {
+    sub m_def  = Mid()        at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub m_ovr  = Mid(s: 77mm) at transform3(orient_identity(), vec3(300mm, 0mm, 0mm))
+    sub m_spec : Mid { s = 55mm } at transform3(orient_identity(), vec3(600mm, 0mm, 0mm))
+    let ovr_probe = self.m_ovr.probe_x
+    sub flag = Leaf(k: 3mm) at transform3(orient_identity(), vec3(ovr_probe, 500mm, 0mm))
+}

@@ -592,7 +592,9 @@ fn maximize_with_feasible_initial_point() {
             );
             // AutoParam bounds are hard constraints on output values — the solver
             // guarantees results stay within [lo, hi].
-            // Clamping logic: solver.rs ~line 617-625 (effective_bounds clamping loop).
+            // Clamping logic: the final-solution clamp into the resolved box in
+            // `solve_core_with_sd_tolerance` (solver.rs); that box never widens an
+            // explicit `AutoParam.bounds` (see `resolve_bounds`).
             // Because clamping is exact (val.clamp(lo, hi)), no epsilon tolerance needed.
             assert!(
                 si <= 0.050,
@@ -1816,6 +1818,11 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
 /// residual-only path (no bounds-cap; contradictory equalities). Both currently pass through
 /// the shared `Infeasible` return after the residual check in `solve_core` with `code: Some(ConstraintUnsatisfiable)`.
 ///
+/// The contradiction is `x == 1mm` against `x == 2mm OR x == 3mm`: an `Or` compiles to no
+/// interval relation, so the pre-solve refutation (task #6655) cannot read it and the solve
+/// still reaches the residual path. A plain `x == 1mm ∧ x == 2mm` pair is now refuted before
+/// any solve (`interval_refutation_reports_eq_pair_before_any_solve`).
+///
 /// Specific refactor this guards: if `solver.rs` is split so that the early-exit bounds-cap
 /// branch and the residual-gradient branch each construct their own `Infeasible` emission,
 /// the residual branch could omit `.code` (reverting to `None`) without breaking the existing
@@ -1828,11 +1835,14 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
     let x_ref = value_ref("Part", "x");
     let x_ref2 = value_ref("Part", "x");
 
-    // No bounds-cap: x == 1mm AND x == 2mm — contradictory equalities, residual-only Infeasible.
-    // bounds: None falls back to default_bounds_for(Type::length()), which is wide enough that
-    // the bounds-cap path is not exercised here.
+    // No bounds-cap: x == 1mm AND (x == 2mm OR x == 3mm) — contradictory, residual-only
+    // Infeasible. bounds: None falls back to default_bounds_for(Type::length()), which is wide
+    // enough that the bounds-cap path is not exercised here.
     let c1 = eq(x_ref, literal(mm(1.0)));
-    let c2 = eq(x_ref2, literal(mm(2.0)));
+    let c2 = or(
+        eq(x_ref2, literal(mm(2.0))),
+        eq(value_ref("Part", "x"), literal(mm(3.0))),
+    );
 
     let problem = ResolutionProblem {
         dependent_cells: Vec::new(),
@@ -1876,6 +1886,310 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
     }
 }
 
+// ── interval refutation before any solve (task #6655) ─────────────────────────
+//
+// An HC4 contraction of every original constraint from the whole real line,
+// relaxed by the solver's own acceptance, that empties the box is a PROOF of
+// infeasibility. It is reported as `ConstraintRefuted` naming the narrowing
+// constraint, before Nelder-Mead evaluates anything.
+
+fn strict_length_auto(entity: &str, member: &str) -> AutoParam {
+    AutoParam {
+        id: vcid(entity, member),
+        param_type: Type::length(),
+        bounds: None,
+        free: false,
+    }
+}
+
+fn refutation_problem(
+    entity: &str,
+    auto_params: Vec<AutoParam>,
+    constraints: Vec<CompiledExpr>,
+) -> ResolutionProblem {
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params,
+        constraints: constraints
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (cnid(entity, i as u32), e))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    }
+}
+
+/// The diagnostics of an `Infeasible` that carries exactly one
+/// `ConstraintRefuted` error naming `narrowing`, and no residual report.
+fn assert_refuted(diagnostics: &[reify_core::Diagnostic], narrowing: reify_core::ConstraintNodeId) {
+    let refuted: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintRefuted))
+        .collect();
+    assert_eq!(
+        refuted.len(),
+        1,
+        "one ConstraintRefuted diagnostic; got {diagnostics:?}"
+    );
+    assert_eq!(refuted[0].severity, Severity::Error);
+    assert_eq!(
+        refuted[0].message,
+        reify_ir::Completeness::Refuted { narrowing }.describe(),
+        "the proof renders as Completeness::Refuted"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.message.contains("max absolute residual")),
+        "a proof is not a search failure: no residual report; got {diagnostics:?}"
+    );
+}
+
+fn assert_not_refuted(result: &SolveResult, what: &str) {
+    if let SolveResult::Infeasible { diagnostics } = result {
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted)),
+            "{what}: must not be refuted; got {diagnostics:?}"
+        );
+    }
+}
+
+/// Counts `test::stress` dispatches: any count above zero means the solver
+/// evaluated the constraint set.
+struct CountingDispatch {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingDispatch {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl reify_ir::ComputeDispatch for CountingDispatch {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        if target != "test::stress" {
+            return None;
+        }
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let t = args.first()?.as_f64()?;
+        Some(Value::Scalar {
+            si_value: 1.0 / t,
+            dimension: DimensionVector::DIMENSIONLESS,
+        })
+    }
+}
+
+/// `@optimized("test::stress") fn stress(t: Length) -> Real`, dispatch-backed.
+fn stress_function() -> CompiledFunction {
+    let params = vec![("t".to_string(), Type::length())];
+    CompiledFunction {
+        name: "stress".to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::dimensionless_scalar(),
+        body: reify_ir::CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+        },
+        content_hash: reify_core::ContentHash::of(b"task6655_refutation_stress_stub"),
+        annotations: vec![],
+        optimized_target: Some("test::stress".to_string()),
+        type_params: vec![],
+    }
+}
+
+/// `stress(<entity>.<member>) < 4`, opaque to the interval propagator.
+fn stress_below_limit(entity: &str, member: &str) -> CompiledExpr {
+    let call = CompiledExpr::user_function_call(
+        "stress".to_string(),
+        vec![value_ref(entity, member)],
+        Type::dimensionless_scalar(),
+    );
+    lt(call, literal(real_val(4.0)))
+}
+
+#[test]
+fn interval_refutation_reports_eq_pair_before_any_solve() {
+    let problem = refutation_problem(
+        "Rod",
+        vec![strict_length_auto("Rod", "length")],
+        vec![
+            eq(value_ref("Rod", "length"), literal(mm(10.0))),
+            eq(value_ref("Rod", "length"), literal(mm(20.0))),
+        ],
+    );
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Infeasible { diagnostics } => assert_refuted(&diagnostics, cnid("Rod", 1)),
+        other => panic!("`L == 10mm ∧ L == 20mm` is refutable; got {other:?}"),
+    }
+}
+
+/// "Before any solve", behaviourally: Nelder-Mead would evaluate the
+/// dispatch-backed constraint at every iteration, so a refutation that ran
+/// first leaves the dispatch count at exactly zero.
+#[test]
+fn interval_refutation_runs_before_any_solver_evaluation() {
+    let mut problem = refutation_problem(
+        "Rod",
+        vec![strict_length_auto("Rod", "length")],
+        vec![
+            stress_below_limit("Rod", "length"),
+            eq(value_ref("Rod", "length"), literal(mm(10.0))),
+            eq(value_ref("Rod", "length"), literal(mm(20.0))),
+        ],
+    );
+    problem.functions = vec![stress_function()].into();
+    let dispatch = CountingDispatch::new();
+    match DimensionalSolver.solve_with_dispatch(&problem, Some(&dispatch)) {
+        SolveResult::Infeasible { diagnostics } => assert_refuted(&diagnostics, cnid("Rod", 2)),
+        other => panic!("the contradictory pair is refutable; got {other:?}"),
+    }
+    assert_eq!(
+        dispatch.calls(),
+        0,
+        "refuted before the solver evaluated anything"
+    );
+}
+
+/// The ranked multistart path (two autos under an objective) refutes first
+/// too, passing the proof through as its `Infeasible` arm.
+#[test]
+fn interval_refutation_covers_the_ranked_multistart_path() {
+    let mut problem = refutation_problem(
+        "Frame",
+        vec![
+            strict_length_auto("Frame", "a"),
+            strict_length_auto("Frame", "b"),
+        ],
+        vec![
+            stress_below_limit("Frame", "a"),
+            ge(value_ref("Frame", "a"), literal(mm(1.0))),
+            eq(value_ref("Frame", "b"), literal(mm(10.0))),
+            eq(value_ref("Frame", "b"), literal(mm(20.0))),
+        ],
+    );
+    problem.functions = vec![stress_function()].into();
+    problem.objective = Some(ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        binop(BinOp::Add, value_ref("Frame", "a"), value_ref("Frame", "b")),
+    ));
+    let dispatch = CountingDispatch::new();
+    match DimensionalSolver.solve_ranked_with_dispatch(&problem, Some(&dispatch)) {
+        reify_ir::RankedSolveResult::Infeasible { diagnostics } => {
+            assert_refuted(&diagnostics, cnid("Frame", 3))
+        }
+        other => panic!("the contradictory pair on `b` is refutable; got {other:?}"),
+    }
+    assert_eq!(dispatch.calls(), 0, "refuted before any multistart solve");
+}
+
+#[test]
+fn feasible_and_within_acceptance_models_are_not_refuted() {
+    let feasible = refutation_problem(
+        "Plate",
+        vec![strict_length_auto("Plate", "w")],
+        vec![
+            ge(value_ref("Plate", "w"), literal(mm(8.0))),
+            eq(value_ref("Plate", "w"), literal(mm(10.0))),
+        ],
+    );
+    assert_not_refuted(
+        &DimensionalSolver.solve(&feasible),
+        "`w >= 8mm ∧ w == 10mm`",
+    );
+
+    let within_threshold = refutation_problem(
+        "Plate",
+        vec![strict_length_auto("Plate", "x")],
+        vec![
+            ge(value_ref("Plate", "x"), literal(mm(1.0))),
+            le(value_ref("Plate", "x"), literal(meters(1e-3 - 1e-13))),
+        ],
+    );
+    assert_not_refuted(
+        &DimensionalSolver.solve(&within_threshold),
+        "a contradiction within FEASIBILITY_THRESHOLD",
+    );
+}
+
+/// A dependent cell that reads an auto moves with the solve, so its
+/// `current_values` snapshot is no bound. `d = 2*w` holds a stale `d = 1m`
+/// that contradicts `d <= 30mm`: read as a constant it would turn this
+/// feasible model (`1mm <= w <= 15mm`) into a false `ConstraintRefuted` proof.
+#[test]
+fn a_stale_dependent_cell_snapshot_is_not_refuted() {
+    let mut problem = refutation_problem(
+        "Plate",
+        vec![AutoParam {
+            free: true,
+            ..strict_length_auto("Plate", "w")
+        }],
+        vec![
+            le(value_ref("Plate", "d"), literal(mm(30.0))),
+            ge(value_ref("Plate", "w"), literal(mm(1.0))),
+        ],
+    );
+    problem.dependent_cells = vec![(
+        vcid("Plate", "d"),
+        binop(BinOp::Mul, literal(real_val(2.0)), value_ref("Plate", "w")),
+    )];
+    problem
+        .current_values
+        .insert(vcid("Plate", "d"), meters(1.0));
+    let result = DimensionalSolver.solve(&problem);
+    assert_not_refuted(&result, "a stale `d = 2*w` snapshot");
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let w = values[&vcid("Plate", "w")].as_f64().expect("w is a scalar");
+            assert!(
+                (0.001..=0.015).contains(&w),
+                "w must satisfy both constraints through d = 2*w; got {w} m"
+            );
+        }
+        other => panic!("the model is feasible, so it solves; got {other:?}"),
+    }
+}
+
+/// #6653's toleranced equality reaches the proof: fixed cells `p == q` half a
+/// length floor apart are an ACCEPTED row, so the model solves.
+#[test]
+fn an_accepted_equality_near_miss_is_not_refuted() {
+    use reify_core::scalar_tolerance::LENGTH_FLOOR_M;
+    let mut problem = refutation_problem(
+        "Gauge",
+        vec![strict_length_auto("Gauge", "w")],
+        vec![
+            eq(value_ref("Gauge", "p"), value_ref("Gauge", "q")),
+            eq(value_ref("Gauge", "w"), literal(mm(10.0))),
+        ],
+    );
+    problem
+        .current_values
+        .insert(vcid("Gauge", "p"), meters(0.005));
+    problem
+        .current_values
+        .insert(vcid("Gauge", "q"), meters(0.005 + 0.5 * LENGTH_FLOOR_M));
+    let result = DimensionalSolver.solve(&problem);
+    assert_not_refuted(&result, "an accepted `p == q` near miss");
+    assert!(
+        matches!(result, SolveResult::Solved { .. }),
+        "the near miss is accepted, so the model solves; got {result:?}"
+    );
+}
+
 // ── auto type-param backtracking integration (task 2664) ──────────────────────
 //
 // Two smoke tests proving the cross-crate trait-object wiring between
@@ -1891,7 +2205,7 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
 /// Build the `(template_registry, trait_registry)` pair from a compiled module.
 ///
 /// Mirrors the same helper in `crates/reify-eval/tests/auto_backtracking_e2e.rs`
-/// and `crates/reify-compiler/tests/auto_type_param_backtracking_tests.rs`.
+/// and `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_backtracking_tests.rs`.
 fn build_atp_registries(
     module: &CompiledModule,
 ) -> (
@@ -2421,7 +2735,7 @@ fn solve_ranked_override_objective_score_is_some() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
             assert!(
                 candidates[0].objective_score.is_some(),
@@ -2477,7 +2791,7 @@ fn solve_ranked_override_no_objective_feasibility_only() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
             assert!(
                 candidates[0].objective_score.is_none(),
@@ -2585,7 +2899,7 @@ fn solve_ranked_multistart_dim2_returns_k_ranked_candidates() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             // K = 2*(dim+1) = 2*(2+1) = 6
             assert_eq!(
                 candidates.len(),
@@ -3217,7 +3531,7 @@ fn solve_ranked_gate_dim2_no_objective_feasibility_only() {
 
     let ranked = solver.solve_ranked(&problem);
     match ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(
                 candidates.len(),
                 1,
@@ -3300,7 +3614,7 @@ fn solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate() {
 
     let ranked = solver.solve_ranked(&problem);
     match ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(
                 candidates.len(),
                 1,
@@ -3668,5 +3982,144 @@ fn solve_ranked_multistart_all_starts_infeasible_falls_back_to_infeasible() {
              (scored.is_empty() fallback), got {:?}",
             other
         ),
+    }
+}
+
+// ---- BT13: producers that do not opt into the completeness axis (#6706) ----
+
+/// BT13 (solution-set-completeness): `DimensionalSolver` does not opt into the
+/// completeness axis at task α, so every ranked construction site it owns must
+/// report `Partial { NotAttempted }` — and `solve()` must be byte-identical to
+/// what it returned before, with candidate 0 carrying the same `values` and
+/// `unique`.
+///
+/// # Two fixtures, because `solve_ranked_impl` has TWO construction sites
+///
+/// The entry points are NOT the axis of variation: `solve_ranked` is
+/// `solve_ranked_impl(problem, None)` and `solve_ranked_with_dispatch(p, None)`
+/// is the same call, so asserting both against one fixture tests one path twice.
+/// What genuinely differs is which arm of `solve_ranked_impl` constructs the
+/// result:
+///
+/// - the single-candidate lift, reached by a feasibility (objective-less)
+///   problem — exercised below via `solve_ranked`;
+/// - the best-of-K multistart arm, reached only by an objective-bearing problem
+///   of dim >= 2 — exercised via `solve_ranked_with_dispatch`, so each entry
+///   point still runs once while the two PRODUCER arms are both covered.
+///
+/// The optimality field is bound with `..` and asserted about nowhere: #6706 does
+/// not touch the optimality axis, and pinning a `BestFoundReason` here would
+/// couple this test to P2 μ #6680's landing.
+#[test]
+fn dimensional_solver_ranked_reports_not_attempted_and_preserves_solve() {
+    use reify_ir::{Completeness, PartialReason, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // The single-auto feasibility problem this file already covers: 2mm < t < 20mm.
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.025)),
+            free: true,
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt(thickness_ref.clone(), literal(mm(2.0)))),
+            (cnid("Bracket", 1), lt(thickness_ref, literal(mm(20.0)))),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    // BT13 half 1 — the frozen `solve()` surface.
+    let (solved_values, solved_unique) = match solver.solve(&problem) {
+        SolveResult::Solved { values, unique } => (values, unique),
+        other => panic!("expected Solved, got {other:?}"),
+    };
+
+    // BT13 half 2a — the single-candidate lift adds the verdict and nothing else.
+    match &solver.solve_ranked(&problem) {
+        RankedSolveResult::Ranked { candidates, completeness, .. } => {
+            assert_eq!(
+                *completeness,
+                Completeness::Partial { reason: PartialReason::NotAttempted },
+                "single-candidate lift: DimensionalSolver does not opt into the \
+                 completeness axis at task α"
+            );
+            assert!(
+                !completeness.derived_unique(candidates.len()),
+                "single-candidate lift: C1"
+            );
+            assert!(
+                !completeness.permits_proven_optimal(),
+                "single-candidate lift: C2"
+            );
+
+            let c = &candidates[0];
+            assert_eq!(
+                c.values, solved_values,
+                "single-candidate lift: candidate 0 values must match solve() exactly"
+            );
+            assert_eq!(
+                c.unique, solved_unique,
+                "single-candidate lift: candidate 0 unique must match solve() exactly"
+            );
+        }
+        other => panic!("single-candidate lift: expected Ranked, got {other:?}"),
+    }
+
+    // BT13 half 2b — the best-of-K multistart arm, the OTHER construction site in
+    // `solve_ranked_impl`. The feasibility problem above never enters it (no
+    // objective, dim 1), and the registry BT13 test reads the registry's own
+    // construction site, so without this fixture this arm carries no BT13
+    // assertion at all.
+    //
+    // Deliberately NOT compared against `solve()`: this arm's candidate 0 comes
+    // from the K-start winner after `finalise_uniqueness`, which is a different
+    // path from `solve_with_meta`. BT13's claim here is only that the arm reports
+    // the honest verdict.
+    let (multistart_problem, _x_id, _y_id) = two_param_interior_quadratic_problem();
+    match &solver.solve_ranked_with_dispatch(&multistart_problem, None) {
+        RankedSolveResult::Ranked { candidates, completeness, .. } => {
+            // K = 2*(dim+1) = 6 — pinned so the fixture cannot silently stop
+            // reaching the multistart arm and leave this test asserting the
+            // single-candidate lift twice.
+            assert_eq!(
+                candidates.len(),
+                6,
+                "multistart arm: expected K = 2*(2+1) = 6 candidates, got {}",
+                candidates.len()
+            );
+            assert_eq!(
+                *completeness,
+                Completeness::Partial { reason: PartialReason::NotAttempted },
+                "multistart arm: best-of-K establishes nothing about the solution set"
+            );
+            // That arm's own comment: the K candidates are NOT deduplicated, so
+            // `candidates.len()` is not a solution count (C5 basin identity
+            // arrives at ζ #6711 → #6902). `NotAttempted` is what makes that
+            // mechanical rather than conventional — C1 is false for EVERY count
+            // under it, including the K=6 length a careless consumer would reach
+            // for and the 1 it would collapse to after a dedup that has not
+            // happened.
+            assert!(
+                !completeness.derived_unique(candidates.len()),
+                "multistart arm: C1 must not turn 6 undeduplicated candidates into a claim"
+            );
+            assert!(
+                !completeness.derived_unique(1),
+                "multistart arm: C1 is false under NotAttempted for any count"
+            );
+            assert!(
+                !completeness.permits_proven_optimal(),
+                "multistart arm: C2"
+            );
+        }
+        other => panic!("multistart arm: expected Ranked, got {other:?}"),
     }
 }

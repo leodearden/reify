@@ -30,7 +30,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
   "timestamp": "2026-05-16T07:30:45Z",     // ISO-8601 UTC, full colons (not filename-safe form)
   "scope": { /* see scope examples below */ },
   "cli": {
-    "argv": ["--since", "2026-05-02", "--tasks-file", "…"],  // exact argv passed to reify-audit
+    "argv": ["--runs-db", "…", "--project-root", "…"],  // exact argv passed to reify-audit
     "exit_code": 0                           // 0, 1-254, or 125
   },
   "findings": [
@@ -40,7 +40,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "pattern": "P5PhantomDone",            // from Finding.pattern (CLI value)
       "task_id": "3242",                     // from Finding.task_id
       "summary": "task marked done but …",   // from Finding.summary
-      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see EvidenceRef enum in crates/reify-audit/src/lib.rs)
+      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see EvidenceRef enum in crates/reify-audit/src/model.rs)
 
       // Action taken by the skill for this finding:
       "action_taken": "escalated",           // "escalated" | "filed" | "deduped" | "logged"
@@ -49,7 +49,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "task_id_filed": "3901",               // task_id returned by submit_task
 
       // Present only when action_taken == "escalated":
-      "escalation_id": "esc-abc123",         // ID returned by escalate_info (if available)
+      "escalation_id": "esc-abc123",         // ID returned by escalate_info (if available); batched PDOCCOVER findings share one escalation_id (severity-routing.md §2)
 
       // Present only when action_taken == "deduped":
       "prior_finding_id": "f-20260510T120000Z-1"  // finding_id from the prior run
@@ -62,12 +62,9 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
 
 The `scope` field carries exactly the flags used for the invocation. When flags compose, include all relevant keys:
 
-**Default / `--since` modes (`"window"` key):**
+**Default mode (`"corpus"` key):**
 ```json
-{ "window": "14d" }
-```
-```json
-{ "window": "2026-05-02..now" }
+{ "corpus": "all" }
 ```
 
 **`--task` mode (`"task"` key):**
@@ -91,6 +88,18 @@ The `scope` field carries exactly the flags used for the invocation. When flags 
 ```json
 { "patterns": ["PLAYER"] }
 ```
+```json
+{ "patterns": ["PDSSENTINEL"] }
+```
+```json
+{ "patterns": ["PDIAG"] }
+```
+```json
+{ "patterns": ["PDOCCOVER"] }
+```
+```json
+{ "patterns": ["PDCHECK"] }
+```
 
 > **Advisory P-\* patterns:** PDEAD, PUNTESTED, and PLAYER findings always carry `action_taken: "logged"` (Severity Low) — they are never escalated or auto-filed. See `references/severity-routing.md` for routing details.
 
@@ -99,17 +108,7 @@ The `scope` field carries exactly the flags used for the invocation. When flags 
 { "task": "3242", "patterns": ["P5"] }
 ```
 
-**Composed — `--since` + `--pattern`:**
-```json
-{ "window": "2026-04-01..now", "patterns": ["P1"] }
-```
-
-When `--task` and `--since` are both given, include both keys:
-```json
-{ "task": "3242", "window": "2026-05-02..now" }
-```
-
-**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/model.rs`.
 
 ---
 
@@ -118,10 +117,9 @@ When `--task` and `--since` are both given, include both keys:
 ```json
 {
   "timestamp": "2026-05-16T07:30:45Z",
-  "scope": { "window": "14d" },
+  "scope": { "corpus": "all" },
   "cli": {
-    "argv": ["--since", "2026-05-02", "--tasks-file", "/tmp/reify-audit-snapshot-a1b2c3.json",
-             "--runs-db", "data/orchestrator/runs.db", "--project-root", "."],
+    "argv": ["--runs-db", "data/orchestrator/runs.db", "--project-root", "."],
     "exit_code": 1
   },
   "findings": [

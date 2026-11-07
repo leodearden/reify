@@ -1,0 +1,857 @@
+//! Integration test: a fn body can construct a structure_def from the SAME module.
+//!
+//! `Widget()` inside `make_widget()` must lower to
+//! `CompiledExprKind::StructureInstanceCtor` (not a generic `UserFunctionCall`), and
+//! eval must produce a `Value::StructureInstance` carrying the structure_def's real
+//! defaults.
+//!
+//! Originally the acceptance gate for task 3895, which delivered this by fabricating
+//! a transient mirror template for every `structure_def` ahead of the fn pass. Task
+//! 5494 deleted that mirror: fn param defaults and fn bodies are now compiled by the
+//! unified source-order pass in `entities_phase::phase_entities`, interleaved with
+//! entity templates in declaration order, so a fn body reads the ONE AUTHORITATIVE
+//! `TopologyTemplate` — the same object external access reads.
+//!
+//! Two consequences this file pins:
+//!
+//!   * There is no second, diverging lowering of a `structure_def` to drift against,
+//!     so the mirror's two silent-divergence hazards (defaults compiled in a neutral
+//!     scope with their diagnostics discarded; nested `Inner()` in a `let` lowering
+//!     to a generic `FunctionCall` because no template registry was installed) are
+//!     unrepresentable rather than merely fixed.
+//!   * Declaration order is load-bearing: a fn body may construct a same-module
+//!     structure declared ABOVE it; one declared BELOW is an ordering ERROR (see
+//!     `fn_body_ctor_of_later_declared_structure_reports_ordering_error`), matching
+//!     the no-forward-reference rule `compile_entity` already obeys for entity →
+//!     entity references.
+
+use reify_core::*;
+use reify_ir::*;
+
+// ─── source fixture ───────────────────────────────────────────────────────────
+
+/// Single ad-hoc module containing both a structure_def and pub fns that
+/// construct it — the minimal same-module ctor test case.
+const WIDGET_SRC: &str = r#"
+module test.widget
+
+structure def Widget {
+    param width : Real = 3.5
+    param tag   : Bool = true
+}
+
+pub fn make_widget() -> Widget { Widget() }
+pub fn make_widget_partial() -> Widget { Widget(5.5) }
+"#;
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+fn load_widget_module() -> reify_compiler::CompiledModule {
+    reify_test_support::helpers::compile_source_with_stdlib(WIDGET_SRC)
+}
+
+/// Compile `source` with the stdlib/prelude in scope and evaluate it end-to-end.
+///
+/// Same 4-line idiom as `crates/reify-eval/tests/parse_length_e2e.rs` — there is
+/// no shared `eval_source_with_stdlib` in `reify-test-support`, and the prelude
+/// must be in scope for structure/fn resolution.  Pair with
+/// [`reify_test_support::cell_value`] to read a concrete cell value and with
+/// [`reify_test_support::assert_no_eval_errors`] to reject eval-phase errors:
+/// together they assert the *value*, which is strictly stronger than the
+/// `!matches!(v, Value::Undef)` non-poison idiom used elsewhere in this file.
+fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+    engine.eval(&compiled)
+}
+
+// ─── step-1: zero errors ──────────────────────────────────────────────────────
+
+/// The module must compile with zero `Severity::Error` diagnostics: `Widget()` in
+/// a same-module fn body resolves against `Widget`'s authoritative template, which
+/// the unified source-order pass has already built by the time the fn body compiles.
+#[test]
+fn same_module_widget_zero_errors() {
+    let module = load_widget_module();
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "same-module Widget module should compile with zero errors; \
+         got: {:#?}",
+        errors
+    );
+}
+
+// ─── step-2: make_widget body is StructureInstanceCtor ────────────────────────
+
+/// `make_widget()`'s result_expr must lower to
+/// `CompiledExprKind::StructureInstanceCtor` with `type_name == "Widget"` — not a
+/// generic `UserFunctionCall`.
+#[test]
+fn make_widget_body_is_structure_instance_ctor() {
+    let module = load_widget_module();
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_widget")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_widget` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+            assert_eq!(
+                type_name, "Widget",
+                "make_widget body StructureInstanceCtor.type_name should be \
+                 \"Widget\"; got: {}",
+                type_name
+            );
+        }
+        other => panic!(
+            "make_widget body result_expr.kind should be \
+             CompiledExprKind::StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-3: eval make_widget() → Value::StructureInstance with defaults ──────
+
+/// Evaluating `make_widget()` must yield `Value::StructureInstance` with
+/// `type_name == "Widget"`, `width == Value::Real(3.5)`, `tag == Value::Bool(true)`.
+#[test]
+fn eval_make_widget_returns_struct_with_defaults() {
+    let module = load_widget_module();
+
+    let call_expr = CompiledExpr::user_function_call(
+        "make_widget".to_string(),
+        vec![],
+        Type::StructureRef("Widget".to_string()),
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    let data = match &result {
+        Value::StructureInstance(data) => data,
+        other => panic!(
+            "make_widget() should return Value::StructureInstance; got: {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(
+        data.type_name, "Widget",
+        "make_widget() StructureInstance.type_name should be \"Widget\"; got: {}",
+        data.type_name
+    );
+
+    // Count only user-facing param/let fields, excluding the `@@`-prefixed
+    // overlay keys (e.g. task 4089's `@@source_span` construction-site span,
+    // which `eval_structure_instance_ctor` attaches to every ctor and which is
+    // intentionally excluded from identity/Display — see reify-ir value.rs).
+    let user_field_count = data
+        .fields
+        .iter()
+        .filter(|(k, _)| !k.starts_with("@@"))
+        .count();
+    assert_eq!(
+        user_field_count,
+        2,
+        "make_widget() StructureInstance should have 2 user fields; got: {:?}",
+        data.fields.keys().collect::<Vec<_>>()
+    );
+
+    // width default = 3.5
+    let width = data
+        .fields
+        .get(&"width".to_string())
+        .expect("make_widget().width missing");
+    assert_eq!(
+        *width,
+        Value::Real(3.5),
+        "make_widget().width should be Real(3.5) (structure_def default); got: {:?}",
+        width
+    );
+
+    // tag default = true
+    let tag = data
+        .fields
+        .get(&"tag".to_string())
+        .expect("make_widget().tag missing");
+    assert_eq!(
+        *tag,
+        Value::Bool(true),
+        "make_widget().tag should be Bool(true) (structure_def default); got: {:?}",
+        tag
+    );
+}
+
+// ─── step-4: eval make_widget_partial() → covered positional arg + default ───
+
+/// `make_widget_partial()` passes `5.5` as the first positional arg (`width`).
+/// Eval must yield `width == Value::Real(5.5)` (covered) and
+/// `tag == Value::Bool(true)` (default).
+#[test]
+fn eval_make_widget_partial_covers_first_param() {
+    let module = load_widget_module();
+
+    let call_expr = CompiledExpr::user_function_call(
+        "make_widget_partial".to_string(),
+        vec![],
+        Type::StructureRef("Widget".to_string()),
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    let data = match &result {
+        Value::StructureInstance(data) => data,
+        other => panic!(
+            "make_widget_partial() should return Value::StructureInstance; got: {:?}",
+            other
+        ),
+    };
+
+    // width covered by positional arg 5.5
+    let width = data
+        .fields
+        .get(&"width".to_string())
+        .expect("make_widget_partial().width missing");
+    assert_eq!(
+        *width,
+        Value::Real(5.5),
+        "make_widget_partial().width should be Real(5.5) (positional arg); got: {:?}",
+        width
+    );
+
+    // tag still defaults to true
+    let tag = data
+        .fields
+        .get(&"tag".to_string())
+        .expect("make_widget_partial().tag missing");
+    assert_eq!(
+        *tag,
+        Value::Bool(true),
+        "make_widget_partial().tag should be Bool(true) (default); got: {:?}",
+        tag
+    );
+}
+
+// ─── step-5: sibling-param default survives the fn-returned ctor ──────────────
+
+/// A structure-def param whose default expression references a SIBLING param
+/// must keep that default's real value when the structure is built through a
+/// fn-returned ctor.
+///
+/// This test was `sibling_param_default_accepted_limitation_body_is_ctor` — the
+/// task-3895 pin for design decision #3, which recorded sibling-param defaults as
+/// unresolvable in the mirror's neutral scope and deferred the eval assertion ("If
+/// a future task implements sibling-param resolution, this test must be updated to
+/// assert the correct eval result for `y`").  Task 5494 is that task, and closing
+/// it took BOTH halves:
+///
+///   * compile — the authoritative template is what the fn body sees, so `x + 1.0`
+///     lowers to a real `ValueRef(ValueCellId{Point, x})` instead of the poison the
+///     mirror's neutral scope produced (with its diagnostic discarded);
+///   * eval — `eval_structure_instance_ctor` evaluated defaults in the OUTER
+///     context, where a `Point`-stamped cell does not exist on the fn-returned
+///     path, so the field silently became `Undef`. Defaults are now evaluated
+///     against a child scope keyed by `ValueCellId::new(type_name, member)`, the
+///     same mechanism `materialize_template_lets` already used for lets.
+///
+/// The zero-errors and `StructureInstanceCtor{Point}` assertions are carried over
+/// unchanged.
+#[test]
+fn sibling_param_default_in_fn_returned_ctor_evaluates_correctly() {
+    let src = r#"
+module test.sibling_default
+structure def Point { param x : Real = 1.0  param y : Real = x + 1.0 }
+pub fn make_point() -> Point { Point() }
+structure App {
+    let p = make_point()
+    let py = p.y
+}
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    // Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "sibling-default module should compile with zero errors; got: {:#?}",
+        errors
+    );
+
+    // The fn body IS a StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_point")
+        .expect("make_point must be in compiled module");
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+            assert_eq!(type_name, "Point");
+        }
+        other => panic!(
+            "make_point body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+
+    // The deferred assertion: `y`'s sibling-referencing default must carry its
+    // real value (`x + 1.0` == 2.0) through the fn-returned ctor, not a poison.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let py = reify_test_support::cell_value(&result, "App", "py");
+    assert_eq!(
+        py,
+        Value::Real(2.0),
+        "App.py must be Point's sibling-referencing default `x + 1.0` == 2.0; \
+         got: {:?}",
+        py
+    );
+}
+
+// Deleted with the mirror (task 5494): `skeleton_pass_produces_no_spurious_-
+// parametric_alias_info_diagnostics`. Its rationale was skeleton-internal — it
+// guarded a `TypeAliasRegistry` clone the mirror was believed to take before
+// resolving param types — and was already stale (the mirror read the registry
+// read-only, no clone). The Info machinery it pinned the absence of was retired
+// by task 4792, which owns that guarantee now. There is no second alias-resolution
+// path left for a fn-body ctor to drift from, so the test has no subject.
+
+// ─── task-4342 step-3b: fn-returned struct carries its template's lets ─────────
+
+const TOL_SRC: &str = r#"
+module test.tol
+
+structure def Tol {
+    param nominal      : Real = 0.0
+    param upper_dev    : Real = 0.001
+    let upper_limit    = nominal + upper_dev
+}
+
+pub fn make_tol() -> Tol { Tol(5.0, 0.02) }
+"#;
+
+/// step_3b (task-4342): a same-module fn-returned struct with a sibling-referencing
+/// derived let must produce a StructureInstanceCtor that carries `lets` AND
+/// whose let expr is NOT poison (result_type != Type::Error).
+#[test]
+fn fn_returned_struct_ctor_carries_non_poison_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(TOL_SRC);
+
+    // The module must compile without errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Tol module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // find make_tol in compiled functions
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_tol")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_tol` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    // The fn body must be a StructureInstanceCtor.
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
+            assert_eq!(type_name, "Tol", "fn body ctor type_name must be Tol");
+            assert_eq!(
+                lets.len(),
+                1,
+                "fn-returned Tol ctor must carry 1 let (upper_limit); got {} lets: {:?}",
+                lets.len(),
+                lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                lets[0].0, "upper_limit",
+                "let member name must be upper_limit"
+            );
+            // The let expr must not be poison: the authoritative template
+            // registers sibling params before compiling let exprs, so the
+            // sibling refs resolve.
+            assert_ne!(
+                lets[0].1.result_type,
+                Type::Error,
+                "let expr result_type must not be Error (sibling refs must resolve)"
+            );
+        }
+        other => panic!(
+            "make_tol body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── task-4342 step-9: guarded lets excluded from the fn-returned ctor ────────
+
+/// A structure with both an unguarded `let` and a per-decl-guarded `let … where cond`
+/// in a same-module fn-returned position.
+///
+/// The mirror's second pass pushed every non-geometry let into value_cells
+/// unconditionally — including guarded lets — so the ctor-lets collection (expr.rs)
+/// harvested `guarded_limit` alongside `plain_limit`, which the sub path never did.
+///
+/// There is now only ONE lowering: `where_clause.is_some()` lets are routed to
+/// `guarded_groups`, never to the ctor's `lets` — so a fn-returned ctor and a `sub`
+/// agree by construction rather than by two implementations staying in step.
+const GUARDED_LET_SRC: &str = r#"
+module test.guarded
+
+structure def G {
+    param nominal    : Real = 0.0
+    param upper_dev  : Real = 0.001
+    param active     : Bool = true
+    let plain_limit   = nominal + upper_dev
+    let guarded_limit = nominal - upper_dev where active
+}
+
+pub fn make_g() -> G { G(5.0, 0.02, true) }
+"#;
+
+#[test]
+fn fn_returned_struct_ctor_excludes_guarded_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(GUARDED_LET_SRC);
+
+    // (a) Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "G module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // (b) make_g body is StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_g")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_g` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
+            assert_eq!(type_name, "G", "fn body ctor type_name must be G");
+
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+
+            // (c) Unguarded let is present.
+            assert!(
+                let_names.contains(&"plain_limit"),
+                "ctor `lets` must contain \"plain_limit\" (unguarded); got: {:?}",
+                let_names
+            );
+
+            // (d) Guarded let is absent — must not be eagerly materialized.
+            assert!(
+                !let_names.contains(&"guarded_limit"),
+                "ctor `lets` must NOT contain \"guarded_limit\" (per-decl guarded); \
+                 got: {:?}",
+                let_names
+            );
+        }
+        other => panic!(
+            "make_g body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── task-4342 (esc-4342-21): geometry-let alias excluded from the ctor ────────
+
+/// A structure with a geometry let (`base = box(...)`), an Ident *alias* to that
+/// geometry let (`shifted = base`), and a scalar derived let, in a fn-returned
+/// position.
+///
+/// Regression for the path-consistency divergence flagged in esc-4342-21, where a
+/// mirror lowering built `known_geometry_lets` differently from the authoritative
+/// one: `is_geometry_let` could not recognize `shifted` as an alias of the geometry
+/// let `base`, so `shifted` compiled against a scope where `base` was never
+/// registered as geometry and a poison/Undef expr leaked into the ctor `lets` — a
+/// field the sub path never produces.  Task 5494 removed the second lowering
+/// entirely, so `known_geometry_lets` is built once: both `base` and `shifted` are
+/// routed out of value_cells, while the scalar `scaled` survives.
+const GEOMETRY_ALIAS_SRC: &str = r#"
+module test.geomalias
+
+structure def H {
+    param w      : Length = 1mm
+    param factor : Real   = 2.0
+    let base    = box(w, w, w)
+    let shifted = base
+    let scaled  = w * factor
+}
+
+pub fn make_h() -> H { H(1mm, 2.0) }
+"#;
+
+// C6 MIGRATION (task 5750): `w` was `Real = 1.0` and fed all three `box`
+// dimensions, which now carry compile-layer LENGTH slots — so assertion (a)
+// ("zero errors") started failing on a fixture that has nothing to do with
+// units. Dimensioning `w` restores it while preserving everything this test
+// exists for: `base`/`shifted` are still routed out of the ctor `lets`, and
+// `scaled = w * factor` still survives as a non-poison scalar (now
+// `Scalar{LENGTH}` rather than `Real`, which assertion (e) does not constrain —
+// it asserts only that the type is not `Type::Error`). `factor` stays `Real`:
+// it is a dimensionless multiplier, not a length.
+//
+// NOT in this leaf's plan-time measured migration list; surfaced by the full
+// `cargo test -p reify-compiler` rerun that step-7 mandates.
+
+#[test]
+fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(GEOMETRY_ALIAS_SRC);
+
+    // (a) Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "H module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // (b) make_h body is StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_h")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_h` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
+            assert_eq!(type_name, "H", "fn body ctor type_name must be H");
+
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+
+            // (c) The direct geometry let is routed out.
+            assert!(
+                !let_names.contains(&"base"),
+                "ctor `lets` must NOT contain \"base\" (direct geometry let); got: {:?}",
+                let_names
+            );
+
+            // (d) The Ident-alias of the geometry let is ALSO routed out — this is
+            //     the divergence esc-4342-21 fixed.
+            assert!(
+                !let_names.contains(&"shifted"),
+                "ctor `lets` must NOT contain \"shifted\" (alias of geometry let \
+                 `base`); got: {:?}",
+                let_names
+            );
+
+            // (e) The scalar derived let still survives and is non-poison.
+            assert!(
+                let_names.contains(&"scaled"),
+                "ctor `lets` must contain \"scaled\" (scalar derived let); got: {:?}",
+                let_names
+            );
+            let scaled = lets.iter().find(|(n, _)| n == "scaled").unwrap();
+            assert_ne!(
+                scaled.1.result_type,
+                Type::Error,
+                "`scaled` let expr result_type must not be Error"
+            );
+        }
+        other => panic!(
+            "make_h body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── task-5494 step-1: boundary #5, hazard 1 (poison default in a fn-body ctor) ─
+
+/// A structure-def param default that calls a SAME-MODULE fn, consumed through a
+/// fn-returned ctor, must evaluate to the fn's real value.
+///
+/// Declaration order is load-bearing and is the point of the fixture: `tol` is
+/// declared before `Widget` (which calls it in a param default), and `Widget` is
+/// declared before `make_widget` (which constructs it).  Every edge points
+/// backwards, so a strict source-order compilation satisfies all of them.
+///
+/// Hazard 1, now unrepresentable: the mirror was built BEFORE any user fn was
+/// compiled, so it was handed an EMPTY function table.  `tol()` could not resolve
+/// in its neutral scope, `compile_expr` returned a poison expr, that expr's
+/// diagnostic went to a throwaway buffer, and the poison was baked verbatim into
+/// `StructureInstanceCtor.defaults` at the `Widget()` lowering site.  The failure
+/// was therefore SILENT — a wrong/`Undef` value with no diagnostic — which is
+/// precisely the divergence boundary #5 forbids.
+#[test]
+fn fn_returned_ctor_default_referencing_same_module_fn_evaluates_correctly() {
+    let src = r#"
+module test.slack
+
+fn tol() -> Real { 0.25 }
+
+structure def Widget {
+    param w     : Real = 3.5
+    param slack : Real = tol()
+}
+
+pub fn make_widget() -> Widget { Widget() }
+
+structure App {
+    let x = make_widget()
+    let s = x.slack
+}
+"#;
+
+    // (a) No compile-time errors — the whole fixture is correctly source-ordered.
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "same-module fn-call param default should compile with zero errors; \
+         got: {:#?}",
+        errors
+    );
+
+    // (b) No eval-time errors, and (c) the ctor default carries `tol()`'s REAL
+    //     value — not a poison/Undef baked in by a neutral-scope mirror.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let s = reify_test_support::cell_value(&result, "App", "s");
+    assert_eq!(
+        s,
+        Value::Real(0.25),
+        "App.s must be tol()'s real value 0.25 — a `Value::Undef`/wrong number \
+         here is the silent divergence hazard 1 describes; got: {:?}",
+        s
+    );
+}
+
+// ─── task-5494 step-2: boundary #5, hazard 2 (nested-ctor-in-let lowering) ─────
+
+/// A `let` inside a same-module structure that itself constructs another
+/// same-module structure must lower to a nested `StructureInstanceCtor` on the
+/// fn-returned path — not to a generic function call — and must carry the inner
+/// structure's own `lets` so `o.h.b` resolves at eval.
+///
+/// Hazard 2, now unrepresentable: the mirror deliberately never had a template
+/// registry installed on its scope, so `let h = Inner()` compiled to a generic
+/// FunctionCall and did not carry Inner's lets — "a narrow sub-consistency gap for
+/// nested-ctor-in-let cases on the fn-returned path … latent but untested".  The
+/// authoritative registry is complete, so the nested ctor lowers as a ctor; this
+/// test asserts both the IR shape and the value.
+#[test]
+fn fn_returned_ctor_nested_ctor_in_let_carries_inner_lets() {
+    let src = r#"
+module test.nested
+
+structure def Inner {
+    param a : Real = 1.0
+    let b = a + 1.0
+}
+
+structure def Outer {
+    param k : Real = 2.0
+    let h = Inner()
+}
+
+pub fn make_outer() -> Outer { Outer() }
+
+structure App {
+    let o = make_outer()
+    let v = o.h.b
+}
+"#;
+
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "nested-ctor-in-let module should compile with zero errors; got: {:#?}",
+        errors
+    );
+
+    // (a) IR shape: Outer's ctor `lets["h"]` must itself be a
+    //     StructureInstanceCtor{Inner}, and must not be poison.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_outer")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_outer` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
+            assert_eq!(type_name, "Outer", "fn body ctor type_name must be Outer");
+            let h = lets.iter().find(|(n, _)| n == "h").unwrap_or_else(|| {
+                panic!(
+                    "Outer ctor `lets` must contain \"h\"; got: {:?}",
+                    lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                )
+            });
+            assert_ne!(
+                h.1.result_type,
+                Type::Error,
+                "`h` let expr result_type must not be Error"
+            );
+            match &h.1.kind {
+                CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+                    assert_eq!(
+                        type_name, "Inner",
+                        "`let h = Inner()` must lower to StructureInstanceCtor{{Inner}}"
+                    );
+                }
+                other => panic!(
+                    "`let h = Inner()` must lower to a nested StructureInstanceCtor, \
+                     not a generic call — this is hazard 2 (entity.rs:5972-5984); \
+                     got: {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "make_outer body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+
+    // (b) Value: `o.h.b` == Inner's `a + 1.0` == 2.0.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let v = reify_test_support::cell_value(&result, "App", "v");
+    assert_eq!(
+        v,
+        Value::Real(2.0),
+        "App.v must be Inner's derived let `a + 1.0` == 2.0; got: {:?}",
+        v
+    );
+}
+
+// ─── step-8: a fn body constructing a LATER-declared structure fails LOUDLY ───
+
+/// Constructing a same-module `structure def` declared BELOW the function is an
+/// ordering ERROR that names the structure and the remedy.
+///
+/// This is the one capability the deleted mirror provided that source-order
+/// interleaving removes: the mirror fabricated a template for every
+/// `structure_def` regardless of declaration position, so a fn body could
+/// construct a structure declared anywhere in the file. The unified pass gives a
+/// fn body only the templates built ABOVE it — the same no-forward-reference rule
+/// `compile_entity` already obeys for entity → entity references.
+///
+/// Before task 5494's step-9 the fallback was SILENT (measured): the module
+/// compiled with zero errors, `Thing()` lowered to a generic
+/// `FunctionCall{std::Thing}`, and the only diagnostic was a Warning — "cannot
+/// infer return type of zero-arg function 'Thing', defaulting to Real" — so
+/// `make_it` claimed to return `Thing` while actually yielding a `Real`. That is
+/// exactly the silent divergence PRD boundary #5 forbids ("correct value at eval
+/// OR a loud diagnostic — never silent divergence"); this test pins the loud
+/// half.
+#[test]
+fn fn_body_ctor_of_later_declared_structure_reports_ordering_error() {
+    let src = r#"
+module test.fwd
+pub fn make_it() -> Thing { Thing() }
+structure def Thing { param a : Real = 1.0 }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "constructing a later-declared same-module structure must be exactly one \
+         Error — never a Warning-only silent fallback; all diagnostics: {:#?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("Thing"),
+        "the ordering error must name the structure it could not construct; got: {msg}"
+    );
+    assert!(
+        msg.contains("declared after"),
+        "the ordering error must state the ordering RULE (fix-it shaped: \
+         `structure def Thing` is declared after this function), not a bare \
+         unknown-function message; got: {msg}"
+    );
+
+    // Not a silent success: the body must NOT have lowered to a ctor.
+    if let Some(f) = module.functions.iter().find(|f| f.name == "make_it")
+        && let CompiledExprKind::StructureInstanceCtor { type_name, .. } = &f.body.result_expr.kind
+    {
+        panic!(
+            "`make_it` must not lower to StructureInstanceCtor{{{type_name}}} — \
+             `Thing`'s template does not exist yet at this point in the source"
+        );
+    }
+}

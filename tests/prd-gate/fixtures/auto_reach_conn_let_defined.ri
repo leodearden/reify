@@ -1,0 +1,13 @@
+module auto_reach_conn_let_defined
+trait Signal {}
+
+structure ConnLet {
+    param base : Length = 4mm
+    let gain : Length = self.base * 2.0
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnLet { gain = auto }
+}

@@ -10,9 +10,9 @@ use reify_test_support::*;
 fn mock_kernel_create_box() {
     let mut kernel = MockGeometryKernel::new();
     let op = GeometryOp::Box {
-        width: mm(80.0),
-        height: mm(100.0),
-        depth: mm(5.0),
+        size_x: mm(80.0),
+        size_y: mm(100.0),
+        size_z: mm(5.0),
     };
     let handle = kernel.execute(&op).unwrap();
     assert_eq!(handle.id, GeometryHandleId(1));
@@ -24,17 +24,17 @@ fn mock_kernel_boolean_union() {
 
     let box1 = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
     let box2 = kernel
         .execute(&GeometryOp::Box {
-            width: mm(5.0),
-            height: mm(5.0),
-            depth: mm(5.0),
+            size_x: mm(5.0),
+            size_y: mm(5.0),
+            size_z: mm(5.0),
         })
         .unwrap();
 
@@ -54,9 +54,9 @@ fn mock_kernel_export() {
     let mut kernel = MockGeometryKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -92,9 +92,9 @@ fn mock_kernel_query_with_configured_result() {
     // First create a shape so handle 1 exists
     kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -110,9 +110,9 @@ fn mock_kernel_translate() {
     let mut kernel = MockGeometryKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -147,9 +147,9 @@ mod occt_tests {
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(10.0),
-                height: mm(10.0),
-                depth: mm(10.0),
+                size_x: mm(10.0),
+                size_y: mm(10.0),
+                size_z: mm(10.0),
             })
             .unwrap();
 
@@ -206,17 +206,17 @@ mod occt_tests {
 
         let box1 = kernel
             .execute(&GeometryOp::Box {
-                width: mm(20.0),
-                height: mm(20.0),
-                depth: mm(20.0),
+                size_x: mm(20.0),
+                size_y: mm(20.0),
+                size_z: mm(20.0),
             })
             .unwrap();
 
         let box2 = kernel
             .execute(&GeometryOp::Box {
-                width: mm(10.0),
-                height: mm(10.0),
-                depth: mm(10.0),
+                size_x: mm(10.0),
+                size_y: mm(10.0),
+                size_z: mm(10.0),
             })
             .unwrap();
 
@@ -246,9 +246,9 @@ mod occt_tests {
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(20.0),
-                height: mm(20.0),
-                depth: mm(20.0),
+                size_x: mm(20.0),
+                size_y: mm(20.0),
+                size_z: mm(20.0),
             })
             .unwrap();
 
@@ -279,9 +279,9 @@ mod occt_tests {
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(20.0),
-                height: mm(20.0),
-                depth: mm(20.0),
+                size_x: mm(20.0),
+                size_y: mm(20.0),
+                size_z: mm(20.0),
             })
             .unwrap();
 
@@ -312,9 +312,9 @@ mod occt_tests {
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(10.0),
-                height: mm(10.0),
-                depth: mm(10.0),
+                size_x: mm(10.0),
+                size_y: mm(10.0),
+                size_z: mm(10.0),
             })
             .unwrap();
 
@@ -370,9 +370,9 @@ mod occt_tests {
         // Create a box and translate it off-origin so rotation moves its centroid
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(10.0),
-                height: mm(10.0),
-                depth: mm(10.0),
+                size_x: mm(10.0),
+                size_y: mm(10.0),
+                size_z: mm(10.0),
             })
             .unwrap();
 
@@ -464,9 +464,9 @@ mod occt_tests {
         }
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: mm(0.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(0.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         });
 
         match result {
@@ -508,9 +508,9 @@ mod occt_tests {
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: mm(10.0),
-                height: mm(10.0),
-                depth: mm(10.0),
+                size_x: mm(10.0),
+                size_y: mm(10.0),
+                size_z: mm(10.0),
             })
             .unwrap();
 

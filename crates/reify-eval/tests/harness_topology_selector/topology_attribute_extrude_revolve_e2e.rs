@@ -29,7 +29,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
-use reify_core::{ModulePath, Type};
+use reify_core::ModulePath;
 use reify_ir::{
     AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
@@ -173,13 +173,6 @@ impl GeometryKernel for HistoryMockKernel {
 
 // ─── shared helpers ───────────────────────────────────────────────────────────
 
-fn mm_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(mm(v), Type::length())
-}
-
-fn real_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
-}
 
 /// Build a synthesised `CompiledModule` with two ops:
 /// (0) a LineSegment curve (a non-primitive whose primitive-seeding step
@@ -231,13 +224,13 @@ fn revolve_module() -> reify_compiler::CompiledModule {
         "TestRevolve",
         SweepKind::Revolve,
         vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::PI)),
+            ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     )
 }
@@ -302,6 +295,7 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
         )
         .with_extrude_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -421,6 +415,7 @@ fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -518,6 +513,7 @@ fn engine_build_full_revolve_populates_only_revolved_face_no_caps() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

@@ -1,0 +1,64 @@
+// Fixture: precision-nominal α (task 6166) — ANCHOR probe for the refine envelope.
+//
+// This is the reference layout every other pnrg_envelope_* fixture copies, and
+// the VALIDITY GATE for all of them.  It measures the ACHIEVED sampled facet
+// chord deviation of a realized surface against the REQUESTED `#precision(d)`,
+// by declaring a 1 μm `RepresentationWithin` bound that any genuinely measured
+// curved surface must violate — the violation message carries the achieved
+// number.  See docs/notes/precision-refine-envelope-calibration.md.
+//
+// ── THE `OK` TRAP — read before recording any number from this or any sibling ──
+//
+// A subject that FAILS TO REALIZE prints `OK <checker>#constraint[0]` and exits
+// 0 — it does NOT report Indeterminate.  Against the 0.001mm (1 μm) bound below,
+// any genuinely measured curved surface MUST violate: a 1 m sphere at any
+// practical deflection deviates by millimetres, four orders of magnitude above
+// the bound.  Therefore:
+//
+//     `OK` NEVER means "achieved ≈ 0".  It means nothing was measured.
+//
+// VALIDITY ASSERTION (this fixture and every sibling): a run is valid only if
+// it emits a line of the form
+//
+//     error: RepresentationWithin: sampled facet deviation <X> m exceeds bound 1.000e-6 m
+//
+// If that line is absent — `OK`, a realization diagnostic, or a timeout — the
+// run produced NO datum and its "result" must not be tabulated.
+//
+// ── Layout rules (why it is shaped this way) ──
+//
+//  * ONE geometry `let` in the subject structure.  The engine resolves the
+//    achieved deviation by scanning `achieved_repr_tol` for `{struct}#realization[*]`
+//    keys and taking the MAX; multiple lets make that attribution ambiguous.
+//  * A SEPARATE checker structure whose `subject` param is typed to the subject
+//    structure — that type name is what the scan keys on.
+//  * The bound is 0.001mm, deliberately unreachable, so the assertion is a
+//    read-out instrument rather than a pass/fail gate.
+//
+// ── Reproduction ──
+//
+//   reify check tests/prd-gate/fixtures/pnrg_envelope_sphere.ri
+//
+// To walk the ladder, rewrite the `#precision(...)` argument (see the note's
+// reproduction section for the fenced sweep loop).  Measured on this fixture at
+// R = 1000 mm: d = 3 mm → 2.280e-3 m (ratio 0.760, PRD §2 "tooth" branch);
+// d = 0.3 mm → 6.202e-4 m (ratio 2.067, PRD §2 "tread" branch ≈ 2.075).
+//
+// NOT wired into any probe set or auto-run gate — this is a measurement
+// instrument, not a capability assertion.
+
+module pnrg_envelope_sphere
+
+#precision(3mm)
+
+// Subject: a 1 m-radius sphere — the analytic anchor class.
+structure PnrgSphere {
+    let s = sphere(1000mm)
+}
+
+// Checker: carries the read-out assertion.  `subject : PnrgSphere` supplies the
+// type name the achieved_repr_tol scan matches.
+structure PnrgSphereCheck {
+    param subject : PnrgSphere
+    constraint RepresentationWithin(subject, 0.001mm)
+}

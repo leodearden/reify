@@ -33,7 +33,7 @@
 //! - [`try_infer_traits_for_function_call`] — returns `Some(InferredTraits)`
 //!   for every explicitly-dispatched function name, or `None` for the
 //!   unknown-name fallback. Consumed by the coverage test in
-//!   `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//!   `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //! - [`infer_traits_for_expr`] — walks a `CompiledExpr` tree by FunctionCall
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
@@ -49,7 +49,7 @@
 //!
 //! | Construct               | Where it slots in                                   | `InferredTraits`                      |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `extrude_infinite(...)` | Dedicated `"extrude_infinite"` arm in `infer_traits_for_function_call_in_env` | `InferredTraits::none()` |
+//! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` arm of [`combine_sweep`], shared by both walkers | `InferredTraits::none()` flags |
 //!
 //! ## Unimplemented Unbounded primitives
 //!
@@ -62,7 +62,7 @@
 //! [`infer_primitive`] and `"half_space" => Some(unbounded_convex())` in
 //! [`try_infer_traits_for_function_call_in_env`]. The end-to-end negative
 //! conformance test is in
-//! `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//! `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //!
 //! When a new Unbounded source lands, double-check that every routing path
 //! the conformance walker uses is updated. In particular, both the **direct**
@@ -73,7 +73,7 @@
 //! defeats the Bounded check.
 
 use crate::types::{
-    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind, SweepKind,
 };
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
@@ -104,17 +104,16 @@ pub enum GeometryTrait {
 /// `crates/reify-compiler/stdlib/geometry_traits.ri`) and consumed by the
 /// profile-precondition check in `crates/reify-compiler/src/geometry.rs`.
 ///
-/// # Producer → dimension table (task α)
+/// # Producer → dimension table
 ///
 /// | Producer family                                              | `dimension` |
 /// |--------------------------------------------------------------|-------------|
 /// | curves (`line_segment`/`arc`/`helix`/`interp`/`bezier`/`nurbs`) | `Curve`  |
+/// | profile faces (`rectangle`/`circle`/`ellipse`/`polygon`/…), `nurbs_surface` | `Surface` |
 /// | primitives (`box`/`box_centered`/`cylinder`/`cylinder_centered`/`sphere`/`tube`) | `Solid` |
-/// | boolean / sweep / pattern / modify results                   | `Solid`     |
+/// | boolean / pattern / modify results                           | `Solid`     |
+/// | sweep results (see [`combine_sweep`])                        | lifts the section by one; `pipe`/`loft` → `Solid` |
 /// | transform (`translate`/`rotate`/`scale`/`rotate_around`)      | preserves operand |
-///
-/// `Surface` is reserved for the 2-D profile constructors that land in sibling
-/// tasks ζ/η (`rectangle`/`circle`/…); no task-α producer is a `Surface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GeomDim {
     /// A 1-D curve (a sweep/pipe *path*).
@@ -169,7 +168,7 @@ impl InferredTraits {
     }
 
     /// All three flags cleared — used for sources that fail every check
-    /// (e.g. a future `extrude_infinite` primitive).
+    /// (e.g. `extrude_infinite`, see [`combine_sweep`]).
     pub const fn none() -> Self {
         Self {
             bounded: false,
@@ -346,12 +345,8 @@ impl InferredTraits {
 /// Connected+Convex but **not bounded** (`InferredTraits::unbounded_convex()`)
 /// — the first `Bounded=false` producer.
 ///
-/// # Future variants
-///
-/// When PRD `geometry-traits.md` adds `extrude_infinite`, extend this match to
-/// return `InferredTraits::none()` (or a tuned subset) for that kind. The
-/// exhaustive `match` will fail to compile against the un-updated arm, so the
-/// maintenance is localised.
+/// The match is exhaustive, so a new `PrimitiveKind` must state its traits
+/// here. (`extrude_infinite` is a `SweepKind`, handled by [`combine_sweep`].)
 pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
     match kind {
         PrimitiveKind::Box
@@ -467,22 +462,56 @@ pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
     }
 }
 
-/// Sweep propagation rule (loft/extrude/revolve/sweep/extrude_symmetric/
-/// sweep_guided/loft_guided/pipe).
+/// Sweep propagation rule, shared by both inference walkers.
 ///
-/// `bounded` and `connected` are inherited from the **profile** (a
-/// bounded, connected profile swept along a finite path stays bounded
-/// and connected). `convex` is always dropped: even a convex profile
-/// swept along a curved path produces a non-convex solid in general.
-pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
-    InferredTraits {
-        bounded: profile.bounded,
-        connected: profile.connected,
-        convex: false,
-        // A sweep result is a 3-D solid.
-        dimension: GeomDim::Solid,
-        planar: false,
-        closed: false,
+/// `first_operand` is the op's first geometry operand: the (first) section
+/// profile for every kind except `Pipe`, whose first operand is its PATH.
+///
+/// A sweep raises its section's dimension by one: a swept curve is an
+/// un-capped, non-planar surface (OCCT builds a shell), a swept face a solid.
+/// `Pipe` sweeps a kernel-synthesised circle face, and `Loft` reduces every
+/// section to its wire and caps the result (ThruSections, isSolid=true), so
+/// both are solids whatever their operand; an open-wire loft is the residual
+/// this over-claims.
+///
+/// `ExtrudeInfinite` is unbounded whatever its profile, so it yields the
+/// [`InferredTraits::none`] flags. Every other kind inherits `bounded` and
+/// `connected` from the operand (a bounded, connected section swept along a
+/// finite path stays so). `convex` is always dropped: even a convex section
+/// swept along a curved path is non-convex in general.
+pub const fn combine_sweep(kind: SweepKind, first_operand: InferredTraits) -> InferredTraits {
+    let dimension = swept_dimension(kind, first_operand.dimension);
+    match kind {
+        SweepKind::ExtrudeInfinite => InferredTraits {
+            dimension,
+            ..InferredTraits::none()
+        },
+        _ => InferredTraits {
+            bounded: first_operand.bounded,
+            connected: first_operand.connected,
+            convex: false,
+            dimension,
+            planar: false,
+            closed: false,
+        },
+    }
+}
+
+/// The dimension of a `kind` sweep whose first operand has dimension `operand`.
+/// See [`combine_sweep`].
+const fn swept_dimension(kind: SweepKind, operand: GeomDim) -> GeomDim {
+    match kind {
+        SweepKind::Pipe | SweepKind::Loft => GeomDim::Solid,
+        SweepKind::Extrude
+        | SweepKind::ExtrudeSymmetric
+        | SweepKind::ExtrudeInfinite
+        | SweepKind::Revolve
+        | SweepKind::Sweep
+        | SweepKind::SweepGuided
+        | SweepKind::LoftGuided => match operand {
+            GeomDim::Curve => GeomDim::Surface,
+            GeomDim::Surface | GeomDim::Solid => GeomDim::Solid,
+        },
     }
 }
 
@@ -513,6 +542,39 @@ impl LetBindingEnv for EmptyLetEnv {
     }
 }
 
+/// An environment that resolves a `GeomRef::Sub(name)` operand to the inferred
+/// traits of its referent.
+///
+/// The op-array walker does not own name→ops resolution: a `Sub` ref names a
+/// sibling realization on the enclosing template, which only the conformance
+/// walker can look up. This trait is the seam it reaches through, mirroring
+/// [`LetBindingEnv`] for the expression walker.
+///
+/// Returns `None` for any name the implementor declines to resolve (unknown,
+/// deliberately out of scope, or already in flight on the current call stack),
+/// in which case the caller falls back to `InferredTraits::all()` — the same
+/// safe-default convention [`LetBindingEnv`] uses.
+pub trait SubRefEnv {
+    /// Look up the inferred traits for the geometry named by a `GeomRef::Sub`.
+    ///
+    /// Returns `Some(traits)` if `name` resolves, or `None` for "unknown / use
+    /// the safe default". Implementors MUST terminate cycles themselves —
+    /// nothing in this module tracks which names are already being resolved.
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits>;
+}
+
+/// An empty `SubRefEnv` that always returns `None`.
+///
+/// Used by the env-less [`infer_traits_for_op`] wrapper and by any call site
+/// that has no sibling-realization context to offer.
+pub struct EmptySubRefEnv;
+
+impl SubRefEnv for EmptySubRefEnv {
+    fn lookup_sub(&self, _name: &str) -> Option<InferredTraits> {
+        None
+    }
+}
+
 /// Walk the inference table over a `CompiledExpr`.
 ///
 /// This is the call-site form used by the conformance walker, which has a
@@ -529,11 +591,11 @@ impl LetBindingEnv for EmptyLetEnv {
 ///
 /// # Geometry-arg recursion
 ///
-/// For combinators, recurse on every argument that has `result_type ==
-/// Type::Geometry` (boolean ops take two geometry args, transforms/modify/
-/// pattern take one as the first geometry-typed arg, sweeps take a list
-/// of profiles plus a path). Non-geometry args are skipped — their
-/// inferred traits don't participate in the combine.
+/// For combinators, recurse on the geometry operands per
+/// [`is_geometry_operand`]: boolean ops take the first two, variadic booleans
+/// fold all of them, and transforms/modify/pattern/sweeps take the first.
+/// Non-geometry args are skipped — their inferred traits don't participate in
+/// the combine.
 ///
 /// # Default-Bounded fallback
 ///
@@ -577,7 +639,13 @@ pub fn infer_traits_for_expr_in_env(
     }
 }
 
-/// Walk the inference table over a compiled geometry op-array.
+/// Walk the inference table over a compiled geometry op-array that has NO
+/// sibling scope.
+///
+/// This wrapper never resolves `GeomRef::Sub`: every such operand infers
+/// `all()`, so an unbounded sibling-let operand would satisfy `Bounded`. Use it
+/// only for an op-array with no enclosing template (e.g. a hand-built one); a
+/// caller that can name the template must use [`infer_traits_for_op_in_env`].
 ///
 /// This is the **inverse** of the `infer_traits_for_expr` FunctionCall arm —
 /// same dispatch table (same `combine_*` helpers and `infer_primitive` lookup)
@@ -593,9 +661,7 @@ pub fn infer_traits_for_expr_in_env(
 ///
 /// - Empty array → `InferredTraits::all()` (defensive; compiler never emits an
 ///   empty realization).
-/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (safe-default: sub-component
-///   geometry is not chased through the call stack; doing so would require
-///   resolving cross-entity references that are out of scope here).
+/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (see above).
 /// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
 ///   well-formed IR never produces an out-of-range index).
 /// - Self-referential or forward-chain `GeomRef::Step(idx)` (`idx >=
@@ -603,9 +669,27 @@ pub fn infer_traits_for_expr_in_env(
 ///   SSA-style construction guarantees `idx < current_position`, so any
 ///   violation is malformed IR that would otherwise infinite-recurse).
 pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
+    infer_traits_for_op_in_env(ops, &EmptySubRefEnv)
+}
+
+/// Walk the inference table over a compiled geometry op-array, consulting
+/// `env` to resolve `GeomRef::Sub(name)` operands to their referent's traits.
+///
+/// Every arm behaves identically to [`infer_traits_for_op`] except
+/// `GeomRef::Sub`, which delegates to `env.lookup_sub(name)` and safe-defaults
+/// to `InferredTraits::all()` only when the env declines. The dispatch table
+/// lives here and the env-less wrapper is a thin alias over `EmptySubRefEnv`.
+///
+/// The env is responsible for its own cycle termination — a sibling
+/// realization can name a sibling that names it back, and this walker's
+/// `idx < current_position` guard only covers `GeomRef::Step` within one array.
+pub fn infer_traits_for_op_in_env(
+    ops: &[CompiledGeometryOp],
+    env: &dyn SubRefEnv,
+) -> InferredTraits {
     match ops.last() {
         None => InferredTraits::all(),
-        Some(op) => infer_op(op, ops, ops.len() - 1),
+        Some(op) => infer_op(op, ops, ops.len() - 1, env),
     }
 }
 
@@ -614,11 +698,14 @@ pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
 ///
 /// `current_position` is the index of `op` within `ops`. It is threaded
 /// through all recursive calls so that `infer_geom_ref` can enforce the
-/// `idx < current_position` SSA-style invariant.
+/// `idx < current_position` SSA-style invariant. `env` is threaded the same
+/// way, so every `GeomRef::Sub` reachable from the root sees the same
+/// resolution environment.
 fn infer_op(
     op: &CompiledGeometryOp,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
@@ -628,8 +715,8 @@ fn infer_op(
             left,
             right,
         } => {
-            let a = infer_geom_ref(left, ops, current_position);
-            let b = infer_geom_ref(right, ops, current_position);
+            let a = infer_geom_ref(left, ops, current_position, env);
+            let b = infer_geom_ref(right, ops, current_position, env);
             match bool_op {
                 BooleanOp::Union => combine_union(a, b),
                 BooleanOp::Difference => combine_difference(a, b),
@@ -638,25 +725,24 @@ fn infer_op(
         }
 
         CompiledGeometryOp::Modify { target, .. } => {
-            combine_modify(infer_geom_ref(target, ops, current_position))
+            combine_modify(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Transform { target, .. } => {
-            combine_transform(infer_geom_ref(target, ops, current_position))
+            combine_transform(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Pattern { target, .. } => {
-            combine_pattern(infer_geom_ref(target, ops, current_position))
+            combine_pattern(infer_geom_ref(target, ops, current_position, env))
         }
 
-        CompiledGeometryOp::Sweep { profiles, .. } => {
-            // Sweep inherits traits from the first profile (bounded, connected
-            // geometry swept along a finite path stays bounded and connected).
-            let profile = profiles
+        CompiledGeometryOp::Sweep { kind, profiles, .. } => {
+            // `profiles[0]` is the first geometry operand `combine_sweep` reads.
+            let first_operand = profiles
                 .first()
-                .map(|r| infer_geom_ref(r, ops, current_position))
+                .map(|r| infer_geom_ref(r, ops, current_position, env))
                 .unwrap_or(InferredTraits::all());
-            combine_sweep(profile)
+            combine_sweep(*kind, first_operand)
         }
 
         // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
@@ -686,7 +772,8 @@ fn infer_op(
 }
 
 /// Resolve a `GeomRef` within an op-array, returning the inferred traits for
-/// the referenced op. `GeomRef::Sub(_)` returns the safe all() default.
+/// the referenced op. `GeomRef::Sub(name)` delegates to `env.lookup_sub(name)`
+/// and falls back to the safe all() default only when the env declines.
 ///
 /// # Cycle guard — `idx < current_position` invariant
 ///
@@ -705,6 +792,7 @@ fn infer_geom_ref(
     geom_ref: &GeomRef,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match geom_ref {
         GeomRef::Step(idx) => {
@@ -723,11 +811,14 @@ fn infer_geom_ref(
                 "cycle guard should have caught idx >= current_position"
             );
             ops.get(*idx)
-                .map(|op| infer_op(op, ops, *idx))
+                .map(|op| infer_op(op, ops, *idx, env))
                 .unwrap_or(InferredTraits::all())
         }
-        // Sub-component geometry is not chased through the call stack.
-        GeomRef::Sub(_) => InferredTraits::all(),
+        // Sub-component geometry is resolved by the env, which owns
+        // name→realization lookup and its own cycle termination. `None` means
+        // the env declined (unknown name, out of scope, or already in flight),
+        // which collapses to the module-wide safe default.
+        GeomRef::Sub(name) => env.lookup_sub(name).unwrap_or(InferredTraits::all()),
     }
 }
 
@@ -742,7 +833,7 @@ fn infer_geom_ref(
 ///
 /// This function is consumed by the coverage test
 /// `every_geometry_function_name_has_explicit_dispatch_arm` in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 /// That test iterates `crate::GEOMETRY_FUNCTION_NAMES` and asserts `Some(_)`
 /// for each name. Adding a name to `GEOMETRY_FUNCTION_NAMES` without a
 /// corresponding arm here causes the test to fail loudly.
@@ -826,7 +917,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
-        // zone_profile lowers to [Thicken(+w/2), Thicken(-w/2), Boolean{Difference}] on
+        // zone_profile lowers to [OffsetSolid(+w/2), OffsetSolid(-w/2), Boolean{Difference}] on
         // a solid target — a boolean-of-modifies result, not a sweep — so it belongs here
         // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
         // identical InferredTraits for any solid input, but grouping by lowering semantics
@@ -844,28 +935,35 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(combine_pattern(t))
         }
 
-        // ─── extrude_infinite → Unbounded (task #3466) ──────────────────
-        // extrude_infinite always produces an unbounded solid regardless of its
-        // profile argument — the defining property of a semi-infinite or
-        // bi-infinite extrusion. Returns InferredTraits::none() (bounded=false,
-        // connected=false, convex=false) so the conformance walker emits
-        // E_GEOMETRY_UNBOUNDED whenever the result is placed at a `param g :
-        // Bounded` slot.
-        "extrude_infinite" => Some(InferredTraits::none()),
-
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
-        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
-        // so they belong here. zone_profile is in the modify arm above.
-        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
-            let t = first_geometry_arg_in_env(args, env);
-            Some(combine_sweep(t))
-        }
+        // Each name maps to the SweepKind its geometry.rs lowering arm emits.
+        // zone_annulus is the exception: it lowers to a Difference of two Pipe
+        // sweeps, whose op-array inference drops `connected`, while this arm
+        // keeps it. zone_profile is in the modify arm above.
+        "extrude" => Some(sweep_in_env(SweepKind::Extrude, args, env)),
+        "extrude_symmetric" => Some(sweep_in_env(SweepKind::ExtrudeSymmetric, args, env)),
+        "extrude_infinite" => Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env)),
+        "revolve" | "revolve_full" => Some(sweep_in_env(SweepKind::Revolve, args, env)),
+        "sweep" => Some(sweep_in_env(SweepKind::Sweep, args, env)),
+        "sweep_guided" => Some(sweep_in_env(SweepKind::SweepGuided, args, env)),
+        "loft" => Some(sweep_in_env(SweepKind::Loft, args, env)),
+        "loft_guided" => Some(sweep_in_env(SweepKind::LoftGuided, args, env)),
+        "pipe" | "zone_cylinder" | "zone_annulus" => Some(sweep_in_env(SweepKind::Pipe, args, env)),
 
         // ─── Curve constructors → curve() (1-D primitives) ──────────────
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             Some(InferredTraits::curve())
         }
+
+        // ─── Surface-offset modify → surface_freeform() (2-D, non-planar) ────
+        // offset_surface (θ, task 4192) takes a surface target and produces a
+        // fresh Surface, so it infers `GeomDim::Surface` — deliberately a
+        // DEDICATED arm, NOT the `combine_modify` arm above, whose
+        // `combine_modify()` hardcodes `GeomDim::Solid` (correct for
+        // `offset_solid`, wrong here). `surface_freeform()` (not `surface()`)
+        // because the input surface is not necessarily planar/closed (e.g. a
+        // nurbs_surface target), so offset_surface can't claim planar=true.
+        "offset_surface" => Some(InferredTraits::surface_freeform()),
 
         // ─── Curve-offset modify → curve() (1-D result) ─────────────────
         // offset_curve (ι, task 4193) takes a curve target and produces a fresh
@@ -917,14 +1015,19 @@ fn infer_traits_for_function_call_in_env(
     try_infer_traits_for_function_call_in_env(name, args, env).unwrap_or(InferredTraits::all())
 }
 
-/// Find the first geometry-typed argument and recurse with the env, defaulting
-/// to `InferredTraits::all()` if no geometry arg is present (defensive — a
-/// well-formed call site always has one).
+/// Find the first geometry operand (per [`is_geometry_operand`]) and recurse
+/// with the env, defaulting to `InferredTraits::all()` if none is present
+/// (defensive — a well-formed call site always has one).
 fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
     args.iter()
-        .find(|a| a.result_type == reify_core::Type::Geometry)
+        .find(|a| is_geometry_operand(a))
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
+}
+
+/// [`combine_sweep`] of `kind` over the call's first geometry operand.
+fn sweep_in_env(kind: SweepKind, args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
+    combine_sweep(kind, first_geometry_arg_in_env(args, env))
 }
 
 /// Fold `combine` across every geometry-typed argument with env threading
@@ -937,21 +1040,138 @@ fn fold_geometry_args_in_env(
     env: &dyn LetBindingEnv,
 ) -> InferredTraits {
     args.iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry)
-        .map(|a| infer_traits_for_expr_in_env(a, env))
+        .flat_map(|a| geometry_operand_traits_in_env(a, env))
         .reduce(combine)
         .unwrap_or(InferredTraits::all())
 }
 
-/// Find the first two geometry-typed arguments and recurse on each with the
-/// env, defaulting to `InferredTraits::all()` if either is missing.
+/// The traits of each geometry OPERAND contributed by a single argument.
+///
+/// A single geometry argument contributes itself — either a `Type::Geometry`
+/// value-ref, as the plain `result_type == Type::Geometry` filter always did,
+/// or a direct geometry builtin CALL, which the expression compiler types as a
+/// `Type::dimensionless_scalar()` placeholder (see [`is_geometry_operand`]).
+/// Accepting the placeholder here is what makes the multi-argument form
+/// `union_all(box(…), half_space(…))` fold over real operands instead of
+/// filtering them all out and taking the `all()` default.
+///
+/// Task #5385 made a single `List<Geometry>` argument legal for
+/// `union_all`/`intersection_all`, so such an argument contributes each of its
+/// ELEMENTS. Without this the arg is filtered out entirely, the fold sees
+/// nothing, and its defensive `InferredTraits::all()` default silently claims
+/// `bounded` for a list containing an unbounded `half_space` — the exact
+/// failure the `union_all` dispatch arms were added to prevent.
+///
+/// DO NOT gate the list arm on `result_type == List<Geometry>` (review
+/// esc-5385-4): that shape is one the expression compiler never emits for a
+/// list LITERAL of geometry calls, so the arm would be dead and the safety
+/// check inert. `expr.rs`'s `is_geometry_function` arm types every geometry
+/// builtin call as a `Type::dimensionless_scalar()` PLACEHOLDER, and the
+/// `ListLiteral` arm derives its element type from the FIRST compiled element,
+/// so `[box(…), half_space(…)]` compiles to `List<Real>`. The arm therefore
+/// keys on the KIND (`ListLiteral`) plus a per-element geometry-operand test
+/// that accepts that placeholder — the same `extract_function_call_name(..)
+/// .map(is_geometry_function)` fallback `conformance/mod.rs` already applies to
+/// a scalar-placeholder arg.
+///
+/// The INLINE `generate` fold form is handled by its own arm (review
+/// esc-5385-7). `resolve_geometry_list_arg` accepts `generate(<literal>, |i|
+/// <geom>)` as a single fold argument, but such an arg compiles to a
+/// `FunctionCall` whose callee is `generate` — not a geometry builtin, so
+/// [`is_geometry_operand`] rejects it — and it is not a `ListLiteral` either.
+/// It therefore contributed ZERO operands and the fold's
+/// `.unwrap_or(InferredTraits::all())` default silently claimed `bounded` for
+/// `union_all(generate(2, |i| half_space(…)))`. Unlike the named-let residual
+/// below, the lambda body is syntactically visible right here, so no new env is
+/// needed: the arm contributes the BODY's traits ONCE. The element count is
+/// irrelevant to the fold because `combine` (both the `union_all` and the
+/// `intersection_all` variant) is idempotent over identical operands, so `n`
+/// copies of one operand fold to the same result as one.
+///
+/// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral` or
+/// inline `generate` exposes its elements here. `union_all(holes)` naming a
+/// geometry-list LET compiles to a `ValueRef`, and `LetBindingEnv` maps a cell
+/// to one `InferredTraits` rather than to a list of them, so that form still
+/// takes the `all()` default. Narrowing it needs a list-aware `LetBindingEnv`
+/// (a new per-element accessor plus the conformance-walker env that implements
+/// it), which is why it is a follow-up rather than a widening of this task —
+/// filed as task #6418 (review esc-5385-3, suggestion 5).
+///
+/// That residual is PINNED, not merely described, by
+/// `union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap` in this
+/// module's tests (review esc-5385-6): it asserts both the mechanism (a named
+/// list arg contributes zero operands) and the consequence (the fold claims
+/// `bounded`), so the follow-up cannot land without deliberately flipping it.
+///
+/// Failing CLOSED here instead is NOT an acceptable stopgap: claiming
+/// not-`bounded` for the common all-bounded case would emit spurious errors for
+/// the very idiom this task exists to make legal.
+fn geometry_operand_traits_in_env(
+    arg: &CompiledExpr,
+    env: &dyn LetBindingEnv,
+) -> Vec<InferredTraits> {
+    if is_geometry_operand(arg) {
+        return vec![infer_traits_for_expr_in_env(arg, env)];
+    }
+    // A list LITERAL every element of which is a geometry operand contributes
+    // each element. Non-empty is required: an empty literal is not evidence of
+    // a geometry list, and `all()` over zero elements is vacuously true.
+    if let CompiledExprKind::ListLiteral(elements) = &arg.kind
+        && !elements.is_empty()
+        && elements.iter().all(is_geometry_operand)
+    {
+        return elements
+            .iter()
+            .map(|e| infer_traits_for_expr_in_env(e, env))
+            .collect();
+    }
+    // An inline `generate(<count>, |i| <geom>)` fold arg contributes its lambda
+    // BODY's traits once (see the doc-comment: `combine` is idempotent, so the
+    // count cannot change the fold's result).
+    //
+    // Matching `CompiledExprKind::FunctionCall` by name is builtin-only by
+    // construction: a user-defined `fn generate` lowers to `UserFunctionCall`
+    // (expr.rs), never to this variant, so a user override cannot be mistaken
+    // for the builtin combinator here.
+    if let CompiledExprKind::FunctionCall { function, args } = &arg.kind
+        && function.name == "generate"
+        && let [_count, lambda] = args.as_slice()
+        && let CompiledExprKind::Lambda { body, .. } = &lambda.kind
+        && is_geometry_operand(body)
+    {
+        return vec![infer_traits_for_expr_in_env(body, env)];
+    }
+    Vec::new()
+}
+
+/// Is this compiled expression a geometry OPERAND?
+///
+/// Two accepted shapes, mirroring `conformance/mod.rs`'s `is_geometry_arg`:
+///   1. `result_type == Type::Geometry` — a `ValueRef` to a `let g = box(…)`,
+///      which `entity.rs` registers with the real geometry type; and
+///   2. a `FunctionCall` whose callee is in [`crate::units::is_geometry_function`]
+///      — `box(…)`/`half_space(…)` etc., which `expr.rs` types as a
+///      `Type::dimensionless_scalar()` placeholder, NOT `Type::Geometry`.
+///
+/// Shape 2 is the one that actually occurs inside a geometry list literal;
+/// omitting it is what made the previous `List<Geometry>` gate dead code.
+fn is_geometry_operand(expr: &CompiledExpr) -> bool {
+    expr.result_type == reify_core::Type::Geometry
+        || matches!(
+            &expr.kind,
+            CompiledExprKind::FunctionCall { function, .. }
+                if crate::units::is_geometry_function(function.name.as_str())
+        )
+}
+
+/// Find the first two geometry operands (per [`is_geometry_operand`]) and
+/// recurse on each with the env, defaulting to `InferredTraits::all()` if
+/// either is missing.
 fn first_two_geometry_args_in_env(
     args: &[CompiledExpr],
     env: &dyn LetBindingEnv,
 ) -> (InferredTraits, InferredTraits) {
-    let mut iter = args
-        .iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry);
+    let mut iter = args.iter().filter(|a| is_geometry_operand(a));
     let a = iter
         .next()
         .map(|a| infer_traits_for_expr_in_env(a, env))
@@ -966,6 +1186,137 @@ fn first_two_geometry_args_in_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- task #5385: union_all over a single List<Geometry> argument ---
+
+    /// Build a `CompiledExpr` for the geometry call `name()` in **the shape the
+    /// expression compiler actually emits**: `expr.rs`'s `is_geometry_function`
+    /// arm types every geometry builtin call as a `Type::dimensionless_scalar()`
+    /// PLACEHOLDER, never `Type::Geometry`.
+    ///
+    /// Hand-building these with `result_type: Type::Geometry` (as this helper
+    /// did before review esc-5385-4) makes the test pass against an input shape
+    /// the compiler never produces, which is exactly how the dead
+    /// `List<Geometry>` gate went unnoticed.
+    fn geom_call(name: &str) -> CompiledExpr {
+        assert!(
+            crate::units::is_geometry_function(name),
+            "geom_call({name}) must name a real geometry builtin, or this test \
+             pins a shape the compiler never emits",
+        );
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::dimensionless_scalar(),
+            content_hash: reify_core::ContentHash(0),
+        }
+    }
+
+    /// `union_all` given ONE `List<Geometry>` argument must fold over the
+    /// list's ELEMENTS, exactly as the multi-argument form folds over its args.
+    ///
+    /// Task #5385 made `union_all(<list>)` legal. Without this, the
+    /// `result_type == Type::Geometry` filter in `fold_geometry_args_in_env`
+    /// drops the single List-typed arg, the fold sees nothing, and the
+    /// defensive `InferredTraits::all()` default silently claims `bounded`
+    /// for a union containing an unbounded `half_space`.
+    #[test]
+    fn union_all_over_a_geometry_list_folds_over_its_elements() {
+        // `List<Real>`, NOT `List<Geometry>` — `expr.rs`'s ListLiteral arm takes
+        // the element type from the FIRST compiled element, and that element is
+        // a geometry call carrying the `dimensionless_scalar` placeholder. This
+        // is the shape real compilation produces (review esc-5385-4).
+        let list_arg = CompiledExpr {
+            kind: CompiledExprKind::ListLiteral(vec![geom_call("half_space"), geom_call("box")]),
+            result_type: reify_core::Type::List(Box::new(
+                reify_core::Type::dimensionless_scalar(),
+            )),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let via_list = try_infer_traits_for_function_call("union_all", &[list_arg])
+            .expect("union_all must be dispatched");
+        let via_args =
+            try_infer_traits_for_function_call("union_all", &[geom_call("half_space"), geom_call("box")])
+                .expect("union_all must be dispatched");
+
+        assert_eq!(
+            via_list, via_args,
+            "union_all over a List<Geometry> must infer exactly what the \
+             equivalent multi-arg call infers",
+        );
+        assert!(
+            !via_list.bounded,
+            "a union containing half_space is NOT bounded; got {via_list:?}",
+        );
+    }
+
+    /// GAP PIN (review esc-5385-6) — a geometry-list LET passed by NAME does
+    /// NOT fold over its elements, so `union_all(holes)` at a `Bounded` slot is
+    /// accepted even when an element is unbounded.
+    ///
+    /// This asserts the CURRENT, UNSOUND disposition on purpose: the KNOWN
+    /// RESIDUAL on [`geometry_operand_traits_in_env`] describes the gap in
+    /// prose, and prose alone is silently satisfied if the follow-up is dropped.
+    /// Pinning the mechanism directly — a `ValueRef` typed `List<Geometry>`
+    /// contributes ZERO operands — means the follow-up that threads per-element
+    /// traits through `LetBindingEnv` MUST come here and flip this test rather
+    /// than leave a stale claim behind.
+    ///
+    /// Both halves matter: the empty-operand assertion is the mechanism, and the
+    /// `bounded` assertion is its user-visible consequence, contrasted against
+    /// the syntactically-adjacent LITERAL form which does fold (pinned by
+    /// `union_all_over_a_geometry_list_folds_over_its_elements` above).
+    #[test]
+    fn union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap() {
+        // `entity.rs` pass 1 registers a geometry-list let at exactly this type,
+        // and `expr.rs` compiles a bare reference to it as a `ValueRef` — the
+        // shape `union_all(holes)` really produces.
+        let named_list = CompiledExpr {
+            kind: CompiledExprKind::ValueRef(ValueCellId::new("S", "holes")),
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        assert!(
+            geometry_operand_traits_in_env(&named_list, &EmptyLetEnv).is_empty(),
+            "MECHANISM: a named geometry-list arg contributes no operands today.              If this now yields per-element traits, the gap is CLOSED — delete              this test and the KNOWN RESIDUAL rustdoc, and re-point the              consequence assertion below.",
+        );
+
+        let via_name = try_infer_traits_for_function_call("union_all", &[named_list])
+            .expect("union_all must be dispatched");
+        assert!(
+            via_name.bounded,
+            "CONSEQUENCE: with no operands the fold takes its              `InferredTraits::all()` default, which claims `bounded`. This is              the gap, not the contract.",
+        );
+
+        // Contrast: the same geometry, written as a LITERAL, is correctly
+        // unbounded. One syntactic step apart, two different verdicts — which is
+        // exactly what makes the gap worth pinning.
+        let via_literal = try_infer_traits_for_function_call(
+            "union_all",
+            &[CompiledExpr {
+                kind: CompiledExprKind::ListLiteral(vec![
+                    geom_call("half_space"),
+                    geom_call("box"),
+                ]),
+                result_type: reify_core::Type::List(Box::new(
+                    reify_core::Type::dimensionless_scalar(),
+                )),
+                content_hash: reify_core::ContentHash(0),
+            }],
+        )
+        .expect("union_all must be dispatched");
+        assert!(
+            !via_literal.bounded,
+            "control: the literal form must still fold over its elements — if              this regresses, the gap pin above is measuring nothing",
+        );
+    }
 
     // --- wedge inference (task-4158, step-7 RED) ---
 

@@ -10,7 +10,9 @@ import { parser } from './reifyParser.js';
  * `SpecializationBody` additionally admits `ParamAssignment` (:900-920);
  * `PortBody` admits a narrower member list plus the two settings (:970-980);
  * `ConnectBody` is comma-separated (:1006-1013); `ImportItems` is the
- * destructured import's `{A, B}`.
+ * destructured import's `{A, B}`; `KeyedMemberBlock` is the keyed sub's
+ * `{ "key" => { … } }` (:906-912), the sibling `SpecializationBody` parts from
+ * on the first token after the brace.
  */
 export const BRACE_FIRST_BODIES = [
   'Block',
@@ -19,6 +21,17 @@ export const BRACE_FIRST_BODIES = [
   'PortBody',
   'ConnectBody',
   'ImportItems',
+  'KeyedMemberBlock',
+  // The derived sub's body (task #6615). Brace-FIRST, not keyword-led: the
+  // `{` opens the node — `mirror of a across P` is the sibling `SubDerivation`,
+  // not a prefix inside this one.
+  'DerivedBody',
+  // The joint family (:781-802). `JointBody`'s block arm and `JointDof`'s
+  // record arm both OPEN with the brace; each also has a brace-less arm
+  // (a single expression, a bare DOF field), which `foldBody` already handles
+  // by returning null — the same path `FnBody`'s `= expression` arm takes.
+  'JointDof',
+  'JointBody',
 ];
 
 /**
@@ -44,6 +57,8 @@ export const KEYWORD_LED_BODIES = [
   'PurposeDeclaration',
   // `relate { … }` — the `{` follows the `relate` keyword, so it is keyword-led.
   'RelateBlock',
+  // `sketch <name> { … }` — the `{` follows `sketch <name>`.
+  'SketchBlock',
   // `constraint def Name<T> { … }` — the `{` trails a header, never opens the node.
   'ConstraintDefinition',
   // `where { … }` trailing a sub's pose — keyword-led like `RelateBlock`.
@@ -69,7 +84,9 @@ export const KEYWORD_LED_BODIES = [
  * arm (`= expression`, grammar.js:239-246) needs.
  */
 function foldBody(node: SyntaxNode): { from: number; to: number } | null {
-  const open = node.getChild('{');
+  // `ImportItems` opens with `ImportItemsOpen` (`.{`), not a bare `{`; see the
+  // ImportDeclaration comment in reify.grammar.
+  const open = node.getChild('{') ?? node.getChild('ImportItemsOpen');
   const close = node.lastChild;
   if (!open || !close || close.name !== '}' || open.to >= close.from) return null;
   return { from: open.to, to: close.from };

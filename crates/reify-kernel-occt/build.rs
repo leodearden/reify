@@ -22,10 +22,23 @@ fn main() {
         None => {
             // OCCT not found — emit a warning and exit gracefully.
             // The crate will compile with stub types instead of FFI bindings.
+            //
+            // Deliberately fail-OPEN: OCCT-free stub builds are sanctioned and
+            // `src/stubs.rs` carries a real `#[cfg(all(test, not(has_occt)))]`
+            // contract suite for them, so hard-failing here would break a
+            // supported configuration. The GATE lives outside the build, in
+            // the OCCT arm of `scripts/check-manifold-deps.sh` — see the
+            // warning text below.
             println!(
                 "cargo:warning=OCCT libraries not found. \
                  Building without OCCT support (stub types only). \
-                 Set OCCT_INCLUDE_DIR / OCCT_LIB_DIR or install libocct-*-dev."
+                 Set OCCT_INCLUDE_DIR / OCCT_LIB_DIR or install libocct-*-dev. \
+                 NOTE: this also removes every #[cfg(all(test, has_occt))] module and \
+                 #![cfg(has_occt)] integration binary in this crate — zero tests \
+                 REPORTED, not zero tests failed. scripts/check-manifold-deps.sh's \
+                 OCCT arm is the gate that should have caught this before the build \
+                 started; seeing this warning under a GREEN verify is itself a bug \
+                 worth reporting (task 6343)."
             );
             return;
         }
@@ -116,7 +129,8 @@ fn main() {
     // `/opt/reify-deps/lib` to the link search path. The conda env ships OCCT
     // 7.9 there as a transitive of gmsh=4.15.2, so ld would otherwise resolve
     // OCCT against 7.9 and the resulting binary would NEED `libTKernel.so.7.9`
-    // — which only exists under `/etc/ld.so.conf.d/reify-deps.conf`. Pinning
+    // — whose SONAME lives only in the `/opt/reify-deps/lib` conda prefix, on
+    // no default loader path (docs/notes/native-dep-loader-path.md). Pinning
     // to the OCCT-detected lib_dir's exact filename (e.g. `:libTKernel.so.7.8`
     // on the system path) makes the link impervious to the gmsh-induced `-L`.
     //
@@ -124,15 +138,25 @@ fn main() {
     // whatever OCCT version is actually installed (7.8 on system today, 7.9
     // tomorrow if Debian/Ubuntu update). Fallback `"7.8"` is the current
     // system version (`libTKernel.so → libTKernel.so.7.8`) on the dev box.
+    //
+    // Since task 6343 this fallback should be UNREACHABLE under a gated
+    // verify: `scripts/check-manifold-deps.sh`'s OCCT arm rejects both an
+    // undeterminable SONAME and one outside its accepted set, before any
+    // compile. It is kept for direct `cargo build` invocations outside the
+    // pipeline, which have no preflight in front of them.
     let so_version = read_soname_version(&lib_dir, "TKernel").unwrap_or_else(|| {
         println!(
             "cargo:warning=Could not detect OCCT SONAME from {} — falling back to '7.8'. \
-             If your OCCT install uses a different version, set OCCT_LIB_DIR.",
+             If your OCCT install uses a different version, set OCCT_LIB_DIR. \
+             Under the verify pipeline this is unreachable: \
+             scripts/check-manifold-deps.sh's OCCT arm rejects an undeterminable \
+             SONAME, so the link would otherwise pin a version nobody verified.",
             lib_dir.display()
         );
         "7.8".to_string()
     });
-    for lib in &occt_libs {
+    let xde_toolkits = NativeDep::Occt.xde_toolkits().iter().map(String::as_str);
+    for lib in occt_libs.into_iter().chain(xde_toolkits) {
         // `dylib:+verbatim` passes the literal name to the linker without the
         // usual `lib<NAME>` / `.so` rewrites — ld then accepts the exact
         // filename match. Without `+verbatim`, rustc rejects the leading `:`

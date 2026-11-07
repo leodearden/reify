@@ -1,7 +1,25 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// Mirror gui/src/__tests__/debugParity.test.ts:12-23 — these three mocks make
+// bridge.ts importable at collection time without a Tauri runtime. Proven
+// sufficient there (buildHandlers() is already called from that file); reused
+// here for task-5934 case (c), which needs the real buildHandlers() key set.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("html-to-image", () => ({
+  toPng: vi.fn().mockResolvedValue("data:image/png;base64,STUB"),
+}));
+
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
+import * as bridge from "../../src/debug/bridge.js";
+import { extractToolDefNames, readDebugServerSource } from "../../src/__tests__/toolDefNames.js";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES, SCENE_CAMERA_FOV_DEG, ASSERTION_OPS } from "./assertions.js";
+import { CAMERA_FOV_DEG } from "../../src/viewport/scene.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
 import { resolveRepoRoot } from "./paths.js";
@@ -60,6 +78,34 @@ describe("evaluateAssertion", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toContain("count");
+    }
+  });
+
+  // 'atMost' is the mirror of 'atLeast' and exists because neither of the other
+  // three ops can express an UPPER bound. Task 6965 needs exactly that: "the live
+  // orbit distance is BELOW the old 0.5 m floor" (the litter-tray round-3 regression) is
+  // not expressible as atLeast, and equals cannot tolerate float drift in a distance
+  // computed through a projection.
+  it("'atMost' passes when actual <= expected (3 <= 50)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 3 }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'atMost' passes when actual === expected (inclusive, matching atLeast's >=)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 50 }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'atMost' fails with message carrying path, expected and actual (54 > 50)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 54 }, a);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("count");
+      expect(result.message).toContain("50");
+      expect(result.message).toContain("54");
     }
   });
 
@@ -131,6 +177,60 @@ describe("evaluateAssertion", () => {
     const result = evaluateAssertion({ v: "hello" }, a);
     expect(result.ok).toBe(false);
   });
+
+  // A missing path must FAIL, not pass vacuously: an absent `distanceDelta` is
+  // exactly what a saturated zoom_camera would produce, and "<= bound" read off
+  // undefined would silently green the regression this op was added to catch.
+  it("'atMost' fails when actual is undefined (missing path)", () => {
+    const a: Assertion = { path: "missing", op: "atMost", expected: 1 };
+    const result = evaluateAssertion({ x: 5 }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  it("'atMost' fails when actual is a non-numeric string", () => {
+    const a: Assertion = { path: "v", op: "atMost", expected: 1 };
+    const result = evaluateAssertion({ v: "hello" }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  // Exhaustiveness: every op the VALUE_SCENARIOS validator accepts must have a
+  // real `case` arm. Without this, adding an op to the union and to ASSERTION_OPS
+  // but not to the switch falls through to `default:` and every scenario using it
+  // fails with "unknown op" only when a live GUI is attached.
+  //
+  // The probe is deliberately a value every op REJECTS — a missing path, which fails
+  // `exists` and is non-numeric for the comparisons and unequal for `equals`. Probing
+  // with a passing value would make the message check unreachable for any op that
+  // happens to pass, which is how an unhandled op could slip through unnoticed.
+  it("every op in ASSERTION_OPS is handled — none falls through to 'unknown op'", () => {
+    for (const op of ASSERTION_OPS) {
+      const a = { path: "missing", op, expected: 1 } as Assertion;
+      const result = evaluateAssertion({ v: 1 }, a);
+      expect(result.ok, `op '${op}' must reject the probe so its message is observable`).toBe(false);
+      if (!result.ok) {
+        expect(result.message, `op '${op}' fell through to the default arm`).not.toContain("unknown op");
+      }
+    }
+  });
+
+  it("the roster is exactly the four documented ops", () => {
+    // ASSERTION_OPS is imported from assertions.ts, where `AssertionOp` is DERIVED from
+    // it — so no op can exist in the type without appearing here, and the loop above
+    // therefore covers the union rather than an arbitrary subset of it. This pins the
+    // roster's contents so an addition is a deliberate, reviewed edit.
+    expect([...ASSERTION_OPS].sort()).toEqual(["atLeast", "atMost", "equals", "exists"]);
+  });
+});
+
+// The camera VALUE_SCENARIOS' thresholds are all derived from the app's field of view.
+// assertions.ts mirrors that constant rather than importing scene.ts (which would drag
+// three and the axis-label builders into the bare-node e2e runner); this is the pin that
+// makes the mirror safe. Under vitest the real module IS importable, so the two can be
+// compared directly here.
+describe("scene-constant mirrors", () => {
+  it("SCENE_CAMERA_FOV_DEG tracks scene.ts's CAMERA_FOV_DEG", () => {
+    expect(SCENE_CAMERA_FOV_DEG).toBe(CAMERA_FOV_DEG);
+  });
 });
 
 describe("FIXTURES catalogue", () => {
@@ -167,7 +267,7 @@ describe("VALUE_SCENARIOS", () => {
   });
 
   it("every scenario has a valid tool name and non-empty assertions array", () => {
-    const VALID_OPS = ["equals", "atLeast", "exists"];
+    const VALID_OPS = ASSERTION_OPS;
     for (const scenario of VALUE_SCENARIOS) {
       expect(typeof scenario.name, `scenario name must be string`).toBe("string");
       expect(scenario.name.length, `scenario name must be non-empty`).toBeGreaterThan(0);
@@ -459,5 +559,37 @@ describe("F1 VALUE_SCENARIOS (task-4303)", () => {
         expect(KNOWN_TOOLS.has(step.tool), `${name}: setup step tool '${step.tool}' is unknown`).toBe(true);
       }
     }
+  });
+});
+
+// task-5934: KNOWN_DEBUG_TOOL_NAMES must be a superset of every tool
+// advertised by tool_defs() in debug_server.rs — any advertised debug tool
+// may legitimately appear as a VALUE_SCENARIOS setup step, so an
+// under-populated set would silently reject a valid setup tool (case (a)).
+// Case (b) closes the reverse direction: every KNOWN_DEBUG_TOOL_NAMES entry
+// must resolve to a real tool_defs() or bridge.ts buildHandlers() name, so a
+// typo'd or stale entry added directly to KNOWN_DEBUG_TOOL_NAMES cannot
+// silently widen the allowlist past what actually exists. (debugParity.test.ts's
+// (d)+(e) constrain buildHandlers() against tool_defs()/REST_ONLY_HANDLERS, but
+// neither touches KNOWN_DEBUG_TOOL_NAMES — it is a hand-written superset, not a
+// derived set, so nothing else in the suite checks it.)
+describe("KNOWN_DEBUG_TOOL_NAMES ↔ tool_defs() parity (task-5934)", () => {
+  // The debug_server.rs read and the extraction regex live in
+  // gui/src/__tests__/toolDefNames.ts (task 6065), shared with debugParity.test.ts.
+  // Extraction sanity (exact count vs raw `ToolDef {` literals, no duplicates) is
+  // asserted once there, by debugParity.test.ts case (b).
+  const toolDefNames = extractToolDefNames(readDebugServerSource());
+
+  it("(a) every tool_defs() name is present in KNOWN_DEBUG_TOOL_NAMES", () => {
+    const missing = toolDefNames.filter((n) => !KNOWN_DEBUG_TOOL_NAMES.has(n));
+    expect(missing).toStrictEqual([]);
+  });
+
+  it("(b) every KNOWN_DEBUG_TOOL_NAMES entry is a real tool_defs() or buildHandlers() name", () => {
+    const bridgeHandlerNames = Object.keys(bridge.buildHandlers({} as any));
+    const unknown = [...KNOWN_DEBUG_TOOL_NAMES].filter(
+      (n) => !toolDefNames.includes(n) && !bridgeHandlerNames.includes(n),
+    );
+    expect(unknown).toStrictEqual([]);
   });
 });

@@ -2,9 +2,12 @@
 //!
 //! All types here are serde-serializable value objects with no dependency on
 //! `reify-compiler`, `reify-syntax`, or `reify-types`. String fields carry
-//! rendered/printable representations rather than typed AST nodes.
+//! rendered/printable representations rather than typed AST nodes; fields
+//! holding an expression carry an [`ExprText`].
 
 use serde::{Deserialize, Serialize};
+
+use crate::expr_text::ExprText;
 
 /// Root documentation model for a set of compiled Reify modules.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -27,8 +30,10 @@ pub struct ModuleDoc {
     pub annotations: Vec<AnnotationDoc>,
     /// Module-level pragmas.
     pub pragmas: Vec<PragmaDoc>,
-    /// Cross-reference data for this module (referenced modules / items / traits).
-    /// Populated by the lowering slice; absent in serialized JSON from earlier slices.
+    /// Reserved per-module cross-reference slot. `build_doc_model` never
+    /// populates it (always `ModuleCrossRefs::default()`); the formatters'
+    /// cross-reference data is [`crate::cross_refs::CrossRefs`], built by
+    /// `reify_doc_build::cross_refs::build_cross_refs`.
     pub cross_refs: ModuleCrossRefs,
 }
 
@@ -60,9 +65,8 @@ pub struct PragmaDoc {
 
 /// Documentation for a parameter declaration on a structure or occurrence.
 ///
-/// Field values are rendered/printable strings — `type_repr` holds a textual
-/// rendering of the parameter's type (e.g. `"Length"`), and `default_repr`
-/// holds a rendering of the default expression if present.
+/// `type_repr` holds a textual rendering of the parameter's type (e.g.
+/// `"Length"`), and `default_repr` the default expression's text if present.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ParamDoc {
@@ -72,8 +76,8 @@ pub struct ParamDoc {
     pub doc: Option<String>,
     /// Rendered type of the parameter (e.g. `"Length"`, `"Voltage"`).
     pub type_repr: String,
-    /// Rendered default value expression, if any.
-    pub default_repr: Option<String>,
+    /// The default value expression, if the parameter declares one.
+    pub default_repr: Option<ExprText>,
     /// Annotations attached to this parameter declaration.
     pub annotations: Vec<AnnotationDoc>,
 }
@@ -98,8 +102,8 @@ pub struct PortDoc {
 pub struct ConstraintDoc {
     /// Optional user-given label for the constraint.
     pub label: Option<String>,
-    /// Rendered constraint expression (e.g. `"voltage >= 3.0 V && voltage <= 5.5 V"`).
-    pub expr_repr: String,
+    /// The constraint expression (e.g. `voltage >= 3.0 V && voltage <= 5.5 V`).
+    pub expr_repr: ExprText,
     /// Annotations attached to this constraint.
     pub annotations: Vec<AnnotationDoc>,
     /// 1-indexed source line number of the constraint, if known.
@@ -118,31 +122,37 @@ pub struct SubComponentDoc {
     pub name: String,
     /// Name of the structure or occurrence being instantiated.
     pub structure_name: String,
-    /// Rendered argument expressions passed to the sub-component (e.g. `["flash = 512 kB"]`).
-    pub args: Vec<String>,
+    /// Arguments passed to the sub-component, in source order.
+    pub args: Vec<SubComponentArgDoc>,
     /// Annotations attached to this sub-component instantiation.
     pub annotations: Vec<AnnotationDoc>,
 }
 
-/// Documentation for a realization block on a topology template.
-///
-/// A realization describes how abstract topology maps to a concrete view
-/// (e.g. schematic placement, layout, simulation). `op_summaries` holds
-/// one rendered string per operation inside the realization body.
+/// One named argument of a sub-component instantiation (e.g. `flash: 512 kB`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubComponentArgDoc {
+    /// The argument's parameter name.
+    pub name: String,
+    /// The argument's value expression.
+    pub value: ExprText,
+}
+
+/// Documentation for a geometry realization on a topology template.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RealizationDoc {
-    /// Realization name (e.g. `"SchematicView"`, `"PCBLayout"`).
+    /// Realization name: the `let` or `param` binding it was lowered from.
     pub name: String,
-    /// Rendered summaries of each operation in the realization body.
-    pub op_summaries: Vec<String>,
+    /// The value text of the declaration the realization was lowered from.
+    pub value: ExprText,
 }
 
-/// Cross-reference information gathered for a module or item.
+/// Reserved schema for per-module cross-reference information.
 ///
-/// Populated by later slices (the lowering pass from `CompiledModule`).
-/// In slice 1 the type exists solely so downstream crates can take a
-/// dependency on the schema without needing to wait for the lowering pass.
+/// Nothing populates it: `build_doc_model` always leaves
+/// `ModuleDoc.cross_refs` at its default. The cross-reference data the
+/// formatters render is [`crate::cross_refs::CrossRefs`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleCrossRefs {
@@ -221,6 +231,19 @@ pub enum ItemKind {
     },
     /// A `trait` declaration — interface definition.
     Trait {
+        /// PRE-RENDERED display strings for the trait's type parameters, in
+        /// declaration order (e.g. `["T: Rigid"]` for `trait Holder<T: Rigid>`).
+        /// Empty for a non-generic trait.
+        ///
+        /// A separate field from `members` on purpose: `members` holds rendered
+        /// REQUIREMENT lines (`param x: T`, `fn f(..) -> ..`), which are a
+        /// different axis entirely and render in the body rather than the
+        /// heading.
+        ///
+        /// See `ItemKind::TypeAlias::type_params` for why these are strings and
+        /// why the `#[serde(default)]` is per-field rather than struct-level.
+        #[serde(default)]
+        type_params: Vec<String>,
         /// Rendered member signatures (e.g. `["voltage: Voltage", "current: Current"]`).
         members: Vec<String>,
     },
@@ -233,13 +256,13 @@ pub enum ItemKind {
     Field {
         /// Rendered field type (e.g. `"Voltage"`).
         type_repr: String,
-        /// Rendered default value expression, if any.
-        default_repr: Option<String>,
+        /// The default value expression, if any.
+        default_repr: Option<ExprText>,
     },
     /// A `purpose` (objective/optimization) declaration.
     Purpose {
-        /// Rendered objective expression.
-        expr_repr: String,
+        /// The objective expression.
+        expr_repr: ExprText,
         /// Optimization direction, e.g. `"minimize"` or `"maximize"`.
         direction: String,
     },
@@ -257,13 +280,36 @@ pub enum ItemKind {
     },
     /// A `type` alias declaration.
     TypeAlias {
+        /// PRE-RENDERED display strings for the alias's type parameters, in
+        /// declaration order (e.g. `["Q: Dimension"]` for
+        /// `pub type Rate<Q: Dimension> = Q / Time`).  Empty for a
+        /// non-parametric alias, in which case the formatters emit no `<>` at
+        /// all.
+        ///
+        /// Strings, not typed nodes: `reify-doc` is pure-data and must stay
+        /// free of any dependency on `reify-ir`/`reify-types`, so the bound
+        /// and default syntax is rendered upstream by the lowering pass.
+        ///
+        /// # Serde note
+        ///
+        /// The per-FIELD `#[serde(default)]` is a deliberate deviation:
+        /// `ItemKind` carries no serde attributes on any other field, because
+        /// every struct in this module (and `cross_refs.rs`) expresses
+        /// forward-compat with a struct-level `#[serde(default)]` instead.
+        /// An internally-tagged enum has no struct-level slot to put one in,
+        /// so the additive field must carry its own or legacy payloads fail
+        /// with `missing field "type_params"`.  No `skip_serializing_if`:
+        /// the crate never uses one, and the shape stays uniform — an empty
+        /// list still serializes as `"type_params": []`.
+        #[serde(default)]
+        type_params: Vec<String>,
         /// Rendered right-hand-side type (e.g. `"f64"`).
         type_repr: String,
     },
     /// A named constraint definition.
     ConstraintDef {
-        /// Rendered constraint expression.
-        expr_repr: String,
+        /// The constraint expression.
+        expr_repr: ExprText,
     },
 }
 
@@ -286,6 +332,23 @@ impl ItemKind {
             ItemKind::Unit { .. } => "unit",
             ItemKind::TypeAlias { .. } => "type",
             ItemKind::ConstraintDef { .. } => "constraint",
+        }
+    }
+
+    /// Pre-rendered type-parameter display strings for the kinds that carry
+    /// generics, in declaration order; an empty slice for every other kind.
+    ///
+    /// Exists so both formatters share a single lookup when appending the
+    /// `<…>` segment to an item heading, exactly as they share
+    /// [`ItemKind::keyword`].  The segment is DISPLAY only — `ItemHeader.name`
+    /// remains the sole join key for anchors, TOC hrefs, cross-reference
+    /// resolution and split-mode filenames, so it must never absorb these.
+    pub(crate) fn type_params(&self) -> &[String] {
+        match self {
+            ItemKind::TypeAlias { type_params, .. } | ItemKind::Trait { type_params, .. } => {
+                type_params
+            }
+            _ => &[],
         }
     }
 
@@ -374,6 +437,11 @@ impl ItemDoc {
         self.kind.keyword()
     }
 
+    /// Pre-rendered type-parameter display strings — delegates to `ItemKind`.
+    pub(crate) fn type_params(&self) -> &[String] {
+        self.kind.type_params()
+    }
+
     /// Stable TOC group label — delegates to `ItemKind`.
     pub(crate) fn group(&self) -> &'static str {
         self.kind.group()
@@ -433,7 +501,7 @@ mod tests {
             name: "width".to_string(),
             doc: Some("Width of the component.".to_string()),
             type_repr: "Length".to_string(),
-            default_repr: Some("100 mm".to_string()),
+            default_repr: Some(ExprText::Source("100 mm".into())),
             annotations: vec![AnnotationDoc {
                 name: "units".to_string(),
                 args: vec!["mm".to_string()],
@@ -463,7 +531,7 @@ mod tests {
     fn constraint_doc_serde_round_trip() {
         let constraint = ConstraintDoc {
             label: Some("voltage_range".to_string()),
-            expr_repr: "voltage >= 3.0 V && voltage <= 5.5 V".to_string(),
+            expr_repr: ExprText::Source("voltage >= 3.0 V && voltage <= 5.5 V".into()),
             annotations: vec![],
             line: None,
         };
@@ -478,7 +546,7 @@ mod tests {
     fn constraint_doc_serde_round_trip_with_line() {
         let constraint = ConstraintDoc {
             label: Some("len_ge_diam".to_string()),
-            expr_repr: "length >= diameter".to_string(),
+            expr_repr: ExprText::Source("length >= diameter".into()),
             annotations: vec![],
             line: Some(42),
         };
@@ -491,13 +559,14 @@ mod tests {
 
     /// Forward-compat guard: legacy JSON without the `line` field must still
     /// deserialize, with `line` defaulting to `None` via the struct-level
-    /// `#[serde(default)]`.
+    /// `#[serde(default)]`, and its string-form `expr_repr` decodes as
+    /// source text.
     #[test]
     fn constraint_doc_deserializes_without_line() {
         let legacy_json = r#"{"label":"voltage_range","expr_repr":"v <= 5.5 V","annotations":[]}"#;
         let c: ConstraintDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
         assert_eq!(c.label.as_deref(), Some("voltage_range"));
-        assert_eq!(c.expr_repr, "v <= 5.5 V");
+        assert_eq!(c.expr_repr, ExprText::Source("v <= 5.5 V".into()));
         assert!(c.annotations.is_empty());
         assert_eq!(c.line, None);
     }
@@ -507,7 +576,10 @@ mod tests {
         let sub = SubComponentDoc {
             name: "cpu".to_string(),
             structure_name: "MCU".to_string(),
-            args: vec!["flash = 512 kB".to_string()],
+            args: vec![SubComponentArgDoc {
+                name: "flash".to_string(),
+                value: ExprText::Source("512 kB".into()),
+            }],
             annotations: vec![AnnotationDoc {
                 name: "supplier".to_string(),
                 args: vec!["\"STMicro\"".to_string()],
@@ -522,16 +594,12 @@ mod tests {
     #[test]
     fn realization_doc_serde_round_trip() {
         let real = RealizationDoc {
-            name: "SchematicView".to_string(),
-            op_summaries: vec![
-                "place cpu at (10, 20)".to_string(),
-                "route power_in -> cpu.vcc".to_string(),
-            ],
+            name: "body".to_string(),
+            value: ExprText::Source("cylinder(r, h)".into()),
         };
         let json = serde_json::to_string(&real).expect("serialize");
         let back: RealizationDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(real, back);
-        assert_eq!(back.op_summaries.len(), 2);
     }
 
     #[test]
@@ -556,7 +624,7 @@ mod tests {
                     name: "width".to_string(),
                     doc: None,
                     type_repr: "Length".to_string(),
-                    default_repr: Some("100 mm".to_string()),
+                    default_repr: Some(ExprText::Source("100 mm".into())),
                     annotations: vec![],
                 }],
                 ports: vec![PortDoc {
@@ -567,7 +635,7 @@ mod tests {
                 }],
                 constraints: vec![ConstraintDoc {
                     label: None,
-                    expr_repr: "width > 0 mm".to_string(),
+                    expr_repr: ExprText::Source("width > 0 mm".into()),
                     annotations: vec![],
                     line: None,
                 }],
@@ -578,8 +646,8 @@ mod tests {
                     annotations: vec![],
                 }],
                 realizations: vec![RealizationDoc {
-                    name: "Schematic".to_string(),
-                    op_summaries: vec!["place cpu".to_string()],
+                    name: "body".to_string(),
+                    value: ExprText::Source("box(1mm, 2mm, 3mm)".into()),
                 }],
                 meta: vec![("version".to_string(), "1.0".to_string())],
             },
@@ -642,6 +710,7 @@ mod tests {
                 pragmas: vec![],
             },
             kind: ItemKind::TypeAlias {
+                type_params: vec![],
                 type_repr: "f64".to_string(),
             },
         };
@@ -694,6 +763,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("HasPower", true),
                     kind: ItemKind::Trait {
+                        type_params: vec![],
                         members: vec!["voltage: Voltage".to_string()],
                     },
                 },
@@ -707,7 +777,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("minimize_area", false),
                     kind: ItemKind::Purpose {
-                        expr_repr: "total_area".to_string(),
+                        expr_repr: ExprText::Source("total_area".into()),
                         direction: "minimize".to_string(),
                     },
                 },
@@ -721,7 +791,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("voltage_safe", true),
                     kind: ItemKind::ConstraintDef {
-                        expr_repr: "v <= 5.5 V".to_string(),
+                        expr_repr: ExprText::Source("v <= 5.5 V".into()),
                     },
                 },
             ],
@@ -796,7 +866,10 @@ mod tests {
             (
                 ItemDoc {
                     header: hdr("T"),
-                    kind: ItemKind::Trait { members: vec![] },
+                    kind: ItemKind::Trait {
+                        type_params: vec![],
+                        members: vec![],
+                    },
                 },
                 "trait",
             ),
@@ -823,7 +896,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("P"),
                     kind: ItemKind::Purpose {
-                        expr_repr: "cost".into(),
+                        expr_repr: ExprText::Source("cost".into()),
                         direction: "minimize".into(),
                     },
                 },
@@ -850,6 +923,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("A"),
                     kind: ItemKind::TypeAlias {
+                        type_params: vec![],
                         type_repr: "f64".into(),
                     },
                 },
@@ -859,7 +933,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("C"),
                     kind: ItemKind::ConstraintDef {
-                        expr_repr: "x > 0".into(),
+                        expr_repr: ExprText::Source("x > 0".into()),
                     },
                 },
                 "constraint_def",
@@ -873,6 +947,65 @@ mod tests {
                 json.contains(&expected_tag),
                 "variant={expected_kind}: expected {expected_tag} in serialized JSON: {json}",
             );
+        }
+    }
+
+    /// Forward-compat guard: `ItemDoc` JSON serialized before `type_params`
+    /// was added to `ItemKind::TypeAlias` (task #6342) must still deserialize,
+    /// with `type_params` defaulting to an empty vec.
+    ///
+    /// `ItemKind` carries no struct-level `#[serde(default)]` — an internally
+    /// tagged enum cannot express one — so the new field needs a per-field
+    /// `#[serde(default)]` or a missing key is a hard deserialization error.
+    /// Mirrors `module_doc_deserializes_without_cross_refs` and
+    /// `constraint_doc_deserializes_without_line`.
+    #[test]
+    fn item_doc_type_alias_deserializes_without_type_params() {
+        let legacy_json = r#"{"kind":"type_alias","name":"Pressure","doc":null,"is_pub":true,"annotations":[],"pragmas":[],"type_repr":"Force / Area"}"#;
+        let item: ItemDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(item.header.name, "Pressure");
+        assert!(item.header.is_pub);
+        match &item.kind {
+            ItemKind::TypeAlias {
+                type_params,
+                type_repr,
+            } => {
+                assert_eq!(type_repr, "Force / Area");
+                assert_eq!(
+                    type_params,
+                    &Vec::<String>::new(),
+                    "a legacy payload with no `type_params` key must default to empty"
+                );
+            }
+            other => panic!("expected ItemKind::TypeAlias, got {other:?}"),
+        }
+    }
+
+    /// Forward-compat guard for `ItemKind::Trait`, mirroring
+    /// `item_doc_type_alias_deserializes_without_type_params`.
+    ///
+    /// Both variants carry the additive `type_params` field, so both need their
+    /// own per-field `#[serde(default)]` — an internally-tagged enum has no
+    /// struct-level slot for one, and a missing key is otherwise a hard
+    /// deserialization error.
+    #[test]
+    fn item_doc_trait_deserializes_without_type_params() {
+        let legacy_json = r#"{"kind":"trait","name":"Physical","doc":null,"is_pub":true,"annotations":[],"pragmas":[],"members":["param mass: Mass"]}"#;
+        let item: ItemDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(item.header.name, "Physical");
+        match &item.kind {
+            ItemKind::Trait {
+                type_params,
+                members,
+            } => {
+                assert_eq!(members, &vec!["param mass: Mass".to_string()]);
+                assert_eq!(
+                    type_params,
+                    &Vec::<String>::new(),
+                    "a legacy payload with no `type_params` key must default to empty"
+                );
+            }
+            other => panic!("expected ItemKind::Trait, got {other:?}"),
         }
     }
 
@@ -963,7 +1096,10 @@ mod tests {
             },
             ItemDoc {
                 header: hdr("T"),
-                kind: ItemKind::Trait { members: vec![] },
+                kind: ItemKind::Trait {
+                    type_params: vec![],
+                    members: vec![],
+                },
             },
             ItemDoc {
                 header: hdr("F"),
@@ -981,7 +1117,7 @@ mod tests {
             ItemDoc {
                 header: hdr("P"),
                 kind: ItemKind::Purpose {
-                    expr_repr: "cost".into(),
+                    expr_repr: ExprText::Source("cost".into()),
                     direction: "minimize".into(),
                 },
             },
@@ -999,13 +1135,14 @@ mod tests {
             ItemDoc {
                 header: hdr("A"),
                 kind: ItemKind::TypeAlias {
+                    type_params: vec![],
                     type_repr: "f64".into(),
                 },
             },
             ItemDoc {
                 header: hdr("C"),
                 kind: ItemKind::ConstraintDef {
-                    expr_repr: "x > 0".into(),
+                    expr_repr: ExprText::Source("x > 0".into()),
                 },
             },
         ]

@@ -25,20 +25,15 @@
 //! - `surface_slack`     : `List<Bool>` — per patch.
 //! - `converged`         : `Bool`.
 
+use crate::failed_diagnostics::{assert_mentions, joined_failure_messages, joined_messages};
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::make_simple_engine;
+use reify_test_support::{
+    make_simple_engine, meters, point3, read_real_or_scalar, read_real_or_scalar3,
+};
 
 // ---- Value-construction helpers (mirror tensegrity_t3b_load.rs) -------------
-
-/// A Length-typed coordinate Scalar (SI metres).
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
 
 /// A Force-typed Scalar (SI newtons).
 fn force(n: f64) -> Value {
@@ -64,33 +59,9 @@ fn area(a: f64) -> Value {
     }
 }
 
-/// A 3-component `Value::Point` node coordinate (Length scalars).
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
-}
-
 /// A 3-component `Value::Vector` force load (Force scalars).
 fn force_vec(fx: f64, fy: f64, fz: f64) -> Value {
     Value::Vector(vec![force(fx), force(fy), force(fz)])
-}
-
-/// Extract an f64 from a Scalar (any dimension) or a bare Real.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real component, got {other:?}"),
-    }
-}
-
-/// Crack a 3-component displacement `Value::Vector`/`Value::Point` into `[f64; 3]`.
-fn vec3(v: &Value) -> [f64; 3] {
-    match v {
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [coord(&c[0]), coord(&c[1]), coord(&c[2])]
-        }
-        other => panic!("expected a 3-component Vector, got {other:?}"),
-    }
 }
 
 /// A combined pavilion `Tensegrity` value: a flat membrane patch braced by one
@@ -107,11 +78,11 @@ fn vec3(v: &Value) -> [f64; 3] {
 /// index 1 the cable; the `prestress` payload must follow that order.
 fn combined_pavilion() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 0.0),
-        node(0.0, 1.0, 0.0),
-        node(0.0, 0.0, 0.0),
-        node(0.0, 0.0, 1.0),
-        node(0.0, 0.0, -1.0),
+        point3(1.0, 0.0, 0.0),
+        point3(0.0, 1.0, 0.0),
+        point3(0.0, 0.0, 0.0),
+        point3(0.0, 0.0, 1.0),
+        point3(0.0, 0.0, -1.0),
     ]);
     let struts = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(4)])]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(3)])]);
@@ -177,7 +148,7 @@ fn combined_pavilion_payload() -> Vec<Value> {
         // [6] per-triangle surface prestress (one patch).
         Value::List(vec![pressure(sigma)]),
         // [7] membrane thickness, [8] membrane youngs, [9] membrane poisson.
-        length(t),
+        meters(t),
         pressure(e_fab),
         Value::Real(nu_fab),
     ]
@@ -236,16 +207,16 @@ fn trampoline_combined_pavilion_solves() {
     let displacements = list_field(&fields, "displacements");
     assert_eq!(displacements.len(), 5, "one displacement per node");
     for (i, d) in displacements.iter().enumerate() {
-        let u = vec3(d);
+        let u = read_real_or_scalar3(d, &format!("displacements[{i}]"));
         assert!(
             u.iter().all(|c| c.is_finite()),
             "displacement[{i}] must be finite (non-Undef), got {u:?}",
         );
     }
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(u_center[2] < 0.0, "free center moves toward the -z load, got {u_center:?}");
     for &anchor in &[0usize, 1, 3, 4] {
-        let u = vec3(&displacements[anchor]);
+        let u = read_real_or_scalar3(&displacements[anchor], &format!("displacements[{anchor}]"));
         assert!(
             u.iter().all(|c| c.abs() < 1e-9),
             "anchored node {anchor} must not move, got {u:?}",
@@ -257,21 +228,26 @@ fn trampoline_combined_pavilion_solves() {
     let member_forces = list_field(&fields, "member_forces");
     assert_eq!(member_forces.len(), 2, "one member force per line member");
     for (i, f) in member_forces.iter().enumerate() {
-        assert!(coord(f).is_finite(), "member_forces[{i}] must be finite, got {f:?}");
+        let force = read_real_or_scalar(f, &format!("member_forces[{i}]"));
+        assert!(
+            force.is_finite(),
+            "member_forces[{i}] must be finite, got {f:?}"
+        );
     }
     let member_force_deltas = list_field(&fields, "member_force_deltas");
     assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
     for (i, d) in member_force_deltas.iter().enumerate() {
+        let delta = read_real_or_scalar(d, &format!("member_force_deltas[{i}]"));
         assert!(
-            coord(d).is_finite(),
+            delta.is_finite(),
             "member_force_deltas[{i}] must be finite, got {d:?}",
         );
     }
     // The cable (index 1) stays in tension (taut) under the downward pull.
+    let cable_force = read_real_or_scalar(&member_forces[1], "member_forces[1]");
     assert!(
-        coord(&member_forces[1]) > 0.0,
-        "cable (member 1) stays in tension, got {}",
-        coord(&member_forces[1]),
+        cable_force > 0.0,
+        "cable (member 1) stays in tension, got {cable_force}",
     );
 
     // member_slack: per line member, none slack (cable stays taut; struts never
@@ -291,7 +267,12 @@ fn trampoline_combined_pavilion_solves() {
             Value::List(comps) => {
                 assert_eq!(comps.len(), 3, "Δσ[{p}] encodes 3 Voigt components");
                 for (k, c) in comps.iter().enumerate() {
-                    assert!(coord(c).is_finite(), "Δσ[{p}][{k}] must be finite, got {c:?}");
+                    let component =
+                        read_real_or_scalar(c, &format!("surface_stress_deltas[{p}][{k}]"));
+                    assert!(
+                        component.is_finite(),
+                        "Δσ[{p}][{k}] must be finite, got {c:?}"
+                    );
                 }
             }
             other => panic!("surface_stress_deltas[{p}] must be a List, got {other:?}"),
@@ -305,7 +286,10 @@ fn trampoline_combined_pavilion_solves() {
     match &principals[0] {
         Value::List(pair) => {
             assert_eq!(pair.len(), 2, "principal pair is [min, max]");
-            let (min, max) = (coord(&pair[0]), coord(&pair[1]));
+            let (min, max) = (
+                read_real_or_scalar(&pair[0], "surface_principal_stresses[0][0]"),
+                read_real_or_scalar(&pair[1], "surface_principal_stresses[0][1]"),
+            );
             assert!(min.is_finite() && max.is_finite(), "principals must be finite");
             assert!(min <= max, "principal pair must be sorted [min, max], got [{min}, {max}]");
             assert!(min > 0.0, "taut patch keeps a positive minimum principal, got {min}");
@@ -370,13 +354,13 @@ fn trampoline_upward_load_slackens_cable() {
     let member_forces = list_field(&fields, "member_forces");
     assert_eq!(member_forces.len(), 2, "one member force per line member");
     assert_eq!(
-        coord(&member_forces[1]),
+        read_real_or_scalar(&member_forces[1], "member_forces[1]"),
         0.0,
         "a dropped (slack) cable reports zero total force, got {:?}",
         member_forces[1],
     );
     assert!(
-        coord(&member_forces[0]).is_finite(),
+        read_real_or_scalar(&member_forces[0], "member_forces[0]").is_finite(),
         "the active strut reports a finite force, got {:?}",
         member_forces[0],
     );
@@ -385,13 +369,13 @@ fn trampoline_upward_load_slackens_cable() {
     // force fell from the +3000 N prestress to 0); the strut delta stays finite.
     let member_force_deltas = list_field(&fields, "member_force_deltas");
     assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
+    let cable_delta = read_real_or_scalar(&member_force_deltas[1], "member_force_deltas[1]");
     assert!(
-        (coord(&member_force_deltas[1]) - (-3_000.0)).abs() < 1e-6,
-        "a dropped cable's force delta cancels its +3000 N prestress, got {}",
-        coord(&member_force_deltas[1]),
+        (cable_delta - (-3_000.0)).abs() < 1e-6,
+        "a dropped cable's force delta cancels its +3000 N prestress, got {cable_delta}",
     );
     assert!(
-        coord(&member_force_deltas[0]).is_finite(),
+        read_real_or_scalar(&member_force_deltas[0], "member_force_deltas[0]").is_finite(),
         "the active strut reports a finite force delta, got {:?}",
         member_force_deltas[0],
     );
@@ -399,7 +383,7 @@ fn trampoline_upward_load_slackens_cable() {
     // displacements: the free center now moves UP toward the +z load (the mirror of
     // the downward happy-path case); anchors stay put.
     let displacements = list_field(&fields, "displacements");
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(
         u_center[2] > 0.0,
         "free center moves toward the +z load, got {u_center:?}",
@@ -444,11 +428,7 @@ fn solver_membrane_load_target_is_registered() {
             other => panic!("expected a MembraneLoadResult StructureInstance, got {other:?}"),
         },
         Err(diags) => {
-            let joined = diags
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
+            let joined = joined_messages(&diags);
             panic!(
                 "solver::membrane_load must be a registered ComputeNode target, but \
                  dispatch returned the unregistered-target Err: {joined}"
@@ -472,24 +452,25 @@ fn solver_membrane_load_target_is_registered() {
 /// whose joined message also contains `needle`. A `Completed` (or any other)
 /// outcome — including a panic that would unwind past this call — fails the test.
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
-    match outcome {
-        ComputeOutcome::Failed { diagnostics, .. } => {
-            let joined = diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            assert!(
-                joined.contains("E_MembraneLoadInfeasible"),
-                "expected an E_MembraneLoadInfeasible diagnostic, got: {joined}"
-            );
-            assert!(
-                joined.contains(needle),
-                "expected the diagnostic to mention {needle:?}, got: {joined}"
-            );
-        }
-        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
-    }
+    assert_failed_infeasible_needles(outcome, &[needle], &[]);
+}
+
+/// The several-needle form of [`assert_failed_infeasible`], for a guard whose
+/// wording is pinned by more than one needle — including *negative* ones, which
+/// catch a degenerate labelling that every positive needle would still satisfy.
+///
+/// Every needle is checked against ONE flattened diagnostic set, so a caller
+/// invokes the trampoline once and the assertions provably describe the same
+/// message rather than several independently-produced ones. The flattening and
+/// the needle checks live in `tests/common/failed_diagnostics.rs`; the
+/// single-needle form above delegates here.
+fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
+    let joined = joined_failure_messages(outcome);
+    assert!(
+        joined.contains("E_MembraneLoadInfeasible"),
+        "expected an E_MembraneLoadInfeasible diagnostic, got: {joined}"
+    );
+    assert_mentions(&joined, must, must_not);
 }
 
 /// (a) Every node listed as a support ⇒ empty free set: the kernel has no free
@@ -553,12 +534,12 @@ fn trampoline_out_of_range_support_is_failed() {
 /// the CG Jacobi preconditioner on a missing diagonal.
 fn pavilion_with_orphan() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 0.0),
-        node(0.0, 1.0, 0.0),
-        node(0.0, 0.0, 0.0),
-        node(0.0, 0.0, 1.0),
-        node(0.0, 0.0, -1.0),
-        node(5.0, 5.0, 5.0), // node 5 — FREE ORPHAN: no member/patch, not a support
+        point3(1.0, 0.0, 0.0),
+        point3(0.0, 1.0, 0.0),
+        point3(0.0, 0.0, 0.0),
+        point3(0.0, 0.0, 1.0),
+        point3(0.0, 0.0, -1.0),
+        point3(5.0, 5.0, 5.0), // node 5 — FREE ORPHAN: no member/patch, not a support
     ]);
     let struts = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(4)])]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(3)])]);
@@ -628,4 +609,120 @@ fn trampoline_out_of_range_poisson_is_failed() {
     // [9] membrane_poisson := 1.0 — the (1 − ν²) plane-stress singularity.
     value_inputs[9] = Value::Real(1.0);
     assert_failed_infeasible(call_membrane_load(&value_inputs), "poisson");
+}
+
+// ---- (4) Wrong-unit guards (task #6412) -------------------------------------
+//
+// `membrane_load::run` cracks all ten inputs — structure, prestress,
+// youngs_modulus, area, loads, supports, surface_prestress, membrane_thickness,
+// membrane_youngs, membrane_poisson — BEFORE it reaches the poisson-range and
+// the three length guards, so every unit guard fires strictly ahead of any count
+// guard and "wrong unit" is what surfaces in all four tests below. Each payload
+// nonetheless keeps every *count* valid, so the guard under test is provably the
+// one that fires rather than a count mismatch reached by accident.
+//
+// f1/f2 exercise the direct `crack_dimensioned_scalar` path; f3/f4 reach it
+// through `crack_scalar_list`'s FORCE and PRESSURE arms and additionally pin the
+// located `{what}[{i}]` entry-index labelling.
+
+/// (f1) The line section scalars carry SI units — `youngs_modulus` is a Pressure
+/// and `area` is an Area. Swapping the two positionally-adjacent arguments (an
+/// Area in the `youngs_modulus` slot, a Pressure in the `area` slot) must
+/// surface a located `E_MembraneLoadInfeasible` "wrong unit" diagnostic rather
+/// than silently solving a physically wrong problem — a fabric pavilion sized
+/// with a 10⁻⁴ Pa bar modulus would converge to plausible-looking nonsense.
+/// `youngs_modulus` is cracked first, so the Pressure check is what fires. This
+/// is the membrane analogue of `tensegrity_t3b_load.rs`'s
+/// `trampoline_swapped_section_units_is_failed`.
+#[test]
+fn trampoline_swapped_line_section_units_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [2] youngs_modulus := an Area, [3] area := a Pressure.
+    value_inputs[2] = area(1.0e-4);
+    value_inputs[3] = pressure(2.0e9);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "youngs_modulus");
+}
+
+/// (f2) The membrane section scalars are likewise dimensioned —
+/// `membrane_thickness` is a Length and `membrane_youngs` a Pressure — and they
+/// are positionally adjacent in exactly the same way. This swap is membrane-only
+/// and therefore invisible to the t3b coverage: nothing else in the repo pins
+/// it. `membrane_thickness` is cracked before `membrane_youngs`, so the Length
+/// check fires first and names that argument.
+#[test]
+fn trampoline_swapped_membrane_section_units_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [7] membrane_thickness := a Pressure, [8] membrane_youngs := a Length.
+    value_inputs[7] = pressure(1.0e6);
+    value_inputs[8] = meters(0.01);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "membrane_thickness");
+}
+
+/// (f3) The LIST path's FORCE arm: line `prestress` is a `List<Force>`, so a
+/// list of Pressures (the natural mistake once `surface_prestress` — genuinely a
+/// `List<Pressure>` — is in scope two slots away) must be rejected per entry.
+/// Two entries are supplied, matching the pavilion's two line members, so the
+/// later member-count guard is provably not what fires. The `prestress[0]`
+/// needle pins the located `{what}[{i}]` entry-index labelling that tells an
+/// author *which* list entry is wrong.
+#[test]
+fn trampoline_pressure_in_prestress_slot_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [1] prestress := two Pressures where two Forces (strut, cable) belong.
+    value_inputs[1] = Value::List(vec![pressure(1.0e5), pressure(1.0e5)]);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "expected a Force");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "prestress[0]");
+}
+
+/// (f4) The LIST path's PRESSURE arm — the mirror of (f3). `surface_prestress`
+/// is a `List<Pressure>` (one membrane σ₀ per triangle), so a Force entry must
+/// be rejected with the Pressure label. Exactly one entry is supplied, matching
+/// the pavilion's single patch, so the surface-(patch)-count guard exercised by
+/// (b) is provably not what fires here. `surface_prestress[0]` again pins the
+/// located entry index.
+#[test]
+fn trampoline_force_in_surface_prestress_slot_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [6] surface_prestress := one Force where the patch σ₀ (Pressure) belongs.
+    value_inputs[6] = Value::List(vec![force(1.0e5)]);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "expected a Pressure");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "surface_prestress[0]");
+}
+
+/// (f5) The VECTOR path — `loads` is a `List<Vector3<Force>>`, so each of the
+/// three *components* of each entry is unit-checked individually. A Length in
+/// the y component of entry [1] must be rejected with the located
+/// `loads[1].y` labelling: the entry index tells the author *which* node's load
+/// is wrong, the component letter *which* of its three numbers. Five entries
+/// are supplied, matching the pavilion's five nodes, and corrupting a single
+/// component leaves that count intact, so the `loads.len() != nodes.len()`
+/// guard is provably not what fires. This is the membrane mirror of
+/// `tensegrity_t3b_load.rs`'s `trampoline_length_in_load_component_is_failed`;
+/// the PAIR matters, because each file's `assert_failed_infeasible` pins its
+/// OWN mnemonic, so together they prove each trampoline keeps its own
+/// `E_*Infeasible` code once `crack_loads` takes that code as a parameter
+/// instead of hardcoding it. The negative `loads[0]` needle is what rules out a
+/// constant entry index, which every positive needle would still satisfy — and
+/// all four are checked against ONE invocation's diagnostics, so they provably
+/// describe the same message.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [4] loads := five entries (one per node) with loads[1].y a Length.
+    value_inputs[4] = Value::List(vec![
+        force_vec(0.0, 0.0, 0.0),
+        Value::Vector(vec![force(0.0), meters(50.0), force(0.0)]),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+    ]);
+    assert_failed_infeasible_needles(
+        call_membrane_load(&value_inputs),
+        &["wrong unit", "expected a Force", "loads[1].y"],
+        &["loads[0]"],
+    );
 }

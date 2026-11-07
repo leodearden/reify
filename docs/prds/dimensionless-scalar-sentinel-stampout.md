@@ -129,6 +129,11 @@ all of `math_signatures.rs`/`analysis_signatures.rs`/`joint_signatures.rs`/`buil
 (85 sites — 100% genuine dimensionless op results); all `reify-ir`/`reify-eval`/`reify-expr`/`reify-core`
 runtime sites (600+ — value placeholders / empty-collection element defaults / genuine dimensionless
 results — **runtime crates do not perform type-name resolution**).
+**Pending-#6001 note:** #6001 (builtin-signature-registry leaf α) deletes `analysis_signatures.rs`
+and `signatures_common.rs` outright, relocating their sites' dimensionless-fallback logic to
+`crates/reify-builtins/src/resolvers.rs` — **in flight on `task/6001`, unlanded as of 2026-09-11**,
+so both files still stand on main today and remain part of the KEEP list above. The relocated logic
+is not itself re-audited here, and the site count above is a snapshot — re-point when #6001 lands.
 
 > **Note on the ANGLE ≠ DIMENSIONLESS concern** (`math_signatures.rs` comments): that is a *separate,
 > known* correctness bug (a math op yielding the wrong *dimension*), **not** the unknown-name sentinel.

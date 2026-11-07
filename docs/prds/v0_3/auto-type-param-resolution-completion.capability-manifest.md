@@ -1,6 +1,6 @@
 # Capability manifest — `auto:` Type-Parameter Resolution v0.2 Completion
 
-Mechanizes G3 (substrate-exists) + G6 (premise-valid) for
+**AS-AUTHORED GATE ARTIFACT (2026-06-09) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (α #4431 … θ #4438) — see the parent PRD's SHIPPED header (`docs/prds/v0_3/auto-type-param-resolution-completion.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-06-09 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 (substrate-exists) + G6 (premise-valid) for
 `docs/prds/v0_3/auto-type-param-resolution-completion.md`. Built at decompose
 (2026-06-09), verified against `main` @ `1d192cdae4`. Each **leaf** signal's
 asserted capabilities are bound to on-`main` evidence; any binding resolving to

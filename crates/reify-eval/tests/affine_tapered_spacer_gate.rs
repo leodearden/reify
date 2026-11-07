@@ -15,8 +15,11 @@
 //! Modeled on `sub_placement_assembly_gate.rs` (task 3908) and
 //! `affine_apply_e2e.rs` (task 3963).
 
+#[path = "common/strict_routing.rs"]
+mod strict_routing;
+
 use reify_core::Severity;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
+use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
 /// Path to the committed example, relative to this crate's manifest.
 ///
@@ -28,8 +31,8 @@ const EXAMPLE_SRC: &str = concat!(
 );
 
 /// Read and compile the committed example, panicking with a helpful message
-/// if the file is missing. Shared by all three gate tests below to avoid
-/// repeating the read+compile boilerplate.
+/// if the file is missing. Shared by the gate tests below to avoid repeating
+/// the read+compile boilerplate.
 fn compiled_example() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
         .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
@@ -38,19 +41,12 @@ fn compiled_example() -> reify_compiler::CompiledModule {
 
 // ── Engine builder helpers (copied from sub_placement_assembly_gate.rs) ───────
 
-/// Build a Mock-kernel engine for structural surfacing assertions.
-fn mock_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
-}
-
 /// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
 fn occt_engine_via_holder() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 // ── Path-resolution helper (copied from sub_placement_assembly_gate.rs) ──────
@@ -137,7 +133,7 @@ fn deformed_body_surfaces_under_mock() {
         .expect("TaperedSpacer template not found in compiled module");
     let body_path = root_realization_path(spacer, "body");
 
-    let mut engine = mock_engine();
+    let mut engine = make_engine_with_mock_kernel();
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
         .diagnostics
@@ -234,4 +230,18 @@ fn body_z_stretch_aabb_occt() {
             extents[axis]
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Strict multi-kernel routing reaches OCCT for affine_apply (#8989)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// In-process form of `reify build examples/affine_tapered_spacer.ri -o x.step`
+/// rc 0: `TransformAffineApply` must be declared by the kernel that executes it.
+#[test]
+fn example_builds_step_under_registered_kernels() {
+    strict_routing::assert_step_builds_under_registered_kernels(
+        &compiled_example(),
+        reify_ir::Operation::TransformAffineApply,
+    );
 }

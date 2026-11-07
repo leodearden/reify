@@ -1,0 +1,10 @@
+// Fixture (γ decompose-phase premise, tau1-numeric): `sinh(1mm)` on a
+// dimensioned Length compiles clean TODAY — `reify check` exits 0 with zero
+// diagnostics (silent accept). A hyperbolic function of a Length is
+// dimensionally meaningless; this file is the "before" half of the premise.
+
+module numeric_sinh_dimensioned_silent_accept
+
+structure def NumericSinhDimensionedSilentAccept {
+    let s = sinh(1mm)
+}

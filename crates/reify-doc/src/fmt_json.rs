@@ -25,11 +25,13 @@ use crate::model::DocModel;
 ///
 /// `unwrap`s the `serde_json` result.  Every field in the [`DocModel`] graph
 /// is plain serde-derived data — no `#[serde(serialize_with = ...)]` adapters,
-/// no fallible custom `Serialize` impls — so `to_string` / `to_string_pretty`
-/// can only fail on a writer error, and we serialize into a `String` whose
-/// writer is infallible.  An unwrap here is therefore "never panics in
-/// practice"; we annotate the call with `expect` for diagnosability if a
-/// future refactor introduces a fallible adapter.
+/// no fallible custom `Serialize` impls; the one conversion,
+/// [`crate::expr_text::ExprText`]'s `#[serde(into = ...)]` wire form, is an
+/// infallible `From` — so `to_string` / `to_string_pretty` can only fail on a
+/// writer error, and we serialize into a `String` whose writer is infallible.
+/// An unwrap here is therefore "never panics in practice"; we annotate the
+/// call with `expect` for diagnosability if a future refactor introduces a
+/// fallible adapter.
 pub fn render_json(model: &DocModel, compact: bool) -> String {
     if compact {
         serde_json::to_string(model).expect("DocModel serde never fails")
@@ -41,6 +43,7 @@ pub fn render_json(model: &DocModel, compact: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::render_json;
+    use crate::expr_text::ExprText;
     use crate::model::{DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc};
 
     /// Build a small `DocModel` with one `ModuleDoc` containing a single
@@ -58,7 +61,10 @@ mod tests {
                         annotations: vec![],
                         pragmas: vec![],
                     },
-                    kind: ItemKind::Trait { members: vec![] },
+                    kind: ItemKind::Trait {
+                        type_params: vec![],
+                        members: vec![],
+                    },
                 }],
                 annotations: vec![],
                 pragmas: vec![],
@@ -130,6 +136,7 @@ mod tests {
                             pragmas: vec![],
                         },
                         kind: ItemKind::TypeAlias {
+                            type_params: vec![],
                             type_repr: "f64".to_string(),
                         },
                     },
@@ -142,7 +149,7 @@ mod tests {
                             pragmas: vec![],
                         },
                         kind: ItemKind::ConstraintDef {
-                            expr_repr: "v <= 5.5 V".to_string(),
+                            expr_repr: ExprText::Source("v <= 5.5 V".into()),
                         },
                     },
                 ],
@@ -169,6 +176,82 @@ mod tests {
         assert!(
             !output.contains("constraintDef"),
             "kind tag must not be camelCase, got: {output}"
+        );
+    }
+
+    /// Wire-shape guard for `ItemKind::TypeAlias::type_params` (task #6342).
+    ///
+    /// The field is ALWAYS present — `reify-doc` uses no `skip_serializing_if`
+    /// anywhere, so the JSON shape stays uniform across parametric and
+    /// non-parametric aliases and consumers can index it unconditionally.
+    ///
+    /// Also pins that the identity fields did not absorb the params: `"name"`
+    /// stays the bare `Vel`, and the `"kind"` tag stays `"type_alias"`.
+    #[test]
+    fn render_json_type_alias_emits_type_params_array() {
+        let model = DocModel {
+            modules: vec![ModuleDoc {
+                path: "m".to_string(),
+                doc: None,
+                items: vec![
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "Vel".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_params: vec!["Q: Dimension".to_string()],
+                            type_repr: "Q / Time".to_string(),
+                        },
+                    },
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "Meters".to_string(),
+                            doc: None,
+                            is_pub: false,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_params: vec![],
+                            type_repr: "f64".to_string(),
+                        },
+                    },
+                ],
+                annotations: vec![],
+                pragmas: vec![],
+                cross_refs: Default::default(),
+            }],
+        };
+
+        let output = render_json(&model, true);
+
+        // Parametric alias: the rendered param strings appear verbatim.
+        assert!(
+            output.contains(r#""type_params":["Q: Dimension"]"#),
+            "expected populated `type_params` array in: {output}"
+        );
+        // Non-parametric alias: the key is still present, as an empty array.
+        assert!(
+            output.contains(r#""type_params":[]"#),
+            "`type_params` must always serialize (no skip_serializing_if) in: {output}"
+        );
+
+        // Identity fields are unchanged by the new display field.
+        assert!(
+            output.contains(r#""kind":"type_alias""#),
+            "expected unchanged `type_alias` kind tag in: {output}"
+        );
+        assert!(
+            output.contains(r#""name":"Vel""#),
+            "`name` must stay the bare identifier, not absorb the params, in: {output}"
+        );
+        assert!(
+            !output.contains(r#""name":"Vel<"#),
+            "`name` must not absorb the type params in: {output}"
         );
     }
 }

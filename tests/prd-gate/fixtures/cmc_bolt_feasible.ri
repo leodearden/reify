@@ -1,0 +1,16 @@
+module cmc_bolt_feasible
+
+// docs/prds/v0_6/catalog-membership-constraint.md §1 / §6 B5 (leaf β).
+// Window [22.5mm, 25.5mm]; standard_bolt_lengths has exactly one member in it (25mm).
+// After β: `reify eval` prints BoltedJoint.bolt_length = 0.025 m, no diagnostic, exit 0.
+// Baseline (main 2026-10-08): parse error. The @solver_hint form of this model resolves to
+// 0.024 m (a non-stock length) with no diagnostic.
+structure BoltedJoint {
+    param bolt_length : Length = auto
+    param plate_a : Length = 6mm
+    param plate_b : Length = 8mm
+    param nut_h   : Length = 6.5mm
+    constraint bolt_length in standard_bolt_lengths()
+    constraint bolt_length >= plate_a + plate_b + nut_h + 2mm
+    constraint bolt_length <= plate_a + plate_b + nut_h + 5mm
+}

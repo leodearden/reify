@@ -14,7 +14,7 @@
 // `inventory::iter`. Without a reference to a symbol from the crate, the
 // linker dead-strips it and the submission never fires (mirrors the
 // `OCCT_AVAILABLE` import in
-// `reify-kernel-occt/tests/warm_startable_registration.rs`).
+// `reify-kernel-occt/tests/harness_occt/warm_startable_registration.rs`).
 use reify_solver_elastic::CgWarmState;
 use reify_ir::{NodeKind, WarmStartableRegistry};
 

@@ -1,6 +1,6 @@
 # PRD: `std.materials` §6 — restore the documented parameter surface & constraints
 
-**Status:** draft · **Authored:** 2026-06-02 · **Milestone:** v0_6
+**Status: SHIPPED.** All 5 decomposition leaves have landed — α #4239, β #4240, γ #4241, δ #4242, ε #4243. **Authored:** 2026-06-02 · **Milestone:** v0_6 · shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its substrate measurements, "today" surface descriptions and task-state remarks (e.g. the §6 cross-PRD rows) are dated 2026-06-02 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — no production code defers to this document; the restored `std.materials` surface is stated by `docs/reify-stdlib-reference.md` §6, reconciled by ε #4243.
 **Closes gap-register cluster:** P12 materials-breadth (`docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md`)
 **Source doc:** `docs/reify-stdlib-reference.md` §6 (`std.materials`)
 **Approach:** bare **B** (self-contained declarative stdlib feature; not a high-stakes seam — see §5 G5).
@@ -270,7 +270,7 @@ serialized to avoid contention + renames build on the additive surface).
 (substrate shipped, §3).
 
 - **α — mechanical *additive* surface.** *(`materials_mechanical.ri` + new
-  `crates/reify-compiler/tests/materials_param_surface_tests.rs`)*
+  `crates/reify-compiler/tests/harness_units_materials/materials_param_surface_tests.rs`)*
   Add `trait TemperatureDependent { param reference_temperature : Temperature = 293.15K }`
   (§6.1). On `Elastic`: add `constraint 0 < poissons_ratio < 0.5` and change
   `shear_modulus : Real` → `shear_modulus : Real = undef`. On `Strong`/`Ductile`:
@@ -289,10 +289,10 @@ serialized to avoid contention + renames build on the additive surface).
 - **β — mechanical *breaking* renames + collapsed-param restores + atomic
   consumer migration.** *(`materials_mechanical.ri` + `examples/m8_materials.ri`,
   `examples/io_export.ri`, `examples/drivebelt_trait_bounds.ri`,
-  `crates/reify-compiler/tests/materials_mechanical_tests.rs`,
+  `crates/reify-compiler/tests/harness_units_materials/materials_mechanical_tests.rs`,
   `crates/reify-compiler/tests/stdlib_loader_tests.rs`,
-  `crates/reify-compiler/tests/parametric_tensor_resolution_tests.rs`,
-  `crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs`,
+  `crates/reify-compiler/tests/harness_langcore/parametric_tensor_resolution_tests.rs`,
+  `crates/reify-compiler/tests/harness_result_annotation/cross_module_alias_propagation_tests.rs`,
   `crates/reify-eval/tests/m8_3_stdlib_integration.rs`,
   `crates/reify-eval/tests/drivebelt_trait_bounds.rs`,
   `crates/reify-test-support/src/fixtures.rs`)* — **depends on α.**

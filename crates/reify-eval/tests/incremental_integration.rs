@@ -15,7 +15,7 @@
 use reify_compiler::CompiledModule;
 use reify_core::{SnapshotId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value};
-use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
+use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib, scalar_si};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -51,14 +51,6 @@ fn make_eval_engine() -> (reify_eval::Engine, reify_eval::EvalResult) {
     (engine, result)
 }
 
-/// Extract the SI value from a Value::Scalar, panicking with a helpful message otherwise.
-fn si_value(v: &Value, label: &str) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar for {label}, got {other:?}"),
-    }
-}
-
 /// Extract the first component's SI value from a Value::Point or Value::Vector.
 fn point_component(v: &Value, component: usize, label: &str) -> f64 {
     match v {
@@ -66,7 +58,7 @@ fn point_component(v: &Value, component: usize, label: &str) -> f64 {
             let item = items
                 .get(component)
                 .unwrap_or_else(|| panic!("{label} has no component {component}"));
-            si_value(item, &format!("{label}[{component}]"))
+            scalar_si(item, &format!("{label}[{component}]"))
         }
         other => panic!("expected Point/Vector for {label}, got {other:?}"),
     }
@@ -84,7 +76,7 @@ fn cold_start_baseline_values() {
     let e = "Assembly";
 
     // height = 300mm = 0.3 SI
-    let h = si_value(
+    let h = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "height"))
@@ -97,7 +89,7 @@ fn cold_start_baseline_values() {
     );
 
     // width = 150mm = 0.15 SI
-    let w = si_value(
+    let w = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "width"))
@@ -110,7 +102,7 @@ fn cold_start_baseline_values() {
     );
 
     // mass = 5kg = 5.0 SI
-    let m = si_value(
+    let m = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "mass"))
@@ -123,7 +115,7 @@ fn cold_start_baseline_values() {
     );
 
     // clearance = 500mil = 500*0.0000254 = 0.0127 SI
-    let c = si_value(
+    let c = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "clearance"))
@@ -136,7 +128,7 @@ fn cold_start_baseline_values() {
     );
 
     // position_x = 100mm = 0.1 SI
-    let px = si_value(
+    let px = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "position_x"))
@@ -286,14 +278,18 @@ fn edit_height_inrange_still_satisfied() {
         .expect("edit_check should succeed");
 
     // Positive presence check: all constraints should still be evaluated (not silently dropped).
-    // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
-    // the full assembly count (measured as 49) must be present.
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
-    assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >= 47 constraint results after height=400mm, got {} \
-         (constraints may have been silently dropped; \
-          floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
+    // Height does not touch the `determined(origin)` guard, so no constraints are excluded and
+    // the FULL assembly count must be present — MEASURED as 51 on this tree.
+    // #5417 raised that total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
+    // Pinned exactly, not floored: a `>=` floor let the two constraints the comment
+    // above insists must be present vanish silently.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results after height=400mm, got {} \
+         (constraints may have been silently dropped)",
         check_result.constraint_results.len()
     );
 
@@ -395,12 +391,14 @@ fn edit_height_below_width_triggers_ordering_violation() {
         .edit_check(height_id, mm(100.0))
         .expect("edit_check should succeed");
 
-    // Total count still >=47 (no short-circuit on violation).
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
-    assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >=47 constraint results even with height=100mm (violation), got {} \
-         (floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
+    // Full count still present (no short-circuit on violation) — MEASURED as 51.
+    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results even with height=100mm (violation), got {}",
         check_result.constraint_results.len()
     );
 
@@ -434,15 +432,19 @@ fn edit_position_x_determinacy_predicates_hold() {
         .edit_check(px_id, mm(200.0))
         .expect("edit_check should succeed");
 
-    // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
-    // the result when position_x is in the dirty cone.  Even so, the remaining 47 constraints
-    // must all be present — any further silent dropping would indicate a regression.
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
-    assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >= 47 constraint results after position_x=200mm, got {} \
-         (constraints may have been silently dropped; \
-          note esc-295-78 excludes 2 guarded constraints leaving floor of 47)",
+    // Positive presence check: all 51 constraints come back even with position_x in the dirty
+    // cone — MEASURED on this tree, by raising this floor to an unreachable value and reading
+    // the panic. An earlier revision of this comment said the 2 esc-295-78 guarded constraints
+    // are EXCLUDED from the result here, leaving 49; that is not what the engine returns today.
+    // Their satisfaction is asserted separately below; their presence is asserted here.
+    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results after position_x=200mm, got {} \
+         (constraints may have been silently dropped)",
         check_result.constraint_results.len()
     );
 
@@ -465,7 +467,7 @@ fn edit_position_x_determinacy_predicates_hold() {
 /// Checks:
 /// 1. The compiled Assembly template has exactly 1 guarded_group with 2 constraints
 ///    (the `where determined(origin) { … }` block).
-/// 2. After edit_check, all 49 constraints are returned (including the 2 guarded ones).
+/// 2. After edit_check, all 51 constraints are returned (including the 2 guarded ones).
 /// 3. The guarded constraints (determined(displacement), determined(base_frame)) are Satisfied.
 /// 4. No returned constraint results are Violated.
 #[test]
@@ -492,7 +494,7 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
          (determined(displacement) and determined(base_frame))"
     );
 
-    // 2. After edit_check(position_x=200mm), all 49 constraints should be returned.
+    // 2. After edit_check(position_x=200mm), all 51 constraints should be returned.
     let px_id = ValueCellId::new(e, "position_x");
     let check_result = engine
         .edit_check(px_id, mm(200.0))
@@ -500,18 +502,18 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
 
     let result_count = check_result.constraint_results.len();
     assert_eq!(
-        result_count, 49,
-        "expected all 49 constraint results (including 2 guarded), got {result_count}"
+        result_count, 51,
+        "expected all 51 constraint results (including 2 guarded), got {result_count}"
     );
     // Lower-bound guard: even with esc-295-78 active, any regression that drops
-    // the count below the expected-broken floor of 47 must not silently pass.
-    // The XFAIL assertion above already captures the known breakage (count != 49);
+    // the count below the expected-broken floor of 49 must not silently pass.
+    // The XFAIL assertion above already captures the known breakage (count != 51);
     // this lower bound catches additional regressions below the broken floor.
     assert!(
-        result_count >= 47,
-        "expected >= 47 constraint results after position_x=200mm (XFAIL lower bound), \
+        result_count >= 49,
+        "expected >= 49 constraint results after position_x=200mm (XFAIL lower bound), \
          got {result_count} — this indicates a regression beyond the esc-295-78 exclusion \
-         (49 total minus 2 guarded constraints excluded by esc-295-78 = 47 broken floor)"
+         (51 total minus 2 guarded constraints excluded by esc-295-78 = 49 broken floor)"
     );
 
     // 3. The guarded constraints should be Satisfied (determined(origin) is true after edit).
@@ -573,7 +575,7 @@ fn multiple_edits_accumulate_correctly() {
         .expect("second edit_param should succeed");
 
     // height = 0.4 SI
-    let h = si_value(
+    let h = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "height"))
@@ -586,7 +588,7 @@ fn multiple_edits_accumulate_correctly() {
     );
 
     // width = 0.2 SI
-    let w = si_value(
+    let w = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "width"))

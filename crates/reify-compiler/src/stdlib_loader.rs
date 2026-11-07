@@ -59,7 +59,10 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// is what is *resolvable* during the sequential prelude build (the footgun
 /// above), not what a resolvable name *means*.  That inertness is the §5
 /// precondition the ζ task consumes.
-pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
+///
+/// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each
+/// compiled stdlib module with its source by module path.
+pub fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),
@@ -151,8 +154,14 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // for the `stress_invariants` builtin (FEA-5, task 2884). Placed
         // immediately after `std.analysis` (which defines `Stress`/
         // `AnalysisResult`) and before `std.determinacy.purposes` (which
-        // MUST remain last). Zero ordering constraints on neighbouring
-        // modules — it only uses built-in `Real`.
+        // MUST remain last).
+        //
+        // ORDERING CONSTRAINT: `std.fea` MUST follow `std.units`, which
+        // supplies the `Pressure`/`Pressure2`/`Pressure3` aliases its fields
+        // declare (task #6092). Already satisfied — `std.units` is entry [0]
+        // above — so this is a note for whoever reorders next, not a bug. It
+        // previously read "zero ordering constraints … only uses built-in
+        // `Real`", which the retype made false in both clauses.
         ("std.fea", include_str!("../stdlib/fea.ri").to_owned()),
         (
             "std.tolerancing",
@@ -227,17 +236,6 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.slice",
             include_str!("../stdlib/fdm_slice.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the FlexureCompliance
-        // structure_def and the flexure_compliance() accessor (the former
-        // RotationalStiffness=Real alias was removed in task 4547 — the built-in
-        // ROTATIONAL_STIFFNESS dimension shadowed it). The same-module skeleton
-        // pre-pass (task 3895) makes
-        // the structure_def visible to the accessor fn body in the same
-        // module, so no split is needed.
-        (
-            "std.flexures",
-            include_str!("../stdlib/flexures.ri").to_owned(),
-        ),
         // `std.tensegrity` depends on `std.units` (Length, Area, Force),
         // `std.si_units` (0N literal), and `std.materials.fea`
         // (ElasticMaterial trait) — all earlier in the prelude sequence.
@@ -268,6 +266,27 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
         ),
+        // `std.flexures` — single module containing the FlexureCompliance
+        // structure_def, the `FlexureJoint` marker, and the
+        // flexure_compliance() accessor (the former RotationalStiffness=Real
+        // alias was removed in task 4547 — the built-in ROTATIONAL_STIFFNESS
+        // dimension shadowed it). The same-module skeleton pre-pass (task 3895)
+        // makes the structure_def visible to the accessor fn body in the same
+        // module, so no split is needed.
+        //
+        // MUST follow `std.kinematic` (task #5476, placeholder-ratchet α) —
+        // `structure def FlexureJoint : DrivingJoint` references the
+        // `DrivingJoint` trait declared in kinematic.ri, resolved via the
+        // growing sequential prelude. Declares no `import`, so the topo-sort
+        // stays the identity permutation and registration order IS visibility
+        // order. Moved down from its former slot before `std.tensegrity`: the
+        // only modules stepped over are `std.tensegrity` and `std.process`,
+        // neither of which references `FlexureCompliance` / `flexure_compliance`
+        // / `FlexureJoint`, so nothing earlier in the sequence loses visibility.
+        (
+            "std.flexures",
+            include_str!("../stdlib/flexures.ri").to_owned(),
+        ),
         // `std.joints` defines the standard kinematic joint set (revolute /
         // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
         // declarations over the relation vocabulary (geometric-joints γ, task
@@ -282,7 +301,8 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
         ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
         // `std.ports` declares the Directionality enum, the Port base trait,
-        // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
+        // and the `Frame3` structure (a `Vec3<Length>` origin, which is a
+        // position, and `Vec3<Dimensionless>` x/y/z axes, which are directions).
         // No inter-module dependencies beyond built-in types.
         // Reconstruction of lost work per PRD task α.
         //
@@ -310,13 +330,15 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // options) -> ModalResult` — the κ-modal-bridge (task 4271).
         //
         // Ordering constraint: MUST follow BOTH:
-        //   - `std.modal.analysis` (line 147) — supplies ModalOptions/ModalResult/Mode
-        //   - `std.kinematic` (line 233) — supplies the Mechanism type
-        // The existing `std.modal.analysis.fns` (line 157) loads BEFORE
+        //   - `std.modal.analysis` — supplies ModalOptions/ModalResult/Mode
+        //   - `std.kinematic` — supplies the Mechanism type
+        // The existing `std.modal.analysis.fns` loads BEFORE
         // `std.kinematic`, so Mechanism is not yet in its prelude; placing
         // `mechanism_modal_analysis` there would produce an unresolved-type error.
-        // Tail placement after `std.dynamics` (which itself requires both
-        // std.kinematic and std.modal.analysis) satisfies all ordering constraints.
+        // Tail placement after `std.dynamics` satisfies both constraints
+        // directly: `std.modal.analysis` and `std.kinematic` both precede
+        // this entry (`std.kinematic` is itself pulled in ahead of
+        // `std.dynamics`).
         // Same prelude-ordering rationale as the original std.modal.analysis /
         // std.modal.analysis.fns split (esc-3851-32).
         (
@@ -335,7 +357,9 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         ),
         // `std.ports.mechanical` refines Port from std.ports and adds
         // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
-        // ThreadedPort, StructurePort) plus the Torque type alias.
+        // ThreadedPort, StructurePort). (Formerly also defined a `Torque`
+        // type alias; that alias was deleted by task η/5785 in favor of the
+        // NAMED_DIMENSIONS registry entry in reify-core's dimension.rs.)
         // Must follow std.ports in the growing prelude sequence so Port is
         // resolved when MechanicalPort : Port is compiled.
         // Reconstruction of lost work per PRD task α.
@@ -519,19 +543,13 @@ pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
 }
 
 /// One cross-module name collision: the same key declared by two stdlib modules.
+/// The module fields are spelled DOTTED, as keyed in [`stdlib_sources`],
+/// because that list is where a collision gets fixed.
 struct NameCollision {
     kind: &'static str,
     name: String,
     first_module: String,
     second_module: String,
-}
-
-/// Render a module path in the DOTTED form used as the key in
-/// [`stdlib_sources`] — that list is where a collision actually gets fixed, so
-/// the panic message should spell modules the way they are spelled there.
-/// `Display for ModulePath` is slash-separated (`std/solver/buckling`).
-fn dotted(path: &reify_core::ModulePath) -> String {
-    path.to_string().replace('/', ".")
 }
 
 /// NS-P2 (task 5496, PRD docs/prds/v0_6/stdlib-namespace.md §7): no two stdlib
@@ -564,8 +582,8 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     let mut collisions: Vec<NameCollision> = Vec::new();
 
     // One map for every kind. The key is (kind, dedup_key) so each kind gets its
-    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
-    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // OWN namespace — `structure def Planar` (kinematic.ri) and
+    // `trait Planar {}` (geometry_traits.ri) coexist on main today, and a
     // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
     // declared name for every kind except functions (see below).
     let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
@@ -585,7 +603,7 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     };
 
     for module in modules {
-        let m = dotted(&module.path);
+        let m = module.path.to_dotted();
 
         // Templates carry their own kind label so `structure` and `occurrence`
         // are distinguishable in the message; derived, never hard-coded.
@@ -608,9 +626,9 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
         // CRITICAL: read this vector, never the syntax. `type_aliases` holds
         // MODULE-LEVEL aliases only. Associated types declared inside a
         // trait/structure body (`type MotionValue` in `trait HasMotion`,
-        // kinematic.ri:110,133,151,198) are members of their template and are
-        // correctly absent here. A syntactic scan sees four `MotionValue`s and
-        // panics the real stdlib build immediately.
+        // kinematic.ri) are members of their template and are correctly
+        // absent here. A syntactic scan sees four `MotionValue`s and panics
+        // the real stdlib build immediately.
         for a in module.type_aliases.iter().filter(|a| a.is_pub) {
             record("type alias", a.name.clone(), &a.name, &m);
         }

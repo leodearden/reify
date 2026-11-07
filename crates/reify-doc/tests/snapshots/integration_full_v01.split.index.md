@@ -30,6 +30,7 @@ Comprehensive v0.1 language feature integration.
 
 - [`Positive`](constraint_def-Positive.md)
 - [`Pressure`](type_alias-Pressure.md)
+- [`Rate`](type_alias-Rate.md)
 - [`mil`](unit-mil.md)
 - [`minimize_area`](purpose-minimize_area.md)
 

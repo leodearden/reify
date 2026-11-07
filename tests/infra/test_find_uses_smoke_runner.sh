@@ -56,6 +56,15 @@
 # only ever checked BEFORE the driver ran, so a launcher that crashed mid-run
 # behind a green driver produced a false PASS.
 #
+# ── ARM D (task 7274): the launcher is handed its own vite port ──────────────
+# reify-gui retargets its devUrl to REIFY_VITE_PORT at startup, so the
+# lifecycle resolves a vite port per run — a caller's valid value, else a
+# freshly allocated free port — and hands it to the launcher. Without that,
+# every lane's smoke shares :1420 and concurrent smokes contend for it.
+#   D1 (no caller value): the launcher sees a valid port that is NOT the shared
+#       1420 default, and the runner announces it.
+#   D2 (caller-pinned): the launcher sees exactly the caller's value.
+#
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern).
 
 set -euo pipefail
@@ -149,6 +158,8 @@ _write_stub() {
 #   REIFY_SMOKE_LAUNCHER=<bindir>/stub_launcher.sh
 #   REIFY_SMOKE_WAIT_MS=<wait_ms>      (readiness budget)
 #   REIFY_DEBUG_PORT=<port>            (valid port, so resolve_port doesn't allocate)
+#   REIFY_VITE_PORT scrubbed           (no ambient value leaks in; an arm that
+#                                       wants one passes REIFY_VITE_PORT=<p>)
 #   DISPLAY=:99                        (dummy display, must not open a window)
 #   PATH=<bindir>:$PATH                (PATH-stub injection for curl/node)
 #
@@ -159,7 +170,7 @@ _smoke_arm_run() {
     local _arm_start=$SECONDS
     _ARM_RC=0
     _ARM_OUT=$(
-        env \
+        env -u REIFY_VITE_PORT \
             REIFY_SMOKE_SKIP_PREBUILD=1 \
             REIFY_SMOKE_LAUNCHER="$bindir/stub_launcher.sh" \
             REIFY_SMOKE_WAIT_MS="$wait_ms" \
@@ -327,6 +338,55 @@ _arm_c() {
 }
 
 # ===========================================================================
+# ARM D — the launcher is handed a vite port of its own.
+#
+# The curl stub reports ready only once the launcher has written its env dump,
+# closing the same launcher-first-line race ARM C's pidfile wait closes: the
+# runner must not tear the launcher down before it has recorded what it saw.
+# ===========================================================================
+_arm_d() {
+    local label="$1" runner="$2" bin
+    _new_bindir; bin="$_BINDIR"
+    local dump="$bin/vite-port"
+
+    _write_stub "$bin/stub_launcher.sh" \
+        'printf "%s" "${REIFY_VITE_PORT:-}" > "$_VITE_DUMP"' \
+        'exec sleep 20'
+    _write_stub "$bin/curl" \
+        '[ -e "$_VITE_DUMP" ] && exit 0' \
+        'exit 7'
+    _write_stub "$bin/node" 'exit 0'
+
+    # --- D1: no caller value, so the lifecycle allocates one ---
+    _alloc_port
+    _smoke_arm_run "$bin" "$runner" "$_PORT" 30000 _VITE_DUMP="$dump"
+    local rc="$_ARM_RC" out="$_ARM_OUT" seen
+    seen=$(cat "$dump" 2>/dev/null || true)
+
+    assert "$label ARM D1: exits 0 on the happy path" \
+        bash -c '[ "$1" -eq 0 ]' _ "$rc"
+
+    assert "$label ARM D1: launcher is handed a REIFY_VITE_PORT in 1..65535" \
+        bash -c '[[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]' _ "$seen"
+
+    assert "$label ARM D1: the allocated vite port is not the shared 1420 default" \
+        bash -c '[ "$1" != 1420 ]' _ "$seen"
+
+    assert "$label ARM D1: runner announces the vite port it handed the launcher" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "using vite port $2"' _ "$out" "$seen"
+
+    # --- D2: a caller-pinned value is honoured verbatim (every process is
+    # stubbed, so nothing ever binds it) ---
+    rm -f "$dump"
+    _alloc_port
+    _smoke_arm_run "$bin" "$runner" "$_PORT" 30000 _VITE_DUMP="$dump" REIFY_VITE_PORT=59990
+    seen=$(cat "$dump" 2>/dev/null || true)
+
+    assert "$label ARM D2: launcher is handed the caller's REIFY_VITE_PORT verbatim" \
+        bash -c '[ "$1" = 59990 ]' _ "$seen"
+}
+
+# ===========================================================================
 # Sweep every runner through every arm.
 #
 # Assertion descriptions are prefixed with the runner basename so a failure
@@ -349,6 +409,7 @@ for _runner_base in "${RUNNERS[@]}"; do
     _arm_a "$_runner_base" "$_runner_path"
     _arm_b "$_runner_base" "$_runner_path"
     _arm_c "$_runner_base" "$_runner_path"
+    _arm_d "$_runner_base" "$_runner_path"
 done
 
 test_summary

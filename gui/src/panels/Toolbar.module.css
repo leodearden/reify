@@ -21,6 +21,12 @@
   background: var(--reify-accent-hover, #74c7ec);
 }
 
+.button[aria-pressed='true'] {
+  background: var(--reify-background, #1e1e2e);
+  color: var(--reify-accent, #89b4fa);
+  box-shadow: inset 0 0 0 1px var(--reify-accent, #89b4fa);
+}
+
 .spacer {
   flex: 1;
 }

@@ -1,38 +1,7 @@
+use reify_git_env::sanitize;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// Git environment variables that redirect *which repository* a command
-/// operates on — the same defining criterion as, and an independent copy of,
-/// `reify_audit::git_env::REPO_REDIRECT_VARS`. A copy rather than a re-export:
-/// the dependency edge runs `reify-audit` -> `reify-test-support` (see
-/// `Cargo.toml`), so this crate cannot depend on `reify-audit` to reuse its
-/// copy directly.
-///
-/// `crates/reify-audit/src/git_env.rs` carries a unit test
-/// (`repo_redirect_vars_matches_reify_test_support_orphan_audit_copy`)
-/// asserting the two lists stay equal, so a divergence between them now fails
-/// `cargo test` rather than resting on a "keep in sync" comment.
-pub const REPO_REDIRECT_VARS: &[&str] = &[
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_WORK_TREE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-];
-
-/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment. See
-/// [`REPO_REDIRECT_VARS`] for why this crate keeps its own copy of this
-/// function rather than calling `reify_audit::git_env::sanitize`.
-pub fn sanitize(cmd: &mut Command) -> &mut Command {
-    for var in REPO_REDIRECT_VARS {
-        cmd.env_remove(var);
-    }
-    cmd
-}
 
 /// Build the (unexecuted) `audit-orphan-producers.sh` command: scope/format
 /// args, `current_dir`, and [`sanitize`]. Split out of [`run_orphan_audit`] so
@@ -47,110 +16,310 @@ fn build_audit_command(script: &Path, scope: &str, repo_root: &Path) -> Command 
     cmd
 }
 
-/// Run `scripts/audit-orphan-producers.sh` against a specific crate scope and
-/// return the parsed JSON envelope.
+/// The three possible outcomes of running the orphan-producer audit against a
+/// scope.
 ///
-/// # Graceful-skip protocol
+/// [`run_orphan_audit`]'s `Option<serde_json::Value>` return collapses
+/// `ExcludedScope` and `EnvUnavailable` to `None`, so every existing call
+/// site's `let Some(..) else { return; }`/`else { return; }` shape keeps
+/// compiling and behaving identically.
 ///
-/// Returns `None` (without panicking) when the environment cannot satisfy the
-/// script's prerequisites:
-/// - `python3` is absent from `PATH`
-/// - `git` is absent from `PATH`
-/// - `scripts/audit-orphan-producers.sh` does not exist on disk
-///
-/// In each of those cases an explanatory message is printed to `stderr` so CI
-/// logs remain informative.
-///
-/// Returns `Some(json)` on success.  Panics on hard failures: spawn errors or
-/// malformed JSON output (which always indicates a bug in the audit script or
-/// its invocation).
-///
-/// # `scope` argument
-///
-/// Pass a repo-relative path to a source directory, e.g.
-/// `"crates/reify-audit/src"`.  This is forwarded as `--scope <scope>` to the
-/// audit script.
-///
-/// # Repo-root resolution
-///
-/// The repo root is resolved at compile time via `env!("CARGO_MANIFEST_DIR")`
-/// evaluated inside **this** crate (`reify-test-support`), which always sits at
-/// `<repo>/crates/reify-test-support/`.  Two `.parent()` walks reach the repo
-/// root regardless of which downstream crate calls this function.
-pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
-    // Resolve script path: CARGO_MANIFEST_DIR = crates/reify-test-support
-    // Go up two parents → repo root → scripts/audit-orphan-producers.sh
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-test-support has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .join("scripts/audit-orphan-producers.sh");
+/// Deliberately module-private rather than re-exported: as of task 5698 no
+/// caller needs to discriminate a legitimate skip from a hard failure — all
+/// 9 existing external call sites use [`run_orphan_audit`] and tolerate both
+/// as `None` — so this finer-grained outcome type stays private (reachable
+/// from this module's own tests via `use super::*`) until a real external
+/// consumer appears. Promote it and `run_orphan_audit_detailed` back to
+/// `pub` at that point rather than speculatively ahead of one.
+#[derive(Debug)]
+enum OrphanAudit {
+    /// A well-formed JSON envelope was produced.
+    Envelope(serde_json::Value),
+    /// `scope`'s crate segment is a literal member of `EXCLUDE_CRATES` — a
+    /// legitimate, non-failing outcome that the script itself encodes as
+    /// empty stdout. Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    ExcludedScope(SkipNote),
+    /// The environment cannot satisfy the script's prerequisites (missing
+    /// `python3`/`git`, the script itself absent, or `repo_root` not inside a
+    /// git work tree). Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    EnvUnavailable(SkipNote),
+}
 
-    let repo_root = script
-        .parent()
-        .expect("scripts/ dir exists")
-        .parent()
-        .expect("repo root exists");
+/// The phrase every graceful-skip note [`run_orphan_audit`] prints to stderr
+/// contains, whichever skip cause fired. Exported so a caller attributing a
+/// process's stderr to such a skip matches the string this module actually
+/// produces, not a copy of it.
+pub const ORPHAN_AUDIT_SKIP_MARKER: &str = "skipping orphan audit";
 
-    // Graceful skip: check python3 is available
-    match Command::new("python3").arg("--version").output() {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("python3 not on PATH; skipping orphan audit for scope {scope:?}");
-            return None;
+/// Why [`run_orphan_audit`] declined to return an envelope for `scope`,
+/// rendered as the one stderr line it prints — so every skip, whichever
+/// cause fired, carries [`ORPHAN_AUDIT_SKIP_MARKER`] in the same place.
+#[derive(Debug)]
+struct SkipNote {
+    scope: String,
+    cause: String,
+}
+
+impl SkipNote {
+    fn new(scope: &str, cause: impl Into<String>) -> Self {
+        Self {
+            scope: scope.to_string(),
+            cause: cause.into(),
         }
-        Err(e) => panic!("unexpected error probing python3: {e}"),
+    }
+}
+
+impl std::fmt::Display for SkipNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { scope, cause } = self;
+        write!(f, "{cause}; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}")
+    }
+}
+
+/// Crate names excluded from the orphan-producer audit — a Rust copy of the
+/// `EXCLUDE_CRATES = {...}` set literal declared in
+/// `scripts/audit-orphan-producers.sh` (the source of truth; this copy exists
+/// because the script cannot be consulted at Rust compile/run time without a
+/// python round-trip).
+///
+/// Pinned against the script by
+/// `exclude_crates_const_matches_audit_script_declaration`: a divergence
+/// between the two fails `cargo test` rather than resting on a "keep in
+/// sync" comment. That pin is the duplication-pinning pattern this codebase
+/// reaches for whenever a value genuinely cannot be single-sourced across a
+/// language boundary — and it is the last resort, not the default: where a
+/// value CAN be single-sourced it should be, as [`sanitize`]'s own move into
+/// [`reify_git_env`] did.
+///
+/// The exclusion's premise — an excluded crate's publics are reached only from
+/// test code — is kept true by the `reify-test-support-is-dev-only` crate rule
+/// in `scripts/crate-strata.json`; `exclude_crates_are_dev_only_under_a_crate_strata_rule`
+/// ties every entry here to such a rule.
+const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
+
+/// True when `scope`'s crate segment (the path component immediately after
+/// `crates`) is a LITERAL member of [`EXCLUDE_CRATES`].
+///
+/// Deliberately literal-only, not glob-aware — and needs no special-casing to
+/// be so: a segment containing a glob metacharacter (e.g. the `reify-*` in
+/// the default `crates/reify-*/src` scope) is never literally equal to a
+/// single crate name, so plain set membership already returns `false` for
+/// it. That is exactly right for the five call sites in this workspace that
+/// pass a glob scope: their expansion always includes non-excluded crates,
+/// so treating the glob itself as "excluded" would be wrong.
+fn scope_is_excluded_crate(scope: &str) -> bool {
+    scope
+        .split('/')
+        .skip_while(|&seg| seg != "crates")
+        .nth(1)
+        .is_some_and(|seg| EXCLUDE_CRATES.contains(&seg))
+}
+
+/// Resolve the git work tree that a child process spawned with
+/// `.current_dir(repo_root)` would itself compute via `git rev-parse
+/// --show-toplevel` — i.e. what `audit-orphan-producers.sh`'s own
+/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` line will resolve to for
+/// this child. Routed through the SAME [`sanitize`] the script spawn uses,
+/// so this probe faithfully reproduces the child's exact view.
+///
+/// This does NOT re-test that [`sanitize`] works — it tests the premise
+/// [`sanitize`] is supposed to establish: that the child resolves the SAME
+/// repository the caller asked it to scan. That is why the probe still has
+/// teeth despite reusing the spawn's own sanitizer: it independently catches
+/// an incomplete [`reify_git_env::REPO_REDIRECT_VARS`] list, a `.git` file
+/// pointing at another checkout, a symlinked or embedded checkout, or a
+/// workspace-root resolution that lands on the wrong level — any
+/// of which would make the real script silently scan a different tree than
+/// the one the caller specified.
+///
+/// Returns `Err(`[`ChildRepoRootFailure::NoRepository`]`)` only when
+/// `repo_root` is genuinely not inside a git work tree at all — the ONE
+/// outcome callers should treat as a graceful skip. Every other failure
+/// (see [`ChildRepoRootFailure::Other`]'s doc) returns `Err(Other(..))` and
+/// must NOT be treated as a graceful skip: a real repository is expected to
+/// exist in those cases, and silently skipping would reintroduce exactly the
+/// silent-green failure mode this task exists to close.
+fn child_repo_root(repo_root: &Path) -> Result<PathBuf, ChildRepoRootFailure> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"])
+        .current_dir(repo_root);
+    sanitize(&mut cmd);
+
+    // A spawn failure (e.g. `git` absent from PATH entirely) leaves no way to
+    // tell whether a repository exists here — fold it into the
+    // graceful-skip bucket alongside "genuinely no repository", consistent
+    // with the python3/git presence probes one layer up in
+    // run_orphan_audit_detailed.
+    let output = cmd
+        .output()
+        .map_err(|_| ChildRepoRootFailure::NoRepository)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Only a truly repo-less directory's `git rev-parse --show-toplevel`
+        // includes this exact phrase, e.g. "fatal: not a git repository (or
+        // any of the parent directories): .git". A corrupt `.git` file
+        // instead produces the shorter "fatal: not a git repository:
+        // <path>" (no "parent directories" wording), and a dubious-
+        // ownership rejection produces "detected dubious ownership in
+        // repository" — neither contains this phrase, so both correctly
+        // fall through to `Other` below rather than being misread as "no
+        // repository here". Verified empirically for the repo-less and
+        // corrupt-gitdir shapes; see
+        // `child_repo_root_plain_non_git_dir_is_no_repository` and
+        // `child_repo_root_corrupt_git_file_is_other_not_no_repository`.
+        if stderr.contains("(or any of the parent directories)") {
+            return Err(ChildRepoRootFailure::NoRepository);
+        }
+        return Err(ChildRepoRootFailure::Other(format!(
+            "git rev-parse --show-toplevel exited {:?}; stderr: {stderr}",
+            output.status
+        )));
     }
 
-    // Graceful skip: check git is available (audit-orphan-producers.sh:59-64
-    // probes for both python3 AND git; missing git causes exit 3 which would
-    // surface as a confusing JSON-parse panic without this probe).
-    match Command::new("git").arg("--version").output() {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("git not on PATH; skipping orphan audit for scope {scope:?}");
-            return None;
-        }
-        Err(e) => panic!("unexpected error probing git: {e}"),
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err(ChildRepoRootFailure::Other(format!(
+            "git rev-parse --show-toplevel exited {:?} but produced empty stdout",
+            output.status
+        )));
     }
+    Ok(PathBuf::from(trimmed))
+}
 
-    // Graceful skip: check the script itself exists
+/// Failure detail from [`child_repo_root`]'s `git rev-parse --show-toplevel`
+/// probe. Distinguishes "genuinely no repository here" — the ONLY case
+/// [`run_orphan_audit_at`] should treat as a graceful environmental skip —
+/// from every other failure, where a real, usable repository is expected to
+/// exist and the probe should panic instead of silently skipping.
+///
+/// Review finding (task 5698 amendment pass): a non-zero exit from `git
+/// rev-parse --show-toplevel` is not only "no `.git` anywhere in the parent
+/// chain". Git also exits non-zero for "detected dubious ownership in
+/// repository" (a real condition under this project's shared
+/// warm-lane/orchestrator ownership topology), for a corrupt `.git` file
+/// pointing at a missing gitdir, or for a `safe.directory` misconfiguration —
+/// and in every one of those cases a real repository DOES exist, so the
+/// audit should have run. Collapsing them into a graceful skip would
+/// silently reintroduce the exact silent-green failure mode this task exists
+/// to close, and would do so by short-circuiting BEFORE the empty-stdout
+/// hard-failure branch that would otherwise have caught it.
+#[derive(Debug)]
+enum ChildRepoRootFailure {
+    /// `git` could not be spawned at all, or exited unsuccessfully with
+    /// git's "no repository anywhere in the parent chain" diagnosis
+    /// (typically exit 128). Both mean there is genuinely nothing here to
+    /// scan.
+    NoRepository,
+    /// `git rev-parse --show-toplevel` failed, or produced unusable stdout
+    /// despite exiting successfully, for some OTHER reason. Carries a
+    /// description (exit status and/or stderr) for the caller's panic
+    /// message.
+    Other(String),
+}
+
+/// Injectable seam behind [`run_orphan_audit`]: takes `script` and
+/// `repo_root` as parameters rather than resolving them internally, so tests
+/// can point it at a decoy tree, a subdirectory root, or a nonexistent script
+/// without touching the real repo or the real script location. Mirrors why
+/// [`build_audit_command`] was split out one layer down.
+fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAudit {
+    // Graceful skip: check the script itself exists. (Moved here from
+    // run_orphan_audit_detailed in task 5698 step 6 so this seam is
+    // self-contained when called directly with a script path that caller
+    // never probed — see missing_script_is_env_unavailable.)
     if !script.exists() {
-        eprintln!(
-            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
-            script
-        );
-        return None;
+        return OrphanAudit::EnvUnavailable(SkipNote::new(
+            scope,
+            format!("scripts/audit-orphan-producers.sh not found at {script:?}"),
+        ));
     }
 
-    // Sanitize repo-redirect git env vars before spawning: the script's first
-    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an
-    // ambient GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process
-    // tree) overrides BOTH cwd and an explicit `-C`. Full rationale and
-    // failure mode, and why this crate keeps its own REPO_REDIRECT_VARS/
-    // sanitize copy rather than calling reify_audit::git_env::sanitize (the
-    // dependency edge runs the other way): crates/reify-audit/src/git_env.rs
-    // module doc, "Resolved non-central case".
-    let output = build_audit_command(&script, scope, repo_root)
+    // Repo-root premise probe (task 5698 step 6): assert that a child spawned
+    // in `repo_root` would itself resolve the SAME work tree, before spending
+    // a real spawn on it. This is a SECOND, more specific diagnosis than the
+    // empty-stdout panic below: that panic is the primary closure of "wrong
+    // tree" and fires no matter how the wrong tree was reached, but it stays
+    // silent when the scope is in EXCLUDE_CRATES (empty stdout is legitimate
+    // there). This probe additionally catches a wrong tree scanned under an
+    // EXCLUDE_CRATES scope, which the empty-stdout branch alone cannot.
+    match child_repo_root(repo_root) {
+        Err(ChildRepoRootFailure::NoRepository) => {
+            return OrphanAudit::EnvUnavailable(SkipNote::new(
+                scope,
+                format!("repo_root {repo_root:?} is not inside a git work tree"),
+            ));
+        }
+        Err(ChildRepoRootFailure::Other(detail)) => {
+            panic!(
+                "git rev-parse --show-toplevel could not resolve repo_root {repo_root:?} \
+                 for a reason other than \"no repository here\" — a real, usable \
+                 repository is expected to exist (e.g. this project's shared \
+                 warm-lane/orchestrator topology can trigger a dubious-ownership \
+                 safe.directory rejection, or the gitdir pointer is corrupt), so this is \
+                 a hard failure rather than a graceful skip for scope {scope:?}: {detail}"
+            );
+        }
+        Ok(resolved) => {
+            let resolved_canon = resolved.canonicalize().unwrap_or_else(|e| {
+                panic!("failed to canonicalize child-resolved repo root {resolved:?}: {e}")
+            });
+            let repo_root_canon = repo_root.canonicalize().unwrap_or_else(|e| {
+                panic!("failed to canonicalize repo_root argument {repo_root:?}: {e}")
+            });
+            if resolved_canon != repo_root_canon {
+                panic!(
+                    "audit-orphan-producers.sh would run against a DIFFERENT repository \
+                     than requested: repo_root argument was {repo_root:?} (canonicalized \
+                     {repo_root_canon:?}), but the child's own `git rev-parse \
+                     --show-toplevel` resolves to {resolved:?} (canonicalized \
+                     {resolved_canon:?}). The audit would have silently enumerated the \
+                     wrong checkout for scope {scope:?} — never a legitimate outcome."
+                );
+            }
+        }
+    }
+
+    // Sanitize repo-redirect git env vars before spawning (via
+    // build_audit_command -> reify_git_env::sanitize): the script's first
+    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, so an ambient
+    // redirect var, not this call's `repo_root`, would decide which checkout it
+    // enumerates. Why such a var beats both cwd and an explicit `-C`, and what
+    // that costs: `reify_git_env`'s crate doc, where the sanitizer is
+    // defined.
+    let output = build_audit_command(script, scope, repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Guard: empty stdout means the scope is in EXCLUDE_CRATES or the script
-    // produced no envelope.  `serde_json::from_str("")` would panic with a
-    // "not valid JSON" error whose accompanying "status: ExitStatus(0)" would
-    // be misleading.  Surface a clear skip-style message instead.
     if stdout.trim().is_empty() {
-        eprintln!(
-            "audit-orphan-producers.sh produced empty output for scope {scope:?} \
-             — scope may be in EXCLUDE_CRATES (exit status: {:?})",
+        if scope_is_excluded_crate(scope) {
+            return OrphanAudit::ExcludedScope(SkipNote::new(
+                scope,
+                format!(
+                    "audit-orphan-producers.sh produced empty output because the scope is \
+                     in EXCLUDE_CRATES (exit status: {:?})",
+                    output.status
+                ),
+            ));
+        }
+        // Empty stdout for a scope that is NOT in EXCLUDE_CRATES is never a
+        // legitimate outcome: it means the orphan-producer pin for this
+        // scope has been silently disabled. Known causes: a wrong-tree
+        // redirect (repo_root resolves to a checkout with no matching
+        // sources), an EXCLUDE_CRATES edit, a crate rename, or a
+        // discover_sources refactor in the script itself. A silent `None`
+        // here is exactly the bug task 5698 closes — every caller would keep
+        // reporting green while the pin does nothing.
+        panic!(
+            "audit-orphan-producers.sh produced empty output for scope {scope:?}, which \
+             is NOT in EXCLUDE_CRATES — this is never a legitimate outcome for a real \
+             scope. repo_root: {repo_root:?}; exit status: {:?}; stderr: {stderr:?}",
             output.status
         );
-        return None;
     }
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
@@ -161,24 +330,936 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
         )
     });
 
-    Some(parsed)
+    OrphanAudit::Envelope(parsed)
+}
+
+/// Run `scripts/audit-orphan-producers.sh` against a specific crate scope and
+/// return the parsed JSON envelope.
+///
+/// A thin `Option`-collapsing wrapper over the private `run_orphan_audit_detailed`,
+/// kept with this exact signature so every existing call site's
+/// `else { return; }`/`let Some(..) else` shape keeps compiling and behaving
+/// identically. `run_orphan_audit_detailed` and the `OrphanAudit` enum it
+/// returns are deliberately NOT part of this crate's public surface — see
+/// `OrphanAudit`'s own doc for why — so this is currently the only way
+/// external code can reach this functionality.
+///
+/// Collapses both the excluded-scope and environment-unavailable outcomes to
+/// `None`, after printing the outcome's note, which always carries
+/// [`ORPHAN_AUDIT_SKIP_MARKER`], to stderr. Returns `Some(json)` on a
+/// well-formed envelope. Panics exactly when `run_orphan_audit_detailed`
+/// would panic: empty output for a scope that is NOT excluded, or a resolved
+/// repo root that disagrees with what the audit child itself would compute.
+pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
+    match run_orphan_audit_detailed(scope) {
+        OrphanAudit::Envelope(v) => Some(v),
+        OrphanAudit::ExcludedScope(note) | OrphanAudit::EnvUnavailable(note) => {
+            eprintln!("{note}");
+            None
+        }
+    }
+}
+
+/// [`run_orphan_audit`] over the wide `crates/reify-*/src` corpus, run once per
+/// test process and cached. Only that scope sees cross-crate callers.
+///
+/// `None` when the environment cannot run the audit, unless
+/// `REIFY_REQUIRE_ORPHAN_AUDIT` is set (non-empty, not `0`): then the skip is a
+/// panic.
+pub fn wide_orphan_audit() -> Option<&'static serde_json::Value> {
+    static AUDIT: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+    let audit = AUDIT.get_or_init(|| run_orphan_audit("crates/reify-*/src"));
+    let required = std::env::var("REIFY_REQUIRE_ORPHAN_AUDIT")
+        .is_ok_and(|flag| !flag.is_empty() && flag != "0");
+    assert!(
+        audit.is_some() || !required,
+        "REIFY_REQUIRE_ORPHAN_AUDIT is set but the orphan audit could not run \
+         (python3, git, or scripts/audit-orphan-producers.sh missing)."
+    );
+    audit.as_ref()
+}
+
+/// Resolve the on-disk path to `scripts/audit-orphan-producers.sh` and the
+/// repo root it lives under. The root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// the public API.
+///
+/// Single-sourced for [`run_orphan_audit_detailed`] and this module's own
+/// tests (which need the same two paths to construct decoy/mismatch
+/// scenarios), so the production and test-time resolution can never drift
+/// apart. Before the task 5698 amendment pass, the tests module carried an
+/// independent copy of this resolution (`resolve_real_script_and_root`),
+/// which this replaces.
+fn resolve_script_and_root() -> (PathBuf, PathBuf) {
+    let repo_root = crate::workspace_root::workspace_root().to_path_buf();
+    (
+        repo_root.join("scripts/audit-orphan-producers.sh"),
+        repo_root,
+    )
+}
+
+/// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
+/// program, argv, `current_dir`, and [`reify_git_env::sanitize`] already
+/// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
+/// — no new resolution logic, no new argv — so it cannot fork from what
+/// production actually spawns.
+///
+/// Public because `reify-audit`'s `tests/g_allow.rs` hazard probe needs to
+/// spawn this EXACT command TWICE, under two different environments, to
+/// compare them — something [`run_orphan_audit`] (one spawn, sanitized,
+/// parsed to a JSON envelope) cannot express. Contrast [`OrphanAudit`]'s doc
+/// above, which declines to promote a finer-grained type ahead of a real
+/// external consumer: this item has one, so it is promoted.
+///
+/// # Composition contract
+///
+/// The returned command is ALREADY sanitized. A caller that then adds
+/// `Command::env` for one of [`reify_git_env::REPO_REDIRECT_VARS`] is
+/// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
+/// hazard synthetically — not working around a missing sanitize. See
+/// [`reify_git_env`] for what sanitization is for and why.
+///
+/// # Not a substitute for [`run_orphan_audit`]
+///
+/// Every REAL invocation of the audit goes through [`run_orphan_audit`],
+/// which wraps this same command with the graceful-skip protocol
+/// (`python3`/`git` presence, script-on-disk, `repo_root`-is-a-git-work-tree,
+/// `EXCLUDE_CRATES` membership), the repo-root premise probe, and the
+/// empty-stdout hard failure. Spawning this command directly buys none of
+/// those — it is for a caller that needs the command ITSELF, unexecuted, to
+/// compare against another.
+pub fn audit_command(scope: &str) -> Command {
+    let (script, repo_root) = resolve_script_and_root();
+    build_audit_command(&script, scope, &repo_root)
+}
+
+/// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
+/// outcome instead of collapsing two of them to `None`.
+///
+/// # Graceful-skip protocol
+///
+/// Returns [`OrphanAudit::EnvUnavailable`] (without panicking) when the
+/// environment cannot satisfy the script's prerequisites:
+/// - `python3` is absent from `PATH`
+/// - `git` is absent from `PATH`
+/// - `scripts/audit-orphan-producers.sh` does not exist on disk
+/// - **As of task 5698**: the resolved `repo_root` is not inside a git work
+///   tree at all (e.g. a source tarball with no `.git`) — genuinely
+///   environmental, unlike the DIFFERENT-work-tree case below.
+///
+/// In each of those cases, the returned [`SkipNote`] names which one, and
+/// [`run_orphan_audit`] prints it to stderr so CI logs remain informative.
+///
+/// Returns [`OrphanAudit::ExcludedScope`] when `scope`'s crate segment is a
+/// literal member of `EXCLUDE_CRATES`. Also non-failing, but distinct from
+/// the above: the tooling ran fine — the scope is just deliberately excluded
+/// from the audit.
+///
+/// Returns [`OrphanAudit::Envelope`] on success.
+///
+/// # Panics
+///
+/// - On a spawn error, or malformed JSON output — both always indicate a bug
+///   in the audit script or its invocation, never an environmental
+///   condition.
+/// - **As of task 5698**: on empty output for a scope that is NOT in
+///   `EXCLUDE_CRATES`. Before task 5698 this returned `None` exactly like the
+///   excluded-crate case, which meant a wrong-tree redirect, an
+///   `EXCLUDE_CRATES` edit, a crate rename, or a `discover_sources` script
+///   refactor could silently disable the orphan-producer pin for a real scope
+///   while every caller kept reporting green. That is never a legitimate
+///   outcome, so it is now a hard failure instead of a silent skip — see
+///   [`run_orphan_audit_at`]'s empty-stdout branch.
+/// - **As of task 5698**: when `repo_root` IS inside a git work tree, but a
+///   DIFFERENT one than the child itself resolves via `git rev-parse
+///   --show-toplevel` from that directory. Tooling all present, but the
+///   audit would run to completion against the wrong sources — a green
+///   result that means nothing — so this is a hard failure rather than any
+///   flavour of skip. See [`run_orphan_audit_at`]'s repo-root premise probe
+///   (`child_repo_root`).
+///
+/// # `scope` argument
+///
+/// Pass a repo-relative path to a source directory, e.g.
+/// `"crates/reify-audit/src"`.  This is forwarded as `--scope <scope>` to the
+/// audit script.
+///
+/// # Repo-root resolution
+///
+/// The repo root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// this function.
+fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
+    let (script, repo_root) = resolve_script_and_root();
+
+    // Graceful skip: check python3 is available
+    match Command::new("python3").arg("--version").output() {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "python3 not on PATH"));
+        }
+        Err(e) => panic!("unexpected error probing python3: {e}"),
+    }
+
+    // Graceful skip: check git is available (audit-orphan-producers.sh's own
+    // `for tool in python3 git; do ... done` loop probes for both python3
+    // AND git; missing git causes exit 3 which would surface as a confusing
+    // JSON-parse panic without this probe).
+    match Command::new("git").arg("--version").output() {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "git not on PATH"));
+        }
+        Err(e) => panic!("unexpected error probing git: {e}"),
+    }
+
+    // The script-existence check now lives in run_orphan_audit_at itself
+    // (task 5698 step 6), so that seam is self-contained when called
+    // directly — see missing_script_is_env_unavailable.
+    run_orphan_audit_at(&script, &repo_root, scope)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Covers the empty-stdout → `None` branch: `crates/reify-test-support/src` is in
-    /// `EXCLUDE_CRATES` so the script exits 0 with no output. A flat `is_none()` assertion
-    /// is environment-safe — all four `None`-yielding branches converge on the same outcome.
+    /// RED premise (task 5698 step 1): at this branch base,
+    /// `run_orphan_audit_at`'s empty-stdout branch does not yet distinguish
+    /// "scope is legitimately in EXCLUDE_CRATES" from "the script scanned the
+    /// wrong tree (or otherwise found zero real source files) for a scope
+    /// that is NOT excluded" — both collapse to `ExcludedScope`.
+    ///
+    /// Measured in this worktree at the branch base: pointing the audit at a
+    /// freshly `git init`ed decoy tree with the real (non-excluded) scope
+    /// `crates/reify-audit/src` produces exit 0, 0-byte stdout, and the
+    /// stderr line `audit-orphan-producers.sh: no source files matched` —
+    /// byte-identical to the excluded-scope and nonexistent-scope cases. So
+    /// nothing in the child's exit status or output can tell them apart; this
+    /// test asserts on OUR panic message ONLY, never on the script's stderr
+    /// text (which stays unchanged and ambiguous by design).
+    ///
+    /// Uses `catch_unwind` rather than `#[should_panic]`: the latter has no
+    /// runtime skip, and this test must skip gracefully (not fail) on a
+    /// git-less image, matching the convention every other test in this
+    /// module already follows.
     #[test]
-    fn run_orphan_audit_on_excluded_crate_returns_none() {
-        let result = run_orphan_audit("crates/reify-test-support/src");
+    fn wrong_tree_with_real_scope_panics() {
+        // Graceful-skip convention used throughout this module: `git init`
+        // below, and the script's own internal `git rev-parse
+        // --show-toplevel`, both require git.
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping wrong_tree_with_real_scope_panics — git not available"
+            );
+            return;
+        }
+
+        let decoy = crate::temp_dirs::prefixed_tempdir("orphan-audit-decoy-");
+        let mut git_init = Command::new("git");
+        git_init
+            .args(["init", "--initial-branch=main"])
+            .current_dir(decoy.path());
+        sanitize(&mut git_init);
+        let status = git_init
+            .status()
+            .unwrap_or_else(|e| panic!("git init failed to spawn: {e}"));
         assert!(
-            result.is_none(),
-            "expected None for EXCLUDE_CRATES scope `crates/reify-test-support/src` \
-             (the script emits empty stdout for excluded crates); got Some(_): {:#?}",
-            result
+            status.success(),
+            "git init {:?} exited {:?}",
+            decoy.path(),
+            status.code()
+        );
+
+        let (script, _real_root) = resolve_script_and_root();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_orphan_audit_at(&script, decoy.path(), "crates/reify-audit/src")
+        }));
+
+        let payload = match result {
+            Ok(audit) => panic!(
+                "expected run_orphan_audit_at to panic for scope \
+                 \"crates/reify-audit/src\" scanned under a decoy tree with no \
+                 matching sources (empty stdout for a real, non-excluded scope must \
+                 never be silently accepted as a legitimate outcome) — got: {audit:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        // Assert on wording unique to the empty-stdout branch, not the
+        // shared "never a legitimate outcome" phrase that ALSO appears in
+        // the repo-root-mismatch panic below — a bare substring match on
+        // the shared phrase can't tell which branch actually fired, so it
+        // would stay green even if a future canonicalization/TMPDIR-topology
+        // change made the mismatch probe fire first instead of the
+        // empty-stdout branch this test exists to cover (review finding #2,
+        // task 5698 amendment pass).
+        assert!(
+            message.contains("NOT in EXCLUDE_CRATES"),
+            "panicked, but not with the expected empty-stdout wording; got: {message}"
+        );
+        assert!(
+            !message.contains("DIFFERENT repository"),
+            "panicked with the repo-root-mismatch branch's wording instead of the \
+             empty-stdout branch's — the decoy's own `git init` should make the \
+             mismatch probe agree and let the empty-stdout branch fire instead; \
+             got: {message}"
+        );
+    }
+
+    /// RED premise (task 5698 step 5): `run_orphan_audit_at` does not yet
+    /// verify that the child actually resolves the SAME repo root it was
+    /// asked to scan. Pointing it at `<repo_root>/crates` (a real
+    /// subdirectory, not `repo_root` itself) currently still produces a
+    /// valid envelope: the script's own `REPO_ROOT="$(git rev-parse
+    /// --show-toplevel)"` resolves past the subdirectory to the TRUE repo
+    /// root and `cd`s there before scanning — silently auditing a different
+    /// tree than the caller specified, with no error.
+    ///
+    /// Deliberately NOT environment poisoning (`GIT_DIR`/`GIT_WORK_TREE`):
+    /// task 5605's `sanitize()` already strips those from the spawned child,
+    /// so poisoning them would be vacuous — the same defect that made task
+    /// 5656's original one-line design unreachable. Passing a real
+    /// subdirectory as `repo_root` creates a genuine expected-vs-resolved
+    /// disagreement with no environment manipulation at all, and models a
+    /// real bug class: a workspace-root resolution landing on the wrong level.
+    #[test]
+    fn child_repo_root_mismatch_panics() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping child_repo_root_mismatch_panics — git not available"
+            );
+            return;
+        }
+
+        let (script, repo_root) = resolve_script_and_root();
+        let wrong_root = repo_root.join("crates");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_orphan_audit_at(&script, &wrong_root, "crates/reify-audit/src")
+        }));
+
+        let payload = match result {
+            Ok(audit) => panic!(
+                "expected run_orphan_audit_at to panic when repo_root ({wrong_root:?}) \
+                 does not match what the child itself resolves via `git rev-parse \
+                 --show-toplevel` — got: {audit:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("DIFFERENT repository than requested"),
+            "panicked, but not with the expected repo-root-mismatch wording; \
+             got: {message}"
+        );
+    }
+
+    /// Regression guard against [`child_repo_root_mismatch_panics`]'s probe
+    /// becoming a false positive under this project's warm-lane topology.
+    ///
+    /// Measured at this branch base: sanitized `git rev-parse
+    /// --show-toplevel` from the [`crate::workspace_root::workspace_root`]
+    /// root returns EXACTLY that root, even inside a linked git worktree whose
+    /// `.git` is a gitdir FILE (this project's normal topology,
+    /// `worktrees/_lane-NN`) — so git's view agrees with the filesystem-marker
+    /// resolver and this call must NOT panic. The cross-check has teeth only
+    /// because that resolver never consults git itself.
+    ///
+    /// Calls [`child_repo_root`] directly rather than going through
+    /// [`run_orphan_audit_detailed`] (review finding #7, task 5698 amendment
+    /// pass): the previous version spawned the full audit script — which
+    /// this test doesn't need and which
+    /// `run_orphan_audit_on_self_scope_returns_well_formed_envelope` already
+    /// covers for the same scope — and its `EnvUnavailable` arm printed and
+    /// silently fell through to a pass, so on any image lacking python3 it
+    /// reported green without the probe under test ever running. Calling
+    /// the probe directly removes the redundant spawn and makes an
+    /// `EnvUnavailable`-shaped skip unreachable except on a genuinely
+    /// git-less image (checked up front, same as every other test here).
+    #[test]
+    fn child_repo_root_agrees_with_runtime_workspace_root() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — git not available"
+            );
+            return;
+        }
+
+        let (_script, repo_root) = resolve_script_and_root();
+        match child_repo_root(&repo_root) {
+            Ok(resolved) => {
+                let resolved_canon = resolved
+                    .canonicalize()
+                    .unwrap_or_else(|e| panic!("canonicalize {resolved:?}: {e}"));
+                let repo_root_canon = repo_root
+                    .canonicalize()
+                    .unwrap_or_else(|e| panic!("canonicalize {repo_root:?}: {e}"));
+                assert_eq!(
+                    resolved_canon, repo_root_canon,
+                    "child_repo_root({repo_root:?}) resolved {resolved:?}, which does \
+                     not canonicalize to the same path as workspace_root() \
+                     — the mismatch probe in run_orphan_audit_at would incorrectly \
+                     panic on every real invocation in this environment"
+                );
+            }
+            Err(ChildRepoRootFailure::NoRepository) => eprintln!(
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — repo root is not inside a git work tree"
+            ),
+            Err(ChildRepoRootFailure::Other(detail)) => panic!(
+                "child_repo_root({repo_root:?}) failed for a reason other than \"no \
+                 repository here\" in what should be a normal checkout: {detail}"
+            ),
+        }
+    }
+
+    /// [`child_repo_root`] regression guard (review finding #4, task 5698
+    /// amendment pass): a plain, never-`git init`ed directory is the ONE
+    /// case that should classify as [`ChildRepoRootFailure::NoRepository`]
+    /// — the only variant [`run_orphan_audit_at`] treats as a graceful
+    /// [`OrphanAudit::EnvUnavailable`] skip rather than a panic. Calls
+    /// [`child_repo_root`] directly: pure probe logic, no script spawn.
+    #[test]
+    fn child_repo_root_plain_non_git_dir_is_no_repository() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 child_repo_root_plain_non_git_dir_is_no_repository — git not available"
+            );
+            return;
+        }
+
+        let dir = crate::temp_dirs::prefixed_tempdir("orphan-audit-no-git-");
+        let result = child_repo_root(dir.path());
+        assert!(
+            matches!(result, Err(ChildRepoRootFailure::NoRepository)),
+            "expected NoRepository for a plain directory with no .git anywhere in its \
+             parent chain, got: {result:?}"
+        );
+    }
+
+    /// [`child_repo_root`] regression guard (review finding #4, task 5698
+    /// amendment pass): a directory whose `.git` FILE exists but points at a
+    /// nonexistent gitdir produces git's `fatal: not a git repository:
+    /// <path>` message — textually similar to, but a DIFFERENT diagnosis
+    /// than, the `(or any of the parent directories)` message a truly
+    /// repo-less directory produces (see
+    /// `child_repo_root_plain_non_git_dir_is_no_repository`). This must
+    /// classify as [`ChildRepoRootFailure::Other`], never
+    /// [`ChildRepoRootFailure::NoRepository`]: a real repository was
+    /// expected to exist here (e.g. a corrupted worktree gitdir pointer), so
+    /// [`run_orphan_audit_at`] must panic rather than silently skip — the
+    /// exact silent-green failure mode this task exists to close. Chosen
+    /// over simulating git's "dubious ownership" rejection (also named in
+    /// the review finding) because that needs a real UID mismatch this
+    /// sandbox cannot produce hermetically; a corrupt `.git` file is one of
+    /// the same finding's named examples and IS reproducible hermetically —
+    /// verified empirically (bare `git rev-parse --show-toplevel` against a
+    /// hand-written `.git` file pointing at `/nonexistent/path/.git` exits
+    /// 128 with exactly that message, no "parent directories" wording).
+    #[test]
+    fn child_repo_root_corrupt_git_file_is_other_not_no_repository() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 child_repo_root_corrupt_git_file_is_other_not_no_repository — git not \
+                 available"
+            );
+            return;
+        }
+
+        let dir = crate::temp_dirs::prefixed_tempdir("orphan-audit-corrupt-git-");
+        std::fs::write(dir.path().join(".git"), "gitdir: /nonexistent/path/.git\n")
+            .unwrap_or_else(|e| panic!("write corrupt .git file: {e}"));
+
+        let result = child_repo_root(dir.path());
+        assert!(
+            matches!(result, Err(ChildRepoRootFailure::Other(_))),
+            "expected Other for a corrupt .git file (a real repository was intended to \
+             exist here, so this must not be silently skipped as \"no repository\"), \
+             got: {result:?}"
+        );
+    }
+
+    /// RED premise (task 5698 step 5): `run_orphan_audit_at` does not yet
+    /// check that `script` exists before spawning it — that check currently
+    /// lives only in [`run_orphan_audit_detailed`], one layer up. Calling the
+    /// seam directly with a nonexistent script hits the spawn's
+    /// `unwrap_or_else` panic ("failed to invoke") instead of gracefully
+    /// returning `EnvUnavailable`, so this test pins that the documented
+    /// graceful-skip protocol survives the move of that check down into the
+    /// seam (task 5698 step 6).
+    #[test]
+    fn missing_script_is_env_unavailable() {
+        let (_script, repo_root) = resolve_script_and_root();
+        let result = run_orphan_audit_at(
+            Path::new("/nonexistent/audit-orphan-producers.sh"),
+            &repo_root,
+            "crates/reify-audit/src",
+        );
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains("/nonexistent/audit-orphan-producers.sh"),
+                    "expected the skip note to name the offending script path, got: {line:?}"
+                );
+            }
+            other => {
+                panic!("expected EnvUnavailable for a nonexistent script path, got: {other:?}")
+            }
+        }
+    }
+
+    /// [`run_orphan_audit_at`]'s repo-root premise probe classifies a plain,
+    /// never-`git init`ed directory as [`ChildRepoRootFailure::NoRepository`]
+    /// (see `child_repo_root_plain_non_git_dir_is_no_repository`, which
+    /// drives [`child_repo_root`] directly) — this test drives the same
+    /// premise through the public seam instead, pinning that the resulting
+    /// [`OrphanAudit::EnvUnavailable`] skip note names both
+    /// [`ORPHAN_AUDIT_SKIP_MARKER`] and the offending `repo_root`.
+    #[test]
+    fn repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip() {
+        let (script, _) = resolve_script_and_root();
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let dir = crate::temp_dirs::prefixed_tempdir("orphan-audit-no-git-root-");
+        let result = run_orphan_audit_at(&script, dir.path(), "crates/reify-audit/src");
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                let repo_root_debug = format!("{:?}", dir.path());
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains(&repo_root_debug),
+                    "expected the skip note to name the offending repo_root {repo_root_debug}, \
+                     got: {line:?}"
+                );
+            }
+            other => panic!(
+                "expected EnvUnavailable for a repo_root outside any git work tree, \
+                 got: {other:?}"
+            ),
+        }
+    }
+
+    /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
+    /// set-literal declaration. No `regex` dependency exists anywhere in this
+    /// workspace (checked before writing this test), so a small manual scan
+    /// is used instead of pulling one in just for this.
+    ///
+    /// A line counts as the declaration only when its first non-whitespace
+    /// text starts with the marker `EXCLUDE_CRATES = {`. A full-line comment
+    /// (`# EXCLUDE_CRATES = {...}`) starts with `#` instead, so it can never
+    /// match; a trailing inline echo of the marker sits after the start of
+    /// its line, so it can't inflate the count either. Exactly one matching
+    /// line is required: zero returns `None` (the caller reports this — it
+    /// already holds the script path for that message), and more than one is
+    /// a hard `panic!` naming `source_label` and the observed count — either
+    /// case would otherwise risk
+    /// `exclude_crates_const_matches_audit_script_declaration` passing while
+    /// silently pinning the wrong text against the Rust `EXCLUDE_CRATES`
+    /// const, permanently masking real drift.
+    ///
+    /// Returns `None` if no declaration line is found; otherwise whatever
+    /// names it parsed from that line (possibly empty), so the caller can
+    /// distinguish "declaration not found" from "declaration found but
+    /// parsed empty" and fail loudly on the latter rather than matching
+    /// vacuously.
+    fn parse_exclude_crates_declaration(source: &str, source_label: &str) -> Option<Vec<String>> {
+        let marker = "EXCLUDE_CRATES = {";
+        let declaration_lines: Vec<&str> = source
+            .lines()
+            .filter(|line| line.trim_start().starts_with(marker))
+            .collect();
+
+        if declaration_lines.is_empty() {
+            return None;
+        }
+        if declaration_lines.len() > 1 {
+            let occurrences = declaration_lines.len();
+            panic!(
+                "found {occurrences} occurrences of `{marker}` in \
+                 {source_label} — this parser cannot tell which declaration \
+                 is authoritative, and silently binding the first would risk \
+                 permanently pinning the wrong text against the Rust \
+                 EXCLUDE_CRATES const while the parity assertion keeps \
+                 passing. Remove the duplicate declaration, or teach this \
+                 parser which one is authoritative."
+            );
+        }
+
+        let line = declaration_lines[0].trim_start();
+        let rest = &line[marker.len()..];
+        let end = rest.find('}')?;
+        let body = &rest[..end];
+
+        let mut names = Vec::new();
+        let mut chars = body.chars();
+        while let Some(c) = chars.next() {
+            if c == '"' || c == '\'' {
+                let quote = c;
+                let mut name = String::new();
+                for c2 in chars.by_ref() {
+                    if c2 == quote {
+                        break;
+                    }
+                    name.push(c2);
+                }
+                names.push(name);
+            }
+        }
+        Some(names)
+    }
+
+    /// A full-line `#` comment that illustrates the declaration in
+    /// assignment form (plausible directly above the real one — task 6027
+    /// already added 9 comment lines right above it) never shadows the real
+    /// declaration below it: the parser binds the real one, so
+    /// `exclude_crates_const_matches_audit_script_declaration` keeps
+    /// checking the actual declaration rather than silently pinning a
+    /// comment against the Rust const.
+    ///
+    /// Exercises BOTH a column-0 comment and an INDENTED one, to pin the rule
+    /// as "first non-whitespace character is `#`", not "line starts with
+    /// `#`".
+    #[test]
+    fn parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow() {
+        let source = "#!/usr/bin/env bash\n# Illustration of what this parser looks for:\n#     EXCLUDE_CRATES = {\"decoy-from-a-column-zero-comment\"}\n    # EXCLUDE_CRATES = {\"decoy-from-an-indented-comment\"}\nEXCLUDE_CRATES = {\"reify-test-support\", \"another-real-crate\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result,
+            Some(vec![
+                "reify-test-support".to_string(),
+                "another-real-crate".to_string(),
+            ]),
+            "expected the parser to skip both the column-0 and indented \
+             commented-out shadows and bind the real declaration below \
+             them — got: {result:?}"
+        );
+    }
+
+    /// Companion to
+    /// [`parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow`]
+    /// — the other observable face of the same rule. When the ONLY
+    /// occurrence of the marker in the source is inside a full-line comment
+    /// and no real declaration exists anywhere, the parser reports "not
+    /// found" (`None`) so the caller's path-naming not-found panic fires,
+    /// rather than returning the comment's contents as if they were a real
+    /// declaration.
+    #[test]
+    fn parse_exclude_crates_declaration_is_not_found_when_only_a_comment_declares_it() {
+        let source = "# EXCLUDE_CRATES = {\"only-in-a-comment\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result, None,
+            "expected None because the only occurrence of the marker is inside \
+             a full-line comment and no real declaration exists — got: {result:?}"
+        );
+    }
+
+    /// Two REAL (non-comment) declarations panic rather than silently
+    /// first-wins binding the first one — the direction the line-anchored
+    /// match above does not otherwise resolve on its own (a genuine
+    /// duplicate or conditionally-redefined declaration).
+    ///
+    /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
+    /// idiom already established by `wrong_tree_with_real_scope_panics`
+    /// above — rather than `#[should_panic]`, whose attribute-level
+    /// substring match cannot distinguish WHICH panic fired.
+    #[test]
+    fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
+        let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_exclude_crates_declaration(source, "a test fixture")
+        }));
+
+        let payload = match result {
+            Ok(value) => panic!(
+                "expected parse_exclude_crates_declaration to panic on two \
+                 non-comment EXCLUDE_CRATES declarations with different \
+                 contents — silently binding the first would permanently pin \
+                 the wrong text against the Rust EXCLUDE_CRATES const while \
+                 the parity assertion kept passing — got: {value:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("found 2 occurrences"),
+            "panicked, but the message doesn't report the observed count of \
+             2 declarations in context; got: {message}"
+        );
+        assert!(
+            message.contains("EXCLUDE_CRATES = {"),
+            "panicked, but the message doesn't name the marker text that was \
+             duplicated; got: {message}"
+        );
+        assert!(
+            message.contains("a test fixture"),
+            "panicked, but the message doesn't name the source being \
+             scanned; got: {message}"
+        );
+    }
+
+    /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
+    /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
+    /// declaration (the source of truth for SET MEMBERSHIP) — the
+    /// duplication-pinning pattern this codebase reaches for across a
+    /// language boundary, rather than resting on a "keep in sync" comment.
+    ///
+    /// Pins ONLY the set's *contents* — NOT [`scope_is_excluded_crate`]'s
+    /// matching *rule*. The script's own `discover_sources` excludes a
+    /// matched directory or file when ANY of its path segments is a member
+    /// of `EXCLUDE_CRATES` (two membership tests: one over the matched
+    /// directory's `parts`, one over each `.rs` file's `rs_parts`);
+    /// `scope_is_excluded_crate` only inspects the single segment
+    /// immediately after `crates`. The two sides can therefore disagree for
+    /// a scope shaped differently from every one of this workspace's 9
+    /// current call sites — see `scope_is_excluded_crate_table` for the
+    /// specific divergent cases this is known, and accepted, to not catch.
+    ///
+    /// RED at task 5698 step 1: `EXCLUDE_CRATES` does not exist yet, so this
+    /// module does not compile.
+    #[test]
+    fn exclude_crates_const_matches_audit_script_declaration() {
+        let (_script, repo_root) = resolve_script_and_root();
+        let script_path = repo_root.join("scripts/audit-orphan-producers.sh");
+        let source = std::fs::read_to_string(&script_path)
+            .unwrap_or_else(|e| panic!("read {script_path:?}: {e}"));
+
+        let declared = parse_exclude_crates_declaration(&source, &format!("{script_path:?}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
+                     {script_path:?} — has it moved or been reformatted? Update \
+                     parse_exclude_crates_declaration's marker alongside whatever \
+                     changed the script."
+                )
+            });
+        assert!(
+            !declared.is_empty(),
+            "parsed an EXCLUDE_CRATES declaration from {script_path:?} but found \
+             zero quoted names in it — this almost certainly means the parser \
+             mis-parsed a reformatted declaration rather than that the set is \
+             genuinely empty; a vacuous empty-set match would silently stop \
+             catching drift, so this fails loudly instead"
+        );
+
+        let mut declared_sorted = declared.clone();
+        declared_sorted.sort();
+        let mut rust_sorted: Vec<String> =
+            EXCLUDE_CRATES.iter().map(|s| s.to_string()).collect();
+        rust_sorted.sort();
+
+        assert_eq!(
+            declared_sorted, rust_sorted,
+            "orphan_audit.rs's EXCLUDE_CRATES const has drifted from \
+             {script_path:?}'s EXCLUDE_CRATES = {{...}} declaration (the source \
+             of truth) — update both together"
+        );
+    }
+
+    /// Ties [`EXCLUDE_CRATES`] to the gate that keeps its premise true: every
+    /// excluded crate must be named by a `scripts/crate-strata.json` crate rule
+    /// that forbids it from EVERY stratum, and no `exceptions[]` row may excuse
+    /// an edge into it (one row excuses every rule its edge breaks). Matched on
+    /// the rule's structure, not its name, so renaming the rule cannot silence
+    /// this. "Every stratum" is stated once, as `"from": {"every_stratum": true}`,
+    /// so a new stratum needs no rule edit.
+    #[test]
+    fn exclude_crates_are_dev_only_under_a_crate_strata_rule() {
+        use std::collections::BTreeSet;
+
+        let (_script, repo_root) = resolve_script_and_root();
+        let table_path = repo_root.join("scripts/crate-strata.json");
+        let table: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&table_path)
+                .unwrap_or_else(|e| panic!("read {table_path:?}: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("parse {table_path:?}: {e}"));
+
+        let names = |value: &serde_json::Value| -> BTreeSet<String> {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect()
+        };
+        let all_strata: BTreeSet<String> = table["strata"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `strata` must be an array"))
+            .iter()
+            .filter_map(|stratum| stratum["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !all_strata.is_empty(),
+            "{table_path:?} declares no strata — a vacuous `from` set would match"
+        );
+        let rules = table["crate_rules"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `crate_rules` must be an array"));
+        let exceptions = table["exceptions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `exceptions` must be an array"));
+
+        let every_stratum = serde_json::json!({"every_stratum": true});
+
+        for crate_name in EXCLUDE_CRATES {
+            let gated = rules.iter().any(|rule| {
+                names(&rule["never"]["packages"]).contains(*crate_name)
+                    && rule["from"] == every_stratum
+            });
+            assert!(
+                gated,
+                "an EXCLUDE_CRATES crate's publics are reached only from test code, \
+                 so no stratum may take it as a normal/build dependency — but \
+                 {table_path:?} has no crate rule with `from` = {every_stratum} \
+                 (the declared strata are {all_strata:?}) and `never.packages` \
+                 naming `{crate_name}`. Rules seen: {rules:#?}"
+            );
+
+            let excused: Vec<&serde_json::Value> = exceptions
+                .iter()
+                .filter(|row| row["to"].as_str() == Some(*crate_name))
+                .collect();
+            assert!(
+                excused.is_empty(),
+                "{table_path:?} excepts a normal/build edge into EXCLUDE_CRATES crate \
+                 `{crate_name}`, which re-opens a production path the orphan sweep \
+                 cannot see. Drop the edge, or drop `{crate_name}` from EXCLUDE_CRATES. \
+                 Offending rows: {excused:#?}"
+            );
+        }
+    }
+
+    /// Table-driven coverage of [`scope_is_excluded_crate`] (review finding
+    /// #1, task 5698 amendment pass) — the single predicate that decides
+    /// between a graceful [`OrphanAudit::ExcludedScope`] skip and a hard
+    /// panic in [`run_orphan_audit_at`]'s empty-stdout branch. Needs neither
+    /// `git` nor `python3`: pure string logic, no process ever spawned.
+    ///
+    /// The glob row (`"crates/reify-*/src"` -> `false`) is the most
+    /// load-bearing: 5 of this workspace's 9 external call sites pass
+    /// exactly that scope. If the `skip_while`/`nth(1)` logic ever
+    /// regressed to match a prefix or the last path segment instead of the
+    /// literal crate segment, every one of those 5 call sites would start
+    /// silently skipping via `ExcludedScope` instead of exercising the real
+    /// audit.
+    ///
+    /// This test pins ONLY [`scope_is_excluded_crate`]'s matching *rule* for
+    /// these inputs — it does NOT assert that the rule agrees with
+    /// `audit-orphan-producers.sh`'s own ANY-path-segment exclusion rule in
+    /// general (see `exclude_crates_const_matches_audit_script_declaration`,
+    /// which pins only the set's contents, one layer over from this).
+    #[test]
+    fn scope_is_excluded_crate_table() {
+        let cases: &[(&str, bool)] = &[
+            ("crates/reify-test-support/src", true),
+            ("crates/reify-audit/src", false),
+            // Glob scope: 5 of 9 external call sites pass exactly this
+            // shape. `reify-*` contains a glob metacharacter, so it is never
+            // literally equal to a single crate name and must stay `false`
+            // — treating the glob itself as excluded would silently skip
+            // real, non-excluded crates it expands to.
+            ("crates/reify-*/src", false),
+            ("crates/reify-test-support", true),
+            // No `crates` path segment at all.
+            ("gui/src-tauri/src", false),
+        ];
+        for (scope, expected) in cases {
+            assert_eq!(
+                scope_is_excluded_crate(scope),
+                *expected,
+                "scope_is_excluded_crate({scope:?}) should be {expected}"
+            );
+        }
+    }
+
+    /// Covers the empty-stdout → excluded-scope branch:
+    /// `crates/reify-test-support/src` is in `EXCLUDE_CRATES` so the script
+    /// exits 0 with no output.
+    ///
+    /// Post-5698 the four `None`-yielding branches no longer all converge on
+    /// the same outcome: `ExcludedScope` and `EnvUnavailable` still both
+    /// collapse to `None` through [`run_orphan_audit`] (pinned by the second
+    /// assertion below, which is what all 9 existing call sites' `else {
+    /// return; }`/`let Some(..) else` shape depends on) — but a wrong-tree or
+    /// otherwise-empty result for a scope NOT in `EXCLUDE_CRATES` now panics
+    /// instead (see `wrong_tree_with_real_scope_panics`). This test pins that
+    /// the excluded-scope outcome specifically stays NAMED (`ExcludedScope`),
+    /// not merely absent, by going through [`run_orphan_audit_detailed`]
+    /// first.
+    ///
+    /// RED at task 5698 step 3: `run_orphan_audit_detailed` does not exist
+    /// yet, so this module does not compile.
+    #[test]
+    fn run_orphan_audit_on_excluded_crate_is_named_not_erased() {
+        match run_orphan_audit_detailed("crates/reify-test-support/src") {
+            OrphanAudit::ExcludedScope(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the excluded-scope note to carry ORPHAN_AUDIT_SKIP_MARKER, \
+                     got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-test-support/src"),
+                    "expected the excluded-scope note to name its scope, got: {line:?}"
+                );
+            }
+            // Graceful-skip convention: missing python3/git/script/repo-root
+            // is environmentally legitimate and indistinguishable here from
+            // the excluded-scope case once collapsed through
+            // `run_orphan_audit`; skip rather than fail.
+            OrphanAudit::EnvUnavailable(note) => {
+                eprintln!(
+                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {note}"
+                );
+                return;
+            }
+            other => panic!(
+                "expected ExcludedScope for EXCLUDE_CRATES scope \
+                 \"crates/reify-test-support/src\" (or EnvUnavailable on a \
+                 tooling-less image) — any other outcome, especially a panic \
+                 from the empty-stdout hard-failure branch, means the \
+                 excluded-crate case regressed into the hard-failure path; \
+                 got: {other:?}"
+            ),
+        }
+
+        assert!(
+            run_orphan_audit("crates/reify-test-support/src").is_none(),
+            "run_orphan_audit must still return None for an EXCLUDE_CRATES scope \
+             — all 9 existing call sites' `else {{ return; }}`/`let Some(..) else` \
+             shape depends on this backward-compatible collapse"
         );
     }
 
@@ -223,16 +1304,27 @@ mod tests {
         );
     }
 
-    /// Mirrors `git_env.rs`'s `both_entry_points_remove_every_repo_redirect_var`:
-    /// asserts the constructed script-spawn `Command` records a removal
+    /// Asserts the constructed script-spawn `Command` records a removal
     /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
-    /// [`REPO_REDIRECT_VARS`] entry. Unlike the two tests above, this one
-    /// never spawns the script and needs neither `git` nor `python3` on
-    /// `PATH` — it only inspects `Command` metadata, so the paths passed in
-    /// are deliberately nonexistent. A regression that dropped [`sanitize`]
-    /// from [`build_audit_command`], or dropped an entry from
-    /// [`REPO_REDIRECT_VARS`], fails this test even though the smoke tests
-    /// above never poison the environment to notice.
+    /// [`reify_git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
+    /// script spawn sanitizes from the SHARED definition, not from a
+    /// module-local copy. Uses [`reify_git_env::removed_vars`], the same
+    /// removal-collecting helper the definition site's own tests use, so every
+    /// assertion site in the workspace reads the `(key, None)` encoding
+    /// through one place.
+    ///
+    /// This covers the WIRING only — that [`build_audit_command`] applies the
+    /// sanitizer. That the sanitizer actually defeats an ambient redirect var
+    /// against real git is proved once, at the definition site, by
+    /// `reify_git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
+    ///
+    /// Unlike the two tests above, this one never spawns the script and needs
+    /// neither `git` nor `python3` on `PATH` — it only inspects `Command`
+    /// metadata, so the paths passed in are deliberately nonexistent. A
+    /// regression that dropped [`sanitize`] from [`build_audit_command`], or
+    /// dropped an entry from [`reify_git_env::REPO_REDIRECT_VARS`], fails
+    /// this test even though the smoke tests above never poison the
+    /// environment to notice.
     #[test]
     fn build_audit_command_removes_every_repo_redirect_var() {
         let cmd = build_audit_command(
@@ -240,12 +1332,8 @@ mod tests {
             "crates/reify-audit/src",
             Path::new("/nonexistent/repo-root"),
         );
-        let removed: Vec<String> = cmd
-            .get_envs()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.to_string_lossy().into_owned())
-            .collect();
-        for var in REPO_REDIRECT_VARS {
+        let removed = reify_git_env::removed_vars(&cmd);
+        for var in reify_git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),
                 "build_audit_command must REMOVE `{var}` (env_remove -> \
@@ -253,5 +1341,104 @@ mod tests {
                  {removed:?}"
             );
         }
+    }
+
+    /// The two premises `reify-audit`'s `g_allow.rs` hazard probe used to
+    /// assert about its OWN `CARGO_MANIFEST_DIR` walk — "the script this walk
+    /// names is really on disk" and "this root really holds both crates, so
+    /// the two walks cannot have resolved different trees" — relocated to the
+    /// single resolution site [`audit_command`] now composes, rather than a
+    /// second copy of them at the call site.
+    ///
+    /// One substantive upgrade over the assertions this replaces: those could
+    /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
+    /// compare, which does not distinguish this repo from a byte-identical
+    /// vendored copy laid out the same way. Here there is only ONE resolution,
+    /// so that reconstruction — and its blind spot — is gone.
+    ///
+    /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
+    /// nothing about THIS crate's own resolution needs it: it is what makes
+    /// `audit_command`'s only external consumer (`reify-audit`'s
+    /// `g_allow.rs`) reachable from the root this seam hands back. That is a
+    /// deliberate DOWNWARD reference to a consumer crate by PATH, checked on
+    /// disk — not a dependency edge, which would be a cycle (`reify-audit`
+    /// depends on this crate, never the reverse).
+    ///
+    /// PASSES on arrival: this pins an existing property of
+    /// [`resolve_script_and_root`] at its new home rather than driving new
+    /// behaviour — the relocation is the point, not a fresh RED.
+    ///
+    /// The script's absence is a graceful skip, not a hard assertion: this
+    /// module treats "the script does not exist on disk" as environmentally
+    /// legitimate everywhere else (a packaged crate or a source tarball with
+    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s missing-script
+    /// `EnvUnavailable` branch and `missing_script_is_env_unavailable` above.
+    /// Hard-asserting here would turn that same environmental condition into
+    /// a red unit test instead. The hard assertions this test exists for —
+    /// that a root resolving an EXISTING script also holds both crates'
+    /// manifests — only make sense once the script is confirmed present.
+    #[test]
+    fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
+        let cmd = audit_command("crates/reify-audit/src");
+
+        let script = Path::new(cmd.get_program());
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 audit_command_names_an_existing_script_under_a_root_holding_both_crates \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let root = cmd
+            .get_current_dir()
+            .expect("audit_command sets current_dir");
+        assert!(
+            root.join("crates/reify-test-support/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-test-support/Cargo.toml — this crate's own \
+             manifest is not reachable from the root the seam hands back"
+        );
+        assert!(
+            root.join("crates/reify-audit/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-audit/Cargo.toml — audit_command's only external \
+             consumer's crate is not reachable from the root this seam hands \
+             back (a downward reference by path, not a dependency edge)"
+        );
+    }
+
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root_child() {
+        crate::workspace_root::reexec::in_child(|root| {
+            let cmd = audit_command("crates/reify-audit/src");
+            assert_eq!(
+                cmd.get_current_dir(),
+                Some(root),
+                "audit_command's current_dir is not the fixture root {root:?}"
+            );
+            let expected_script = root.join("scripts/audit-orphan-producers.sh");
+            assert_eq!(
+                Path::new(cmd.get_program()),
+                expected_script,
+                "audit_command's program is not the fixture's script {expected_script:?}"
+            );
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart.
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root() {
+        use crate::workspace_root::reexec::{Launch, fixture_workspace, run_child};
+
+        let fixture = fixture_workspace("orphan-audit-runtime-root-");
+        run_child(
+            "orphan_audit::tests::audit_command_follows_the_runtime_workspace_root_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
+        );
     }
 }

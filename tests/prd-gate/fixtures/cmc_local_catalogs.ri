@@ -1,0 +1,21 @@
+module cmc_local_catalogs
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B7 (leaf β).
+// Catalogs that are not stdlib functions: a local let and a param list.
+// After β: LetCatalog.x = 0.024 m and ParamCatalog.x = 0.024 m, exit 0.
+// Baseline (main 2026-10-08): parse error.
+structure LetCatalog {
+    param x : Length = auto
+    let sizes = [22mm, 24mm, 26mm]
+    constraint x in sizes
+    constraint x >= 22.5mm
+    constraint x <= 25.5mm
+}
+
+structure ParamCatalog {
+    param x : Length = auto
+    param sizes : List<Length> = [22mm, 24mm, 26mm]
+    constraint x in sizes
+    constraint x >= 22.5mm
+    constraint x <= 25.5mm
+}

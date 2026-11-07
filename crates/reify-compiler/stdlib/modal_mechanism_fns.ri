@@ -8,16 +8,17 @@
 // WHY this is a separate module (prelude-ordering constraint — same root cause
 // as esc-3851-32 / the std.modal.analysis / std.modal.analysis.fns split):
 //   This function takes a `mechanism : Mechanism` parameter. `Mechanism` is
-//   declared in `std.kinematic` (stdlib_loader.rs line 233). The existing
-//   `std.modal.analysis.fns` (modal_analysis_fns.ri) is registered at line 157,
-//   BEFORE `std.kinematic`, so `Mechanism` is not yet in the growing sequential
+//   declared in `std.kinematic` (its entry in `stdlib_sources()`,
+//   stdlib_loader.rs). The existing `std.modal.analysis.fns`
+//   (modal_analysis_fns.ri) is registered BEFORE the `std.kinematic` entry
+//   there, so `Mechanism` is not yet in the growing sequential
 //   prelude when modal_analysis_fns.ri compiles. Adding `mechanism_modal_analysis`
 //   there would produce an unresolved-type error on `mechanism : Mechanism`.
 //
-//   Tail placement after `std.dynamics` (line 277) puts BOTH required types in
+//   Tail placement after the `std.dynamics` entry puts BOTH required types in
 //   the prelude:
-//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis` (line 147)
-//     - `Mechanism` from `std.kinematic` (line 233)
+//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis`
+//     - `Mechanism` from `std.kinematic`
 //   This is the canonical fix for the prelude-ordering constraint; it exactly
 //   mirrors the rationale that forced the `std.modal.analysis` /
 //   `std.modal.analysis.fns` split in the first place.
@@ -37,10 +38,11 @@
 // λ₀ = k/m (closed-form exact for a diagonal system), returned as
 // f = √λ₀/(2π) Hz.
 //
-// Mirrors the Mechanism-param precedent from dynamics.ri:256-257:
+// Mirrors the Mechanism-param precedent from `inverse_dynamics` in dynamics.ri:
 //   @optimized("dynamics::inverse_dynamics")
 //   pub fn inverse_dynamics(mechanism: Mechanism, ...) -> ...
-// and the placeholder-ctor body pattern from modal_analysis_fns.ri:51-60:
+// and the placeholder-ctor body pattern from `modal_analysis` in
+// modal_analysis_fns.ri:
 //   ModalResult() placeholder body — dispatch replaces the body once the
 //   trampoline is registered (task 4271 step-6), so ModalResult() is never
 //   evaluated from a body-inline path.
@@ -51,15 +53,29 @@
 //                               solid (via `point_mass`/`mass_properties`).
 //   `options : ModalOptions`  — reuses the same ModalOptions from
 //                               std.modal.analysis (n_modes, tol, max_iters,
-//                               sigma, damping, boundary_conditions). For a
-//                               lumped generalized-coordinate model the BCs and
-//                               reference_direction fields are unused (no 3D FEA
-//                               mesh), but the same ModalOptions type is accepted
-//                               for API consistency.
+//                               shift_frequency, damping, boundary_conditions).
+//                               For a lumped generalized-coordinate model the
+//                               BCs and reference_direction fields are unused
+//                               (no 3D FEA mesh), so
+//                               `ModalResult.boundary_conditions` is `undef`,
+//                               not an echo of the caller's list. The same
+//                               ModalOptions type is accepted for API
+//                               consistency. A non-zero shift_frequency is not
+//                               yet honored here: it warns
+//                               `W_ModalOptionUnsupported` and the solve
+//                               returns the lowest modes (owner #7263).
 //
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
-// modes are ordered ascending by frequency; each Mode carries only `.frequency`
-// (empty `.shape`, zero `participation_mass`, zero `damping_ratio`).
+// modes are ordered ascending by frequency.  Each Mode carries `.frequency`
+// and `.damping_ratio`, the Rayleigh ratio ζ_i = (α + β·ω_i²)/(2·ω_i) read
+// from the `ModalOptions.damping` descriptor the caller supplied — the same
+// formula the FEA `modal_analysis` path uses (task #6875).  ζ_i is 0 for
+// `NoDamping`, for an absent `damping` field, and for a rigid-joint ω = 0
+// mode.  `.shape` and `.participation_mass` are `undef`, not an empty list or
+// zero: the lumped generalized-coordinate model has one scalar DOF per body,
+// so it has no per-node mode shape and no spatial direction to project a
+// participation mass onto.  `.mass_matrix_norm` / `.stiffness_matrix_norm` are
+// the Frobenius norms of the lumped diagonal M / K over the physical DOFs only.
 //
 // Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
 // (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF
@@ -68,6 +84,14 @@
 // flexural mode.  A `W_MechanismModalRigidBodyMode` diagnostic is emitted for
 // each such mode.  Ensure every load-bearing body is attached via a flexure
 // joint with a non-zero `spring_rate` to obtain a meaningful first frequency.
+//
+// Unsupported-damping note: only `RayleighDamping` and `NoDamping` are honored
+// on this path.  A `DampingDescriptor` refinement this lumped model does not
+// implement emits a `W_MechanismModalUnsupportedDamping` diagnostic naming the
+// offending descriptor type, rather than silently reporting it as undamped.
+// The solve still completes (the frequencies are unaffected), every
+// `.damping_ratio` is 0, and `ModalResult.damping` echoes the descriptor you
+// supplied — so the dropped damping intent is visible rather than swallowed.
 @optimized("modal::mechanism_modal")
 pub fn mechanism_modal_analysis(
     mechanism : Mechanism,

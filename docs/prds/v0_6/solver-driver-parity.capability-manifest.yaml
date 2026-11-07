@@ -1,0 +1,333 @@
+prd: docs/prds/v0_6/solver-driver-parity.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6689
+  title: 'P1-alpha: ResolutionProfile + profile-taking Engine constructor — make solver-free unrepresentable'
+  capabilities:
+  - name: solver-registry-production-exists
+    binding: 'capability→producer, wired on main — SolverRegistry::production() is the constructor both existing production sites use; alpha reuses it, does not create it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn production\(\)'
+      expect: present
+      paths:
+      - crates/reify-constraints/src/registry.rs
+  - name: two-production-wiring-sites-only
+    binding: 'observed — exhaustive grep finds exactly two non-test solver-wiring sites (configured_eval_engine, EngineSession::with_registered_kernel); all others are under cfg(test) or tests/.'
+    verdict: PASS
+  - name: solver-free-is-by-omission
+    binding: 'producer-self — Engine::with_prelude initialises solver:None and only with_solver/register_solver set it. This is the state alpha makes unnameable by accident.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ResolutionProfile
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+  - name: mcp-server-site-removed-upstream
+    binding: 'DAG-direction — CliToolContext::ensure_engine is a construction site alpha would otherwise migrate; #6665 (delete reify mcp-server) is UPSTREAM by a real edge, so the site is gone before alpha runs. Not downstream.'
+    verdict: PASS
+- label: β
+  task_id: 6690
+  title: 'P1-beta: unify the resolution-problem builder'
+  capabilities:
+  - name: duplicated-edit-block-exists
+    binding: 'observed — edit_param and edit_source carry a byte-identical construction distinct from build_solver_problem; three copies, agreeing in none.'
+    verdict: PASS
+  - name: cells-reaching-index-exists
+    binding: 'capability→producer, wired on main — CellReadIndex::cells_reaching is what cold''s filter_constraints_reading_autos uses and the edit filter lacks; beta adopts it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cells_reaching
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+  - name: guarded-groups-are-a-separate-field
+    binding: 'observed — TopologyTemplate.guarded_groups is a field separate from .constraints, and EvaluationGraph::from_templates inserts both group.constraints and group.else_constraints. The mechanism behind the population divergence.'
+    verdict: PASS
+  - name: single-builder-after
+    binding: 'producer-self — exactly one engine-side construction of ResolutionProblem''s constraint/auto-param fields must remain (PRD B15). A second one is a regression.'
+    verdict: PASS
+- label: γ
+  task_id: 6691
+  title: 'P1-gamma: deterministic ordering at the resolution seam (T1)'
+  capabilities:
+  - name: hash-order-reaches-solver
+    binding: 'observed — SubProblem.auto_params is a HashSet<ValueCellId> collected into the Vec that becomes ResolutionProblem.auto_params (the solver''s axis order); component_map is likewise an unsorted HashMap-derived Vec.'
+    verdict: PASS
+  - name: valuecellid-is-ord
+    binding: 'capability→producer, wired on main — ValueCellId already implements Ord, so the sort key exists and gamma need not add one.'
+    verdict: PASS
+  - name: house-sort-pattern-exists
+    binding: 'capability→producer, wired on main — resolve_order.rs, engine_fixpoint.rs (BTreeSet<DebugOrd>) and engine_constraints.rs already implement the discipline gamma ports to decompose.rs and engine_edit.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sort_unstable|BTreeSet
+      expect: present
+      paths:
+      - crates/reify-constraints/src/decompose.rs
+  - name: per-instance-hash-variance
+    binding: 'observed BY EXECUTION, not inferred — three HashSets built from the same six keys in one process, one thread, iterated in three different orders.'
+    verdict: PASS
+- label: ε
+  task_id: 6692
+  title: 'P1-epsilon: a one-sided-only auto is UNDERDETERMINED, not resolved'
+  capabilities:
+  - name: one-sided-corner-pick
+    binding: 'rejection-check, OBSERVED ABSENT — reify eval on the committed fixture returns 10 m, exit 0, with NO diagnostic. The rejection capability is confirmed absent, which is the defect epsilon closes. Reproduced independently twice.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_AUTO_ONE_SIDED|OneSidedAuto|one_sided
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: two-sided-still-resolves
+    binding: 'observed — driver_parity_two_sided_auto.ri resolves to 0.01 m, the ANALYTIC centre of [8,12]. Discriminating negative case; the asserted value has a closed-form basis, not a tuned guess.'
+    verdict: PASS
+  - name: default-bounds-are-hardcoded
+    binding: 'observed in source — default_bounds_for returns (1e-6, 10.0) for LENGTH and build_auto_param_list always passes bounds:None, so constraint-derived bounds never narrow the box. This is why the argmax is 10 m.'
+    verdict: PASS
+  - name: grammar-fixture
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri and driver_parity_two_sided_auto.ri each parse with 0 ERROR nodes.'
+    verdict: PASS
+  - name: inv-sf-4-static-arm
+    binding: 'producer-self, G7 refinement stamped in the task''s details — INV-SF-4 makes an always-indeterminate constraint a COMPILE error, so the static arm is preferred and the runtime arm is the fallback for non-static populations.'
+    verdict: PASS
+- label: δ
+  task_id: 6693
+  title: 'P1-delta: flip cmd_build and cmd_check to the full resolution profile'
+  capabilities:
+  - name: verdict-tolerance
+    binding: 'DAG-direction, load-bearing — the exact-f64 verdict fold vs the solver''s 1e-12 acceptance is owned by #6653, which is UPSTREAM of delta by a real edge. Without it the flip converts silent-wrong into false-red across the corpus.'
+    verdict: PASS
+  - name: verdict-tolerance-extent
+    binding: 'producer-extent — #6653 covers the engine verdict fold AND DimensionalSolver acceptance, and its acceptance names all four evidence probes including eq+ineq. It does NOT cover SolveSpaceSolver, CP-SAT, relate-solve residuals or RepresentationWithin, and excludes inequality comparisons. Delta''s B1/B3/B6 signal stays inside the covered extent.'
+    verdict: PASS
+  - name: compute-trampoline-registration
+    binding: 'capability→producer, wired on main — register_compute_trampolines exists and cmd_build already calls it directly; delta extends the call to cmd_check per the overturned cost carve-out.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: register_compute_trampolines
+      expect: present
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: posture-comment-retired
+    binding: 'producer-self — the cmd_build posture comment, the matching configured_eval_engine rustdoc note and cmd_check''s posture rustdoc all assert a posture this leaf removes; all three must go.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: solver-free posture
+      expect: absent
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: infeasible-still-refused
+    binding: 'rejection-check, OBSERVED PRESENT — an infeasible equality pair reports max absolute residual 5.00e-3, nine orders above threshold, unresolvable under any wiring. Preservation assertion, not a producer.'
+    verdict: PASS
+  - name: bracket-fixtures-are-destroyed
+    binding: 'observed — running the solver-wired driver on each of the four (plus a byte-identical fifth) directly measures post-flip behaviour; all four cease to be indeterminate fixtures.'
+    verdict: PASS
+  - name: replacement-fixture-rule
+    binding: 'producer-self, authoring constraint — replacement --strict fixtures must carry ZERO auto params, because comparison_residual''s `_ => 1.0` arm makes an undef-operand constraint that also reads an auto infeasible and Severity::Error, flipping build to exit 1.'
+    verdict: PASS
+- label: ζ
+  task_id: 6694
+  title: 'P1-zeta: reify test runs the full resolution and reports real verdicts'
+  capabilities:
+  - name: testresult-diagnostics-field-exists
+    binding: 'field-population — TestResult.diagnostics is a real POPULATED field ("Diagnostics emitted by constraint checking during the test run"); the runner''s loop simply never reads it. Present and dropped, not absent.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub diagnostics: Vec<Diagnostic>'
+      expect: present
+      paths:
+      - crates/reify-eval/src/test_runner.rs
+  - name: reify-constraints-is-a-normal-dep
+    binding: 'capability→producer, wired on main — reify-eval/Cargo.toml carries reify-constraints.workspace = true under [dependencies] (task 4386). The "dev-only dependency" half of build_test_engine''s rationale is STALE.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'reify-constraints\.workspace'
+      expect: present
+      paths:
+      - crates/reify-eval/Cargo.toml
+  - name: pinning-test-exists
+    binding: 'observed — run_tests_with_auto_param_returns_indeterminate pins the current posture and is the contract zeta intentionally inverts.'
+    verdict: PASS
+- label: η
+  task_id: 6695
+  title: 'P1-eta: the LSP resolves, with a bounded iteration budget and marked staleness'
+  capabilities:
+  - name: four-solver-free-lsp-sites
+    binding: 'observed — EvalState::new, the cold-start rebuild inside compute_diagnostics_with_state, standalone compute_diagnostics, and AnalysisContext::from_parsed (which backs hover/completion/goto-def). Missing the fourth would leave the LSP disagreeing with itself.'
+    verdict: PASS
+  - name: iteration-budget-mechanism-exists
+    binding: 'capability→producer, wired on main — the 500*(n+1) feasible-with-objective scaling already exists, so eta tunes a budget rather than inventing budgeting.'
+    verdict: PASS
+  - name: no-wallclock-budget-to-preserve
+    binding: 'observed — no Executor timeout and no Duration deadline anywhere in reify-constraints; every budget is an iteration or node count. Eta must not introduce the first wall-clock bound, which would make solves load-dependent.'
+    verdict: PASS
+- label: ι
+  task_id: 6696
+  title: 'P1-iota: the GUI hosts TWO solver-free evaluators inside a solver-bearing process'
+  capabilities:
+  - name: get-def-preview-is-solver-free
+    binding: 'observed — EngineSession::get_def_preview builds Engine::new(SimpleConstraintChecker, None) per preview and check()s it, inside a solver-bearing session.'
+    verdict: PASS
+  - name: in-process-lsp-is-solver-free
+    binding: 'observed — LspBridge -> reify_lsp::bridge::InProcessLsp -> the real ReifyLanguageServer, all solver-free, in the same window as the viewport.'
+    verdict: PASS
+  - name: engine-session-new-is-a-latent-hole
+    binding: 'observed — EngineSession::new is pub and from_engine deliberately does not install the solver; only with_registered_kernel does.'
+    verdict: PASS
+  - name: lsp-work-is-upstream
+    binding: 'DAG-direction — iota wires the GUI''s LSP host; the LSP resolution itself is eta, which is UPSTREAM of iota by a real edge. Iota does not re-implement it.'
+    verdict: PASS
+- label: ρ
+  task_id: 6698
+  title: 'P1-rho: relate resolution reaches reify check'
+  capabilities:
+  - name: relate-vacuity-under-check
+    binding: 'rejection-check, OBSERVED ABSENT — check AND check --strict on driver_parity_relate_conflict.ri both exit 0 with "All constraints satisfied.", printing zero per-constraint lines for the relate block.'
+    verdict: PASS
+  - name: eval-conflict-diagnostic-exists
+    binding: 'capability→producer, wired on main AND OBSERVED FIRING — reify eval on the same fixture exits 1 naming the relation, both operands, the required separation and the primary conflict. Rho routes check to this existing message.'
+    verdict: PASS
+  - name: solve-scopes-single-call-site
+    binding: 'observed — relate_solve::solve_scopes is reached only from build_with_geometry_output, which is exactly why check never sees it.'
+    verdict: PASS
+  - name: seam-not-absorbed
+    binding: 'DAG-direction / scope — the GUI-viewport half is #6646, the zero-auto relate arm is DIC alpha #5415, auto-ful relate diagnostics are #4388. None is downstream of rho; rho owns the check half only.'
+    verdict: PASS
+  - name: grammar-fixture
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/driver_parity_relate_conflict.ri parses with 0 ERROR nodes.'
+    verdict: PASS
+- label: κ
+  task_id: 6699
+  title: 'P1-kappa: warm and edit paths choose the same solve entry point as cold'
+  capabilities:
+  - name: entry-point-split-exists
+    binding: 'observed in source — cold calls solve_ranked_with_dispatch iff objective.is_some(); warm calls solve_with_dispatch unconditionally.'
+    verdict: PASS
+  - name: divergence-is-self-documented
+    binding: 'observed — SolverRegistry::solve_ranked''s own doc states candidate 0 "is never worse than solve()''s, but not guaranteed byte-identical", and solve_ranked_impl''s comment states the two can disagree on Solved-vs-Infeasible for the SAME problem.'
+    verdict: PASS
+  - name: solve-ranked-is-back-compat
+    binding: 'capability→producer, wired on main — ranked-solve-result.md I5 guarantees the default solve_ranked lifts solve() losslessly, so routing warm through it cannot change below-gate behaviour.'
+    verdict: PASS
+  - name: tolerance-basis-is-in-tree
+    binding: 'numeric floor, NOT a guessed bound — the asserted 1e-9 rel/abs is SOLVER_AUTO_PARITY_ABS_TOL/_REL_TOL, existing constants whose own doc justifies tolerance-parity as "the achievable, load-bearing contract". CAVEAT they currently live in test-support (crates/reify-eval/tests/common/differential.rs), so kappa must promote or re-home them to state the contract in production terms.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SOLVER_AUTO_PARITY_ABS_TOL
+      expect: present
+      paths:
+      - crates/reify-eval/tests/common/differential.rs
+- label: φ
+  task_id: 6700
+  title: 'P1-phi: committed cross-driver agreement harness'
+  capabilities:
+  - name: every-driver-is-upstream
+    binding: 'DAG-direction — phi asserts agreement across drivers it does not itself fix. All seven producing leaves (gamma, delta, zeta, eta, iota, rho, kappa) are UPSTREAM of phi by real edges. No capability phi asserts is owned by a task depending on phi.'
+    verdict: PASS
+  - name: fixture-corpus-committed
+    binding: 'grammar-fixture — all five driver_parity_*.ri fixtures are committed with this PRD and parse with 0 ERROR nodes.'
+    verdict: PASS
+  - name: gui-debug-listener-exists
+    binding: 'capability→producer, wired on main — the GUI debug MCP listener is an observation surface over the same EngineSession pipeline, so phi can drive the GUI without standing up a fourth pipeline.'
+    verdict: PASS
+  - name: registration-obligations-same-diff
+    binding: 'producer-self, gate obligation — phi adds gate-resident tests, so _RUST_COUPLED_RI_FIXTURES, run-all-classification.manifest, the wallclock-bounds registration and .config/nextest.toml entries all land in phi''s OWN diff. Ordering any of them after phi is the esc-4914-162 failure.'
+    verdict: PASS
+- label: χ
+  task_id: 6701
+  title: 'P1-chi: land the driver-parity invariant family (INV-DR-*) + registry row'
+  capabilities:
+  - name: invariant-file-and-family-convention
+    binding: 'capability→producer, wired on main — design-invariants.md exists, its preamble explicitly contemplates appended families, and INV-AD-* is the worked precedent.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-DR-
+      expect: present
+      paths:
+      - docs/legibility/design-invariants.md
+  - name: registry-row-required
+    binding: 'capability→producer, wired on main — INV-META-1 in docs/invariants.md requires the paired row; INV-EVAL-1 (CacheLeg::Skip, "skipped legs are explicit values, never omissions") is the house pattern to cite for enforcement-by-type.'
+    verdict: PASS
+  - name: doctrine-needs-no-amendment
+    binding: 'producer-self, design claim — because the ruled cost axis bounds iterations and never declines a stage, "a solve that never ran" keeps its literal INV-SF-4 meaning. Chi cites slugs and must not widen "expected".'
+    verdict: PASS
+  - name: stale-evidence-lines-identified
+    binding: 'observed — INV-SF-1, INV-SF-2 and INV-SF-4 each carry an Evidence line the flip falsifies; chi repairs them in place rather than leaving a normative file asserting things the code no longer does.'
+    verdict: PASS
+- label: ψ
+  task_id: 6702
+  title: 'P1-psi: docs-truth — the missing solver chunk plus every false driver claim'
+  capabilities:
+  - name: readme-line-is-false
+    binding: 'observed — README.md line 79 reads "reify check <file>  Parse, type-check, solve constraints" while cmd_check installs no solver. The one flatly false user-facing line in the repo.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'check.*Parse, type-check, solve constraints'
+      expect: absent
+      paths:
+      - README.md
+  - name: zero-chunk-cli-coverage
+    binding: 'observed — grep for CLI command names and --strict across all 17 chunks returns nothing; "solver" appears 3 times in 1211 lines. The discoverability gap.'
+    verdict: PASS
+  - name: chunk-registry-and-pinned-count
+    binding: 'capability→producer, wired on main — TOPICS, get_chunk, available_topics() and the pinned available_topics_returns_17_entries all exist and must be updated together.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: available_topics_returns_1[0-9]_entries
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/language_chunks.rs
+  - name: no-automated-gate-covers-this
+    binding: 'observed — reify-audit --pattern PDOCCOVER is a registry-vs-chunk NAME-drift detector and structurally cannot see a false claim about which command solves. Psi is the enforcement.'
+    verdict: PASS
+- label: ω
+  task_id: 6703
+  title: 'P1-omega: graduate the solver-binding-site exemplar into examples/best_practices'
+  capabilities:
+  - name: source-exemplar-exists
+    binding: 'capability→producer, wired on main — examples/auto_binding_sites.ri exists and already carries all four binding-site spellings including sub bolt = Bolt(length: auto). Omega graduates it; it does not author it.'
+    verdict: PASS
+  - name: index-guard-exists
+    binding: 'capability→producer, wired on main — best_practices_index_matches_corpus_directory enforces bidirectional file-to-row correspondence, so file and row must land in one commit.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: best_practices_index_matches_corpus_directory
+      expect: present
+      paths:
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
+  - name: false-index-rows-identified
+    binding: 'observed — the clearance_oracle.ri, symmetry_mirror.ri and discrete_choice.ri rows each assert a check-vs-eval split this PRD removes.'
+    verdict: PASS
+  - name: corpus-gate-blast-radius
+    binding: 'observed, risk binding — best_practices_constraint_gate.rs pins discrete_choice.ri as EXPECTED_INDETERMINATE and reds BOTH ways once a solver runs (StaleExpectedIndeterminate if it resolves, Violated if the exact-== re-check fires). That belongs to delta''s blast radius, not omega''s, but omega will see it.'
+    verdict: PASS
+- label: Ω
+  task_id: 6704
+  title: 'P1-Omega: PRD close — terminal stamp, AS-AUTHORED freeze and LIVE map'
+  capabilities:
+  - name: every-leaf-upstream
+    binding: 'DAG-direction — Omega depends on all 14 siblings by real edges; a cancelled sibling counts as satisfied for its edges.'
+    verdict: PASS
+  - name: terminal-vocabulary-is-closed
+    binding: 'capability→producer — the three-value terminal vocabulary and the freeze-header shape are fixed by the overlay and have committed exemplars (data-carrying-enums.md, kernel-seam-contracts.md at edd9703fae).'
+    verdict: PASS
+  - name: artifacts-exist
+    binding: 'producer-self — the PRD and this manifest are committed by the authoring session, so Omega has both files to stamp.'
+    verdict: PASS

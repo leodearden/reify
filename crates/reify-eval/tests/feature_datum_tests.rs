@@ -134,6 +134,7 @@ fn revolved_cylinder_bundle_unions_analytic_and_history_to_one_axis() {
         axis_origin: [0.0, 0.0, 0.0],
         axis_dir: [0.0, 0.0, 1.0],
         angle_rad: 2.0 * std::f64::consts::PI,
+        profile: GeometryHandleId(0),
     };
 
     let bundle = feature_datum_bundle(feature, &mut kernel, Some(&history));
@@ -210,6 +211,7 @@ fn revolved_cylinder_bundle_with_seam_line_dedups_to_one_axis() {
         axis_origin: [0.0, 0.0, 0.0],
         axis_dir: [0.0, 0.0, 1.0],
         angle_rad: 2.0 * std::f64::consts::PI,
+        profile: GeometryHandleId(0),
     };
 
     let bundle = feature_datum_bundle(feature, &mut kernel, Some(&history));
@@ -243,6 +245,7 @@ fn extruded_solid_bundle_includes_extrude_direction_trait() {
     let history = SweptKind::Extrude {
         axis: [0.0, 0.0, 1.0],
         length: Value::length(0.01),
+        profile: GeometryHandleId(0),
     };
 
     let bundle = feature_datum_bundle(feature, &mut kernel, Some(&history));
@@ -355,6 +358,7 @@ fn revolved_cylinder_bundle() -> reify_eval::feature_datum::FeatureDatumBundle {
         axis_origin: [0.0, 0.0, 0.0],
         axis_dir: [0.0, 0.0, 1.0],
         angle_rad: 2.0 * std::f64::consts::PI,
+        profile: GeometryHandleId(0),
     };
 
     feature_datum_bundle(feature, &mut kernel, Some(&history))
@@ -494,7 +498,7 @@ fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // No select-a-subfeature ambiguity for the unambiguous cylinder.

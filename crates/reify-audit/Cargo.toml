@@ -12,6 +12,7 @@ description = "Reify architecture audit forensics — phantom-done detector and 
 test-support = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # rusqlite: first SQLite use in the workspace. `bundled` avoids depending on
@@ -22,16 +23,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # behind `default-features = false` so we don't pull native-tls — the only
 # endpoint is localhost (HTTP). See `crates/reify-audit/src/fused_memory_client.rs`.
 ureq = { version = "2.10", default-features = false, features = ["json"] }
-# reify-test-support: promoted from dev-dep so production ptodo.rs::check can
-# call reify_test_support::ignore_hygiene::extract_ignore_reason (§8.3 γ lane).
-# Acyclic: reify-test-support depends on reify-ast/core/ir/syntax/compiler —
-# none of which depend on reify-audit. PRD §4/§8.3/§10 sanction this direction.
-# Build-graph note: the transitive compiler-stack deps inflate the audit binary's
-# build graph. This cost was weighed against extracting extract_ignore_reason into
-# a new dep-free leaf crate; the alternative was declined because the function is
-# ~15 lines, a new crate adds more ceremony than it saves, and the PRD explicitly
-# chose reuse. Re-evaluate if reify-test-support's deps grow significantly.
-reify-test-support.workspace = true
+# reify-git-env: the sanitized `git -C <root>` constructor every RealGitOps
+# call is built through.
+reify-git-env.workspace = true
+# reify-syntax: the language keyword table pdoccover's mention-side filter reads
+# (PRD D15).
+reify-syntax.workspace = true
 
 [[bin]]
 name = "reify-audit"
@@ -40,6 +37,18 @@ path = "src/bin/reify-audit.rs"
 [dev-dependencies]
 tempfile.workspace = true
 reify-test-support.workspace = true
+# Same crate as the [dependencies] entry, plus `test-utils` for the tests'
+# `removed_vars` reads; the production build stays without it.
+reify-git-env = { workspace = true, features = ["test-utils"] }
+# ureq: integration tests under tests/ link only the `reify_audit` lib and
+# cannot reach its private [dependencies], so the live session test
+# (tests/jcodemunch_session_live.rs) needs its own entry to drive raw HTTP for
+# the client-minted-session-id arm — which must NOT be routed through
+# JcodemunchClient, since the claim under test is a property of the *server*.
+# Same version + `default-features = false` + `features = ["json"]` as the
+# production entry above, so Cargo unifies them into one build: no extra
+# compile cost, no native-tls.
+ureq = { version = "2.10", default-features = false, features = ["json"] }
 # Self-pull with the test-support feature so integration tests in tests/p5.rs
 # can construct MockGitOps. Standard Rust pattern for integration-test-visible
 # test doubles that should NOT pollute the production public API.

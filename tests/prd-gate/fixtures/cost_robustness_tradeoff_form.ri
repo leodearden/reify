@@ -10,6 +10,15 @@ module cost_robustness_tradeoff_form
 // arg diagnostics) are γ's NEW work — NOT assumed substrate. So only the GRAMMAR
 // premise (parses, 0 ERROR nodes) is asserted here; `reify check`/`eval` rejection
 // of bad args is γ's deliverable, verified at γ's leaf signal, not at decompose time.
+//
+// ALSO the canonical MISSING-UPPER-BOUND γ shape (task #6465). `thickness` is a
+// STRICT `auto` bounded only below, so its upper side comes from
+// `default_bounds_for(Length)` — a solver-internal default the model never
+// authored — and `verify_uniqueness`' γ branch reports it as
+// default-bounds-determined. The precise diagnostic that produces is asserted
+// end to end by `crates/reify-eval/tests/harness_auto_resolution/cost_robustness_tradeoff_underdetermined_diagnostic.rs`.
+// The model below is UNCHANGED by that: the two-arm grammar/semantics framing
+// above still owns why this fixture exists.
 structure CostTradeoffPart {
     param thickness : Length = auto
     param unit_cost : Money = 5USD

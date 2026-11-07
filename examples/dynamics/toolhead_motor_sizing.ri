@@ -33,7 +33,7 @@
 //
 // For a horizontal +x prismatic DOF RNEA gives τ = M·a EXACTLY:
 //
-//   default_gravity() = [0, 0, −9.81]  (rnea.rs:127)
+//   default_gravity() = [0, 0, −9.81]  (`default_gravity`, reify-stdlib dynamics/rnea.rs)
 //   base spatial accel linear-z = +9.81  (inertial acceleration)
 //   +x motion subspace S = [0,0,0,1,0,0]  → linear-x component only
 //   gravity (z) projects ZERO onto x-DOF for any joint position.
@@ -50,11 +50,13 @@
 //   max_accel= 5.0  (m/s²)
 //
 // Dimensioned literals (0mm / 500mm / 5000mm/s²) MISMATCH the Real params and
-// are rejected; the bare-float SI convention is the proven pattern from
-// `crates/reify-eval/tests/dynamics_compute_node.rs:51`.
+// are rejected; the bare-float SI convention is the proven pattern from the
+// `ramp_profile(0.0, …)` call in `FIXTURE`,
+// `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs`.
 //
-// Prismatic FK accepts bare-Real position bindings as METRES
-// (joints.rs:1486-1502 "Accept Length Scalar or bare Real/Int as metres").
+// Prismatic FK accepts bare-Real position bindings as METRES (the "prismatic"
+// arm of `transform_at_simple_joint`, reify-stdlib joints.rs: "Accept Length
+// Scalar or bare Real/Int as metres").
 //
 // ─── Numeric gate ────────────────────────────────────────────────────────────
 //
@@ -76,7 +78,7 @@ structure def ToolheadMotorSizing {
     // 0.5 kg toolhead carriage (realistic direct-drive hotend + carriage mass).
     // COM at origin (symmetric carriage); zero rotational inertia (point-mass
     // model — rotational inertia negligible for motor sizing on prismatic DOF).
-    let mp = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
 
     // Prismatic joint along +X; range 0..500 mm (full X travel).
     let axis_x = vec3(1, 0, 0)

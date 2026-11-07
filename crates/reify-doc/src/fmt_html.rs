@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use crate::cross_refs::CrossRefs;
+use crate::expr_text::ExprText;
 use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemKind, ParamDoc, PortDoc};
 
 /// Hand-written CSS embedded inside the document's `<style>` block.
@@ -488,6 +489,17 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     out.push_str(kw);
     out.push(' ');
     escape_into(out, name);
+    // Type parameters (task #6342) go through `escape_into` so `<`/`>` become
+    // `&lt;`/`&gt;` — emitted raw a browser would parse `<Q: Dimension>` as an
+    // unknown tag and swallow it.  Mirrors `fmt_markdown::render_item`, which
+    // instead relies on the heading's backtick code span.
+    //
+    // Deliberately heading-only: the `<section id="…">` above and both TOC
+    // href builders (`render_toc`, `render_toc_for_pages`) stay keyed on the
+    // bare `name`, which is item identity rather than display.
+    if let Some(generics) = crate::util::join_type_params(item.type_params()) {
+        escape_into(out, &generics);
+    }
     out.push_str("</h2>\n");
 
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
@@ -544,7 +556,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             render_trait_members(out, members);
         }
         ItemKind::Function { signature } => {
@@ -557,7 +569,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
             type_repr,
             default_repr,
         } => {
-            render_field_body(out, type_repr, default_repr.as_deref());
+            render_field_body(out, type_repr, default_repr.as_ref());
         }
         ItemKind::Purpose {
             direction,
@@ -568,7 +580,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             render_type_alias_body(out, type_repr);
         }
         ItemKind::ConstraintDef { expr_repr } => {
@@ -644,9 +656,9 @@ fn find_annotation<'a>(anns: &'a [AnnotationDoc], name: &str) -> Option<&'a Anno
 /// Columns: Name | Type | Dimension | Default | Description.  Name and Type
 /// cells wrap in `<code>` for visual distinction; Dimension is an em-dash
 /// placeholder (mirroring markdown — the model has no `dimension` field
-/// today); Default uses `<code>` when `Some`, em-dash when `None`; Description
-/// is the `doc` text plus an `<em>hint: {arg}</em>` suffix when a
-/// `solver_hint` annotation is present on the parameter.
+/// today); Default goes through [`render_expr_text`] when `Some`, em-dash when
+/// `None`; Description is the `doc` text plus an `<em>hint: {arg}</em>` suffix
+/// when a `solver_hint` annotation is present on the parameter.
 fn render_params_table(out: &mut String, params: &[ParamDoc]) {
     if params.is_empty() {
         return;
@@ -672,11 +684,11 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
         // Dimension placeholder (em-dash).
         out.push_str("<td>—</td>");
         // Default
-        match p.default_repr.as_deref() {
+        match &p.default_repr {
             Some(d) => {
-                out.push_str("<td><code>");
-                escape_into(out, d);
-                out.push_str("</code></td>");
+                out.push_str("<td>");
+                render_expr_text(out, d);
+                out.push_str("</td>");
             }
             None => out.push_str("<td>—</td>"),
         }
@@ -798,33 +810,33 @@ fn render_function_signature(out: &mut String, signature: &str) {
 /// Render the Type / optional Default rows for a `Field`.
 ///
 /// `<dl><dt>Type</dt><dd><code>{type_repr}</code></dd>` always; the
-/// `<dt>Default</dt><dd><code>{default_repr}</code></dd>` row is appended
-/// only when `default_repr` is `Some`.  Mirrors `fmt_markdown::render_field_body`.
-fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
+/// `<dt>Default</dt><dd>{default_repr}</dd>` row is appended only when
+/// `default_repr` is `Some`.  Mirrors `fmt_markdown::render_field_body`.
+fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&ExprText>) {
     out.push_str("<dl>\n");
     out.push_str("<dt>Type</dt><dd><code>");
     escape_into(out, type_repr);
     out.push_str("</code></dd>\n");
     if let Some(d) = default_repr {
-        out.push_str("<dt>Default</dt><dd><code>");
-        escape_into(out, d);
-        out.push_str("</code></dd>\n");
+        out.push_str("<dt>Default</dt><dd>");
+        render_expr_text(out, d);
+        out.push_str("</dd>\n");
     }
     out.push_str("</dl>\n");
 }
 
 /// Render the Direction / Expression rows for a `Purpose`.
 ///
-/// `<dl><dt>Direction</dt><dd>{direction}</dd><dt>Expression</dt><dd><code>{expr}</code></dd></dl>`.
-/// Direction is plain text; the expression wraps in `<code>`.
-fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
+/// `<dl><dt>Direction</dt><dd>{direction}</dd><dt>Expression</dt><dd>{expr}</dd></dl>`.
+/// Direction is plain text; the expression goes through [`render_expr_text`].
+fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &ExprText) {
     out.push_str("<dl>\n");
     out.push_str("<dt>Direction</dt><dd>");
     escape_into(out, direction);
     out.push_str("</dd>\n");
-    out.push_str("<dt>Expression</dt><dd><code>");
-    escape_into(out, expr_repr);
-    out.push_str("</code></dd>\n");
+    out.push_str("<dt>Expression</dt><dd>");
+    render_expr_text(out, expr_repr);
+    out.push_str("</dd>\n");
     out.push_str("</dl>\n");
 }
 
@@ -849,11 +861,28 @@ fn render_type_alias_body(out: &mut String, type_repr: &str) {
     out.push_str("</code></p>\n");
 }
 
-/// Render the `<code>{expr}</code>` line for a `ConstraintDef`.
-fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
-    out.push_str("<p><code>");
-    escape_into(out, expr_repr);
-    out.push_str("</code></p>\n");
+/// Render the `<p>{expr}</p>` line for a `ConstraintDef`.
+fn render_constraint_def_body(out: &mut String, expr_repr: &ExprText) {
+    out.push_str("<p>");
+    render_expr_text(out, expr_repr);
+    out.push_str("</p>\n");
+}
+
+/// Render an expression: source text as `<code>`, and a missing source as
+/// `ExprText`'s placeholder in `<em>`, so it can never pass for a value.
+fn render_expr_text(out: &mut String, expr: &ExprText) {
+    match expr {
+        ExprText::Source(text) => {
+            out.push_str("<code>");
+            escape_into(out, text);
+            out.push_str("</code>");
+        }
+        ExprText::Unavailable(_) => {
+            out.push_str("<em>");
+            escape_into(out, &expr.to_string());
+            out.push_str("</em>");
+        }
+    }
 }
 
 /// Render the `<h3>Meta</h3>` definition list, sorted alphabetically by key.
@@ -883,9 +912,10 @@ fn render_meta(out: &mut String, meta: &[(String, String)]) {
 
 /// Render the `<h3>Constraints</h3>` bullet list.  No-op when `cs` is empty.
 ///
-/// Mirrors the markdown formatter's three entry shapes:
-/// - `<li><code>{escaped-expr}</code></li>` — labelless, no line
-/// - `<li>{escaped-label}: <code>{escaped-expr}</code></li>` — labelled
+/// Mirrors the markdown formatter's three entry shapes, `{expr}` rendered by
+/// [`render_expr_text`]:
+/// - `<li>{expr}</li>` — labelless, no line
+/// - `<li>{escaped-label}: {expr}</li>` — labelled
 /// - either of the above with a trailing ` <em>(line N)</em>` when
 ///   `line.is_some()`.
 fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
@@ -900,9 +930,7 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
             escape_into(out, label);
             out.push_str(": ");
         }
-        out.push_str("<code>");
-        escape_into(out, &c.expr_repr);
-        out.push_str("</code>");
+        render_expr_text(out, &c.expr_repr);
         if let Some(line) = c.line {
             out.push_str(" <em>(line ");
             out.push_str(&line.to_string());

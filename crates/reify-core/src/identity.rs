@@ -66,6 +66,13 @@ impl ModulePath {
         }
         Ok(Self::new(dotted.split('.').map(String::from).collect()))
     }
+
+    /// The dot-separated spelling `import` and `module` declarations use
+    /// (`["std", "units"]` → `"std.units"`); the inverse of [`Self::from_dotted`].
+    /// `Display` is slash-separated instead.
+    pub fn to_dotted(&self) -> String {
+        self.0.join(".")
+    }
 }
 
 impl fmt::Display for ModulePath {
@@ -131,11 +138,243 @@ impl ValueCellId {
     }
 }
 
+/// Renders as `"<entity>.<member>"`.
+///
+/// This rendering is LOSSY whenever either half already contains a `'.'`,
+/// because the joined string no longer says where the boundary was. Three live
+/// families hit that case, and they disagree about which dot is the separator:
+///
+/// * INSTANCE PATHS carry the dots in the ENTITY half (`Rig.bolts` +
+///   `line_cost`).
+/// * PORT COMPOSITE MEMBERS carry a dot in the MEMBER half (`Bracket` +
+///   `mount.width`).
+/// * KEYED MEMBERS carry the key in the MEMBER half (`Widget` +
+///   `vents["intake"]`), so a key containing a dot lands there too.
+///
+/// `ValueCellId::new("Rig.bolts", "line_cost")` and
+/// `ValueCellId::new("Rig", "bolts.line_cost")` are distinct cells that render
+/// to the identical string, so Display is not injective and NO positional split
+/// inverts it. [`FromStr`](std::str::FromStr) is therefore only a PARTIAL
+/// inverse: it round-trips the unambiguous single-dot case and refuses the rest
+/// rather than guessing. Do not hand-roll a split — route through it.
 impl fmt::Display for ValueCellId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.entity, self.member)
     }
 }
+
+/// Error returned by [`ValueCellId`]'s [`FromStr`](std::str::FromStr) impl when
+/// the input does not name exactly one `(entity, member)` pair under the
+/// `"<entity>.<member>"` Display grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueCellIdParseError {
+    /// The input contained no `'.'` separator at all.
+    MissingSeparator,
+    /// The entity segment (before the first `'.'`) was empty.
+    EmptyEntity,
+    /// The member segment (after the first `'.'`) was empty.
+    EmptyMember,
+    /// The member segment still contained a `'.'`, so the input admits more
+    /// than one `(entity, member)` reading and cannot say which cell is meant.
+    /// See [`ValueCellId`]'s [`Display`](fmt::Display) docs for the three
+    /// families that collide here.
+    ///
+    /// KNOWN LIMITATION: the refusal is SYNTACTIC, decided from the string
+    /// alone, so it also refuses an id that a lookup against a compiled cell
+    /// set could resolve to exactly one cell (e.g. `Widget` + `vents["a.b"]`).
+    /// #7717 tracks making such cells addressable.
+    Ambiguous,
+}
+
+impl fmt::Display for ValueCellIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueCellIdParseError::MissingSeparator => {
+                write!(f, "expected '<entity>.<member>'")
+            }
+            ValueCellIdParseError::EmptyEntity => {
+                write!(f, "value cell id has an empty entity segment")
+            }
+            ValueCellIdParseError::EmptyMember => {
+                write!(f, "value cell id has an empty member segment")
+            }
+            ValueCellIdParseError::Ambiguous => write!(
+                f,
+                "ambiguous value cell id: the remaining '.' admits more than \
+                 one (entity, member) reading, so the id cannot say which cell \
+                 is meant"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValueCellIdParseError {}
+
+impl std::str::FromStr for ValueCellId {
+    type Err = ValueCellIdParseError;
+
+    /// Parse the `"<entity>.<member>"` Display grammar back into a
+    /// [`ValueCellId`].
+    ///
+    /// This is a PARTIAL inverse of [`fmt::Display`], not an exact one: that
+    /// rendering is not injective (see its docs), so only an id with EXACTLY
+    /// one `'.'` names a single cell. Anything with a second dot is refused as
+    /// [`Ambiguous`](ValueCellIdParseError::Ambiguous) rather than split on a
+    /// guessed boundary. No identifier charset is imposed otherwise — hyphens,
+    /// brackets and quotes all round-trip, so the keyed-member form
+    /// `Widget.vents["intake"]` parses.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, member) = s
+            .split_once('.')
+            .ok_or(ValueCellIdParseError::MissingSeparator)?;
+        if entity.is_empty() {
+            return Err(ValueCellIdParseError::EmptyEntity);
+        }
+        if member.is_empty() {
+            return Err(ValueCellIdParseError::EmptyMember);
+        }
+        if member.contains('.') {
+            return Err(ValueCellIdParseError::Ambiguous);
+        }
+        Ok(ValueCellId::new(entity, member))
+    }
+}
+
+/// The four index-addressed node kinds, which share ONE rendered grammar,
+/// `"<entity>#<marker>[<index>]"`, and differ only in their marker word.
+///
+/// Every indexed id's [`Display`](fmt::Display) renders through
+/// [`marker`](Self::marker) and every indexed id's
+/// [`FromStr`](std::str::FromStr) parses through the same grammar, so the two
+/// directions cannot disagree about a marker. That grammar:
+///
+/// * anchors on the LAST `"#<marker>["`, so an entity may itself contain `'#'`
+///   (and `'.'`, `':'`, `'@'`, hyphens — no identifier charset is imposed);
+/// * forbids the structural delimiters `'/'`, `'['` and `']'` in the entity,
+///   which keeps the mapping unambiguous (`'/'` also introduces a
+///   `FeatureId`'s sub-feature suffix in reify-ir);
+/// * requires the index to be all ASCII digits fitting a `u32`, followed by
+///   the closing `']'` and nothing else.
+///
+/// Parsing is therefore the exact inverse of Display over every entity the
+/// grammar admits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IndexedNodeKind {
+    Constraint,
+    Realization,
+    Resolution,
+    Compute,
+}
+
+impl IndexedNodeKind {
+    pub const ALL: [IndexedNodeKind; 4] = [
+        IndexedNodeKind::Constraint,
+        IndexedNodeKind::Realization,
+        IndexedNodeKind::Resolution,
+        IndexedNodeKind::Compute,
+    ];
+
+    /// The word between `'#'` and `'['` in this kind's rendered ids.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            IndexedNodeKind::Constraint => "constraint",
+            IndexedNodeKind::Realization => "realization",
+            IndexedNodeKind::Resolution => "resolution",
+            IndexedNodeKind::Compute => "computation",
+        }
+    }
+
+    /// The kind whose marker a rendered id names: the text after the LAST
+    /// `'#'`, up to the first `'['` (or to the end), must equal a marker
+    /// exactly. `None` when there is no `'#'` or the segment names no marker.
+    ///
+    /// This only classifies; the id may still be malformed for that kind's
+    /// grammar, which its `FromStr` reports.
+    pub fn of_rendered_id(s: &str) -> Option<Self> {
+        let (_, tail) = s.rsplit_once('#')?;
+        let segment = tail.split_once('[').map_or(tail, |(head, _)| head);
+        Self::ALL.into_iter().find(|kind| kind.marker() == segment)
+    }
+
+    fn write_rendered(self, f: &mut fmt::Formatter<'_>, entity: &str, index: u32) -> fmt::Result {
+        write!(f, "{entity}#{}[{index}]", self.marker())
+    }
+
+    fn parse_rendered(self, s: &str) -> Result<(&str, u32), IndexedNodeIdParseError> {
+        let fail = |fault| IndexedNodeIdParseError { kind: self, fault };
+        let opener = format!("#{}[", self.marker());
+        let (entity, rest) = s
+            .rsplit_once(opener.as_str())
+            .ok_or_else(|| fail(IndexedNodeIdFault::MissingMarker))?;
+        if entity.is_empty() {
+            return Err(fail(IndexedNodeIdFault::EmptyEntity));
+        }
+        if entity.contains(['/', '[', ']']) {
+            return Err(fail(IndexedNodeIdFault::InvalidEntity));
+        }
+        let index_str = rest
+            .strip_suffix(']')
+            .ok_or_else(|| fail(IndexedNodeIdFault::MissingTerminator))?;
+        if index_str.is_empty() || !index_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(fail(IndexedNodeIdFault::InvalidIndex));
+        }
+        let index: u32 = index_str
+            .parse()
+            .map_err(|_| fail(IndexedNodeIdFault::InvalidIndex))?;
+        Ok((entity, index))
+    }
+}
+
+/// Which rule of the [`IndexedNodeKind`] grammar an input broke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedNodeIdFault {
+    /// The `"#<marker>["` opener was not present.
+    MissingMarker,
+    /// The entity segment (before `"#<marker>["`) was empty.
+    EmptyEntity,
+    /// The entity segment contained a structural delimiter (`'/'`, `'['`, or
+    /// `']'`), which would make the Display↔FromStr mapping ambiguous.
+    InvalidEntity,
+    /// The input did not end with the `"]"` terminator.
+    MissingTerminator,
+    /// The index between the brackets was empty, contained a non-digit, or
+    /// overflowed `u32`.
+    InvalidIndex,
+}
+
+/// Error returned by every indexed id's [`FromStr`](std::str::FromStr) impl:
+/// the `kind` whose grammar was applied and the `fault` it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedNodeIdParseError {
+    pub kind: IndexedNodeKind,
+    pub fault: IndexedNodeIdFault,
+}
+
+impl fmt::Display for IndexedNodeIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let marker = self.kind.marker();
+        match self.fault {
+            IndexedNodeIdFault::MissingMarker => {
+                write!(f, "expected '<entity>#{marker}[<index>]'")
+            }
+            IndexedNodeIdFault::EmptyEntity => {
+                write!(f, "{marker} node id has an empty entity segment")
+            }
+            IndexedNodeIdFault::InvalidEntity => write!(
+                f,
+                "{marker} node id entity must not contain '/', '[', or ']'"
+            ),
+            IndexedNodeIdFault::MissingTerminator => {
+                write!(f, "{marker} node id must end with ']'")
+            }
+            IndexedNodeIdFault::InvalidIndex => {
+                write!(f, "{marker} node id index must be a u32")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IndexedNodeIdParseError {}
 
 /// Identifies a constraint node in the topology graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -155,7 +394,18 @@ impl ConstraintNodeId {
 
 impl fmt::Display for ConstraintNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#constraint[{}]", self.entity, self.index)
+        IndexedNodeKind::Constraint.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ConstraintNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Constraint.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -177,83 +427,18 @@ impl RealizationNodeId {
 
 impl fmt::Display for RealizationNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#realization[{}]", self.entity, self.index)
+        IndexedNodeKind::Realization.write_rendered(f, &self.entity, self.index)
     }
 }
-
-/// Error returned by [`RealizationNodeId`]'s [`FromStr`](std::str::FromStr) impl
-/// when the input does not match the `"<entity>#realization[<index>]"` Display
-/// grammar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RealizationNodeIdParseError {
-    /// The `"#realization["` marker was not present.
-    MissingMarker,
-    /// The entity segment (before `"#realization["`) was empty.
-    EmptyEntity,
-    /// The entity segment contained a structural delimiter (`'/'`, `'['`, or
-    /// `']'`), which would make the Display↔FromStr mapping ambiguous.
-    InvalidEntity,
-    /// The input did not end with the `"]"` terminator.
-    MissingTerminator,
-    /// The index between the brackets was empty, contained a non-digit, or
-    /// overflowed `u32`.
-    InvalidIndex,
-}
-
-impl fmt::Display for RealizationNodeIdParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RealizationNodeIdParseError::MissingMarker => {
-                write!(f, "expected '<entity>#realization[<index>]'")
-            }
-            RealizationNodeIdParseError::EmptyEntity => {
-                write!(f, "realization node id has an empty entity segment")
-            }
-            RealizationNodeIdParseError::InvalidEntity => write!(
-                f,
-                "realization node id entity must not contain '/', '[', or ']'"
-            ),
-            RealizationNodeIdParseError::MissingTerminator => {
-                write!(f, "realization node id must end with ']'")
-            }
-            RealizationNodeIdParseError::InvalidIndex => {
-                write!(f, "realization node id index must be a u32")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RealizationNodeIdParseError {}
 
 impl std::str::FromStr for RealizationNodeId {
-    type Err = RealizationNodeIdParseError;
+    type Err = IndexedNodeIdParseError;
 
-    /// Parse the `"<entity>#realization[<index>]"` Display grammar back into a
-    /// [`RealizationNodeId`]. This is the exact inverse of [`fmt::Display`] and
-    /// round-trips any Display output, including hyphenated entities — no strict
-    /// identifier charset is imposed (only the structural delimiters `'/'`,
-    /// `'['`, `']'` are forbidden in the entity). Anchors on the *last*
-    /// `"#realization["` marker so the mapping stays unambiguous.
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (entity, rest) = s
-            .rsplit_once("#realization[")
-            .ok_or(RealizationNodeIdParseError::MissingMarker)?;
-        if entity.is_empty() {
-            return Err(RealizationNodeIdParseError::EmptyEntity);
-        }
-        if entity.contains(['/', '[', ']']) {
-            return Err(RealizationNodeIdParseError::InvalidEntity);
-        }
-        let index_str = rest
-            .strip_suffix(']')
-            .ok_or(RealizationNodeIdParseError::MissingTerminator)?;
-        if index_str.is_empty() || !index_str.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(RealizationNodeIdParseError::InvalidIndex);
-        }
-        let index: u32 = index_str
-            .parse()
-            .map_err(|_| RealizationNodeIdParseError::InvalidIndex)?;
-        Ok(RealizationNodeId::new(entity, index))
+        let (entity, index) = IndexedNodeKind::Realization.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -275,7 +460,18 @@ impl ResolutionNodeId {
 
 impl fmt::Display for ResolutionNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#resolution[{}]", self.entity, self.index)
+        IndexedNodeKind::Resolution.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ResolutionNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Resolution.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -297,7 +493,18 @@ impl ComputeNodeId {
 
 impl fmt::Display for ComputeNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#computation[{}]", self.entity, self.index)
+        IndexedNodeKind::Compute.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ComputeNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Compute.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -519,6 +726,32 @@ mod tests {
         );
     }
 
+    // ── ModulePath::to_dotted ─────────────────────────────────────────
+
+    #[test]
+    fn to_dotted_round_trips_from_dotted() {
+        for s in ["foo", "std.units", "a.b.c"] {
+            assert_eq!(
+                ModulePath::from_dotted(s).unwrap().to_dotted(),
+                s,
+                "round-trip of {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn to_dotted_joins_segments_with_dots_not_slashes() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(path.to_dotted(), "std.units");
+        assert_eq!(path.to_string(), "std/units");
+    }
+
+    #[test]
+    fn to_dotted_output_parses_back_to_the_same_path() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(ModulePath::from_dotted(&path.to_dotted()), Ok(path));
+    }
+
     #[test]
     fn resolution_node_id_as_hashmap_key() {
         let mut map = HashMap::new();
@@ -570,102 +803,266 @@ mod tests {
         assert_eq!(map.get(&ComputeNodeId::new("Missing", 0)), None);
     }
 
-    // ── RealizationNodeId::from_str (FromStr) ─────────────────────────
-    //
-    // The inverse of the `"<entity>#realization[<index>]"` Display grammar.
-    // Round-trip (I2/B3): any `RealizationNodeId` Display output must parse
-    // back to an equal value, including hyphenated entities produced by
-    // `FeatureId::realization(...)` test fixtures. Strictly reject malformed
-    // or structurally-ambiguous inputs.
+    // ── Shared indexed-id grammar (`<entity>#<marker>[<index>]`) ─────
 
-    #[test]
-    fn realization_node_id_from_str_roundtrip() {
-        let id = RealizationNodeId::new("Foo", 3);
-        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-        assert_eq!(parsed, RealizationNodeId::new("Foo", 3));
-        assert_eq!(parsed.entity, "Foo");
-        assert_eq!(parsed.index, 3);
-    }
+    fn check_indexed_grammar<T>(kind: IndexedNodeKind, make: fn(&str, u32) -> T)
+    where
+        T: std::str::FromStr<Err = IndexedNodeIdParseError> + fmt::Display + PartialEq + fmt::Debug,
+    {
+        let entities = [
+            "Foo",
+            // Hyphens, as in reify-ir's `FeatureId::realization` fixtures: no
+            // identifier charset is imposed.
+            "box-2658-smoke",
+            "Rig.bolts",
+            "a#b",
+            // The constraint-entity shape minted by reify-eval's engine_edit.rs
+            // for `forall connect` bodies.
+            "forall_connect:v@Rig.bolts#3",
+        ];
+        for entity in entities {
+            for index in [0, 7, u32::MAX] {
+                let id = make(entity, index);
+                assert_eq!(
+                    id.to_string().parse::<T>(),
+                    Ok(make(entity, index)),
+                    "{kind:?} id {id} must round-trip"
+                );
+            }
+        }
 
-    #[test]
-    fn realization_node_id_from_str_index_zero_roundtrip() {
-        let id = RealizationNodeId::new("Bracket", 0);
-        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-        assert_eq!(parsed, id);
-    }
-
-    #[test]
-    fn realization_node_id_from_str_hyphenated_entity_roundtrips() {
-        // CRUCIAL (I2/B3): realization()-constructed fixtures use hyphens.
-        // from_str MUST NOT impose a strict [a-zA-Z_] identifier charset —
-        // hyphens (and any non-delimiter char) must round-trip.
-        for entity in ["box-2658-smoke", "not-a-real-feature", "F99-never-existed"] {
-            let id = RealizationNodeId::new(entity, 0);
-            let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-            assert_eq!(parsed, id, "hyphenated entity {entity:?} must round-trip");
+        let m = kind.marker();
+        let other = IndexedNodeKind::ALL
+            .into_iter()
+            .find(|k| *k != kind)
+            .unwrap()
+            .marker();
+        let rejections = [
+            (String::new(), IndexedNodeIdFault::MissingMarker),
+            ("Foo".to_string(), IndexedNodeIdFault::MissingMarker),
+            (format!("Foo#{other}[0]"), IndexedNodeIdFault::MissingMarker),
+            (format!("Foo#{m}"), IndexedNodeIdFault::MissingMarker),
+            (format!("#{m}[0]"), IndexedNodeIdFault::EmptyEntity),
+            (format!("a/b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("a[b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("a]b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("Foo#{m}[0"), IndexedNodeIdFault::MissingTerminator),
+            (
+                format!("Foo#{m}[0]junk"),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
+            (
+                format!("Foo#{m}[0] "),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
+            // A trailing "/mid_surface" belongs to reify-ir's FeatureId
+            // grammar, not to a bare indexed id.
+            (
+                format!("Foo#{m}[0]/mid_surface"),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
+            (format!("Foo#{m}[0]]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[x]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[-1]"), IndexedNodeIdFault::InvalidIndex),
+            // All digits, so only the u32 parse itself rejects it.
+            (
+                format!("Foo#{m}[99999999999]"),
+                IndexedNodeIdFault::InvalidIndex,
+            ),
+        ];
+        for (input, fault) in rejections {
+            assert_eq!(
+                input.parse::<T>(),
+                Err(IndexedNodeIdParseError { kind, fault }),
+                "{kind:?} must reject {input:?} as {fault:?}"
+            );
         }
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_empty() {
-        assert!("".parse::<RealizationNodeId>().is_err());
+    fn indexed_node_ids_share_one_grammar_that_inverts_display() {
+        check_indexed_grammar(IndexedNodeKind::Constraint, |e, i| {
+            ConstraintNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Realization, |e, i| {
+            RealizationNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Resolution, |e, i| {
+            ResolutionNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Compute, |e, i| ComputeNodeId::new(e, i));
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_missing_marker() {
-        assert!("Foo".parse::<RealizationNodeId>().is_err());
+    fn indexed_node_kind_of_rendered_id_reads_the_last_marker() {
+        for k in IndexedNodeKind::ALL {
+            let m = k.marker();
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(&format!("Foo#{m}[0]")),
+                Some(k)
+            );
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(&format!("Foo#{m}")),
+                Some(k)
+            );
+        }
+        assert_eq!(
+            IndexedNodeKind::of_rendered_id("a#b#realization[1]"),
+            Some(IndexedNodeKind::Realization),
+            "the segment after the LAST '#' names the kind"
+        );
+        for s in [
+            "Bracket.width",
+            "Foo",
+            "Foo#bogus[0]",
+            "Foo#constraintx[0]",
+            r#"Widget.vents["x#y"]"#,
+        ] {
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(s),
+                None,
+                "{s:?} names no marker"
+            );
+        }
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_missing_brackets() {
-        assert!("Foo#realization".parse::<RealizationNodeId>().is_err());
+    fn indexed_node_kind_markers_are_pairwise_distinct() {
+        let all = IndexedNodeKind::ALL;
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a.marker(), b.marker(), "{a:?} and {b:?} share a marker");
+            }
+        }
+    }
+
+    // ── ValueCellId::from_str (FromStr) ──────────────────────────────
+    //
+    // The PARTIAL inverse of the `"<entity>.<member>"` Display grammar. Only the
+    // unambiguous single-dot case is addressable as a string; see the
+    // non-injectivity test below for why no positional split can do better.
+
+    #[test]
+    fn value_cell_id_from_str_roundtrips_unambiguous_ids() {
+        // Every shape a real mint site produces with exactly one dot in the
+        // rendered string must survive Display → parse unchanged.
+        let cases = [
+            ValueCellId::new("Bracket", "width"),
+            // FIELD_ENTITY_PREFIX form: fields are top-level, not members.
+            ValueCellId::new(FIELD_ENTITY_PREFIX, "gravity"),
+            // Compiler-synthesized member, minted by `compile_block_guard` in
+            // reify-compiler/src/guards.rs.
+            ValueCellId::new("Part", "__guard_0"),
+            // No strict identifier charset, mirroring the hyphenated entities
+            // of `indexed_node_ids_share_one_grammar_that_inverts_display`.
+            ValueCellId::new("my-part_2", "hole_diameter"),
+            // Keyed member, minted by `keyed_member_cell` in reify-ir/src/value.rs
+            // and asserted by its `keyed_member_cell_carries_key_in_nodeid_path`
+            // test. Brackets and quotes must round-trip: the rendered id still
+            // has exactly one dot.
+            ValueCellId::new("Widget", r#"vents["intake"]"#),
+        ];
+        for id in cases {
+            let parsed: ValueCellId = id
+                .to_string()
+                .parse()
+                .unwrap_or_else(|e| panic!("{id} must round-trip, got {e}"));
+            assert_eq!(parsed, id, "{id} must round-trip unchanged");
+        }
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_empty_index() {
-        assert!("Foo#realization[]".parse::<RealizationNodeId>().is_err());
+    fn value_cell_id_from_str_rejects_missing_separator() {
+        for s in ["", "width"] {
+            assert_eq!(
+                s.parse::<ValueCellId>(),
+                Err(ValueCellIdParseError::MissingSeparator),
+                "{s:?} has no '.' separator, so it names no (entity, member) pair"
+            );
+        }
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_non_digit_index() {
-        assert!("Foo#realization[x]".parse::<RealizationNodeId>().is_err());
+    fn value_cell_id_display_is_not_injective_so_dotted_members_are_refused() {
+        // THE load-bearing property. Three live id families all render into the
+        // same `<entity>.<member>` string shape, and they disagree about where
+        // the split belongs:
+        //
+        //   1. INSTANCE PATHS put the dots in the ENTITY half
+        //      (`Rig.bolts` + `line_cost`). Splitting these needs the LAST dot.
+        //   2. PORT COMPOSITE MEMBERS put a dot in the MEMBER half
+        //      (`Bracket` + `mount.width`). Splitting these needs the FIRST dot.
+        //   3. KEYED MEMBERS put the key in the MEMBER half
+        //      (`Widget` + `vents["a.b"]`). A dotted key needs the FIRST dot
+        //      too, and a last-dot split would cut INSIDE the quoted key.
+        //
+        // So `rsplit_once('.')` is not "the correct inverse" of Display: it
+        // would fix family 1 and break families 2 and 3. No positional split
+        // can be right, because Display is NOT INJECTIVE — two distinct cells
+        // render to one identical string, and the information needed to choose
+        // between them is simply not present in that string:
+        let instance_path = ValueCellId::new("Rig.bolts", "line_cost");
+        let port_composite = ValueCellId::new("Rig", "bolts.line_cost");
+        assert_ne!(
+            instance_path, port_composite,
+            "these are two DIFFERENT cells"
+        );
+        assert_eq!(
+            instance_path.to_string(),
+            port_composite.to_string(),
+            "… yet they render to ONE string, so no parser can tell them apart"
+        );
+
+        // The only correct answer for that one string is therefore to refuse,
+        // naming ambiguity as the reason rather than silently picking either
+        // family's split.
+        assert_eq!(
+            instance_path.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_overflowing_index() {
-        // All-ascii-digit, so it passes the pre-parse digit guard, but the value
-        // exceeds u32::MAX — only the `index_str.parse::<u32>()` step rejects it.
-        // Pins the overflow branch promised by RealizationNodeIdParseError::
-        // InvalidIndex's doc comment so a future refactor that drops `.parse()`
-        // (e.g. building the u32 from digit bytes by hand) can't silently regress.
-        assert!("Foo#realization[99999999999]"
-            .parse::<RealizationNodeId>()
-            .is_err());
+    fn value_cell_id_from_str_rejects_keyed_member_with_dotted_key() {
+        // A key carrying a dot pushes a second dot into the member half, so the
+        // keyed-member form stops being addressable as a string …
+        //
+        // This is a CAPABILITY LOSS pinned deliberately, not a latent bug being
+        // ratified: the entity half here is undotted, so this id does name one
+        // cell and a cell-set lookup could recover it. See the KNOWN LIMITATION
+        // on `ValueCellIdParseError::Ambiguous` and #7717 — if that refusal is
+        // ever lifted, this assertion is the one that must change with it.
+        let dotted_key = ValueCellId::new("Widget", r#"vents["a.b"]"#);
+        assert_eq!(
+            dotted_key.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous),
+            "a dot inside the key makes the id ambiguous"
+        );
+        // … while its undotted sibling still round-trips. Without this contrast
+        // the test above would also pass a parser that refused every keyed
+        // member outright.
+        let plain_key = ValueCellId::new("Widget", r#"vents["intake"]"#);
+        assert_eq!(
+            plain_key.to_string().parse::<ValueCellId>(),
+            Ok(plain_key.clone()),
+            "an undotted key must still round-trip"
+        );
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_empty_entity() {
-        assert!("#realization[0]".parse::<RealizationNodeId>().is_err());
+    fn value_cell_id_from_str_rejects_empty_entity() {
+        assert_eq!(
+            ".width".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyEntity)
+        );
     }
 
     #[test]
-    fn realization_node_id_from_str_rejects_trailing_junk() {
-        assert!("Foo#realization[0]junk".parse::<RealizationNodeId>().is_err());
-        assert!("Foo#realization[0] ".parse::<RealizationNodeId>().is_err());
-        assert!("Foo#realization[0]]".parse::<RealizationNodeId>().is_err());
-        // A trailing "/mid_surface" belongs to the FeatureId grammar, not the
-        // bare RealizationNodeId grammar — reject it here.
-        assert!("Foo#realization[0]/mid_surface"
-            .parse::<RealizationNodeId>()
-            .is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_structural_delimiter_in_entity() {
-        // An entity containing a structural delimiter ('/', '[', ']') would make
-        // the Display↔FromStr mapping ambiguous, so reject such inputs.
-        assert!("a[b#realization[0]".parse::<RealizationNodeId>().is_err());
-        assert!("a/b#realization[0]".parse::<RealizationNodeId>().is_err());
-        assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
+    fn value_cell_id_from_str_rejects_empty_member() {
+        assert_eq!(
+            "Bracket.".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyMember)
+        );
     }
 }

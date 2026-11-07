@@ -26,11 +26,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 structure def ZvShapedRamp {
     // ZV impulse shaper: suppress 10 Hz resonance with 5 % critical damping.
-    // ZVShaper.target_frequency must be > 0Hz (ctor constraint, trajectory.ri:665).
+    // ZVShaper.target_frequency must be > 0Hz (ctor constraint, `ZVShaper`, trajectory.ri).
     let shaper = ZVShaper(target_frequency: 10Hz, damping_ratio: 0.05)
 
     // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).
-    // JointValue = Real per the trajectory.ri type alias (line 76).
+    // JointValue = Real per `pub type JointValue = Real` in trajectory.ri.
     // vels / accels are Option<List<JointValue>> with no defaults; CubicSpline
     // interpolation needs only positions, so both are set to none.
     let wp0 = Waypoint(

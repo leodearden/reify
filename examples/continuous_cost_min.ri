@@ -22,8 +22,11 @@ module continuous_cost_min
 //
 // # Why auto(free), not strict auto
 //
-// A strict `auto` triggers the uniqueness re-solve (perturbing the start from
-// ~9m and checking convergence within UNIQUENESS_SD_TOLERANCE).
+// A strict `auto` triggers the uniqueness re-solve (perturbing the start and
+// checking convergence within UNIQUENESS_SD_TOLERANCE).  Task #5711 moved that
+// perturbation anchor onto the #5618 CONSTRAINT-DERIVED seed box; before it, the
+// anchor came off the un-derived `effective_bounds` box and sat at ~9m for this
+// mm-scale part.
 //
 // The ORIGINAL reason for `auto(free)` no longer holds: it was that the eval-layer
 // solver returned the initially-feasible SEED (~10mm) via the `initially_feasible`
@@ -31,12 +34,15 @@ module continuous_cost_min
 // reconverge and `ConstraintNonUnique` would mask the floor signal.  Since task #5618
 // this example converges to 2.040mm — the floored bound, an actual argmin.
 //
-// It stays `auto(free)` anyway, deliberately.  Whether a strict auto would now SURVIVE
-// the uniqueness re-solve is not re-tested here, and it is not a safe assumption:
-// `verify_uniqueness` still anchors its perturbation off the un-derived box, which is
-// exactly the uniqueness-contract question task #5711 owns.  Flipping this example to
-// a strict auto is that task's call, not this file's.  Same reasoning as
-// crates/reify-eval/tests/fixtures/cost_min_robustness_floor.ri.
+// It stays `auto(free)` anyway, deliberately, and task #5711 — which has now shipped
+// and owned that question — RULED that it stays: #5711 resolved the uniqueness
+// CONTRACT (§11.6's two disjunctive well-determinedness tests), not the β Money-floor
+// path this file exercises, so flipping this example to a strict auto would be a
+// behaviour change to an e2e-asserted example
+// (crates/reify-eval/tests/continuous_cost_min_example_e2e.rs) that buys no coverage
+// of what #5711 changed.  Whether a strict auto would now SURVIVE the uniqueness
+// re-solve is still not re-tested here, and is still not a safe assumption.  Same
+// reasoning as crates/reify-eval/tests/fixtures/cost_min_robustness_floor.ri.
 //
 // # Why Length, not bare Real
 //

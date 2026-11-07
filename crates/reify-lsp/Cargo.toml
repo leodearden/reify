@@ -6,6 +6,7 @@ license.workspace = true
 description = "Language server protocol implementation for Reify"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast = { workspace = true, features = ["serde"] }
 reify-core = { workspace = true, features = ["serde"] }
 reify-ir = { workspace = true, features = ["serde"] }
@@ -20,7 +21,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [features]
-test-support = []
+test-support = ["tokio/time"]
 
 [dev-dependencies]
 reify-test-support.workspace = true

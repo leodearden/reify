@@ -12,8 +12,9 @@
 // pure-Rust step-7 finiteness smoke test (q̇=q̈=0, no gravity work).
 //
 // The companion Rust gate
-// `crates/reify-eval/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
-// asserts the virtual-work power identity below within 1 µW.
+// `crates/reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
+// asserts the virtual-work power identity below within 1 µW, and τ = τ_open
+// joint by joint (λ = 0) within 1 µN.
 //
 // ── Why a vertical PRISMATIC loop (not a revolute 4-bar) ──────────────────────
 // The original plan targeted a planar revolute 4-bar, but the Reify kinematic
@@ -24,6 +25,8 @@
 // 2-prismatic loop, oriented along gravity so the energy ledger is non-trivial.
 // The kinematic-offset feature that would unlock a true spatial linkage is the
 // deferred follow-up docs/prds/v0_6/kinematic-inter-joint-offsets.md.
+// Task 4331 has since added revolute pivot offsets, and the revolute 4-bar now
+// lives in examples/dynamics/closed_4bar_idyn.ri.
 //
 // ── Analytic energy rate (first principles) ───────────────────────────────────
 // Two prismatic joints along the VERTICAL axis [0,0,1], each parenting one body
@@ -37,15 +40,17 @@
 // enters the energy. COM offsets, inertia, and joint positions do not enter τ
 // for a pure-translation DOF; only masses, rates, gravity, and the axis z-comp.
 //
-// For the prismatic-closing loop the rank reduction projects out the entire
-// residual row (m_eff = 0): there is no live constraint, so the closed path
-// reduces to per-DOF open-chain RNEA and τ = τ_open exactly. By the work-energy
-// theorem (b ≡ 0, constraint forces do no work on the supplied velocities),
-//     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly (holds for m_eff = 0 too).
+// The loop carries ONE live constraint row, v_z = [1, −1] (m_eff = 1, closure
+// q_b == q_a), but its multiplier vanishes analytically: both sliders carry the
+// same per-mass gravity load and the prescribed accelerations are equal, so the
+// unconstrained response to τ_open already satisfies the constraint. Hence
+// λ = 0 and τ = τ_open exactly. By the work-energy theorem (b ≡ 0, constraint
+// forces do no work on the supplied velocities),
+//     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly.
 //
-// At the prescribed instant — q_a = 0.3 m, q_b = 0.5 m (closing free
-// x = q_b − q_a = 0.2 m), consistent rates q̇_a = q̇_b = 0.7,
-// accels q̈_a = q̈_b = 1.5:
+// At the prescribed instant — q_a = q_b = 0.3 m (the closure q_b == q_a is
+// satisfied; positions do not enter dE/dt here), consistent rates
+// q̇_a = q̇_b = 0.7, accels q̈_a = q̈_b = 1.5:
 //     dE/dt = (m_a + m_b)·v·(a + 9.81)
 //           = (2 + 3)·0.7·(1.5 + 9.81)
 //           = 5.0·0.7·11.31  =  39.585 W
@@ -59,9 +64,9 @@ structure def Closed2PrismaticIdyn {
     // (irrelevant to a prismatic gravity force, kept zero for clarity). The
     // closing body m_c (1 kg) is dynamics-ignored (n_tree = 2) but must be
     // distinct from m_a/m_b.
-    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
-    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
 
     // Vertical prismatic axis so gravity [0,0,−9.81] does work on the motion.
     // Distinct ranges (0..1 m vs 0..2 m) make j_a and j_b structurally-distinct
@@ -81,9 +86,15 @@ structure def Closed2PrismaticIdyn {
 
     // One-sample joint-space trajectory.
     //   values[0..3]  : per-body joint positions, in BODIES order, in metres.
-    //                   m_a@j_a = 0.3, m_b@j_b (spanning) = 0.5, m_c@j_b
-    //                   (closing initial guess) = 0.2. Closure identity holds:
-    //                   spanning(j_b) = j_a + free(j_b) → 0.5 = 0.3 + 0.2. ✓
+    //                   m_a@j_a = 0.3, m_b@j_b = 0.3, m_c@j_b = 0.3.
+    //
+    //   The loop's closure is q_b == q_a — the closing joint j_b is composed
+    //   on ONE side only, so the record is path_a = [world, j_b] against
+    //   path_b = [world, j_a] — and 0.3 == 0.3 satisfies it. values[2] is
+    //   structurally required — snapshot_for_sample rejects a sample whose
+    //   values length differs from bodies length — and inert for chain
+    //   extraction, which reads the FIRST binding keyed on j_b. Do not read
+    //   it as a second, independent coordinate for j_b.
     //   vels[0..2]    : per spanning-tree DOF (j_a, j_b) generalized velocities.
     //   accels[0..2]  : per spanning-tree DOF generalized accelerations.
     //
@@ -92,7 +103,7 @@ structure def Closed2PrismaticIdyn {
     // `Real` alias — a dimensioned Length literal (`300mm`) does NOT satisfy a
     // Real param (type_compat: Length ≁ Real). The prismatic FK's `length_input`
     // reads a bare Real as metres, so 0.3 ≡ 300 mm here.
-    let sample = TrajectorySample(t: 0s, values: [0.3, 0.5, 0.2], vels: [0.7, 0.7], accels: [1.5, 1.5])
+    let sample = TrajectorySample(t: 0s, values: [0.3, 0.3, 0.3], vels: [0.7, 0.7], accels: [1.5, 1.5])
     let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
 
     // Closed-chain inverse dynamics → List<List<JointForce>> (1 sample × 2 tree

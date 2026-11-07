@@ -7,10 +7,13 @@ import type {
   MeshData,
   RawMeshData,
   MeshAppearance,
+  ScalarChannelTag,
   AppearanceDirective,
   DisplayStyleData,
   ValueData,
   ConstraintData,
+  ConstraintStatus,
+  RawConstraintData,
   SourceLocation,
   FileData,
   GuiState,
@@ -20,7 +23,6 @@ import type {
   ConstraintUpdate,
   DiagnosticInfo,
   EntityTreeNode,
-  MorphStats,
 } from '../types';
 import { convertRawMesh } from '../types';
 
@@ -50,6 +52,51 @@ const meshWithScalars: MeshData = {
   displaced_positions: new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]),
 };
 void meshWithScalars;
+
+// --- MeshData / RawMeshData with scalar_channel_tags (task #6185) ---
+// (a) Tag map populated \u2014 asserts the field is accepted on MeshData and that
+//     the tag shape is { unit: string; signed: boolean }.
+const meshWithChannelTags: MeshData = {
+  entity_path: 'FEA.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+  scalar_channels: {
+    vonMises: new Float32Array([10, 20, 30]),
+    testRotation: new Float32Array([-0.5, 0, 0.25]),
+  },
+  scalar_channel_tags: {
+    vonMises: { unit: 'Pa', signed: false },
+    testRotation: { unit: 'rad', signed: true },
+  },
+};
+void meshWithChannelTags;
+
+// (b) Tag map ABSENT while scalar_channels is present \u2014 asserts the field is
+//     optional, which is what keeps pre-tag payloads assignable.
+const meshWithoutChannelTags: MeshData = {
+  entity_path: 'FEA.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+  scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+};
+void meshWithoutChannelTags;
+
+// (c) The raw wire form carries the same plain-JSON tag map (no typed arrays).
+const rawMeshWithChannelTags: RawMeshData = {
+  entity_path: 'FEA.body',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+  normals: null,
+  scalar_channels: { vonMises: [10, 20, 30] },
+  scalar_channel_tags: { vonMises: { unit: 'Pa', signed: false } },
+};
+void rawMeshWithChannelTags;
+
+// (d) A tag is structurally a ScalarChannelTag.
+const _channelTag: ScalarChannelTag = { unit: 'rad', signed: true };
+void _channelTag;
 
 // --- MeshData with shell-extract fields (task 3597) ---
 // (a) All three new fields populated with their typed-array forms.
@@ -260,6 +307,34 @@ const constraintWithLabel: ConstraintData = {
   parameter_ids: ['cell_003'],
 };
 
+const constraintIndeterminate: ConstraintData = {
+  node_id: 'constraint_003',
+  expression: 'depth > 0',
+  status: 'indeterminate',
+  label: null,
+  parameter_ids: [],
+};
+void constraintIndeterminate;
+
+// --- ConstraintData.status is the closed verdict union ---
+const _status: ConstraintStatus = constraint.status;
+void _status;
+
+// --- RawConstraintData.status is open on the wire (checked at runtime) ---
+const wireToken: string = 'satisfied';
+const rawConstraint: RawConstraintData = {
+  node_id: 'constraint_004',
+  expression: 'width > 0',
+  status: wireToken,
+  label: null,
+  parameter_ids: [],
+};
+void rawConstraint;
+
+// @ts-expect-error ConstraintData.status is the closed lower-case union; a PascalCase variant name is not a token
+const _pascalStatus: ConstraintData = { node_id: 'c', expression: 'e', status: 'Satisfied', label: null, parameter_ids: [] };
+void _pascalStatus;
+
 // --- SourceLocation ---
 const loc: SourceLocation = {
   file_path: 'bracket.ri',
@@ -377,36 +452,6 @@ type AssertTrue<T extends true> = T;
 type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
   Equals<(typeof BUILD_CONTEXT_HANDLED_FIELDS)[number], keyof Required<MessageContext>>
 >;
-
-// --- MorphStats (GR-016 θ morph_stats RPC response) ---
-// (a) Fully-populated form.
-const morphStats: MorphStats = {
-  morph_count: 7,
-  remesh_count: 3,
-  last_rejection_reason: 'Ineligible(StructuralChange)',
-};
-void morphStats;
-
-// (b) last_rejection_reason omitted (skip-serializing on Rust side → undefined here).
-const morphStatsNoReason: MorphStats = {
-  morph_count: 0,
-  remesh_count: 0,
-};
-void morphStatsNoReason;
-
-// (c) morph_count is required (omitting it is a type error).
-// @ts-expect-error morph_count is a required field
-const _missingMorphCount: MorphStats = {
-  remesh_count: 0,
-};
-void _missingMorphCount;
-
-// (d) remesh_count is required.
-// @ts-expect-error remesh_count is a required field
-const _missingRemeshCount: MorphStats = {
-  morph_count: 0,
-};
-void _missingRemeshCount;
 
 // --- AppearanceDirective + DisplayStyleData (PRD-2 γ, task #4772) ---
 // RED until AppearanceDirective/DisplayStyleData are added to types.ts (step-6).

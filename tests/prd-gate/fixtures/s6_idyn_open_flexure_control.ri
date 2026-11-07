@@ -1,0 +1,17 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): open-chain control for s6_idyn_closed_flexure (T15)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_idyn_open_flexure_control
+
+// Control: same tree, no closing body (open chain).
+structure def OpenFlexure {
+    let steel = Steel_AISI_1045()
+    let j_a = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let j_b = prismatic(vec3(0, 0, 1), 0mm .. 2000mm)
+    let m0 = mechanism()
+    let m1 = body(m0, point_mass(0.5kg), j_a)
+    let m = body(m1, point_mass(0.25kg), j_b)
+    let s0 = TrajectorySample(t: 0s, values: [0.0, 0.0], vels: [0.0, 0.0], accels: [0.0, 0.0])
+    let s1 = TrajectorySample(t: 1s, values: [0.0003, 0.0003], vels: [0.0, 0.0], accels: [0.0, 0.0])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [s0, s1])
+    let forces = inverse_dynamics(m, traj)
+}

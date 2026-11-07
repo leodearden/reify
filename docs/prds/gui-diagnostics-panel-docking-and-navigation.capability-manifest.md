@@ -6,12 +6,12 @@ Mechanizes G3 + G6 per leaf for `docs/prds/gui-diagnostics-panel-docking-and-nav
 
 ---
 
-## α — `DiagnosticInfo.has_location` wire field + 4 producers + TS type (intermediate / H-contract producer)
+## α — `DiagnosticInfo.has_location` wire field + ~~4~~ 3 producers + TS type (intermediate / H-contract producer)
 
 | Capability asserted by signal | Evidence | Verdict |
 |---|---|---|
 | `reify_core::DiagnosticInfo` is an extensible serde struct that can carry an additive field | `crates/reify-core/src/diagnostics.rs:3133` (`pub struct DiagnosticInfo`, serde-derived; consumed via `reify-core/src/lib.rs` re-export) | **wired** |
-| All 4 construction sites are on production paths (not test-only) | GUI: `gui/src-tauri/src/engine.rs:4603` (normal `diagnostics_to_info`), `:2178` (cold-start), `:2383` (live-edit) — all in `build_gui_state`; CLI: `crates/reify-cli/src/mcp_context.rs:239` | **wired-on-main** |
+| All ~~4~~ 3 construction sites are on production paths (not test-only) | GUI: `gui/src-tauri/src/engine.rs:4603` (normal `diagnostics_to_info`), `:2178` (cold-start), `:2383` (live-edit) — all in `build_gui_state` — as authored; re-verified by symbol at main a011b819c7: `diagnostics_to_info` plus the two synthetic sites in `build_compile_diagnostics` and `build_gui_state`. ~~CLI: `crates/reify-cli/src/mcp_context.rs:239`~~ — deleted by bbfbc7dd29 (#6665) | **wired-on-main** |
 | `has_location` is derivable at the producer from span presence | `engine.rs:4593-4602` already branches on `diag.labels.first()` → `(1,1,1,1)` sentinel when empty; flag = `!diag.labels.is_empty()` | **wired** |
 | Pinned wire-format tests exist to update (anti-mismatch for the contract) | `gui/src-tauri/src/tests/{engine,types,mcp_context}_tests.rs`, `crates/reify-mcp/tests/read_tools_tests.rs` reference `DiagnosticInfo` | **wired** |
 
@@ -58,3 +58,5 @@ Consumers (downstream, wired via deps): β, γ; plus MCP `get_diagnostics` (#429
 ### Resolution log
 
 No binding required re-scoping, re-homing, or bound relaxation. The single contract seam (`DiagnosticInfo.has_location`) is additive + serde-defaulted (back-compat), its producer (α) is upstream of every consumer and dep-wired, and the integration gate (ε) exists and names the §Boundary-test sketch as its signal. Batch clear to queue.
+
+**[Amended 2026-10-24, #6714]** α's production construction-site count corrected 4 → 3: α #4400 set `has_location` at four producers, and bbfbc7dd29 (#6665) then deleted the fourth, `crates/reify-cli/src/mcp_context.rs`, with `reify mcp-server`. The three GUI producers were re-verified by symbol at main a011b819c7.

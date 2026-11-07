@@ -5,6 +5,8 @@
 
 use reify_ast::{Declaration, DimOp, ParseError, TypeAliasDecl, TypeExpr, TypeExprKind};
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("type_alias_test"));
@@ -32,6 +34,22 @@ fn assert_malformed_recovers(decls: &[Declaration], errors: &[ParseError]) {
         "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
         decls,
         errors,
+    );
+}
+
+/// Helper: assert `source` is refused with one `invalid type alias: ` diagnostic at byte
+/// `fault_offset` and lowers no TypeAlias.
+#[track_caller]
+fn assert_refused_at(source: &str, fault_offset: usize) {
+    let (decls, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid type alias: ");
+    assert_eq!(
+        error.span.start as usize, fault_offset,
+        "`{source}`: expected the diagnostic at byte {fault_offset}, got: {error:?}"
+    );
+    assert!(
+        !decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_))),
+        "`{source}`: a refused type alias must not be lowered, got: {decls:?}"
     );
 }
 
@@ -357,50 +375,17 @@ fn parse_type_alias_missing_equals_no_panic() {
 // ── Error case: empty RHS ────────────────────────────────────────
 
 #[test]
-fn parse_type_alias_empty_rhs_no_panic() {
-    // `type Foo =` — RHS is empty (no type expression after '=').
-    // Should NOT panic. Tree-sitter error recovery produces a zero-width node
-    // that gets lowered to a TypeAlias with an empty-name Named type_expr.
+fn type_alias_with_an_empty_rhs_is_refused() {
     let source = "type Foo =";
-    let (decls, errors) = parse_decls(source);
-    assert!(
-        errors.is_empty(),
-        "expected no parse errors for empty-RHS recovery, got: {errors:?}"
-    );
+    assert_refused_at(source, source.len());
+}
 
-    // Tree-sitter recovery produces a TypeAlias — extract it.
-    // This .expect() depends on the current Tree-sitter grammar/error-recovery behavior;
-    // if a grammar change stops producing a TypeAlias node here, this will need updating.
-    let ta = decls
-        .iter()
-        .find_map(|d| match d {
-            Declaration::TypeAlias(ta) => Some(ta),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected Tree-sitter recovery to produce a TypeAlias for empty RHS, \
-                 got decls={decls:?}, errors={errors:?}"
-            )
-        });
+// ── Error case: unclosed type-argument list ──────────────────────
 
-    // Name should survive recovery intact
-    assert_eq!(
-        ta.name, "Foo",
-        "name should survive recovery; decls={decls:?}, errors={errors:?}"
-    );
-    // Zero-width recovery node produces an empty-name Named type_expr with no type_args
-    let (te_name, te_args) = as_named(&ta.type_expr);
-    assert!(
-        te_name.is_empty(),
-        "expected empty name for zero-width recovery node, got {:?}; errors={errors:?}",
-        te_name,
-    );
-    assert!(
-        te_args.is_empty(),
-        "expected no type_args for zero-width recovery node, got {:?}; errors={errors:?}",
-        te_args,
-    );
+#[test]
+fn type_alias_with_an_unclosed_type_argument_list_is_refused() {
+    let source = "type A = List<Real";
+    assert_refused_at(source, source.len());
 }
 
 // ── Type params combined with dimensional RHS ────────────────────

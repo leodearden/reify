@@ -308,4 +308,57 @@ assert "fake verify.sh: wrapper outcome line reports the exact exit code ($FAKE_
     bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -qF "$3"' \
     _ "$T5_STDERR" "$OUTCOME_TOKEN" "$FAKE_RC"
 
+# ---------------------------------------------------------------------------
+# Test 6: --confirm-failed SUPPRESSES the wrapper's own outcome line.
+#
+# Under that flag dark-factory spawns this wrapper with stdout=PIPE and
+# stderr=STDOUT — the two streams MERGED — and parses every non-blank line of
+# the result as one confirmed-still-failing test ID. The wrapper's
+# `==> offline deep-test lane: …` line is written unconditionally to stderr, so
+# merged it becomes a bogus test id, and DF's fingerprint/dedup path would file
+# a fix task literally named `==> offline deep-test lane: FAIL (exit 100)`.
+#
+# So under this one flag stderr is not a safe channel at all. That is why the
+# capture below merges the streams: asserting on stderr separately would miss
+# nothing here, but it would misdescribe the contract being protected.
+#
+# The confirm state is pointed at a scratch dir so the invocation resolves a
+# vacuous (absent) manifest and returns immediately, running no tests.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6: --confirm-failed suppresses the wrapper outcome line (merged-stream contract) ---"
+
+_t6_scratch="$(mktemp -d)"
+_t6_merged="$(mktemp)"
+T6_RC=0
+REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG="$_t6_scratch/absent-debug.txt" \
+REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$_t6_scratch/absent-release.txt" \
+REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG="$_t6_scratch/absent-debug.json" \
+REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$_t6_scratch/absent-release.json" \
+REIFY_VERIFY_CONFIRM_JUNIT="$_t6_scratch/absent-junit.xml" \
+REIFY_VERIFY_CONFIRM_LOG="$_t6_scratch/confirm.log" \
+    timeout 300 bash "$RUN_OFFLINE_DEEP" --test-threads=1 --confirm-failed >"$_t6_merged" 2>&1 || T6_RC=$?
+T6_MERGED="$(cat "$_t6_merged")"
+rm -f "$_t6_merged"
+rm -rf "$_t6_scratch"
+
+assert "--confirm-failed: the MERGED capture carries NO '$OUTCOME_TOKEN' outcome line (it would parse as a bogus confirmed test id)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiF -- "$2"' \
+    _ "$T6_MERGED" "$OUTCOME_TOKEN"
+
+assert "--confirm-failed: on a vacuous (nothing recorded) run the MERGED capture is empty — the wire encoding of 'no confirmed failures'" \
+    bash -c '[ -z "$(printf "%s" "$1" | tr -d "[:space:]")" ]' \
+    _ "$T6_MERGED"
+
+assert "--confirm-failed: the wrapper still propagates verify.sh's exit code (0 on the vacuous path)" \
+    test "$T6_RC" -eq 0
+
+# The suppression must be scoped to the flag, not a blanket removal: Tests 3-5
+# above already pin the outcome line on the normal, --print-plan and
+# shimmed-exit-code paths, so this block only has to prove the flag is what
+# turns it off — which it does by the contrast with Test 4's captures.
+assert "suppression is scoped to the flag: a --print-plan run (Test 4's PASS path) still emits the outcome line on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qiF -- "$2"' \
+    _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
+
 test_summary

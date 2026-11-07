@@ -44,6 +44,7 @@ use crate::entity::{
     check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
+use crate::name_env;
 use crate::scope::CompilationScope;
 use crate::type_compat::{
     OverloadResolution, resolve_function_overload, type_carries_trait_object,
@@ -55,7 +56,8 @@ use crate::type_resolution::{
 };
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
-    CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
+    CompiledTrait, EntityKind, PreludeRegistries, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    Visibility,
 };
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
@@ -91,11 +93,27 @@ pub(crate) fn phase_entities(
     // trait-name fallback.  Collected from local structure/occurrence decls
     // (already in `ctx.seen_entity_names` from pre_pass::collect_decl_refs)
     // and every prelude module's exported templates. See task 1876.
-    let structure_names: HashSet<String> = ctx
+    //
+    // The module-local `enum N` shadowing rule that reinterprets a name in this
+    // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
+    // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
+    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // phase on what the name means (esc-5429-1). See
+    // `enums_phase::build_local_enum_shadow_set`.
+    //
+    // task 5867: split out the LOCAL half first. `structure_names` is the union
+    // (local ∪ prelude) its own consumers want, but sub-target resolution needs
+    // to know which names the module OWNS — see `PreludeRegistries::
+    // local_entity_names` and property 1 of `find_template_with_prelude`.
+    let local_entity_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
         .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
         .map(|(name, _)| name.clone())
+        .collect();
+    let structure_names: HashSet<String> = local_entity_names
+        .iter()
+        .cloned()
         .chain(
             prelude
                 .iter()
@@ -111,18 +129,44 @@ pub(crate) fn phase_entities(
     // matches ImportDecl.path (see task 2226).
     let mut resolved_import_paths: Option<HashSet<String>> = None;
 
+    // task 5867: prelude templates keyed by name for SUB-TARGET resolution
+    // (`types::find_template_with_prelude`), which the `Sub` pre-passes in
+    // `entity.rs` consult to populate `sub_member_types` /
+    // `sub_realization_names` / `sub_structure_traits` / `sub_assoc_fn_keys`.
+    //
+    // This one carries NO `EntityKind` filter, and must not: sub targets may be
+    // occurrences — `sub o = STLOutput(…)` is a shipped shape (reify-cli's
+    // `output_driver_*.ri` fixtures). MEASURED: resolving sub targets against
+    // the Structure-filtered map below leaves `let res = self.o.resolution`
+    // typed `Type::Error` with a bogus `RealizationDecl`.
+    let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> =
+        name_env::bind::<TopologyTemplate, _>(&[], prelude.iter().copied())
+            .winners()
+            .map(|t| (t.name.clone(), t))
+            .collect();
+
     // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
     // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). Built once here (immutable borrow
-    // of `prelude` for the loop); `compile_entity` merges in local
+    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
     // already-compiled structure-defs. Occurrences are excluded — only
     // structure-defs are constructible via the ctor path.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude
+    //
+    // DERIVED from the unfiltered map above rather than re-walking `prelude`:
+    // a prelude occurrence that wins a name under NS-P1 (`name_env`) must not
+    // let a lower-precedence `structure def` of that name into the ctor view.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
         .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t| (t.name.clone(), t))
+        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
+        .map(|(k, v)| (k.clone(), *v))
         .collect();
+
+    // One bundle for the entity-compile recursion, so the two same-typed maps
+    // cannot be transposed at a call site (they are read by field name).
+    let prelude_registries = PreludeRegistries {
+        ctor: &prelude_template_registry,
+        sub_target: &prelude_sub_target_registry,
+        local_entity_names: &local_entity_names,
+    };
 
     // ── Ambient-default file-scope pre-pass (ambient-default-material task B) ──
     // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
@@ -167,6 +211,14 @@ pub(crate) fn phase_entities(
     // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
     // order with no filtering.
     let mut fn_decl_index: usize = 0;
+    // The order-INDEPENDENT companion to the order-dependent call table each fn
+    // body resolves against (task #5371), merged ONCE for the whole pass and
+    // borrowed by every fn scope. It changes nothing about which overload
+    // resolves; see `CompilationScope::declared_callable_names` for what it is for.
+    let declared_callables = crate::functions::declared_callable_names(
+        &ctx.declared_fn_names,
+        &ctx.resolution_structure_names,
+    );
 
     for decl in &parsed.declarations {
         match decl {
@@ -192,7 +244,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -232,51 +284,27 @@ pub(crate) fn phase_entities(
                 // task 5494 (PRD `stdlib-namespace.md` D-8): a fn's param defaults
                 // and body compile HERE, in source order, against the AUTHORITATIVE
                 // structure templates built so far — never against a mirror.
-                //
-                // The registry composition is the same as `compile_entity`'s
-                // `entity_template_registry`: prelude structure_defs first, then the
-                // module's own already-compiled structure templates (local shadows
-                // prelude).  A fn body may therefore construct a same-module
-                // structure declared ABOVE it; one declared BELOW is not in the
-                // registry, matching the no-forward-reference rule `compile_entity`
-                // already obeys for entity → entity references.
                 let idx = fn_decl_index;
                 fn_decl_index += 1;
-                let fn_template_registry: HashMap<String, &TopologyTemplate> =
-                    prelude_template_registry
-                        .iter()
-                        .map(|(k, v)| (k.clone(), *v))
-                        .chain(
-                            ctx.templates
-                                .iter()
-                                .filter(|t| t.entity_kind == EntityKind::Structure)
-                                .map(|t| (t.name.clone(), t)),
-                        )
-                        .collect();
-                let compiled = match ctx.fn_signatures.get(idx) {
-                    Some(sig) => {
-                        debug_assert_eq!(
-                            sig.name, fn_def.name,
-                            "fn_signatures must stay parallel to the source-order \
-                             Declaration::Function sequence"
-                        );
-                        // `&ctx.functions` is the prior-siblings table: a fn resolves
-                        // calls to EARLIER sibling declarations only (forward
-                        // references are not supported at the function layer).
-                        crate::compile_builder::functions_phase::compile_function_decl(
-                            fn_def,
-                            sig,
-                            &ctx.resolution_enums,
-                            &ctx.functions,
-                            &ctx.resolution_structure_names,
-                            &fn_template_registry,
-                            &mut ctx.diagnostics,
-                        )
-                    }
-                    None => None,
+                let Some(sig) = ctx.fn_signatures.get(idx) else {
+                    continue;
                 };
-                drop(fn_template_registry);
-                if let Some(f) = compiled {
+                debug_assert_eq!(
+                    sig.name, fn_def.name,
+                    "fn_signatures must stay parallel to the source-order \
+                     Declaration::Function sequence"
+                );
+                if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
+                    fn_def,
+                    sig,
+                    &ctx.resolution_enums,
+                    &ctx.functions,
+                    &ctx.templates,
+                    prelude,
+                    &ctx.resolution_structure_names,
+                    &declared_callables,
+                    &mut ctx.diagnostics,
+                ) {
                     // Replace this fn's signature stub with the real
                     // `CompiledFunction` so a LATER structure calling it pads an
                     // omitted defaulted arg from real `param_defaults`
@@ -312,7 +340,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -357,7 +385,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
-                            &prelude_template_registry,
+                            &prelude_registries,
                         );
                     }
                 }
@@ -656,13 +684,9 @@ fn resolve_ambient_default(
 ///      compiled members feed the residual.
 ///   3. Resolve each `JointDofField.type_expr` (`Angle` → `Scalar<ANGLE>`,
 ///      `Length` → `Scalar<LENGTH>`, `Orientation` → `Orientation(n)`).
-///   4. Compare the body's geometric residual against the declared free DOF by
-///      exact-integer COUNT and KIND via [`crate::joint_self_check`]; push any
-///      returned `E_JOINT_DOF_MISMATCH` diagnostic.
-///
-/// An empty body removes no DOF, so its residual is the full nominal (3, 3),
-/// which cannot match any sane declaration — caught here as a mismatch (the α
-/// empty-`{ }`-body lowering case), with no bespoke empty-body code.
+///   4. Push the diagnostics of
+///      [`crate::joint_self_check::joint_dof_diagnostics`], which owns the
+///      COUNT/KIND verdict and both of its gradualism gates.
 fn compile_joint_self_check(
     joint: &reify_ast::JointDef,
     structure_names: &HashSet<String>,
@@ -711,11 +735,11 @@ fn compile_joint_self_check(
     }
 
     // (3) Resolve each declared DOF field type.
-    let declared_types: Vec<Type> = joint
+    let declared_dof: Vec<(&str, Type, SourceSpan)> = joint
         .dof
         .iter()
         .map(|f| {
-            resolve_type_expr_with_aliases(
+            let ty = resolve_type_expr_with_aliases(
                 &f.type_expr,
                 &type_param_names,
                 alias_registry,
@@ -723,7 +747,8 @@ fn compile_joint_self_check(
                 structure_names,
                 trait_names,
             )
-            .unwrap_or(Type::Error)
+            .unwrap_or(Type::Error);
+            (f.name.as_str(), ty, f.span)
         })
         .collect();
 
@@ -732,9 +757,9 @@ fn compile_joint_self_check(
     // DOF (`Angle`/`Length`) carrying an `in <range>` bound, compile the range
     // against the param scope and require its element dimension to equal the
     // declared DOF's. Orientation DOFs (no scalar range) and absent ranges are
-    // skipped. Indexed against `declared_types` so each field is paired with its
+    // skipped. Zipped with `declared_dof` so each field is paired with its
     // already-resolved type.
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+    for (field, (_, declared_ty, _)) in joint.dof.iter().zip(declared_dof.iter()) {
         let Type::Scalar { dimension: dof_dim } = declared_ty else {
             continue; // non-Scalar DOF (Orientation / unresolved Error) — no scalar range
         };
@@ -766,52 +791,13 @@ fn compile_joint_self_check(
         }
     }
 
-    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). Two gradualism gates
-    // stand in front of it; either leaves the residual comparison unable to
-    // substantiate a verdict, so it is skipped rather than emit a spurious
-    // `E_JOINT_DOF_MISMATCH`:
-    //
-    //   (a) a declared DOF field whose resolved type has no geometric kind
-    //       (neither Angle, Length, nor Orientation) — surfaced here, per-field,
-    //       with a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
-    //       since its `(0, 0)` contribution would otherwise emit a confusing
-    //       `E_JOINT_DOF_MISMATCH` that never names the real problem. A
-    //       `Type::Error` DOF (already diagnosed by the resolver) gates the
-    //       verdict too, but draws no second diagnostic (anti-cascade).
-    //   (b) a body relation whose DOF COUNT is curated but whose rot/trans split
-    //       is not (e.g. `tangent`): `residual_kinds` omits it, INFLATING the
-    //       residual above the true geometry, so the verdict could fire
-    //       spuriously (see `joint_self_check::body_has_undecidable_kind_split`).
-    let mut skip_verdict = false;
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
-        if *declared_ty == Type::Error {
-            skip_verdict = true; // resolver already diagnosed — no second diagnostic
-        } else if crate::joint_self_check::dof_kind_of(declared_ty).is_none() {
-            skip_verdict = true;
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "joint `{}` DOF `{}`: type `{}` is not a valid joint DOF kind \
-                     (expected Angle, Length, or Orientation)",
-                    joint.name, field.name, declared_ty
-                ))
-                .with_code(DiagnosticCode::ArgTypeMismatch)
-                .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
-            );
-        }
-    }
-    if crate::joint_self_check::body_has_undecidable_kind_split(&compiled_body) {
-        skip_verdict = true;
-    }
-
-    if !skip_verdict {
-        let residual = crate::joint_self_check::residual_kinds(&compiled_body);
-        let declared = crate::joint_self_check::declared_kinds(&declared_types);
-        if let Some(diag) =
-            crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
-        {
-            diagnostics.push(diag);
-        }
-    }
+    // (4) Definition-time COUNT/KIND verdict, behind its gradualism gates (PRD §7.1).
+    diagnostics.extend(crate::joint_self_check::joint_dof_diagnostics(
+        &joint.name,
+        &declared_dof,
+        &compiled_body,
+        joint.span,
+    ));
 }
 
 /// Compile a single `structure` or `occurrence` declaration, pushing the
@@ -855,7 +841,10 @@ fn compile_entity_decl(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables, bundled — see
+    // `types::PreludeRegistries` for why they travel as one named-field value
+    // rather than as adjacent same-typed positional parameters.
+    prelude_registries: &PreludeRegistries<'_, '_>,
 ) {
     let template = compile_entity(
         &entity_ref,
@@ -877,7 +866,7 @@ fn compile_entity_decl(
         pending_connect_auto_params,
         diagnostics,
         templates,
-        prelude_template_registry,
+        prelude_registries,
     );
     templates.push(template);
 }
@@ -903,13 +892,8 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
     // `emit_leaf_conformance_for_arg_type` early-returns on a registry miss and
     // a non-conforming ctor arg (e.g. `Beam(mat: PointLoad())` where
     // `mat : ElasticMaterial`) is silently admitted.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Rebuild the trait registry (same composition as phase_entities).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
@@ -972,8 +956,8 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &arg_name,
                     &compiled_arg,
                     span,
-                    // task 5465 (family 4): `enum_defs` is `prelude ++
-                    // module-local`, so the walker's general concrete-leaf arm
+                    // task 5465 (family 4): `enum_defs` is the module-local
+                    // plus prelude enum table, so the walker's general concrete-leaf arm
                     // can tolerate D1 / F-Mono enum erasure. All three are
                     // disjoint-field shared borrows alongside the
                     // `&mut ctx.diagnostics` below.
@@ -1040,13 +1024,8 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_pending_bound_checks`.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_sub_override_autos);
 
@@ -1190,13 +1169,8 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_sub_override_autos`.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_connect_auto_params);
 
@@ -1390,13 +1364,8 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 /// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
 pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     // Build template registry (same composition as phase_pending_bound_checks).
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
@@ -1405,7 +1374,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
-    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // task 5465 (family 4): module-local plus prelude enum table, threaded into
     // the conformance walker so its general concrete-leaf arm can tolerate
     // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
     // `resolution_functions` because the `walk` closure below borrows `ctx`
@@ -1655,8 +1624,12 @@ fn check_expr_fn_calls(
 }
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
-/// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>`, a bare `StructureRef(_)`, or a `Type::Vector { .. }`.
+/// `check_trait_arg_conformance` on each named or positionally bound arg, EXCEPT
+/// one bound to a bare `Type::TraitObject` field (the D6 exemption, see the loop).
+///
+/// Since task 5302 every other field type goes through the shared conformance
+/// walker, at `CTOR_FIELD_CONFORMANCE_SEVERITY` (`Error` since δ, task 5306).
+/// The user-facing rules are `docs/reify-language-spec.md` §4.9.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -1664,26 +1637,6 @@ fn check_expr_fn_calls(
 /// `StructureInstanceCtor` expressions and were not checked.  By walking the
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
-///
-/// **Scope: `List<TraitObject>`, `StructureRef`, and `Type::Vector` params.**
-/// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
-/// are intentionally excluded — those are either already covered by the
-/// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
-/// (e.g. `ConstitutiveLawInput`).  Extending this walk to bare `TraitObject`
-/// params would regress those escape-hatch call sites, so it is deliberately
-/// out of scope here.
-///
-/// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
-/// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` StructureRef arm, which emits
-/// `TypeNotConformingToStructureRef` for concrete type mismatches.
-///
-/// `Type::Vector` params (task-4622): vector params like `axis : Vector3<Length>`
-/// are routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` Vector arm, which emits
-/// `TypeNotConformingToVector` for non-vector args (bare scalars).  The check
-/// is shape-based (not `type_compatible`) so a dimensionless `vec3(…)` arg is
-/// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     // task 5465 (family 4 + amendment): the templates/traits/enums trio,
@@ -1718,19 +1671,26 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
-            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
-            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
-            // Selector) to every concrete field type, routed through the shared
-            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            // task 5302 (struct-ctor-conformance α): check ALL params EXCEPT a bare
+            // `Type::TraitObject(_)`, at CTOR_FIELD_CONFORMANCE_SEVERITY.
             //
-            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
-            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
-            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
-            // component paths. REVISIT this exemption once those escape-hatch call
-            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
-            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
-            // trait params are checked too.
+            // Bare TraitObject params stay EXEMPT here (PRD
+            // docs/prds/struct-ctor-field-type-conformance.md, D6): they were
+            // deliberate type-coercion escape hatches, the original being
+            // `ConstitutiveLawInput.law : ConstitutiveLaw` (that shim was retired in
+            // task 4442).
+            //
+            // SCOPE: only this expression-position path is exempt. `sub x = T(…)`
+            // and `sub x : T { … }` go through `PendingBoundCheck::TraitArgConformance`,
+            // which DOES check bare trait params — compare
+            // `sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct`
+            // (harness_traits/trait_typed_param_tests.rs) with
+            // `boundary9_bare_trait_param_value_cell_is_exempt`. Authors see the
+            // exemption in docs/reify-language-spec.md §4.9.
+            //
+            // REVISIT once no escape-hatch call site relies on it (measuring that is
+            // #7957): drop the `!matches!(… TraitObject …)` guard so bare trait
+            // params are checked here too.
             let should_check = template
                 .value_cells
                 .iter()

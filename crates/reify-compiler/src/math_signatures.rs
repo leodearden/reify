@@ -17,7 +17,7 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The complete set of math-linalg **construction** builtin names recognised
@@ -27,12 +27,26 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// Case-sensitive: Reify function names are snake_case. (The §3 operation /
 /// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
 /// 4182 δ — NOT in this construction-only slice.)
-pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
+///
+/// **`point3`/`point2` (task 5344).** The point twins live HERE, alongside
+/// `vec3`/`vec2`, rather than in the construction-datum vocabulary
+/// (`units::datum_constructor_result_type`). They are one eval line apart —
+/// `"point3" => construct_point_or_vector(args, 3, true)` sits directly above
+/// `"vec3" => construct_point_or_vector(args, 3, false)` in
+/// `reify-stdlib/src/geometry.rs` — same helper, same arity, one bool apart, and
+/// both carry the argument-DEPENDENT quantity slot that needs this args-aware
+/// resolver shape. Splitting the twins across two families would contradict
+/// one-vocabulary-one-resolver; `units.rs`'s
+/// `builtin_name_families_are_pairwise_disjoint` pins that the datum
+/// resolver does not also claim them.
+pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[
+    "vec", "matrix", "diag", "identity", "vec3", "vec2", "point3", "point2",
+];
 
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
 /// to [`MATH_CONSTRUCTION_NAMES`] — kept as a SEPARATE slice so α's
-/// construction-only contract (`math_construction_names_are_exactly_the_four`)
+/// construction-only contract (`math_construction_names_are_exactly_the_eight`)
 /// stays valid; [`is_math_typed_fn`] ORs the two. Single source of truth —
 /// imported into the `units.rs` test module to pin disjointness from the five
 /// geometry families, the dynamics-query family, AND the construction family.
@@ -81,7 +95,7 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
 /// The complete set of §1.2 trig/transcendental builtin names recognised by
 /// the compiler (task 4352). Sibling to [`MATH_CONSTRUCTION_NAMES`] and
 /// [`MATH_OPERATION_NAMES`] — kept as a SEPARATE slice so the construction
-/// exact-set contract (`math_construction_names_are_exactly_the_four`) and the
+/// exact-set contract (`math_construction_names_are_exactly_the_eight`) and the
 /// operation exact-set contract (`math_operation_names_are_exactly_the_frozen_set`)
 /// both stay valid; [`is_math_typed_fn`] ORs all three. Single source of truth
 /// — imported into the `units.rs` test module to pin disjointness from every
@@ -90,6 +104,14 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
 /// Frozen at EXACTLY the 9 task-4352 §1.2 names. log10/sinh/cosh/tanh also
 /// drift to the first-arg default but are out of scope (deferred), mirroring
 /// how task-4182 froze its 26 §3 names and left trig out.
+///
+/// That deferral has an owner: #6003 (registry τ1) registers
+/// floor/ceil/round/log10/remap/sinh/cosh/tanh as builtin-signature rows and
+/// deletes this paragraph when it lands. The class is already machine-visible
+/// in `unresolved_function::EVAL_DEFERRED_BUILTIN_NAMES` under that same owner
+/// cite, so read the manifest rather than this prose for which names ride the
+/// first-arg fallback today — prose drifts, and the manifest is pinned by
+/// `eval_deferred_manifest_contains_the_known_deferred_names`.
 ///
 /// Case-sensitive snake_case, mirroring the sibling slices.
 pub const MATH_TRANSCENDENTAL_NAMES: &[&str] = &[
@@ -113,6 +135,89 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
         || MATH_TRANSCENDENTAL_NAMES.contains(&name)
 }
 
+/// The forward-trig names whose argument dimension
+/// [`check_forward_trig_arg_dimensions`] polices.
+const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
+
+/// Rejects a `sin`/`cos`/`tan` argument typed as a dimensioned `Scalar` other
+/// than `Angle`, pushing one `ArgTypeMismatch` Error at the call span.
+///
+/// `Angle`, dimensionless and `Int` arguments pass, mirroring the `Some` arms
+/// of `reify_stdlib::helpers::trig_input`; eval turns every other scalar
+/// dimension into `Value::Undef`, so this rejects statically only what already
+/// fails at runtime. Unresolved arguments (`Error`, `TypeParam`, `ScalarParam`)
+/// pass, and so does every non-`Scalar` type: this checks dimension, not kind.
+///
+/// Like `check_builtin_arg_types` and `check_relation_arg_types`, it only
+/// pushes diagnostics and never changes the call's result type.
+///
+/// The other transcendental names are deliberately unchecked here. Their owners
+/// are recorded in `docs/legibility/design-invariants.md` (D7), and the
+/// scope-fence tests in
+/// `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
+/// pin them.
+pub(crate) fn check_forward_trig_arg_dimensions(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !FORWARD_TRIG_NAMES.contains(&name) {
+        return;
+    }
+    let Some(arg) = compiled_args.first() else {
+        // Call is short — arity errors are handled elsewhere; a missing arg is
+        // not a dimension mismatch.
+        return;
+    };
+
+    match &arg.result_type {
+        // Gradualism: poison and unresolved types pass silently, as in
+        // `check_builtin_arg_types` and `check_relation_arg_types`.
+        Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
+
+        // Mirrors `trig_input`'s `Value::Int` arm.
+        Type::Int => {}
+
+        // Bare radians (dimensionless) or a true `Angle` — both accepted.
+        Type::Scalar { dimension }
+            if dimension.is_dimensionless() || *dimension == DimensionVector::ANGLE => {}
+
+        // Any OTHER dimensioned scalar: a definite static mismatch — eval
+        // would Undef here.
+        other @ Type::Scalar { .. } => {
+            emit_trig_dimension_mismatch(name, other, call_span, diagnostics);
+        }
+
+        // Every other `Type` variant (Bool, Geometry, Vector, List, …) passes
+        // silently: this checks dimension, not kind.
+        _ => {}
+    }
+}
+
+/// Emit the single `ArgTypeMismatch` error for a forward-trig argument whose
+/// dimension is neither `Angle` nor dimensionless.
+///
+/// Reuses the EXISTING [`DiagnosticCode::ArgTypeMismatch`] rather than minting a
+/// new code: the `E_ArgDimension` taxonomy is #6943's chartered ruling
+/// (builtin-signature-registry INV-SF-6) and inventing it here would pre-empt it.
+/// Construction and wording mirror `relation_signatures::emit_unit_mismatch`, so
+/// this family's diagnostics read identically to the geometric-relation family's.
+fn emit_trig_dimension_mismatch(
+    name: &str,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!("{name}: argument expects Angle or dimensionless, got {actual}");
+    let label = format!("expected Angle or dimensionless, got {actual}");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
+}
+
 /// Result type for a math-linalg construction builtin, derived from the
 /// compiled argument structure.
 ///
@@ -130,7 +235,13 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
 /// `Value::Tensor`, and `value_type_kind_matches(Value::Vector, Type::List)` is
 /// false, so a List fallback would raise a runtime `TypeKindMismatch`.
 ///
-/// Only reached for the four construction names (the caller gates on
+/// The fixed-`n` constructors (`vec3`/`vec2`, `point3`/`point2`) take `n` from
+/// the NAME and only the quantity slot from the args — the same
+/// argument-DEPENDENT quantity governed by the "Point / Vector quantity-slot
+/// convention" in `reify_core::ty`, which is why they need this args-aware
+/// shape rather than the name-only one.
+///
+/// Only reached for names in the three slices (the caller gates on
 /// [`is_math_typed_fn`]); the `_` arm is therefore unreachable in practice and
 /// returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
@@ -144,26 +255,35 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
                 quantity: Box::new(quantity),
             }
         }
-        // `vec3(x,y,z)` → Vector{n:3, quantity} — quantity from first variadic
-        // scalar component (mirrors eval construct_point_or_vector(args, 3, false)
-        // in reify-stdlib/src/geometry.rs:936). n is fixed from the name.
-        "vec3" => Type::Vector {
-            n: 3,
-            quantity: Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
-        // `vec2(x,y)` → Vector{n:2, quantity} — same pattern as vec3.
-        "vec2" => Type::Vector {
-            n: 2,
-            quantity: Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
+        // The four FIXED-`n` component constructors, collapsed into one arm
+        // because eval collapses them too: all four are
+        // `construct_point_or_vector(args, n, is_point)` in
+        // reify-stdlib/src/geometry.rs:936 — same helper, same arity, differing
+        // only in `n` and one bool.
+        //   vec3(x,y,z)   → Vector{n:3, quantity}
+        //   vec2(x,y)     → Vector{n:2, quantity}
+        //   point3(x,y,z) → Point {n:3, quantity}
+        //   point2(x,y)   → Point {n:2, quantity}
+        // `n` is fixed from the NAME; the quantity slot is the one the variadic
+        // scalar components agree on, via `homogeneous_quantity` — the same rule
+        // `list_shape` / `matrix_shape` apply, reached inline here because this
+        // arm routes through neither.
+        //
+        // The point twins also make the VALUE constructor agree with the
+        // same-named TYPE constructor: `Type::point3(q)` is an established
+        // `reify_core` helper for `Type::Point { n: 3, quantity: q }`, so
+        // `point3` already means this in type position (e.g.
+        // `closest_point`/`centroid` resolve to `Type::point3(Type::length())`
+        // in `units.rs`).
+        "vec3" | "vec2" | "point3" | "point2" => {
+            let n = if name.ends_with('3') { 3 } else { 2 };
+            let quantity = Box::new(homogeneous_quantity(args.iter().map(|a| &a.result_type)));
+            if name.starts_with("point") {
+                Type::Point { n, quantity }
+            } else {
+                Type::Vector { n, quantity }
+            }
+        }
         // `diag(list)` → N×N Tensor (same N/quantity recovery as `vec`).
         "diag" => {
             let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), list_shape);
@@ -486,19 +606,39 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
     }
 }
 
+/// The quantity a literal's elements agree on: element `[0]`'s `Type` when every
+/// element has the same [`arg_dimension`] (so `Int` beside `Real` agrees), else
+/// `Type::dimensionless_scalar()` — also for no elements. Why that degrade
+/// target silences the quantity rule: `reify_core::ty`'s module doc, *What the
+/// arg side infers from a literal*.
+fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
+    let mut elems = elems.into_iter();
+    let Some(first) = elems.next() else {
+        return Type::dimensionless_scalar();
+    };
+    let dim = arg_dimension(first);
+    if elems.all(|e| arg_dimension(e) == dim) {
+        first.clone()
+    } else {
+        Type::dimensionless_scalar()
+    }
+}
+
 /// Recover `(n, element_quantity)` from a single list argument (`vec` / `diag`).
 ///
-/// - `ListLiteral(elems)` → `(elems.len(), elems[0].result_type)` — exact.
+/// - `ListLiteral(elems)` → `(elems.len(), <the quantity the elements agree on>)`.
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
+///
+/// Every element is inspected, via [`homogeneous_quantity`]; `n` is the element
+/// count either way.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
-        let quantity = elems
-            .first()
-            .map(|e| e.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        (elems.len(), quantity)
+        (
+            elems.len(),
+            homogeneous_quantity(elems.iter().map(|e| &e.result_type)),
+        )
     } else {
         (0, innermost_list_element(&arg.result_type))
     }
@@ -507,18 +647,42 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 /// Recover `(ncols, cell_quantity)` from a depth-2 list argument (`matrix`).
 ///
 /// - outer `ListLiteral` whose first row is itself a `ListLiteral(cells)` →
-///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
-///   projects to `n = N`, per design decision D5).
+///   `(cells.len(), <the quantity every cell of every row agrees on>)`.
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
+///
+/// ALL cells of ALL rows are inspected, via [`homogeneous_quantity`]. Scanning
+/// row 0 alone would miss the heterogeneity a block-structured matrix actually
+/// has — a stiffness/compliance matrix or a screw-theory spatial Jacobian is
+/// uniform WITHIN a row block and differs ACROSS blocks.
+///
+/// Two shapes leave the literal un-inspectable and degrade the quantity as
+/// well — the conservative direction D7 already takes at this function: a row
+/// that is not itself a `ListLiteral`, and an EMPTY row 0. The empty row 0 pins
+/// `n = 0`, which discards every later row, so inferring a quantity from those
+/// rows would reject `matrix([[], [1m, 2m]])` at a `Matrix<M, N, Dimensionless>`
+/// param on the strength of cells the `n` projection threw away.
+///
+/// `n` is unchanged: still row 0's column count, so an M×N matrix still projects
+/// to `n = N` (design decision D5).
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
     {
-        let quantity = cells
-            .first()
-            .map(|c| c.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        return (cells.len(), quantity);
+        let ncols = cells.len();
+        let row_cells: Option<Vec<&Vec<CompiledExpr>>> = rows
+            .iter()
+            .map(|r| match &r.kind {
+                CompiledExprKind::ListLiteral(row_cells) => Some(row_cells),
+                _ => None,
+            })
+            .collect();
+        let quantity = match row_cells {
+            Some(row_cells) if ncols > 0 => {
+                homogeneous_quantity(row_cells.into_iter().flatten().map(|c| &c.result_type))
+            }
+            _ => Type::dimensionless_scalar(),
+        };
+        return (ncols, quantity);
     }
     (0, innermost_list_element(&arg.result_type))
 }
@@ -569,10 +733,13 @@ fn reduce_field_codomain(codomain: &Type) -> Type {
 mod tests {
     use super::*;
 
-    /// The six construction-builtin names, frozen by the §3 contract (task 4622
-    /// adds vec3/vec2). Local fixture so a drift in `MATH_CONSTRUCTION_NAMES` is
-    /// caught against an independent list rather than against itself.
-    const EXPECTED_NAMES: [&str; 6] = ["vec", "matrix", "diag", "identity", "vec3", "vec2"];
+    /// The eight construction-builtin names, frozen by the §3 contract (task
+    /// 4622 adds vec3/vec2; task 5344 adds point3/point2). Local fixture so a
+    /// drift in `MATH_CONSTRUCTION_NAMES` is caught against an independent list
+    /// rather than against itself.
+    const EXPECTED_NAMES: [&str; 8] = [
+        "vec", "matrix", "diag", "identity", "vec3", "vec2", "point3", "point2",
+    ];
 
     // ── Name-family contract (step-9 RED / step-10 GREEN) ────────────────────
 
@@ -631,14 +798,18 @@ mod tests {
         // task 4622 additions — PascalCase must not match.
         assert!(!is_math_typed_fn("Vec3"));
         assert!(!is_math_typed_fn("Vec2"));
+        // task 5344 additions — PascalCase must not match.
+        assert!(!is_math_typed_fn("Point3"));
+        assert!(!is_math_typed_fn("Point2"));
     }
 
-    /// `MATH_CONSTRUCTION_NAMES` is exactly the six construction names (vec,
-    /// matrix, diag, identity, vec3, vec2) — membership both ways plus an exact
-    /// count (so neither a missing nor an extra name slips through).
-    /// Task 4622 extends the original four-name set by adding vec3/vec2.
+    /// `MATH_CONSTRUCTION_NAMES` is exactly the eight construction names (vec,
+    /// matrix, diag, identity, vec3, vec2, point3, point2) — membership both
+    /// ways plus an exact count (so neither a missing nor an extra name slips
+    /// through). Task 4622 extended the original four-name set by adding
+    /// vec3/vec2; task 5344 adds the point3/point2 twins.
     #[test]
-    fn math_construction_names_are_exactly_the_six() {
+    fn math_construction_names_are_exactly_the_eight() {
         assert_eq!(
             MATH_CONSTRUCTION_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -713,7 +884,7 @@ mod tests {
     /// `MATH_OPERATION_NAMES` is exactly the pre-1 frozen operation set —
     /// membership both ways plus an exact count (so neither a missing nor an
     /// extra name slips through), mirroring
-    /// `math_construction_names_are_exactly_the_four`.
+    /// `math_construction_names_are_exactly_the_eight`.
     #[test]
     fn math_operation_names_are_exactly_the_frozen_set() {
         assert_eq!(
@@ -740,7 +911,7 @@ mod tests {
 
     /// Both families are recognised by `is_math_typed_fn`, but they remain
     /// distinct slices — δ ORs them rather than merging (so α's
-    /// `math_construction_names_are_exactly_the_four` stays valid).
+    /// `math_construction_names_are_exactly_the_eight` stays valid).
     #[test]
     fn is_math_typed_fn_recognises_construction_and_operation_alike() {
         for name in EXPECTED_NAMES {
@@ -862,17 +1033,27 @@ mod tests {
         CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
-    /// A `Scalar<Length>` element expression.
-    fn length_elem(v: f64) -> CompiledExpr {
+    /// A `Scalar<dimension>` element expression at an arbitrary dimension.
+    fn scalar_elem(v: f64, dimension: DimensionVector) -> CompiledExpr {
         CompiledExpr::literal(
             Value::Scalar {
                 si_value: v,
-                dimension: DimensionVector::LENGTH,
+                dimension,
             },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
+            Type::Scalar { dimension },
         )
+    }
+
+    /// A `Scalar<Length>` element expression.
+    fn length_elem(v: f64) -> CompiledExpr {
+        scalar_elem(v, DimensionVector::LENGTH)
+    }
+
+    /// A `Scalar<Mass>` element expression — a SECOND concrete dimension, so a
+    /// literal can disagree with [`length_elem`] on dimension without either
+    /// side being dimensionless.
+    fn mass_elem(v: f64) -> CompiledExpr {
+        scalar_elem(v, DimensionVector::MASS)
     }
 
     /// A `ListLiteral` of `elems` whose own `result_type` is `List(elem_ty)`.
@@ -881,6 +1062,20 @@ mod tests {
     /// realistically anyway.
     fn list_lit(elems: Vec<CompiledExpr>, elem_ty: Type) -> CompiledExpr {
         CompiledExpr::list_literal(elems, Type::List(Box::new(elem_ty)))
+    }
+
+    /// A depth-2 `matrix` `ListLiteral` laid out row-major — the module's single
+    /// matrix-literal builder. Each row's own `result_type` is immaterial for
+    /// the same reason [`list_lit`]'s is, so it stays dimensionless throughout;
+    /// only the CELL expressions carry the types under test. A row that is
+    /// deliberately NOT a well-formed cell list (the un-inspectable-row case)
+    /// cannot be expressed here and is built inline at its one call site.
+    fn matrix_lit(rows: Vec<Vec<CompiledExpr>>) -> CompiledExpr {
+        let rows = rows
+            .into_iter()
+            .map(|cells| list_lit(cells, Type::dimensionless_scalar()))
+            .collect();
+        list_lit(rows, Type::List(Box::new(Type::dimensionless_scalar())))
     }
 
     /// (a) `vec` over a 3-element dimensionless `ListLiteral` →
@@ -916,10 +1111,121 @@ mod tests {
         );
     }
 
+    // ── Heterogeneous literals degrade the quantity slot (task 5889) ─────────
+    //
+    // The homogeneous half: `vec_result_type_length_preserves_quantity` above.
+
+    /// A `vec` literal mixing a dimensioned element with dimensionless ones
+    /// infers NO dimension: the quantity degrades to `Type::dimensionless_scalar()`
+    /// while `n` still counts every element.
+    #[test]
+    fn vec_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 0, 0]) must infer no dimension — its elements disagree — while \
+             keeping n = 3"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, not just dimensioned
+    /// mixed with bare: the rule is "the elements agree", not "no element is
+    /// dimensionless".
+    #[test]
+    fn vec_result_type_cross_dimension_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), mass_elem(2.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 2kg]) must infer no dimension — Length and Mass disagree"
+        );
+    }
+
+    /// `diag` is `list_shape`'s SECOND consumer, so the degrade is pinned at
+    /// both call sites and not just at `vec`.
+    #[test]
+    fn diag_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("diag", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "diag([1m, 0, 0]) must degrade its quantity exactly as `vec` does — both \
+             route through `list_shape`"
+        );
+    }
+
+    /// FENCE — `Int` and `Real` elements AGREE (both dimensionless), so nothing
+    /// degrades and element `[0]`'s `Type::Int` survives verbatim: agreement is
+    /// by dimension, not `Type`.
+    #[test]
+    fn vec_result_type_int_and_real_elements_agree_and_keep_int_quantity() {
+        let arg = list_lit(
+            vec![
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+                real_elem(2.0),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Int)
+            },
+            "Int and Real are both DIMENSIONLESS, so they agree and element [0]'s \
+             Type::Int must survive — the heterogeneity check compares dimensions, \
+             not Types"
+        );
+    }
+
+    /// FENCE, MIRRORED — the same dimensionless pair in the other ORDER keeps
+    /// element `[0]`'s `Type` too, and so yields `Real` rather than `Int`.
+    #[test]
+    fn vec_result_type_real_and_int_elements_agree_and_keep_real_quantity() {
+        let arg = list_lit(
+            vec![
+                real_elem(2.0),
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([2.0, 1]) must keep element [0]'s Real, mirroring vec([1, 2.0]) \
+             keeping Int — the retained Type follows the order, the inferred \
+             dimension does not"
+        );
+    }
+
     // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
 
     /// (c-4622a) `vec3` over 3 dimensionless Real args →
-    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from the
+    /// dimension the components agree on).
     ///
     /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
     #[test]
@@ -936,7 +1242,8 @@ mod tests {
     }
 
     /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
-    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from the dimension the
+    /// components agree on).
     ///
     /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
     #[test]
@@ -955,21 +1262,172 @@ mod tests {
         );
     }
 
+    // ── Heterogeneous components degrade the quantity slot (task 5889) ───────
+    //
+    // The homogeneous half: `vec2_result_type_length_is_vector_n2_length` above,
+    // `point3_result_type_length_is_point_n3_length` below.
+
+    /// `vec3` whose components DISAGREE on dimension infers no dimension. `n`
+    /// still comes from the NAME suffix, never from the arguments — asserting
+    /// the whole `Type` pins both at once.
+    #[test]
+    fn vec3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(1m, 0, 0) must infer no dimension — its components disagree — while \
+             n stays 3, fixed from the name"
+        );
+    }
+
+    /// The `point` twin, which shares this one collapsed arm: the degrade must
+    /// not be `Vector`-only.
+    #[test]
+    fn point3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "point3(1m, 0, 0) must degrade exactly as its vec3 twin does — one arm \
+             serves both"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, and `vec2` is covered:
+    /// the rule is "the components agree", not "no component is dimensionless".
+    #[test]
+    fn vec2_result_type_cross_dimension_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), mass_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec2(1m, 2kg) must infer no dimension — Length and Mass disagree"
+        );
+    }
+
+    // ── point3/point2 result-type tests (task 5344, esc-5344-4 grant) ─────────
+
+    /// `point3` over 3 `Scalar<Length>` args → `Point{n:3, quantity:Scalar<Length>}`,
+    /// exactly symmetric with the `vec3` arm above (same eval helper
+    /// `construct_point_or_vector(args, 3, ·)`, one bool apart).
+    ///
+    /// This also makes the VALUE constructor agree with the same-named TYPE
+    /// constructor: `Type::point3(q)` is an established `reify_core` helper
+    /// meaning exactly `Type::Point { n: 3, quantity: q }`, so typing the call
+    /// `point3(0mm, 0mm, 0mm)` as `Point3<Length>` invents no new convention.
+    ///
+    /// RED until the `"point3"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point3_result_type_length_is_point_n3_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(0.0), length_elem(0.0), length_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(len_ty)
+            },
+            "point3(0mm, 0mm, 0mm) must type as Point{{n:3, quantity:Scalar<Length>}}"
+        );
+    }
+
+    /// `point2` over 2 `Scalar<Length>` args → `Point{n:2, quantity:Scalar<Length>}`
+    /// — same pattern as `point3`, mirroring the `vec2`/`vec3` pair.
+    ///
+    /// RED until the `"point2"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point2_result_type_length_is_point_n2_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(1.0), length_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("point2", &args),
+            Type::Point {
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "point2(1m, 2m) must type as Point{{n:2, quantity:Scalar<Length>}}"
+        );
+    }
+
+    /// `point3` over dimensionless args → `Point{n:3, quantity:Real}`: `n` is
+    /// fixed from the NAME, the quantity slot tracks the dimension the arguments
+    /// agree on. Pins that the quantity is argument-DERIVED (not hard-coded to
+    /// Length), which is the whole reason this family needs the args-aware
+    /// resolver shape.
+    ///
+    /// RED until the `"point3"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point3_result_type_dimensionless_is_point_n3_real() {
+        let args = vec![real_elem(0.0), real_elem(0.0), real_elem(1.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "point3(0, 0, 1) must type as Point{{n:3, quantity:Real}} — the quantity \
+             slot is derived from the dimension the arguments agree on, not fixed to \
+             Length"
+        );
+    }
+
+    /// The point twins must NOT type as their `vec` counterparts, and must NOT
+    /// fall through to the first argument's `Scalar` type.
+    ///
+    /// The Scalar negative is the one that was load-bearing for task 5344: with
+    /// `point3(..)` typed `Scalar[m]`, `t * origin` in `examples/m10_geometric_types.ri`
+    /// hit `E_ArithOperandKind` ("operator `*` is undefined for operand kinds
+    /// `Transform3` and `Scalar[m]`") once step-8 made `transform3(..)` produce a
+    /// real `Type::Transform(3)`. `type_compat.rs`'s `(Transform(n), Point{n})`
+    /// Mul rule — which sits alongside its Vector and Transform twins — then
+    /// makes the expression well-typed again.
+    ///
+    /// RED until the point arms are added to `math_fn_result_type`.
+    #[test]
+    fn point_constructors_are_neither_vector_nor_scalar() {
+        let args3 = vec![length_elem(0.0), length_elem(0.0), length_elem(0.0)];
+        let args2 = vec![length_elem(0.0), length_elem(0.0)];
+        for (name, args) in [("point3", &args3), ("point2", &args2)] {
+            let ty = math_fn_result_type(name, args);
+            assert!(
+                matches!(ty, Type::Point { .. }),
+                "{name}(..) must resolve to a Type::Point, got {ty:?}"
+            );
+            assert!(
+                !matches!(ty, Type::Vector { .. }),
+                "{name}(..) must NOT type as a Vector — the point/vec twins differ \
+                 only by `construct_point_or_vector`'s bool, and conflating them \
+                 would break the Point-vs-Vector arms in type_compat.rs, got {ty:?}"
+            );
+            assert!(
+                !matches!(ty, Type::Scalar { .. }),
+                "{name}(..) must NOT adopt the first argument's Scalar type (the \
+                 old first-arg fallback), got {ty:?}"
+            );
+        }
+    }
+
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
     #[test]
     fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(3.0), real_elem(4.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -977,6 +1435,132 @@ mod tests {
                 n: 2,
                 quantity: Box::new(Type::dimensionless_scalar())
             }
+        );
+    }
+
+    // ── Heterogeneous matrix literals degrade the quantity slot (task 5889) ──
+
+    /// Heterogeneity WITHIN row 0 degrades the quantity, while `n` stays row
+    /// 0's COLUMN count (D5 is untouched by this narrowing).
+    #[test]
+    fn matrix_result_type_heterogeneous_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a matrix whose cells disagree must infer no dimension, while n stays the \
+             row-0 column count (3)"
+        );
+    }
+
+    /// Every row is internally homogeneous and the rows disagree with EACH
+    /// OTHER — the block-structured stiffness shape (`N/m` rows beside `N·m/rad²`
+    /// rows). A row-0-only check would pass this literal through.
+    #[test]
+    fn matrix_result_type_heterogeneous_across_rows_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![
+                scalar_elem(1.0, DimensionVector::STIFFNESS),
+                scalar_elem(2.0, DimensionVector::STIFFNESS),
+            ],
+            vec![
+                scalar_elem(1.0, DimensionVector::ROTATIONAL_STIFFNESS),
+                scalar_elem(2.0, DimensionVector::ROTATIONAL_STIFFNESS),
+            ],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "rows that are each internally homogeneous but disagree ACROSS rows must \
+             still degrade — row 0 alone is not evidence about the matrix"
+        );
+    }
+
+    /// A later row that is not itself a `ListLiteral` is not inspectable, so the
+    /// literal is not fully known and the quantity degrades — the conservative
+    /// direction D7 already established at this function. `n` is still row 0's
+    /// column count.
+    #[test]
+    fn matrix_result_type_uninspectable_later_row_degrades_quantity_to_dimensionless() {
+        let row0 = list_lit(
+            vec![length_elem(1.0), length_elem(0.0)],
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let row1 = CompiledExpr::value_ref(
+            ValueCellId::new("S", "r"),
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        let arg = list_lit(
+            vec![row0, row1],
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a row that cannot be inspected leaves the literal unknown, so the quantity \
+             degrades rather than being inferred from the rows that happen to be visible"
+        );
+    }
+
+    /// An EMPTY row 0 pins `n = 0`, which discards every later row — so the
+    /// quantity must not be read out of those rows either.
+    #[test]
+    fn matrix_result_type_empty_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![vec![], vec![length_elem(1.0), length_elem(2.0)]]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 0,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "an empty row 0 leaves the shape unrecoverable, so neither n nor the \
+             quantity may be taken from the rows that follow it"
+        );
+    }
+
+    /// FENCE — a fully homogeneous dimensioned matrix KEEPS its precise
+    /// quantity. The change narrows when the inference applies; it is not a
+    /// blanket degrade of every dimensioned `matrix(…)`.
+    #[test]
+    fn matrix_result_type_homogeneous_dimensioned_keeps_quantity() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), length_elem(0.0)],
+            vec![length_elem(0.0), length_elem(1.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "every cell is Length, so the cells AGREE and the precise quantity survives"
         );
     }
 
@@ -1148,18 +1732,10 @@ mod tests {
     #[test]
     fn matrix_result_type_non_square_projects_to_column_count() {
         // 2 rows, 3 columns.
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -1890,5 +2466,120 @@ mod tests {
             Type::dimensionless_scalar(),
             "max(Real, Real) must stay Real (kind-preserving identity)"
         );
+    }
+
+    // ── Forward-trig argument-dimension check ────────────────────────────────
+
+    fn trig_call_span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 10)
+    }
+
+    /// Assert `name(arg)` pushes exactly one `ArgTypeMismatch` Error whose
+    /// message names the builtin and the word `Angle`, labelled at the call span.
+    fn assert_single_trig_rejection(name: &str, arg: CompiledExpr) {
+        let span = trig_call_span();
+        let mut diagnostics = Vec::new();
+        check_forward_trig_arg_dimensions(name, &[arg], span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "{name}(<dimensioned>) must push exactly ONE diagnostic, got {diagnostics:?}"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.code,
+            Some(reify_core::DiagnosticCode::ArgTypeMismatch),
+            "{name}: diagnostic must reuse DiagnosticCode::ArgTypeMismatch"
+        );
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "{name}: diagnostic must be Error severity"
+        );
+        assert!(
+            d.message.contains(name),
+            "{name}: message must name the builtin, got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Angle"),
+            "{name}: message must mention `Angle`, got {:?}",
+            d.message
+        );
+        let label = d
+            .labels
+            .first()
+            .unwrap_or_else(|| panic!("{name}: diagnostic must carry a label"));
+        assert_eq!(
+            label.span, span,
+            "{name}: label must be anchored at the passed call span"
+        );
+    }
+
+    /// `sin(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn sin_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("sin", length_elem(0.005));
+    }
+
+    /// `cos(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn cos_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("cos", length_elem(0.005));
+    }
+
+    /// `tan(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn tan_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("tan", length_elem(0.005));
+    }
+
+    /// `sin(2.0kg)` — MASS argument is rejected too. Pins that the rule is
+    /// "any dimensioned non-ANGLE scalar", not a LENGTH special case.
+    #[test]
+    fn sin_rejects_mass_dimensioned_argument_not_just_length() {
+        assert_single_trig_rejection("sin", mass_elem(2.0));
+    }
+
+    fn assert_no_trig_diagnostic(name: &str, args: &[CompiledExpr], why: &str) {
+        let mut diagnostics = Vec::new();
+        check_forward_trig_arg_dimensions(name, args, trig_call_span(), &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "{name}: {why} must push nothing, got {diagnostics:?}"
+        );
+    }
+
+    /// A zero-arg call is an arity problem, not a dimension mismatch.
+    #[test]
+    fn forward_trig_with_no_args_pushes_nothing() {
+        assert_no_trig_diagnostic("sin", &[], "an empty arg list");
+    }
+
+    /// Gradualism: poison and unresolved args pass silently, including a
+    /// `Scalar<Q>` whose dimension is unresolved inside a generic fn body.
+    #[test]
+    fn forward_trig_skips_unresolved_args() {
+        let typed = |ty: Type| CompiledExpr::literal(Value::Undef, ty);
+        assert_no_trig_diagnostic("cos", &[typed(Type::Error)], "a Type::Error arg");
+        assert_no_trig_diagnostic(
+            "tan",
+            &[typed(Type::TypeParam("T".to_string()))],
+            "a Type::TypeParam arg",
+        );
+        assert_no_trig_diagnostic(
+            "sin",
+            &[typed(Type::ScalarParam("Q".to_string()))],
+            "a Type::ScalarParam arg",
+        );
+    }
+
+    /// Only `FORWARD_TRIG_NAMES` are gated: a dimensioned arg to `exp` or
+    /// `atan` passes here.
+    #[test]
+    fn non_forward_trig_names_are_not_checked() {
+        assert_no_trig_diagnostic("exp", &[length_elem(0.005)], "exp(Length)");
+        assert_no_trig_diagnostic("atan", &[length_elem(0.005)], "atan(Length)");
     }
 }

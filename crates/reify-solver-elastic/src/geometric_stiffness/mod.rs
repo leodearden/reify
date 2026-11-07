@@ -2,17 +2,11 @@
 //! linear-buckling eigenproblem.
 //!
 //! See PRD `docs/prds/v0_5/buckling-eigensolver.md` §13 task γ. This module
-//! ships:
-//!
-//! - [`geometric_element_stiffness_tet_p1`] — the P1 (linear, 4-node)
-//!   tetrahedron geometric-stiffness kernel,
-//! - stub entry points for shell / hex / wedge cells
-//!   ([`geometric_element_stiffness_shell`],
-//!   [`geometric_element_stiffness_hex_p1`],
-//!   [`geometric_element_stiffness_wedge_p1`]) — these panic with a
-//!   descriptive citation; the diagnostic-emitting trampoline path is
-//!   task ζ's job (`E_BucklingShellNotImplemented` /
-//!   `E_BucklingHexWedgeNotImplemented`).
+//! ships the per-element geometric-stiffness kernels for the P1 tet
+//! ([`geometric_element_stiffness_tet_p1`]), the P2 tet
+//! ([`geometric_element_stiffness_tet_p2`]), the bar/cable
+//! ([`geometric_element_stiffness_bar_p1`]) and the CST membrane
+//! ([`geometric_element_stiffness_membrane_cst`]).
 //!
 //! Global `K_g` is obtained by feeding the per-element matrices through the
 //! existing [`crate::assembly::assemble_global_stiffness`] scatter — the
@@ -36,17 +30,12 @@
 pub mod bar;
 // Task 4417/ζ: CST membrane geometric stiffness K_g + prestress + tangent.
 pub mod membrane;
-pub mod stubs;
 pub mod tet;
 pub mod tet_p2;
 
 pub use bar::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
 pub use membrane::{
     MembranePrestress, geometric_element_stiffness_membrane_cst, membrane_tangent_stiffness,
-};
-pub use stubs::{
-    geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
-    geometric_element_stiffness_wedge_p1,
 };
 pub use tet::geometric_element_stiffness_tet_p1;
 pub use tet_p2::geometric_element_stiffness_tet_p2;

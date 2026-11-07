@@ -5,11 +5,20 @@
 //! `reify_doc_build::build_doc_model(&compiled, source)` and asserts the
 //! structure of the returned `DocModel`.
 
+use reify_compiler::{CompiledModule, CompiledTypeAlias};
+use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
+use reify_doc::expr_text::{ExprText, UnavailableReason};
 use reify_doc::fmt_html::render_html;
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{DocModel, ItemKind};
-use reify_doc_build::build_doc_model;
-use reify_test_support::compile_source_with_stdlib;
+use reify_doc::model::{
+    ConstraintDoc, DocModel, ItemKind, ParamDoc, RealizationDoc, SubComponentArgDoc,
+    SubComponentDoc,
+};
+use reify_doc_build::{build_doc_model, build_stdlib_doc_model};
+use reify_ir::{CompiledExpr, Value};
+use reify_test_support::{
+    CompiledModuleBuilder, TopologyTemplateBuilder, compile_source_with_stdlib,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helper
@@ -27,6 +36,54 @@ fn find_item<'m>(module: &'m reify_doc::model::ModuleDoc, name: &str) -> &'m rei
         })
 }
 
+/// Compile `source` against the stdlib, failing the test on any Error diagnostic.
+fn compile_clean(source: &str) -> CompiledModule {
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compilation errors in test source: {errors:?}"
+    );
+    compiled
+}
+
+/// The body of a structure or occurrence item, or a panic naming what it was.
+struct TemplateBody<'m> {
+    params: &'m [ParamDoc],
+    constraints: &'m [ConstraintDoc],
+    sub_components: &'m [SubComponentDoc],
+    realizations: &'m [RealizationDoc],
+}
+
+fn template_body<'m>(item: &'m reify_doc::model::ItemDoc) -> TemplateBody<'m> {
+    match &item.kind {
+        ItemKind::Structure {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+            ..
+        }
+        | ItemKind::Occurrence {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+            ..
+        } => TemplateBody {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+        },
+        other => panic!("expected a Structure or Occurrence, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // step-1: structure with params and constraints
 // ---------------------------------------------------------------------------
@@ -37,15 +94,7 @@ fn find_item<'m>(module: &'m reify_doc::model::ModuleDoc, name: &str) -> &'m rei
 /// payload.
 #[test]
 fn structure_with_params_and_constraints() {
-    let source = r#"
-pub structure Widget {
-    param width: Length = 10mm
-    param height: Length = 20mm
-    param depth: Length
-    constraint depth > 0mm
-    constraint width >= height
-}
-"#;
+    let source = WIDGET_SOURCE;
     let compiled = compile_source_with_stdlib(source);
     let model: DocModel = build_doc_model(&compiled, source);
 
@@ -76,49 +125,31 @@ pub structure Widget {
 
     // Params: width, height, depth (in source order).
     assert_eq!(params.len(), 3, "expected 3 params; got {params:?}");
+    // A default is the declaration's value text alone, not the whole declaration.
     assert_eq!(params[0].name, "width");
-    {
-        let default = params[0]
-            .default_repr
-            .as_deref()
-            .expect("width has a default (10mm); default_repr must be Some");
-        assert!(
-            default.contains("10mm"),
-            "width default_repr must contain the actual default value '10mm', \
-             not the full declaration; got: {default:?}"
-        );
-        assert!(
-            !default.contains("param"),
-            "width default_repr must NOT contain 'param' (should be the RHS value, \
-             not the full declaration text); got: {default:?}"
-        );
-    }
+    assert_eq!(
+        params[0].default_repr,
+        Some(ExprText::Source("10mm".into()))
+    );
     assert_eq!(params[1].name, "height");
-    assert!(
-        params[1].default_repr.is_some(),
-        "height has a default (20mm)"
+    assert_eq!(
+        params[1].default_repr,
+        Some(ExprText::Source("20mm".into()))
     );
     assert_eq!(params[2].name, "depth");
-    assert!(
-        params[2].default_repr.is_none(),
-        "depth has no default"
-    );
+    assert_eq!(params[2].default_repr, None, "depth has no default");
 
-    // Constraints: two entries.
+    // Constraints: two entries, each the span-sliced source of its declaration.
     assert_eq!(constraints.len(), 2, "expected 2 constraints; got {constraints:?}");
-
-    // constraint 0: expr_repr is the span-sliced text of "depth > 0mm"
-    assert!(
-        constraints[0].expr_repr.contains("depth"),
-        "first constraint expr_repr must mention 'depth', got: {:?}",
-        constraints[0].expr_repr
-    );
-    // constraint 1: expr_repr is "width >= height"
-    assert!(
-        constraints[1].expr_repr.contains("width"),
-        "second constraint expr_repr must mention 'width', got: {:?}",
-        constraints[1].expr_repr
-    );
+    for (c, mentioned) in constraints.iter().zip(["depth", "width"]) {
+        match &c.expr_repr {
+            ExprText::Source(text) => assert!(
+                text.contains(mentioned),
+                "constraint source must mention {mentioned:?}, got: {text:?}"
+            ),
+            other => panic!("constraint mentioning {mentioned:?} has no source: {other:?}"),
+        }
+    }
 
     // line numbers: both constraints must have Some(line) and be >= 1.
     for (i, c) in constraints.iter().enumerate() {
@@ -132,6 +163,139 @@ pub structure Widget {
             c.line
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// task #8767: every expression-valued field is source text or a typed reason
+// ---------------------------------------------------------------------------
+
+const WIDGET_SOURCE: &str = r#"
+pub structure Widget {
+    param width: Length = 10mm
+    param height: Length = 20mm
+    param depth: Length
+    constraint depth > 0mm
+    constraint width >= height
+}
+"#;
+
+/// A sub-component argument value is a `CompiledExpr`, which records no span.
+#[test]
+fn sub_component_arg_values_have_no_span() {
+    let source =
+        "structure Inner { param w: Length = 1mm }\nstructure Outer { sub inner = Inner(w: 2mm) }";
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let outer = template_body(find_item(&model.modules[0], "Outer"));
+    assert_eq!(outer.sub_components.len(), 1, "{:?}", outer.sub_components);
+    assert_eq!(
+        outer.sub_components[0].args,
+        vec![SubComponentArgDoc {
+            name: "w".into(),
+            value: ExprText::Unavailable(UnavailableReason::NoSpan),
+        }]
+    );
+}
+
+/// A realization documents the value text of the `let` it was lowered from.
+///
+/// Source copied from `crates/reify-cli/tests/fixtures/box_3mf.ri`.
+#[test]
+fn realization_value_is_its_declaration_source_text() {
+    let source = r#"structure Box3mf {
+    param width: Length = 10mm
+    param height: Length = 20mm
+    param depth: Length = 5mm
+
+    let body = box(width, height, depth)
+}
+"#;
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let body = template_body(find_item(&model.modules[0], "Box3mf"));
+    let expected = RealizationDoc {
+        name: "body".into(),
+        value: ExprText::Source("box(width, height, depth)".into()),
+    };
+    assert!(
+        body.realizations.contains(&expected),
+        "expected {expected:?} among {:?}",
+        body.realizations
+    );
+}
+
+/// An expression annotation argument renders the source text it was written as.
+///
+/// Source from `crates/reify-compiler/tests/fixtures/eval_annotation_smoke.ri`.
+#[test]
+fn annotation_expression_arg_renders_its_source_text() {
+    let source = "@test_eval(2.0 * 1.5) structure def Foo {\n    param dummy : Real = 0\n}\n";
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let foo = find_item(&model.modules[0], "Foo");
+    let test_eval = foo
+        .header
+        .annotations
+        .iter()
+        .find(|a| a.name == "test_eval")
+        .unwrap_or_else(|| panic!("Foo has no @test_eval: {:?}", foo.header.annotations));
+    assert_eq!(test_eval.args, vec!["2.0 * 1.5".to_string()]);
+}
+
+/// Lowering against a source that does not contain the module's spans marks
+/// every span-derived field as outside the source, and never panics.
+#[test]
+fn empty_source_marks_every_span_outside_source() {
+    let compiled = compile_clean(WIDGET_SOURCE);
+    let model = build_doc_model(&compiled, "");
+
+    let widget = template_body(find_item(&model.modules[0], "Widget"));
+    let outside = ExprText::Unavailable(UnavailableReason::SpanOutsideSource);
+    let defaults: Vec<&ExprText> = widget
+        .params
+        .iter()
+        .filter_map(|p| p.default_repr.as_ref())
+        .collect();
+    assert_eq!(defaults, vec![&outside, &outside], "{:?}", widget.params);
+    assert_eq!(widget.constraints.len(), 2, "{:?}", widget.constraints);
+    for c in widget.constraints {
+        assert_eq!(c.expr_repr, outside, "{c:?}");
+        assert_eq!(c.line, None, "{c:?}");
+    }
+}
+
+/// A param whose declaration text has no `=` reports that, rather than
+/// inventing a default.  Unreachable from source (a defaulted param always
+/// declares one), so the template is built synthetically.
+#[test]
+fn declaration_without_value_is_reported() {
+    let source = "param w: Real";
+    let real = Type::dimensionless_scalar();
+    let mut template = TopologyTemplateBuilder::new("T")
+        .param(
+            "T",
+            "w",
+            real.clone(),
+            Some(CompiledExpr::literal(Value::Real(1.0), real)),
+        )
+        .build();
+    template.value_cells[0].span = SourceSpan::new(0, source.len() as u32);
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let model = build_doc_model(&compiled, source);
+
+    let t = template_body(find_item(&model.modules[0], "T"));
+    assert_eq!(
+        t.params[0].default_repr,
+        Some(ExprText::Unavailable(
+            UnavailableReason::DeclarationWithoutValue
+        ))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +570,7 @@ constraint def non_negative {
     let trait_item = find_item(module, "HasValue");
     assert!(!trait_item.header.is_pub, "HasValue is not pub");
     match &trait_item.kind {
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             assert_eq!(members.len(), 1, "HasValue has 1 member; got {members:?}");
             assert!(
                 members[0].contains("value"),
@@ -479,7 +643,7 @@ constraint def non_negative {
     // ── TypeAlias ─────────────────────────────────────────────────────────
     let alias_item = find_item(module, "MyLength");
     match &alias_item.kind {
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             assert!(
                 !type_repr.is_empty(),
                 "MyLength type_repr must be non-empty"
@@ -493,8 +657,8 @@ constraint def non_negative {
     match &cd_item.kind {
         ItemKind::ConstraintDef { expr_repr } => {
             assert!(
-                !expr_repr.is_empty(),
-                "non_negative expr_repr must be non-empty"
+                matches!(expr_repr, ExprText::Source(text) if !text.is_empty()),
+                "non_negative expr_repr must be non-empty source text; got {expr_repr:?}"
             );
         }
         other => panic!("expected ItemKind::ConstraintDef for 'non_negative', got {other:?}"),
@@ -505,12 +669,9 @@ constraint def non_negative {
 // Amendment: purpose with explicit minimize / maximize objective
 // ---------------------------------------------------------------------------
 
-/// Verify that `lower_purpose` renders explicit minimize/maximize objectives
-/// as clean placeholders rather than Rust Debug AST output.
-///
-/// `CompiledExpr` has no source span, so we cannot span-slice the objective
-/// expression.  The lowering emits "<minimize>" / "<maximize>" instead of
-/// `format!("{expr:?}")` which would produce unreadable internal AST text.
+/// An explicit minimize/maximize objective is a `CompiledExpr`, which carries
+/// no source span, so its text is the typed `NoSpan` placeholder — never a
+/// Rust Debug dump of the AST.  The direction still comes from the objective.
 #[test]
 fn purpose_with_explicit_objective() {
     let source = r#"
@@ -542,21 +703,10 @@ purpose with_maximize(subject: Structure) {
     match &min_item.kind {
         ItemKind::Purpose { direction, expr_repr } => {
             assert_eq!(direction, "minimize", "direction must be 'minimize'");
-            // Must NOT contain Rust internal Debug output.
-            assert!(
-                !expr_repr.contains("CompiledExpr"),
-                "minimize expr_repr must not contain Rust Debug output 'CompiledExpr'; \
-                 got: {expr_repr:?}"
-            );
-            assert!(
-                !expr_repr.contains("BinOp"),
-                "minimize expr_repr must not contain Rust Debug output 'BinOp'; \
-                 got: {expr_repr:?}"
-            );
-            // Should be the clean placeholder.
             assert_eq!(
-                expr_repr, "<minimize>",
-                "minimize expr_repr must be '<minimize>' placeholder; got: {expr_repr:?}"
+                expr_repr,
+                &ExprText::Unavailable(UnavailableReason::NoSpan),
+                "a minimize objective has no source span"
             );
         }
         other => panic!("expected ItemKind::Purpose for 'with_minimize', got {other:?}"),
@@ -567,13 +717,10 @@ purpose with_maximize(subject: Structure) {
     match &max_item.kind {
         ItemKind::Purpose { direction, expr_repr } => {
             assert_eq!(direction, "maximize", "direction must be 'maximize'");
-            assert!(
-                !expr_repr.contains("CompiledExpr"),
-                "maximize expr_repr must not contain Rust Debug output; got: {expr_repr:?}"
-            );
             assert_eq!(
-                expr_repr, "<maximize>",
-                "maximize expr_repr must be '<maximize>' placeholder; got: {expr_repr:?}"
+                expr_repr,
+                &ExprText::Unavailable(UnavailableReason::NoSpan),
+                "a maximize objective has no source span"
             );
         }
         other => panic!("expected ItemKind::Purpose for 'with_maximize', got {other:?}"),
@@ -677,5 +824,497 @@ trait HasLength {
         md_str.contains("HasLength"),
         "Markdown must contain item name 'HasLength'; snippet: {:?}",
         &md_str[..md_str.len().min(500)]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task #6342 step-1: parametric type-alias heading (Markdown, end-to-end)
+// ---------------------------------------------------------------------------
+
+/// A parametric `pub type Vel<Q: Dimension> = Q / Time` must render its type
+/// params in the Markdown H2 heading — today they are silently dropped and the
+/// alias documents as an indistinguishable `pub type Vel`.
+///
+/// The fixture line is copied verbatim from
+/// `crates/reify-compiler/tests/fixtures/parametric_alias_def_site_ok.ri:11`,
+/// which `parametric_alias_def_site_validation_tests::valid_pub_parametric_alias_accepted`
+/// pins to ZERO Error diagnostics, so this test does not depend on any open
+/// def-site grammar question.
+///
+/// Three invariants are pinned here:
+///   (a) the heading gains `<Q: Dimension>` INSIDE the backtick code span;
+///   (b) identity is unchanged — `header.name`, the `<a id="…">` anchor and the
+///       TOC bullet all stay the bare `Vel`;
+///   (c) a non-parametric alias emits NO `<>` at all.
+#[test]
+fn parametric_type_alias_renders_type_params_in_markdown_heading() {
+    let source = r#"
+pub type Vel<Q: Dimension> = Q / Time
+type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in parametric alias source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── (b) identity is unchanged ─────────────────────────────────────────
+    let item = find_item(module, "Vel");
+    assert_eq!(
+        item.header.name, "Vel",
+        "header.name is the join key for anchors / TOC hrefs / split filenames \
+         and must stay the bare identifier"
+    );
+
+    let md_str = match render_markdown(&model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("MarkdownOptions::default() must yield single mode"),
+    };
+
+    // ── (a) RED: type params render in the heading, inside the code span ──
+    assert!(
+        md_str.contains("## `pub type Vel<Q: Dimension>` <a id=\"Vel\"></a>"),
+        "parametric alias heading must render its type params inside the backtick \
+         code span; got markdown:\n{md_str}"
+    );
+
+    // ── (b cont.) anchor and TOC bullet stay name-derived ─────────────────
+    assert!(
+        md_str.contains("<a id=\"Vel\"></a>"),
+        "anchor must remain the bare name `Vel` with no angle brackets; got:\n{md_str}"
+    );
+    assert!(
+        !md_str.contains("<a id=\"Vel<"),
+        "anchor must NOT absorb the type params; got:\n{md_str}"
+    );
+    assert!(
+        md_str.contains("- [`Vel`](#Vel)"),
+        "TOC bullet must link the bare name `Vel`; got:\n{md_str}"
+    );
+
+    // ── (c) no-regression: empty type-param list emits no `<>` ────────────
+    assert!(
+        md_str.contains("## `type MyLength` <a id=\"MyLength\"></a>"),
+        "non-parametric alias heading must be unchanged (no empty `<>`); got:\n{md_str}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task #6342 step-3(a): parametric type-alias heading (HTML, end-to-end)
+// ---------------------------------------------------------------------------
+
+/// The HTML formatter must render the same type params as Markdown, but with
+/// `<`/`>` HTML-escaped in the heading TEXT — and must keep them out of the
+/// `id`/`href` attributes entirely.
+///
+/// Escaping is what makes the HTML side a distinct risk from Markdown: the
+/// Markdown heading relies on a backtick code span to survive `<Q: …>`, while
+/// HTML relies on `escape_into`.  A naive `out.push_str(&generics)` here would
+/// emit a literal `<Q: Dimension>` that browsers parse as an unknown tag.
+///
+/// Uses the same zero-Error fixture as the Markdown test.
+#[test]
+fn parametric_type_alias_renders_escaped_type_params_in_html_heading() {
+    let source = r#"
+pub type Vel<Q: Dimension> = Q / Time
+type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in parametric alias source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let html = render_html(&model, None);
+
+    // ── heading text: params present and HTML-escaped ─────────────────────
+    assert!(
+        html.contains("<h2>pub type Vel&lt;Q: Dimension&gt;</h2>"),
+        "parametric alias <h2> must carry HTML-escaped type params; got html:\n{html}"
+    );
+
+    // ── identity: section id and nav href stay the bare name ──────────────
+    assert!(
+        html.contains("<section id=\"Vel\">"),
+        "section id must remain the bare name `Vel`; got html:\n{html}"
+    );
+    assert!(
+        html.contains("<a href=\"#Vel\">Vel</a>"),
+        "nav entry must link and label the bare name `Vel`; got html:\n{html}"
+    );
+
+    // ── the raw, unescaped form must never appear anywhere ────────────────
+    assert!(
+        !html.contains("Vel<Q"),
+        "type params must never be emitted unescaped (browsers would parse \
+         `<Q: Dimension>` as a tag); got html:\n{html}"
+    );
+
+    // ── no-regression: non-parametric alias emits no empty `<>` ───────────
+    assert!(
+        html.contains("<h2>type MyLength</h2>"),
+        "non-parametric alias <h2> must be unchanged (no empty `<>`); got html:\n{html}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task #6342 step-7: generic function signature
+// ---------------------------------------------------------------------------
+
+/// A generic `pub fn pick<T>(...)` must carry its generic segment in the
+/// rendered `ItemKind::Function { signature }`.
+///
+/// Unlike `TypeAlias`, this needs no model change: `signature` is already a
+/// single rendered DISPLAY string, so the generics fold into it and
+/// `header.name` stays the bare identity `pick`.
+///
+/// Fixture shaped after the proven stdlib forms `pub fn unwrap_or<T, E>(...)`
+/// (`crates/reify-compiler/stdlib/result.ri:52`) and
+/// `pub fn clamp_field<D, Q: Dimension>(...)` (`stdlib/fields.ri:162`).
+#[test]
+fn generic_function_renders_type_params_in_signature() {
+    let source = r#"
+pub fn pick<T>(a: T, b: T) -> T { a }
+fn scale(x: Real) -> Real { x }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in generic fn source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── generic fn: signature carries `<T>` between name and param list ───
+    let pick = find_item(module, "pick");
+    assert_eq!(
+        pick.header.name, "pick",
+        "header.name must stay the bare identity `pick`"
+    );
+    match &pick.kind {
+        ItemKind::Function { signature } => {
+            assert!(
+                signature.starts_with("fn pick<T>("),
+                "generic fn signature must splice `<T>` between the name and the \
+                 parameter list; got {signature:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Function for 'pick', got {other:?}"),
+    }
+
+    // ── no-regression: non-generic fn signature is unchanged, no empty `<>` ─
+    let scale = find_item(module, "scale");
+    match &scale.kind {
+        ItemKind::Function { signature } => {
+            assert!(
+                signature.starts_with("fn scale("),
+                "non-generic fn signature must be unchanged (no empty `<>`); \
+                 got {signature:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Function for 'scale', got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// task #6342 step-9: generic trait heading
+// ---------------------------------------------------------------------------
+
+/// A generic `pub trait Holder<T: Rigid>` must render its type params in both
+/// the Markdown and HTML headings — today `lower_trait` never reads
+/// `CompiledTrait.type_params`, so it documents as an indistinguishable
+/// `pub trait Holder`.
+///
+/// Fixture shaped after `trait Container<T: Rigid>`
+/// (`crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:13`).
+/// The non-generic control is declared in the same source rather than reusing
+/// an existing fixture, so the two headings are compared under identical
+/// compilation conditions.
+#[test]
+fn generic_trait_renders_type_params_in_headings() {
+    let source = r#"
+pub trait Holder<T: Rigid> { param count : Int }
+pub trait Plain { param value : Real }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in generic trait source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── (c) identity unchanged ────────────────────────────────────────────
+    let holder = find_item(module, "Holder");
+    assert_eq!(
+        holder.header.name, "Holder",
+        "header.name must stay the bare identity `Holder`"
+    );
+
+    // ── (a) Markdown heading ──────────────────────────────────────────────
+    let md_str = match render_markdown(&model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("MarkdownOptions::default() must yield single mode"),
+    };
+    assert!(
+        md_str.contains("## `pub trait Holder<T: Rigid>` <a id=\"Holder\"></a>"),
+        "generic trait heading must render its type params inside the backtick \
+         code span; got markdown:\n{md_str}"
+    );
+
+    // ── (b) HTML heading, escaped; section id stays the bare name ─────────
+    let html = render_html(&model, None);
+    assert!(
+        html.contains("<h2>pub trait Holder&lt;T: Rigid&gt;</h2>"),
+        "generic trait <h2> must carry HTML-escaped type params; got html:\n{html}"
+    );
+    assert!(
+        html.contains("<section id=\"Holder\">"),
+        "section id must remain the bare name `Holder`; got html:\n{html}"
+    );
+
+    // ── (d) no-regression: non-generic trait emits no empty `<>` ──────────
+    assert!(
+        md_str.contains("## `pub trait Plain` <a id=\"Plain\"></a>"),
+        "non-generic trait heading must be unchanged (no empty `<>`); got markdown:\n{md_str}"
+    );
+    assert!(
+        html.contains("<h2>pub trait Plain</h2>"),
+        "non-generic trait <h2> must be unchanged (no empty `<>`); got html:\n{html}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task-6321: type alias renders its type_expr when resolved_type is None
+// ---------------------------------------------------------------------------
+
+/// When a `CompiledTypeAlias` exports `resolved_type: None` (a parametric
+/// body, an entity-named body, or any other unresolvable RHS), `lower_type_alias`
+/// must render the alias's carried `type_expr` (via `impl Display for TypeExpr`)
+/// rather than the `"<parameterized>"` sentinel. That sentinel is a lie for an
+/// entity-named alias like `type F = Fit` and uninformative even for a
+/// genuinely parametric alias like `Container<T> = T`.
+///
+/// Expected strings are read directly off `impl Display for TypeExpr`
+/// (`impl fmt::Display for TypeExpr` in `reify-ast/src/ast.rs`, the
+/// `TypeExprKind::Named` arm): a bare `Named { name, type_args: [] }`
+/// renders as `name`; a `Named` with args renders `name<arg1, arg2>`.
+#[test]
+fn alias_with_unresolved_body_renders_its_type_expr() {
+    let source = r#"
+enum Fit { Close, Medium }
+pub type Container<T> = T
+pub type F = Fit
+pub type Fits = List<Fit>
+pub type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // Parametric alias: body is the bare type param `T`.
+    let container_item = find_item(module, "Container");
+    match &container_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "T",
+                "Container's type_repr must be the type_expr Display 'T', not the \
+                 '<parameterized>' sentinel; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Container', got {other:?}"),
+    }
+
+    // Entity-named alias: body names the local enum `Fit`.
+    let f_item = find_item(module, "F");
+    match &f_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "Fit",
+                "F's type_repr must be the type_expr Display 'Fit', not \
+                 '<parameterized>'; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'F', got {other:?}"),
+    }
+
+    // Composite body: List<Fit>.
+    let fits_item = find_item(module, "Fits");
+    match &fits_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "List<Fit>",
+                "Fits's type_repr must be the type_expr Display 'List<Fit>'; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Fits', got {other:?}"),
+    }
+
+    // Resolvable alias: unchanged path (Some(resolved_type) → type_to_string).
+    // Do NOT pin the exact spelling: `reify_core::Type`'s Display is a
+    // canonicalising, non-source-syntax rendering, not the source text "Length".
+    let my_length_item = find_item(module, "MyLength");
+    match &my_length_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert!(
+                !type_repr.is_empty() && type_repr != "<parameterized>",
+                "MyLength type_repr must be non-empty and not the sentinel; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'MyLength', got {other:?}"),
+    }
+}
+
+/// Covers the `(None, None)` arm of `lower_type_alias`'s match: a
+/// `CompiledTypeAlias` with neither a resolved type nor a carried body.
+///
+/// This state is unreachable from source — both user-alias construction
+/// sites in `type_resolution.rs` set `type_expr: Some(..)` unconditionally —
+/// so the fixture is built synthetically via `CompiledModuleBuilder`.
+///
+/// A `None`/`None` alias says nothing about whether it is parametric, so the
+/// old `"<parameterized>"` sentinel is actively misleading here; the doc
+/// surface must render `"<unresolved>"` instead.
+#[test]
+fn alias_with_no_body_renders_unresolved_not_parameterized() {
+    let alias = CompiledTypeAlias {
+        name: "Bodyless".to_string(),
+        resolved_type: None,
+        type_params: vec![],
+        type_expr: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Bodyless"),
+    };
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .type_alias(alias)
+        .build();
+
+    // "" as source proves the alias renderer never depends on source text.
+    let model: DocModel = build_doc_model(&compiled, "");
+    let module = &model.modules[0];
+
+    let item = find_item(module, "Bodyless");
+    match &item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert!(
+                !type_repr.is_empty(),
+                "Bodyless type_repr must be non-empty"
+            );
+            assert_eq!(
+                type_repr, "<unresolved>",
+                "an alias with neither resolved_type nor type_expr must render \
+                 '<unresolved>', not the misleading '<parameterized>' sentinel; \
+                 got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Bodyless', got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// task #8767 B12: the stdlib doc model is lowered against its real sources
+// ---------------------------------------------------------------------------
+
+fn stdlib_module<'m>(model: &'m DocModel, dotted: &str) -> &'m reify_doc::model::ModuleDoc {
+    let path = ModulePath::from_dotted(dotted)
+        .unwrap_or_else(|e| panic!("{dotted:?} is not a module path: {e:?}"))
+        .to_string();
+    model
+        .modules
+        .iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("stdlib doc model has no module {path:?}"))
+}
+
+/// Every defaulted stdlib param documents its default's source text, and
+/// stdlib constraints carry their source text and line.
+#[test]
+fn stdlib_param_defaults_carry_their_source_text() {
+    let model = build_stdlib_doc_model();
+
+    let mut defaulted = 0usize;
+    let mut without_source = Vec::new();
+    for module in &model.modules {
+        for item in &module.items {
+            if !matches!(
+                item.kind,
+                ItemKind::Structure { .. } | ItemKind::Occurrence { .. }
+            ) {
+                continue;
+            }
+            for param in template_body(item).params {
+                let Some(default) = &param.default_repr else {
+                    continue;
+                };
+                defaulted += 1;
+                if !matches!(default, ExprText::Source(text) if !text.is_empty()) {
+                    without_source.push((
+                        module.path.as_str(),
+                        item.header.name.as_str(),
+                        param.name.as_str(),
+                        default,
+                    ));
+                }
+            }
+        }
+    }
+    assert!(defaulted > 0, "the stdlib declares defaulted params");
+    assert!(
+        without_source.is_empty(),
+        "{} of {defaulted} defaulted stdlib params have no default source text \
+         (module, item, param, default): {without_source:#?}",
+        without_source.len()
+    );
+
+    let fea = stdlib_module(&model, "std.materials.fea");
+    let steel = template_body(find_item(fea, "Steel_AISI_1045"));
+    let youngs_modulus = steel
+        .params
+        .iter()
+        .find(|p| p.name == "youngs_modulus")
+        .expect("Steel_AISI_1045 declares youngs_modulus");
+    assert_eq!(
+        youngs_modulus.default_repr,
+        Some(ExprText::Source("205GPa".into()))
+    );
+
+    let appearance_module = stdlib_module(&model, "std.materials.appearance");
+    let appearance = template_body(find_item(appearance_module, "Appearance"));
+    assert!(
+        appearance.constraints.iter().any(|c| c.line.is_some()
+            && matches!(&c.expr_repr, ExprText::Source(text) if text.contains("metalness"))),
+        "Appearance must document its metalness constraint with source and line: {:#?}",
+        appearance.constraints
     );
 }

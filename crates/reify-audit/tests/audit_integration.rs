@@ -37,8 +37,9 @@ mod audit_integration {
 use crate::common::schema::{seed_db, insert_task_completed_event};
 use crate::common::fixtures::legacy_meta;
 use reify_audit::{
-    AuditContext, ChangedSymbol, DoneProvenance, EvidenceRef, MockGitOps, MockJCodemunchOps,
-    Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub, p5_phantom_done,
+    AuditContext, ChangedSymbol, DeclSuppression, DoneProvenance, EvidenceRef, MockGitOps,
+    MockJCodemunchOps, Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub,
+    p5_phantom_done,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -68,12 +69,12 @@ mod tests {
     ///   short-circuits before per-symbol iteration (symbol mock
     ///   seeded so the guard is demonstrably load-bearing).
     /// - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
-    ///   `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
-    ///   returns true → P1 short-circuits.
+    ///   `consumer_ref` matching 2358's `prd`) → `pending_consumer_prds`
+    ///   contains that `prd` → P1 short-circuits.
     /// - task 2658 → P1 guard B2: `done_provenance=None` (legacy_meta) →
     ///   P1 skips the task at commit-resolution before per-symbol iteration.
     /// - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
-    ///   `is_g_allow_suppressed` returns true → P1 skips the symbol.
+    ///   `DeclSuppression::opts_out` returns true → P1 skips the symbol.
     /// - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
     ///   `is_test_path` fires → P2 skips the diff scan entirely.
     ///
@@ -128,9 +129,7 @@ mod tests {
                 name: "would_be_orphan".to_string(),
                 file: "crates/reify-x/src/foo.rs".to_string(),
                 line: 10,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(DeclSuppression::default()),
             }],
         );
         // Fixture 4 (task 2358, guard B4 pending-consumer-ref): symbol seeded
@@ -143,9 +142,7 @@ mod tests {
                 name: "producer_fn".to_string(),
                 file: "crates/reify-y/src/bar.rs".to_string(),
                 line: 20,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(DeclSuppression::default()),
             }],
         );
         // Fixture 5 (task 2658, guard B2 commit-resolution): done_provenance=None
@@ -159,9 +156,7 @@ mod tests {
                 name: "stdlib_def".to_string(),
                 file: "crates/reify-stdlib/src/foo.ri".to_string(),
                 line: 5,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(DeclSuppression::default()),
             }],
         );
         // Fixture 6 (task 2699, guard B7 G-allow marker): previously exercised
@@ -175,9 +170,10 @@ mod tests {
                 name: "g_allowed_fn".to_string(),
                 file: "crates/reify-z/src/baz.rs".to_string(),
                 line: 7,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: Some("// G-allow: consumed by upcoming PRD consumer".to_string()),
+                suppression: Some(DeclSuppression {
+                    g_allow_marker: Some("// G-allow: consumed by upcoming PRD consumer".to_string()),
+                    ..Default::default()
+                }),
             }],
         );
 
@@ -238,7 +234,7 @@ mod tests {
         );
 
         // Fixture 4 — task 2358, guard B4 (P1 pending-consumer-ref):
-        // has_pending_consumer matches task 2358_c's consumer_ref against this
+        // pending_consumer_prds holds task 2358_c's consumer_ref, which is this
         // prd → P1 short-circuits before iterating changed_symbols.
         // done_provenance=None → P5 early-returns (guard A1).
         task_metadata.insert(
@@ -277,7 +273,7 @@ mod tests {
 
         // Fixture 6 — task 2699, guard B7 (P1 G-allow marker):
         // changed_symbols entry has g_allow_marker=Some("non-blank") →
-        // is_g_allow_suppressed returns true → P1 skips the symbol.
+        // DeclSuppression::opts_out returns true → P1 skips the symbol.
         // done_provenance=None → P5 early-returns (guard A1).
         task_metadata.insert(
             "2699".to_string(),
@@ -302,17 +298,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let p5_findings = p5_phantom_done::check(&ctx);
         let p1_findings = p1_producer_orphan::check(&ctx);
@@ -388,17 +376,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new(); // P2 ignores jcodemunch
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         // P2 aggregates per (task, file): two stub lines on one file → one finding.
@@ -462,9 +441,7 @@ mod tests {
                 name: "resolve_unique_by_attribute".to_string(),
                 file: "crates/reify-eval/src/selector_resolution.rs".to_string(),
                 line: 42,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(DeclSuppression::default()),
             }],
         );
         // Zero callers → true orphan.
@@ -491,17 +468,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -581,17 +550,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new(); // P5 ignores jcodemunch
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(

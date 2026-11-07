@@ -2,6 +2,12 @@
 
 Per-leaf capability→evidence bindings (mechanizes G3 + G6). Each binding ties a leaf's asserted capability to **evidence**; any **FAIL** (`declared-only | test-only | producer-downstream | producer-absent | producer-extent-short | fixture-ERROR | bound≤floor | rejection-absent`) blocks queueing until resolved. All bindings **PASS**. Reify-side substrate anchors re-verified against `main@e6595a38ff` at decompose time (author-time anchors were `fc47d707b3`); DF-side anchors verified by the author against post-recovery main and consumed as producer-side (each DF leaf's own unit test is its mechanical check).
 
+**Dated evidence, decompose 2026-07-19.** The DF-side `path:line` anchors in the bindings below
+are `(author-verified)` observations taken at decompose time — provenance for the PASS
+verdicts, not live breadcrumbs. Do not re-anchor them; grep the symbol named beside each one.
+The PRD header's `main@e6595a38ff` is a **reify** SHA and does **not** cover these five, which
+are dark-factory-side; no DF commit is claimed for them, because none was ever recorded.
+
 **Domain notes.** This PRD is **verify-pipeline / merge-gate plumbing** — no `.ri` DSL syntax, no result-field production. The reify grammar gate and the `Value::Undef` field-population sentinel are therefore **N/A by construction** (recorded, not silently skipped); the `scripts/prd-decompose-verify.mjs` grammar/semantic-substrate workflow does not apply (no DSL premise to probe) — same disposition as the sibling infra PRDs `merge-gate-compile-cost` and `merge-gate-riders`. The G6 surface here is (a) **rejection-mechanism** bindings — the tree-OID/empty-subset/ceiling refusals (§4.3) must be *observed to fall back loud*, not merely defined; and (b) the **savings numbers** (~2.5 h/14d direct, compile+link ≈ 55–65% of gate CPU) are ratified survey figures (`docs/notes/merge-verify-cpu-survey-2026-07.md`), not accuracy bounds on a numerical method — no method error-floor applies.
 
 **G3 substrate re-verification (reify anchors, main@e6595a38ff):**
@@ -131,3 +137,12 @@ The normative doc is not yet on main (produced by the undelivered dark_factory `
 ## Milestone wiring
 
 Program milestone **5254** (merge-verify CPU-reduction release gate) `depends_on` **δ (5290)** and **ε (5291)** — wired 2026-07-19 (`add_dependency id=5254 depends_on=<leaf>`). Intra-reify: δ(5290) ← α(5287)/β(5288)/γ(5289); ε(5291) ← δ(5290), reify:5261. ε external deps: dark_factory:2833/2834/2835/2836/2837 + dark_factory:2821. Intra-DF: D2(2834) ← D1(2833); D3(2835)/D4(2836)/D5(2837) ← D2(2834).
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `nextest-filter-file-consumption`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE`.
+- `tree-oid-sidecar-guard-and-loud-full-fallback`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_VERIFY_RETRY_SCOPE`.
+- `gui-failed-spec-forwarding`: paths now `scripts/verify.sh`, `scripts/gui-test.sh`, `scripts/reify_verify/`; pattern now `REIFY_GUI_RETRY_SPECS`.
+- `boundary-test-b1-b6-and-honest-marker`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_RETRY_SCOPE=failed_only`.

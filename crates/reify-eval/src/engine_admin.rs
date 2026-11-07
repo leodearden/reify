@@ -4,7 +4,8 @@ use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
-use crate::{Engine, EvaluationState};
+use crate::solver_posture::SolveStage;
+use crate::{Engine, EvaluationState, SolverPosture};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
@@ -218,7 +219,10 @@ impl Engine {
     ///
     /// `Engine::new` is the ergonomic shorthand for the common case and
     /// delegates to this constructor with `stdlib_loader::load_stdlib()`.
+    ///
+    /// `posture` names whether the engine resolves `auto` parameters.
     pub fn with_prelude(
+        posture: SolverPosture,
         constraint_checker: Box<dyn ConstraintChecker>,
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
         prelude: &'static [CompiledModule],
@@ -234,6 +238,7 @@ impl Engine {
             name
         });
         Self::with_prelude_and_kernels(
+            posture,
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
@@ -247,6 +252,7 @@ impl Engine {
     /// (loads one entry per inventory registration). Centralises the field
     /// initialisation so future engine fields land in one place.
     fn with_prelude_and_kernels(
+        posture: SolverPosture,
         constraint_checker: Box<dyn ConstraintChecker>,
         geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
         default_kernel_name: Option<String>,
@@ -265,7 +271,7 @@ impl Engine {
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
-            solver: None,
+            solve_stage: SolveStage::for_posture(posture),
             cache: CacheStore::new(),
             prelude,
             prelude_functions,
@@ -296,6 +302,7 @@ impl Engine {
             last_guard_phase_group_evals: 0,
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
+            last_changed_realizations: std::collections::HashSet::new(),
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
@@ -353,6 +360,11 @@ impl Engine {
             // cached handle satisfies the request under the partial-order
             // rule.
             realization_cache: crate::realization_cache::RealizationCache::new(),
+            volume_mesh_sources: Default::default(),
+            // Task 4152: zeroed eval-cache accumulator. Folded forward by
+            // `eval_cached` and surfaced (alongside the live realization
+            // counter) by `Engine::cache_stats`.
+            cumulative_eval_cache_totals: crate::EvalCacheTotals::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -377,9 +389,18 @@ impl Engine {
             // hot path pays zero overhead (no BRepExtrema projection) when γ
             // assertions are not active. Enable via set_capture_repr_tol(true).
             capture_repr_tol: false,
+            // Task 6169: "not recorded". Only the inventory-driven constructors
+            // can answer the declared-capability question (they alone hold the
+            // KernelRegistration); they overwrite this after construction. The
+            // caller-supplied-kernel seam leaves it None and gets the
+            // benefit-of-the-doubt scan in `has_repr_capable_kernel`.
+            repr_capable_kernel: None,
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
+            // DIC α (#5415): per-build ledger, populated by the relate
+            // consumption loop and cleared on every surface.
+            relate_static_facts: Vec::new(),
             // task #3428 step-6: persistent cache — off by default so all
             // existing tests without set_persistent_cache_dir are unaffected.
             persistent_cache_dir: None,
@@ -396,12 +417,28 @@ impl Engine {
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." Migration is in progress, not yet complete: this task (5040)
-    /// routes the 3 paired sites in `engine_eval.rs` through this helper,
-    /// but `engine_edit.rs` and `concurrent.rs` still bump the counters by
-    /// hand pending their own migration tasks. See
-    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
-    /// call-site inventory.
+    /// each."
+    ///
+    /// **The migration is complete** — this is now the sole writer of both
+    /// `next_snapshot_id` and `next_version_id`. All five live
+    /// paired-allocation sites route through it: `engine_edit.rs`'s
+    /// `edit_param` and `edit_source`, and `engine_eval.rs`'s `eval` (two
+    /// sites) and `dispatch_merged_cluster_solve`.
+    ///
+    /// **One allowlisted exception survives**: `engine_eval.rs`'s
+    /// `eval_cached` re-stamps `next_snapshot_id` alone — reusing the
+    /// caller-supplied `version` — behind a `// version-id-gate: allow`
+    /// comment, since routing through here would spuriously bump
+    /// `next_version_id` too.
+    ///
+    /// The discipline is self-enforcing, not aspirational:
+    /// `crates/reify-eval/tests/version_id_discipline_gate.rs` scans
+    /// `crates/reify-eval/src/` for raw `self.next_*_id` use outside this
+    /// allocator and its readers, which is why `docs/invariants.md`
+    /// records INV-BUILD-2 as `enforced(type+lint)`. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the settled
+    /// contract statement — the gate test above is the live source of
+    /// truth for the call-site set.
     pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
@@ -450,15 +487,18 @@ impl Engine {
     /// Wraps the private [`Self::with_prelude_and_kernels`] (embedded stdlib
     /// prelude, matching `Engine::new`), then installs `registry` as the
     /// `test_registry_override` consulted at the two build-path dispatch sites
-    /// in `engine_build.rs`.
+    /// in `engine_build.rs`. `posture` names whether the engine resolves
+    /// `auto` parameters.
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn with_test_kernels_and_registry(
+        posture: SolverPosture,
         constraint_checker: Box<dyn ConstraintChecker>,
         kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: BTreeMap<String, reify_ir::CapabilityDescriptor>,
         default_kernel_name: Option<String>,
     ) -> Self {
         let mut engine = Self::with_prelude_and_kernels(
+            posture,
             constraint_checker,
             kernels,
             default_kernel_name,
@@ -605,6 +645,48 @@ impl Engine {
         self.achieved_repr_tol.get(occurrence).copied()
     }
 
+    /// Every recorded `(occurrence, deviation)` pair, in ascending
+    /// occurrence-key order. Same map, population and freshness rules as
+    /// [`achieved_repr_tol`](Self::achieved_repr_tol).
+    ///
+    /// Each value is the exact f64 the `RepresentationWithin` comparator
+    /// reads; `reify check --verbose` prints these.
+    pub fn achieved_repr_tol_by_occurrence(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.achieved_repr_tol.iter().map(|(k, v)| (k.as_str(), *v))
+    }
+
+    /// The static-relate consumption ledger produced by the LAST build — one
+    /// `(scope_name, facts)` row per ZERO-AUTO relate scope, in `solve_scopes`
+    /// order (DIC α, task 5415).
+    ///
+    /// Each row records how many of that scope's declared relations were
+    /// measured and found satisfied, measured and found violated, or could not
+    /// be decided; the three always sum to the scope's relation count.
+    ///
+    /// An EMPTY slice means this build processed no zero-auto relate scope —
+    /// either the module has no relate block, or every relate scope has `at
+    /// auto` subs and was SOLVED rather than statically verified. Those are
+    /// different ledger rows to ζ (#5420) and are deliberately not folded
+    /// together here: reporting an assembly the solver actually placed as one
+    /// merely checked in place would be a false claim.
+    ///
+    /// Per-build, not cumulative: `reset_per_build_state` clears it on the
+    /// `Build` surface — the one that also repopulates it, from the relate
+    /// consumption loop — so a row can never describe a previous module's
+    /// scopes. The other surfaces deliberately leave it standing: a
+    /// `tessellate_realizations()` after a build (which `reify check` performs on
+    /// any module carrying a `RepresentationWithin` rule) never repopulates, so
+    /// clearing there would hand ζ (#5420) an empty ledger for a module that has
+    /// a relate block — the same conflation, one layer up, that the ledger exists
+    /// to remove.
+    ///
+    /// This task produces the rows; rendering them into the `reify check`
+    /// summary is ζ #5420's leaf
+    /// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    pub fn relate_static_facts(&self) -> &[(String, crate::relate_solve::StaticRelateFacts)] {
+        &self.relate_static_facts
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Immutable access to the per-Engine [`reify_types::StructureRegistry`]
@@ -649,6 +731,43 @@ impl Engine {
         &self.realization_cache
     }
 
+    /// Cache counters for this engine (task 4152).
+    ///
+    /// **This method is UNGATED**, unlike the neighbouring
+    /// [`realization_cache`](Self::realization_cache) accessor: it returns only
+    /// `usize` counters by value and never exposes a kernel-internal
+    /// `GeometryHandleId`, so there is nothing here to keep out of production
+    /// builds.
+    ///
+    /// The four fields have two different time bases:
+    ///
+    /// - [`realization_entries`](crate::CacheStats::realization_entries) is
+    ///   **live** — read straight off the current
+    ///   [`RealizationCache`](crate::realization_cache::RealizationCache). It is
+    ///   a monotonic lifetime count of new terminal realizations that survives
+    ///   both cache eviction and [`clear_realization_cache`](Self::clear_realization_cache),
+    ///   which is what makes it usable as a re-mesh-avoidance signal across
+    ///   `edit_param` / `edit_source` (both of which evict stale families).
+    /// - `cache_hits` / `cache_misses` / `early_cutoffs` are **cumulative
+    ///   totals** across every [`Engine::eval_cached`](crate::Engine::eval_cached)
+    ///   call on this engine — not the last call's figures. For a single call's
+    ///   own numbers, read `CachedEvalResult::stats` instead.
+    ///
+    /// Only the `build()` family can move `realization_entries`: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub fn cache_stats(&self) -> crate::CacheStats {
+        // Assembled field-by-field, deliberately not by functional update from
+        // the accumulator: the accumulator holds only the three eval-cache
+        // counters, so `realization_entries` has exactly one source (the live
+        // cache) and cannot be shadowed by a stale accumulated copy.
+        crate::CacheStats {
+            cache_hits: self.cumulative_eval_cache_totals.hits,
+            cache_misses: self.cumulative_eval_cache_totals.misses,
+            early_cutoffs: self.cumulative_eval_cache_totals.early_cutoffs,
+            realization_entries: self.realization_cache.realization_entries(),
+        }
+    }
+
     /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
     /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
     /// GeometryHandleId` entry.
@@ -663,14 +782,15 @@ impl Engine {
     ///
     /// **Most callers do NOT need to call this manually.** Both
     /// [`Engine::edit_param`](crate::Engine::edit_param) and
-    /// [`Engine::edit_source`](crate::Engine::edit_source) already invoke
-    /// the same reset internally near function entry (the auto-invalidation
-    /// hook points pinned by tests
-    /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-    /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
-    /// for scenarios that fall OUTSIDE those hook points; it is NOT a
-    /// required pre-`build_snapshot` step.
+    /// [`Engine::edit_source`](crate::Engine::edit_source) already evict the
+    /// family of every realization the edit made stale and keep the rest
+    /// (selective-realization-eviction γ #4730, pinned by
+    /// `edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits`
+    /// and `edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one`
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This whole-cache
+    /// flush is the escape hatch for scenarios that fall OUTSIDE those edits,
+    /// and the GUI whole-file reload below; it is NOT a required
+    /// pre-`build_snapshot` step.
     ///
     /// **Shape**: takes `&mut self`, returns nothing, idempotent on an
     /// already-empty cache. Mirrors the precedent set by
@@ -687,29 +807,79 @@ impl Engine {
     /// **What this method does NOT touch**: `eval_state`, `snapshot`,
     /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
     /// `param_overrides`, registered solvers/kernels, or any other engine
-    /// state. The reset is single-purpose: only `realization_cache` is
-    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    /// state. The reset is single-purpose: only `realization_cache`'s entries
+    /// are dropped, via
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear),
+    /// together with the VolumeMesh source records that let a cache-served
+    /// VolumeMesh terminal export the body it was meshed from (the crate-private
+    /// `volume_mesh_sources` module).
+    ///
+    /// **What this method does NOT reset**: the cache's
+    /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
+    /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
+    /// It is a monotonic count of realizations PERFORMED over the engine's lifetime, not of
+    /// entries currently resident, so it deliberately survives this flush (task 4152). Why
+    /// that holds by construction, and the tests that pin it, are documented at
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    /// in `tests/tolerance_wiring_e2e.rs`.
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
+        // Must stay a clear-in-place; never a reseat to `RealizationCache::new()`.
+        // See `RealizationCache::clear` for why the lifetime counter's survival
+        // depends on that (task 4152).
+        self.realization_cache.clear();
+        self.volume_mesh_sources.clear();
+    }
+
+    /// Reset all geometry kernels and drop the realization cache for a GUI
+    /// whole-file reload (task 5212).
+    ///
+    /// Must be called **exactly once per whole-file reload** — the GUI wires
+    /// it at the top of `EngineSession::check_with_solve_slot`, the single
+    /// funnel for `load_file`/`update_source`/`load_from_source`, and never on
+    /// a slider (parameter) edit. It does two coupled things, BOTH required:
+    ///
+    /// 1. Resets every registered geometry kernel (`GeometryKernel::reset`),
+    ///    freeing the previous design's resident native shapes. The reify-eval
+    ///    `Engine` and the kernels it owns are long-lived and reused across
+    ///    reloads, so without this the OCCT kernel's native `shapes` table
+    ///    grows unbounded over a long session.
+    /// 2. Clears the realization cache (via
+    ///    [`clear_realization_cache`](Self::clear_realization_cache)). GUI
+    ///    reloads preserve prior module identity, so build-2 entities collide
+    ///    on `entity_id` with build-1 and would cache-hit a build-1
+    ///    `KernelHandle` whose shape step 1 just evicted → `InvalidReference`
+    ///    → broken render. Clearing forces a cache-miss → fresh re-execution
+    ///    against the reset kernel.
+    ///
+    /// Reset alone frees the native shapes but leaves stale cache handles that
+    /// now resolve to `InvalidReference` (broken render); a cache-clear alone
+    /// keeps the render correct but frees no native memory. Together they
+    /// bound native memory AND keep the reload correct. Idempotent on a cold
+    /// engine (no kernel holds state; the cache is already empty).
+    pub fn reset_geometry_for_reload(&mut self) {
+        self.geometry_kernels.values_mut().for_each(|k| k.reset());
+        self.clear_realization_cache();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
+    ///
+    /// `posture` names whether the engine resolves `auto` parameters.
     pub fn new(
+        posture: SolverPosture,
         constraint_checker: Box<dyn ConstraintChecker>,
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
         Self::with_prelude(
+            posture,
             constraint_checker,
             geometry_kernel,
             reify_compiler::stdlib_loader::load_stdlib(),
@@ -722,8 +892,7 @@ impl Engine {
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
@@ -747,8 +916,8 @@ impl Engine {
     ///
     /// When no adapter has submitted a registration (e.g. stub-mode build with
     /// `cfg(has_occt)` off, or a binary that links no `reify-kernel-*` crate
-    /// at all), `kernel` is forwarded as `None`, matching `Engine::new(checker,
-    /// None)`. The existing build-path error surface ("no geometry kernel
+    /// at all), `kernel` is forwarded as `None`, matching `Engine::new(posture,
+    /// checker, None)`. The existing build-path error surface ("no geometry kernel
     /// registered") fires cleanly without a non-functional stub kernel.
     ///
     /// # BRep-preferring picker (task 3224)
@@ -811,7 +980,12 @@ impl Engine {
     /// event is still emitted exactly once per construction (the
     /// `engine_with_registered_kernel_emits_one_selection_event` integration
     /// pin continues to assert this).
-    pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
+    ///
+    /// `posture` names whether the engine resolves `auto` parameters.
+    pub fn with_registered_kernel(
+        posture: SolverPosture,
+        constraint_checker: Box<dyn ConstraintChecker>,
+    ) -> Self {
         // Amendment round 2 (task ε / 3436): pick the lex-min BRep-capable
         // entry from the inventory and instantiate only it, then forward to
         // `with_prelude` (which wraps it under `DEFAULT_KERNEL_NAME` via the
@@ -831,11 +1005,25 @@ impl Engine {
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let single_kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
-        Self::with_prelude(
+        // Task 6169 (review round): record the picked adapter's DECLARED BRep
+        // capability here, while the `KernelRegistration` is still in hand.
+        // `with_prelude` files the adapter under the synthetic
+        // `DEFAULT_KERNEL_NAME` key, which is absent from the static registry,
+        // so this answer is unrecoverable downstream — and every production
+        // constraint-dispatching surface (reify-cli `cmd_check`/`cmd_build`,
+        // the GUI `EngineSession`) constructs through exactly this path.
+        // `None` (empty registry) → `false`: there is no adapter at all, which
+        // matches the empty-`geometry_kernels` semantics.
+        let repr_capable = picked
+            .is_some_and(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep));
+        let mut engine = Self::with_prelude(
+            posture,
             constraint_checker,
             single_kernel,
             reify_compiler::stdlib_loader::load_stdlib(),
-        )
+        );
+        engine.repr_capable_kernel = Some(repr_capable);
+        engine
     }
 
     /// Construct an Engine using the inventory-driven multi-kernel registry,
@@ -859,7 +1047,7 @@ impl Engine {
     /// When no adapter has submitted a registration (e.g. stub-mode build with
     /// `cfg(has_occt)` off, or a binary that links no `reify-kernel-*` crate
     /// at all), `geometry_kernels` is empty and `default_kernel_name` is
-    /// `None`, matching `Engine::new(checker, None)`. The existing build-path
+    /// `None`, matching `Engine::new(posture, checker, None)`. The existing build-path
     /// error surface ("no geometry kernel registered") fires cleanly.
     ///
     /// # Per-op routing
@@ -878,8 +1066,13 @@ impl Engine {
     /// than one adapter is registered (lex-min tie-break notification),
     /// `DEBUG` when only one is. The event fires only when a
     /// [`tracing::Subscriber`] is installed.
-    pub fn with_registered_kernels(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        Self::with_registered_kernels_and_manifest(constraint_checker, None).0
+    ///
+    /// `posture` names whether the engine resolves `auto` parameters.
+    pub fn with_registered_kernels(
+        posture: SolverPosture,
+        constraint_checker: Box<dyn ConstraintChecker>,
+    ) -> Self {
+        Self::with_registered_kernels_and_manifest(posture, constraint_checker, None).0
     }
 
     /// Manifest-aware variant of [`Self::with_registered_kernels`]: walks the
@@ -926,7 +1119,10 @@ impl Engine {
     /// One structured tracing event is emitted (via
     /// [`crate::kernel_registry::emit_kernel_selection`]) for the same reasons
     /// as `with_registered_kernels` — this is the shared construction body.
+    ///
+    /// `posture` names whether the engine resolves `auto` parameters.
     pub fn with_registered_kernels_and_manifest(
+        posture: SolverPosture,
         constraint_checker: Box<dyn ConstraintChecker>,
         manifest: Option<&reify_config::Manifest>,
     ) -> (Self, Vec<Diagnostic>) {
@@ -959,10 +1155,21 @@ impl Engine {
             None => Vec::new(),
         };
         let mut engine = Self::with_prelude_and_kernels(
+            posture,
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
+        );
+        // Task 6169 (review round): record declared BRep capability across the
+        // loaded set. This path keys `geometry_kernels` by real registry names,
+        // so the registry scan would also answer correctly — recording it makes
+        // both inventory-driven constructors answer from the same place rather
+        // than leaving one on a lookup shape the other cannot use.
+        engine.repr_capable_kernel = Some(
+            registry
+                .values()
+                .any(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep)),
         );
         // Wire manifest-level knobs that need a post-construction setter
         // (mirrors the set_persistent_cache_dir pattern for cache-dir wiring).
@@ -981,7 +1188,7 @@ impl Engine {
     /// the single-kernel `Engine::new` / `Engine::with_prelude` wrapping
     /// case; returns adapter names (`"occt"`, future `"manifold"`, …) for
     /// the inventory-driven `Engine::with_registered_kernels` case. Empty
-    /// iterator when `Engine::new(checker, None)` was used (no kernel
+    /// iterator when `Engine::new(posture, checker, None)` was used (no kernel
     /// configured).
     pub fn registered_kernel_names(&self) -> impl Iterator<Item = &str> {
         self.geometry_kernels.keys().map(String::as_str)
@@ -989,7 +1196,7 @@ impl Engine {
 
     /// Number of geometry kernels currently held by this engine.
     ///
-    /// `0` matches the historical `Engine::new(checker, None)` semantics
+    /// `0` matches the historical `Engine::new(posture, checker, None)` semantics
     /// (no kernel configured). `1` is the wrapping case (single kernel
     /// inserted under [`Self::DEFAULT_KERNEL_NAME`]). `>1` arises with the
     /// inventory-driven [`Self::with_registered_kernels`] constructor once
@@ -1531,10 +1738,15 @@ impl Engine {
             // so the diagnostic would be misleading. The lowering site in
             // `engine_eval.rs` emits its own diagnostic that DOES mention
             // body-inline fallback, where that wording is accurate.
-            None => Err(vec![reify_core::Diagnostic::error(format!(
-                "@optimized target {:?}: no registered compute trampoline",
-                target
-            ))]),
+            //
+            // Both HARD sites build this via
+            // `crate::engine_compute::hard_no_trampoline_diagnostic`, which
+            // single-sources the message from `NO_TRAMPOLINE_STEM` and pins the
+            // severity unconditionally to Error — see its rustdoc for why the
+            // SOFT sites' empty-registry downgrade does not apply here.
+            None => Err(vec![crate::engine_compute::hard_no_trampoline_diagnostic(
+                target,
+            )]),
         }
     }
 
@@ -1578,10 +1790,36 @@ impl Engine {
         self.max_unfold_nodes = limit;
     }
 
-    /// Set the constraint solver for resolving auto parameters.
+    /// The [`SolverPosture`] this engine was constructed with.
+    pub fn solver_posture(&self) -> SolverPosture {
+        match &self.solve_stage {
+            Some(stage) => SolverPosture::Solve(stage.profile()),
+            None => SolverPosture::SolverFree,
+        }
+    }
+
+    /// Replace the constraint solver that resolves auto parameters, keeping
+    /// the engine's resolution profile. This is the solver-double seam.
+    ///
+    /// # Panics
+    /// Panics if the engine was constructed `SolverPosture::SolverFree`.
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
-        self.solver = Some(solver);
+        self.solve_stage_or_refuse("Engine::with_solver").replace_solver(solver);
         self
+    }
+
+    /// The solve stage a solver-injection `op` writes into. A solver installed
+    /// on a `SolverFree` engine would make its named posture untrue, so that is
+    /// refused rather than silently re-arming the engine.
+    fn solve_stage_or_refuse(&mut self, op: &str) -> &mut SolveStage {
+        self.solve_stage.as_mut().unwrap_or_else(|| {
+            panic!(
+                "{op} on an engine constructed SolverPosture::SolverFree: installing a \
+                 solver would make its named solver-free posture untrue \
+                 (solver-driver-parity I1); construct with SolverPosture::Solve(..) to \
+                 inject a solver double"
+            )
+        })
     }
 
     /// Return the set of scope names that received a synthetic Chebyshev-centre
@@ -1603,15 +1841,19 @@ impl Engine {
     /// module pragma (Task 2300).
     ///
     /// Modules whose `solver_pragma.name` matches `name` route their solver
-    /// invocations to `solver` instead of the default `self.solver` set via
-    /// `with_solver`. If `name` is not the value of any module's
-    /// `#solver(<name>)`, the registered solver is never invoked.
+    /// invocations to `solver` instead of the engine's default solver. If
+    /// `name` is not the value of any module's `#solver(<name>)`, the
+    /// registered solver is never invoked.
     ///
     /// If a solver is already registered for `name`, it is silently overwritten
     /// and the previous solver is dropped. Mirrors `register_optimized_impl`'s
     /// `HashMap::insert` semantics; intentional to support hot-reload and test
     /// fixture scenarios where callers swap impls between runs.
+    ///
+    /// # Panics
+    /// Panics if the engine was constructed `SolverPosture::SolverFree`.
     pub fn register_solver(&mut self, name: impl Into<String>, solver: Box<dyn ConstraintSolver>) {
+        self.solve_stage_or_refuse("Engine::register_solver");
         self.solvers.insert(name.into(), solver);
     }
 
@@ -1630,15 +1872,20 @@ impl Engine {
         self.solvers.keys().map(String::as_str)
     }
 
+    /// The solve stage's solver; `None` for a `SolverFree` engine.
+    fn default_solver(&self) -> Option<&dyn ConstraintSolver> {
+        self.solve_stage.as_ref().map(SolveStage::solver)
+    }
+
     /// Look up the constraint solver to use for `module` (Task 2300).
     ///
     /// Resolution policy:
-    /// - `module.solver_pragma == None`: return `self.solver.as_deref()`.
+    /// - `module.solver_pragma == None`: return the default solver.
     /// - `module.solver_pragma == Some({ name, .. })` and `name` is in
     ///   `self.solvers`: return the named solver.
     /// - `module.solver_pragma == Some({ name, .. })` and `name` is NOT in
-    ///   `self.solvers`: return `self.solver.as_deref()` (default fallback;
-    ///   may itself be `None` if `with_solver` was never called).
+    ///   `self.solvers`: return the default solver (fallback; `None` for an
+    ///   engine constructed `SolverPosture::SolverFree`).
     ///
     /// This helper is the lookup-only counterpart of
     /// [`Engine::resolve_solver_for_module`]: it does NOT emit the
@@ -1652,12 +1899,12 @@ impl Engine {
         module: &CompiledModule,
     ) -> Option<&dyn ConstraintSolver> {
         match module.solver_pragma.as_ref() {
-            None => self.solver.as_deref(),
+            None => self.default_solver(),
             Some(p) => self
                 .solvers
                 .get(&p.name)
                 .map(|b| b.as_ref() as &dyn ConstraintSolver)
-                .or(self.solver.as_deref()),
+                .or(self.default_solver()),
         }
     }
 
@@ -1923,6 +2170,36 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_diff_value_cells(&self) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
+    }
+
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, as recomputed by the most recent ACCEPTED `edit_param`
+    /// / `edit_source` (selective-realization-eviction PRD task β, #4729).
+    /// Empty means nothing is known to be stale.
+    ///
+    /// The measurement is against α's stored `input_cone_hash` — "the input
+    /// cone as of the last execution" — so it is cumulative until a `build()`
+    /// re-executes, NOT a per-edit delta: a realization edited but not yet
+    /// rebuilt keeps being reported across subsequent unrelated edits. A
+    /// REJECTED edit (`NotInitialized` / `CellNotFound` / a param-override
+    /// type or dimension mismatch) mutates nothing and leaves the prior
+    /// record intact. See the field doc in `lib.rs` for the full contract.
+    ///
+    /// Consumed by task γ (#4730) keyed eviction. Note this is the
+    /// INPUT-cone comparison, not the static
+    /// `RealizationNodeData::content_hash` diff that
+    /// [`Engine::last_diff_value_cells`]' realization analogue would give —
+    /// see `realization_staleness::compute_changed_realizations` for why the static
+    /// hash provably never moves on a value-driven change.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_changed_realizations(
+        &self,
+    ) -> &std::collections::HashSet<reify_core::RealizationNodeId> {
+        &self.last_changed_realizations
     }
 
     /// Returns the number of param-override rejections due to `TypeKindMismatch`
@@ -2302,13 +2579,17 @@ impl Engine {
     ///     divergence from `current_eval_version()` that this site
     ///     deliberately avoids). This equals the *current eval* version in
     ///     eval-only flows, but the two notions are not the same guarantee:
-    ///     `engine_edit.rs` and `concurrent.rs` still bump `next_version_id`
-    ///     by hand (migration in progress — see `allocate_snapshot_version`'s
-    ///     doc), so a non-eval allocation occurring between an eval and a
-    ///     drain would stamp drained events with a version that does not
-    ///     correspond to that eval. Pre-existing exposure — the prior inline
-    ///     `next_version_id.saturating_sub(1)` formula had the identical
-    ///     coupling — left unchanged by this reader (task 5047 / δ).
+    ///     `engine_edit.rs`'s `edit_param` and `edit_source` still
+    ///     *allocate* versions on non-eval paths — now via
+    ///     `allocate_snapshot_version()` rather than by hand — so a
+    ///     non-eval allocation occurring between an eval and a drain would
+    ///     stamp drained events with a version that does not correspond to
+    ///     that eval. (The allowlisted `eval_cached` re-stamp is
+    ///     snapshot-only and never advances `next_version_id`, so it cannot
+    ///     contribute to this desync.) Pre-existing exposure — the prior
+    ///     inline `next_version_id.saturating_sub(1)` formula had the
+    ///     identical coupling — left unchanged by this reader (task 5047 /
+    ///     δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
@@ -2422,7 +2703,26 @@ impl Engine {
     /// **Counter reset**: both `persistent_hit_count` and
     /// `persistent_miss_count` are reset to 0 on every call so callers
     /// receive per-session statistics.
+    ///
+    /// # Panics
+    /// Panics on `Some(dir)` when the engine's posture is `Solve(profile)` with
+    /// a `StalenessPolicy::Fresh` profile: a persistent cache serves results
+    /// from an earlier session, which that profile does not permit. `None` is
+    /// always accepted, and so is a `SolverFree` engine, which carries no
+    /// resolution profile (see [`SolverPosture::SolverFree`] for why that gap is
+    /// bounded).
     pub fn set_persistent_cache_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        if dir.is_some()
+            && let SolverPosture::Solve(profile) = self.solver_posture()
+            && !profile.staleness().permits_persisted_results()
+        {
+            panic!(
+                "Engine::set_persistent_cache_dir(Some(..)) on an engine whose resolution \
+                 profile is StalenessPolicy::Fresh: a persistent cache may serve results \
+                 from an earlier session (solver-driver-parity I5, staleness axis); \
+                 construct with a StalenessPolicy::MayServePersisted profile ({profile:?})"
+            );
+        }
         self.persistent_cache_dir = dir;
         self.persistent_hit_count = 0;
         self.persistent_miss_count = 0;
@@ -3051,6 +3351,51 @@ mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
 
+    // ── `Engine::cache_stats()` public surface (task 4152, step-03) ──
+
+    /// `Engine::cache_stats()` is an UNGATED public method returning
+    /// `CacheStats` by value, and a freshly-constructed engine reports zeros
+    /// across the board — including the additive `realization_entries` field,
+    /// which is publicly readable and starts at 0.
+    ///
+    /// Ungated (unlike [`Engine::realization_cache`], which is
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`) because it
+    /// exposes only `usize` counters — never a kernel-internal
+    /// `GeometryHandleId`.
+    #[test]
+    fn fresh_engine_cache_stats_reports_all_zero() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // `CacheStats::default()` zeroes the additive field too — the
+        // workspace's only `CacheStats` construction idiom is `Default` (there
+        // are no `CacheStats { .. }` literals outside `cache_stats()` itself),
+        // which is what makes the added field non-breaking.
+        assert_eq!(
+            crate::CacheStats::default().realization_entries,
+            0,
+            "a default CacheStats must report zero realizations"
+        );
+
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+
+        // Returned by value: bind it and let the engine borrow end.
+        let stats: crate::CacheStats = engine.cache_stats();
+
+        assert_eq!(
+            stats.realization_entries, 0,
+            "a fresh engine has realized and cached no geometry"
+        );
+        assert_eq!(stats.cache_hits, 0, "a fresh engine has no eval-cache hits");
+        assert_eq!(
+            stats.cache_misses, 0,
+            "a fresh engine has no eval-cache misses"
+        );
+        assert_eq!(
+            stats.early_cutoffs, 0,
+            "a fresh engine has no early cutoffs"
+        );
+    }
+
     // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
 
     /// The VolumeMesh-demand target registry: `register_volume_mesh_demand`
@@ -3062,7 +3407,7 @@ mod tests {
     #[test]
     fn register_volume_mesh_demand_marks_target_and_unregistered_is_false() {
         use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Unregistered target → not demanding.
         assert!(
@@ -3091,6 +3436,68 @@ mod tests {
         );
     }
 
+    // ── reset_geometry_for_reload (task 5212 — GUI whole-file reload) ──
+
+    /// `reset_geometry_for_reload()` frees per-design native kernel memory and
+    /// drops the realization cache in one call, so a GUI whole-file reload
+    /// neither leaks prior-design shapes nor re-serves a stale build-N handle
+    /// (module identity is preserved across reloads, so build-2 entities
+    /// collide on entity_id with build-1 and would otherwise cache-hit a
+    /// build-1 handle whose shape was just evicted). A reset-counting mock
+    /// kernel confirms every registered kernel is reset exactly once, and the
+    /// realization cache is emptied.
+    #[test]
+    fn reset_geometry_for_reload_resets_kernels_and_clears_realization_cache() {
+        use reify_core::ContentHash;
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId, ReprKind};
+        use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+
+        // Register a reset-counting mock kernel; keep a shared handle to its
+        // reset counter before the mock is boxed into the engine.
+        let mock = MockGeometryKernel::new();
+        let reset_calls = mock.reset_calls_ref();
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(mock));
+
+        // Seed one realization-cache entry — the stale build-N handle a reload
+        // must drop (else it would be re-served against an evicted shape).
+        engine.realization_cache.insert(
+            "Bracket",
+            ReprKind::BRep,
+            0.01,
+            ContentHash(0),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        assert!(
+            !engine.realization_cache().is_empty(),
+            "precondition: realization cache seeded with one entry",
+        );
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            0,
+            "precondition: no reset before the reload call",
+        );
+
+        engine.reset_geometry_for_reload();
+
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            1,
+            "reset_geometry_for_reload must reset every registered kernel exactly once",
+        );
+        assert!(
+            engine.realization_cache().is_empty(),
+            "reset_geometry_for_reload must clear the realization cache so no \
+             stale build-N handle is re-served after reload",
+        );
+    }
+
     // ── allocate_snapshot_version pair-allocator (task 5040, INV-BUILD-2 α) ──
 
     /// `allocate_snapshot_version` mints a fresh `(SnapshotId, VersionId)`
@@ -3108,7 +3515,7 @@ mod tests {
     fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
         use reify_core::{SnapshotId, VersionId};
         use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         assert_eq!(
             engine.next_snapshot_id, 0,
@@ -3244,7 +3651,7 @@ mod tests {
 
         let compiled =
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let before_first_snapshot = engine.next_snapshot_id;
         let before_first_version = engine.next_version_id;
@@ -3324,7 +3731,7 @@ mod tests {
             .template(template)
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        let mut engine = Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
         let before_snapshot = engine.next_snapshot_id;
@@ -3404,7 +3811,7 @@ mod tests {
             .template(b)
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        let mut engine = Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
         let before_snapshot = engine.next_snapshot_id;
@@ -3455,7 +3862,7 @@ mod tests {
     fn last_allocated_version_is_zero_pre_allocation_and_tracks_next_version_id() {
         use reify_core::VersionId;
         use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Pre-allocation edge: next_version_id == 0, last_allocated_version()
         // must saturate to VersionId(0) rather than panic.
@@ -3514,7 +3921,7 @@ mod tests {
         use reify_ir::OpaqueState;
         use reify_test_support::parse_and_compile;
 
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
         // 1-byte budget: the second donate below is guaranteed to evict the
         // first, producing both a Donated and an Evicted event.
@@ -3614,7 +4021,7 @@ mod tests {
         use reify_ir::OpaqueState;
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let base = engine.journal().len();
 
         // 1-byte budget: the second donate below is guaranteed to evict the
@@ -3677,7 +4084,7 @@ mod tests {
 
         let compiled =
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let _ = engine.eval(&compiled);
 
         let before_snapshot = engine.next_snapshot_id;
@@ -3718,7 +4125,7 @@ mod tests {
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let compiled_b =
             parse_and_compile_with_stdlib("structure S { param width: Length = 150mm }");
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let _ = engine.eval(&compiled_a);
 
         let before_snapshot = engine.next_snapshot_id;
@@ -4102,7 +4509,11 @@ mod tests {
     fn register_solver_stores_named_solver_and_unregister_returns_true_when_present() {
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
         use std::collections::HashMap;
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(
+            crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            Box::new(MockConstraintChecker::new()),
+            None,
+        );
         engine.register_solver(
             "libslvs",
             Box::new(SpyConstraintSolver::new_solved(HashMap::new())),
@@ -4143,7 +4554,7 @@ mod tests {
         use reify_core::ValueCellId;
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let a = ValueCellId::new("M", "a");
         let b = ValueCellId::new("M", "b");
         let c = ValueCellId::new("M", "c");
@@ -4190,13 +4601,13 @@ mod tests {
         use reify_test_support::mocks::MockConstraintChecker;
 
         // Engine::new path.
-        let engine_new = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine_new = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let table_new = engine_new.topology_attribute_table();
         assert!(table_new.is_empty());
         assert_eq!(table_new.len(), 0);
 
         // Engine::with_prelude path (empty prelude).
-        let engine_wp = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let engine_wp = Engine::with_prelude(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
         let table_wp = engine_wp.topology_attribute_table();
         assert!(table_wp.is_empty());
         assert_eq!(table_wp.len(), 0);
@@ -4220,7 +4631,7 @@ mod tests {
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // (a) Unknown node → Final (default) even before any eval.
         let unknown = ValueCellId::new("Ghost", "x");
@@ -4284,7 +4695,7 @@ mod tests {
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // (a) Unknown node → None (no cache entry).
         let unknown = NodeId::Value(ValueCellId::new("Ghost", "x"));
@@ -4378,7 +4789,7 @@ mod tests {
             )
             .build();
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Pass 1: cold eval — initialises cache (all cells → Final).
         let _ = engine.eval(&module);
@@ -4447,7 +4858,7 @@ mod tests {
         let v_node = NodeId::Value(v_id.clone());
         let compute_node = NodeId::Compute(ComputeNodeId::new("T", 0));
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Seed a Value entry for v directly — no eval pipeline needed; the test
         // exercises only the pending_cause delegation contract, not eval behaviour.

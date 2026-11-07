@@ -16,7 +16,7 @@
 //! `has_gmsh` because it calls `mesh_surface_to_volume_with_diagnostics` which
 //! only exists in the real FFI build.
 
-use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeConnectivity, VolumeMesh};
+use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh};
 // `MeshInvariant` / `MeshViolationCounts` / `MeshWitness` compose the
 // #4876 watertightness preflight's `GeometryError::MeshContractViolation`.
 // Not re-exported at the `reify_ir` crate root (see
@@ -38,6 +38,10 @@ use std::borrow::Cow;
 #[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,
+    meshable_region::{
+        FEATURE_EDGE_CLASSIFY_ANGLES, TetReadback, build_meshable_region, read_back_tet_mesh,
+    },
+    mesh_size_scope::MeshSizeScope,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
     repair::{RepairConfig, repair_surface_mesh_with_correspondence},
@@ -294,7 +298,7 @@ pub fn preflight_watertight_surface(surface: &Mesh, tol: f64) -> Result<(), Geom
 /// `pub` (not crate-private): this is the SINGLE shared implementation of
 /// the raw directed-edge scan. Both [`preflight_watertight_surface`] (above)
 /// and the #4876/#5115 characterization test
-/// (`crates/reify-eval/tests/fea_face_selector_bc_e2e.rs::characterizes_4876_occt_tessellation_unwelded_witness`)
+/// (`crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs::characterizes_4876_occt_tessellation_unwelded_witness`)
 /// call this same function — the latter as
 /// `reify_kernel_gmsh::mesh_boundary::raw_open_edge_census`, reachable
 /// because `reify-eval`'s dev-dependency on this crate enables the
@@ -574,7 +578,9 @@ fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool 
 /// deliberately mirrors the structure of `kernel_real.rs::mesh_to_volume`
 /// (acquiring `GMSH_LOCK`, calling the same FFI sequence) while adding the
 /// entity-membership queries between `mesh_generate(3)` and `ffi::clear()`.
-/// The existing `mesh_to_volume` function is left unchanged.
+/// It shares `mesh_to_volume`'s region builder and tet readback,
+/// `meshable_region::build_meshable_region` / `meshable_region::read_back_tet_mesh`,
+/// and arms the same [`crate::log_capture::LogCapture`].
 #[cfg(has_gmsh)]
 fn run_meshing_with_entity_queries(
     surface: &Mesh,
@@ -582,7 +588,6 @@ fn run_meshing_with_entity_queries(
     element_order: ElementOrderTag,
     attribution: &EntityAttribution,
 ) -> Result<(VolumeMesh, Vec<(u32, NodeAttachment)>), GeometryError> {
-    use std::collections::HashMap;
     use crate::{ffi, init};
 
     // --- Input validation (mirrors kernel_real.rs checks) ---
@@ -602,12 +607,21 @@ fn run_meshing_with_entity_queries(
         )));
     }
 
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Placed above the first `?` so every early return is covered, not
+    // only the success path. See `mesh_size_scope` for both directions.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
+    // gmsh's diagnosis now reaches only the capture; armed and dropped exactly
+    // as at `kernel_real::GmshKernel::mesh_to_volume`'s arm site (`log_capture`).
+    let log_capture = crate::log_capture::LogCapture::armed(&_guard);
 
-    // Mesh-size options
+    // Mesh-size options: this function's own deviation from the size defaults
+    // the scope just established, and dying with it.
     if let Some(s) = options.mesh_size
         && s > 0.0
     {
@@ -619,17 +633,10 @@ fn run_meshing_with_entity_queries(
     ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
     // Thread count
-    let num_threads: f64 = if options.deterministic {
-        1.0
-    } else {
-        match options.threads {
-            Some(t) => t as f64,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        }
-    };
-    ffi::option_set_number("General.NumThreads", num_threads)?;
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
 
     // Element order
     let order_value: f64 = match element_order {
@@ -652,40 +659,45 @@ fn run_meshing_with_entity_queries(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    // Classify surfaces + create geometry.
+    // Shared with `mesh_to_volume`, at the same angles; the classify-angle
+    // rationale lives with the builder.
+    build_meshable_region(
+        &_guard,
+        "mesh_surface_to_volume_with_attribution",
+        FEATURE_EDGE_CLASSIFY_ANGLES,
+    )
+    .map_err(|e| log_capture.annotate(e))?;
+
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
     //
-    // NOTE (task 3591, at time of writing): the feature angle is FRAC_PI_4
-    // (45°), NOT the FRAC_PI_2 (90°) that `mesh_to_volume` uses. Volume meshing
-    // only needs a closed watertight surface, but ATTRIBUTION additionally needs
-    // gmsh to reconstruct the B-rep topology (faces / edges / corner points). A
-    // cube's dihedral angle is exactly 90°, so a 90° feature angle fails to
-    // separate adjacent faces: gmsh then emits a degenerate decomposition with
-    // no corner (dim-0) entities, yielding zero OnVertex attributions. FRAC_PI_4
-    // puts the cube's 90° edges safely above the threshold so corners, edges and
-    // faces are recovered. See `tests/node_attachment_producer.rs` (signal test)
-    // and `tests/gmsh_classify_diagnostics.rs` (pinned re-meshing property).
-    ffi::classify_surfaces(
-        std::f64::consts::FRAC_PI_4,
-        1,
-        1,
-        std::f64::consts::FRAC_PI_4,
-        0,
-    )?;
-    ffi::create_geometry(&[])?;
+    // Driven from `tests/mesher_poison_recovery.rs` by two disjoint closed
+    // cubes, which pass this entry point's watertight preflight and fail HXT
+    // in ~50 ms; those tests cover both the recovery and the single
+    // captured-log annotation. Outside both `log_capture` seams because it
+    // annotates its own failure — a seam over it would append the tail twice.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
-    // Wrap in surface loop + volume
-    let surface_tags = ffi::get_entity_tags(2)?;
-    if surface_tags.is_empty() {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(
-            "gmsh produced no dim=2 entities after classify_surfaces+create_geometry".into(),
-        ));
-    }
-    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-    ffi::geo_synchronize()?;
+    read_back_attributed_volume(&_guard, element_order, attribution)
+        .map_err(|e| log_capture.annotate(e))
+}
 
-    ffi::mesh_generate(3)?;
+/// Query gmsh's entity membership for the mesh just generated, read the volume
+/// mesh back out of the process-global model, and attribute its nodes to the
+/// caller's B-rep handles.
+///
+/// The [`crate::init::GmshGuard`] is an admission ticket only, as in
+/// `meshable_region::build_meshable_region`. Split out of
+/// [`run_meshing_with_entity_queries`] so this span's failures reach the
+/// caller's `LogCapture` at one seam.
+#[cfg(has_gmsh)]
+fn read_back_attributed_volume(
+    _guard: &crate::init::GmshGuard,
+    element_order: ElementOrderTag,
+    attribution: &EntityAttribution,
+) -> Result<(VolumeMesh, Vec<(u32, NodeAttachment)>), GeometryError> {
+    use crate::ffi;
+    use std::collections::HashMap;
 
     // -----------------------------------------------------------------------
     // Entity-membership queries (must happen BEFORE ffi::clear)
@@ -736,69 +748,11 @@ fn run_meshing_with_entity_queries(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Read out the volume mesh (mirrors kernel_real.rs post-mesh readout)
-    // -----------------------------------------------------------------------
-
-    let (all_node_tags, coord_buf) = ffi::get_nodes_all()?;
-    if coord_buf.len() != all_node_tags.len() * 3 {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh get_nodes_all stride mismatch: node_tags.len()={}, coord_buf.len()={}",
-            all_node_tags.len(),
-            coord_buf.len()
-        )));
-    }
-
-    let elem_type = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 11,
-    };
-    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    let nodes_per_elem: usize = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh element stride mismatch: elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len()
-        )));
-    }
-
-    // Sort by tag → assign local indices
-    let mut paired: Vec<(u64, [f64; 3])> = all_node_tags
-        .iter()
-        .copied()
-        .zip(coord_buf.chunks_exact(3))
-        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-        .collect();
-    paired.sort_by_key(|(t, _)| *t);
-
-    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-    for (idx, (tag, xyz)) in paired.iter().enumerate() {
-        let idx_u32 = u32::try_from(idx).map_err(|_| {
-            GeometryError::OperationFailed(format!(
-                "mesh has {} nodes, exceeding u32 limit",
-                paired.len()
-            ))
-        })?;
-        tag_to_idx.insert(*tag, idx_u32);
-        vertices.extend(xyz.iter().map(|&v| v as f32));
-    }
-
-    // Remap connectivity
-    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-    for &tag in &elem_node_tags {
-        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-            GeometryError::OperationFailed(format!(
-                "element references unknown node tag {tag}"
-            ))
-        })?;
-        tet_indices.push(idx);
-    }
+    let TetReadback { mesh, tag_to_idx } = read_back_tet_mesh(
+        _guard,
+        "mesh_surface_to_volume_with_attribution",
+        element_order,
+    )?;
 
     // Build node_tag → local_idx based attribution list
     let node_attribution: Vec<(u32, NodeAttachment)> = node_tag_to_attachment
@@ -810,18 +764,7 @@ fn run_meshing_with_entity_queries(
 
     let _ = ffi::clear();
 
-    Ok((
-        VolumeMesh {
-            vertices,
-            connectivity: VolumeConnectivity::Tet {
-                indices: tet_indices,
-                order: element_order,
-            },
-            normals: None,
-            boundary: None,
-        },
-        node_attribution,
-    ))
+    Ok((mesh, node_attribution))
 }
 
 // ---------------------------------------------------------------------------
@@ -911,11 +854,6 @@ mod tests {
     /// tie) and (b) emits exactly one WARN at
     /// `reify_kernel_gmsh::mesh_boundary` documenting the exclusion.
     fn assert_non_finite_candidate_excluded_and_warns(coord: f64) {
-        // Prime the callsite cache so per-test with_default subscribers see
-        // events even if a prior test thread hit the callsite with no
-        // subscriber active.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [coord, 0.0, 0.0]),
@@ -966,8 +904,6 @@ mod tests {
     /// the nearer handle.
     #[test]
     fn all_finite_candidates_emit_no_warn() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1003,8 +939,6 @@ mod tests {
     /// a bad query anchor from a bad candidate anchor.
     #[test]
     fn non_finite_query_anchor_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [f64::NAN, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1053,8 +987,6 @@ mod tests {
     /// WARN.
     #[test]
     fn all_candidates_non_finite_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![(GeometryHandleId(1), [f64::NAN, 0.0, 0.0])];
         let tol_sq = 1.0;
@@ -1089,8 +1021,6 @@ mod tests {
     /// widespread corruption.
     #[test]
     fn n_excluded_counts_only_non_finite_candidates() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [f64::NAN, 0.0, 0.0]),

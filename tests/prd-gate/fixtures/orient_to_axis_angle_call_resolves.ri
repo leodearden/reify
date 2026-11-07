@@ -1,0 +1,13 @@
+// Adversary fixture (γ decompose-phase premise, builtin-signature-registry
+// leaf tau2-orientation): the RECEIVER of the member-access post-state —
+// `orient_to_axis_angle(orient_identity())` WITHOUT any member access —
+// resolves and passes `reify check` today (exit 0). The parse-only premise
+// never type-checked the receiver; if the orientation builtins did not
+// resolve, the leaf's "absorbs #5344's arms as rows" plan has no substrate.
+
+module orient_to_axis_angle_call_resolves
+
+structure OrientToAxisAngleCallResolves {
+    let q = orient_identity()
+    let aa = orient_to_axis_angle(q)
+}

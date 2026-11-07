@@ -52,7 +52,7 @@ Cross-PRD notes:
 - **mirror-exists-and-shadows** → PASS. `examples/stdlib/ports_breadth.ri`
   carries the local `ThreadSpec` mirror (`:44`, lacking `thread_form`) and the
   "EVAL-TIME RE-DECLARATION NOTE" dead-semantics block (`:16-24`); file is
-  auto-covered by `crates/reify-compiler/tests/examples_smoke.rs` (in-file
+  auto-covered by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (in-file
   comment + directory walk).
 - **regime-b-live-mirror-strippable** → PASS *(probe, D3)*. The re-declaration
   hazard is dead: a mirror-stripped copy evaluates clean with stdlib
@@ -90,7 +90,8 @@ Cross-PRD notes:
 - **single-file-pre-state-real** → PASS *(probe, D3)*. `reify eval`/`build` use
   `parse_and_compile` (`reify-cli/main.rs:173`, no import DAG): importing entry
   yields `import "parts" not resolved by this entry point` + unknown-structure
-  error today.
+  error today. **[Amended 2026-10-22, υ #8775 BLK-1]**
+  delivered check `single-file-pre-state-real` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is the `cmd_eval` / `cmd_build` entry points, which moved to `crates/reify-cli/src/cmd/eval.rs` and `crates/reify-cli/src/cmd/build.rs`.
 - **cfg-threading-substrate** → PASS. `check`'s `--cfg` threading
   (`build_cfg_set`, conditional-compilation.md landed) is the mechanism D-4
   reuses; semantics unchanged.

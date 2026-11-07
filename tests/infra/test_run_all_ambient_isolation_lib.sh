@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# tests/infra/test_run_all_ambient_isolation_lib.sh — unit test for
-# ambient_isolation_check_one() in run_all_ambient_isolation_lib.sh (task 5259,
-# PRD docs/prds/merge-gate-health.md W4c).
+# tests/infra/test_run_all_ambient_isolation_lib.sh — unit test for both
+# functions in run_all_ambient_isolation_lib.sh: ambient_isolation_check_one()
+# (task 5259, PRD docs/prds/merge-gate-health.md W4c; sub-cases A-D) and
+# run_all_injected_env_keys() (task 7234; sub-cases E-H).
 #
-# The lib function decides, per ambient ledger var, whether test_run_all.sh
-# going red under a HOSTILE ambient env is a GENUINE ambient-isolation bug or
-# merely DERIVATIVE of a pre-existing (env-independent) test_run_all.sh
-# failure. Only the former must fail the guard; the latter must be SKIPped
-# distinctly so run_all.sh's classifier does not double-count one
-# test_run_all.sh failure as two FAILED names (W4c).
+# ambient_isolation_check_one decides, per ambient ledger var, whether
+# test_run_all.sh going red under a HOSTILE ambient env is a GENUINE
+# ambient-isolation bug or merely DERIVATIVE of a pre-existing
+# (env-independent) test_run_all.sh failure. Only the former must fail the
+# guard; the latter must be SKIPped distinctly so run_all.sh's classifier does
+# not double-count one test_run_all.sh failure as two FAILED names (W4c).
 #
-# This is the only place ambient_isolation_check_one can be exercised in
-# isolation: the consumer test_run_all_ambient_isolation.sh cannot self-test
-# (self-invocation recurses — see its header) and drives the REAL suite. Here
-# we drive the function against tiny FAKE target scripts, so each decision
-# branch (SKIP / FAIL / PASS) is hermetic and fast (no real ~103-test suite,
-# no --print-plan derivation).
+# run_all_injected_env_keys derives, behaviourally, which env var NAMES a
+# runner injects into a member it spawns — the ledger's third live source.
+#
+# This is the only place either function can be exercised in isolation: the
+# consumer test_run_all_ambient_isolation.sh cannot self-test (self-invocation
+# recurses — see its header) and drives the REAL suite and runner. Here we
+# drive each function against tiny FAKE targets / runners, so every branch is
+# hermetic and fast (no real ~103-test suite, no --print-plan derivation).
 
 set -euo pipefail
 
@@ -30,7 +33,7 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 [ -f "$SCRIPT_DIR/run_all_ambient_isolation_lib.sh" ] || { echo "ERROR: run_all_ambient_isolation_lib.sh not found at $SCRIPT_DIR/run_all_ambient_isolation_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/run_all_ambient_isolation_lib.sh"
 
-echo "=== ambient_isolation_check_one unit test (task 5259 / W4c) ==="
+echo "=== run_all_ambient_isolation_lib.sh unit test (task 5259 / W4c; task 7234) ==="
 
 # Hermetic scratch dir for the fake target scripts (one per sub-case).
 FAKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-ambient-iso-lib.XXXXXX")"
@@ -107,6 +110,20 @@ else
     assert "isolation-bug: does not emit the derivative SKIP marker (coverage preserved)" true
 fi
 
+# The FAIL marker line itself, pinned symmetrically with Sub-case C's PASS pin.
+# Without this, nothing in-tree asserts that line at all: Sub-case D's
+# non-vacuity check is satisfied by the `  | `-prefixed dump alone, so renaming
+# or deleting the marker outright would leave this whole suite green while the
+# lib header and the FAIL branch's own comment both promise it stays greppable.
+# Anchored at BOTH ends deliberately:
+#   ^   -- the marker is NOT itself `  | `-prefixed; the prefix filter applies
+#          to the re-emitted capture only.
+#   …$  -- the capture FOLLOWS the marker on its own lines rather than being
+#          interpolated INTO it, which is the pre-6353 shape this task removed
+#          (`… [hostile rc=$_amb_rc; hostile out: $_amb_out]`).
+assert "isolation-bug: emits the FAIL marker line, un-prefixed, with the capture not inlined into it" \
+    plan_match "$_out" '^AMBIENT-ISOLATION FAIL: .*\[hostile rc=1\]$'
+
 # ---------------------------------------------------------------------------
 # Sub-case C "green happy-path": a fake test_run_all.sh that is GREEN
 # regardless of env. Hostile GREEN => PASS immediately (no baseline run) =>
@@ -139,5 +156,206 @@ fi
 
 assert "green happy-path: emits the hostile-green PASS line" \
     plan_match "$_out" 'AMBIENT-ISOLATION PASS:'
+
+# ---------------------------------------------------------------------------
+# Sub-case D "hostile-red target whose output carries a sentinel": Sub-case B's
+# shape (green at baseline, red under the hostile ambient) PLUS a column-0
+# slot-timeout sentinel on the hostile run. This is the real hazard: the lib's
+# FAIL branch re-emits $_amb_out — the COMBINED stdout+stderr of a
+# deadline-capable child (the real target, test_run_all.sh, forces a
+# REIFY_RUN_ALL_POOL_WAIT deadline on every green run) — so a bare
+# interpolation puts that child's sentinel at COLUMN 0, where dark-factory's
+# `^[ \t]*`-anchored classifier misreads the whole merge verify as semaphore
+# starvation (task 6353).
+#
+# The sentinel is assembled from a SPLIT literal, so neither this file nor the
+# fake ever carries the contiguous token: test_slot_timeout_marker.sh scans
+# sibling tests/infra suites for exactly that anchored shape, and this suite's
+# own stdout is re-emitted into the merge-gate verify log.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case D: hostile-red target carrying a sentinel (FAIL line must not re-emit it column-anchored) ---"
+
+FAKE_SENTINEL="$FAKE_DIR/fake_sentinel.sh"
+cat > "$FAKE_SENTINEL" <<'SH'
+#!/usr/bin/env bash
+# Red ONLY when the ambient var is present (Sub-case B's isolation-bug shape),
+# and on that red run it emits a slot-timeout sentinel at column 0.
+#
+# The PREAMBLE line matters: it puts the sentinel on line >=2 of the captured
+# output, which is what actually reproduces the hazard. A sentinel on line 1
+# of the capture lands mid-line inside the FAIL message ("... hostile out: ")
+# and is already unanchored by accident, which would make the absence assert
+# below pass vacuously on base.
+if [ -n "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" ]; then
+    echo "fake target: preamble line before the deadline"
+    printf '%sTIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=1800 disposition=soft lock=x\n' '@@REIFY_SLOT_'
+    echo "Results: 2 passed, 1 failed"
+    exit 1
+fi
+echo "Results: 3 passed, 0 failed"
+exit 0
+SH
+chmod +x "$FAKE_SENTINEL"
+
+_D_SP='@@REIFY_SLOT_'
+_D_TOK="${_D_SP}TIMEOUT@@"
+_D_ANCHOR="^[[:blank:]]*${_D_TOK}"
+
+_rc=0
+_out="$(ambient_isolation_check_one "$FAKE_SENTINEL" REIFY_RUN_ALL_EXCLUDE_HOST_INFRA 1 "$MKEYS" 2>&1)" || _rc=$?
+
+# --- D4/D3 FIRST: the probe's own controls. D2 below asserts an ABSENCE, so a
+# typo'd anchor (D4) or a fake that stopped emitting (D3) would make it green
+# forever. Counts only ever reach an assert description through a plain
+# variable; $_out itself is NEVER interpolated — dumping it would BE the leak.
+_d_probe_out="$(REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 bash "$FAKE_SENTINEL" 2>&1 || true)"
+_d_probe_anchored="$(printf '%s\n' "$_d_probe_out" | grep -cE "$_D_ANCHOR" || true)"
+assert "D4: live-probe control -- the anchored predicate FIRES on the fake target's OWN unfiltered output (got ${_d_probe_anchored:-0}, want >=1)" \
+    test "${_d_probe_anchored:-0}" -ge 1
+
+_d_present="$(printf '%s\n' "$_out" | grep -cF -- "$_D_TOK" || true)"
+assert "D3: non-vacuity -- the sentinel token IS present in the lib's FAIL output, just unanchored (got ${_d_present:-0}, want >=1)" \
+    test "${_d_present:-0}" -ge 1
+
+# D1: the verdict is preserved — sanitizing the re-emission must not change the
+# FAIL classification.
+assert "D1: sentinel-bearing isolation bug still returns verdict rc 1 [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+# D2 THE LEAK ASSERT.
+_d_anchored="$(printf '%s\n' "$_out" | grep -cE "$_D_ANCHOR" || true)"
+assert "D2: the FAIL line does not re-emit the captured sentinel \`^[[:blank:]]*\`-anchored (got ${_d_anchored:-0}, want 0)" \
+    test "${_d_anchored:-0}" -eq 0
+
+# ===========================================================================
+# run_all_injected_env_keys <runner> (task 7234): the behavioural derivation of
+# which env vars a runner injects into a member it spawns. Driven here against
+# FAKE runners — never one named after the real runner, and never a variable
+# bound to its path: test_slot_timeout_marker.sh Section F reads either as a
+# derivation EDGE and would promote this unit test to a deadline-capable
+# roster member.
+# ===========================================================================
+
+# _line_count <text> -> number of non-empty lines. Lets an assert description
+# report the SIZE of a capture without interpolating the capture itself.
+_line_count() {
+    if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d ' '; fi
+}
+
+# ---------------------------------------------------------------------------
+# Sub-case E "sourced-lib export is detected (the #7106 class)": a runner that
+# sources a lib which exports a var, AND adds a per-member spawn-prefix
+# assignment, AND prints runner chatter on both streams. The result must be
+# exactly the two injected KEYS, sorted — no values, no chatter.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case E: sourced-lib export + spawn-prefix assignment are detected (keys only, sorted) ---"
+
+cat > "$FAKE_DIR/fake_exporting_lib.sh" <<'SH'
+# Stands in for a lib the runner sources that (wrongly) exports a var.
+export FAKE_SOURCED_LIB_VAR=1
+SH
+
+FAKE_RUNNER_EXPORTS="$FAKE_DIR/fake_runner_exports.sh"
+cat > "$FAKE_RUNNER_EXPORTS" <<'SH'
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/fake_exporting_lib.sh"
+echo "FAILED test_x.sh"
+echo "=== Summary: 1 discovered, 1 failed ==="
+echo "FAILED test_x.sh" >&2
+echo "=== Summary: 1 discovered, 1 failed ===" >&2
+for f in "$1"/test_*.sh; do FAKE_SPAWN_PREFIX_VAR=1 bash "$f"; done
+SH
+
+_rc=0
+_out=""
+_out="$(run_all_injected_env_keys "$FAKE_RUNNER_EXPORTS")" || _rc=$?
+
+assert "E: rc 0 when the probe member ran [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+assert "E: stdout is EXACTLY FAKE_SOURCED_LIB_VAR then FAKE_SPAWN_PREFIX_VAR (keys only, sorted, no runner chatter) [got $(_line_count "$_out") line(s)]" \
+    test "$_out" = $'FAKE_SOURCED_LIB_VAR\nFAKE_SPAWN_PREFIX_VAR'
+
+# ---------------------------------------------------------------------------
+# Sub-case F "a runner that injects nothing yields an empty set": bash itself
+# maintains SHLVL/PWD/_ in every child, and the direct-spawn control must
+# cancel them structurally — no exclusion list.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case F: a runner that injects nothing yields an empty key set ---"
+
+FAKE_RUNNER_PLAIN="$FAKE_DIR/fake_runner_plain.sh"
+cat > "$FAKE_RUNNER_PLAIN" <<'SH'
+#!/usr/bin/env bash
+for f in "$1"/test_*.sh; do bash "$f"; done
+SH
+
+_rc=0
+_out=""
+_out="$(run_all_injected_env_keys "$FAKE_RUNNER_PLAIN")" || _rc=$?
+
+assert "F: rc 0 when the probe member ran [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+assert "F: empty key set — bash-maintained SHLVL/PWD/_ cancel through the direct-spawn control [got $(_line_count "$_out") line(s)]" \
+    test -z "$_out"
+
+# ---------------------------------------------------------------------------
+# Sub-case G "caller ambient never leaks into the result": the probe's
+# baseline is minimal and identical for both spawns, so the answer is the
+# same standalone and inside the merge gate's ambient env (which exports
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA, among others).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case G: caller ambient env never leaks into the result ---"
+
+_rc=0
+_out=""
+_out="$(
+    export REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1
+    export T7234_CALLER_AMBIENT_ONLY_VAR=1
+    run_all_injected_env_keys "$FAKE_RUNNER_PLAIN"
+)" || _rc=$?
+
+assert "G: rc 0 under a caller ambient env [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+assert "G: empty key set — caller-exported vars reach neither spawn [got $(_line_count "$_out") line(s)]" \
+    test -z "$_out"
+
+# ---------------------------------------------------------------------------
+# Sub-case H "a runner that never runs the probe member fails loudly, and its
+# output never reaches column 0": the real runner prints `FAILED <names>` and
+# may print slot/clock sentinels, so the diagnostic must carry the runner log
+# (non-vacuity) only through the lib's `  | ` prefix — never bare, where
+# dark-factory's `^FAILED\s` classifier anchor would claim it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case H: runner never runs the probe member -> rc 1, runner log re-emitted prefixed only ---"
+
+FAKE_RUNNER_NO_SPAWN="$FAKE_DIR/fake_runner_no_spawn.sh"
+cat > "$FAKE_RUNNER_NO_SPAWN" <<'SH'
+#!/usr/bin/env bash
+echo "FAILED test_ambient_env_probe.sh"
+exit 1
+SH
+
+_rc=0
+_out=""
+_out="$(run_all_injected_env_keys "$FAKE_RUNNER_NO_SPAWN" 2>&1)" || _rc=$?
+
+assert "H: rc 1 when the probe member never ran [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+if plan_match "$_out" '^FAILED '; then
+    assert "H: must NOT emit a column-0 FAILED line (DF's ^FAILED\\s classifier anchor)" false
+else
+    assert "H: emits no column-0 FAILED line" true
+fi
+
+assert "H: non-vacuity — the diagnostic DOES carry the runner log, \`  | \`-prefixed" \
+    plan_match "$_out" '^  \| FAILED '
 
 test_summary

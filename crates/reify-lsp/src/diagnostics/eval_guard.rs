@@ -1,0 +1,587 @@
+//! Containment guard for `reify-eval`'s unrepresentable-value-cell panic
+//! (root cause owned by task **#6851**; this module is its caller-side
+//! "fix-site 2", scoped to `reify-lsp`).
+//!
+//! One predicate, asked by both LSP production entry points —
+//! [`crate::diagnostics::compute_diagnostics_with_state`] and
+//! `crate::analysis::AnalysisContext::from_parsed` — immediately before they
+//! would hand a compiled module to the engine. It
+//! is a `reify-eval` graph-safety question, not diagnostics logic, so it lives
+//! in its own file rather than in `diagnostics.rs`: `analysis.rs` gets an import that names
+//! what it is asking, and the predicate's ~250 lines of derivation stay
+//! readable next to the tests that pin them.
+//!
+//! (A top-level `crate::eval_guard` would read better still at the
+//! `analysis.rs` call site, but declaring one means a `mod` line in `lib.rs`,
+//! which is outside this task's file scope.)
+
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use reify_core::{ContentHash, Type, ValueCellId};
+use tower_lsp::lsp_types;
+
+/// Stage 1 of [`first_unrepresentable_cell`]: `true` only when no value cell
+/// `from_templates` would insert is unrepresentable. Allocation-free, and never
+/// a hit of its own — see that function's "## Cost" section.
+fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
+    reify_eval::graph::cell_contributions::contributed_cell_types(&compiled.templates)
+        .all(reify_eval::is_representable_cell_type)
+}
+
+/// `Some((id, cell_type))` when the evaluation graph `compiled` would build
+/// carries a value cell whose `cell_type` has no runtime `Value` counterpart
+/// — the exact condition `reify-eval`'s `#[cfg(debug_assertions)]`
+/// `assert_value_cell_types_representable` panics on. `None` when the graph is
+/// safe to evaluate.
+///
+/// This is THE containment predicate; `compiled_graph_has_unrepresentable_cell`
+/// is a test-only `bool` face over it (cited by name, not linked — it does not
+/// exist in a non-test build), and [`skip_reason`] is the reporting
+/// form the entry points call. It returns the offender rather than a bare bit
+/// so the report can say WHICH cell suppressed the eval/check pass. Without
+/// that the degradation is silent: the document loses every eval-time
+/// diagnostic and every constraint result (and in `analysis.rs`, every
+/// hover/completion computed value), making "my constraints stopped being
+/// checked" indistinguishable in the field from "the engine thinks they're
+/// satisfied".
+///
+/// "First" is first in `graph.value_cells`' iteration order — an `im::HashMap`,
+/// so hash order, NOT source order. A module with several unrepresentable
+/// cells reports an arbitrary one of them; the value is for a log line naming
+/// a concrete offender, never for an ordering-sensitive assertion.
+///
+/// ## What this is for (task #6851 containment)
+///
+/// `phase_auto_type_param_resolution`
+/// (`crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`)
+/// gates ALL substitution behind `if !sigma.is_empty()`. On a FAILED
+/// resolution `outcome.substitution` is empty, so no monomorph is
+/// synthesized: the sub-component still names the generic template, and a
+/// member declared `param seal : T` keeps `cell_type = Type::TypeParam("T")`
+/// all the way into the evaluation graph. `reify-eval`'s
+/// `assert_value_cell_types_representable`
+/// (`crates/reify-eval/src/engine_eval.rs`) then PANICS —
+/// "unrepresentable cell_type" — taking the language server down mid-keystroke
+/// in a debug build. In release the assertion is elided and eval instead
+/// yields a confusing `TypeKindMismatch`/`Undef`.
+///
+/// The root-cause fix (synthesize a fallback substitution, or make the cell
+/// representable) is owned by **task #6851**, whose addendum independently
+/// designates a caller-side error gate as its "fix-site 2
+/// (defence-in-depth)". This predicate is that gate, scoped to `reify-lsp`
+/// only: the two LSP production entry points ask [`skip_reason`] and skip
+/// their eval/check pass when it answers `Some`, so the server stays alive
+/// and the user is told what happened — by the compile-stage diagnostics
+/// where the module has any, and by [`SkippedEval::diagnostic`] on the
+/// compile-clean shapes where it has none (see "## Blast radius" below).
+///
+/// ## Why the graph, and not the compile diagnostics
+///
+/// The predicate asks the *actual hazard* — "does the graph the engine is
+/// about to build contain an unrepresentable cell" — rather than a proxy for
+/// it. It is exact by construction:
+/// `reify_eval::graph::EvaluationGraph::from_templates` is literally the call
+/// `Snapshot::from_compiled_module` makes
+/// (`crates/reify-eval/src/snapshot.rs`) to build the graph the assertion
+/// then walks, and `reify_eval::is_representable_cell_type` is the
+/// assertion's own single-source-of-truth predicate. There is no third
+/// notion of "unrepresentable" here to drift out of step with reify-eval's.
+///
+/// Two cheaper-looking formulations were measured and rejected:
+///
+/// - **An `AutoTypeParam*` diagnostic-code prefix match.** It over-fires and
+///   under-fires simultaneously. Over: a module whose failing `auto:` bound
+///   leaves `T` UNUSED in the target body (exactly
+///   `auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC`'s shape) has no
+///   unrepresentable cell and evals safely, yet a code match suppresses eval
+///   for the WHOLE document — measured: three real diagnostics lost (a
+///   circular let-binding plus two constraint violations), and via the
+///   identical guard in `analysis.rs` an empty `check_result.values`, so
+///   hover/completion show no computed values file-wide. Under:
+///   `phase_auto_type_param_resolution`'s `monomorph_name_would_collide`
+///   path pushes a CODE-LESS error and `continue`s, leaving the same
+///   unsubstituted cells invisible to any code match. The over-fire half is
+///   pinned by case (2) of
+///   `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`;
+///   the under-fire half is NOT test-pinned, because the collision is
+///   unreachable from valid `.ri` source (`$` is illegal in identifiers —
+///   the compiler itself calls that arm "impossible from source; this is a
+///   compiler bug"). Structural detection needs no code, so it holds anyway.
+/// - **A direct scan of `compiled.templates`' `value_cells`.** Measured to
+///   over-fire on every SUCCESSFUL generic instantiation: the generic
+///   `Bearing` template SURVIVES monomorphisation carrying
+///   `Bearing.seal : TypeParam("T")`, and the synthesized
+///   `Bearing$GasketSeal` monomorph re-uses the SAME `ValueCellId`
+///   (`Bearing.seal`) with the substituted type. Only the last writer into
+///   `graph.value_cells` wins, which is what makes the successful case safe —
+///   a flat template scan cannot see that, and would suppress eval on healthy
+///   modules.
+///
+/// ## Cost
+///
+/// Two-stage, because the exact question is not cheap enough to ask on every
+/// keystroke. `EvaluationGraph::from_templates` is not free — per value cell
+/// it does an id-string allocation, two content hashes and a map insert, and
+/// it also walks constraints, realizations and sub-component registration
+/// (`crates/reify-eval/src/graph.rs`).
+///
+/// Stage 1, [`stage_one_proves_absence`], is an allocation-free
+/// `all(is_representable_cell_type)` scan over
+/// `reify_eval::graph::cell_contributions::contributed_cell_types` — the types
+/// of the enumeration `from_templates` itself folds into `graph.value_cells` —
+/// so "every contributed type representable" implies "every graph cell
+/// representable" by construction. That view collapses each sub's instances
+/// to one, so a collection's literal count adds nothing: the scan is linear in
+/// declared cells plus one by-name template lookup per sub (subs × templates
+/// name comparisons, stdlib templates included). reify-eval owns the
+/// enumeration's arms and the test that replaying it reproduces the graph
+/// (`graph/value_cell_fold_tests.rs`); the guarded-member arm a
+/// narrower scan once missed is pinned here by case (5) of
+/// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
+/// and by `tests::stage_one_proves_absence_only_where_the_graph_is_safe`.
+///
+/// Stage 1 is used ONLY to prove ABSENCE. The converse does NOT hold — a
+/// contributed cell can be unrepresentable while the graph is safe, which is
+/// exactly the successful-monomorphisation case rejected above, where a later
+/// same-id contribution overwrites it — so stage 1 is never allowed to answer
+/// `true`.
+///
+/// Stage 2, reached only when stage 1 finds a candidate, is the exact
+/// `from_templates` walk. It is the SAME construction the gated eval would
+/// itself run, so on the shape that actually trips the guard the cost is at
+/// worst a doubled graph construction, and never an added eval.
+///
+/// The staging matters most on the WARM path. `compute_diagnostics_with_state`
+/// takes the `content_unchanged` branch on a repeat request, where the gated
+/// work is `eval_cached` + `check_snapshot` — neither of which calls
+/// `from_templates` (`eval_cached` builds a combined param/let graph;
+/// `check_snapshot` reuses the stored snapshot). An unconditional exact walk
+/// there would be pure new cost with no counterpart; the stage-1 scan is not.
+///
+/// ## Blast radius: wider than `auto:`, deliberately
+///
+/// Because it asks about the graph rather than about `auto:` resolution, the
+/// guard also contains two PRE-EXISTING crash shapes that have nothing to do
+/// with task #6798's checker swap, both measured to panic `Engine::check` at
+/// HEAD: an explicit generic instantiation (`sub b = Bearing<GasketSeal>()`
+/// with `param seal : T`), and a generic structure that is merely DECLARED
+/// and never instantiated. Containing them is a strict improvement — the
+/// alternative on those inputs is a dead language server — but the root cause
+/// stays task #6851's.
+///
+/// Both compile CLEAN, which is what makes them the sharp end of this claim
+/// rather than a footnote to it: there is no compile diagnostic to explain
+/// the skipped eval pass, so [`SkippedEval::diagnostic`] has to. Pinned as
+/// cases (6)-(7) of
+/// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
+/// and, at the entry points, by
+/// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`
+/// and
+/// `crate::analysis::tests::compile_clean_unrepresentable_graph_yields_empty_check_result`.
+/// Without those, a future narrowing of the predicate back toward an
+/// `auto:`-specific test would leave the whole family green.
+///
+/// ## Why narrow rather than the CLI's blanket error gate
+///
+/// `reify-cli` skips eval on `any(|d| d.severity == Severity::Error)`
+/// (`crates/reify-cli/src/main.rs`). The LSP deliberately evaluates THROUGH
+/// non-fatal compile errors so keystroke-time eval diagnostics keep flowing
+/// while the user is mid-edit. A compile error that leaves the graph
+/// representable does not suppress eval here — pinned at the production entry
+/// points by
+/// `crate::diagnostics::tests::non_auto_compile_error_still_yields_eval_diagnostics`.
+pub(crate) fn first_unrepresentable_cell(
+    compiled: &reify_compiler::CompiledModule,
+) -> Option<(ValueCellId, Type)> {
+    // Stage 1 — cheap ABSENCE proof, no allocation and no graph. Sound only in
+    // this direction (see the "## Cost" doc section): it may find a candidate
+    // on a module whose graph is in fact safe, so it may only ever return
+    // early with `None`, never report a hit of its own.
+    if stage_one_proves_absence(compiled) {
+        return None;
+    }
+
+    // Stage 2 — the exact question, on the rare shape that got past stage 1.
+    reify_eval::graph::EvaluationGraph::from_templates(&compiled.templates)
+        .value_cells
+        .iter()
+        .find(|(_, node)| !reify_eval::is_representable_cell_type(&node.cell_type))
+        .map(|(id, node)| (id.clone(), node.cell_type.clone()))
+}
+
+/// Fingerprint of the last skip reported to the server log.
+///
+/// Log throttling, not state: a document left in the guarded state is
+/// re-compiled on every keystroke AND on every hover / completion /
+/// goto-definition / document-symbols request (`server.rs` builds a fresh
+/// `AnalysisContext` per request), so an unthrottled line per call makes the
+/// very files that most need a legible log the least legible ones. Zero is
+/// both the initial value and "nothing reported yet"; a first skip whose
+/// fingerprint is genuinely zero costs one log line, once, in 2^-64 of cases.
+static LAST_REPORTED_SKIP: AtomicU64 = AtomicU64::new(0);
+
+/// Why the eval/check pass was skipped for a document, and the ONE place that
+/// renders that reason for a human — server log and editor alike.
+///
+/// The two production entry points hold two different return types and so
+/// keep two different early-return bodies, but the reason they return early
+/// is one thing and is spelled once here. Before this type the predicate call
+/// and a character-for-character identical two-line `eprintln!` were
+/// triplicated across `compute_diagnostics_with_state`, `compute_diagnostics`
+/// and `AnalysisContext::from_parsed`, with the shared wording enforced only
+/// by convention.
+pub(crate) struct SkippedEval {
+    cell_id: ValueCellId,
+    cell_type: Type,
+}
+
+impl SkippedEval {
+    /// The offending cell, phrased once for both audiences.
+    fn cell_description(&self) -> String {
+        format!(
+            "value cell `{}` has unrepresentable cell_type {:?}",
+            self.cell_id, self.cell_type
+        )
+    }
+
+    /// The EDITOR-visible half of the report: a file-level Warning saying the
+    /// document lost its eval pass.
+    ///
+    /// Without it the guard degrades mutely on the shapes that carry no
+    /// compile diagnostic of their own. The two such shapes are named in
+    /// [`first_unrepresentable_cell`]'s "## Blast radius" section — a
+    /// generic structure merely DECLARED, and an explicit
+    /// `Bearing<GasketSeal>()` instantiation — and both were measured
+    /// compile-CLEAN while their graphs carry a `TypeParam` cell. On those
+    /// inputs "the compile-stage `E_AUTO_TYPE_PARAM_*` error is still the
+    /// actionable signal" is simply false: there is no such error, so every
+    /// eval-time diagnostic, every constraint result and (via the same guard
+    /// in `AnalysisContext::from_parsed`) every hover/completion computed
+    /// value would vanish for the whole document with nothing but a line on
+    /// the server's stderr. Pinned by
+    /// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`.
+    ///
+    /// Range is the start of the document, matching `convert_diagnostic`'s
+    /// own fallback for a label-less diagnostic: the offender is a value cell
+    /// in the evaluation graph, which carries no source span here.
+    ///
+    /// Warning, not Error: the file may be perfectly valid `.ri` that the
+    /// compiler accepted, and the LSP is reporting its own reduced service
+    /// rather than a defect in the source.
+    pub(crate) fn diagnostic(&self) -> lsp_types::Diagnostic {
+        lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position::new(0, 0),
+                end: lsp_types::Position::new(0, 0),
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+            code: Some(lsp_types::NumberOrString::String(
+                "EvalSkippedUnrepresentableCell".to_string(),
+            )),
+            message: format!(
+                "constraint checking and computed values are unavailable for this \
+                 file: {} — that type has no runtime value (typically an unresolved \
+                 generic type parameter), so evaluation was skipped rather than fed \
+                 a graph it cannot evaluate (task #6851)",
+                self.cell_description()
+            ),
+            source: Some("reify".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// The SERVER-LOG half: one line per distinct (document content,
+    /// offending cell), so a document parked in the guarded state does not
+    /// emit a line per keystroke and per hover.
+    ///
+    /// Still `eprintln!` rather than `tracing::warn!` deliberately, despite
+    /// this crate depending on `tracing`: nothing installs a `Subscriber` on
+    /// the LSP's production path (`crate::run_server`, reached from
+    /// `reify lsp`), so a `tracing` event would be DROPPED in the field.
+    /// `convert.rs`'s `tracing::debug!` is opt-in protocol debugging and can
+    /// afford that; a guard that silently blanks a document's eval pass
+    /// cannot.
+    fn report_to_log(&self, content_hash: ContentHash) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (content_hash, &self.cell_id, &self.cell_type).hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        if LAST_REPORTED_SKIP.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+            return;
+        }
+        eprintln!(
+            "[reify-lsp] skipping eval/check: {} (task #6851)",
+            self.cell_description()
+        );
+    }
+}
+
+/// `Some(reason)` when `compiled`'s evaluation graph must NOT be fed to the
+/// engine, already reported to the server log — the form both production
+/// entry points call.
+///
+/// Wraps [`first_unrepresentable_cell`] (which stays a pure predicate, so the
+/// unit tests below can ask it without writing to a log) and folds the
+/// reporting in, so the guard's observability policy has ONE definition
+/// rather than one per call site. The caller decides only what to DO about
+/// it: `diagnostics.rs`'s `compute_diagnostics_with_state` pushes
+/// [`SkippedEval::diagnostic`] and returns its partial diagnostics,
+/// `AnalysisContext::from_parsed` returns an empty `CheckResult`.
+pub(crate) fn skip_reason(compiled: &reify_compiler::CompiledModule) -> Option<SkippedEval> {
+    let (cell_id, cell_type) = first_unrepresentable_cell(compiled)?;
+    let reason = SkippedEval { cell_id, cell_type };
+    reason.report_to_log(compiled.content_hash);
+    Some(reason)
+}
+
+/// Boolean face of [`first_unrepresentable_cell`] — see that function's doc
+/// for the mechanism, the cost model and the rejected alternatives.
+///
+/// **Test-only.** Both production entry points go through
+/// [`skip_reason`], which needs the OFFENDER rather than the bit in order to
+/// name it — so nothing in the lib build calls this form. It is kept because the property the unit
+/// test below pins genuinely IS a boolean ("fires / does not fire", per
+/// compiled shape), and spelling `.is_some()` at each of those call sites
+/// would bury the predicate's contract in an accessor.
+/// `#[cfg(test)]` states that split honestly rather than leaving a
+/// `pub(crate)` wrapper nothing builds.
+#[cfg(test)]
+pub(crate) fn compiled_graph_has_unrepresentable_cell(
+    compiled: &reify_compiler::CompiledModule,
+) -> bool {
+    first_unrepresentable_cell(compiled).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::{ModulePath, Type};
+
+    use crate::diagnostics::auto_type_param_fixtures::{
+        AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
+        DECLARED_ONLY_GENERIC_TYPEPARAM_SRC, EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+        assert_compile_clean_typeparam_fixtures_carry_no_error,
+        assert_guarded_group_fixture_is_newly_reachable,
+    };
+
+    /// Unit-pin [`super::compiled_graph_has_unrepresentable_cell`] — the
+    /// predicate that gates the LSP's eval/check pass — against the compiled
+    /// shapes that decide whether it is asking the right question.
+    ///
+    /// **Why this shape and not a classifier test.** An earlier form of the
+    /// guard matched an `AutoTypeParam*` prefix over `DiagnosticCode`, which
+    /// is a PROXY for the hazard rather than the hazard itself. The cases
+    /// below are the measured proof that the proxy is wrong in BOTH
+    /// directions and that the structural predicate is right in both — they
+    /// are the executable form of the "Why the graph, and not the compile
+    /// diagnostics" section of the predicate's own doc.
+    ///
+    /// Deliberately compiles real fixtures instead of hand-building
+    /// `CompiledModule` values: the property under test is a fact about the
+    /// graph the COMPILER produces, so a synthetic module would pin the
+    /// predicate against this test's own model of the compiler rather than
+    /// against the compiler.
+    #[test]
+    fn unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes() {
+        fn fires(src: &str) -> bool {
+            let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
+            let compiled =
+                reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+            super::compiled_graph_has_unrepresentable_cell(&compiled)
+        }
+
+        // (1) POSITIVE — the hazard itself. A failed `auto:` resolution over a
+        // body that USES `T` leaves `Bearing.seal : TypeParam("T")` in the
+        // graph, which is exactly what `assert_value_cell_types_representable`
+        // panics on. Anti-vacuity for this fixture (stub clean, real checker
+        // fails) lives in `assert_auto_fail_fixture_is_newly_reachable`.
+        assert!(
+            fires(AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC),
+            "a failed `auto:` resolution over a body that uses `T` leaves an \
+             unrepresentable cell in the graph — the guard MUST fire, or the \
+             engine panics (task #6851)"
+        );
+
+        // (2) NEGATIVE — the proxy's OVER-fire. Same failed `auto:` resolution,
+        // but `T` is unused in the target body, so no unrepresentable cell is
+        // ever created and eval is provably safe. The `AutoTypeParam*` code
+        // match fired here and blanked every eval diagnostic for the whole
+        // document; the structural predicate does not. Wired end-to-end by
+        // `failed_auto_resolution_with_unused_type_param_still_yields_eval_diagnostics`.
+        assert!(
+            !fires(BT8_CONSTANT_CONSTRAINT_SRC),
+            "BT8's failed `auto:` resolution leaves `T` UNUSED, so the graph \
+             carries no unrepresentable cell and eval is safe — the guard must \
+             NOT fire, or one `auto:` clause silently blanks eval for the whole \
+             document"
+        );
+
+        // (3) NEGATIVE — the CLI's blanket-error shape, rejected. An
+        // Error-severity compile diagnostic that leaves the graph
+        // representable must not suppress eval; the LSP evaluates through
+        // non-fatal compile errors on purpose. Wired end-to-end by
+        // `non_auto_compile_error_still_yields_eval_diagnostics`.
+        assert!(
+            !fires("structure S { param x : Real = nope }\n"),
+            "an UnresolvedName compile error leaves the graph representable — \
+             the guard must not drift into the CLI's blanket \
+             `any(severity == Error)` gate"
+        );
+
+        // (4) NEGATIVE — the template-scan formulation, rejected. A SUCCESSFUL
+        // `auto:` resolution leaves the generic `Bearing` template in
+        // `compiled.templates` still carrying `Bearing.seal : TypeParam("T")`;
+        // only the monomorph's same-id cell, written later into
+        // `graph.value_cells`, makes it safe. A flat scan of
+        // `compiled.templates` fires here; the graph-level predicate does not.
+        //
+        // This case doubles as the pin for the STAGE-1 FAST PATH inside
+        // `first_unrepresentable_cell`. That stage scans every contributed
+        // cell type, the surviving generic template's included — the very
+        // formulation rejected here — and is sound only as an ABSENCE proof.
+        // This fixture is exactly the shape where it finds a candidate and
+        // the graph is nevertheless safe, so an edit that let stage 1 answer
+        // `true` on its own (rather than falling through to the exact
+        // `from_templates` walk) goes RED right here.
+        assert!(
+            !fires(
+                r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    param seal : T
+    constraint bore > 0.1
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#
+            ),
+            "a SUCCESSFUL `auto:` resolution is safe even though the surviving \
+             generic template still carries a TypeParam cell — the monomorph \
+             overwrites it at the same ValueCellId when the graph is built. A \
+             flat `compiled.templates` scan would fire here and suppress eval \
+             on a healthy module"
+        );
+
+        // (5) POSITIVE — case (1)'s hazard with the `param seal : T` member
+        // inside a GUARDED group, which is where stage 1's absence proof was
+        // UNSOUND. A guarded member lives in `CompiledGuardedGroup::members`,
+        // a Vec that never appears in `TopologyTemplate::value_cells`, yet
+        // `from_templates` inserts it into `graph.value_cells` all the same.
+        // Measured before the fix: stage 1 found every scanned cell
+        // representable and short-circuited to `None`, while the graph carried
+        // `Bearing.seal : TypeParam("T")` and `compute_diagnostics` panicked at
+        // `crates/reify-eval/src/engine_eval.rs:210`. So this case is not a
+        // variant spelling of (1) — it is the arm (1) cannot reach, and an
+        // absence proof that scans a strict subset of what reaches the graph
+        // goes RED right here.
+        assert_guarded_group_fixture_is_newly_reachable();
+        assert!(
+            fires(GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC),
+            "a failed `auto:` resolution leaves an unrepresentable cell in the \
+             graph whether the `param seal : T` member is plain or GUARDED — \
+             the guard MUST fire on both, or the engine panics on the guarded \
+             one (task #6851). Stage 1 may only ever prove ABSENCE, so it has \
+             to scan every collection `EvaluationGraph::from_templates` draws \
+             cells from, not just `value_cells`"
+        );
+
+        // (6)-(7) POSITIVE, and COMPILE-CLEAN — the two shapes the
+        // "## Blast radius" section of the predicate's doc claims to contain
+        // without an `auto:` clause anywhere in sight. Every other firing case
+        // here also carries an `AutoTypeParamNoCandidate` error, so without
+        // these two the whole family would stay green under a future narrowing
+        // of the predicate back toward an `auto:`-specific test — and the
+        // "wider than `auto:`, deliberately" claim, which is the justification
+        // for scoping this to the graph in the first place, would be
+        // unmeasured. They are also the shapes on which the guard's report has
+        // no compile diagnostic to ride on: see
+        // `SkippedEval::diagnostic`.
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+        assert!(
+            fires(DECLARED_ONLY_GENERIC_TYPEPARAM_SRC),
+            "a generic structure that is merely DECLARED still contributes \
+             `Bearing.seal : TypeParam(\"T\")` to the graph, with no `auto:` \
+             clause and no compile diagnostic anywhere — the guard MUST fire, \
+             or `Engine::check` panics on a file the compiler accepted \
+             (task #6851)"
+        );
+        assert!(
+            fires(EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC),
+            "an EXPLICIT `Bearing<GasketSeal>()` instantiation leaves its \
+             TypeParam cells unsubstituted just as a failed `auto:` \
+             resolution does, and likewise compiles clean — the guard MUST \
+             fire. A predicate narrowed to `auto:` resolution specifically \
+             would miss this and crash the server (task #6851)"
+        );
+    }
+
+    /// Pin stage 1 of [`super::first_unrepresentable_cell`] from both sides.
+    ///
+    /// Its soundness (every graph cell's type is scanned) is owned by
+    /// reify-eval's replay oracle over `contributed_cells`, whose type set
+    /// stage 1 scans.
+    /// What stays here is the LSP's own wiring: stage 1 declines on both
+    /// unsubstituted-`TypeParam` arms so stage 2 runs and names the offender,
+    /// and it DOES prove absence on healthy modules — a stage 1 that always
+    /// declined would be sound but would put the full `from_templates` walk on
+    /// every keystroke.
+    #[test]
+    fn stage_one_proves_absence_only_where_the_graph_is_safe() {
+        fn compile(src: &str) -> reify_compiler::CompiledModule {
+            let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)
+        }
+
+        let healthy = [
+            (
+                "plain sub",
+                r#"structure def Inner { param x : Real = 1.0 }
+structure Outer { sub i = Inner() }
+"#,
+            ),
+            (
+                "guarded group, both branches",
+                r#"enum Shape { Round, Square }
+enum Finish { Raw, Coated }
+structure Fitting {
+    let shape = Shape.Round
+    param size : Real = 10.0
+    where shape == Shape.Round {
+        param ribs : Int = 3
+    } else {
+        param finish : Finish = Finish.Raw
+    }
+}
+"#,
+            ),
+        ];
+        for (shape, src) in healthy {
+            assert!(
+                super::stage_one_proves_absence(&compile(src)),
+                "stage 1 must prove absence on a healthy {shape} module, or every \
+                 keystroke pays for the stage-2 `from_templates` walk"
+            );
+        }
+
+        assert!(
+            !super::stage_one_proves_absence(&compile(AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC)),
+            "stage 1 must decline when a plain sub's instance cell keeps \
+             `TypeParam(\"T\")`, or the engine panics on it (task #6851)"
+        );
+
+        let guarded = compile(GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC);
+        assert!(
+            !super::stage_one_proves_absence(&guarded),
+            "stage 1 must decline when a GUARDED member keeps `TypeParam(\"T\")` — \
+             proving absence here short-circuits to `None` and the engine panics"
+        );
+        assert_eq!(
+            super::first_unrepresentable_cell(&guarded).map(|(id, ty)| (id.to_string(), ty)),
+            Some(("Bearing.seal".to_string(), Type::TypeParam("T".to_string()))),
+            "stage 2 must then name the offender. The fixture's graph has \
+             exactly ONE unrepresentable cell, so this equality is independent \
+             of `graph.value_cells`' hash iteration order"
+        );
+    }
+}

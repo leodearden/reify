@@ -30,7 +30,7 @@ Proposing-mode feedback (§10.2) and coupling-detection (§10.6) are looser — 
 
 **Who reads the legibility surface?** Two named readers:
 1. The same CLI designer, via a new `reify explain <file>` subcommand that prints, per `auto` cell, which objective governed its resolution and (where applicable) the active weighting/priority and the chosen combination strategy.
-2. The GUI auto-resolve panel and the LSP, which already surface determinacy state (`crates/reify-cli/src/mcp_context.rs` maps `DeterminacyState`); the legibility data structure this PRD adds (`ObjectiveProvenance`) is the substrate they will later render. **This is a declared future consumer, not a wired one** — the CLI `reify explain` path is the in-batch leaf that proves the surface end-to-end (G1 satisfied by the CLI; GUI/LSP wiring is out of scope, §10).
+2. The GUI auto-resolve panel and the LSP, which already surface determinacy state (`crates/reify-cli/src/mcp_context.rs` maps `DeterminacyState`) *(that file was deleted by bbfbc7dd29 (#6665); the GUI's surviving mapper is `format_determinacy` in `gui/src-tauri/src/types.rs`)*; the legibility data structure this PRD adds (`ObjectiveProvenance`) is the substrate they will later render. **This is a declared future consumer, not a wired one** — the CLI `reify explain` path is the in-batch leaf that proves the surface end-to-end (G1 satisfied by the CLI; GUI/LSP wiring is out of scope, §10).
 
 Every mechanism this PRD introduces and its consumer:
 
@@ -138,10 +138,18 @@ Ran the overlay grammar gate (`tree-sitter parse --quiet` from `tree-sitter-reif
 |---|---|---|---|
 | `minimize mass` + `maximize stiffness` (two bare decls, one scope) | conflict case + equal-weight sum | **exit 0 — parses** | No grammar work. Semantics only. |
 | `minimize 0.7 * mass - 0.3 * stiffness` | explicit weighted-sum via arithmetic | **exit 0 — parses** | No grammar work. The supported explicit-weight path. |
-| `minimize mass where thickness > 2mm` | guarded objective | **exit 0 — parses** | Already supported (guard clause). |
+| `minimize mass where thickness > 2mm` | guarded objective | **exit 0 — parses** | ⛔ **CORRECTED 2026-08-25 — "Already supported" was FALSE.** Parse-green, semantics-red: the compiler's Minimize/Maximize arms never read the guard, so it registers **zero** constraints and the objective runs unopposed with no diagnostic. Ruled **reject** (Leo, 2026-08-25; owner task **6575**) — objectives take no `where` guard, in either form. Express the predicate as a separate `constraint` member. |
 | `minimize mass weight 0.7` | trailing-keyword explicit weight | **exit 1 — FAILS** (`ERROR` at `weight`) | Novel syntax. **Out of scope**; if wanted, follow-up grammar PRD. |
 | `minimize mass priority 1` | trailing-keyword lexicographic rank | **exit 1 — FAILS** | Novel syntax. **Out of scope**; follow-up grammar PRD. |
 | `minimize(mass, weight: 0.7)` | call-style named-arg | **exit 1 — FAILS** | Novel syntax. Rejected. |
+
+> **Caution added 2026-08-25.** The "parses today ⇒ supported" step above is exactly how the
+> guarded-objective row went green. A `tree-sitter parse` exit 0 proves only that the CST accepts
+> the form — it says nothing about whether the compiler consumes the resulting AST field. For any
+> fragment carrying a *modifier* (a guard, a trailing keyword, an extra clause), confirm the
+> compiler reads it before recording "already supported"; a `grep` for the field name in the
+> lowering arm is the cheap check. See `docs/prds/v0_4/fea-result-model.md` §6 decision #5 for the
+> same failure on the same construct.
 
 **Decision (G3-clean):** this PRD ships multi-objective semantics using **only syntax that parses today**. Explicit weights and lexicographic priorities are expressed through:
 - **Weighted-sum:** the combined arithmetic expression form (`minimize 0.7*mass - 0.3*stiffness`) — fully covered by the widened `ObjectiveSet` with a single folded term, *and* the multi-decl equal-weight sum (multiple `minimize`/`maximize` decls → multi-term `WeightedSum`).
@@ -200,11 +208,12 @@ This PRD **extends** existing seams; it owns the extension. The seam-owner table
 | `purposes-completion` (sibling, authored in parallel) | consumes | `CompiledPurpose.objective : Option<ObjectiveSet>` — the widened type | **this PRD owns the type change** | declared, NOT wired |
 | `engine-integration-norm.md §3.5 ConstraintSolver` | extends | `ConstraintSolver::solve` / `ResolutionProblem.objective` | this PRD | extension owned here |
 | `solver-hint-payloads.md` (`@solver_hint`) | adjacent | `@solver_hint` changes *search strategy / discrete sets*; this PRD changes *what is optimised* | disjoint — no shared mechanism | no seam |
+| `docs/prds/v0_6/catalog-membership-constraint.md` (*added 2026-10-08*) | adjacent | `discrete_set` is now sugar for the constraint `x in C` (a hard domain), so it changes *what is valid*; `prefer_stock` / `preferred_strategy` stay search-only | disjoint — membership is a constraint, not an objective | no seam |
 | `@optimized` annotation | adjacent | `@optimized` is a fast-path *checker* swap (per `constraint.rs` OptimizedImpl scope note); does not touch objectives | disjoint | no seam |
 
 **Purposes relationship (the load-bearing cross-cluster declaration).** The sibling `purposes-completion` cluster states "purposes can carry objectives." Today `CompiledPurpose.objective` is `Option<OptimizationObjective>` and `Engine::activate_purpose` rewrites + injects it into `active_objective_map` (`crates/reify-eval/src/engine_purposes.rs`). **This PRD owns the widening of `OptimizationObjective` → `ObjectiveSet`.** The purposes cluster consumes the new type but does not define it. The single concrete coupling: `activate_purpose`'s objective-rewrite loop (lines ~107–182) currently matches `Minimize(expr) | Maximize(expr)` to remap entity refs; after the widening it must iterate `set.terms`. **This is declared as a companion correction-task in the decomposition (phase 7)** so the purposes cluster's decomposition does not have to own a change to this PRD's type. We do NOT wire a dependency edge into the purposes cluster's tasks (they may not be filed yet); the correction-task lives in this batch and is self-contained (it edits `engine_purposes.rs`, which this PRD already touches).
 
-**Relationship to `@solver_hint` / `@optimized` (brief asked to relate):** both are *orthogonal*. `@solver_hint` (solver-hint-payloads PRD) nudges the *search* (discrete candidate sets, preferred strategy) — it changes *how* the solver looks, not *what* it optimises. `@optimized` swaps in a fast equivalent *checker* and (per the `OptimizedImpl` scope note in `constraint.rs`) does not even participate in the solve/objective path today. This PRD changes the *objective* — the thing being optimised. No mechanism is shared; no seam ownership to resolve.
+**Relationship to `@solver_hint` / `@optimized` (brief asked to relate):** both are *orthogonal*. `@solver_hint` (solver-hint-payloads PRD) nudges the *search* (discrete candidate sets, preferred strategy) — it changes *how* the solver looks, not *what* it optimises. `@optimized` swaps in a fast equivalent *checker* and (per the `OptimizedImpl` scope note in `constraint.rs`) does not even participate in the solve/objective path today. This PRD changes the *objective* — the thing being optimised. No mechanism is shared; no seam ownership to resolve. *(2026-10-08: `discrete_set` is no longer a search hint — it compiles to `constraint x in C`, `docs/prds/v0_6/catalog-membership-constraint.md`; the orthogonality claim holds for the other hint kinds.)*
 
 ---
 

@@ -36,6 +36,24 @@ pub(crate) fn unquote(s: &str) -> &str {
     inner
 }
 
+/// Join pre-rendered type-parameter strings into the `<…>` segment appended to
+/// an item heading, or `None` when the item has no type parameters.
+///
+/// Returning `Option` rather than an empty `String` makes the "emit nothing at
+/// all" case explicit at every call site: a non-parametric declaration must
+/// render exactly as it did before this segment existed, with no stray `<>`.
+///
+/// The result is DISPLAY text only.  Markdown pushes it verbatim (inside the
+/// heading's backtick code span, where `<` is not parsed as raw HTML); HTML
+/// pushes it through `escape_into`.  Neither formatter may route it into an
+/// `id`/`href`, which stay derived from `ItemHeader.name` alone.
+pub(crate) fn join_type_params(params: &[String]) -> Option<String> {
+    if params.is_empty() {
+        return None;
+    }
+    Some(format!("<{}>", params.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +150,43 @@ mod tests {
             unquote("\"a\"\""),
             "\"a\"\"",
             "trailing-side unescaped inner quote must be returned unchanged"
+        );
+    }
+
+    /// Contract tests for `join_type_params`.
+    ///
+    /// The empty case is the load-bearing one: every non-parametric
+    /// declaration in the corpus flows through here, and an empty `<>` in its
+    /// heading would be a visible regression against the pre-existing goldens.
+    #[test]
+    fn join_type_params_wraps_only_non_empty_lists() {
+        // No type parameters: emit nothing at all, not an empty `<>`.
+        assert_eq!(
+            join_type_params(&[]),
+            None,
+            "an empty type-param list must yield None so no `<>` is emitted"
+        );
+
+        // Single bare param.
+        assert_eq!(
+            join_type_params(&["T".to_string()]),
+            Some("<T>".to_string()),
+            "a single bare param should render as `<T>`"
+        );
+
+        // Single bounded param — the bound text is pre-rendered upstream and
+        // passed through verbatim.
+        assert_eq!(
+            join_type_params(&["Q: Dimension".to_string()]),
+            Some("<Q: Dimension>".to_string()),
+            "a bounded param's rendered text should pass through verbatim"
+        );
+
+        // Multiple params join with `", "` in declaration order (NOT sorted).
+        assert_eq!(
+            join_type_params(&["T".to_string(), "U: Rigid".to_string()]),
+            Some("<T, U: Rigid>".to_string()),
+            "multiple params should join with `, ` in declaration order"
         );
     }
 }

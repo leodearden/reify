@@ -18,15 +18,16 @@
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_geometry_kinds/` subdir. As in harness_doc_chunks.rs — and unlike
 //! harness_langcore.rs / harness_patterns.rs — the shared `common` helper module is
-//! deliberately NOT declared here: the absorbed file declares no `mod` and uses no
-//! helper, so declaring it would pull tests/common/mod.rs into this compile unit for
-//! nothing, in a PRD whose whole point is cutting merge-gate compile cost.
+//! deliberately NOT declared here: no member declares a `mod` or uses a helper, so
+//! declaring it would pull tests/common/mod.rs into this compile unit for nothing, in a
+//! PRD whose whole point is cutting merge-gate compile cost.
 //!
-//! Future kind-family public-API locks belong in this unit. In particular the sibling
-//! precedent `tests/modify_kind_public_api.rs` (task 2238) — which this crate still
-//! carries as a grandfathered standalone — is the natural next absorption, shrinking the
-//! baseline ratchet by one row; it is left alone here only because it is outside #5754's
-//! file scope.
+//! Future kind-family public-API locks belong in this unit. The designated next
+//! absorption, `modify_kind_public_api` (task 2238), is spent: task #5695 (PRD
+//! §5 C1, leaf CMP-5) folded it in as `harness_geometry_kinds/modify_kind_public_api.rs`
+//! and removed its baseline row.
 
 #[path = "harness_geometry_kinds/geometry_kind_variant_count.rs"]
 mod geometry_kind_variant_count;
+#[path = "harness_geometry_kinds/modify_kind_public_api.rs"]
+mod modify_kind_public_api;

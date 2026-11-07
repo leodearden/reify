@@ -47,8 +47,18 @@ User-visible API: extend `ElasticOptions` with `target_accuracy : Number = 0.05`
 
 - **Error indicator: Zienkiewicz-Zhu (Z-Z) superconvergent patch recovery** for v0.4. Per-element indicator = norm of (element stress − patch-averaged nodal stress). Cheap (no auxiliary solve), well-validated on linear elasticity, ~1k LOC of pure Rust over the existing per-element stress field from kernel task #2920. Rejected residual-based (needs aux solve, more code, rigor matters mainly for adversarial cases Reify users don't have). Rejected DWR — best for goal-oriented but needs Reify-language syntax for "quantity of interest" + an adjoint solve of comparable cost; substantial language workstream, real v0.5+. (See DWR future-proofing below.)
 - **Refinement strategy: h-refinement only.** P3+ tetrahedral shape functions are not in v0.3 (only P1/P2), so adaptive p needs new element kinds first. hp is research-grade with stability/conditioning headaches. h-only is what commercial tools mostly run.
-- **Refinement marking: Dörfler marking with θ = 0.5.** Mark elements in descending order of indicator until cumulative indicator reaches θ × global. Provable convergence guarantees on broad problem classes. Rejected fixed-top-N% — works in practice but lacks theory.
+- **Refinement marking: Dörfler marking with θ = 0.5.** Mark elements in descending order of indicator until the cumulative indicator reaches θ × the summed indicator (Σ η_e). Provable convergence guarantees on broad problem classes. Rejected fixed-top-N% — works in practice but lacks theory.
+  - *Amended (task 7449, 2026-10): linear accumulation kept deliberately.* The marked set M is accumulated on η_e, not η_e². For non-negative weights visited in descending order the prefix share of squares dominates the prefix share of values, so M also satisfies the textbook bulk criterion Σ_M η_e² ≥ θ Σ η_e² at the same θ, and contains the minimal squared set: a valid, non-minimal Dörfler set, which is all the convergence rationale above needs. Minimality matters only for the rate-optimality theory, and that theory assumes nested refinement, which a full gmsh remesh-from-surface is not. Pinned by `the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set` (`crates/reify-solver-elastic/tests/adaptive_refinement_tests.rs`). Measured (θ = 0.5, one refine, deterministic gmsh, `aposteriori_validation.rs` fixtures, 2026-10-08, main `9315409d72`; "squared" = η_e² fed to `mark_dorfler`):
+
+    | Fixture | Linear: marked → rel. error | Squared: marked → rel. error |
+    |---|---|---|
+    | Cantilever | 192/761, 0.3412 → 0.1983 (−41.9%) | 97/761, → 0.2179 (−36.2%) |
+    | L-shape | 495/2221, 0.3369 → 0.2194 (−34.9%) | 126/2221, → 0.2443 (−27.5%; better per-dof rate −0.37 vs −0.31) |
+    | Plate with hole | 425/2841, 0.0812 → 0.0697 (−14.3%) | 127/2841, → 0.1069 (+31.6% — a `Stalled` termination under a free budget) |
+
+    Revisit condition: switch to squared marking only together with a stall rule robust to pre-asymptotic indicator growth (follow-up ticket `tkt_0RVJCTMZ98PW9DX2K0DDBG1KBT`).
 - **Budget knobs**: three user-facing, "any of these stops it" semantics — `target_accuracy: Number = 0.05` (relative energy-norm error), `max_refinement_iterations: Integer = 5`, `max_dofs: Integer = 5_000_000`. Plus implicit **stall termination** (if global indicator drops <10% iter-over-iter, stop) so pathological cases don't iterate to budget cap unproductively. Budget-capped-without-target uses *warning + downgraded confidence flag*, never hard error — interactive design is iterative.
+  - *Amended (task 7449, 2026-10):* stall is an early-stop rule only — it is reported only when the budget would have allowed another refinement; when `max_refinement_iterations` or `max_dofs` binds on the same iteration, that cap is reported. Precedence: target > max-iterations > max-dofs > stall.
 - **Error norm**: relative *energy-norm* error globally (the engineering-standard quantity); per-element *stress-norm* indicator for visualisation. Different metrics for different purposes; both named explicitly in the result API as `global_relative_energy_error: Number` and `per_element_indicator: Field<...>`.
 - **Confidence signaling — substrate now, UX later.** Substrate locked: norms above; visualisable per-element field on the surface mesh; `convergence_status: enum { Converged(target), NotConverged { reason: BudgetReason } }` on `ElasticResult` so downstream code (auto-resolve, CI gates) can check before trusting numeric values. UX (default presentation, percentage vs confidence band, on-by-default vs toggle, phrasing for non-FEA users) deferred to user research after v0.4 ships and produces real designer feedback.
 - **Auto-resolve composition: refinement gated on auto-resolve's "near constraint boundary" classification.** Far-from-boundary probes pass `target_accuracy = 0.10` (coarse is enough); near-boundary probes pass `target_accuracy = 0.01` (the inadequate-resolution case where refinement earns its cost). Per-probe accuracy contract is the plumbing. Refinement does NOT fire on every probe — only on the auto-resolve loop's "accept" / final-answer step or on explicit user request.
@@ -77,6 +87,84 @@ Seven active tasks plus one deferred bookmark. Tasks gate on v0.3 FEA kernel com
 7. **Validation suite (analytical convergence study)** — convergence study against L-shaped domain (known re-entrant-corner singularity), plate-with-hole (known stress concentration), cantilever (smooth case as control). Demonstrate Z-Z indicator drops at expected rate; demonstrate auto-refinement total cost ≤ manual mesh-refinement baseline.
 
 **Deferred bookmark**: MMG3D mesher swap (v0.4.x). Switch criterion: if a typical refinement loop spends >30% of wallclock in remeshing under Gmsh, swap to MMG3D's local-remesh path.
+
+## Implementation status (2026-09)
+
+A dated note on where the eval-side wiring actually stands, because the
+mesher-facing half of this PRD landed in two stages and the interim stage was
+deliberately, honestly, *not* adaptive.
+
+- **Loop control (decomposition #2) lives in `reify-solver-elastic`**
+  (`adaptive.rs`): the `AdaptiveProblem` trait, `run_adaptive_refinement`,
+  Dörfler marking at θ = 0.5, budget + stall termination. It is mesher-agnostic
+  by construction — the caller supplies `refine`.
+
+- **Task #4902 threaded that loop into `reify-eval`'s `solve_elastic_static`
+  with a MESH-FREE UNIFORM refine step**, labelled as non-adaptive rather than
+  dressed up as adaptive (ratified esc-4902-83, option D). Two constraints
+  forced it: production `reify-eval` is gmsh-build-free (#4743 makes
+  `reify-kernel-gmsh` a dev-dep), and the synthetic `nx×1×nz` box that path
+  builds has no closed surface `Mesh` for `refine_marked_elements` to remesh
+  from. The marked set was computed correctly and then discarded; each
+  iteration simply doubled the grid on every axis.
+
+- **Task #4909 closes that interim.** Eval-side refinement is now genuinely
+  mark-driven on the *realized* `body : Solid` path opened by #4870: the
+  Dörfler set reaches `refine_marked_elements` (decomposition #4's
+  size-field-driven local refinement), which remeshes under a per-element size
+  field. Refinement is localized to the marked region rather than applied
+  uniformly.
+
+### Where the surface comes from, and why
+
+`refine_marked_elements` needs the closed surface its volume mesh was meshed
+from. On the realized path no such `Mesh` reaches the consumer: a
+`RealizationReadHandle` structurally carries exactly ONE `RealizedContent`
+variant, and for `solver::elastic_static` that variant is the `VolumeMesh`.
+Adding a second (surface) realization demand was rejected — it would mean
+changing `reify-ir` / `reify-compute-contract` / the engine's realization
+plumbing, a blast radius far outside a wiring task, on a content-hashed and
+bincode-cached type.
+
+Instead the boundary is **reconstructed from the realized tet mesh's own free
+faces** (`reify_solver_elastic::volume_refine::boundary_surface_mesh`). This is
+not merely the cheaper route, it is the tighter one: the remesh is sized by a
+gmsh background size field built over the realized mesh's own tets (task
+#7447), so the field's support is exactly the union of those tets, and the
+extracted boundary — their free-face set — bounds exactly that support. Every
+point the mesher queries for a size then lies inside some field tet, whereas an
+independently tessellated surface of the same solid bounds a slightly different
+region, leaving some query points outside every field tet.
+
+### Fallback
+
+The gmsh-realized lane is selected at RUNTIME on
+`reify_solver_elastic::GMSH_AVAILABLE`, never on a `cfg` (a cfg emitted by the
+gmsh crate's build script does not propagate to dependents, so a cfg gate would
+read false on every host). It also requires a realized mesh, an extractable
+boundary, and the absence of selector-resolved BCs — those are node INDEX sets
+resolved against the pre-refinement mesh, and a remesh preserves no index.
+Any unmet precondition, or a `RefineError` raised at runtime, falls back to
+#4902's uniform lane with a Warning naming the reason. An `adaptive: true`
+request never degrades to a failed solve because the gmsh lane could not run.
+
+### Still open
+
+Decomposition **#7 (validation suite / analytical convergence study)** is NOT
+closed by #4909, which deliberately asserts no convergence *rate*: its
+localization assertions are strict inequalities on element counts and on
+before/after sizes at a fixed physical position. Adaptive-vs-uniform log-log
+rate validation remains task #3002's remit.
+
+Since #8246, a run that refined reports its FINAL iterate in every
+solve-derived field and in `error_indicator`, resampled onto the seed solve's
+grid, so the result bundle describes one mesh and the §7a grid does not move;
+a zero-refine run reports the seed solve. The contract lives in
+`fea-result-model.md` §4.1 ("Adaptive solves").
+
+> This PRD edit rides task #4909's branch through the merge queue rather than
+> committing direct-to-main: #4909 is a mixed code+docs change, so the
+> docs-only fast path does not apply to it.
 
 ## Test plan
 

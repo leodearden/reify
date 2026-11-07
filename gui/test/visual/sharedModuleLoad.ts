@@ -97,6 +97,10 @@ export const SHARED_ESM_MODULES = [
   "rpcEnvelope.mjs",
   "meshCountParity.mjs",
   "smokeDriverGuards.mjs",
+  "railLengtheningGate.mjs",
+  "sliderWriteBackGate.mjs",
+  "edgesToggleGate.mjs",
+  "debugServerEndpoint.mjs",
 ];
 
 /**

@@ -38,6 +38,19 @@ export type RpcResult<T> =
  *
  * In-band errors (Branches 4 & 5): debug handlers return Ok({error:<string>,...})
  * rather than setting MCP isError. See docs/debug-mcp-contract.md §2a.
+ *
+ * Branch 3 is POSITIONAL ON PURPOSE. Since #5891 an image response MAY carry a
+ * trailing `text` block — a multi-match `element_screenshot` appends its pane
+ * diagnostics after the image — and this branch deliberately ignores it. Do NOT
+ * "fix" that by rewriting `first` to `content.find(c => c.type === "text") ??
+ * content[0]`: it lets branch 4 win ahead of branch 3 and `value.data` goes
+ * missing.
+ *
+ * WHY, the failure it produces, and why an IMAGE-targeted `.find` is a
+ * different and harmless rewrite: docs/debug-mcp-contract.md §2 "JS-side
+ * decoders" → "The §2d divergence — canonical statement". That is the single
+ * home of this rationale; it is not restated here, so this comment cannot drift
+ * out of sync with it. Pinned by ./rpc.test.ts case 4b.
  */
 export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
   const env = envelope as Record<string, unknown>;

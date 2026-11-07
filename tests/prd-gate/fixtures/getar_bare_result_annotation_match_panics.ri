@@ -1,0 +1,21 @@
+module getar_bare_result_annotation_match_panics
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — fork R2 evidence
+// (third P-1 path). MEASURED 2026-09-29:
+//   target/debug/reify:   check/eval EXIT 101, panic "unrepresentable
+//                         cell_type … TypeParam("T")"
+//   target/release/reify: check/eval EXIT 0, `W.r = Result::Ok`, `W.v = 0.005 m`.
+// A BARE generic-enum annotation (`Result` with no arguments) resolves to
+// `Type::Enum("Result")` (resolve_enum_type_with_args, zero-arg path), so the
+// param cell is erased exactly like a let-bound construction and the match
+// binder is untyped. Under R2(a) (keep bare annotations legal) this path
+// survives S1; under R2(b) (reject with the arity diagnostic that already
+// exists for the wrong-arity case) it becomes a compile error. The tracked
+// corpus has ZERO bare generic-enum annotations (measured:
+// git grep -E 'param [a-z_]+ *: *(Result|Tree|Pair|Either|Maybe) *(=|$)' -- '*.ri').
+// EXPECTED after R2(b)+α: check EXIT 1, an arity diagnostic naming Result<T, E>.
+
+structure def W {
+    param r : Result = Ok { value: 5mm }
+    let v = match r { Ok { value: x } => x, Err { error: e } => 1mm }
+}

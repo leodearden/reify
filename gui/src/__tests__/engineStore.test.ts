@@ -40,6 +40,7 @@ vi.mock('../bridge', () => ({
   onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
   onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
   onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onEvalGeneration: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 import {
@@ -63,6 +64,7 @@ import {
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
   onDisplayAppearanceUpdate,
+  onEvalGeneration,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -86,6 +88,7 @@ const mockOnTensegrityWiresUpdate = vi.mocked(onTensegrityWiresUpdate);
 const mockOnTensegritySurfacesUpdate = vi.mocked(onTensegritySurfacesUpdate);
 const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
 const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
+const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,6 +106,7 @@ beforeEach(() => {
   mockOnTensegritySurfacesUpdate.mockResolvedValue(vi.fn());
   mockOnDisplayPanesUpdate.mockResolvedValue(vi.fn());
   mockOnDisplayAppearanceUpdate.mockResolvedValue(vi.fn());
+  mockOnEvalGeneration.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
@@ -258,6 +262,60 @@ describe('engineStore', () => {
     });
   });
 
+  describe('applyMeshUpdate typed-array ownership', () => {
+    // applyMeshUpdate swaps in an update's typed arrays and never writes into
+    // the arrays the entity held before. meshManager.sync relies on this: it
+    // skips rebuilding the edges overlay when an entity's arrays are the
+    // identical objects it last built from.
+    function meshWithFreshArrays(vertices: number[], displaced?: number[]): MeshData {
+      return {
+        entity_path: 'Bracket.body',
+        vertices: new Float32Array(vertices),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        ...(displaced ? { displaced_positions: new Float32Array(displaced) } : {}),
+      };
+    }
+
+    it('swaps in an update\'s new arrays and leaves the previous arrays untouched', () => {
+      createRoot((dispose) => {
+        const { state, applyMeshUpdate } = createEngineStore();
+        const first = meshWithFreshArrays([0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 0, 1, 1, 0, 1, 0, 1, 1]);
+        applyMeshUpdate(first);
+        const held = state.meshes['Bracket.body'];
+        const oldVertices = held.vertices;
+        const oldIndices = held.indices;
+        const oldDisplaced = held.displaced_positions!;
+
+        const second = meshWithFreshArrays([5, 5, 5, 6, 5, 5, 5, 6, 5], [5, 5, 6, 6, 5, 6, 5, 6, 6]);
+        applyMeshUpdate(second);
+
+        const now = state.meshes['Bracket.body'];
+        expect(now.vertices).toBe(second.vertices);
+        expect(now.indices).toBe(second.indices);
+        expect(now.displaced_positions).toBe(second.displaced_positions);
+        expect([...oldVertices]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+        expect([...oldIndices]).toEqual([0, 1, 2]);
+        expect([...oldDisplaced]).toEqual([0, 0, 1, 1, 0, 1, 0, 1, 1]);
+        dispose();
+      });
+    });
+
+    it('keeps the very same arrays when an update re-sends them', () => {
+      createRoot((dispose) => {
+        const { state, applyMeshUpdate } = createEngineStore();
+        const first = meshWithFreshArrays([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+        applyMeshUpdate(first);
+
+        applyMeshUpdate({ ...first, normals: new Float32Array(9) });
+
+        expect(state.meshes['Bracket.body'].vertices).toBe(first.vertices);
+        expect(state.meshes['Bracket.body'].indices).toBe(first.indices);
+        dispose();
+      });
+    });
+  });
+
   it('applyValueUpdates upserts multiple values by cell_id', () => {
     createRoot((dispose) => {
       const { state, applyValueUpdates } = createEngineStore();
@@ -314,6 +372,7 @@ describe('engineStore', () => {
       const unlistenMeshRemoved = vi.fn();
       const unlistenValueRemoved = vi.fn();
       const unlistenConstraintRemoved = vi.fn();
+      const unlistenEvalGeneration = vi.fn();
 
       mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
       mockOnValueUpdate.mockResolvedValue(unlistenValue);
@@ -322,6 +381,7 @@ describe('engineStore', () => {
       mockOnMeshRemoved.mockResolvedValue(unlistenMeshRemoved);
       mockOnValueRemoved.mockResolvedValue(unlistenValueRemoved);
       mockOnConstraintRemoved.mockResolvedValue(unlistenConstraintRemoved);
+      mockOnEvalGeneration.mockResolvedValue(unlistenEvalGeneration);
 
       const { subscribeToEvents } = createEngineStore();
       const cleanup = await subscribeToEvents();
@@ -340,6 +400,7 @@ describe('engineStore', () => {
       expect(unlistenMeshRemoved).toHaveBeenCalled();
       expect(unlistenValueRemoved).toHaveBeenCalled();
       expect(unlistenConstraintRemoved).toHaveBeenCalled();
+      expect(unlistenEvalGeneration).toHaveBeenCalled();
 
       dispose();
     });
@@ -954,25 +1015,35 @@ describe('engineStore freshness pass-through', () => {
   });
 });
 
-describe('engineStore autoResolve loop state', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+// One canonical auto-resolve iteration fixture, shared by every autoResolve
+// describe below. Previously each block re-declared this same 14-line literal;
+// drift between the copies would have silently stopped the deferred-reset and
+// driving-metric tests from exercising the canonical-metric interaction they
+// are named for.
+//
+// Treat as READ-ONLY: tests spread it (`{ ...sampleIteration, iteration: 2 }`)
+// rather than mutating it, so the single instance is safe to share across
+// stores. Do not `Object.freeze` it — Solid's `createStore` defines a `$PROXY`
+// property on any object it wraps, which throws on a frozen target.
+const sampleIteration = {
+  iteration: 1,
+  parameters: {
+    'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+  },
+  constraints: {
+    max_von_mises: {
+      name: 'max_von_mises',
+      value: 180,
+      unit: 'MPa',
+      target_upper: 200,
+      satisfied: true,
     },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
+  },
+  driving_metric: 'max_von_mises',
+  driving_metric_value: 180,
+};
 
+describe('engineStore autoResolve loop state', () => {
   it('(a) initial state.autoResolve equals { active: false, iterations: [] }', () => {
     createRoot((dispose) => {
       const { state } = createEngineStore();
@@ -981,14 +1052,22 @@ describe('engineStore autoResolve loop state', () => {
     });
   });
 
-  it('(b) beginAutoResolveLoop sets active=true and clears iterations', () => {
+  it('(b) beginAutoResolveLoop sets active=true; the new loop\'s first iteration is what drops the old samples', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       applyAutoResolveIteration(sampleIteration);
       expect(state.autoResolve.iterations).toHaveLength(1);
+
       beginAutoResolveLoop();
       expect(state.autoResolve.active).toBe(true);
-      expect(state.autoResolve.iterations).toHaveLength(0);
+      // The clear is deferred, not skipped: the previous samples stay visible
+      // until this loop actually has something to show.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 9 });
+      // A new loop must not show the previous loop's samples.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].iteration).toBe(9);
       dispose();
     });
   });
@@ -1009,7 +1088,7 @@ describe('engineStore autoResolve loop state', () => {
     });
   });
 
-  it('(d) endAutoResolveLoop sets active=false and clears iterations', () => {
+  it('(d) endAutoResolveLoop sets active=false and PRESERVES iterations', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
       beginAutoResolveLoop();
@@ -1019,25 +1098,157 @@ describe('engineStore autoResolve loop state', () => {
 
       endAutoResolveLoop();
       expect(state.autoResolve.active).toBe(false);
-      // iterations are cleared — the panel unmounts on active=false so
-      // preserved data would be unreachable until the next beginAutoResolveLoop
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('(e) endAutoResolveLoop preserves the completed loop\'s samples and canonical metric', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2 });
+
+      endAutoResolveLoop();
+      // The loop is finished — but a finished loop must stay READABLE. The panel
+      // mounts on `iterations.length > 0`, not on `active`, so clearing here would
+      // make the result of the loop the user just ran vanish the instant it lands.
+      expect(state.autoResolve.active).toBe(false);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.iterations[1].iteration).toBe(2);
+      // The canonical must survive too, or the chart's y-axis label goes blank
+      // on a completed loop.
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+      dispose();
+    });
+  });
+});
+
+describe('engineStore autoResolve deferred loop reset', () => {
+  it('(1) beginAutoResolveLoop does NOT open an empty iterations window', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      // A completed loop holding one sample.
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // The engine re-fires the whole start/iteration/complete trio on EVERY
+      // re-eval. If `begin` cleared eagerly the store would walk
+      // [iter] -> [] -> [iter] and the data-gated panel would unmount, resize
+      // the side-panel grid and lose scroll position on every commit.
+      beginAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(true);
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(2) the first accepted iteration of the new loop REPLACES the previous samples', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+
+      beginAutoResolveLoop();
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 7 });
+      // Deferred clear ran, THEN the push — it must not append to length 2.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].iteration).toBe(7);
+      dispose();
+    });
+  });
+
+  it('(3) a new loop with a different driving_metric is accepted, not dropped against the stale canonical', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+
+      beginAutoResolveLoop();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: 'mass', driving_metric_value: 3.1 });
+
+      // The deferred clear MUST run before the canonical-mismatch check. If it
+      // did not, every iteration of the new loop would be dropped against the
+      // previous loop's canonical and the panel would freeze on the old loop.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('mass');
+      const mismatchWarns = warnSpy.mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('driving_metric mismatch'),
+      );
+      expect(mismatchWarns).toHaveLength(0);
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(4) a loop that produces no iteration at all clears the previous loop on end', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // start -> complete with nothing in between: the deferred clear was never
+      // discharged by an iteration, so `end` must discharge it. Otherwise the
+      // previous loop's samples would be stranded on screen indefinitely.
+      beginAutoResolveLoop();
+      endAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(false);
       expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      dispose();
+    });
+  });
+});
+
+describe('engineStore autoResolve initFromState reset', () => {
+  it('initFromState drops the previous file\'s completed auto-resolve loop', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop, initFromState } = createEngineStore();
+
+      // File A runs a loop to completion; its samples now persist (they are what
+      // the data-gated panel renders).
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // Opening file B must not leave file A's resolved parameters and
+      // constraint rows mounted — that is actively misleading.
+      const guiState: GuiState = {
+        fea_convergence: null,
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+      };
+      initFromState(guiState);
+
+      expect(state.autoResolve.active).toBe(false);
+      expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      expect(state.autoResolve.pendingReset).toBeFalsy();
       dispose();
     });
   });
 });
 
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } },
-    constraints: {
-      max_von_mises: { name: 'max_von_mises', value: 180, unit: 'MPa', target_upper: 200, satisfied: true },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(a) subscribeToEvents calls onAutoResolveStart, onAutoResolveIteration, onAutoResolveComplete', async () => {
     await createRoot(async (dispose) => {
       mockOnMeshUpdate.mockResolvedValue(vi.fn());
@@ -1058,7 +1269,7 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
     });
   });
 
-  it('(b) auto-resolve-start callback flips active=true and clears iterations', async () => {
+  it('(b) auto-resolve-start callback flips active=true and defers the clear', async () => {
     await createRoot(async (dispose) => {
       let startCb: (() => void) | undefined;
       mockOnMeshUpdate.mockResolvedValue(vi.fn());
@@ -1076,7 +1287,8 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
 
       startCb!();
       expect(store.state.autoResolve.active).toBe(true);
-      expect(store.state.autoResolve.iterations).toHaveLength(0);
+      // Deferred: the previous loop's sample survives until this loop emits one.
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
       dispose();
     });
   });
@@ -1103,7 +1315,7 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
     });
   });
 
-  it('(d) auto-resolve-complete callback sets active=false and clears iterations', async () => {
+  it('(d) auto-resolve-complete callback sets active=false and preserves iterations', async () => {
     await createRoot(async (dispose) => {
       let startCb: (() => void) | undefined;
       let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
@@ -1127,8 +1339,8 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
       completeCb!();
 
       expect(store.state.autoResolve.active).toBe(false);
-      // iterations cleared — panel unmounts on active=false so data would be unreachable
-      expect(store.state.autoResolve.iterations).toHaveLength(0);
+      // A completed loop stays readable — the panel is data-gated, not active-gated.
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
       dispose();
     });
   });
@@ -1162,24 +1374,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
 });
 
 describe('engineStore autoResolve driving_metric invariance', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(1) iteration with matching driving_metric is appended', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
@@ -1289,7 +1483,10 @@ describe('engineStore autoResolve driving_metric invariance', () => {
 
       endAutoResolveLoop();
       beginAutoResolveLoop();
-      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      // The reset is deferred to the new loop's first iteration, so the stale
+      // canonical is still readable here — what matters is that it does not
+      // survive that iteration, nor cause it to be dropped as a mismatch.
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
 
       const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
       applyAutoResolveIteration(iterB);
@@ -1300,7 +1497,7 @@ describe('engineStore autoResolve driving_metric invariance', () => {
     });
   });
 
-  it('(7) a second beginAutoResolveLoop without endAutoResolveLoop in between still clears canonical', () => {
+  it('(7) a second beginAutoResolveLoop without endAutoResolveLoop in between still resets canonical on its first iteration', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       beginAutoResolveLoop();
@@ -1308,10 +1505,10 @@ describe('engineStore autoResolve driving_metric invariance', () => {
       applyAutoResolveIteration(iterA);
       expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
 
-      // Fresh begin without an explicit end — must still clear canonical.
+      // Fresh begin without an explicit end — the reset is owed, not yet done.
       beginAutoResolveLoop();
-      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
-      expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
+      expect(state.autoResolve.iterations).toHaveLength(1);
 
       const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
       applyAutoResolveIteration(iterB);
@@ -1324,24 +1521,6 @@ describe('engineStore autoResolve driving_metric invariance', () => {
 });
 
 describe('engineStore autoResolve empty-string driving_metric', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(a) empty-string driving_metric after canonical established: appended, canonical unchanged, dedicated warn fires', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
@@ -2659,6 +2838,195 @@ describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', 
 
       await cleanup();
       expect(spyUnlisten).toHaveBeenCalled();
+      dispose();
+    });
+  });
+});
+
+// ── task 7853: a whole-state snapshot never overwrites newer event-applied state ──
+
+describe('engineStore publish-generation guard', () => {
+  const width = (value: string): ValueData => ({ ...sampleValue, value });
+
+  function snapshot(value: string, feaDiagnostics: FeaDiagnosticInfo[] = []): GuiState {
+    return {
+      fea_convergence: null,
+      meshes: [sampleMesh],
+      values: [width(value)],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: feaDiagnostics,
+    };
+  }
+
+  /** A store subscribed to its events, and the callbacks it handed the bridge. */
+  async function subscribedStore() {
+    let announce: ((generation: number) => void) | undefined;
+    let valueUpdate: ((value: ValueData) => void) | undefined;
+    let feaDiagnosticsChanged: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
+    mockOnMeshUpdate.mockResolvedValue(vi.fn());
+    mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+    mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+    mockOnMeshRemoved.mockResolvedValue(vi.fn());
+    mockOnValueRemoved.mockResolvedValue(vi.fn());
+    mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+    mockOnEvalGeneration.mockImplementation(async (cb) => {
+      announce = cb;
+      return vi.fn();
+    });
+    mockOnValueUpdate.mockImplementation(async (cb) => {
+      valueUpdate = cb;
+      return vi.fn();
+    });
+    mockOnFeaDiagnosticsChanged.mockImplementation(async (cb) => {
+      feaDiagnosticsChanged = cb as (diags: FeaDiagnosticInfo[]) => void;
+      return vi.fn();
+    });
+    const onEngineReinitialized = vi.fn();
+    const store = createEngineStore({ onEngineReinitialized });
+    await store.subscribeToEvents();
+    return {
+      store,
+      onEngineReinitialized,
+      announce: announce!,
+      valueUpdate: valueUpdate!,
+      feaDiagnosticsChanged: feaDiagnosticsChanged!,
+    };
+  }
+
+  const shownWidth = (store: ReturnType<typeof createEngineStore>) =>
+    store.state.values[sampleValue.cell_id]?.value;
+
+  it('applyPublishedState applies a snapshot when no newer generation was announced', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized } = await subscribedStore();
+
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      expect(shownWidth(store)).toBe('50');
+      expect(store.state.meshes[sampleMesh.entity_path]).toEqual(sampleMesh);
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  it('a snapshot older than an announced generation leaves event-applied state in place', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized, announce, valueUpdate, feaDiagnosticsChanged } =
+        await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      onEngineReinitialized.mockClear();
+
+      announce(5);
+      valueUpdate(width('120'));
+      const live: FeaDiagnosticInfo[] = [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }];
+      feaDiagnosticsChanged(live);
+      store.applyPublishedState({
+        generation: 4,
+        state: snapshot('80', [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationY'] }]),
+      });
+
+      expect(shownWidth(store)).toBe('120');
+      expect(store.state.feaDiagnostics).toEqual(live);
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  /** Run one whole auto-resolve loop, as the engine fires it on a re-eval. */
+  function runAutoResolveLoop(store: ReturnType<typeof createEngineStore>) {
+    store.beginAutoResolveLoop();
+    store.applyAutoResolveIteration(sampleIteration);
+    store.endAutoResolveLoop();
+  }
+
+  it('a reply clears an auto-resolve loop an older generation began, even when it is stale', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      runAutoResolveLoop(store);
+
+      announce(5);
+      store.applyPublishedState({ generation: 4, state: snapshot('80') });
+
+      expect(store.state.autoResolve).toEqual({ active: false, iterations: [] });
+      dispose();
+    });
+  });
+
+  it('a stale reply keeps the auto-resolve loop a newer generation began', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      onEngineReinitialized.mockClear();
+
+      announce(5);
+      runAutoResolveLoop(store);
+      store.applyPublishedState({ generation: 4, state: snapshot('80') });
+
+      expect(store.state.autoResolve.iterations).toEqual([sampleIteration]);
+      expect(store.state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  it('a reply keeps the auto-resolve loop its own generation began', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(2);
+      runAutoResolveLoop(store);
+      store.applyPublishedState({ generation: 2, state: snapshot('80') });
+
+      expect(shownWidth(store)).toBe('80');
+      expect(store.state.autoResolve.iterations).toEqual([sampleIteration]);
+      dispose();
+    });
+  });
+
+  it('a snapshot of the announced generation itself is applied', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(5);
+      store.applyPublishedState({ generation: 5, state: snapshot('80') });
+
+      expect(shownWidth(store)).toBe('80');
+      dispose();
+    });
+  });
+
+  it('an applied snapshot raises the newest generation', async () => {
+    await createRoot(async (dispose) => {
+      const { store } = await subscribedStore();
+
+      store.applyPublishedState({ generation: 7, state: snapshot('70') });
+      store.applyPublishedState({ generation: 6, state: snapshot('60') });
+
+      expect(shownWidth(store)).toBe('70');
+      dispose();
+    });
+  });
+
+  it('announcements never lower the newest generation', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(9);
+      announce(4);
+      store.applyPublishedState({ generation: 6, state: snapshot('60') });
+
+      expect(shownWidth(store)).toBe('50');
       dispose();
     });
   });

@@ -37,7 +37,7 @@ fn trait_implementing_structure() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check length = 100mm = 0.1 SI (metres)
@@ -176,7 +176,7 @@ structure S {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // items should be a List
@@ -269,7 +269,9 @@ fn connect_occurrence_chain() {
         .iter()
         .find(|t| t.name == "Pipeline")
         .expect("should have a Pipeline template");
-    // chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet should produce 3 connections
+    // `chain p1 -> p2 -> p3` desugars per role: p1.outlet -> p2.inlet, then
+    // p2.outlet -> p3.inlet. The exact endpoints are pinned by the compiler's
+    // chain_desugar_tests; here only their reaching eval matters.
     assert!(
         !pipeline.connections.is_empty(),
         "Pipeline should have connections from chain desugaring"
@@ -277,7 +279,7 @@ fn connect_occurrence_chain() {
 
     // Eval + check
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // All compatibility constraints should be Satisfied
@@ -315,7 +317,7 @@ fn guarded_enum_declarations() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check shape = Shape.Round (let binding, not param — enum types aren't resolvable)
@@ -415,7 +417,7 @@ fn user_fn_with_constraint() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check width = 200
@@ -505,7 +507,7 @@ fn geometry_cylinder_pattern() {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // All constraints should be satisfied
@@ -590,7 +592,7 @@ structure def Widget : Sizable {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check kind = Kind.Medium
@@ -705,7 +707,7 @@ fn trait_rigid_mass_conformance() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check mass = 0.5kg = 0.5 SI
@@ -865,7 +867,7 @@ fn guarded_enum_multi_branch() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check head_type = HeadType.Hex
@@ -968,7 +970,7 @@ fn collection_with_quantifier() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check items = [5, 10, 15, 20]
@@ -1103,7 +1105,7 @@ fn occurrence_manufacturing_chain() {
 
     // Eval + check
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check feed_rate = 100
@@ -1188,7 +1190,7 @@ fn user_fn_safety_factor() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check stress = 100
@@ -1310,7 +1312,7 @@ fn geometry_flange_with_pattern() {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // All constraints should be satisfied
@@ -1366,7 +1368,7 @@ fn combined_all_features() {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check size = 25 (Real type from trait conformance)

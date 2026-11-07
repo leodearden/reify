@@ -69,7 +69,7 @@ Follow the `materials_*` flat-file convention: `ports_mechanical.ri` → module 
 - `ports_thermal.ri` → `std.ports.thermal`: `ThermalPort : Port` (heat-transfer interface params).
 - `ports_fluid.ri` → `std.ports.fluid`: `FluidPort : Port` (pressure, flow-rate, fluid medium).
 
-Property dimensions use the existing 35 named dimension aliases (`Torque`, `AngularVelocity`, `Voltage`, `Current`, `Length`, `Pressure`, …). Where the spec reference asks for a dimension that does not exist (e.g. a flow-rate `Volume/Time`), express it as a type expression (`Volume / Time`) — valid per spec line 875 (`pub let torque_constant : Torque/Current`). Document any such deviation in a header comment per the `io.ri` precedent.
+Property dimensions use the existing named dimensions registered in `NAMED_DIMENSIONS` (`crates/reify-core/src/dimension.rs`) — `Torque`, `AngularVelocity`, `Voltage`, `Current`, `Length`, `Pressure`, …; the set has grown since this slice was authored. **No count is quoted here, deliberately** — nothing derives one, so a number in this pointer is maintenance debt that rots on the next dimension addition (that is exactly how the "35 aliases" this sentence used to claim went stale). Count the rows in the registry if you need the number; see the `NAMED_DIMENSIONS` doc comment, which records the same decision. Where the spec reference asks for a dimension that does not exist (e.g. a flow-rate `Volume/Time`), express it as a type expression (`Volume / Time`) — valid per spec line 875 (`pub let torque_constant : Torque/Current`). Document any such deviation in a header comment per the `io.ri` precedent.
 
 **Prelude re-export of `Port`/`Directionality` is OUT OF SCOPE for the authoring tasks** and split into a separate slice (task ε) — see §6 design decision 3. The authoring tasks require an explicit `import std.ports` in the consumer example; that is the observable signal.
 
@@ -93,7 +93,7 @@ The decisive scoping question (which ops get a real `pub fn` body vs. a doc-only
 
 Append to `units.ri` (the existing `STANDARD_GRAVITY()` lives there), in the existing zero-arg `pub fn` idiom (Reify lacks top-level `const`):
 - `SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }` — exact, SI definition (c = 299792458 m/s).
-- `BOLTZMANN_CONSTANT() -> Energy / Temperature { 0.00000000000000000000001380649 * 1J / 1K }` — k_B = 1.380649e-23 J/K (2019 SI redefinition, exact). **Written in decimal form, NOT scientific notation** — `1.38e-23` does not parse in value position (verified §G3; convention documented at `modal_analysis.ri:32-33`).
+- `BOLTZMANN_CONSTANT() -> Energy / Temperature { 0.00000000000000000000001380649 * 1J / 1K }` — k_B = 1.380649e-23 J/K (2019 SI redefinition, exact). **Written in decimal form, NOT scientific notation** — `1.38e-23` does not parse in value position (verified §G3; convention documented in `modal_analysis.ri`'s header Encoding notes ("Number-literal grammar")).
 
 The spec §11.3 also names `pi` and `g`; `pi` is already a compiler builtin (`constants.rs` `BUILTIN_NAMES`), `g` is the existing `STANDARD_GRAVITY()`. No change needed for those — note it in the task.
 

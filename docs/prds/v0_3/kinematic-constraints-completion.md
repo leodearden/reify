@@ -436,6 +436,8 @@ pub enum JointBinding {
 }
 ```
 
+*Superseded:* `LiteralBound` is never scrubbable (`scrubbable: false`); see the §8.3 status note.
+
 The synth name follows pattern `__joint_<joint_id>_v`. Engine ensures
 no name collision against user-defined `param` cells (rejection at
 mechanism-build time if a user names a param `__joint_*`; emit
@@ -450,6 +452,8 @@ coalescing path. Visual distinction kept (an outline or small icon
 indicates literal-bound vs param-bound) but slider is functional in
 both cases.
 
+*Superseded:* the "slider is functional in both cases" clause is replaced by the §8.3 status note below.
+
 ### §8.3 — Persistence semantics
 
 Scrubbing a literal-bound joint **does not write back to the source
@@ -461,6 +465,14 @@ behaviour).
 
 A future PRD may add "scrub-as-edit" if dogfood demand warrants;
 filed as open question §14.1.
+
+**Status (task #7375).** The §8.1 synth virtual param was never built engine-side: no cell or
+source span resolves `__joint_*_v`, so a literal-bound scrub reached nothing. A session-only engine
+value is also the "divergent engine-only live value" that INV-GUI-3 (`docs/invariants.md`;
+`docs/prds/v0_6/ai-native-editing.md` D1) forbids, which supersedes the session-only model above.
+Literal-bound joints therefore render READ-ONLY, showing their literal; `JointBinding::literal_bound`
+sets `scrubbable = false`. The only route to a scrubbable literal-bound joint is §14.1 scrub-as-edit,
+a source splice of the `bind()` literal.
 
 ### §8.4 — Performance budget
 
@@ -581,7 +593,7 @@ Phase 7 is dogfood.
   - Prereqs: none.
 
 - **α — Wire `solve_loop_closure_with_diagnostics` into `snapshot()` and `sweep()`; add `is_singular` field; refine over-constrained pre-check to use effective residual dimension.**
-  - Crates: `reify-stdlib/src/snapshot.rs`, `reify-stdlib/src/sweep.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-types/src/diagnostics.rs` (strip "not currently emitted" TODOs), `reify-eval/tests/kinematic_diagnostics_e2e.rs` (extend to assert via snapshot).
+  - Crates: `reify-stdlib/src/snapshot.rs`, `reify-stdlib/src/sweep.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-types/src/diagnostics.rs` (strip "not currently emitted" TODOs), `reify-eval/tests/harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs` (extend to assert via snapshot).
   - Observable signal: kinematic_diagnostics_e2e.rs adds a snapshot-routed assertion: `Snapshot.is_singular == true` AND `EvalResult.diagnostics` contains `KinematicSingularity` for a rank-deficient four-bar fixture. Bare `solve_loop_closure_with_diagnostics`-direct tests still pass.
   - Prereqs: α-pre.
 
@@ -589,7 +601,7 @@ Phase 7 is dogfood.
 
 - **γ — Widen `value_for_joint`, `joint_range_midpoint`, `chain_transform` to operate on `JointValue`. Wire planar/spherical/cylindrical chain participation. Add analytic-J for planar + spherical (δ folded into this task).**
   - Crates: `reify-stdlib/src/loop_closure.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-stdlib/src/joints.rs` (analytic-J replacements at :785, :800).
-  - Observable signal: `crates/reify-eval/tests/kinematic_loop_closure_machinery.rs` adds a closed-chain planar-joint fixture (counter-mass-balance with planar joint in loop). Snapshot returns finite bodies; iteration count < 50; analytic-J path used (logged via tracing).
+  - Observable signal: `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_loop_closure_machinery.rs` adds a closed-chain planar-joint fixture (counter-mass-balance with planar joint in loop). Snapshot returns finite bodies; iteration count < 50; analytic-J path used (logged via tracing).
   - Prereqs: α-pre.
 
 ### Phase 3 — FK-aware OCCT (ε)
@@ -600,7 +612,7 @@ Phase 7 is dogfood.
   - Prereqs: none.
 
 - **ε — Wire FK-aware dispatch in `reify-eval/src/geometry_ops.rs`; add `try_resolve_snapshot_body` helper.**
-  - Crates: `reify-eval/src/geometry_ops.rs`, `examples/kinematic/dock_pickup.ri` (strip FIXME comment block), `reify-eval/tests/kinematic_examples_e2e.rs`.
+  - Crates: `reify-eval/src/geometry_ops.rs`, `examples/kinematic/dock_pickup.ri` (strip FIXME comment block), `reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`.
   - Observable signal: `cargo test -p reify-eval --test kinematic_examples_e2e -- dock_pickup_clearance_sweep` runs `dock_pickup.ri` end-to-end; `min_clearance` returns expected pattern (positive outside dock, negative inside, monotonic transition). FIXME comments at the head of dock_pickup.ri removed.
   - Prereqs: ε-occt, KGQ Phase 2 `distance` dispatcher landed (cross-PRD dep).
 
@@ -612,6 +624,8 @@ Phase 7 is dogfood.
   - Prereqs: SIR-α (task 3540) — **cross-PRD `add_dependency` edge**.
 
 ### Phase 5 — GUI slider for literal-bound joints (η)
+
+*Superseded:* literal-bound joints render read-only and their descriptor carries `scrubbable: false`; see the §8.3 status note.
 
 - **η-engine — Extend `JointBinding` enum, descriptor extractor, name-collision detection in engine.rs.**
   - Crates: `gui/src-tauri/src/types.rs`, `gui/src-tauri/src/engine.rs`, `gui/src-tauri/src/commands.rs`.
@@ -683,7 +697,8 @@ Carried forward from v0.2 PRD plus new exclusions:
    Real dogfood demand may surface a need to write scrubbed values back to the
    `.ri` source AST literal. **Suggested resolution:** defer to a focused
    "scrub-as-edit" PRD once dogfood data exists. Decide during printer-build
-   dogfood phase.
+   dogfood phase. **Update (task #7375):** session-only scrub is superseded (§8.3 status note), so
+   scrub-as-edit is now the only remaining path to a scrubbable literal-bound joint — task #8315.
 
 2. **Manifold-kernel FK-aware parity.** Once KGQ Phase 5 (Manifold parity)
    lands, this PRD's ε path inherits Manifold support — but the

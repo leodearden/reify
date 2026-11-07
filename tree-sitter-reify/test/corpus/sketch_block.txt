@@ -1,0 +1,204 @@
+; NOTE: This corpus documents the CST shape of the member-level `sketch` block
+; and of `auto(<expr>)` in positional call-argument position — task α of
+; docs/prds/v0_6/constrained-2d-sketch.md (§7 C1 grammar contract, §5 D6/D12).
+;
+; LOAD-BEARING: the expected S-expressions below ARE validated on every merge —
+; not by `tree-sitter test` (which dark-factory-orchestrator.yaml does not run),
+; but by `corpus_cases_match_the_live_parser` in
+; tree-sitter-reify/tests/sketch_grammar_tests.rs, which include_str!s THIS
+; file, reparses each case with the live grammar and compares `to_sexp()`
+; output. So a grammar change that alters the sketch or auto_seed CST fails
+; there until these expectations are updated too — this file cannot silently
+; drift. That Rust file remains the canonical CST contract; this one is
+; documentation OF the grammar, never a second source of truth. It also pins the
+; case count (6), so dropping a case below is itself a failure.
+;
+; SCOPE: this file pins the CST shape ONLY — a green case means "the grammar
+; shape is right", never "this source compiles". Sketch blocks are rejected one
+; layer down by α's interim compiler arms, and every positional `auto` argument
+; is rejected by the E_AUTO_NOT_AT_BINDING_SITE gate
+; (`reject_auto_in_arg_list`, crates/reify-compiler/src/expr.rs) until γ/η relax
+; it inside sketch scope.
+;
+; Sources are kept MINIMAL on purpose: because the guard compares whole-root
+; S-expressions, any node shape a case drags in becomes pinned here too, and an
+; unrelated grammar change to (say) a call's argument nodes would then fail a
+; sketch test. So the sketch cases bind plain identifiers rather than real
+; geometry constructors. The two auto_seed cases do carry quantity literals,
+; because a SEED is the thing under test and an identifier seed would not
+; document the intended surface.
+;
+; KNOWN LIMITATION of case 2, stated rather than papered over: `aux` is an
+; ANONYMOUS token, so it does not appear in `to_sexp()` output at all — case 2's
+; expected S-expression is byte-identical to what a plain `let cl = c` would
+; produce. The case therefore documents only that the `aux let` FORM is admitted
+; inside a sketch body; that the `aux` token is actually present as a child is
+; pinned separately by `sketch_block_cst_contract` in the Rust file, which
+; inspects anonymous children directly. Do not "strengthen" this case by
+; hand-editing its sexp — whole-root equality is generated from the live parser,
+; and a hand-written expectation is exactly the drift this file is guarded
+; against.
+;
+; The `on <expr>` anchoring clause of PRD §5 D2 is deliberately absent in v1 and
+; has no case here: it is a parse ERROR today, which is what makes a future
+; widening non-breaking. That reading is pinned by
+; `on_clause_slot_is_unclaimed_in_v1` in the Rust file, alongside the other
+; negative controls — error-recovery trees do not belong in a shape corpus.
+
+================================================================================
+sketch block — let declaration and bare relation member as siblings
+================================================================================
+
+structure S {
+  sketch profile {
+    let p = q
+    fix(p)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sketch_block
+      name: (identifier)
+      (let_declaration
+        name: (identifier)
+        value: (identifier))
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)))))))
+
+================================================================================
+sketch block — aux let construction member (PRD §5 D12)
+================================================================================
+
+structure S {
+  sketch profile {
+    aux let cl = c
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sketch_block
+      name: (identifier)
+      (let_declaration
+        name: (identifier)
+        value: (identifier)))))
+
+================================================================================
+sketch block — empty body
+================================================================================
+
+structure S {
+  sketch s {
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sketch_block
+      name: (identifier))))
+
+================================================================================
+sketch block — inside a where-guarded block
+================================================================================
+
+structure S {
+  where c {
+    sketch s {
+      fix(a)
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (guarded_block
+      condition: (identifier)
+      (sketch_block
+        name: (identifier)
+        (relation_member
+          expr: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier))))))))
+
+================================================================================
+auto seed — auto(<expr>) as a positional call argument
+================================================================================
+
+structure S {
+  let b = point(auto(10mm), 0mm)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (auto_seed
+            seed: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name))))
+          (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))))))
+
+================================================================================
+auto seed — coexists with the binding-site auto modifier
+================================================================================
+
+structure S {
+  param p : Frame = auto(seed = 5mm)
+  let b = f(auto(5mm))
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword
+        (auto_param_list
+          (auto_param
+            name: (identifier)
+            value: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name)))))))
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (auto_seed
+            seed: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name)))))))))
+

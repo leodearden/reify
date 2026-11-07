@@ -5,7 +5,6 @@
 #![allow(clippy::mutable_key_type)]
 
 mod ambient_defaults;
-mod analysis_signatures;
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
@@ -24,16 +23,20 @@ pub(crate) mod containment_graph;
 /// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
 /// can call it without knowing the private module layout.
 pub use containment_graph::sub_component_forward_adjacency;
+mod builtin_registry;
 mod builtin_signatures;
 mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
+mod flexure_signatures;
+mod fn_return_check;
 mod forall_elaborate;
 mod functions;
 mod geometry;
 mod geometry_boolean;
 mod geometry_curve;
+mod geometry_list;
 mod geometry_modify;
 pub mod geometry_traits;
 pub mod geometry_traits_inference;
@@ -41,51 +44,60 @@ mod geometry_transform;
 mod guards;
 mod hoist_nested_selectors;
 mod ice;
+pub mod import_headers;
 mod joint_self_check;
 mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
+mod member_cell_decls;
 mod member_path;
-mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
 mod module_pragmas;
+pub mod name_env;
+mod orientation_signatures;
+mod port_path;
 pub mod prelude_context;
+pub mod program;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
-mod signatures_common;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
+mod trajectory_signatures;
+mod type_acceptance;
 mod type_compat;
 mod type_resolution;
 mod types;
 mod units;
+mod unresolved_function;
 mod variant_construct;
 
 pub use annotations::materialize::{
     MaterializationAnnotationArg, MaterializationArgType, compile_materialization_annotation_args,
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
+pub use compile_builder::units_phase::seed_prelude_units;
 pub use entity::satisfies_trait_bound;
+pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
-pub(crate) use analysis_signatures::*;
 pub(crate) use annotations::*;
 pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
 pub(crate) use expr::*;
+pub(crate) use flexure_signatures::*;
 #[allow(unused_imports)]
 pub(crate) use forall_elaborate::*;
 #[allow(unused_imports)]
@@ -93,6 +105,7 @@ pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
+pub(crate) use geometry_list::*;
 pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
@@ -100,7 +113,7 @@ pub(crate) use ice::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
-pub(crate) use parse_signatures::*;
+pub(crate) use orientation_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
@@ -122,9 +135,15 @@ pub use units::{
     DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
     GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
     GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, UnitEntry, UnitRegistry,
-    UnitResolveError, geometry_query_result_type, resolve_unit_expr,
-    topology_selector_result_type,
+    UnitResolveError, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, geometry_query_result_type,
+    resolve_unit_expr, topology_selector_result_type,
 };
+/// Closed-world builtin-name membership oracle (task #5371).
+///
+/// `pub` so reify-lsp can gate an "unknown function" hint on the same oracle
+/// the compiler's `UnresolvedFunction` warning uses, instead of re-deriving
+/// the union of every builtin-name family.
+pub use unresolved_function::is_known_builtin;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -183,6 +202,115 @@ pub fn __infer_mul_div_result_for_parity_test(
     type_compat::infer_mul_div_result(op, left, right)
 }
 
+/// Test-visible mirror of the `pub(crate)` `OverloadResolution` discriminants.
+///
+/// Carries a positional INDEX into the caller's `functions` slice rather than
+/// a `&CompiledFunction`, so the `pub(crate)` `OverloadResolution` type is not
+/// re-exported and no lifetime plumbing crosses the crate boundary. The index
+/// also gives the parity test its SELECTION-IDENTITY axis for free: eval-side
+/// `find_matching_compiled_function` returns a `&CompiledFunction`, which maps
+/// back to the same coordinate system by pointer-identity position lookup.
+///
+/// # Stability
+///
+/// This type is intentionally named for a single test consumer and is **not
+/// part of the public API**. It may be removed or changed at any time. Gated
+/// behind `feature = "test-support"` (or `cfg(test)` for in-crate tests).
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
+// tests/harness_langcore/overload_resolution_compile_eval_parity.rs
+// (compile-vs-eval overload-resolution parity).
+pub enum ParityOverloadVerdict {
+    /// Exactly one candidate matched; `index` is its position in `functions`.
+    Resolved { index: usize },
+    /// No function with this name exists at all.
+    NoUserFunctions,
+    /// Same-name candidates exist but none matched the given arg types.
+    NoMatch,
+    /// Multiple candidates matched; `count` is how many.
+    Ambiguous { count: usize },
+}
+
+/// Expose `resolve_function_overload` to the compile-vs-eval
+/// overload-resolution parity integration test without widening the
+/// compiler's public API.
+///
+/// Both `resolve_function_overload` and its `OverloadResolution` return type
+/// are `pub(crate)`, so an integration test (a separate external crate)
+/// cannot reach them. This shim calls the resolver and projects its verdict
+/// onto the index-carrying [`ParityOverloadVerdict`].
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
+// tests/harness_langcore/overload_resolution_compile_eval_parity.rs
+// (compile-vs-eval overload-resolution parity).
+pub fn __resolve_function_overload_for_parity_test(
+    name: &str,
+    arg_types: &[reify_core::Type],
+    functions: &[reify_ir::CompiledFunction],
+) -> ParityOverloadVerdict {
+    match type_compat::resolve_function_overload(name, arg_types, functions) {
+        type_compat::OverloadResolution::Resolved(f) => ParityOverloadVerdict::Resolved {
+            index: functions
+                .iter()
+                .position(|c| std::ptr::eq(c, f))
+                .expect("resolved candidate must be an element of `functions`"),
+        },
+        type_compat::OverloadResolution::NoUserFunctions => ParityOverloadVerdict::NoUserFunctions,
+        type_compat::OverloadResolution::NoMatch(_) => ParityOverloadVerdict::NoMatch,
+        type_compat::OverloadResolution::Ambiguous(v) => {
+            ParityOverloadVerdict::Ambiguous { count: v.len() }
+        }
+    }
+}
+
+/// Expose the compiler's single builtin-signature-registry entry point to the
+/// registry seam test without widening the compiler's public API.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
+// type-preservation pin).
+pub fn __registry_result_type_for_test(
+    name: &str,
+    args: &[reify_core::Type],
+) -> Option<reify_core::Type> {
+    builtin_registry::registry_result_type(name, args)
+}
+
+/// Test shim over `builtin_registry::registry_owns` — the seam's cheap
+/// name-only precheck, which `expr.rs`'s ladder arm uses to guard the
+/// `Vec<Type>` argument projection.
+///
+/// Exists SEPARATELY from [`__registry_result_type_for_test`] because the
+/// guard's safety is the implication `!registry_owns(n)` ⇒
+/// `registry_result_type(n, _) == None`, and a test can only observe that
+/// implication if it can call both halves. Same `__`-prefix stability caveat.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the ladder
+// arm's cheap-miss guard pin).
+pub fn __registry_owns_for_test(name: &str) -> bool {
+    builtin_registry::registry_owns(name)
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -238,6 +366,27 @@ pub fn compile_with_stdlib_checked(
     checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
     compile_with_prelude_context_checked(parsed, stdlib_loader::load_stdlib_context(), checker)
+}
+
+/// Compile a user module against the full stdlib plus its direct user imports.
+///
+/// The single home of "user module against stdlib + direct imports", shared by
+/// the program entry and its import units. An import-free module compiles
+/// against the cached stdlib context itself, exactly the call
+/// [`compile_with_stdlib_checked`] makes; a module with imports compiles
+/// against a context [`PreludeContext::extended`] from it, so the stdlib is
+/// never re-loaded per unit.
+pub(crate) fn compile_with_stdlib_and_imports_checked(
+    parsed: &reify_ast::ParsedModule,
+    user_imports: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
+    let stdlib: &PreludeContext<'_> = stdlib_loader::load_stdlib_context();
+    if user_imports.is_empty() {
+        compile_with_prelude_context_checked(parsed, stdlib, checker)
+    } else {
+        compile_with_prelude_context_checked(parsed, &stdlib.extended(user_imports), checker)
+    }
 }
 
 /// Parse a source string with the stdlib's prelude enum names pre-seeded
@@ -307,56 +456,39 @@ pub fn compile_with_prelude_checked(
     compile_with_prelude_refs_checked(parsed, &refs, checker)
 }
 
-/// Merge user functions with prelude functions, applying the canonical shadowing rule:
-/// prelude functions whose `(name, arity, param_types)` triple matches any user function
-/// are excluded; all others are appended. The result has user functions first, preserving
-/// first-match-wins dispatch order for any resolver that iterates linearly.
+/// Merge user functions with an already-ordered FLAT list of prelude functions:
+/// all user functions first, then each prelude function whose key — a
+/// [`name_env::FunctionSignature`], name plus param types — no user function and no
+/// earlier prelude function claims. First-match-wins dispatch over the result
+/// therefore reaches the same function the key binds.
 ///
-/// First-wins dedup also applies prelude-vs-prelude: the shadow check runs against
-/// `result` (the accumulating output), not `user` alone, so when two stdlib modules
-/// both declare the same `(name, arity, param_types)` triple only the first-seen
-/// entry survives. This mirrors stdlib load order (sequential in `stdlib_loader::load_stdlib`)
-/// and silently drops duplicates without a diagnostic — intentional for now; if a future
-/// stdlib PR introduces an accidental collision it will be invisible, so rely on
-/// stdlib-level review rather than this function for duplicate detection.
-///
-/// This is the single-source shadow predicate for Reify function tables. It is used by
-/// [`compile_with_prelude_refs`] to build the compile-time overload-resolution table.
-/// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under
-/// first-match-wins semantics (shadowed prelude entries are unreachable at dispatch time),
-/// but the dedup logic for the filtered case lives here.
-///
-/// **Cross-phase note:** the silent first-wins policy here is the third variant in a set
-/// of three divergent cross-prelude collision policies; see `prelude_context` §
-/// "Cross-prelude collision policy" for the full comparison (units = last-wins/warns;
-/// aliases = first-wins/warns; functions = first-wins/silent).
+/// No production path calls this. A flat list carries no module origins, so it
+/// cannot apply NS-P1 tiering. The compiler builds its function table from the
+/// prelude MODULES through [`name_env`], in
+/// `compile_builder::functions_phase::build_resolution_functions`. Its one
+/// remaining caller is a reify-expr test
+/// (`find_matching_compiled_function_tests.rs`).
 pub fn merge_prelude_functions(
     user: &[CompiledFunction],
     prelude: &[CompiledFunction],
 ) -> Vec<CompiledFunction> {
-    let mut result = user.to_vec();
-    for f in prelude {
-        let shadowed = result.iter().any(|uf| {
-            uf.name == f.name
-                && uf.params.len() == f.params.len()
-                && uf
-                    .params
-                    .iter()
-                    .zip(f.params.iter())
-                    .all(|((_, ut), (_, ft))| ut == ft)
-        });
-        if !shadowed {
-            result.push(f.clone());
-        }
-    }
-    result
+    let mut claimed: HashSet<name_env::FunctionSignature> =
+        user.iter().map(name_env::Definition::key).collect();
+    user.iter()
+        .chain(
+            prelude
+                .iter()
+                .filter(|f| claimed.insert(name_env::Definition::key(*f))),
+        )
+        .cloned()
+        .collect()
 }
 
 /// Merge is_pub prelude purposes into the user module's compiled_purposes.
 ///
-/// Appends each prelude pub purpose whose name is not already present in
-/// `user_purposes` (first-wins shadow: a user-defined purpose overrides any
-/// stdlib purpose of the same name).
+/// Appends each prelude pub purpose that wins its name under NS-P1
+/// ([`name_env`]); a user-defined purpose shadows any prelude purpose of the
+/// same name.
 ///
 /// This propagates standard purposes (e.g. `simulation_ready`, `design_review`
 /// from `std.determinacy.purposes`) into every user module compiled against the
@@ -388,19 +520,22 @@ pub fn merge_prelude_purposes(
     user_purposes: Vec<CompiledPurpose>,
     prelude_refs: &[&CompiledModule],
 ) -> Vec<CompiledPurpose> {
-    let mut result = user_purposes;
-    for module in prelude_refs {
-        for p in &module.compiled_purposes {
-            if p.is_pub && !result.iter().any(|up| up.name == p.name) {
+    let prelude_winners: Vec<CompiledPurpose> =
+        name_env::bind(&user_purposes, prelude_refs.iter().copied())
+            .winning_candidates()
+            .iter()
+            .filter(|candidate| candidate.origin != name_env::Origin::Local)
+            .map(|candidate| {
                 // Mark merged purposes with the prelude sentinel so downstream
                 // consumers (e.g. doc-model builders) can distinguish them from
                 // user-declared purposes in the same compiled_purposes list.
-                let mut merged = p.clone();
+                let mut merged = candidate.definition.clone();
                 merged.declaration_span = SourceSpan::prelude();
-                result.push(merged);
-            }
-        }
-    }
+                merged
+            })
+            .collect();
+    let mut result = user_purposes;
+    result.extend(prelude_winners);
     result
 }
 
@@ -492,12 +627,47 @@ pub fn compile_with_prelude_context_checked_with_config(
         parsed,
         &mut compile_ctx.diagnostics,
     );
+    compile_builder::sketch_unsupported::validate_module(parsed, &mut compile_ctx.diagnostics);
 
     // Respect #no_prelude: if the pragma is present, treat as empty prelude.
     let prelude_refs: &[&CompiledModule] =
         compile_builder::pre_pass::effective_prelude(parsed, ctx.modules());
 
     let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut compile_ctx, parsed);
+
+    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
+    // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
+    // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
+    // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
+    // The set-construction rules (local-only, minus local structure names) live in ONE
+    // place — see `enums_phase::build_local_enum_shadow_set`. Oracles:
+    // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
+    //
+    // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
+    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
+    // `phase_entities` alone made a trait requirement / fn signature param keep
+    // `Type::StructureRef("Fit")` while the conforming structure's param became
+    // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
+    // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
+    //
+    // Installed immediately after `collect_decl_refs`, the earliest point at which
+    // both set inputs are final, so the scope also covers `resolve_enum_variant_payloads`:
+    // outside it a payload field typed by a shadowed name lowers to
+    // `Type::StructureRef(N)` (#6394; PRD docs/prds/v0_6/enum-shadow-coherence.md §2 R4,
+    // §3 D1). Interim policy: stdlib-namespace α #5493 folds this install into its
+    // shared policy point (same PRD §3 D8, §5 C4).
+    //
+    // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
+    // guard immediately and make the scope a silent no-op). It drops at the end of
+    // this function, leaving the ambient set empty for every other caller. This is
+    // orthogonal to the `EnumNameScope` guards that `functions.rs`/`entity.rs`
+    // install: that set is a LAST-RESORT fallback consulted only after the
+    // structure-name arm fails, whereas this one OVERRIDES that arm's result — they
+    // are separate thread-locals and compose without interfering.
+    let _local_enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
+        compile_builder::enums_phase::build_local_enum_shadow_set(&compile_ctx),
+    );
 
     compile_builder::units_phase::phase_units(&mut compile_ctx, prelude_refs, &decl_refs.unit_refs);
     // Mirror the resolution_enums gate (lib.rs:270-277): when prelude_refs is
@@ -507,12 +677,9 @@ pub fn compile_with_prelude_context_checked_with_config(
     let prelude_aliases = if prelude_refs.is_empty() {
         &[][..]
     } else {
-        // Emit cross-prelude pub alias collision warnings detected at PreludeContext
-        // construction time. Mirroring units_phase's 'last-wins' warning for cross-prelude
-        // unit collisions, but first-wins here (PreludeContext::new deduplicates eagerly).
-        // See `prelude_context` § "Cross-prelude collision policy" for the full cross-phase
-        // comparison (units = last-wins/warns; aliases = first-wins/warns; functions =
-        // first-wins/silent).
+        // Prelude-vs-prelude pub alias collisions, as `name_env` bound them when
+        // the PreludeContext was built (`prelude_context` § "Cross-prelude
+        // collision policy").
         for (alias_name, first_module, second_module) in ctx.pub_alias_collision_warnings() {
             compile_ctx.diagnostics.push(
                 Diagnostic::warning(format!(
@@ -544,39 +711,24 @@ pub fn compile_with_prelude_context_checked_with_config(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.trait_refs,
+        &decl_refs.fn_refs,
     );
-
-    // The merged prelude enum set, used BOTH to resolve enum-typed variant
-    // payload fields (task 2998) AND to seed `ctx.resolution_enums`.
-    // `prelude_refs.is_empty()` covers two cases:
-    //   (a) #no_prelude pragma is active — suppress prelude enum contribution.
-    //   (b) caller passed an empty prelude — ctx.resolution_enums() is also
-    //       empty by construction, so &[] and ctx.resolution_enums() are equivalent.
-    let prelude_enums = if prelude_refs.is_empty() {
-        &[][..]
-    } else {
-        ctx.resolution_enums()
-    };
 
     // Resolve each enum variant's named-field payload TypeExprs into the IR
     // `VariantPayload::Named` (task δ #3942). An enum-typed payload field
     // (e.g. `NotConverged { reason: BudgetReason }`) resolves against the
-    // prelude ++ local enum set (task 2998). MUST run before
-    // `build_resolution_enums_from_cache` so the resolved payloads land in
+    // enums in scope — local plus prelude, bound by `name_env` (task 2998).
+    // `prelude_refs` is already empty under `#no_prelude`. MUST run before
+    // `bind_resolution_enums` so the resolved payloads land in
     // `ctx.resolution_enums` (the set threaded into `compile_expr`, where
     // brace-form variant construction is field-set/type checked).
     compile_builder::enums_phase::resolve_enum_variant_payloads(
         &mut compile_ctx,
         parsed,
-        prelude_enums,
+        prelude_refs,
     );
 
-    // Seed `ctx.resolution_enums` from the same prelude set (skips re-flattening
-    // the prelude modules on every call).
-    compile_builder::enums_phase::build_resolution_enums_from_cache(
-        &mut compile_ctx,
-        prelude_enums,
-    );
+    compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
     // Resolve fn SIGNATURES first (task 5494 / PRD stdlib-namespace.md D-8).
     // Signature resolution compiles no expression, so it runs before any
@@ -601,7 +753,11 @@ pub fn compile_with_prelude_context_checked_with_config(
         &decl_refs.trait_refs,
     );
 
-    compile_builder::fields_phase::phase_fields(&mut compile_ctx, &decl_refs.field_refs);
+    compile_builder::fields_phase::phase_fields(
+        &mut compile_ctx,
+        &trait_names,
+        &decl_refs.field_refs,
+    );
 
     compile_builder::defs_phase::phase_constraint_defs(
         &mut compile_ctx,
@@ -689,6 +845,16 @@ pub fn compile_with_prelude_context_checked_with_config(
     compile_builder::post_passes::phase_augment_composed_captures(&mut compile_ctx);
 
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
+    // D-2: report every local definition that shadows a same-kind stdlib one.
+    // Runs once, after every kind is compiled and before the prelude's
+    // purposes are merged in; diagnostics only, so the hash is unaffected.
+    let stdlib_shadow_warnings = compile_builder::stdlib_shadow_lint::lint(
+        parsed,
+        &compile_ctx,
+        &compiled_purposes,
+        prelude_refs,
+    );
+    compile_ctx.diagnostics.extend(stdlib_shadow_warnings);
     // Merge is_pub prelude purposes (e.g. simulation_ready/design_review from
     // std.determinacy.purposes) into the user module's compiled_purposes.
     // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the
@@ -704,6 +870,34 @@ pub fn compile_with_prelude_context_checked_with_config(
     // compute_module_hash (so the minted cells + refreshed template content_hashes
     // fold into the module hash — design decision 5).
     hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
+
+    // Report declared objectives that provably govern nothing (DIC γ, task
+    // #5417). Runs LAST among the template post-passes, which is what makes the
+    // rule safe: `phase_sub_override_autos` / `phase_connect_auto_params` have
+    // already minted the parent-scoped `Parent.sub`/`member` cells that prove a
+    // child objective is governing after all, and
+    // `phase_hoist_nested_selector_ctors` has already finished rewriting
+    // ValueRefs. Runs before `compute_module_hash` for consistency with the
+    // other post-passes; it mutates only `diagnostics`, so the hash is
+    // unaffected either way. Purposes are excluded structurally — the pass
+    // walks `ctx.templates` and never touches `CompiledPurpose.objective`.
+    //
+    // `prelude_refs` is passed for ONE reason: to name the imported templates
+    // the pass must refuse to judge, including the monomorph clones
+    // `phase_auto_type_param_resolution` pushed into `ctx.templates` above. It
+    // does NOT widen the override search — see `inert_objective_finding`'s
+    // obligation 0′.
+    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
+
+    // Refuse strict autos the module provably bounds on one side only (#6692).
+    // Runs here for the same reasons as the pass above: the sub-override autos
+    // it judges are minted, and `compiled_purposes` already holds the merged
+    // prelude purposes, any of which could add a bound or an objective.
+    compile_builder::post_passes::phase_one_sided_auto_check(
+        &mut compile_ctx,
+        &compiled_purposes,
+        prelude_refs,
+    );
 
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);

@@ -2,6 +2,8 @@
 //!
 //! - **α (task 4331)**: `revolute_pivot_offset_e2e` — translation-pivot (point3) authoring.
 //! - **δ (task 4394)**: `oriented_frame3_linkage_e2e` — oriented Frame3 origin authoring.
+//! - **task 7187**: `screw_follower_inherits_parent_pivot_e2e` — a coupling inherits its
+//!   parent's pivot.
 //!
 //! Original α doc:
 //!
@@ -37,6 +39,11 @@ const ORIENTED_FIXTURE_PATH: &str = concat!(
     "/../../examples/kinematic/spatial_linkage_oriented.ri"
 );
 
+const SCREW_FOLLOWER_FIXTURE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/kinematic/screw_follower_pivot.ri"
+);
+
 /// Read the α fixture source, caching it via OnceLock.
 fn fixture_source() -> &'static str {
     use std::sync::OnceLock;
@@ -55,6 +62,17 @@ fn oriented_fixture_source() -> &'static str {
     S.get_or_init(|| {
         std::fs::read_to_string(ORIENTED_FIXTURE_PATH)
             .unwrap_or_else(|e| panic!("{ORIENTED_FIXTURE_PATH} should exist: {e}"))
+    })
+    .as_str()
+}
+
+/// Read the task-7187 screw-follower fixture source, caching it via OnceLock.
+fn screw_follower_fixture_source() -> &'static str {
+    use std::sync::OnceLock;
+    static S: OnceLock<String> = OnceLock::new();
+    S.get_or_init(|| {
+        std::fs::read_to_string(SCREW_FOLLOWER_FIXTURE_PATH)
+            .unwrap_or_else(|e| panic!("{SCREW_FOLLOWER_FIXTURE_PATH} should exist: {e}"))
     })
     .as_str()
 }
@@ -84,6 +102,24 @@ fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3
             read_f64(&comps[2], &format!("{label}.t[2]")),
         ],
     )
+}
+
+fn map_entry<'a>(value: &'a Value, key: &str, label: &str) -> &'a Value {
+    match value {
+        Value::Map(m) => m
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("{label}: missing {key:?} entry in {value:?}")),
+        other => panic!("{label}: expected Value::Map carrying {key:?}, got {other:?}"),
+    }
+}
+
+/// Walk a snapshot `Value::Map` to `bodies[0].world_transform`.
+fn first_body_world_transform(snapshot: &Value) -> &Value {
+    let first_body = match map_entry(snapshot, "bodies", "snapshot") {
+        Value::List(bodies) if !bodies.is_empty() => &bodies[0],
+        other => panic!("snapshot.bodies: expected a non-empty Value::List, got {other:?}"),
+    };
+    map_entry(first_body, "world_transform", "snapshot.bodies[0]")
 }
 
 /// Signal test: `revolute_pivot_offset.ri` produces the expected pivot-offset
@@ -245,4 +281,57 @@ fn oriented_frame3_linkage_e2e() {
     );
     assert!(hty.abs() < 1e-12, "t_hinge.ty should be 0, got {hty}");
     assert!(htz.abs() < 1e-12, "t_hinge.tz should be 0, got {htz}");
+}
+
+/// Asserts identity rotation (up to sign) and translation (0.1, 0.05, 0.05) m: the
+/// lift's (100 mm, 50 mm) corner raised by ten 5 mm leads of nut travel.
+fn assert_follower_at_lift_corner(transform: &Value, label: &str) {
+    let ((w, x, y, z), translation) = decompose_transform(transform, label);
+    let identity_up_to_sign = ((w - 1.0).abs() < 1e-12 || (w + 1.0).abs() < 1e-12)
+        && x.abs() < 1e-12
+        && y.abs() < 1e-12
+        && z.abs() < 1e-12;
+    assert!(
+        identity_up_to_sign,
+        "{label}: rotation should be identity up to sign, got ({w},{x},{y},{z})"
+    );
+    let expected = [0.1, 0.05, 0.05];
+    assert!(
+        translation
+            .iter()
+            .zip(expected)
+            .all(|(got, want)| (got - want).abs() < 1e-12),
+        "{label}: translation should be {expected:?} m (lift corner + 50 mm travel), got {translation:?}"
+    );
+}
+
+/// Signal test (task 7187): `screw_follower_pivot.ri` — the lead-screw follower of a
+/// lift pivoted at (100 mm, 50 mm) inherits that pivot, both in
+/// `transform_at(j_nut, 20π m)` and in the snapshot FK world transform of a body
+/// bound only through the lift.
+#[test]
+fn screw_follower_inherits_parent_pivot_e2e() {
+    let compiled = parse_and_compile_with_stdlib(screw_follower_fixture_source());
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errors = collect_errors(&result.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "eval must produce no Error diagnostics for screw_follower_pivot.ri, got: {errors:?}"
+    );
+
+    let get_value = |name: &str| {
+        let id = ValueCellId::new("ScrewFollowerPivot", name);
+        result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("ScrewFollowerPivot.{name} not found in eval result"))
+    };
+
+    assert_follower_at_lift_corner(get_value("t_nut"), "t_nut");
+    assert_follower_at_lift_corner(
+        first_body_world_transform(get_value("snap")),
+        "snap.bodies[0].world_transform",
+    );
 }

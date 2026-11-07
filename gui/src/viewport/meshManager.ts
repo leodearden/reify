@@ -8,16 +8,58 @@ import {
   Group,
   DoubleSide,
   Color,
+  type LineSegments,
   type Scene,
+  type TypedArray,
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
+import { UNDERLAY_RENDER_ORDER } from './renderOrder';
+import { createEdgesOverlay } from './edgesOverlay';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
 (BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
+
+/**
+ * BVH build options. `indirect: true` is LOAD-BEARING, not a tuning knob —
+ * removing it silently reintroduces #6813.
+ *
+ * three-mesh-bvh's README, under `MeshBVH` > `.constructor`, states verbatim:
+ * "The geometry's index attribute array is modified in order to build the
+ * bounds tree unless `indirect` is set to `true`." The options list directly
+ * above that note gives the default as `indirect: false`, i.e. the builder
+ * permutes the index array in place.
+ *
+ * Our index attribute *aliases* store-owned `MeshData.indices` rather than
+ * copying it — see the `indices` doc comment on the `MeshData` interface in
+ * `gui/src/types.ts`, the alias sites at
+ * `geometry.setIndex(new BufferAttribute(data.indices, 1))` in
+ * `createMeshFromData` and `indexAttr.array = data.indices` in
+ * `updateMeshGeometry` below, and the store's retention of that same object in
+ * `applyMeshUpdate` (`setState('meshes', mesh.entity_path, mesh)` in
+ * `stores/engineStore.ts`). So under the default the BVH writes back into the
+ * store, permuting face order while every per-face side array keyed to it —
+ * `element_index`, `element_kind`, `region_tags` — stays in the original order.
+ * Measured consequences: `feaDiagnosticOverlay`'s precise outline
+ * (`problemElementOutlinePositions`) emits the wrong faces for the requested
+ * element ids, and a raycast `intersection.faceIndex` no longer denotes the
+ * store's face (57 rather than 7 on the reproduction fixture), corrupting
+ * persisted `probe.face_id` re-sampling.
+ *
+ * Indirect mode keeps the caller's buffer untouched by routing the BVH through
+ * its own permutation buffer, and resolves triangle indices back to geometry
+ * order on both the plain-THREE and `acceleratedRaycast` paths. The cost is one
+ * extra indirection per BVH triangle lookup; reify's raycasts are per-pointer
+ * and set `firstHitOnly = true` on the raycaster (see `selection.ts` and
+ * `ProbeSystem.tsx`), so traversal stays O(log n) and this is not a hot bulk
+ * path.
+ *
+ * Pinned by gui/src/__tests__/viewport/meshManager.indexAliasing.test.ts.
+ */
+const BVH_OPTIONS = { indirect: true } as const;
 
 /** Catppuccin accent palette for deterministic mesh coloring. */
 const ACCENT_PALETTE = [
@@ -142,6 +184,13 @@ export interface MeshManagerContext {
     faceId: number,
     bary: BarycentricUV,
   ) => ProbeSample | null;
+  /**
+   * Turn the edges-in-black view on or off: one black EdgesGeometry overlay per
+   * shown mesh, maintained across sync, visibility and deformation changes.
+   */
+  setEdges: (on: boolean) => void;
+  /** Returns a copy of the edges overlay map (keyed by entity path); empty while off. */
+  getEdgesOverlays: () => Map<string, LineSegments>;
 }
 
 /**
@@ -161,6 +210,77 @@ function validateMeshData(data: MeshData): boolean {
     }
   }
   return true;
+}
+
+/** The MeshData arrays a mesh's geometry is built from: its index, and its vertices warped by displaced_positions. */
+type GeometrySource = Pick<MeshData, 'vertices' | 'indices' | 'displaced_positions'>;
+
+function geometrySourceOf(data: MeshData): GeometrySource {
+  return { vertices: data.vertices, indices: data.indices, displaced_positions: data.displaced_positions };
+}
+
+function isSameGeometrySource(source: GeometrySource | undefined, data: MeshData): boolean {
+  return (
+    source !== undefined &&
+    source.vertices === data.vertices &&
+    source.indices === data.indices &&
+    source.displaced_positions === data.displaced_positions
+  );
+}
+
+/**
+ * Assign `newArray` into `geometry`'s `name` attribute.
+ *
+ * Reuses the existing BufferAttribute object (and therefore its GPU-side
+ * WebGLBuffer) only when the byte size is unchanged; otherwise installs a
+ * fresh BufferAttribute. WebGL buffers have fixed size: bumping `needsUpdate`
+ * on an attribute whose `array.byteLength` changed makes THREE.WebGLAttributes
+ * throw "Resizing buffer attributes is not supported" once per draw call
+ * (#6757).
+ *
+ * Compares byteLength, not element length, because that is what
+ * `WebGLAttributes.update()` compares
+ * (three/src/renderers/webgl/WebGLAttributes.js:204-214). Element length is
+ * only equivalent while `gui/src/types.ts` pins the wire element types; a
+ * narrower array at equal element length would have a different byte size and
+ * slip straight through into the throw.
+ *
+ * The element *type* and `itemSize` are checked too, because byteLength alone
+ * is a weaker predicate than the element-length comparison it replaced. THREE
+ * records the GL type once, at `createBuffer()` time, and never revisits it, so
+ * reusing an attribute whose array changed constructor at equal byte size
+ * (`Uint32Array(6)` -> `Uint16Array(12)`, or Float32 -> Uint32) would upload the
+ * new bytes under the stale type and draw garbage — silently, with no error at
+ * all, which is strictly harder to diagnose than the throw this guard exists to
+ * prevent. Likewise a reused attribute keeps its old `itemSize` while `count` is
+ * recomputed from the new one, so a future non-3-component caller would get an
+ * inconsistent pair. Neither is reachable today (`gui/src/types.ts` pins
+ * Float32Array/Uint32Array on the wire and every call site passes itemSize 3);
+ * both are cheap to exclude structurally rather than by convention.
+ *
+ * Never copies — the caller owns the copy-vs-alias decision and hands in an
+ * already-prepared array (position copies per task 3402's contract; normals
+ * alias per the `MeshData` contract at gui/src/types.ts:41-52).
+ */
+function assignOrReplaceAttribute(
+  geometry: BufferGeometry,
+  name: string,
+  newArray: TypedArray,
+  itemSize: number,
+): void {
+  const existing = geometry.getAttribute(name) as BufferAttribute | null;
+  if (
+    existing &&
+    existing.itemSize === itemSize &&
+    existing.array.constructor === newArray.constructor &&
+    existing.array.byteLength === newArray.byteLength
+  ) {
+    existing.array = newArray;
+    (existing as { count: number }).count = newArray.length / itemSize;
+    existing.needsUpdate = true;
+  } else {
+    geometry.setAttribute(name, new BufferAttribute(newArray, itemSize));
+  }
 }
 
 export function createMeshManager(scene: Scene, options?: MeshManagerOptions): MeshManagerContext {
@@ -194,6 +314,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   const meshOriginalVertices = new Map<string, Float32Array>();
   const meshDisplacedPositions = new Map<string, Float32Array>();
 
+  // Side-table: the MeshData arrays each entity's geometry was last built from.
+  // Mesh updates replace typed arrays and never write into them (pinned by the
+  // "applyMeshUpdate typed-array ownership" block in __tests__/engineStore.test.ts),
+  // so identical arrays mean a sync would rebuild the very geometry the mesh
+  // already holds.
+  const meshGeometrySources = new Map<string, GeometrySource>();
+
   const meshMap = new Map<string, Mesh>();
   const visibilityMap = new Map<string, VisibilityState>();
   const ghostMeshMap = new Map<string, Mesh>();
@@ -221,6 +348,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
   // Map of active undeformed overlay meshes (one per entity with displaced_positions).
   const undeformedMeshMap = new Map<string, Mesh>();
+
+  // Edges-in-black overlay: one black feature-edge LineSegments per shown mesh,
+  // rebuilt by syncEdgesOverlay wherever a mesh's shown state or positions change.
+  const edgesOverlay = createEdgesOverlay(scene);
 
   // Cache for getSceneMeshes() — invalidated on any visibility or sync change.
   // This avoids a new Map allocation on every pointer-move raycast call.
@@ -354,7 +485,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
 
     try {
-      (geometry as any).computeBoundsTree();
+      // BVH_OPTIONS.indirect is required: the index attribute aliases
+      // store-owned data.indices (set just above), which the default
+      // non-indirect builder would permute in place (#6813).
+      (geometry as any).computeBoundsTree(BVH_OPTIONS);
     } catch (err) {
       geometry.dispose();
       material.dispose();
@@ -378,6 +512,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     if (data.displaced_positions) {
       meshDisplacedPositions.set(entityPath, data.displaced_positions.slice());
     }
+    meshGeometrySources.set(entityPath, geometrySourceOf(data));
 
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
@@ -407,20 +542,23 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // so restore / re-apply at different warp factors works correctly.
     const vertsForBuffer = data.vertices.slice();
 
-    // Reuse existing BufferAttribute objects when array length matches to avoid
-    // orphaning GPU-side WebGLBuffers. When length differs, create new attribute
+    // Reuse existing BufferAttribute objects when the byte size matches to avoid
+    // orphaning GPU-side WebGLBuffers. When it differs, create a new attribute
     // because WebGL buffers have fixed size and cannot be resized.
-    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
-    if (posAttr && posAttr.array.length === data.vertices.length) {
-      posAttr.array = vertsForBuffer;
-      (posAttr as { count: number }).count = data.vertices.length / 3;
-      posAttr.needsUpdate = true;
-    } else {
-      geometry.setAttribute('position', new BufferAttribute(vertsForBuffer, 3));
-    }
+    // See assignOrReplaceAttribute() for the full rationale (#6757).
+    assignOrReplaceAttribute(geometry, 'position', vertsForBuffer, 3);
 
+    // `index` cannot share the helper: it must go through geometry.setIndex(),
+    // not setAttribute(). Same byteLength + element-type guard, inline
+    // (see assignOrReplaceAttribute for why the constructor is compared too:
+    // THREE records the index buffer's GL type once and never revisits it, so
+    // a Uint32Array -> Uint16Array swap at equal byte size would draw garbage).
     const indexAttr = geometry.index;
-    if (indexAttr && indexAttr.array.length === data.indices.length) {
+    if (
+      indexAttr &&
+      indexAttr.array.constructor === data.indices.constructor &&
+      indexAttr.array.byteLength === data.indices.byteLength
+    ) {
       indexAttr.array = data.indices;
       (indexAttr as { count: number }).count = data.indices.length;
       indexAttr.needsUpdate = true;
@@ -429,14 +567,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
 
     if (data.normals) {
-      const normalAttr = geometry.getAttribute('normal') as BufferAttribute | null;
-      if (normalAttr && normalAttr.array.length === data.normals.length) {
-        normalAttr.array = data.normals;
-        (normalAttr as { count: number }).count = data.normals.length / 3;
-        normalAttr.needsUpdate = true;
-      } else {
-        geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
-      }
+      assignOrReplaceAttribute(geometry, 'normal', data.normals, 3);
     } else if (geometry.getAttribute('normal')) {
       geometry.deleteAttribute('normal');
       geometry.computeVertexNormals();
@@ -487,19 +618,42 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     } else {
       meshDisplacedPositions.delete(mesh.name);
     }
+    meshGeometrySources.set(mesh.name, geometrySourceOf(data));
 
     // If colorize is active and this mesh already has a colour attribute, re-bake
-    // the colours in place with the new scalars.  Mirrors the setColorize mutation
+    // the colours with the new scalars.  Mirrors the setColorize mutation
     // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
     // reflected immediately without a full geometry resync or material swap.
+    // Routed through assignOrReplaceAttribute so a re-tessellation that changes
+    // the vertex count replaces the attribute instead of resizing it (#6757).
+    //
+    // The negative cases must be handled explicitly rather than falling through.
+    // The material-rebuild guard above declines to rebuild while a colour
+    // attribute is still attached, so simply skipping the re-bake would leave a
+    // MeshPhongMaterial({ vertexColors: true }) mesh drawing a stale, wrong-sized
+    // colour buffer against the new position buffer — a WebGL "attempt to access
+    // out of range vertices in attribute" on every draw call. That is the same
+    // user-visible outcome as the resize throw, reached by a different route, and
+    // it is what a re-evaluation that both re-tessellates an entity and drops its
+    // FEA solve produces. Converge instead on exactly the state
+    // createMeshFromData() and rebuildMaterials() produce for a mesh with no
+    // usable channel: drop the colour attribute and install the base material.
+    //
+    // The length check is `=== vertexCount`, not `> 0`, because `bake()` sizes
+    // its output off the scalars, not off position.count — a channel that
+    // survived at the old vertex count is just as unusable as a missing one.
     if (colorize) {
-      const scalars = (data.scalar_channels ?? {})[colorize.channel];
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
-      if (scalars && scalars.length > 0 && colorAttr) {
-        const newColors = colorize.bake(scalars);
-        colorAttr.array = newColors;
-        (colorAttr as { count: number }).count = newColors.length / 3;
-        colorAttr.needsUpdate = true;
+      if (colorAttr) {
+        const scalars = activeScalars(data);
+        if (scalars !== null && scalars.length === data.vertices.length / 3) {
+          assignOrReplaceAttribute(geometry, 'color', colorize.bake(scalars), 3);
+        } else {
+          geometry.deleteAttribute('color');
+          const staleMaterial = mesh.material as { dispose: () => void };
+          mesh.material = makeBaseMaterial(mesh.name);
+          staleMaterial.dispose();
+        }
       }
     }
 
@@ -526,9 +680,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       }
     }
 
-    // Rebuild BVH for the updated geometry
+    // Rebuild BVH for the updated geometry.
+    // BVH_OPTIONS.indirect is required: the index attribute aliases store-owned
+    // data.indices on both branches above (re-aliased into the existing
+    // BufferAttribute, or wrapped by a fresh setIndex), which the default
+    // non-indirect builder would permute in place (#6813).
     try {
-      (geometry as any).computeBoundsTree();
+      (geometry as any).computeBoundsTree(BVH_OPTIONS);
     } catch (err) {
       console.error(`Failed to rebuild BVH for mesh '${mesh.name}'`, err);
       removeMesh(mesh.name);
@@ -561,6 +719,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
    */
   function isShown(entityPath: string): boolean {
     return (visibilityMap.get(entityPath) ?? 'show') === 'show';
+  }
+
+  /** Rebuild the entity's edges overlay from its current geometry, or drop it when not shown. */
+  function syncEdgesOverlay(entityPath: string, mesh: Mesh): void {
+    if (isShown(entityPath)) edgesOverlay.rebuild(entityPath, mesh);
+    else edgesOverlay.remove(entityPath);
   }
 
   /**
@@ -632,7 +796,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
     const overlay = new Mesh(overlayGeom, undeformedMaterial);
     overlay.name = `undeformed:${entityPath}`;
-    overlay.renderOrder = -1; // draw behind the deformed mesh (renderOrder=0 default)
+    overlay.renderOrder = UNDERLAY_RENDER_ORDER; // draw behind the deformed mesh (renderOrder=0 default)
 
     undeformedMeshMap.set(entityPath, overlay);
     undeformedGroup.add(overlay);
@@ -661,6 +825,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       for (const [entityPath, mesh] of meshMap) {
         restoreOriginalToMesh(mesh, entityPath);
         removeUndeformedOverlay(entityPath);
+        // Only a displaced mesh was warped, so only its positions just moved back.
+        if (meshDisplacedPositions.has(entityPath)) syncEdgesOverlay(entityPath, mesh);
       }
       currentDeformation = null;
       return;
@@ -687,6 +853,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       if (!disp) continue; // no displaced_positions — skip (geometry untouched)
 
       applyWarpToMesh(mesh, entityPath, warpFactor);
+      syncEdgesOverlay(entityPath, mesh);
       // Only 'show' state gets an overlay; hidden/ghost intentionally skipped.
       // See design decision: ghost is already a translucent deformed rendering;
       // hidden means the user wants no visual for this entity at all.
@@ -715,6 +882,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // (the overlay owns cloned index/normal attributes), but doing it first keeps teardown
     // deterministic and contrasts with the ghost-clone ordering requirement below.
     removeUndeformedOverlay(entityPath);
+    edgesOverlay.remove(entityPath);
 
     // removeGhostClone MUST precede geometry disposal: the ghost clone shares
     // the original mesh's BufferGeometry reference. Disposing the geometry first
@@ -730,6 +898,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     meshVectorChannels.delete(entityPath);
     meshOriginalVertices.delete(entityPath);
     meshDisplacedPositions.delete(entityPath);
+    meshGeometrySources.delete(entityPath);
     visibilityMap.delete(entityPath);
   }
 
@@ -789,6 +958,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         addGhostClone(entityPath, mesh);
       }
     }
+
+    syncEdgesOverlay(entityPath, mesh);
   }
 
   /**
@@ -810,7 +981,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
    *
    * When `opts` is null the colorize state is cleared; existing colour buffers
    * on already-phong meshes are left unchanged (material teardown is out of
-   * scope for this task).
+   * scope for this task).  Because that buffer stays attached, a mesh can be
+   * re-tessellated at a different vertex count while colorize is off (the
+   * `sync()` re-bake is skipped when `colorize === null`), leaving a stale
+   * colour attribute sized for the old vertex count.  A later
+   * `setColorize(opts)` therefore *replaces* that attribute rather than
+   * resizing it in place — resizing would make THREE.WebGLAttributes throw on
+   * the next draw call (#6757; see `assignOrReplaceAttribute`).
    */
   function setColorize(opts: MeshColorize | null): void {
     colorize = opts;
@@ -826,10 +1003,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
       if (!colorAttr) continue; // mesh was created without colorize; skip
 
-      const newColors = opts.bake(scalars);
-      colorAttr.array = newColors;
-      (colorAttr as { count: number }).count = newColors.length / 3;
-      colorAttr.needsUpdate = true;
+      assignOrReplaceAttribute(geometry, 'color', opts.bake(scalars), 3);
     }
   }
 
@@ -847,7 +1021,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     for (const [entityPath, data] of Object.entries(meshes)) {
       if (!validateMeshData(data)) continue;
       if (meshMap.has(entityPath)) {
+        const geometryUnchanged = isSameGeometrySource(meshGeometrySources.get(entityPath), data);
         updateMeshGeometry(meshMap.get(entityPath)!, data);
+        // updateMeshGeometry removes the mesh when its BVH rebuild fails.
+        const updated = meshMap.get(entityPath);
+        if (updated && !geometryUnchanged) syncEdgesOverlay(entityPath, updated);
       } else {
         const mesh = createMeshFromData(entityPath, data);
         if (mesh) {
@@ -859,6 +1037,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
             addGhostClone(entityPath, mesh);
           }
           // 'hidden': don't add anywhere
+          syncEdgesOverlay(entityPath, mesh);
         }
       }
     }
@@ -938,6 +1117,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
     scene.remove(undeformedGroup);
     undeformedMaterial.dispose();
+    edgesOverlay.disable();
     sceneMeshCache = null;
   }
 
@@ -1159,6 +1339,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
   }
 
+  function setEdges(on: boolean): void {
+    if (on) edgesOverlay.enable(getSceneMeshes());
+    else edgesOverlay.disable();
+  }
+
   return {
     sync,
     dispose,
@@ -1172,5 +1357,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     computeBarycentric,
     sampleProbe,
     setDisplayAppearance,
+    setEdges,
+    getEdgesOverlays: edgesOverlay.overlays,
   };
 }

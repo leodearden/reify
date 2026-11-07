@@ -76,7 +76,7 @@ fn rigid_mass_props_auto_derive_to_determined_via_build_occt_free() {
                 Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
             ]),
         );
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     for member in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {

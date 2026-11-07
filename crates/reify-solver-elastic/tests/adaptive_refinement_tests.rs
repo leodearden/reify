@@ -42,7 +42,7 @@ impl StubProblem {
 impl AdaptiveProblem for StubProblem {
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         let est = self
             .estimates
             .get(self.next)
@@ -56,7 +56,7 @@ impl AdaptiveProblem for StubProblem {
             })
             .clone();
         self.next += 1;
-        est
+        Ok(est)
     }
 
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
@@ -67,11 +67,12 @@ impl AdaptiveProblem for StubProblem {
 
 /// Build an `AdaptiveEstimate` with a fixed non-trivial per-element vector
 /// (so [`mark_dorfler`] marks a real subset) for the budget-gate scripts.
-fn est(global_indicator: f64, n_dofs: usize) -> AdaptiveEstimate {
+fn est(relative_error: f64, n_dofs: usize) -> AdaptiveEstimate {
     AdaptiveEstimate {
-        global_indicator,
+        relative_error,
         per_element: vec![1.0, 2.0, 3.0, 4.0],
         n_dofs,
+        qoi: None,
     }
 }
 
@@ -85,15 +86,17 @@ fn happy_path_converges_after_one_refine() {
     let mut stub = StubProblem::new(vec![
         // iter 0: above target ⇒ mark + refine.
         AdaptiveEstimate {
-            global_indicator: 0.5,
+            relative_error: 0.5,
             per_element: iter0_per_element.clone(),
             n_dofs: 100,
+            qoi: None,
         },
         // iter 1: re-solve is at/below target ⇒ Converged.
         AdaptiveEstimate {
-            global_indicator: 0.04,
+            relative_error: 0.04,
             per_element: vec![0.01, 0.01],
             n_dofs: 200,
+            qoi: None,
         },
     ]);
     let budget = RefinementBudget {
@@ -175,8 +178,8 @@ fn max_dofs_fires_when_dofs_reach_cap() {
 
 #[test]
 fn stalled_fires_on_insufficient_drop() {
-    // 0.5 → 0.48 is a 4% drop (<= 10%) ⇒ stall on the second solve; caps are
-    // far away so only the stall gate can fire.
+    // 0.5 → 0.48 is a 4% drop (<= 10%) ⇒ stall on the second solve. Caps are
+    // far away, so budget remains: the case stall exists for — stopping early.
     let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 100)]);
     let budget = RefinementBudget {
         target_accuracy: 0.001,
@@ -194,6 +197,73 @@ fn stalled_fires_on_insufficient_drop() {
     );
     // One refine ran (iter 0); the stall is detected at iter 1 before re-marking.
     assert_eq!(stub.refine_calls.len(), 1, "one refine before the stall");
+}
+
+/// At iter 1 the stall gate and the iteration cap are live SIMULTANEOUSLY; the
+/// cap wins. Stall is an early-stop rule, and here no further refine was
+/// possible anyway, so the cap is the cause of termination. See
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved decisions →
+/// Budget knobs amendment (task 7449).
+#[test]
+fn the_iteration_cap_outranks_a_simultaneous_stall() {
+    // 0.5 → 0.48 is a 4% drop, so at iter 1 the stall gate is live
+    // (0.48 >= 0.9 * 0.5 = 0.45) — and so is the iteration cap (iter 1 >= 1).
+    // Deliberately NOT the exact-10% boundary: those float semantics are pinned
+    // orthogonally by `is_stalled_exactly_ten_percent_drop_is_stalled`, and
+    // mixing the two would couple a precedence claim to an FP-representation one.
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 100)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 1, // <- the cap is ALSO hit at iter 1
+        max_dofs: 1_000_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxIterations
+        },
+        "the iteration cap must outrank a stall on the same iteration — a \
+         budget whose single refine happens not to clear the 10% drop still \
+         reports `MaxIterations`, never `Stalled`"
+    );
+    assert_eq!(
+        stub.refine_calls.len(),
+        1,
+        "one refine at iter 0, then the iter-1 gates fire before any re-marking"
+    );
+}
+
+/// At iter 1 the stall gate and the dof ceiling are live SIMULTANEOUSLY; the
+/// ceiling wins, for the same reason as the iteration cap above. The iteration
+/// cap is far away so only the dof ceiling and the stall compete.
+#[test]
+fn the_dof_ceiling_outranks_a_simultaneous_stall() {
+    // 0.5 → 0.48 is a 4% drop (stall gate live at iter 1), and the re-solve's
+    // n_dofs 2000 >= max_dofs 1000 (dof ceiling live at iter 1).
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 2000)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 100,
+        max_dofs: 1000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs
+        },
+        "the dof ceiling must outrank a stall on the same iteration"
+    );
+    assert_eq!(
+        stub.refine_calls.len(),
+        1,
+        "one refine at iter 0, then the iter-1 gates fire before any re-marking"
+    );
 }
 
 #[test]
@@ -217,6 +287,105 @@ fn target_reached_wins_over_simultaneous_caps() {
         },
     );
     assert_eq!(stub.refine_calls.len(), 0, "converged immediately, no refine");
+}
+
+// ---------------------------------------------------------------------------
+// task 7449: linear Dörfler accumulation is a deliberate choice.
+// ---------------------------------------------------------------------------
+
+/// SplitMix64: a tiny deterministic generator, so the property sweep below
+/// needs no `rand` dev-dependency and has no flake surface.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform-enough draw from `0..n` (modulo bias is irrelevant here).
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
+fn squares_of(weights: &[f64]) -> Vec<f64> {
+    weights.iter().map(|w| w * w).collect()
+}
+
+/// For one `(weights, theta)`: the linear set meets the squared bulk criterion
+/// at the same θ, and contains the minimal squared set.
+fn assert_linear_set_meets_squared_bulk_criterion(weights: &[f64], theta: f64) {
+    let linear = mark_dorfler(weights, theta);
+    let squares = squares_of(weights);
+    let minimal_squared = mark_dorfler(&squares, theta);
+
+    let marked_squares: f64 = linear.iter().map(|&i| squares[i]).sum();
+    let total_squares: f64 = squares.iter().sum();
+    assert!(
+        marked_squares >= theta * total_squares,
+        "linear Dörfler set misses the squared bulk criterion: \
+         Σ_M w² = {marked_squares} < θ·Σ w² = {} \
+         (w = {weights:?}, θ = {theta}, linear = {linear:?}, \
+         minimal squared = {minimal_squared:?})",
+        theta * total_squares,
+    );
+    assert!(
+        minimal_squared.iter().all(|i| linear.contains(i)),
+        "linear Dörfler set does not contain the minimal squared set \
+         (w = {weights:?}, θ = {theta}, linear = {linear:?}, \
+         minimal squared = {minimal_squared:?})",
+    );
+}
+
+/// `mark_dorfler` accumulates weights linearly (Σ_M w ≥ θ Σ w). For any
+/// non-negative weights that set also meets the textbook squared bulk
+/// criterion Σ_M w² ≥ θ Σ w² at the SAME θ, and contains the minimal set that
+/// does. The PRD's convergence rationale needs only that bulk criterion, so
+/// linear marking keeps it while over-marking relative to the minimal set. See
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved decisions →
+/// Refinement marking amendment (task 7449).
+///
+/// Integer weights in `0..=1000`, at most 40 of them, and dyadic θ keep every
+/// sum and threshold exact in f64, so the inequality needs no tolerance.
+#[test]
+fn the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set() {
+    const THETAS: [f64; 6] = [0.125, 0.25, DORFLER_THETA, 0.75, 0.875, 1.0];
+
+    // Non-vacuous: on a skewed vector the two forms really differ.
+    let skewed = vec![3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+    assert_eq!(mark_dorfler(&skewed, DORFLER_THETA), vec![0, 1, 2]);
+    assert_eq!(mark_dorfler(&squares_of(&skewed), DORFLER_THETA), vec![0]);
+
+    let mut cases: Vec<Vec<f64>> = vec![
+        skewed,
+        vec![5.0; 10],
+        vec![0.0, 7.0, 0.0, 3.0, 0.0, 0.0, 1.0],
+        vec![0.0, 0.0, 0.0],
+    ];
+    let mut rng = SplitMix64(0x7449);
+    for _ in 0..500 {
+        let len = 1 + rng.below(40) as usize;
+        // Half the vectors heavy-tailed (many small values, ties and zeros).
+        let heavy_tailed = rng.below(2) == 0;
+        let weights = (0..len)
+            .map(|_| {
+                let w = rng.below(1001);
+                let w = if heavy_tailed { w >> rng.below(11) } else { w };
+                w as f64
+            })
+            .collect();
+        cases.push(weights);
+    }
+
+    for weights in &cases {
+        for theta in THETAS {
+            assert_linear_set_meets_squared_bulk_criterion(weights, theta);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

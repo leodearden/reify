@@ -98,7 +98,7 @@ decided explicitly).
 | `rounded_rect` dz | `geometry.rs:2524-2525`, same shape | none |
 | `revolve_full` TAU | `geometry.rs:2063-2067`, bound at `:2079` — dimensionless `Value::Real(TAU)` into an **angle** slot | none |
 | *(newly found, same shape)* `rounded_box` dz | `geometry.rs:2362` and `:2439` — `Value::Real(-0.5)` dimensionless literals | **new** — add to task α |
-| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `reify-eval/src/arg_acceptance.rs:117 / :28 / :40 / :52`; `pub(crate)` via `lib.rs:93` | none |
+| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `reify-eval/src/arg_acceptance.rs:117 / :28 / :40 / :52`; `pub(crate)` via `lib.rs:93` *(pre-relocation; #5791 moved the module to `crates/reify-ir/src/arg_acceptance.rs` — the next two rows' `arg_acceptance.rs` anchors are pre-relocation too)* | none |
 | `*_spec` constructors that exist | **exactly two**: `density_spec` (:86), `length_spec` (:103) | none. **No `angle_spec`** — ANGLE builds an anonymous `ArgSpec` with **no migration hint** at `geometry_ops.rs:8767-8771` (PRD 3's to fix) |
 | rejection wording template | `arg_acceptance.rs:71-79` — `"{builtin}: {arg_name} argument expects {expected}, got {got}"`, `"; {hint}"` appended | none |
 | `required_length_value` / `required_length_origin3` / `resolve_length_scalar_arg` / `resolve_point3_length_arg` / `resolve_bare_angle` | `geometry_ops.rs:359 / :399 / :8817 / :8478 / :880` | none (research cited no lines) |
@@ -344,8 +344,12 @@ kernel diagnostic naming op kind and field (never a bare `expected numeric value
   does not match; the probe universe is non-empty and its size is asserted `>= 60` (a floor, not
   an equality — new builtins must not break the guard).
 - *Extension points (additive only, never a harness rewrite):* PRD 3 adds ANGLE-dimension
-  allowlist entries; PRD 5 adds a **second universe** (`plane_*`/`axis_*`/`point3`, `prb_*`,
-  joints/solver builtins).
+  allowlist entries; PRD 5 adds a **second universe**, DERIVED from every `reify-stdlib`
+  `eval_builtin` match arm (PRD 5 decision 10), so these names illustrate it rather than bound
+  it: `plane_*`/`axis_*`/`point3`, the construction-datum constructors, `prb_*`, joints/solver
+  builtins. *Amended 2026-10-11 (task 7484):* the construction-datum family was missing from this
+  enumeration; its members, and why it joins the second universe rather than this one, are stated
+  once in PRD 5 (`dimension-checked-readers.md`, Leg E's 2026-10-11 amendment, checked by row B11).
 
 **C6 — Migration contract (D7).** A leaf that adds a gate lands, in the same diff, every call-site
 migration its gate newly rejects, and leaves deliberate negative fixtures bare. No leaf asserts a

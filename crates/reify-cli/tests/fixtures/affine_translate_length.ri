@@ -1,0 +1,18 @@
+// affine_translate_length.ri — the INSEPARABLE control for
+// affine_translate_mass.ri.
+//
+// Without it, the sibling's "exits 1 with a units error" assertion could pass
+// for the wrong reason (the builtin broken outright rather than gated), and its
+// stdout claim would go unverified. affine_translate(5mm, 0mm, 0mm) must still
+// exit 0 and print the identity-linear AffineMap with an SI-metre translation:
+//   affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[0.005, 0, 0])
+//
+// Do not delete "the redundant half".
+//
+// Declares its module explicitly, for affine_translate_mass.ri's reason.
+
+module affine_translate_length
+
+structure def AffineTranslateLength {
+    let m = affine_translate(5mm, 0mm, 0mm)
+}

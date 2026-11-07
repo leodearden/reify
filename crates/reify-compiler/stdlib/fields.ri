@@ -15,7 +15,9 @@
 //   curl(f)              — curl of a 3-D vector field → vector field
 //   laplacian(f)         — Laplacian of a scalar field → scalar field
 //   sample(f, point)     — evaluate field f at a domain point; intercepting
-//                          builtin (reify-expr/lib.rs:196); do NOT shadow
+//                          builtin (the "sample" arm of eval_expr in
+//                          crates/reify-expr/src/lib.rs, helper
+//                          `sample_field_at`); do NOT shadow
 //
 // ── §11 Standard Library Field Functions ──────────────────────────────────────
 //
@@ -86,14 +88,16 @@ pub fn through<T>(x: T) -> T { x }
 // back-compat obligation: it fails fast on unsupported methods.
 //
 // Prelude resolution: this enum is declared in std.fields (a registered
-// prelude module, stdlib_loader.rs:297). `enums_phase::flatten_prelude_enum_defs`
-// flattens it into the prelude `enum_defs`, so `InterpolationMethod.Linear`
-// resolves from any user file without an explicit import — same mechanism
-// as `InfillPattern` (fdm.ri) and `SignalKind` (ports).
+// prelude module — the `std.fields` entry of `stdlib_loader::stdlib_sources`).
+// `enums_phase::flatten_prelude_enum_defs` flattens it into the prelude
+// `enum_defs`, so `InterpolationMethod.Linear` resolves from any user file
+// without an explicit import — same mechanism as `InfillPattern` (fdm.ri)
+// and `SignalKind` (ports).
 //
 // The `#no_prelude` directive at the top of this file only suppresses what
-// fields.ri ITSELF sees during its own compilation (pre_pass.rs:45-57); it
-// does NOT remove fields.ri's own declarations from the exported prelude.
+// fields.ri ITSELF sees during its own compilation
+// (`pre_pass::effective_prelude`); it does NOT remove fields.ri's own
+// declarations from the exported prelude.
 pub enum InterpolationMethod {
     Linear,
     NearestNeighbor,
@@ -128,15 +132,17 @@ pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
 //
 //   clamp_field<D, Q: Dimension>(f, lo, hi) -> Field<D, Scalar<Q>>   [step-4]
 //     Clamps the scalar codomain of `f` to [lo, hi] per point.  Uses the
-//     3-arg scalar `clamp` builtin (numeric.rs:101).  B7 gate: an over-range
+//     3-arg scalar `clamp` builtin (the "clamp" arm in
+//     crates/reify-stdlib/src/numeric.rs).  B7 gate: an over-range
 //     input is clamped to the bound.
 //
 //   remap_field<D, Q: Dimension>(f, from_lo, from_hi, to_lo, to_hi) -> Field<D, Scalar<Q>>   [step-4]
 //     Linearly remaps the scalar codomain of `f` from [from_lo, from_hi] onto
 //     [to_lo, to_hi] per point, using the 5-arg scalar `remap` builtin
-//     (numeric.rs:219).  Design decision: 4 scalar bound params (not 2 Range
-//     params) because scalar `remap` is strictly 5-arg and Range.lower/upper
-//     return Value::Option, not bare scalars (see plan.json D1 decision).
+//     (the "remap" arm in crates/reify-stdlib/src/numeric.rs).  Design
+//     decision: 4 scalar bound params (not 2 Range params) because scalar
+//     `remap` is strictly 5-arg and Range.lower/upper return Value::Option,
+//     not bare scalars (see plan.json D1 decision).
 //     NOTE — same-dimension restriction: a single Q constrains BOTH the input
 //     range (from_lo/from_hi) and the output range (to_lo/to_hi) to the same
 //     dimension.  The underlying `remap` builtin supports distinct from/to
@@ -203,6 +209,7 @@ pub fn pointwise_min<D, Q: Dimension>(f: Field<D, Scalar<Q>>, g: Field<D, Scalar
 //   The built-in parametric type Field<D,C> already resolves everywhere
 //   without import (parametric_field_resolution_tests.rs, task 3088).
 //   A self-alias `type Field<D,C> = Field<D,C>` is a circular-alias Error
-//   (type_resolution.rs:1687) that panics stdlib_loader.rs's assert! on
-//   Error-severity diagnostics and breaks the entire build (esc-4025-76).
+//   (`type_resolution::resolve_alias_dfs`) that panics stdlib_loader.rs's
+//   assert! on Error-severity diagnostics and breaks the entire build
+//   (esc-4025-76).
 //   The regression guard in fields_stdlib_compile.rs pins this invariant.

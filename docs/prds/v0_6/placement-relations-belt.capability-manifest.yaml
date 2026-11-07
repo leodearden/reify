@@ -71,6 +71,22 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_eval.rs
       expect: present
+  - name: carried-frame-cross-sub-geometry-read
+    binding: 'producer-self — the §7.1.5 carried-frame member read, i.e. the acceptance ported from
+      the cancelled #6583 (criterion (a): a cross-sub distance over posed subs reports the COMPOSED
+      value, not the identity-pose one). Guards P2 omicron #6683, which depends on #5436 for posed
+      operands. Added here 2026-10-11; until then this check lived only in task metadata as a bare
+      `cross_sub` grep over crates/reify-eval/tests, which already matched on main (vacuous).'
+    verdict: PASS
+    # Accepted gap (overlay rule 2): proves beta's planned acceptance test file exists and exercises
+    # distance(); it does not prove the composed value -- that test's own assertion of criterion (a)
+    # is the behavioural cover. The path is beta's declared metadata.files entry.
+    delivered_check:
+      kind: grep
+      pattern: 'distance\('
+      paths:
+      - crates/reify-eval/tests/harness_engine/cross_sub_posed_geometry_reads.rs
+      expect: present
 - label: γ
   task_id: 5439
   title: 'placement-relations γ: sub-instance bodies into snapshots — kinematic trio
@@ -86,6 +102,7 @@ tasks:
       pattern: fn try_eval_kinematic_query
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: walk-upstream
     binding: capability→producer — α hard prereq; γ consumes realized_bodies, never

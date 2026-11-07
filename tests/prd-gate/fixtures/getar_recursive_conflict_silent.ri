@@ -1,0 +1,20 @@
+module getar_recursive_conflict_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf δ RED
+// before-image: the recursive type-arg conflict that
+// generic-data-carrying-enums.md §7.3 / esc-4031-50 recorded as INFEASIBLE
+// under D1 erasure. MEASURED 2026-09-29 with target/debug/reify built
+// 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 0, "All constraints satisfied.";
+//   `reify eval`  EXIT 0, prints `W.t = Tree::Node`.
+// `left` binds T = Length and `right` binds T = Force through the SAME
+// declared field type `Tree<T>`, but each child erases to `Enum("Tree")` and
+// binds nothing.
+// EXPECTED after δ: `reify check` EXIT 1 with E_ENUM_TYPE_ARG_CONFLICT (the
+// existing same-site conflict code) naming T bound to Length and Force.
+
+enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }
+
+structure def W {
+    let t = Node { left: Leaf { value: 1mm }, right: Leaf { value: 1N } }
+}

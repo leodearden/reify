@@ -2,9 +2,15 @@
 # tests/infra/test_reify_audit_ptodo.sh
 #
 # Infra gate for the PTODO detector (task e / #4557):
-#   (a) RATCHET  — live ptodo-baseline-gen fingerprints must be a subset of
-#                  the committed crates/reify-audit/ptodo-baseline.txt
-#                  (live - baseline = empty).
+#   (a) RATCHET  — the generator runs explicitly DB-ABSENT over the repo, then
+#                  FOUR assertions, in this order: a RUN-EVIDENCE floor and a
+#                  DB-ABSENT floor on the generator's stderr, then the
+#                  TWO-DIRECTIONAL oracle against the committed
+#                  crates/reify-audit/ptodo-baseline.txt — live ⊆ baseline
+#                  (comm -23 empty) and baseline ⊆ live (comm -13 empty), per
+#                  PRD §19.  An empty live set satisfies that oracle whenever
+#                  the baseline is empty too; see RATCHET VACUITY FLOOR and
+#                  DB-ABSENT FLOOR below.
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
@@ -20,6 +26,27 @@
 #                  → reify-audit exits non-zero.  Hermetic (sqlite3 seeded
 #                  tasks.db + --tasks-file []).  Mirrors scenario (d) for the
 #                  G-allow advisory→hard-gate flip.
+#   (f) LANE δ-A HARD GATE (task #6087) — an #[allow(...dead_code...)]
+#                  attribute whose trailing rationale defers the work and cites
+#                  a done task is classified orphaned→High → reify-audit exits
+#                  non-zero.  Hermetic, mirrors (d); adds a BENIGN control repo
+#                  so the lane's false-positive guards are proven at the binary
+#                  level and not only in unit tests.
+#   (g) LANE δ-B HARD GATE (task #6103) — an ORDINARY comment (no marker token,
+#                  no attribute) that both defers the work and cites a terminal
+#                  task is classified orphaned→High → reify-audit exits
+#                  non-zero.  Hermetic, mirrors (f) including its BENIGN control
+#                  repo — which matters more here than anywhere else: δ-B was
+#                  rejected once (task #6087) at a 48% false-positive rate, so
+#                  its guards are proven at the binary level, not only in unit
+#                  tests.
+#   (h) LANE δ-C HARD GATE (task #7098) — an ordinary comment naming a task as
+#                  the OWNER of future work, in any `//`-comment language, with
+#                  that task terminal is classified orphaned→High → reify-audit
+#                  exits non-zero.  Hermetic, mirrors (g) including its BENIGN
+#                  control repo; it sweeps the COMMITTED scenario21/22 fixtures
+#                  so the binary reds on a committed fixture, plus one
+#                  runtime-assembled .ri file for the non-Rust path.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
@@ -34,8 +61,77 @@
 #   This prevents the whole-test-skip bug where a stale warm-lane binary
 #   caused the PTODO hard gate to be silently bypassed (incident 2026-06-22/23).
 #
+# NO-SILENT-GREEN FLOOR (residual of #4733, esc-5405-7).  The rc-75 partition
+# above is only sound while the binary is PRESENT-but-stale.  The same guard
+# also returns 75 for an ABSENT binary, and returns 125 when a rebuild was
+# attempted and the binary is still judged stale — whenever the binary is not
+# executable the `[ -x "$REIFY_AUDIT_BIN" ]` guards below are false, EVERY
+# scenario is skipped, and an unguarded `test_summary` would print "0 passed,
+# 0 failed" and exit 0.  run_all.sh grades on exit code alone, so that is a
+# hard gate reporting green having asserted nothing — the exact failure mode
+# this file's partition was written to prevent.  Three floors close it:
+#   * a guard rc outside {0,75} with the binary ABSENT aborts LOUD immediately
+#     (a broken toolchain, not a budget-safe skip).  With the binary PRESENT
+#     it degrades to RATCHET_SKIP=1 and falls through instead, so (c)+(d)+(e)
+#     still run — see the rc-125 branch below for why the two cases differ
+#     (#5962 review);
+#   * the $RAN tracker refuses to exit 0 unless at least one scenario block
+#     actually executed;
+#   * REIFY_PTODO_RATCHET_REQUIRED=1 (#7006) refuses ANY resolved skip of the
+#     ratchet, closing the residual the bullet above leaves open: a PRESENT
+#     binary keeps (c)-(g) running, but that gate is High-severity only while
+#     phantom-tracking is MEDIUM, so a degraded run still exits green with the
+#     ratchet unrun.  Opt-in and default-off, because that degradation is the
+#     COMMON warm-lane state and must not red every task branch; the one caller
+#     that arms it is scripts/verify.sh's selective-infra leaf for this file
+#     under --scope staged — a hook-gated `git commit` on main, which is NOT
+#     the same as "every main landing": the DF_VERIFY_ROLE=merge tier
+#     suppresses that leaf entirely and runs this file from the run_all.sh
+#     pool under REIFY_AUDIT_NO_COLD_BUILD=1, where the same skip stays
+#     reachable through rc 75 (scoped there, not restated here).  See the
+#     enforcement point after the skip-resolution block below.
+# All three are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
+#
+# RATCHET VACUITY FLOOR (task #6127, rebased onto scan evidence by #6241).  The
+# scenario-(a)-level analogue of the block above: that floor stops a run which
+# executed no SCENARIOS from reporting green; this one stops a scenario whose
+# DETECTOR NEVER RAN from doing the same, since an empty live set satisfies the
+# oracle whenever the baseline is empty too.  _ratchet_check_scan_evidence
+# below is that floor, asserted BEFORE the oracle so the precondition is
+# reported before the thing it conditions.
+#
+# It keys on the generator's own `@@PTODO_SCAN@@ files_scanned=<N> …` stderr
+# line — evidence the sweep RAN — not on how many findings it produced, so a
+# clean tree passes and an ordinary burn-down commit can never false-RED it.
+# That is why no detector-kind knowledge lives in this file any more, and why
+# the PRD 6.6 derivation invariant above holds in full: the helper reads a
+# field off generator-emitted text, it derives nothing.  Rationale and known
+# limits live in ONE place — PRD §6.6
+# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  Cited by
+# SECTION NUMBER only, deliberately: a bolded paragraph title is not a stable
+# anchor (#6241's retitle stranded six such cites at once), a section number is.  The
+# in-file meta-test below pins its SEMANTICS; the WIRING into scenario (a),
+# which that meta-test cannot observe, is pinned in BOTH directions (fires
+# without scan evidence, silent with it) by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+#
+# DB-ABSENT FLOOR (task #7001).  Scenario (a) SETS REIFY_PTODO_TASKS_DB to
+# $PTODO_TASKS_DB_ABSENT rather than unsetting it (unsetting leaves §6.7's
+# default path free to resolve), and _ratchet_check_db_absent_evidence then
+# PROVES the mode from the same scan line's tasks_db token, so the path is
+# never trusted on its own.  Why the ratchet must run DB-absent: PRD §19, not
+# restated here.  Semantics are pinned by the in-file meta-test below; the
+# wiring, in both directions, by the same vacuity meta-test.
+#
+# ACCEPTED UNCOVERED SKIP: the required-tool loop below still exits 0 before
+# any scenario runs when git/cargo/comm/sort/sqlite3 is off PATH, and the
+# floors above do not cover it.  They are scoped to detector usability; that
+# loop is an environment-capability check.  All five tools are present in the
+# merge gate (verify.sh), and hard-failing there would break legitimate
+# dev-box `run_all.sh` runs, so it stays a graceful skip by design.
+#
 # SELF-MATCH SAFETY: this file must not contain any literal marker tokens that
-# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)
+# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)/(f)/(g)
 # is assembled from shell variables at runtime so the written fixture carries a
 # real token while this .sh source stays clean.
 #
@@ -45,6 +141,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The REIFY_PTODO_TASKS_DB override that forces the generator DB-absent: no
+# path beneath a character device can exist (ENOTDIR).
+PTODO_TASKS_DB_ABSENT='/dev/null/tasks.db'
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh" >&2
@@ -63,6 +163,13 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
+# ORACLE DIRECTION — TWO-DIRECTIONAL (task #7001, PRD §19).  Scenario (a)
+# asserts live ⊆ baseline (_ratchet_check_subset, below) AND baseline ⊆ live
+# (_ratchet_check_no_stale_baseline, after it) over an explicitly DB-absent
+# run.  Neither is a drain forcing function: PRD §18.1 still stands, and §19
+# says when its line-number-erasure caveat re-arms.  Both directions are
+# pinned by tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.
+#
 # Pure ratchet-regression checker (task 5260, ITEM 3). When the live-minus-
 # baseline fingerprint set ($1) is non-empty, print the offending fingerprints
 # (one per line, with a count header) to stderr and return 1; when empty, stay
@@ -83,6 +190,188 @@ _ratchet_check_subset() {
 }
 
 # -----------------------------------------------------------------------
+# The converse oracle (task #7001, PRD §19): every committed baseline line must
+# still be live.  Same contract as _ratchet_check_subset above: $1 is the
+# baseline-minus-live set (`comm -13`); empty → rc0, byte-for-byte silent;
+# otherwise rc1 with a stderr diagnostic whose FIRST line is the machine token
+# @@RATCHET_STALE_BASELINE_FIRED@@ (grep for the token, never the prose),
+# followed by a count header, the stale lines, and the one-command remedy.
+# No kind list and no fingerprint derivation here: the structural partition
+# is the generator's own §6.7 degrade path, so the PRD 6.6 invariant in this
+# file's header holds in full.
+# -----------------------------------------------------------------------
+_ratchet_check_no_stale_baseline() {
+    local _stale="$1"
+    [ -n "$_stale" ] || return 0
+    {
+        printf '@@RATCHET_STALE_BASELINE_FIRED@@\n'
+        printf 'STALE BASELINE — %s committed baseline line(s) are no longer live:\n' \
+            "$(printf '%s\n' "$_stale" | grep -c .)"
+        printf '%s\n' "$_stale" | sed 's/^/  - /'
+        printf '  Remedy: regenerate DB-absent (~2 s, valid in any worktree), hand-inspect, and commit:\n'
+        printf '    REIFY_PTODO_TASKS_DB=%s target/release/ptodo-baseline-gen --project-root . > crates/reify-audit/ptodo-baseline.txt\n' \
+            "$PTODO_TASKS_DB_ABSENT"
+        printf '  Why the baseline must match the DB-absent live set: PRD §19\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
+# Vacuity floor, scan-evidence form (task #6241).  The oracle above says
+# nothing about whether the generator RAN at all, and an empty live set
+# satisfies it whenever the baseline is empty too.  This is the precondition
+# that makes that oracle meaningful.
+# WHY it keys on run evidence rather than on the live finding count, and what
+# it does not cover: PRD §6.6 (section number, not a paragraph title — the
+# latter is not a stable anchor) — the single home
+# for that argument, not restated here.
+#
+# Local contract:
+#   _ratchet_check_scan_evidence <generator-stderr>, ONE newline-joined STRING
+#   (matching _ratchet_check_subset's argument convention) so it can be passed
+#   straight to assert() and land its diagnostic in the on-FAIL captured-output
+#   dump.  The committed baseline is NOT an input: the floor is independent of
+#   ptodo-baseline.txt content by construction.
+#
+#   rc0 + BYTE-FOR-BYTE SILENT iff the stderr carries a
+#   `@@PTODO_SCAN@@ files_scanned=<N> …` line whose N is a well-formed integer
+#   >= 1 (silence keeps an all-green suite unchanged — test_helpers.sh:48-51).
+#   Otherwise rc1 with a stderr diagnostic naming which of the three failure
+#   shapes fired: line ABSENT, files_scanned=0, or a MALFORMED count.  A
+#   matched-but-unparseable count falls to the firing branch DELIBERATELY —
+#   loud over silent-disarm, the discipline the retired kind list applied to an
+#   unrecognised kind.
+#
+#   MULTIPLICITY + EXTENSIBILITY (PRD §6.6 grammar).  The generator emits
+#   EXACTLY ONE scan line per run; this helper reads only the FIRST (grep -m1)
+#   rather than policing that count — the strict consumer is the Rust contract
+#   test crates/reify-audit/tests/ptodo_baseline.rs, which asserts exactly one.
+#   The field list is OPEN for additive extension, and this parse honours that
+#   by construction: it reads the files_scanned= token and ignores every other
+#   token on the line, so a future counter cannot turn the gate RED.
+#
+#   @@RATCHET_VACUITY_FIRED@@ leads the failing diagnostic and is a MACHINE
+#   TOKEN — the deliberate contract with
+#   test_reify_audit_ptodo_ratchet_vacuity.sh, in the same idiom as the
+#   @@HARDGATE_*_PASSED@@ sentinels below.  Grep for the token, never for the
+#   prose; the prose is free to change.
+#
+# No fingerprints are re-derived here: this reads two fields off a line the
+# GENERATOR emitted, so the PRD 6.6 invariant in this file's header
+# (derivation lives ONLY in ptodo-baseline-gen) is preserved in full.
+# -----------------------------------------------------------------------
+
+# The two whole-token readers of the @@PTODO_SCAN@@ grammar, shared by both
+# scenario-(a) floors so one grammar has one parser in bash.
+#
+# _ptodo_scan_line <generator-stderr> prints the FIRST scan line (or nothing).
+# _ptodo_scan_field <scan-line> <key> prints the value of the token NAMED
+# <key>, verbatim (or nothing).  It splits on whitespace FIRST, then anchors
+# the key with `^`, mirroring the Rust consumer's `split_whitespace()` +
+# `strip_prefix` (crates/reify-audit/tests/ptodo_baseline.rs::parse_scan_line)
+# so the two implementations of one grammar cannot drift.  An unanchored match
+# would read any token whose name merely ENDS WITH the key
+# (`skipped_files_scanned=0`) — the false-RED the EXTENSIBILITY rule rules out.
+# Pinned by vacuity fixture (vi) and DB-absent fixture (v).
+_ptodo_scan_line() {
+    printf '%s\n' "$1" | grep -m1 -F '@@PTODO_SCAN@@' || true
+}
+_ptodo_scan_field() {
+    printf '%s\n' "$1" | tr ' \t' '\n\n' | sed -n "s/^$2=\(.*\)\$/\1/p" | head -n1
+}
+
+_ratchet_check_scan_evidence() {
+    local _stderr="$1"
+    local _line _count _shape
+
+    _line="$(_ptodo_scan_line "$_stderr")"
+    if [ -z "$_line" ]; then
+        _shape='the generator emitted NO @@PTODO_SCAN@@ line at all'
+    else
+        # Pure field read, then a well-formedness test: anything unparseable
+        # stays visible in the diagnostic rather than being coerced to a number.
+        _count="$(_ptodo_scan_field "$_line" files_scanned)"
+        if [ -z "$_count" ]; then
+            _shape='the @@PTODO_SCAN@@ line carries no files_scanned field'
+        elif ! printf '%s\n' "$_count" | grep -qE '^[0-9]+$'; then
+            _shape="the @@PTODO_SCAN@@ line carries a MALFORMED files_scanned count: '$_count'"
+        elif [ "$_count" -lt 1 ]; then
+            _shape="the detector ran but walked NOTHING (files_scanned=$_count)"
+        else
+            return 0
+        fi
+    fi
+
+    {
+        printf '@@RATCHET_VACUITY_FIRED@@\n'
+        printf 'RATCHET VACUITY — no usable scan evidence from ptodo-baseline-gen: %s.\n' "$_shape"
+        printf '  NOT a pass: an empty live set satisfies the oracle below whenever the\n'
+        printf '  baseline is empty too, so without proof the detector RAN it observes nothing.\n'
+        printf '  A generator that ran over a clean tree still emits the line (with\n'
+        printf '  files_scanned >= 1), so zero fingerprints alone is NOT this failure.\n'
+        printf '  Most likely cause: target/release/ptodo-baseline-gen is STALE or reverted\n'
+        printf '  — a binary predating the contract emits no scan line at all.  Rebuild with\n'
+        printf '  `cargo build --release -p reify-audit`, then re-run.\n'
+        printf '  Generator stderr as captured:\n'
+        printf '%s\n' "$_stderr" | sed 's/^/    | /'
+        printf '  Background and the emitted grammar: PRD §6.6\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
+# DB-absent floor (task #7001) — the second precondition of scenario (a): the
+# generator must PROVE it ran DB-absent.  Why: PRD §19, not restated here.
+#
+# Local contract:
+#   _ratchet_check_db_absent_evidence <generator-stderr>, ONE newline-joined
+#   STRING, same convention as the two helpers above.
+#
+#   rc0 + BYTE-FOR-BYTE SILENT when the first scan line's tasks_db token reads
+#   `absent`, AND when there is no scan line at all: that state is the vacuity
+#   floor's, asserted first in the same scenario, and deferring keeps ONE red
+#   per cause.  Otherwise rc1 with a stderr diagnostic whose FIRST line is the
+#   machine token @@RATCHET_DB_ABSENT_UNPROVEN@@ and which names the shape:
+#   `present`, token missing (a stale generator), or malformed.
+# -----------------------------------------------------------------------
+_ratchet_check_db_absent_evidence() {
+    local _stderr="$1"
+    local _line _mode _shape
+
+    _line="$(_ptodo_scan_line "$_stderr")"
+    [ -n "$_line" ] || return 0
+    _mode="$(_ptodo_scan_field "$_line" tasks_db)"
+    case "$_mode" in
+        absent)
+            return 0
+            ;;
+        present)
+            _shape='tasks_db=present — the DB-dependent lanes (β, ζ, G-allow) RAN, so liveness findings could reach the ratchet'
+            ;;
+        '')
+            _shape='the @@PTODO_SCAN@@ line carries no tasks_db value — target/release/ptodo-baseline-gen predates #7001; rebuild with `cargo build --release -p reify-audit`'
+            ;;
+        *)
+            _shape="the @@PTODO_SCAN@@ line carries a MALFORMED tasks_db value: '$_mode'"
+            ;;
+    esac
+
+    {
+        printf '@@RATCHET_DB_ABSENT_UNPROVEN@@\n'
+        printf 'RATCHET DB-ABSENT UNPROVEN — %s.\n' "$_shape"
+        printf '  Scenario (a) runs the generator with REIFY_PTODO_TASKS_DB=%s and\n' "$PTODO_TASKS_DB_ABSENT"
+        printf '  requires its scan line to report tasks_db=absent.\n'
+        printf '  Generator stderr as captured:\n'
+        printf '%s\n' "$_stderr" | sed 's/^/    | /'
+        printf '  Why the ratchet must run DB-absent: PRD §19\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
 # ITEM 3 meta-test (task 5260): _ratchet_check_subset must NAME the offending
 # live fingerprints on stderr so a ratchet regression lands actionable output in
 # assert()'s on-FAIL captured-output dump (the 4636 failure produced zero
@@ -99,6 +388,186 @@ assert "ratchet check is silent + rc0 when live set is empty" \
     bash -c '[ -z "$1" ]' -- "$_EMPTY"
 
 # -----------------------------------------------------------------------
+# STALE-BASELINE meta-test (task #7001) — pins
+# _ratchet_check_no_stale_baseline, the converse oracle (baseline ⊆ live,
+# PRD §19).  Same properties as the ITEM 3 block above.  The lines are
+# synthetic, under crates/does-not-exist/, with the marker assembled from $M
+# so this source stays clean; the remedy is checked against the constant it
+# is built from, not against prose.
+# -----------------------------------------------------------------------
+M="TODO"
+_STALE_A="crates/does-not-exist/a.rs :: untracked :: // $M: stale grandfather a"
+_STALE_B="crates/does-not-exist/b.rs :: untracked :: // $M: stale grandfather b"
+_STALE_RC=0
+_STALE_DIAG="$(_ratchet_check_no_stale_baseline "$_STALE_A"$'\n'"$_STALE_B" 2>&1 1>/dev/null)" \
+    || _STALE_RC=$?
+assert "stale-baseline check fires (rc1 + machine token) and names every stale line" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_STALE_BASELINE_FIRED@@" ] || exit 1
+             case "$1" in *"$3"*) ;; *) exit 1 ;; esac
+             case "$1" in *"$4"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_STALE_DIAG" "$_STALE_RC" "$_STALE_A" "$_STALE_B"
+assert "stale-baseline remedy is the one-command DB-absent regen" \
+    bash -c 'case "$1" in *"REIFY_PTODO_TASKS_DB=$2"*) ;; *) exit 1 ;; esac
+             case "$1" in *"--project-root"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_STALE_DIAG" "$PTODO_TASKS_DB_ABSENT"
+_STALE_EMPTY_RC=0
+_STALE_EMPTY_OUT="$(_ratchet_check_no_stale_baseline "" 2>&1)" || _STALE_EMPTY_RC=$?
+assert "stale-baseline check is silent + rc0 when every baseline line is live" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_STALE_EMPTY_OUT" "$_STALE_EMPTY_RC"
+
+# -----------------------------------------------------------------------
+# VACUITY-FLOOR meta-test (task #6241) — pins what
+# _ratchet_check_scan_evidence DOES.  Why the floor exists at all, and why it
+# keys on generator-emitted SCAN EVIDENCE rather than on the live fingerprint
+# count: PRD §6.6 — not restated here.  Its
+# WIRING into scenario (a), which this hermetic block cannot see, is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+#
+# Same properties as the block above — unconditional, hermetic, driven by
+# synthetic strings, and placed BEFORE binary resolution so it runs
+# independently of RATCHET_SKIP.  It deliberately mints no temp files: the
+# single EXIT trap below (see "Single EXIT trap covers all temp paths") is
+# registered later, and a second `trap` here would silently replace it.
+#
+# Fixtures are synthetic GENERATOR STDERR strings using the real emitted shape
+# (`@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>`), so the parse is
+# genuinely exercised.  The committed baseline is NOT an input to the helper —
+# these asserts therefore also pin that the floor is independent of
+# ptodo-baseline.txt content, which is the debt coupling #6241 removes.
+#
+# Asserts go through the machine token, the rc, and values DERIVED FROM THE
+# INPUTS (the echoed count) rather than the diagnostic's wording — the prose is
+# free to change, the contract is not.
+# -----------------------------------------------------------------------
+
+# (i) FIRES when there is NO scan line at all — a generator that never ran, or
+# a stale/reverted binary predating the contract.  The fixture is exactly what
+# such a pre-#6241 binary prints.
+_SCAN_ERR_ABSENT='ptodo-baseline-gen: 0 fingerprint(s) emitted'
+_SCAN_ABSENT_RC=0
+_SCAN_ABSENT_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_ABSENT" 2>&1 1>/dev/null)" \
+    || _SCAN_ABSENT_RC=$?
+assert "vacuity floor fires (rc1 + machine token) when the generator emitted no scan line" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ]' \
+    -- "$_SCAN_ABSENT_DIAG" "$_SCAN_ABSENT_RC"
+
+# (ii) FIRES when the line is present but reports files_scanned=0 — the
+# detector started and walked NOTHING (a broken `git ls-files` seam).
+_SCAN_ERR_ZERO='@@PTODO_SCAN@@ files_scanned=0 markers_examined=0'
+_SCAN_ZERO_RC=0
+_SCAN_ZERO_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_ZERO" 2>&1 1>/dev/null)" \
+    || _SCAN_ZERO_RC=$?
+assert "vacuity floor fires when the scan line reports files_scanned=0 (walked nothing)" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"files_scanned=0"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_ZERO_DIAG" "$_SCAN_ZERO_RC"
+
+# (iii) THE DECOUPLING ASSERT — a working detector over a CLEAN tree passes,
+# byte-for-byte silent and rc0, even though it emitted zero fingerprints.  That
+# partition is exactly what a floor on the live finding count got wrong, and
+# what its bash-side kind list existed to paper over (PRD 6.6).  Silence keeps
+# an all-green suite's output unchanged (test_helpers.sh:48-51).
+_SCAN_ERR_CLEAN='@@PTODO_SCAN@@ files_scanned=1755 markers_examined=0'
+_SCAN_CLEAN_RC=0
+_SCAN_CLEAN_OUT="$(_ratchet_check_scan_evidence "$_SCAN_ERR_CLEAN" 2>&1)" || _SCAN_CLEAN_RC=$?
+assert "vacuity floor is silent + rc0 on scan evidence from a clean tree (zero fingerprints)" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_CLEAN_OUT" "$_SCAN_CLEAN_RC"
+
+# (iv) FIRES on a MALFORMED count — fail LOUD rather than silently disarm, the
+# same discipline the retired kind list applied to an unrecognised kind.
+_SCAN_ERR_MALFORMED='@@PTODO_SCAN@@ files_scanned=abc markers_examined=0'
+_SCAN_MALFORMED_RC=0
+_SCAN_MALFORMED_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_MALFORMED" 2>&1 1>/dev/null)" \
+    || _SCAN_MALFORMED_RC=$?
+assert "vacuity floor fires on a malformed files_scanned count (loud, never silent-disarm)" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"abc"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_MALFORMED_DIAG" "$_SCAN_MALFORMED_RC"
+
+# (v) FIRES when the line is present but carries NO files_scanned field at all
+# — the helper's fifth branch, distinct from (iv): the sed yields the EMPTY
+# string rather than an unparseable one, and without its own guard that empty
+# would fall through to the numeric `-lt` test and emit a raw bash error while
+# the branch itself shipped untested.
+_SCAN_ERR_NOFIELD='@@PTODO_SCAN@@ markers_examined=0'
+_SCAN_NOFIELD_RC=0
+_SCAN_NOFIELD_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_NOFIELD" 2>&1 1>/dev/null)" \
+    || _SCAN_NOFIELD_RC=$?
+assert "vacuity floor fires when the scan line carries no files_scanned field" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"no files_scanned field"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_NOFIELD_DIAG" "$_SCAN_NOFIELD_RC"
+
+# (vi) THE EXTENSIBILITY ASSERT — an ADDITIVE third token must be ignored, even
+# when its name ENDS WITH the required field's name.  The §6.6 grammar is open
+# for extension and both consumers promise a future counter "cannot turn the
+# gate RED"; a parse that matched `files_scanned=` as a SUBSTRING would read
+# `skipped_files_scanned`'s 0 here and hard-RED the whole tests/infra PTODO
+# gate — the exact false-RED the contract rules out.  Hence the fixture pins
+# the adversarial name, not merely an unrelated extra token.  Its Rust
+# counterpart (same grammar, other consumer) is
+# `parse_scan_line_ignores_unrecognised_tokens` in
+# crates/reify-audit/tests/ptodo_baseline.rs.
+_SCAN_ERR_EXTRA='@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 skipped_files_scanned=0'
+_SCAN_EXTRA_RC=0
+_SCAN_EXTRA_OUT="$(_ratchet_check_scan_evidence "$_SCAN_ERR_EXTRA" 2>&1)" || _SCAN_EXTRA_RC=$?
+assert "vacuity floor ignores an additive third counter and stays silent + rc0" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_EXTRA_OUT" "$_SCAN_EXTRA_RC"
+
+# -----------------------------------------------------------------------
+# DB-ABSENT FLOOR meta-test (task #7001) — pins what
+# _ratchet_check_db_absent_evidence DOES.  Why scenario (a) must run DB-absent
+# and prove it: PRD §19.  Its WIRING into scenario (a), which this hermetic
+# block cannot see, is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+#
+# Same properties as the VACUITY-FLOOR block above: unconditional, hermetic,
+# synthetic generator-stderr strings, no temp files, placed before binary
+# resolution.  Asserts go through the rc, the machine token
+# @@RATCHET_DB_ABSENT_UNPROVEN@@ and input-derived values, never the prose.
+# -----------------------------------------------------------------------
+_assert_db_absent_fires() {
+    local _desc="$1" _stderr="$2" _echoed="${3:-}" _diag _rc=0
+    _diag="$(_ratchet_check_db_absent_evidence "$_stderr" 2>&1 1>/dev/null)" || _rc=$?
+    assert "$_desc" \
+        bash -c '[ "$2" -eq 1 ] || exit 1
+                 [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_DB_ABSENT_UNPROVEN@@" ] || exit 1
+                 case "$1" in *"$3"*) exit 0 ;; *) exit 1 ;; esac' \
+        -- "$_diag" "$_rc" "$_echoed"
+}
+_assert_db_absent_silent() {
+    local _desc="$1" _stderr="$2" _out _rc=0
+    _out="$(_ratchet_check_db_absent_evidence "$_stderr" 2>&1)" || _rc=$?
+    assert "$_desc" bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_out" "$_rc"
+}
+
+# (i) The generator proved it ran DB-absent.
+_assert_db_absent_silent "DB-absent floor is silent + rc0 on tasks_db=absent" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=absent'
+# (ii) The DB-dependent lanes RAN, so liveness could reach the ratchet.
+_assert_db_absent_fires "DB-absent floor fires on tasks_db=present" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=present' 'present'
+# (iii) No mode token at all: the pre-#7001 generator shape.
+_assert_db_absent_fires "DB-absent floor fires when the scan line carries no tasks_db token" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0'
+# (iv) A value outside the two-valued grammar fails loud.
+_assert_db_absent_fires "DB-absent floor fires on a malformed tasks_db value" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=maybe' 'maybe'
+# (v) Whole-token parse: a token whose name merely ENDS WITH tasks_db= is not
+# the mode token.  A substring parse would read `absent` here and pass.
+_assert_db_absent_fires "DB-absent floor reads the tasks_db token by whole name, not by suffix" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 stale_tasks_db=absent'
+# (vi) No scan line at all is the VACUITY floor's failure, not this one's:
+# single attribution keeps one RED per cause.
+_assert_db_absent_silent "DB-absent floor defers (silent + rc0) when there is no scan line at all" \
+    'ptodo-baseline-gen: 0 fingerprint(s) emitted'
+
+# -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
@@ -107,9 +576,14 @@ assert "ratchet check is silent + rc0 when live set is empty" \
 # Testability seam (task #4624): REIFY_AUDIT_BIN and REIFY_PTODO_GEN_BIN can
 # be overridden by environment variables for hermetic meta-tests that need to
 # exercise the budget-safe skip path without a real binary on disk.
+# REIFY_PTODO_BASELINE (task #7001) is the same kind of seam for the baseline
+# scenario (a) compares against, so the ratchet meta-tests can drive it with
+# synthetic baselines instead of the committed file.  All three are inert
+# when unset.
 # -----------------------------------------------------------------------
 REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-$REPO_ROOT/target/release/reify-audit}"
 GEN="${REIFY_PTODO_GEN_BIN:-$REPO_ROOT/target/release/ptodo-baseline-gen}"
+BASELINE="${REIFY_PTODO_BASELINE:-$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt}"
 
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 
@@ -129,6 +603,10 @@ source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 # hard-aborts the plan if the pre-build produced no binary.
 RATCHET_SKIP=0
 
+# Did ANY scenario actually execute?  Consulted after test_summary; a run that
+# asserted nothing must not exit 0.  See NO-SILENT-GREEN FLOOR in the header.
+RAN=0
+
 set +e
 reify_audit_guard "$REIFY_AUDIT_BIN" rebuild-budget-safe "$REPO_ROOT" 2>&1
 _guard_rc=$?
@@ -137,6 +615,40 @@ set -e
 if [ "$_guard_rc" -eq 75 ]; then
     echo "test_reify_audit_ptodo.sh: reify-audit binary absent/stale and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
     RATCHET_SKIP=1
+elif [ "$_guard_rc" -ne 0 ]; then
+    # Any other nonzero rc — 125 from reify_audit_guard means the binary is
+    # STILL judged stale after the rebuild path ran.  That covers two very
+    # different worlds: a failed `cargo build -p reify-audit` (no usable
+    # detector at all), and a build that was a legitimate no-op — cargo's
+    # fingerprint says up-to-date — while the on-disk mtime still predates the
+    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
+    # stamped mtimes, where the binary is fully usable.
+    #
+    # So split on detector USABILITY, exactly as the rc-75 partition above
+    # does (#5962 review).  Collapsing both worlds into one unconditional
+    # `exit 1` would turn every stamped-mtime warm-lane run into a hard RED
+    # while emitting a diagnostic ("could not be made usable") that is
+    # factually wrong about an executable binary.
+    if [ -x "$REIFY_AUDIT_BIN" ]; then
+        # PRESENT: the detector runs, so the staleness-tolerant (c)+(d)+(e)
+        # hard gate must still execute — that is exactly the #4733 partition
+        # documented in the header ("a present-but-stale binary emits High
+        # findings correctly").  Only the precision-sensitive ratchet
+        # ((a)+(b)) is skipped.  This is not a silent green: those scenarios
+        # set $RAN, and the floor after test_summary still refuses a run that
+        # executed none of them.
+        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet ((a)+(b)); the (c)+(d)+(e)+(f)+(g) hard gate still runs against the stale binary" >&2
+        RATCHET_SKIP=1
+    else
+        # ABSENT: nothing can run.  Leaving RATCHET_SKIP=0 here would look
+        # like "ratchet enabled" while the `-x` guards below silently skip
+        # every scenario.  That is not a budget-safe skip; it is a broken
+        # toolchain, and it must be loud.
+        # Pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh,
+        # second invocation (REIFY_AUDIT_NO_COLD_BUILD unset).
+        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) — the detector could not be made usable and no budget-safe skip was requested; refusing to report green" >&2
+        exit 1
+    fi
 fi
 
 # If ratchet not yet skipped, ensure GEN is available.
@@ -159,7 +671,59 @@ if [ "${RATCHET_SKIP}" = "0" ]; then
     fi
 fi
 
-BASELINE="$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt"
+# -----------------------------------------------------------------------
+# REIFY_PTODO_RATCHET_REQUIRED — the caller declares the ratchet mandatory.
+#
+# Every branch above resolves a SKIP of the fingerprint ratchet into a run
+# that still exits 0 on the strength of the staleness-tolerant (c)-(g) hard
+# gate.  That gate is High-severity only, while phantom-tracking is MEDIUM,
+# so on the hook-gated `--scope staged` main-landing path — where
+# REIFY_AUDIT_NO_COLD_BUILD is deliberately unset and a no-op rebuild against
+# a stamped target/ mtime yields guard rc 125 with the binary still
+# executable — the gate can report green having never run the ratchet.  A
+# caller that cannot tolerate that sets this knob; scripts/verify.sh sets it
+# on exactly the one selective-infra leaf it emits for this file under
+# --scope staged.
+#
+# Stated ONCE, over the RESOLVED RATCHET_SKIP, rather than as an arm inside
+# any one branch: all four skip causes (guard rc 75; guard rc 125 with an
+# executable binary; ptodo-baseline-gen absent under REIFY_AUDIT_NO_COLD_BUILD;
+# ptodo-baseline-gen unavailable) are the same hole, and a fifth added later
+# is covered here without touching this check.  The knob's contract reads
+# "the ratchet ran, or this is red" — not "one rc was refused".
+#
+# `${VAR:-0}" = "1"` as elsewhere in this file: unset/empty/0/true all leave
+# the default OFF, so every existing caller (run_all.sh's merge tier, warm-lane
+# branch verifies, manual runs) behaves exactly as before.
+#
+# Placement is load-bearing: this fires before any fixture is minted and
+# before any scenario runs, so the refusal is cheap and its meta-test needs no
+# real detector.  The branch that set RATCHET_SKIP has already printed its own
+# cause line, so this names the refusal rather than restating the cause.
+# Pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh, assertions
+# (8)-(11).
+# -----------------------------------------------------------------------
+if [ "${REIFY_PTODO_RATCHET_REQUIRED:-0}" = "1" ] && [ "$RATCHET_SKIP" != "0" ]; then
+    # The remedy is rc-SPECIFIC, and rc 125 is the case this knob was written
+    # for.  That rc comes OUT of the rebuild path: reify_audit_guard has ALREADY
+    # run `cargo build --release -q -p reify-audit` and the binary is still
+    # judged stale, so the generic "build a fresh detector" advice is the very
+    # command that just ran, and an operator who follows it gets a no-op plus a
+    # second identical refusal while every `git commit` on main stays blocked.
+    # What is actually stale there is the MTIME, not the build product: cargo's
+    # fingerprint says up-to-date while the on-disk mtime predates the last
+    # crates/reify-audit commit (a warm-lane seeded target/ with stamped
+    # mtimes).  Every other skip cause (guard rc 75, ptodo-baseline-gen absent
+    # or unavailable) IS a missing/unbuilt artifact, and the generic remedy is
+    # correct for those.
+    if [ "$_guard_rc" -eq 125 ]; then
+        _ratchet_remedy="the freshness guard already ran 'cargo build --release -p reify-audit' and the binary is STILL judged stale, so its mtime — not its content — is what fails the check: force a real relink with 'cargo clean -p reify-audit && cargo build --release -p reify-audit', or, once you have confirmed target/release/{reify-audit,ptodo-baseline-gen} were built from this HEAD, 'touch' them forward"
+    else
+        _ratchet_remedy="build a fresh detector with 'cargo build --release -p reify-audit'"
+    fi
+    echo "test_reify_audit_ptodo.sh: REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped (RATCHET_SKIP=$RATCHET_SKIP, freshness guard rc=$_guard_rc); refusing to report green with the ratchet unrun. Remedy: ${_ratchet_remedy}, or unset REIFY_PTODO_RATCHET_REQUIRED to accept the skip." >&2
+    exit 1
+fi
 
 # -----------------------------------------------------------------------
 # Single EXIT trap covers all temp paths.  Registering two separate traps
@@ -174,6 +738,13 @@ FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
 FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP loading)
 _err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
 FIX_E=""       # scenario (e) G-allow orphaned-cite fixture temp dir
+GEN_ERR_TMP="" # scenario (a) generator stderr capture (6.6 scan evidence, #6241)
+FIX_F=""       # scenario (f) δ-A hard-gate fixture temp dir
+FIX_F2=""      # scenario (f) δ-A benign control repo temp dir
+FIX_G=""       # scenario (g) δ-B hard-gate fixture temp dir
+FIX_G2=""      # scenario (g) δ-B benign control repo temp dir
+FIX_H=""       # scenario (h) δ-C hard-gate fixture temp dir
+FIX_H2=""      # scenario (h) δ-C benign control repo temp dir
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -187,6 +758,13 @@ cleanup_all() {
     [ -n "$FIX_D"       ] && rm -rf "$FIX_D"        || true
     [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
     [ -n "$FIX_E"       ] && rm -rf "$FIX_E"        || true
+    [ -n "$GEN_ERR_TMP" ] && rm -f  "$GEN_ERR_TMP"  || true
+    [ -n "$FIX_F"       ] && rm -rf "$FIX_F"        || true
+    [ -n "$FIX_F2"      ] && rm -rf "$FIX_F2"       || true
+    [ -n "$FIX_G"       ] && rm -rf "$FIX_G"        || true
+    [ -n "$FIX_G2"      ] && rm -rf "$FIX_G2"       || true
+    [ -n "$FIX_H"       ] && rm -rf "$FIX_H"        || true
+    [ -n "$FIX_H2"      ] && rm -rf "$FIX_H2"       || true
 }
 trap cleanup_all EXIT
 
@@ -260,25 +838,45 @@ run_audit() {
 # Wrapped in RATCHET_SKIP==0 guard (task #4733).
 # -----------------------------------------------------------------------
 if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
+    RAN=1
     LIVE_TMP="$(mktemp)"
+    GEN_ERR_TMP="$(mktemp)"
 
     # -----------------------------------------------------------------------
-    # (a) RATCHET: live fingerprints (degraded-structural) must be a subset
-    #     of the committed baseline.
-    #     The committed baseline was generated WITH the task DB (a superset of
-    #     structural + liveness findings), so a structural-only live set is
-    #     guaranteed to be a subset of the baseline when the tree is clean.
-    #     comm -23 <(sorted live) <(sorted baseline) = lines in live NOT in baseline.
+    # (a) RATCHET: the live fingerprints of an explicitly DB-absent run must
+    #     EQUAL the committed baseline, checked in both directions (PRD §19):
+    #     comm -23 <(sorted live) <(sorted baseline) = live NOT in baseline;
+    #     comm -13 <(sorted live) <(sorted baseline) = baseline NOT live.
     # -----------------------------------------------------------------------
     echo ""
-    echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
+    echo "--- (a) Ratchet: DB-absent live fingerprints match the committed baseline ---"
 
-    # Run the generator in degraded-structural mode (no task DB).
-    # Stderr may emit a breadcrumb about missing DB — that is expected and ignored.
+    # Run the generator DB-ABSENT: the override names a path that cannot exist,
+    # so it beats §6.7's default path wherever a tasks.db exists (PRD §19).
+    # Stderr is CAPTURED, not discarded: it carries the scan line both floors
+    # below read (alongside the expected missing-DB breadcrumb).
     # Do NOT use || true here: a non-zero exit from the generator signals a broken
     # detector binary, not a missing DB.  The generator exits 0 regardless of
     # finding count; a non-zero exit is an infrastructure failure that must go red.
-    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
+    REIFY_PTODO_TASKS_DB="$PTODO_TASKS_DB_ABSENT" "$GEN" --project-root "$REPO_ROOT" \
+        >"$LIVE_TMP" 2>"$GEN_ERR_TMP"
+
+    # VACUITY FLOOR (task #6241) — the precondition that makes the oracle
+    # below meaningful (PRD §6.6).
+    # Reported FIRST, deliberately: a reader who saw only an oracle assert fail
+    # would draw the wrong conclusion about why.  The wiring here (not just the
+    # helper) is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh,
+    # in BOTH directions.
+    # $(cat ...) strips trailing newlines — correct and irrelevant, since the
+    # helper reads one field off one line.
+    assert "generator emitted scan evidence (the ratchet oracle is not vacuous)" \
+        _ratchet_check_scan_evidence "$(cat "$GEN_ERR_TMP")"
+
+    # DB-ABSENT FLOOR (task #7001) — the second precondition, also reported
+    # before the oracle it conditions.  Wiring pinned by the same vacuity
+    # meta-test, in both directions.
+    assert "generator ran DB-absent (liveness cannot reach the ratchet)" \
+        _ratchet_check_db_absent_evidence "$(cat "$GEN_ERR_TMP")"
 
     # comm -23 requires both inputs sorted; the generator sorts internally but
     # sort -u here is defensive.
@@ -286,6 +884,12 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
 
     assert "live fingerprints are a subset of committed baseline (no ratchet regression)" \
         _ratchet_check_subset "$NEW_IN_LIVE"
+
+    # CONVERSE (task #7001, PRD §19): a committed line that is no longer live
+    # is a stale grandfather entry, and reds instead of lingering.
+    STALE_IN_BASELINE="$(comm -13 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
+    assert "every committed baseline line is still live (no stale grandfather entry)" \
+        _ratchet_check_no_stale_baseline "$STALE_IN_BASELINE"
 
     # -----------------------------------------------------------------------
     # (b) SCENARIO 13 (hermetic): a fresh untracked marker in a temp git
@@ -310,8 +914,9 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     printf '// %s: wire this into the real implementation\n' "$M" > "$FIX/src/fresh.rs"
     git -C "$FIX" add -A
 
-    # Run the generator on the hermetic fixture in degraded-structural mode.
-    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$FIX" >"$FIX_LIVE" 2>/dev/null || true
+    # Run the generator on the hermetic fixture DB-absent, as scenario (a) does.
+    REIFY_PTODO_TASKS_DB="$PTODO_TASKS_DB_ABSENT" "$GEN" --project-root "$FIX" \
+        >"$FIX_LIVE" 2>/dev/null || true
 
     # The fixture live set must contain at least one untracked line for fresh.rs.
     UNTRACKED_LINE="$(grep 'src/fresh.rs' "$FIX_LIVE" | grep ':: untracked ::' || true)"
@@ -352,6 +957,7 @@ fi
 #     SELF-MATCH SAFETY: marker token assembled from $M at runtime.
 # -----------------------------------------------------------------------
 if [ -x "$REIFY_AUDIT_BIN" ]; then
+    RAN=1
     echo ""
     echo "--- (c) Exit-code hard gate: untracked → High → non-zero exit ---"
 
@@ -469,6 +1075,19 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     # LD_LIBRARY_PATH="" so sqlite3 uses the system lib, not /opt/reify-deps/lib's
     # newer libsqlite3 (set by verify.sh) which would crash with a header/source
     # version mismatch (esc-4581-87).
+    #
+    # STILL NEEDED, but no longer the primary mechanism (task 5730). verify.sh
+    # now scrubs the loader path structurally: apply_env() captures the
+    # pre-OCCT ambient into REIFY_AMBIENT_LD_LIBRARY_PATH and every non-cargo
+    # plan line is emitted via add_tool(), which restores it — so under the gate
+    # this suite no longer inherits the conda prefix at all. These six inline
+    # scrubs are retained as DEFENCE IN DEPTH for the one case that fix cannot
+    # reach: a bare `bash tests/infra/test_reify_audit_ptodo.sh` run from a
+    # shell that already carries a hostile ambient loader path. They cost
+    # nothing, so do not "clean them up" — but equally, do not copy this
+    # per-call-site pattern into new code. A new verify.sh tool plan line
+    # belongs on add_tool(); see docs/notes/verify-pipeline-knobs.md
+    # ("Loader path") and tests/infra/test_verify_ld_library_path_scope.sh.
     LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" "
 CREATE TABLE tasks (
     tag TEXT NOT NULL DEFAULT 'master',
@@ -507,6 +1126,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
         bash -c '[ "$1" -eq 1 ]' -- "$_exit_orphan"
 
     # (d-control) UPDATE task status to pending → live cite → no High → exit 0.
+    # LD_LIBRARY_PATH="" — see the (d) seed site above (defence-in-depth for a
+    # standalone run; the gate itself is fixed structurally, task 5730).
     LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" \
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
 
@@ -568,6 +1189,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
     mkdir -p "$FIX_E/.taskmaster/tasks"
     # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    # Defence-in-depth only since task 5730 — verify.sh now scrubs the loader
+    # path structurally via add_tool(); see the (d) seed site above.
     LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" "
 CREATE TABLE tasks (
     tag TEXT NOT NULL DEFAULT 'master',
@@ -608,6 +1231,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_E}, 'done');
         bash -c '[ "$1" -eq 1 ]' -- "$_exit_gallow_orphan"
 
     # (e-control) UPDATE task status to pending → live cite → no High → exit 0.
+    # LD_LIBRARY_PATH="" — see the (d) seed site above (defence-in-depth for a
+    # standalone run; the gate itself is fixed structurally, task 5730).
     LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" \
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_E};"
 
@@ -629,12 +1254,485 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_E}, 'done');
     # Emit passing-branch sentinel for scenario (e).  Gated on FAIL counter
     # unchanged — suppressed if any (e) assert failed (fixes silent_pass_on_failure).
     [ "$FAIL" -eq "$_fail_before_e" ] && echo "@@HARDGATE_E_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (f) LANE δ-A HARD GATE (task #6087): an `#[allow(...dead_code...)]`
+    #     attribute whose trailing rationale defers the work AND cites a DONE
+    #     task is classified orphaned→High → reify-audit exits NON-ZERO.
+    #
+    #     A direct transposition of scenario (d), inheriting its three hard-won
+    #     fixes for free: the LD_LIBRARY_PATH="" sqlite3 workaround
+    #     (esc-4581-87), the gate-on-binary-not-on-RATCHET_SKIP structure
+    #     (#4733), and the no-silent-green RAN floor.
+    #
+    #     Three assertions — the third is the one the ratified FP-control
+    #     requirement buys, proving the guards at the BINARY level and not only
+    #     in unit tests:
+    #       (f-orphan)  allowed.rs + task done  → orphaned High → exit 1
+    #       (f-control) UPDATE task to pending  → live cite     → exit 0
+    #       (f-benign)  non-deferral rationale  → no finding    → exit 0
+    #
+    #     SELF-MATCH SAFETY: this file is swept and is NOT allowlisted.  Lane
+    #     δ-A is .rs-gated so a literal attribute here could not fire it, but
+    #     the file's discipline is followed regardless — the attribute text,
+    #     the deferral needle and the cite id are assembled from shell
+    #     variables at runtime, so no literal attribute+cite+prose triple ever
+    #     appears in the committed source.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (f) Lane δ-A hard gate: allow(dead_code) + deferral + done-task cite → High → non-zero exit ---"
+
+    FIX_F="$(mktemp -d)"
+    git -C "$FIX_F" init -q
+    mkdir -p "$FIX_F/src"
+
+    # Assemble the δ-A anchor at runtime (SELF-MATCH SAFETY, as in (d)/(e)).
+    ADC="allow(dead_code)"
+    DEFER="pending"
+    CITE_ID_F="6666"
+    printf '#[%s] // production wiring %s task #%s (hermetic fixture)\n' \
+        "$ADC" "$DEFER" "$CITE_ID_F" > "$FIX_F/src/allowed.rs"
+    # The benign control lives in the SAME repo but must contribute nothing;
+    # its rationale explains rather than defers (the dominant real-world class).
+    printf '#[%s] // used by some, but not all, test binaries that include this\n' \
+        "$ADC" > "$FIX_F/src/benign.rs"
+    git -C "$FIX_F" add -A
+
+    # Seed tasks.db AFTER the git add (mirrors (d)'s untracked-in-worktree reality).
+    # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
+    mkdir -p "$FIX_F/.taskmaster/tasks"
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_F/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_F}, 'done');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_F_TASKS_FILE="$FIX_F/tasks.json"
+    printf '[]' > "$FIX_F_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (f) begins.  @@HARDGATE_F_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (f) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel.
+    _fail_before_f=$FAIL
+
+    # (f-orphan) done task → orphaned → High → exit 1.  Exactly one High: the
+    # benign sibling contributes nothing, which is what makes 1 (not 2) the
+    # assertion that also proves FP control.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_orphan=$?
+    set -e
+
+    assert "(f-orphan) allow(dead_code) deferral cite (#${CITE_ID_F}) → done-task → orphaned High → reify-audit exits 1" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_adc_orphan"
+
+    # (f-control) UPDATE task status to pending → live cite → no High → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_F/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_F};"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_live=$?
+    set -e
+
+    assert "(f-control) pending-task allow(dead_code) deferral cite → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_adc_live"
+
+    # (f-benign) a repo carrying ONLY non-deferral allow-rationales → no
+    # finding at all → exit 0.  This is the FP-control guard proven at the
+    # binary level: an over-broad lane fires `untracked`→High here and the
+    # exit code becomes non-zero.
+    FIX_F2="$(mktemp -d)"
+    git -C "$FIX_F2" init -q
+    mkdir -p "$FIX_F2/src"
+    {
+        printf '#[%s] // used by some, but not all, test binaries that include this\n' "$ADC"
+        printf '#[%s] // superseded by mark_%s_with_cause at the wire site\n' "$ADC" "$DEFER"
+        printf '#[%s] // constructs a Pending producer for the demand-prune tests\n' "$ADC"
+        printf '#[%s] // serialises the "%s" wire tag for the GUI bridge\n' "$ADC" "$DEFER"
+    } > "$FIX_F2/src/benign.rs"
+    git -C "$FIX_F2" add -A
+
+    FIX_F2_TASKS_FILE="$FIX_F2/tasks.json"
+    printf '[]' > "$FIX_F2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_benign=$?
+    set -e
+
+    assert "(f-benign) non-deferral allow(dead_code) rationales (incl. identifier/enum-variant/quoted-state guards) → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_adc_benign"
+
+    # Emit passing-branch sentinel for scenario (f).  Gated on FAIL counter
+    # unchanged — suppressed if any (f) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_f" ] && echo "@@HARDGATE_F_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (g) LANE δ-B HARD GATE (task #6103): an ORDINARY comment — no marker
+    #     token, no attribute, nothing but comment text — that both DEFERS the
+    #     work AND cites a TERMINAL task is classified orphaned→High →
+    #     reify-audit exits NON-ZERO.
+    #
+    #     A direct transposition of scenario (f), inheriting the same hard-won
+    #     fixes: the LD_LIBRARY_PATH="" sqlite3 workaround (esc-4581-87), the
+    #     gate-on-binary-not-on-RATCHET_SKIP structure (#4733), and the
+    #     no-silent-green RAN floor (block-level, shared with (c)-(f)).
+    #
+    #     The cite is seeded 'cancelled' rather than 'done' — the live
+    #     deliverable this lane exists to surface
+    #     (crates/reify-core/src/diagnostics.rs, "blocked on VolumeMesh
+    #     realization (task #2947)") cites a CANCELLED task, and (d)/(e)/(f)
+    #     already cover 'done'.  Both are terminal per §8.4.
+    #
+    #     Three assertions, matching (f)'s orphan/control/benign triple:
+    #       (g-orphan)  deferred.rs + cancelled task → orphaned High → exit 1
+    #       (g-control) UPDATE task to pending       → live cite     → exit 0
+    #       (g-benign)  FP-guard control repo        → no finding    → exit 0
+    #
+    #     (g-benign) is the assertion that matters most, and it is deliberately
+    #     built to be DISCRIMINATING rather than merely quiet.  Its repo carries
+    #     a seeded tasks.db in which every cite is TERMINAL, so an over-firing
+    #     lane produces orphaned→High and flips the exit code.  Without that
+    #     seeding the liveness lane would degrade on a missing DB and the repo
+    #     would exit 0 whether the guards held or not — a control that cannot
+    #     fail.  Its four populations are exactly the ones task #6087 measured:
+    #       class (a) the needle inside an IDENTIFIER (mark_pending_with_cause);
+    #       class (b) a PRD-RELATIVE cite (deferred to PRD task #N) — §8.2;
+    #       class (c) a deferral with NO cite (δ-B is cite-anchored);
+    #       class (d) a G-allow marker, which belongs to its own lane.  Its
+    #                 owner cite is written with "PRD " immediately left so the
+    #                 G-allow lane's own rule (c) exempts it and stays silent —
+    #                 which leaves δ-B's g_allow_marker_body guard as the only
+    #                 thing preventing a finding, exactly as in
+    #                 crates/reify-audit/tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs.
+    #
+    #     SELF-MATCH SAFETY: this file is swept and is NOT allowlisted.  Lane
+    #     δ-B is .rs-gated so a literal cited-deferral comment here could not
+    #     fire it, but the file's discipline is followed regardless — every
+    #     deferral needle and cite id is assembled from shell variables at
+    #     runtime, so no literal deferral+cite pair ever appears in the
+    #     committed source.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (g) Lane δ-B hard gate: cited deferral in an ordinary comment + terminal cite → High → non-zero exit ---"
+
+    FIX_G="$(mktemp -d)"
+    git -C "$FIX_G" init -q
+    mkdir -p "$FIX_G/src"
+
+    # Assemble the δ-B anchor at runtime (SELF-MATCH SAFETY, as in (d)/(e)/(f)).
+    DEFER_G="blocked on"
+    CITE_ID_G="7777"
+    printf '/// VolumeMesh realization is %s task #%s (hermetic fixture)\nfn f() {}\n' \
+        "$DEFER_G" "$CITE_ID_G" > "$FIX_G/src/deferred.rs"
+    git -C "$FIX_G" add -A
+
+    # Seed tasks.db AFTER the git add (mirrors (d)/(f)'s untracked-in-worktree
+    # reality).  Schema mirrors crates/reify-audit/tests/common/schema.rs.
+    mkdir -p "$FIX_G/.taskmaster/tasks"
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_G}, 'cancelled');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_G_TASKS_FILE="$FIX_G/tasks.json"
+    printf '[]' > "$FIX_G_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (g) begins.  @@HARDGATE_G_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (g) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel.
+    _fail_before_g=$FAIL
+
+    # (g-orphan) cancelled task → orphaned → High → exit 1.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_orphan=$?
+    set -e
+
+    assert "(g-orphan) cited deferral comment (#${CITE_ID_G}) → cancelled task → orphaned High → reify-audit exits 1" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_db_orphan"
+
+    # (g-control) UPDATE task status to pending → live cite → no High → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_G};"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_live=$?
+    set -e
+
+    assert "(g-control) pending-task cited deferral comment → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_db_live"
+
+    # (g-benign) a repo carrying ONLY lines that must be saved by a guard → no
+    # finding at all → exit 0.  Every cite below is seeded TERMINAL, so an
+    # over-broad lane fires orphaned→High here and the exit code becomes
+    # non-zero: the control can actually fail.
+    FIX_G2="$(mktemp -d)"
+    git -C "$FIX_G2" init -q
+    mkdir -p "$FIX_G2/src"
+
+    DEFER_A="pending"
+    DEFER_B="deferred to"
+    DEFER_C="not yet"
+    {
+        # class (a) — the needle is inside an identifier (has_deferral_prose guard 3).
+        printf '// cause via mark_%s_with_cause (task #2330 §9.2 invariant).\n' "$DEFER_A"
+        printf '// --- mark_pruned_%s producer tests (task #4739) ---\n' "$DEFER_A"
+        # class (b) — the cite is PRD-relative, not a task id (§8.2).
+        printf '/// Diagnostic emission is %s PRD task #10 (Diagnostic mapping for\n' "$DEFER_B"
+        printf '//   is %s a hydrated Value::GeometryHandle (PRD invariant #2:\n' "$DEFER_C"
+        # class (c) — a deferral with no cite at all (δ-B is cite-anchored).
+        printf '/// wiring is %s the morph rewrite\n' "$DEFER_A"
+        # class (d) — a G-allow marker; "PRD " left of the cite keeps the
+        # G-allow lane itself silent (its rule (c)), isolating δ-B's guard.
+        printf '// G-allow: shared envelope assembler; the four surfaces are %s PRD #8888 — no non-test caller until then\n' "$DEFER_G"
+    } > "$FIX_G2/src/benign.rs"
+    git -C "$FIX_G2" add -A
+
+    mkdir -p "$FIX_G2/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_G2/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 2330, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4739, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 10, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 2, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 8888, 'done');
+"
+
+    FIX_G2_TASKS_FILE="$FIX_G2/tasks.json"
+    printf '[]' > "$FIX_G2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_G2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_G2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_db_benign=$?
+    set -e
+
+    assert "(g-benign) identifier / PRD-relative / uncited / G-allow lines, all cites seeded terminal → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_db_benign"
+
+    # Emit passing-branch sentinel for scenario (g).  Gated on FAIL counter
+    # unchanged — suppressed if any (g) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_g" ] && echo "@@HARDGATE_G_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (h) LANE δ-C HARD GATE (task #7098): an ordinary `//` comment that names
+    #     a TERMINAL task as the OWNER of future work (`owned by #N`,
+    #     `deferred to task N`, `#N will …`, `until #N lands`) is classified
+    #     orphaned→High → reify-audit exits NON-ZERO.  Grammar: PRD §8.1, §21.
+    #
+    #     A direct transposition of scenario (g), inheriting its fixes and its
+    #     orphan/control/benign triple, with two differences:
+    #       * it sweeps the COMMITTED fixtures
+    #         crates/reify-audit/tests/fixtures/ptodo/scenario21_prose_promise.rs
+    #         (four owner lines) and scenario22_prose_promise_negatives.rs
+    #         (all-negative), so reify-audit reds on a committed fixture and
+    #         the binary-level guard and the check()-level tests in
+    #         tests/ptodo.rs pin the same text;
+    #       * it adds one runtime-assembled .ri file, because δ-C — unlike
+    #         δ-A/δ-B — is not .rs-gated, and the committed fixtures are .rs
+    #         only (a committed .ri would join repo-wide .ri sweeps).
+    #
+    #       (h-orphan)  scenario21 + .ri, owners done → one High per owner line
+    #       (h-control) UPDATE the owners to pending    → exit 0
+    #       (h-benign)  scenario22, every cite terminal → exit 0
+    #
+    #     SELF-MATCH SAFETY: this .sh is swept but δ-C never reads a
+    #     `#`-comment language; the .ri owner phrase and cite are still
+    #     assembled from shell variables, as in (d)-(g).
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (h) Lane δ-C hard gate: owner-position task cite in an ordinary comment + terminal owner → High → non-zero exit ---"
+
+    FIXTURES_H="$REPO_ROOT/crates/reify-audit/tests/fixtures/ptodo"
+    FIX_H="$(mktemp -d)"
+    git -C "$FIX_H" init -q
+    mkdir -p "$FIX_H/src" "$FIX_H/stdlib"
+    cp "$FIXTURES_H/scenario21_prose_promise.rs" "$FIX_H/src/"
+
+    OWNER_H="owned by"
+    CITE_ID_H_RI="8899"
+    printf '// Growth of `Part` is %s #%s (hermetic fixture)\nstructure def Part { }\n' \
+        "$OWNER_H" "$CITE_ID_H_RI" > "$FIX_H/stdlib/promise.ri"
+    git -C "$FIX_H" add -A
+
+    # Owner lines: scenario21's four (pinned by tests/ptodo.rs
+    # committed_prose_promise_fixture_orphans_each_owner_line) + the .ri one.
+    H_FIXTURE_OWNER_LINES=4
+    H_RI_OWNER_LINES=1
+    H_EXPECTED_HIGH=$(( H_FIXTURE_OWNER_LINES + H_RI_OWNER_LINES ))
+
+    mkdir -p "$FIX_H/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4578, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_H_RI}, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 7097, 'pending');
+"
+
+    FIX_H_TASKS_FILE="$FIX_H/tasks.json"
+    printf '[]' > "$FIX_H_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (h) begins.  @@HARDGATE_H_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (h) asserts.
+    _fail_before_h=$FAIL
+
+    # (h-orphan) terminal owners → one orphaned High per owner line.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_orphan=$?
+    set -e
+
+    assert "(h-orphan) scenario21 + .ri owner lines, owners done → ${H_EXPECTED_HIGH} orphaned High → reify-audit exits ${H_EXPECTED_HIGH}" \
+        bash -c '[ "$1" -eq "$2" ]' -- "$_exit_h_orphan" "$H_EXPECTED_HIGH"
+
+    # (h-control) owners pending → every promise honest → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id IN (4578, ${CITE_ID_H_RI});"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_live=$?
+    set -e
+
+    assert "(h-control) owners pending → live owners → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_h_live"
+
+    # (h-benign) the committed all-negative fixture, every cite seeded TERMINAL,
+    # so an over-firing lane flips the exit code: the control can fail.
+    FIX_H2="$(mktemp -d)"
+    git -C "$FIX_H2" init -q
+    mkdir -p "$FIX_H2/src"
+    cp "$FIXTURES_H/scenario22_prose_promise_negatives.rs" "$FIX_H2/src/"
+    git -C "$FIX_H2" add -A
+
+    mkdir -p "$FIX_H2/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H2/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 10, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 3441, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4168, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4578, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 5907, 'cancelled');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 5951, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 6082, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 6890, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 7778, 'done');
+"
+
+    FIX_H2_TASKS_FILE="$FIX_H2/tasks.json"
+    printf '[]' > "$FIX_H2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_benign=$?
+    set -e
+
+    assert "(h-benign) scenario22 provenance / guard lines, all cites seeded terminal → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_h_benign"
+
+    [ "$FAIL" -eq "$_fail_before_h" ] && echo "@@HARDGATE_H_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d)+(e) hard gate skipped (graceful)" >&2
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f)+(g)+(h) hard gate could not run" >&2
 fi
 
 # -----------------------------------------------------------------------
 # Summary
+#
+# test_summary exits 1 when FAIL > 0, so control only reaches the $RAN floor
+# on the otherwise-all-green path — which is exactly where a zero-assertion
+# run would have been laundered into a passing hard gate.
 # -----------------------------------------------------------------------
 test_summary
+
+if [ "$RAN" -eq 0 ]; then
+    echo "test_reify_audit_ptodo.sh: NO scenario executed (REIFY_AUDIT_BIN='$REIFY_AUDIT_BIN' not executable; RATCHET_SKIP=$RATCHET_SKIP, guard rc=$_guard_rc) — refusing to report green for a hard gate that asserted nothing" >&2
+    exit 1
+fi

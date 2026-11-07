@@ -17,6 +17,7 @@
 //!   * `run` -> `App`: a structure member calling a same-module fn with an omitted
 //!     defaulted arg needs that fn's compiled `param_defaults` to pad from
 //!     (`try_default_padding`), so `run` must be compiled before `App`.
+//!
 //! Source order `Opts` -> `run` -> `App` satisfies both.
 //!
 //! ## Test (b): elastic def-site + consumption (RED until step-4)

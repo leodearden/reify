@@ -1,20 +1,23 @@
-//! G-code → motion-profile lowering for the `gcode_import` stdlib builtin
+//! G-code → motion-segment lowering for the `gcode_import` stdlib builtin
 //! (PRD `docs/prds/v0_3/trajectory-input-shaping.md` §7.2, §11 task ο).
 //!
 //! Two layers live here:
 //!
 //! 1. A pure, registry-free `lower_gcode(source, dialect) -> GcodeImportResult`
 //!    that bridges the `reify-gcode` AST (Marlin/Klipper) to a list of motion
-//!    profiles — one per contiguous motion segment — plus typed diagnostics.
+//!    segments — one per contiguous motion run — plus typed diagnostics.
 //!    Everything testable about lowering, segmentation, and diagnostics is
 //!    asserted at this layer (no `Value` construction required).
 //!
 //! 2. A thin marshalling arm wired into
 //!    [`crate::trajectory::eval_trajectory`] that maps `Value` arguments to the
 //!    pure function and the `GcodeImportResult` back to a `Value::List` of
-//!    `Value::Map` profile records (mirroring the `mechanism` builtin's
-//!    `Value::Map` structured-result precedent, since the `eval_builtin` path
-//!    has no `StructureRegistry` to mint a `Value::StructureInstance`).
+//!    registry-free `GcodeMotionSegment` / `GcodeWaypoint` instances (declared
+//!    in `trajectory.ri`).
+//!    [`waypoint_to_value`] is the UNIT-REGIME BOUNDARY of that arm: layer 1
+//!    stays in native g-code units (millimetres, mm/min) for lossless parse
+//!    fidelity, and the DSL-visible projection built here is SI and
+//!    dimensioned. See that function's docs for the field-by-field contract.
 //!
 //! Diagnostics: `E_GcodeParseError` reuses `reify_gcode::ParseError` verbatim;
 //! the two `W_` warnings (`DialectUnsupported`, `ShaperConflict`) are a local
@@ -34,11 +37,57 @@
 //! sibling `spline` submodule.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
-
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use reify_gcode::{GcodeCommand, ParseError};
+
+use crate::helpers::mint_registry_free_instance;
+
+/// Nominal type names of the values [`eval_gcode_import`] mints. They must
+/// match the `structure def`s in `crates/reify-compiler/stdlib/trajectory.ri`,
+/// which are what give the DSL its field types.
+const SEGMENT_TYPE_NAME: &str = "GcodeMotionSegment";
+const WAYPOINT_TYPE_NAME: &str = "GcodeWaypoint";
+
+/// Millimetres → SI metres. Same name and value as the other mm→SI
+/// boundaries in the FDM stack (`reify-fdm/src/r0.rs`,
+/// `reify-eval/src/compute_targets/as_printed_material_r0.rs`), so grepping
+/// `MM_TO_M` enumerates all of them.
+///
+/// # Why positions MULTIPLY while the feedrate below DIVIDES
+///
+/// This is a rounded reciprocal, so it is exactly the spelling
+/// [`MM_PER_MIN_PER_M_PER_S`] argues against — and the two forms really do
+/// differ for positions, not just in principle. Measured:
+///
+/// - `205.0 * 1.0e-3` == `0x1.a3d70a3d70a3ep-3`, `205.0 / 1_000.0` ==
+///   `0x1.a3d70a3d70a3dp-3` — one ULP (2.8e-17 m) apart;
+/// - `123.456` mm likewise differs by one ULP;
+/// - round values (10, 20, 0.3, 5 mm) are BIT-IDENTICAL under both forms,
+///   which is why this module's fixtures can assert exact bits either way.
+///
+/// The multiply form is kept deliberately: the constant's name, value AND
+/// spelling together are what enrol this boundary in the greppable family
+/// above, and a locally-exact `/ 1_000.0` would drop it straight back out of
+/// the survey that family exists to serve. One ULP at bed scale is 2.8e-17 m
+/// — smaller than any tolerance a mechanical design can express, and far
+/// below the mm-resolution the g-code source itself carries.
+///
+/// So the exactness argument stated on [`MM_PER_MIN_PER_M_PER_S`] is about
+/// the FEEDRATE ONLY. It applies there and not here for two reasons: that
+/// conversion has no family spelling to match (it is new with this boundary),
+/// and it is pinned bitwise by `tests::waypoint_feedrate_is_si_velocity`, so
+/// the exact form is an enforced contract rather than a preference.
+const MM_TO_M: f64 = 1.0e-3;
+
+/// G-code feedrate mm-per-minute → SI m/s, as the DIVISOR (1e3 mm per metre
+/// × 60 s per minute), not a reciprocal factor. Dividing is exact for the
+/// round feedrates a slicer emits; multiplying by the rounded reciprocal is
+/// not — `1800.0 / 60_000.0` is exactly `0.03`, while
+/// `1800.0 * (1.0 / 60_000.0)` is `0.030000000000000002`. Pinned by
+/// `tests::waypoint_feedrate_is_si_velocity`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
 
 /// Which dialect parser [`lower_gcode`] should drive.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,38 +140,38 @@ pub(crate) struct Waypoint {
 /// prior segment (or the origin for the first segment) and is intentionally not
 /// re-recorded here. A consumer reconstructing an absolute path must therefore
 /// chain segments against that external running position rather than treating a
-/// single profile as self-contained.
+/// single segment as self-contained.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MotionProfile {
+pub(crate) struct MotionSegment {
     pub waypoints: Vec<Waypoint>,
 }
 
-/// The outcome of lowering a g-code source: zero or more motion profiles, an
-/// optional parse error (which short-circuits to zero profiles), and any
+/// The outcome of lowering a g-code source: zero or more motion segments, an
+/// optional parse error (which short-circuits to zero segments), and any
 /// non-fatal warnings collected during lowering.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GcodeImportResult {
-    pub profiles: Vec<MotionProfile>,
+    pub segments: Vec<MotionSegment>,
     pub parse_error: Option<ParseError>,
     pub warnings: Vec<GcodeImportWarning>,
 }
 
 impl GcodeImportResult {
-    /// An empty result: no profiles, no parse error, no warnings.
+    /// An empty result: no segments, no parse error, no warnings.
     fn empty() -> Self {
         GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: None,
             warnings: Vec::new(),
         }
     }
 
-    /// A short-circuited result carrying a parse error and no profiles. The
+    /// A short-circuited result carrying a parse error and no segments. The
     /// `reify_gcode::ParseError` is reused verbatim as the `E_GcodeParseError`
     /// carrier (1-indexed line + dialect-specific reason).
     fn from_parse_error(error: ParseError) -> Self {
         GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: Some(error),
             warnings: Vec::new(),
         }
@@ -188,12 +237,12 @@ impl PosState {
     }
 }
 
-/// Lower a g-code source to motion profiles using the chosen dialect parser.
+/// Lower a g-code source to motion segments using the chosen dialect parser.
 ///
 /// Marlin/Klipper drive the corresponding `reify_gcode` parser; a parse failure
-/// short-circuits to [`GcodeImportResult::from_parse_error`] (no profiles). An
+/// short-circuits to [`GcodeImportResult::from_parse_error`] (no segments). An
 /// `Unsupported` selector skips parsing and emits a `DialectUnsupported`
-/// warning with no profiles.
+/// warning with no segments.
 pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImportResult {
     match dialect {
         GcodeImportDialect::Marlin => match reify_gcode::parse_marlin(source) {
@@ -207,7 +256,7 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
         // An unrecognised dialect skips parsing entirely and surfaces a single
         // DialectUnsupported warning naming the offending selector.
         GcodeImportDialect::Unsupported(name) => GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: None,
             warnings: vec![GcodeImportWarning::DialectUnsupported(name)],
         },
@@ -225,22 +274,22 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
 /// - `SetPosition` (G92) rebases the running position; `Feedrate` (standalone
 ///   F) updates the running feedrate. Both are in-segment state — no split.
 /// - `IgnoredMCode`/`SetVelocityLimit`/`InputShaper` close the open segment
-///   (emitting a profile only when it holds ≥1 waypoint). The running position
+///   (emitting a segment only when it holds ≥1 waypoint). The running position
 ///   persists across the split.
 ///
 /// Waypoints are move targets (a segment does not re-record its starting
-/// position — see [`MotionProfile`]). The trailing open segment is flushed at
+/// position — see [`MotionSegment`]). The trailing open segment is flushed at
 /// end-of-input.
 fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
-    let mut profiles: Vec<MotionProfile> = Vec::new();
-    let mut segment: Vec<Waypoint> = Vec::new();
+    let mut segments: Vec<MotionSegment> = Vec::new();
+    let mut open_segment: Vec<Waypoint> = Vec::new();
     let mut warnings: Vec<GcodeImportWarning> = Vec::new();
     let mut cur = PosState::origin();
 
     for cmd in commands {
         match cmd {
             GcodeCommand::LinearMove(m) => {
-                segment.push(cur.apply_move(m.x, m.y, m.z, m.e, m.feedrate));
+                open_segment.push(cur.apply_move(m.x, m.y, m.z, m.e, m.feedrate));
             }
             // Chord-flattening: a G2/G3 arc is lowered to its endpoint waypoint
             // exactly like a linear move — the i/j/k center offsets and the
@@ -250,7 +299,7 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
             // consumer can tell the path was approximated.
             GcodeCommand::ArcMove(a) => {
                 warnings.push(GcodeImportWarning::ArcFlattened);
-                segment.push(cur.apply_move(a.x, a.y, a.z, a.e, a.feedrate));
+                open_segment.push(cur.apply_move(a.x, a.y, a.z, a.e, a.feedrate));
             }
             // G92 set-position rebases the running position in place: each
             // supplied axis is set to its new logical value; omitted axes are
@@ -276,9 +325,9 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
                 cur.feedrate = Some(f.value);
             }
             // Non-motion commands close the current motion segment (PRD §7.2):
-            // emit a profile only when the open segment holds at least one
+            // emit a segment only when the open segment holds at least one
             // motion waypoint, so back-to-back splitters never produce empty
-            // profiles. The running position persists across the split.
+            // segments. The running position persists across the split.
             //
             // An `INPUT_SHAPER` directive additionally raises a ShaperConflict
             // warning: its presence signals a file-declared shaper that the
@@ -290,9 +339,9 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
                 if matches!(cmd, GcodeCommand::InputShaper(_)) {
                     warnings.push(GcodeImportWarning::ShaperConflict);
                 }
-                if !segment.is_empty() {
-                    profiles.push(MotionProfile {
-                        waypoints: std::mem::take(&mut segment),
+                if !open_segment.is_empty() {
+                    segments.push(MotionSegment {
+                        waypoints: std::mem::take(&mut open_segment),
                     });
                 }
             }
@@ -300,19 +349,21 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     }
 
     // Flush the trailing open segment at end-of-input.
-    if !segment.is_empty() {
-        profiles.push(MotionProfile { waypoints: segment });
+    if !open_segment.is_empty() {
+        segments.push(MotionSegment {
+            waypoints: open_segment,
+        });
     }
 
     GcodeImportResult {
-        profiles,
+        segments,
         parse_error: None,
         warnings,
     }
 }
 
 /// Marshal the `gcode_import(source, dialect)` builtin: `Value` arguments in,
-/// a `Value::List` of profile records out. This is the thin eval-path arm wired
+/// a `Value::List` of `GcodeMotionSegment` instances out. This is the thin eval-path arm wired
 /// into [`crate::trajectory::eval_trajectory`]; all lowering logic lives in the
 /// pure [`lower_gcode`] below it.
 ///
@@ -322,15 +373,15 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
 /// - `args[0]` is a [`Value::String`] (the g-code source text);
 /// - `args[1]` is a [`Value::StructureInstance`] (the dialect selector). Its
 ///   `type_name` routes the parser — `"MarlinDialect"` / `"KlipperDialect"`;
-///   any other name falls to [`GcodeImportDialect::Unsupported`] (zero profiles,
+///   any other name falls to [`GcodeImportDialect::Unsupported`] (zero segments,
 ///   an empty list).
 ///
 /// A parse error short-circuits to [`Value::Undef`]: the `eval_builtin` path has
 /// no diagnostic sink to carry an `E_GcodeParseError` (deferred per the
 /// `mechanism.rs` precedent), so a hard parse failure can only surface as the
-/// bad-value sentinel. On a clean parse each lowered profile becomes a
-/// `Value::Map` record (see [`profile_to_value`]) and the set is returned as a
-/// `Value::List`. Collected warnings are likewise undeliverable here and are
+/// bad-value sentinel. On a clean parse each lowered segment becomes a
+/// registry-free `GcodeMotionSegment` instance (see [`segment_to_value`]) and
+/// the set is returned as a `Value::List`. Collected warnings are likewise undeliverable here and are
 /// dropped (they are asserted at the pure-function level instead).
 pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
     // Arity guard: exactly (source, dialect).
@@ -361,55 +412,86 @@ pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    Value::List(result.profiles.iter().map(profile_to_value).collect())
+    Value::List(result.segments.iter().map(segment_to_value).collect())
 }
 
-/// Encode one lowered [`MotionProfile`] as a `Value::Map` record, mirroring the
-/// `mechanism` builtin's `{ kind, ... }` structured-result precedent (the
-/// `eval_builtin` path has no `StructureRegistry` to mint a real
-/// `Value::StructureInstance`). Shape:
-/// `{ kind: "motion_profile", waypoints: List(<waypoint record>...) }`.
-fn profile_to_value(profile: &MotionProfile) -> Value {
-    let waypoints = profile.waypoints.iter().map(waypoint_to_value).collect();
-    let mut m = BTreeMap::new();
-    m.insert(
-        Value::String("kind".to_string()),
-        Value::String("motion_profile".to_string()),
-    );
-    m.insert(
-        Value::String("waypoints".to_string()),
-        Value::List(waypoints),
-    );
-    Value::Map(m)
+/// Encode one lowered [`MotionSegment`] as a `GcodeMotionSegment` instance.
+fn segment_to_value(segment: &MotionSegment) -> Value {
+    let waypoints = segment.waypoints.iter().map(waypoint_to_value).collect();
+    mint_registry_free_instance(
+        SEGMENT_TYPE_NAME,
+        vec![("waypoints".to_string(), Value::List(waypoints))],
+    )
 }
 
-/// Encode one [`Waypoint`] as a `Value::Map` of its absolute coordinates:
-/// `{ x, y, z, e }` as `Value::Real` (the `Waypoint` fields are raw,
-/// unit-agnostic f64 lifted straight from the g-code, so they are preserved
-/// verbatim — no unit interpretation is imposed here). The `feedrate` key is
-/// present only when a feed is in effect for the move.
+/// Encode one [`Waypoint`] as a `GcodeWaypoint` instance of its absolute
+/// coordinates `x`, `y`, `z`, `e` and its `feedrate`.
+///
+/// # This function is the unit-regime boundary
+///
+/// Two regimes meet here, and the split is deliberate:
+///
+/// - The [`Waypoint`] STRUCT (and everything in the pure `lower_gcode` layer
+///   below it) stays in NATIVE G-CODE UNITS: millimetres for `x`/`y`/`z`/`e`
+///   and millimetres-per-minute for `feedrate`, lifted verbatim from the
+///   source so parse fidelity is lossless.
+/// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned, field for
+///   field:
+///   - `x`, `y`, `z`, `e` → `Length` scalars in SI metres (via [`MM_TO_M`]);
+///   - `feedrate` → an `Option` of a `Velocity` scalar in m/s (via
+///     [`MM_PER_MIN_PER_M_PER_S`]), `None` when no feed is in effect for the
+///     move — never a `0.0` sentinel.
+///
+/// The conversion is TOTAL over the dimensional fields: every field names its
+/// own unit, so there is no carve-out left for a reader to have to remember.
+///
+/// # The FDM slice surface shares this regime
+///
+/// Worth knowing before writing the next g-code-derived payload: the sibling
+/// one agrees, field for field. `reify_eval::compute_targets::fdm_slice`'s
+/// `toolpath_to_value` converts at its own projection too, and
+/// `crates/reify-compiler/stdlib/fdm_slice.ri` declares the units there —
+/// `Bead.width` / `.height` / `.layer_z` and `Layer.z` as `Length`, `.speed`
+/// as `Velocity`, `.nominal_temp` as `Temperature`, and the centerline as
+/// `List<Point3<Length>>`. Its parser-side `reify_fdm::Toolpath` stays in
+/// native millimetres for exactly the lossless-fidelity reason this module's
+/// [`Waypoint`] does.
+///
+/// So converting at the projection is THE convention for a DSL-visible
+/// payload. It is what lets a design author's
+/// dimensional arithmetic see the units at all, and it keeps the whole
+/// conversion at one nameable boundary instead of spreading it through
+/// downstream consumers.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
-    let mut m = BTreeMap::new();
-    m.insert(Value::String("x".to_string()), Value::Real(wp.x));
-    m.insert(Value::String("y".to_string()), Value::Real(wp.y));
-    m.insert(Value::String("z".to_string()), Value::Real(wp.z));
-    m.insert(Value::String("e".to_string()), Value::Real(wp.e));
-    if let Some(f) = wp.feedrate {
-        m.insert(Value::String("feedrate".to_string()), Value::Real(f));
-    }
-    Value::Map(m)
+    let feedrate = wp.feedrate.map(|f| {
+        Box::new(Value::Scalar {
+            si_value: f / MM_PER_MIN_PER_M_PER_S,
+            dimension: DimensionVector::VELOCITY,
+        })
+    });
+    mint_registry_free_instance(
+        WAYPOINT_TYPE_NAME,
+        vec![
+            ("x".to_string(), Value::length(wp.x * MM_TO_M)),
+            ("y".to_string(), Value::length(wp.y * MM_TO_M)),
+            ("z".to_string(), Value::length(wp.z * MM_TO_M)),
+            ("e".to_string(), Value::length(wp.e * MM_TO_M)),
+            ("feedrate".to_string(), Value::Option(feedrate)),
+        ],
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A three-move Marlin run with no non-motion commands lowers to exactly
-    /// ONE motion profile whose ordered waypoints are the absolute move
+    /// ONE motion segment whose ordered waypoints are the absolute move
     /// targets (0,0) → (10,0) → (10,10). Establishes the `GcodeImportDialect`
-    /// enum, the `GcodeImportResult` type, and the per-profile waypoint shape.
+    /// enum, the `GcodeImportResult` type, and the per-segment waypoint shape.
     #[test]
-    fn marlin_three_linear_moves_lower_to_one_profile() {
+    fn marlin_three_linear_moves_lower_to_one_segment() {
         let src = "G1 X0 Y0\nG1 X10 Y0\nG1 X10 Y10";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
@@ -419,12 +501,12 @@ mod tests {
             result.parse_error
         );
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "a contiguous motion run must lower to exactly one profile"
+            "a contiguous motion run must lower to exactly one segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 3, "expected three ordered waypoints");
         assert_eq!((wps[0].x, wps[0].y), (0.0, 0.0), "waypoint 0 = G1 X0 Y0");
         assert_eq!((wps[1].x, wps[1].y), (10.0, 0.0), "waypoint 1 = G1 X10 Y0");
@@ -436,35 +518,35 @@ mod tests {
     }
 
     /// An ignored M-code interleaved between two moves splits the contiguous
-    /// run into TWO profiles. The running machine position persists across the
-    /// split (the second profile's waypoint is the absolute `G1 X20` target).
+    /// run into TWO segments. The running machine position persists across the
+    /// split (the second segment's waypoint is the absolute `G1 X20` target).
     #[test]
-    fn marlin_ignored_mcode_splits_into_two_profiles() {
+    fn marlin_ignored_mcode_splits_into_two_segments() {
         let src = "G1 X10\nM104 S200\nG1 X20";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "the ignored M104 must split the run into two profiles"
+            "the ignored M104 must split the run into two segments"
         );
         assert_eq!(
-            result.profiles[0].waypoints.len(),
+            result.segments[0].waypoints.len(),
             1,
-            "first profile holds the pre-M104 move"
+            "first segment holds the pre-M104 move"
         );
-        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(result.segments[0].waypoints[0].x, 10.0, "G1 X10");
         assert_eq!(
-            result.profiles[1].waypoints.len(),
+            result.segments[1].waypoints.len(),
             1,
-            "second profile holds the post-M104 move"
+            "second segment holds the post-M104 move"
         );
-        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+        assert_eq!(result.segments[1].waypoints[0].x, 20.0, "G1 X20");
     }
 
     /// A `G92` set-position and a standalone `F` feedrate line interleaved
-    /// between two moves do NOT split the run (single profile). The `G92`
+    /// between two moves do NOT split the run (single segment). The `G92`
     /// rebases the running position so a subsequent move that omits the rebased
     /// axis inherits the rebased value, and the standalone `F` updates the
     /// running feedrate consumed by that move.
@@ -475,12 +557,12 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
             "G92 and standalone F must not split the segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 2, "two motion waypoints in the single segment");
         assert_eq!((wps[0].x, wps[0].y), (10.0, 0.0), "first move target");
         // `G92 X0` rebased x→0; the `G1 Y10` move omits X, so it inherits the
@@ -499,9 +581,9 @@ mod tests {
 
     /// A parse failure short-circuits: the `reify_gcode::ParseError` is carried
     /// verbatim in `parse_error` (1-indexed line + `UnknownCommand` reason) and
-    /// no profiles are emitted (even the valid line-1 move is discarded).
+    /// no segments are emitted (even the valid line-1 move is discarded).
     #[test]
-    fn marlin_parse_error_is_carried_with_no_profiles() {
+    fn marlin_parse_error_is_carried_with_no_segments() {
         let src = "G1 X10\nG99 BOGUS";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
@@ -515,8 +597,8 @@ mod tests {
             err.kind
         );
         assert!(
-            result.profiles.is_empty(),
-            "a parse error short-circuits to zero profiles"
+            result.segments.is_empty(),
+            "a parse error short-circuits to zero segments"
         );
     }
 
@@ -531,9 +613,9 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "INPUT_SHAPER splits the run into two profiles"
+            "INPUT_SHAPER splits the run into two segments"
         );
         let shaper_warnings = result
             .warnings
@@ -556,9 +638,9 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "SET_VELOCITY_LIMIT splits the run into two profiles"
+            "SET_VELOCITY_LIMIT splits the run into two segments"
         );
         let shaper_warnings = result
             .warnings
@@ -571,11 +653,11 @@ mod tests {
         );
     }
 
-    /// An unsupported dialect selector skips parsing entirely: zero profiles
+    /// An unsupported dialect selector skips parsing entirely: zero segments
     /// and exactly one `DialectUnsupported` warning naming the offending
     /// dialect.
     #[test]
-    fn unsupported_dialect_yields_no_profiles_and_one_warning() {
+    fn unsupported_dialect_yields_no_segments_and_one_warning() {
         let result = lower_gcode(
             "G1 X10\nG1 X20",
             GcodeImportDialect::Unsupported("FooDialect".to_string()),
@@ -583,7 +665,7 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert!(
-            result.profiles.is_empty(),
+            result.segments.is_empty(),
             "an unsupported dialect parses nothing"
         );
         assert_eq!(result.warnings.len(), 1, "exactly one warning");
@@ -601,7 +683,7 @@ mod tests {
     /// waypoint (the `I`/`J` center offsets are discarded, so no intermediate
     /// arc points appear), the move's in-line feedrate propagates, and exactly
     /// one `ArcFlattened` warning is raised. The arc is motion (not a splitter),
-    /// so the preceding `G1` and the arc share one profile.
+    /// so the preceding `G1` and the arc share one segment.
     #[test]
     fn arc_move_is_chord_flattened_to_endpoint_with_warning() {
         let src = "G1 X0 Y0 F600\nG2 X10 Y0 I5 J0 F1200";
@@ -609,12 +691,12 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "the arc is motion, not a splitter: G1 + G2 form one profile"
+            "the arc is motion, not a splitter: G1 + G2 form one segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(
             wps.len(),
             2,
@@ -646,44 +728,253 @@ mod tests {
     }
 
     /// Two consecutive non-motion commands between moves never emit an empty
-    /// middle profile: the `if !segment.is_empty()` guard means the second
+    /// middle segment: the `if !open_segment.is_empty()` guard means the second
     /// splitter (whose segment was already flushed) produces nothing. The run
-    /// lowers to exactly TWO profiles, one per surrounding move.
+    /// lowers to exactly TWO segments, one per surrounding move.
     #[test]
-    fn back_to_back_splitters_emit_no_empty_middle_profile() {
+    fn back_to_back_splitters_emit_no_empty_middle_segment() {
         let src = "G1 X10\nM104 S200\nM109 S200\nG1 X20";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "back-to-back M-codes must not produce an empty middle profile"
+            "back-to-back M-codes must not produce an empty middle segment"
         );
-        assert_eq!(result.profiles[0].waypoints.len(), 1, "first move only");
-        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
-        assert_eq!(result.profiles[1].waypoints.len(), 1, "second move only");
-        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+        assert_eq!(result.segments[0].waypoints.len(), 1, "first move only");
+        assert_eq!(result.segments[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(result.segments[1].waypoints.len(), 1, "second move only");
+        assert_eq!(result.segments[1].waypoints[0].x, 20.0, "G1 X20");
     }
 
     /// A source ending with an M-code flushes exactly the preceding waypoints
-    /// and produces no empty trailing profile: the splitter closes the open
+    /// and produces no empty trailing segment: the splitter closes the open
     /// segment, and end-of-input then finds an already-empty segment (nothing
-    /// to flush). One profile holding both leading moves results.
+    /// to flush). One segment holding both leading moves results.
     #[test]
-    fn trailing_splitter_flushes_without_empty_trailing_profile() {
+    fn trailing_splitter_flushes_without_empty_trailing_segment() {
         let src = "G1 X10\nG1 X20\nM104 S200";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "the trailing M-code must not create an empty trailing profile"
+            "the trailing M-code must not create an empty trailing segment"
         );
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 2, "both pre-M104 moves flush together");
         assert_eq!(wps[0].x, 10.0, "G1 X10");
         assert_eq!(wps[1].x, 20.0, "G1 X20");
+    }
+    // ── Unit-regime contract: the DSL-visible payload is SI and dimensioned ──
+
+    /// Build a `MarlinDialect` dialect value as the eval path receives it: a
+    /// `Value::StructureInstance` whose `type_name` is `"MarlinDialect"` (only
+    /// that name is read by the dispatcher — no StructureRegistry is involved).
+    /// Same construction as the eval-boundary test in `trajectory/mod.rs`.
+    fn marlin_dialect_value() -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MarlinDialect".to_string(),
+            version: 0,
+            fields: PersistentMap::default(),
+        }))
+    }
+
+    /// Drive `eval_gcode_import` and dig out the fields of every waypoint of
+    /// the single lowered segment: `List -> GcodeMotionSegment instance ->
+    /// "waypoints" List -> GcodeWaypoint instances`. Panics with a pointed
+    /// message at every level.
+    fn waypoint_records(src: &str) -> Vec<PersistentMap<String, Value>> {
+        let result = eval_gcode_import(&[Value::String(src.to_string()), marlin_dialect_value()]);
+        let Value::List(segments) = result else {
+            panic!("expected a Value::List of segments, got {result:?}")
+        };
+        assert_eq!(
+            segments.len(),
+            1,
+            "expected exactly one segment: {segments:?}"
+        );
+        let Value::StructureInstance(segment) = &segments[0] else {
+            panic!(
+                "expected a GcodeMotionSegment instance, got {:?}",
+                segments[0]
+            )
+        };
+        assert_eq!(segment.type_name, SEGMENT_TYPE_NAME);
+        let Some(Value::List(waypoints)) = segment.fields.get("waypoints") else {
+            panic!("segment should carry a \"waypoints\" list, got {segment:?}")
+        };
+        waypoints
+            .iter()
+            .map(|w| match w {
+                Value::StructureInstance(wp) if wp.type_name == WAYPOINT_TYPE_NAME => {
+                    wp.fields.clone()
+                }
+                other => panic!("expected a GcodeWaypoint instance, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// [`waypoint_records`] narrowed to a fixture that must lower to exactly
+    /// one waypoint.
+    fn sole_waypoint_record(src: &str) -> PersistentMap<String, Value> {
+        let mut wps = waypoint_records(src);
+        assert_eq!(wps.len(), 1, "expected exactly one waypoint: {wps:?}");
+        wps.remove(0)
+    }
+
+    /// Read one field out of a waypoint record, panicking if it is absent.
+    fn field(wp: &PersistentMap<String, Value>, key: &str) -> Value {
+        wp.get(key)
+            .unwrap_or_else(|| panic!("waypoint should carry a {key:?} field: {wp:?}"))
+            .clone()
+    }
+
+    /// The `feedrate` a waypoint carries into the DSL is an SI `Velocity`
+    /// (m/s), converted from the g-code's native mm-per-minute.
+    ///
+    /// # F1800 is the discriminating fixture — do not "simplify" it
+    ///
+    /// This test pins the DIVISOR form, not merely the magnitude. Measured:
+    ///
+    /// - `1800.0 / 60_000.0`         == 0.03                 (`0x1.eb851eb851eb8p-6`)
+    /// - `1800.0 * (1.0 / 60_000.0)` == 0.030000000000000002 (`0x1.eb851eb851eb9p-6`)
+    ///
+    /// One ULP apart, so the exact `assert_eq!` below FAILS if the conversion
+    /// is ever refactored into a multiply-by-reciprocal. F1200, F600 and F3000
+    /// give BIT-IDENTICAL results under both forms and would make this test
+    /// vacuous — F1800 (= 30 mm/s, a realistic print speed) is the point.
+    /// Never weaken the comparison to a tolerance either: a tolerance is
+    /// precisely what cannot discriminate a one-ULP difference.
+    #[test]
+    fn waypoint_feedrate_is_si_velocity() {
+        let wp = sole_waypoint_record("G1 X10 Y0 F1800");
+
+        let Value::Option(Some(got)) = field(&wp, "feedrate") else {
+            panic!("waypoint.feedrate should be Some(<velocity>) under F1800: {wp:?}")
+        };
+        match *got {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    si_value, 0.03,
+                    "F1800 mm/min is exactly 0.03 m/s under the divisor form \
+                     (1800.0 / 60_000.0); got {si_value} — a multiply by the \
+                     rounded reciprocal yields 0.030000000000000002 instead"
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::VELOCITY,
+                    "feedrate should carry the VELOCITY dimension, got {dimension:?}"
+                );
+            }
+            other => panic!(
+                "waypoint.feedrate should be a dimensioned Value::Scalar, got {other:?} — \
+                 an undimensioned Real leaves the unit regime unstated"
+            ),
+        }
+
+        // The positions ride along in the same record and stay SI Lengths.
+        assert_eq!(
+            field(&wp, "x"),
+            Value::length(0.01),
+            "X10 mm is 0.01 m: {wp:?}"
+        );
+    }
+
+    /// EVERY position axis crosses the mm→m boundary, and EVERY waypoint does
+    /// — not just `x`, and not just the first record.
+    ///
+    /// Both neighbouring pins are blind to most of that. The shipped e2e
+    /// fixture is `"G1 X10 Y10"`, so `z` and `e` are only ever asserted at
+    /// `0.0` — a scale-invariant value, which any factor (or none at all)
+    /// reproduces. Deleting `* MM_TO_M` from the `z` or `e` insert, or
+    /// applying a wrong factor there, would leave every other test in the
+    /// module green; `e` is the axis a slicer-emitted program exercises
+    /// hardest. `sole_waypoint_record` additionally asserts a single waypoint, so
+    /// nothing else reaches a second record's conversion.
+    ///
+    /// Fixture design: the four axes land on four DISTINCT magnitudes
+    /// (0.01 / 0.02 / 0.0003 / 0.005 m) and the tail move's `x` on a fifth
+    /// (0.04 m), so a crossed-wire axis swap cannot pass this by coincidence.
+    /// The second move carries only `X`, making it a modal continuation — `y`,
+    /// `z`, `e` and the feed ride through from the first record, which is
+    /// exactly the tail conversion being pinned. All five values are bit-exact
+    /// under `* 1.0e-3` (measured: 10, 20, 0.3, 5 and 40 mm all give the same
+    /// bits as the divisor form), so `assert_eq!` needs no tolerance.
+    #[test]
+    fn every_axis_and_every_waypoint_is_an_si_length() {
+        let wps = waypoint_records("G1 X10 Y20 Z0.3 E5 F1800\nG1 X40");
+        assert_eq!(wps.len(), 2, "two linear moves lower to two waypoints: {wps:?}");
+
+        // Waypoint 0 — every axis named explicitly in the move.
+        assert_eq!(field(&wps[0], "x"), Value::length(0.01), "X10 mm is 0.01 m");
+        assert_eq!(field(&wps[0], "y"), Value::length(0.02), "Y20 mm is 0.02 m");
+        assert_eq!(
+            field(&wps[0], "z"),
+            Value::length(0.0003),
+            "Z0.3 mm is 0.0003 m — the layer-height axis, asserted only at 0.0 elsewhere"
+        );
+        assert_eq!(
+            field(&wps[0], "e"),
+            Value::length(0.005),
+            "E5 mm is 0.005 m — the extrusion axis, asserted only at 0.0 elsewhere"
+        );
+
+        // Waypoint 1 — the modal continuation. Its own `x` converts, and the
+        // ridden-through axes stay converted rather than reverting to mm.
+        assert_eq!(field(&wps[1], "x"), Value::length(0.04), "X40 mm is 0.04 m");
+        assert_eq!(field(&wps[1], "y"), Value::length(0.02), "modal Y20 mm stays 0.02 m");
+        assert_eq!(field(&wps[1], "z"), Value::length(0.0003), "modal Z0.3 mm stays 0.0003 m");
+        assert_eq!(field(&wps[1], "e"), Value::length(0.005), "modal E5 mm stays 0.005 m");
+
+        // `Value::length` carries DimensionVector::LENGTH, so the assertions
+        // above pin the dimension too — but state it once explicitly, because
+        // that is the half an undimensioned `Real` regression would drop.
+        for (i, wp) in wps.iter().enumerate() {
+            for key in ["x", "y", "z", "e"] {
+                match field(wp, key) {
+                    Value::Scalar { dimension, .. } => assert_eq!(
+                        dimension,
+                        DimensionVector::LENGTH,
+                        "waypoint[{i}].{key} should carry the LENGTH dimension"
+                    ),
+                    other => panic!(
+                        "waypoint[{i}].{key} should be a dimensioned Value::Scalar, got {other:?}"
+                    ),
+                }
+            }
+        }
+
+        // The modal feed converts on both records too (F1800 -> 0.03 m/s).
+        for (i, wp) in wps.iter().enumerate() {
+            assert_eq!(
+                field(wp, "feedrate"),
+                Value::Option(Some(Box::new(Value::Scalar {
+                    si_value: 0.03,
+                    dimension: DimensionVector::VELOCITY,
+                }))),
+                "waypoint[{i}] should carry the modal F1800 as Some(0.03 m/s)"
+            );
+        }
+    }
+
+    /// With no `F` word in effect the declared `feedrate : Option<Velocity>`
+    /// field is `none` — always present, never absent, and never a `0.0`
+    /// velocity sentinel that would default the missing feed to a real (and
+    /// wrong) speed.
+    #[test]
+    fn waypoint_without_feed_has_none_feedrate() {
+        let wp = sole_waypoint_record("G1 X10 Y0");
+        assert_eq!(
+            field(&wp, "feedrate"),
+            Value::Option(None),
+            "no feed is in effect, so feedrate must be none (not a 0.0 sentinel)"
+        );
     }
 }

@@ -221,60 +221,6 @@ fn vdb_grid_round_trip_skipped_without_cfg() {
 //     reads a saturated POSITIVE value.
 // ---------------------------------------------------------------------------
 
-/// 10mm × 10mm × 1mm thin slab (8 verts, 12 tris). Outward normals.
-///
-/// Asymmetric 12×6×1mm slab — used by the data-layout test below to
-/// distinguish ALL three pairwise axis transpositions (X↔Y, X↔Z, Y↔Z).
-///
-/// A symmetric X≈Y fixture only catches X↔Z and Y↔Z swaps — see
-/// task 3095 review esc-3095-97 suggestion 1. The asymmetric extents
-/// (X=12, Y=6, Z=1) combined with the asymmetric probe at (8, 2.5, 0.5)
-/// in the layout test below ensure that an X↔Y swap places the probe
-/// outside the slab's Y extent, producing a saturated POSITIVE band-
-/// limit value that flips the negative-SDF assertion.
-///
-/// Distinct from `realize_voxel_tests::thin_slab_mesh` (10×10×1, used
-/// only for non-layout assertions where symmetry is harmless).
-/// here to keep test files self-contained without cross-test imports.
-#[cfg(has_openvdb)]
-fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
-    // Asymmetric extents — X=12, Y=6, Z=1 — chosen so an X↔Y transposition
-    // is detectable: a probe at (X=8, Y=2.5) lies inside the slab, but if
-    // X and Y are swapped the same buffer index is read as physical
-    // (X=2.5, Y=8) which is outside the Y extent (Y > 6).
-    let verts: Vec<[f32; 3]> = vec![
-        [0.0, 0.0, 0.0],  // 0
-        [12.0, 0.0, 0.0], // 1
-        [12.0, 6.0, 0.0], // 2
-        [0.0, 6.0, 0.0],  // 3
-        [0.0, 0.0, 1.0],  // 4
-        [12.0, 0.0, 1.0], // 5
-        [12.0, 6.0, 1.0], // 6
-        [0.0, 6.0, 1.0],  // 7
-    ];
-    let tris: Vec<[u32; 3]> = vec![
-        // Bottom face (z=0, normal -Z)
-        [0, 2, 1],
-        [0, 3, 2],
-        // Top face (z=1, normal +Z)
-        [4, 5, 6],
-        [4, 6, 7],
-        // Front face (y=0, normal -Y)
-        [0, 1, 5],
-        [0, 5, 4],
-        // Back face (y=10, normal +Y)
-        [2, 3, 7],
-        [2, 7, 6],
-        // Left face (x=0, normal -X)
-        [0, 4, 7],
-        [0, 7, 3],
-        // Right face (x=10, normal +X)
-        [1, 2, 6],
-        [1, 6, 5],
-    ];
-    (verts, tris)
-}
-
 /// Round-trip an asymmetric 12×6×1mm slab through write_vdb_grid →
 /// read_vdb_file and assert the densified buffer is laid out X-outermost
 /// (axis-0 = X), matching the workspace-wide row-major-axis-0-outermost
@@ -298,10 +244,16 @@ fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 #[test]
 fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
     use reify_expr::interp::{InterpolationMethod, interpolate_3d};
+    use reify_kernel_openvdb::test_fixtures::{axis_aligned_box, vertex_and_triangle_arrays};
     use reify_kernel_openvdb::{OpenVdbKernel, ingest::read_vdb_file};
     use reify_core::Type;
 
-    let (verts, tris) = slab_mesh();
+    // Asymmetric extents — X=12, Y=6, Z=1 — so an X↔Y transposition is
+    // detectable: a probe at (X=8, Y=2.5) lies inside the slab, but with X
+    // and Y swapped the same buffer index is read as physical (X=2.5, Y=8),
+    // outside the Y extent (Y > 6). A symmetric X≈Y fixture only catches
+    // X↔Z and Y↔Z swaps (task 3095 review esc-3095-97 suggestion 1).
+    let (verts, tris) = vertex_and_triangle_arrays(&axis_aligned_box([0.0; 3], [12.0, 6.0, 1.0]));
 
     // voxel_size = 0.1mm, half_width = 10 voxels = 1.0mm so the narrow band
     // fully covers the 1mm-thick slab interior in Z (band = ±1mm around the

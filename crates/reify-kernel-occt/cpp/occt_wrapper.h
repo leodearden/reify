@@ -1,9 +1,12 @@
 #pragma once
 #include "rust/cxx.h"
 #include <Precision.hxx>
+#include <TCollection_ExtendedString.hxx>
+#include <TDocStd_Document.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -80,8 +83,25 @@ struct Point3;
 struct BBox;
 struct TessResult;
 struct ExportStepResult;
+/// Returned by `export_step_with_injected_fault_for_test` (#6344); defined by
+/// the cxx bridge (ffi.rs).
+struct StepGuardProbeResult;
+/// Taken by the two #6344 fixture hooks; defined by the cxx bridge (ffi.rs),
+/// which is where each value's meaning is documented. Declared opaquely
+/// (underlying type spelled as cxx generates it) because the generated header
+/// includes THIS one before it defines the enum.
+enum class StepGuardFault : ::std::uint8_t;
+/// Outcome of `read_step_document`; defined by the cxx bridge (ffi.rs).
+/// Declared opaquely for the same reason as `StepGuardFault`.
+enum class StepReadStatus : ::std::uint8_t;
+/// Returned by `body_shape_kind`; defined by the cxx bridge (ffi.rs).
+/// Declared opaquely for the same reason as `StepGuardFault`.
+enum class FfiShapeKind : ::std::uint8_t;
+/// Returned by `step_document_tree`; defined by the cxx bridge (ffi.rs).
+struct StepTreeRecords;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+struct VolumeMeasurement;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
 /// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
@@ -93,20 +113,15 @@ struct AnalyticCurveDatum;
 
 /// Return OCCT's `Precision::Confusion()` value (~1e-7).
 ///
-/// Test-fixture-style helper intentionally compiled into every build of the
-/// wrapper.  Cfg-gating cxx::bridge entries is awkward, and the cost of
-/// always shipping a tiny constant-returning function is lower than the
-/// friction of conditional bridge declarations.  The current sole call site
-/// is the `reify-kernel-occt` crate's private test module in `lib.rs`, which
-/// pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
-/// authoritative OCCT value at runtime.  The symbol is visible to all callers
-/// of the wrapper, not hidden by construction.
+/// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+/// `src/ffi_contract_tests.rs`). Why it ships ungated: its declaration in
+/// `src/ffi.rs`.
 double precision_confusion();
 
 // --- Primitive construction ---
 
-/// Create a box centered at origin with given dimensions (in meters).
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth);
+/// Create a box centered at origin; the arguments are its full X/Y/Z extents (in meters).
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z);
 
 /// Create a cylinder along Z axis (in meters).
 std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
@@ -174,23 +189,47 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-/// Zero the process-global boolean-op-pass counter.
+/// Zero the CALLING THREAD's boolean-op-pass count.  The counter is per-thread;
+/// other threads' counts are untouched.
 void reset_boolean_pass_count();
 
-/// Read the process-global count of completed OCCT boolean passes.  Incremented
-/// once per successful Build() in boolean_fuse/boolean_cut/boolean_common and
-/// once per single-pass fuse_shape_list — so a K-instance pattern reads as
-/// exactly 1, not K−1.
+/// Read the calling thread's count of completed OCCT boolean passes — only the
+/// passes this thread performed itself.  Incremented once per successful Build()
+/// at the single Build() site every boolean goes through: once per binary
+/// fuse/cut/common, once per *_with_history sibling and once per single-pass
+/// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
-/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
-/// fuse/pattern result's real type rather than assuming Solid (task 5213).
-rust::String shape_type_name(const OcctShape& shape);
+/// Set whether the CALLING THREAD's BOP algorithms Build() in OCCT's parallel
+/// mode (task 7439).  Per-thread, like the pass counter; other threads' modes
+/// are untouched.
+void set_boolean_run_parallel(bool parallel);
+
+/// Read the calling thread's BOP parallelism mode.
+bool boolean_run_parallel();
+
+/// Read the calling thread's count of completed BOP Builds whose algorithm
+/// reported RunParallel() afterwards: what OCCT ran, not what was requested.
+uint64_t parallel_bop_build_count();
+
+/// The kind of `shape`'s body type after the single-body unwrap, so OCCT's
+/// 1-solid COMPOUND wrappers are Solid; throws on a null shape.
+FfiShapeKind body_shape_kind(const OcctShape& shape);
 
 // --- Boolean operations ---
 
+/// Fuse / cut / intersect two shapes.
+///
+/// The stored result is NORMALIZED, not the raw `BRepAlgoAPI_*::Shape()`:
+/// BRepAlgoAPI always wraps its answer in a bare `TopoDS_COMPOUND`, which fails
+/// the SOLID|COMPSOLID|SHELL guard in `is_watertight`/`is_closed` and defeats
+/// `BRepExtrema_DistShapeShape`'s inner-solution test in
+/// `query_distance`/`min_clearance`. All three ops route through the shared
+/// `normalize_boolean_result` (occt_wrapper.cpp), which tightens the wrapper to
+/// the topology-preserving type the result actually is — one solid → bare
+/// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
+/// Callers must therefore classify the stored repr from the real shape (see
+/// `body_shape_kind`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -679,7 +718,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_fillet_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_fillet_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
     const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
@@ -698,7 +737,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_chamfer_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_chamfer_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
     const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
@@ -737,11 +776,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 /// not be found in the result map. Zero for a well-formed fillet/chamfer.
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history);
 
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance);
-
 // --- Transforms ---
 
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz);
@@ -751,6 +785,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape, double px
 
 /// Apply a general non-rigid affine transform (3×3 linear + translation) to `shape`
 /// using gp_GTrsf / BRepBuilderAPI_GTransform (Copy=true; source untouched).
+/// The result carries no mesh, whatever `shape` carried (see ffi.rs).
 /// Row-major linear part (m00..m22) + translation column (tx, ty, tz).
 /// Singular-input guard: rejects |det(linear)| < 1e-12 with an error message containing
 /// "singular". Non-uniform scale and shear are valid. Per PRD affine-map-type.md §5 task ε.
@@ -795,7 +830,28 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 
 // --- Thicken / Shell / Offset Solid ---
 
+/// Offset a solid: every face moves |distance| along its outward normal
+/// (inward when `distance` is negative), and sharp edges stay sharp (adjacent
+/// faces are extended/trimmed to meet). Throws (surfaced as `Err`) on a zero
+/// distance, a non-solid input, a collapse (inward offset past the inradius),
+/// or an invalid/degenerate result.
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
+
+/// Offset a single open face by `distance` along its normal using
+/// `BRepOffsetAPI_MakeOffsetShape` in Skin (surface) mode, producing a fresh
+/// parallel surface (offset_surface θ). Positive `distance` offsets along the
+/// face's +normal. Throws (surfaced as `Err`) when `distance` is ~0 or the
+/// result is degenerate/invalid.
+///
+/// Caller (`OcctKernel::execute`) registers the result as `BRepKind::Face`,
+/// which assumes a single-face input -- true for every current DSL surface
+/// producer (rectangle/circle/ellipse/nurbs_surface profiles). Skin mode
+/// also accepts a multi-face shell, but a shell input would offset to a
+/// shell result and the caller-side `BRepKind::Face` tag would then be
+/// inaccurate; there is no shell-valued surface producer today, so this is
+/// latent. Revisit (classify the result's actual TopoDS shape type, or
+/// reject shell input) if one is ever added.
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 
@@ -929,6 +985,18 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode).
 /// `spine` is the path the section follows; `guide` biases section
 /// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
+///
+/// `profile` must be a wire, a vertex, or a single-wire face — a face is
+/// reduced to its outer wire before `Add`, since BRepFill_Section accepts only
+/// a wire or a vertex (an EDGE is rejected). A face with any other wire count
+/// is rejected too: a holed face (>1 wire) has no single-wire representation
+/// and dropping the holes would silently produce the wrong part, while an
+/// unbounded face (0 wires, as from make_half_space) has no bounding wire to
+/// sweep at all. `spine` and `guide` must each be a Wire; both are checked by
+/// role up front so a mistyped handle is diagnosed by name instead of through
+/// OCCT's argument-less TopoDS::Wire downcast failure. The result follows
+/// BRepOffsetAPI_MakePipe's convention: a face profile yields a SOLID, a wire
+/// profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
@@ -938,6 +1006,14 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 /// profile is added as a section via `.Add(...)`. If a second guide is
 /// present, it is applied via `SetMode(aux, /*KeepContact=*/false)`
 /// as an auxiliary-orientation constraint.
+///
+/// Each profile is normalized to a section wire before `Add` (a face is
+/// reduced to its outer wire; a holed or unbounded face is rejected), since
+/// BRepFill_Section accepts only a wire or a vertex. Each guide must be a Wire
+/// and is checked by role, as in make_pipe_shell. As there, the result is
+/// solidified when every section was a face, and left as the raw SHELL for
+/// mixed or all-wire section sets. Rejection diagnostics are attributed to
+/// `loft_guided_profiles`, not to make_pipe_shell.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 
@@ -990,6 +1066,12 @@ Point3 wire_start_point(const OcctShape& wire);
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
+
+/// `query_volume`'s number plus which arm produced it. Both functions delegate
+/// to the same `compute_volume_arm` helper, so the returned `volume` is
+/// bit-identical to `query_volume(shape)` and the two can never disagree about
+/// which arm ran. Throws std::runtime_error on null/empty topology.
+VolumeMeasurement query_volume_measurement(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 
@@ -1479,6 +1561,15 @@ bool shape_is_null(const OcctShape& shape);
 /// The shared edge has 3 incident faces, making the compound non-manifold.
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
 
+/// Build an EMPTY `TopoDS_Compound` (a compound with no children) — the
+/// simplest member of the face-less-compound class that takes
+/// `compute_volume_arm`'s tessellation fallback. The measured detail, the class
+/// boundary, and why `make_nonmanifold_compound_for_test()` cannot serve here
+/// live in ONE place: the canonical note on this fixture's definition in
+/// occt_wrapper.cpp. Production `make_compound` rejects empty input, hence this
+/// fixture.
+std::unique_ptr<OcctShape> make_empty_compound_for_test();
+
 /// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
 /// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.
 std::unique_ptr<OcctShape> make_malformed_solid_for_test();
@@ -1531,6 +1622,10 @@ std::unique_ptr<OcctShape> make_compsolid_for_test();
 /// `OcctShape` is opaque. Default construction cannot throw.
 std::unique_ptr<OcctShape> make_null_shape_for_test();
 
+/// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum` ordinal, the
+/// only way to reach its `TopAbs_SHAPE` arm; throws on any non-TopAbs value.
+FfiShapeKind shape_kind_of_topabs_for_test(uint8_t topabs);
+
 /// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
 /// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`
 /// rather than baking it into geometry (unlike `translate_shape`/`rotate_shape`
@@ -1547,6 +1642,63 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
     double dx, double dy, double dz
 );
 
+/// Run the FULL `export_step` body — same mutex, same `wrap_occt_call("export_step")`
+/// label, same guard — after injecting exactly one fault into the transferred
+/// STEP model, and return the plane-angle audit counts alongside the file text.
+///
+/// WHY THIS EXISTS: the guard's failure arms are unreachable from ordinary
+/// inputs, so injection is the only way to show it ever fires. The argument in
+/// full is on the `StepGuardFault` enum (declared in `src/ffi.rs`, generated
+/// into this language too), which is also where it stays current.
+///
+/// `fault` selects the corruption, applied inside the export mutex and after
+/// the shape has been transferred. Each value names the defect it models and
+/// the guard arm it reaches on the `StepGuardFault` variant itself (declared in
+/// `src/ffi.rs`, generated into both languages); how it is injected is
+/// `apply_step_guard_fault` in `occt_wrapper.cpp`.
+///
+/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) when
+/// the fault cannot be injected into this fixture — a fixture with nothing to
+/// corrupt would otherwise make a negative test pass vacuously — and, of
+/// course, on a guard REFUSAL, which is the production behaviour these tests
+/// exist to pin. `StepGuardProbeResult::refusal` is therefore always empty
+/// here; use `step_guard_probe_for_test` to read a refusal's counts.
+StepGuardProbeResult export_step_with_injected_fault_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
+);
+
+/// The same injected export, REPORTING the guard's finding instead of throwing
+/// it (#6344). Test-only. It differs from
+/// `export_step_with_injected_fault_for_test` in its `StepGuardDisposition`
+/// and in nothing else; what that word covers is on the enum itself, in
+/// `occt_wrapper.cpp`.
+///
+/// WHY IT EXISTS. On the refusing path the audit counts are reachable only as
+/// digits embedded in an English diagnostic, so every negative test had to
+/// hand-roll a scanner over the message — the meaningful-strings shape the
+/// house heuristics forbid, and fragile in a way that mattered (a scanner
+/// keyed on the first `"contexts="` in the text silently changes meaning when
+/// a line is prepended). This entry point hands the same numbers back as
+/// `u32` fields.
+///
+/// CONTRACT. `refusal` is empty iff the export was accepted. When it is
+/// non-empty NO file was written and `content` is empty, so this reports a
+/// refusal without weakening it into a warning; and the text is byte-identical
+/// to what the refusing hook throws minus its `"export_step: "` prefix,
+/// because both render it from one `step_export_guard_refusal` call. A test
+/// asserting that equality is what keeps the two dispositions from drifting.
+///
+/// Still THROWS for a fault that could not be injected: that is a fixture
+/// defect, not a finding about the model, and reporting it as a refusal would
+/// let a fixture with nothing to corrupt read as a guard hit.
+StepGuardProbeResult step_guard_probe_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
+);
+
 // --- Export ---
 
 /// Export shape to STEP format using the kernel-neutral `schema`
@@ -1557,6 +1709,67 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 /// exports. For AP242, falls back to AP214DIS if the linked build rejects
 /// the token, reporting it via `ExportStepResult::ap242_fell_back`.
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema);
+
+// --- STEP import (XDE) ---
+
+/// One product of a read STEP document. Products are stored in DFS pre-order
+/// first-visit order over the free roots, which is the dedupe-index contract.
+struct OcctStepProduct {
+    TCollection_ExtendedString name;
+    bool is_assembly = false;
+    /// A part's solids in its local frame, in TopExp_Explorer SOLID order: the
+    /// order body indices address. Empty for an assembly.
+    std::vector<TopoDS_Shape> solids;
+    /// This product's components are `components[first_component ..
+    /// first_component + component_count]` of the owning document.
+    std::uint32_t first_component = 0;
+    std::uint32_t component_count = 0;
+};
+
+/// One occurrence of a product inside an assembly product. `rotation`
+/// (row-major, raw gp_Trsf linear part) and `translation` (metres) place the
+/// referenced product in its PARENT's frame.
+struct OcctStepComponent {
+    std::uint32_t product_index = 0;
+    TCollection_ExtendedString instance_name;
+    std::array<double, 9> rotation{};
+    std::array<double, 3> translation{};
+};
+
+/// An XCAF document read from a STEP file plus its flattened product walk,
+/// whose parts hold their solids for body access. `status` is meaningful on
+/// every instance; the walk vectors are populated only when it is
+/// `StepReadStatus::Read`.
+struct OcctStepDocument {
+    Handle(TDocStd_Document) document;
+    StepReadStatus status;
+    std::vector<OcctStepProduct> products;
+    std::vector<OcctStepComponent> components;
+    /// Free roots, as indices into `products`, in `GetFreeShapes` order.
+    std::vector<std::uint32_t> roots;
+};
+
+/// Read a STEP file through OCCT XDE, converting lengths to metres. Expected
+/// failures (unreadable file, no product roots, failed transfer) are reported
+/// in `status`, never thrown. Serialized on the process-global XSTEP state; the
+/// `xstep.cascade.unit` static is restored before returning.
+std::unique_ptr<OcctStepDocument> read_step_document(rust::Str path);
+
+/// The document's status and flat walk records, names converted to UTF-8.
+StepTreeRecords step_document_tree(const OcctStepDocument& doc);
+
+/// The `body_index`-th of product `product_index`'s `solids`, so in that
+/// product's local frame. Out-of-range indices throw a contract violation: the
+/// caller validates against the tree first.
+std::unique_ptr<OcctShape> step_document_body(
+    const OcctStepDocument& doc,
+    std::uint32_t product_index,
+    std::uint32_t body_index
+);
+
+/// Current value of the process-global `xstep.cascade.unit` static, read under
+/// the XSTEP mutex after registering the STEP statics. Test-only observability.
+rust::String xstep_cascade_unit_for_test();
 
 // --- BRep serialization ---
 

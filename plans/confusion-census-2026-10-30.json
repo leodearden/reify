@@ -1,0 +1,1614 @@
+{
+  "record_version": 2,
+  "run_id": "census-reify-20261030",
+  "date": "2026-10-30",
+  "project_id": "reify",
+  "project_root": "/home/leo/src/reify",
+  "force": false,
+  "method": {
+    "run_id": "census-reify-20261030",
+    "as_of_sha": "77df97265253c514ebd4fa0ef77361aafebeb929",
+    "since": "ad0ab1acf3b7b3bb5220e2e9c36e4ac3f5e43f67",
+    "evidence": {
+      "window": [
+        "2026-09-30T00:00:00+00:00",
+        "2026-10-30T00:00:00+00:00"
+      ],
+      "sessions_enumerated": 3978,
+      "skipped_coded": 398,
+      "skipped_zero_signal": 1815,
+      "mined": 60,
+      "ledger_rows": 412
+    },
+    "verification": {
+      "confirmed": 5,
+      "weakened": 0,
+      "refuted": 13,
+      "unverified": 1
+    },
+    "cost": {
+      "miner_calls": 60,
+      "verify_calls": 19,
+      "synthesis_calls": 1,
+      "probe_calls": 4,
+      "embedding_calls": 1,
+      "wall_clock_secs": 5974.367
+    },
+    "inputs_consumed": [
+      "review-reify-20261015",
+      "review-all-reify-20261010"
+    ],
+    "extra": {
+      "inputs_consumed_note": "/hotspot-survey: no record matching plans/bug-hotspot-survey-<YYYY-MM-DD>[-<n>]-full-findings.json",
+      "screened": {
+        "title": 0,
+        "session": 1,
+        "key": 1,
+        "cross_instrument": 0
+      },
+      "attached": 0,
+      "adjudicated": 30,
+      "ledger_created_this_run": false,
+      "ledger_state": "ok",
+      "ledger_pruned": 0,
+      "ledger_error": null,
+      "verify_normalisations": {
+        "anchor_rewritten": 0,
+        "anchor_from_remediation": 0,
+        "anchor_from_title": 0,
+        "tag_dropped": 0,
+        "severity_missing": 0,
+        "severity_substituted": 0,
+        "severity_reason_missing": 0,
+        "route_defaulted": 0,
+        "remediation_rejected": 0,
+        "reason_missing": 0
+      },
+      "reverify": {
+        "due": 1,
+        "offered": 1,
+        "gone": 1,
+        "present": 0,
+        "inconclusive": 0,
+        "deferred": 0
+      }
+    }
+  },
+  "mining": {
+    "batch_stats": [
+      {
+        "index": 0,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.75,
+        "saturated": false,
+        "status": "ok"
+      },
+      {
+        "index": 1,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.9,
+        "saturated": true,
+        "status": "ok"
+      },
+      {
+        "index": 2,
+        "total": 20,
+        "succeeded": 20,
+        "failed": 0,
+        "dup_rate": 0.9,
+        "saturated": true,
+        "status": "ok"
+      }
+    ],
+    "stop_reason": "saturated",
+    "max_batches": 50
+  },
+  "verify_coverage": {
+    "novel": 8,
+    "offered": 8,
+    "cap": 150
+  },
+  "mass_rejection": null,
+  "dropped_verdicts": [],
+  "matrix_md": "| origin \\ manifested | decompose | implement | ops | unknown |\n| --- | --- | --- | --- | --- |\n| decompose | 3 | 0 | 0 | 0 |\n| architect | 0 | 0 | 0 | 1 |\n| merge | 0 | 0 | 1 | 0 |\n| ops | 0 | 0 | 8 | 0 |\n| unknown | 0 | 3 | 0 | 0 |\n",
+  "synthesis": {
+    "outcome": "ok",
+    "calls": 1,
+    "reason": null,
+    "brief": {
+      "run_id": "census-reify-20261030",
+      "new": [
+        {
+          "key": "fk-9c36e1e93a30",
+          "entry_id": "entry-cand-20261010-3",
+          "title": "Skill location guessed under user-level ~/.claude/skills when the skill is project-scoped or elsewhere",
+          "cause": "The agent assumed the merge-queue skill lives at /home/leo/.claude/skills/merge-queue/. The project instructions only name `/merge-queue` as a command and give no on-disk location for the skill. The guess failed with exit 2, so the agent had no discoverable pointer to where project skills are kept (for example the repo's .claude/skills/).",
+          "area": "repo",
+          "anchor": "CLAUDE.md",
+          "tags": [
+            "h11",
+            "h13",
+            "kind:confusion"
+          ],
+          "origin_phase": "unknown",
+          "manifested_phase": "ops",
+          "sessions": [
+            "24720787-f969-4d31-80bb-9f212533b2ac"
+          ],
+          "verdict": {
+            "severity": "low",
+            "severity_reason": "The cost is contained: one failed lookup, after which the agent can fall back on the named `scripts/land.sh` and `/merge-queue` mechanisms.",
+            "reason": "In /home/leo/src/reify/CLAUDE.md line 10, `/merge-queue` appears only as a command name with no on-disk location. The project's .claude/skills/ holds only hotspot-survey, prd, reify-design, review-all and audit, so there is no merge-queue skill in the tree. The skill is therefore not discoverable under the repo, and an agent that guesses ~/.claude/skills/merge-queue/ gets a missing-path error. I could not run ls on ~/.claude/skills, so I don't know where the skill actually lives.",
+            "proposal": "In the Landing on main bullet, state where the `/merge-queue` skill is defined (for example the dark-factory skills directory, or that it is an orchestrator-provided command with no file in this repo) so agents do not guess ~/.claude/skills/.",
+            "route": "mechanical"
+          }
+        },
+        {
+          "key": "fk-eaa27e3e892f",
+          "entry_id": "entry-cand-20260726-13",
+          "title": "Escalation-watcher rotation script lives outside the target project root and requires an explicit env var, not cwd inference",
+          "cause": "The rotation prompt for an autonomous L1 escalation watcher states only the target project's root and queue dir (e.g. \"Project root: /home/leo/src/reify ... Escalation queue: /home/leo/src/reify/data/escalations\") with no pointer to where the watcher-rearm tooling itself lives. The agent first hit 'no such file or directory' assuming the script was relative to the stated project root, then had to brute-force search common dark-factory install locations plus a full filesystem `find /`, which timed out after 2 minutes. After finally locating scripts/watcher-rearm.sh under /home/leo/src/dark-factory, `cd`-ing into that directory before invoking it was still insufficient \u2014 the script hard-requires the DARK_FACTORY_ROOT env var to be explicitly exported rather than inferring it from cwd, producing a second failure before the agent corrected the invocation on a later retry.",
+          "area": "repo",
+          "anchor": "slug:watcher-rearm-cross-repo-invocation",
+          "tags": [
+            "h11",
+            "h10",
+            "kind:confusion"
+          ],
+          "origin_phase": "ops",
+          "manifested_phase": "ops",
+          "sessions": [
+            "0f47ba75-4134-4691-a92c-b55103dab229",
+            "6bdbd840-a2c1-4cc1-8f97-17ea5033632d",
+            "5adc47e7-acf0-4b4b-957c-e7623a5733b5",
+            "618909a5-94dc-46ba-94a2-e04c3237ae7d"
+          ],
+          "verdict": {
+            "severity": "low",
+            "severity_reason": "The cost is wasted search turns for a watcher agent, and the fix sits in dark-factory's rotation prompt or the script, outside this tree.",
+            "reason": "The reify tree contains no scripts/watcher-rearm.sh. The only DARK_FACTORY_ROOT use is in scripts/test_legibility_reify_config.py, which defaults to /home/leo/src/dark-factory. Neither /home/leo/CLAUDE.md nor /home/leo/src/reify/CLAUDE.md points to the dark-factory checkout for watcher tooling. The rotation prompt and the script's DARK_FACTORY_ROOT requirement belong to dark-factory, which this tree does not contain. I did not read the dark-factory checkout, so I did not check the script's own env-var behaviour.",
+            "proposal": null,
+            "route": "mechanical"
+          }
+        },
+        {
+          "key": "fk-008cb070280b",
+          "entry_id": "entry-cand-20260716-5",
+          "title": "Write tool unavailable in autonomous escalation-watcher session \u2014 memory-write attempt lost",
+          "cause": "Agent tried to persist a distilled feedback lesson (a warm-lane merge-verify lock-divergence finding) using the Write tool, following the interactive-session auto-memory convention of writing a markdown file with frontmatter, but the autonomous escalation-watcher agent class does not have the Write tool enabled in this context. The write failed outright and the finding was not captured through any fallback (e.g. add_memory), risking silent loss of a discovery right before the session's rotation-limit exit.",
+          "area": "repo",
+          "anchor": "slug:escalation-watcher-write-tool-not-provisioned",
+          "tags": [
+            "h10",
+            "kind:confusion"
+          ],
+          "origin_phase": "unknown",
+          "manifested_phase": "ops",
+          "sessions": [
+            "66f21483-9eda-4adc-b83b-b528b0af702d",
+            "b5a9cf5f-9acd-4bf9-8a6c-5b401ac9e9b2",
+            "b8c95b4a-8efb-459e-9433-19717d995f50"
+          ],
+          "verdict": {
+            "severity": "low",
+            "severity_reason": "The cost is contained: a distilled lesson can be lost, but task code and merges are unaffected.",
+            "reason": "The failure is a recurring, observable fact. Three sightings in reify sessions (2026-07-05, 07-12 and 07-16) show the same error: the Write tool is not enabled for the autonomous escalation-watcher agent class, so its memory-write attempts were lost. The tree already records the same signature in docs/legibility/confusion-codebook.yaml (around lines 6478 and 6931), so it is not novel. Tool provisioning for that agent class lives in dark-factory, not in this tree. dark-factory-orchestrator.yaml mentions the escalation-watcher only in comments. Reify's CLAUDE.md already tells agents to use `add_memory` for memory writes, so no existing file here teaches or fails to guard against the confusion.",
+            "proposal": null,
+            "route": "structural"
+          }
+        },
+        {
+          "key": "fk-7fb018091f5a",
+          "entry_id": "entry-cand-20260705-4",
+          "title": "StructuredOutput double-wraps array under a key matching the schema's field name",
+          "cause": "When asked to tag a batch of items (here, tasks) with a schema whose top-level array field is itself named \"tasks\", the model reifies the batch concept twice, emitting {\"tasks\": {\"tasks\": [...]}} instead of {\"tasks\": [...]} \u2014 the field name collides with the natural noun for the collection being processed, producing a spurious extra wrapper object that fails schema validation (`/tasks: must be array`).",
+          "area": "repo",
+          "anchor": "slug:structuredoutput-array-field-double-wrap",
+          "tags": [
+            "h10",
+            "h12",
+            "kind:confusion"
+          ],
+          "origin_phase": "decompose",
+          "manifested_phase": "decompose",
+          "sessions": [
+            "3b5f3598-706c-4ab5-bc92-e4508f3b5b45",
+            "f537786c-9114-4fb5-a104-6fea1ba670bf",
+            "9b42a6f6-a5c3-4d04-9c45-472def0003a4"
+          ],
+          "verdict": {
+            "severity": "low",
+            "severity_reason": "The schema validator rejects the malformed output at tool-call time, so the model can retry. The cost is a wasted turn, not a wrong change landing.",
+            "reason": "The pattern is recorded in this tree's docs/legibility/confusion-codebook.yaml, which has an entry for a StructuredOutput array field double-wrapped under its own key name (`{\"decisions\": {\"decisions\": [...]}}`, plus a `{\"tasks\": {\"tasks\": [...]}}` quote). I found no `tasks` StructuredOutput schema or decompose prompt in the tree. That tooling lives in dark-factory, so no file here produces or guards against it. I did not read the codebook entry in full or check whether this cluster duplicates it.",
+            "proposal": null,
+            "route": "mechanical"
+          }
+        }
+      ],
+      "re_observed": [
+        {
+          "key": "fk-e536a9dd5f09",
+          "entry_id": "entry-cand-20260924-8",
+          "title": "Plan.json or task-meta iteration artifact missing at bootstrap",
+          "cause": "Warm-lane task worktree initialized without expected plan.json or iterations.jsonl artifacts, or agent searching wrong path structure (sibling vs nested under worktrees/)",
+          "gained_sessions": [
+            "17d028ae-a9be-4a51-9332-f6b32a8f6a66",
+            "9069f552-8389-44fb-9fe4-39a9a3050691",
+            "4e6ca5c8-6510-4bc0-9384-c5440a230ef2",
+            "1930e554-9669-4a0f-b464-709b16bbda62"
+          ],
+          "standing": {
+            "severity": "low",
+            "status": "open",
+            "origin_phase": "architect",
+            "manifested_phase": "implement"
+          },
+          "verdict": {
+            "severity": "low",
+            "severity_reason": "The error is a cheap, self-correcting wrong-path probe that costs a few wasted turns. It does not risk a wrong change landing.",
+            "reason": "The path layout is observable and matches the confusion. The metadata directory is /home/leo/src/warm-lanes/worktrees/.task-meta, a sibling of the lane directories. /home/leo/src/warm-lanes/.task-meta does not exist. Each lane's .task entry is an absolute symlink into <worktree_base>/.task-meta/<lane>/. It dangles until the architect writes the plan, and iterations.jsonl is not among the files recorded there. The reify docs (warm-lane-audit-runbook.md A6, and scripts/warm-lane-audit.sh) mention '<worktree_base>/.task-meta/<lane>/' only abstractly. They never give the concrete path /home/leo/src/warm-lanes/worktrees/.task-meta/<lane>/ or the file list, so an agent has to guess between the lane root, worktrees/, and .task. The sightings give no target paths for the lane-25 session and do not show what actually caused the not-found errors. The cause is not directly verifiable, so this confirms only that the layout is ambiguous in the docs.",
+            "proposal": "In the A6 bullet, state the concrete task-metadata location (/home/leo/src/warm-lanes/worktrees/.task-meta/<lane>/, with .task symlinking to it and dangling until the plan is written) and list the files it holds (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts).",
+            "route": "mechanical"
+          },
+          "adopted_from": null
+        }
+      ],
+      "unkeyed_re_observed": 10,
+      "invariant_counts": {},
+      "counts": {
+        "mined": 60,
+        "confirmed": 5,
+        "refuted": 13,
+        "screened_title": 0,
+        "screened_session": 1,
+        "screened_key": 1,
+        "screened_cross_instrument": 0,
+        "attached": 0,
+        "adjudicated": 30
+      }
+    },
+    "document": {
+      "new": [
+        {
+          "key": "fk-9c36e1e93a30",
+          "observation": "The Landing on main bullet of /home/leo/src/reify/CLAUDE.md names `/merge-queue` as a command and gives it no on-disk home, while the repo's own .claude/skills/ holds no merge-queue skill, so a reader of that file alone cannot resolve the name it is told to use \u2014 heuristic 13, files make internal sense in isolation. The skill's location is held nowhere the tree points at, so the agent reconstructed it by analogy with ~/.claude/skills/ and got exit 2 \u2014 heuristic 11, SPOT. The failure was cheap because the same bullet names scripts/land.sh as the fallback path; the verifier could not inspect ~/.claude/skills, so where the skill does live remains unestablished."
+        },
+        {
+          "key": "fk-eaa27e3e892f",
+          "observation": "The rotation prompt states the target project's root and queue dir but no location for the watcher-rearm tooling, and neither /home/leo/CLAUDE.md nor reify's CLAUDE.md points at the dark-factory checkout for it, so the one fact the agent needed had no single home it could reach \u2014 heuristic 11, SPOT; the search cost four sessions' worth of probing, including a filesystem-wide find that timed out. Once found, scripts/watcher-rearm.sh refused to run from its own directory without an exported DARK_FACTORY_ROOT: the precondition is enforced, but not informatively enough to tell a cwd-positioned caller what to export \u2014 heuristic 10, clear invariants informatively enforced. The reify tree carries only one DARK_FACTORY_ROOT reference (scripts/test_legibility_reify_config.py, defaulting to /home/leo/src/dark-factory); the script itself was not read, so its actual env-var behaviour is the report's claim, not a verified fact."
+        },
+        {
+          "key": "fk-008cb070280b",
+          "observation": "Three reify sessions show the autonomous escalation-watcher class attempting a Write-tool memory file and losing the lesson when the tool is absent. The role's tool set is a precondition the agent discovers only by failing at it, with no surfaced statement of what is provisioned and no prompt-level redirect to the fallback \u2014 heuristic 10, clear invariants informatively enforced. Reify's CLAUDE.md already directs memory writes to `add_memory`, so the fallback exists in the tree but was not reached for; provisioning for the class is dark-factory's, which this tree does not contain. The verifier notes the same signature already appears in docs/legibility/confusion-codebook.yaml near lines 6478 and 6931 without checking whether this cluster duplicates it."
+        },
+        {
+          "key": "fk-7fb018091f5a",
+          "observation": "When the StructuredOutput schema's top-level array field shares its name with the collection being tagged (`tasks`), the model emits {\"tasks\": {\"tasks\": [...]}} and the validator rejects it with `/tasks: must be array`. The boundary parse into typed values does its job \u2014 heuristic 12, structured data instead of meaningful strings \u2014 and the rejection names the path and the expected type, so the agent can retry in one turn \u2014 heuristic 10, informatively enforced. No `tasks` schema or decompose prompt exists in this tree; the producing tooling is dark-factory's. The verifier found a codebook entry recording the same shape (`{\"decisions\": {\"decisions\": [...]}}` with a `tasks` quote) and did not read it in full, so this may re-sight a standing entry rather than a new pattern."
+        }
+      ],
+      "re_observed": [
+        {
+          "key": "fk-e536a9dd5f09",
+          "sessions": [
+            "17d028ae-a9be-4a51-9332-f6b32a8f6a66",
+            "9069f552-8389-44fb-9fe4-39a9a3050691",
+            "4e6ca5c8-6510-4bc0-9384-c5440a230ef2",
+            "1930e554-9669-4a0f-b464-709b16bbda62"
+          ],
+          "changed": []
+        }
+      ],
+      "phase_refinements": [
+        {
+          "key": "fk-9c36e1e93a30",
+          "origin_phase": "ops",
+          "manifested_phase": "ops",
+          "why": "The gap the verdict locates is in the operator-maintained CLAUDE.md Landing on main bullet, which names `/merge-queue` without a location; that is operational guidance authored outside any pipeline phase, so the origin is better placed at ops than left unknown."
+        },
+        {
+          "key": "fk-008cb070280b",
+          "origin_phase": "ops",
+          "manifested_phase": "ops",
+          "why": "The verdict places tool provisioning for the escalation-watcher class in dark-factory's operator configuration and notes dark-factory-orchestrator.yaml mentions the class only in comments; the absent Write tool is an ops-time provisioning decision, so origin is better placed at ops than unknown."
+        }
+      ],
+      "corrections": [],
+      "notes": [
+        {
+          "claim": "fk-e536a9dd5f09's four new sessions add weight but no new evidence about the cause: the verdict confirms only that the runbook's `<worktree_base>/.task-meta/<lane>/` wording is abstract and that .task dangles until the architect writes plan.json, while the sightings carry no target paths, so the standing cause's two alternatives (artifacts absent vs. wrong path probed) remain undistinguished.",
+          "evidence": "Verdict reason: 'The sightings give no target paths for the lane-25 session and do not show what actually caused the not-found errors. The cause is not directly verifiable.'",
+          "verified": false
+        },
+        {
+          "claim": "fk-7fb018091f5a and fk-008cb070280b may each duplicate an entry already present in docs/legibility/confusion-codebook.yaml rather than being new patterns.",
+          "evidence": "Both verdicts cite existing codebook entries with the same signature (the double-wrap entry quoting `{\"tasks\": {\"tasks\": [...]}}`; the Write-tool entries near lines 6478 and 6931) and both state the verifier did not check whether the cluster duplicates them.",
+          "verified": false
+        },
+        {
+          "claim": "Three of this run's four new findings (fk-eaa27e3e892f, fk-008cb070280b, fk-7fb018091f5a) have their producing mechanism in dark-factory, not in the reify tree, so no reify-side proposal is actionable for them.",
+          "evidence": "Each verdict states the relevant script, tool provisioning, or schema lives in dark-factory and that the reify tree contains no file that produces or guards against the confusion; none carries a proposal.",
+          "verified": false
+        }
+      ]
+    },
+    "applied": {
+      "clusters_refined": 2,
+      "entries_refined": 2,
+      "corrections_applied": 0,
+      "correction_skipped": 0,
+      "skipped_unknown_entry": 0
+    },
+    "standing": 111
+  },
+  "filing": {
+    "decisions": [
+      {
+        "entry_id": "entry-cand-20261010-3",
+        "finding_key": "fk-9c36e1e93a30",
+        "title": "Skill location guessed under user-level ~/.claude/skills when the skill is project-scoped or elsewhere",
+        "project_root": "/home/leo/src/reify",
+        "step": "curator",
+        "standing": "filed",
+        "ticket": "tkt_0RWCTNTDD53A2NJ735C8EB501K",
+        "task_id": 9587,
+        "resolution": "created",
+        "note": null,
+        "disposition": "filed:9587"
+      },
+      {
+        "entry_id": "entry-cand-20260924-8",
+        "finding_key": "fk-e536a9dd5f09",
+        "title": "Warm-lane task-meta path ambiguity causing repeated not-found errors",
+        "project_root": "/home/leo/src/reify",
+        "step": "semantic",
+        "standing": "filed",
+        "ticket": null,
+        "task_id": 9430,
+        "resolution": "existing",
+        "note": null,
+        "disposition": "filed:9430"
+      },
+      {
+        "entry_id": "entry-cand-20260726-13",
+        "finding_key": "fk-eaa27e3e892f",
+        "title": "Escalation-watcher rotation script lives outside the target project root and requires an explicit env var, not cwd inference",
+        "project_root": "/home/leo/src/reify",
+        "step": "semantic",
+        "standing": "filed",
+        "ticket": null,
+        "task_id": 9432,
+        "resolution": "existing",
+        "note": null,
+        "disposition": "filed:9432"
+      },
+      {
+        "entry_id": "entry-cand-20260705-4",
+        "finding_key": "fk-7fb018091f5a",
+        "title": "StructuredOutput double-wraps array under a key matching the schema's field name",
+        "project_root": "/home/leo/src/reify",
+        "step": "curator",
+        "standing": "filed",
+        "ticket": "tkt_0RWCTNTZB5BJ3A0K7BEGWKXJB4",
+        "task_id": 9588,
+        "resolution": "created",
+        "note": null,
+        "disposition": "filed:9588"
+      }
+    ],
+    "unfiled": [],
+    "unreachable": null,
+    "carried": [],
+    "pending_tickets": [],
+    "budget_exhausted": false,
+    "errors": [],
+    "backfill": {
+      "linked": [],
+      "unmatched": [],
+      "error": null,
+      "done_in_run": "census-reify-20261022"
+    },
+    "structural": [
+      {
+        "entry_id": "entry-cand-20260716-5",
+        "title": "Write tool unavailable in autonomous escalation-watcher session \u2014 memory-write attempt lost",
+        "finding_key": "fk-008cb070280b",
+        "anchor": "slug:escalation-watcher-write-tool-not-provisioned"
+      }
+    ]
+  },
+  "dispositions": {
+    "any_back_links": true,
+    "statuses_error": null,
+    "rows": [
+      {
+        "entry_id": "entry-cand-20260807-1",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7894,
+        "task_status": "cancelled",
+        "outcome": "outranked",
+        "detail": 5910,
+        "disposition": "filed:5910"
+      },
+      {
+        "entry_id": "entry-cand-20260807-1",
+        "finding_key": null,
+        "project_root": "/home/leo/src/dark-factory",
+        "ticket": null,
+        "task_id": 5910,
+        "task_status": "pending",
+        "outcome": "live",
+        "detail": null,
+        "disposition": "filed:5910"
+      },
+      {
+        "entry_id": "entry-cand-20260921-14",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7895,
+        "task_status": "cancelled",
+        "outcome": "outranked",
+        "detail": 5913,
+        "disposition": "filed:5913"
+      },
+      {
+        "entry_id": "entry-cand-20260921-14",
+        "finding_key": null,
+        "project_root": "/home/leo/src/dark-factory",
+        "ticket": null,
+        "task_id": 5913,
+        "task_status": "pending",
+        "outcome": "live",
+        "detail": null,
+        "disposition": "filed:5913"
+      },
+      {
+        "entry_id": "entry-cand-20260823-13",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7896,
+        "task_status": "done",
+        "outcome": "settled",
+        "detail": "fixed",
+        "disposition": "fixed:ad0ab1acf3b7b3bb5220e2e9c36e4ac3f5e43f67"
+      },
+      {
+        "entry_id": "entry-cand-20260912-9",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7897,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260805-1",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7898,
+        "task_status": "pending",
+        "outcome": "live",
+        "detail": null,
+        "disposition": "filed:7898"
+      },
+      {
+        "entry_id": "entry-cand-20260818-22",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7899,
+        "task_status": "done",
+        "outcome": "settled",
+        "detail": "fixed",
+        "disposition": "fixed:ad0ab1acf3b7b3bb5220e2e9c36e4ac3f5e43f67"
+      },
+      {
+        "entry_id": "entry-cand-20260831-14",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7902,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309C15X3Y9GB5DQKBWFKM0H from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260813-9",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7903,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309CEWK4ZMJAYFZGKBXJP7M from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260821-14",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7905,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260901-16",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7907,
+        "task_status": "cancelled",
+        "outcome": "outranked",
+        "detail": 7960,
+        "disposition": "fixed:77df97265253c514ebd4fa0ef77361aafebeb929"
+      },
+      {
+        "entry_id": "entry-cand-20260901-16",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": "tkt_0RW309CQ46Y4XMV82SNCC58XRQ",
+        "task_id": 7960,
+        "task_status": "done",
+        "outcome": "gone",
+        "detail": "77df97265253c514ebd4fa0ef77361aafebeb929",
+        "disposition": "fixed:77df97265253c514ebd4fa0ef77361aafebeb929"
+      },
+      {
+        "entry_id": "entry-cand-20260803-1",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7908,
+        "task_status": "done",
+        "outcome": "settled",
+        "detail": "fixed",
+        "disposition": "fixed:ad0ab1acf3b7b3bb5220e2e9c36e4ac3f5e43f67"
+      },
+      {
+        "entry_id": "entry-cand-20260901-17",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7909,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260914-17",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7910,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260914-18",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7912,
+        "task_status": "done",
+        "outcome": "outranked",
+        "detail": 9431,
+        "disposition": "filed:9431"
+      },
+      {
+        "entry_id": "entry-cand-20260914-18",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": "tkt_0RW309D3JN4WBQX52BWG3KESDE",
+        "task_id": 9431,
+        "task_status": "pending",
+        "outcome": "live",
+        "detail": null,
+        "disposition": "filed:9431"
+      },
+      {
+        "entry_id": "entry-cand-20260921-16",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7913,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260911-20",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7914,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260819-19",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7915,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260908-10",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7916,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260908-11",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7917,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260903-25",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7918,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260828-16",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7919,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260915-20",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7920,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309D9HGC305Y7YDSB0YJ465 from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260807-2",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7921,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260910-18",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7922,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260813-12",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7923,
+        "task_status": "done",
+        "outcome": "settled",
+        "detail": "fixed",
+        "disposition": "fixed:ad0ab1acf3b7b3bb5220e2e9c36e4ac3f5e43f67"
+      },
+      {
+        "entry_id": "entry-cand-20260818-23",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7924,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309DGXQA61N6SEEVYYAP8VT from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260923-10",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7925,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260918-15",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7926,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309VX04WN8MQPM15XB3DN7K from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260916-19",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7927,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260916-20",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7928,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260920-8",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7929,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309W5XY2B5MPD2ZC79XVZMA from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260826-33",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7930,
+        "task_status": "done",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309WDNRGXQ0E7BSG19XRWBA from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260904-15",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7931,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260912-11",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7932,
+        "task_status": "cancelled",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309WPD3FDBWHRHPVRN24S90 from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260830-14",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 7933,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260926-5",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 8477,
+        "task_status": "cancelled",
+        "outcome": "abandoned",
+        "detail": "not sighted this run",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20261006-7",
+        "finding_key": null,
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 8476,
+        "task_status": "done",
+        "outcome": "answered",
+        "detail": "re-filing tkt_0RW309WXG8BWE3XX2DBAEEGMN6 from run census-reify-20261022 combined into this task by the curator; not re-filed while this task decides the entry",
+        "disposition": "open"
+      },
+      {
+        "entry_id": "entry-cand-20260924-8",
+        "finding_key": "fk-e536a9dd5f09",
+        "project_root": "/home/leo/src/reify",
+        "ticket": null,
+        "task_id": 9430,
+        "task_status": "pending",
+        "outcome": "live",
+        "detail": null,
+        "disposition": "filed:9430"
+      }
+    ],
+    "reverify": {
+      "due": 1,
+      "offered": 1,
+      "gone": 1,
+      "present": 0,
+      "inconclusive": 0,
+      "deferred": 0
+    },
+    "changes": [
+      {
+        "entry_id": "entry-cand-20260901-16",
+        "from_status": "open",
+        "to_status": "fixed",
+        "accepted_by": null,
+        "fixed_at_sha": "77df97265253c514ebd4fa0ef77361aafebeb929"
+      }
+    ],
+    "refiled": []
+  },
+  "screened": {
+    "counts": {
+      "title": 0,
+      "session": 1,
+      "key": 1,
+      "cross_instrument": 0
+    },
+    "inputs": {
+      "consumed": [
+        "review-reify-20261015",
+        "review-all-reify-20261010"
+      ],
+      "note": "/hotspot-survey: no record matching plans/bug-hotspot-survey-<YYYY-MM-DD>[-<n>]-full-findings.json"
+    },
+    "screened": [
+      {
+        "rule": "session",
+        "title": "Search tool timeout returns an empty results list, indistinguishable from a genuine no-match during verification",
+        "session": "8077e4f0-8bbd-4e66-b6f6-58ed343972c1",
+        "matched": [
+          "entry-cand-20260923-9",
+          "entry-cand-20260914-19"
+        ]
+      }
+    ],
+    "surfaced": [],
+    "attached": [
+      {
+        "title": "Warm-lane task-meta path ambiguity causing repeated not-found errors",
+        "candidate_id": "cand-20260924-7",
+        "entry_id": "entry-cand-20260924-8",
+        "key": "fk-e536a9dd5f09",
+        "verifier_tags": [
+          "h11",
+          "h13",
+          "kind:confusion"
+        ],
+        "tag_disagreement": null
+      }
+    ],
+    "re_observed": []
+  },
+  "adjudication": {
+    "model": "text-embedding-3-small",
+    "thresholds": {
+      "attach_min_similarity": 0.9,
+      "cluster_min_similarity": 0.85
+    },
+    "max_clusters_per_run": 10,
+    "skipped": null,
+    "embedding": {
+      "requests": 1,
+      "embedded": 28,
+      "cached": 921,
+      "pruned": 181
+    },
+    "queue_depth": {
+      "candidates": 818,
+      "clusters": 785
+    },
+    "processed": [
+      {
+        "representative": "cand-20260924-7",
+        "title": "Warm-lane task-meta path ambiguity causing repeated not-found errors",
+        "members": [
+          "cand-20260730-17",
+          "cand-20260801-14",
+          "cand-20260722-24",
+          "cand-20260902-2",
+          "cand-20260924-7"
+        ],
+        "sessions": 5,
+        "outcome": "verified"
+      },
+      {
+        "representative": "cand-20260728-52",
+        "title": "Warm-lane worktree dispatched without materialized .task/plan.json",
+        "members": [
+          "cand-20260720-10",
+          "cand-20260720-19",
+          "cand-20260725-18",
+          "cand-20260719-14",
+          "cand-20260728-52"
+        ],
+        "sessions": 5,
+        "outcome": "rejected"
+      },
+      {
+        "representative": "cand-20260726-13",
+        "title": "Escalation-watcher rotation script lives outside the target project root and requires an explicit env var, not cwd inference",
+        "members": [
+          "cand-20260726-13",
+          "cand-20260722-6",
+          "cand-20260722-15",
+          "cand-20260716-6"
+        ],
+        "sessions": 4,
+        "outcome": "verified"
+      },
+      {
+        "representative": "cand-20260716-5",
+        "title": "Write tool unavailable in autonomous escalation-watcher session \u2014 memory-write attempt lost",
+        "members": [
+          "cand-20260705-5",
+          "cand-20260712-3",
+          "cand-20260716-5"
+        ],
+        "sessions": 3,
+        "outcome": "verified"
+      },
+      {
+        "representative": "cand-20260709-8",
+        "title": "Escalation-watcher agent invokes filesystem Write tool for memory, unaware only MCP memory tools are enabled in this execution context",
+        "members": [
+          "cand-20260709-6",
+          "cand-20260707-7",
+          "cand-20260709-8"
+        ],
+        "sessions": 3,
+        "outcome": "rejected"
+      },
+      {
+        "representative": "cand-20260705-4",
+        "title": "StructuredOutput double-wraps array under a key matching the schema's field name",
+        "members": [
+          "cand-20260705-4",
+          "cand-20260704-5"
+        ],
+        "sessions": 3,
+        "outcome": "verified"
+      },
+      {
+        "representative": "cand-20261027-1",
+        "title": "MCP plan-tool called with guessed argument names absent from its declared schema",
+        "members": [
+          "cand-20261006-5",
+          "cand-20261027-1"
+        ],
+        "sessions": 2,
+        "outcome": "rejected"
+      },
+      {
+        "representative": "cand-20261008-1",
+        "title": "Info-level escalation park does not hold against the scheduler's stranded-task sweep",
+        "members": [
+          "cand-20261008-1",
+          "cand-20261005-6"
+        ],
+        "sessions": 2,
+        "outcome": "rejected"
+      },
+      {
+        "representative": "cand-20260920-6",
+        "title": "Agent serializes MCP envelope markup into memory content payload, fails validation 3x without self-correction",
+        "members": [
+          "cand-20260824-6",
+          "cand-20260920-6"
+        ],
+        "sessions": 2,
+        "outcome": "rejected"
+      },
+      {
+        "representative": "cand-20260916-15",
+        "title": "Python one-liner command construction missing statement separators",
+        "members": [
+          "cand-20260826-30",
+          "cand-20260916-15"
+        ],
+        "sessions": 2,
+        "outcome": "rejected"
+      }
+    ],
+    "attached": [],
+    "unattached": [],
+    "inconclusive": null,
+    "mass_rejection": null
+  },
+  "dry_run": null,
+  "withheld": [],
+  "findings": [
+    {
+      "id": "entry-cand-20261010-3",
+      "key": "fk-9c36e1e93a30",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "CLAUDE.md",
+      "tags": [
+        "h11",
+        "h13",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts",
+        "present-tree"
+      ],
+      "statement": "The agent assumed the merge-queue skill lives at /home/leo/.claude/skills/merge-queue/. The project instructions only name `/merge-queue` as a command and give no on-disk location for the skill. The guess failed with exit 2, so the agent had no discoverable pointer to where project skills are kept (for example the repo's .claude/skills/). Verifier: In /home/leo/src/reify/CLAUDE.md line 10, `/merge-queue` appears only as a command name with no on-disk location. The project's .claude/skills/ holds only hotspot-survey, prd, reify-design, review-all and audit, so there is no merge-queue skill in the tree. The skill is therefore not discoverable under the repo, and an agent that guesses ~/.claude/skills/merge-queue/ gets a missing-path error. I could not run ls on ~/.claude/skills, so I don't know where the skill actually lives.",
+      "proposal": "In the Landing on main bullet, state where the `/merge-queue` skill is defined (for example the dark-factory skills directory, or that it is an orchestrator-provided command with no file in this repo) so agents do not guess ~/.claude/skills/.",
+      "verdict": "confirmed",
+      "disposition": "filed:9587",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "entry-cand-20260924-8",
+      "key": "fk-e536a9dd5f09",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "docs/notes/warm-lane-audit-runbook.md",
+      "tags": [
+        "h11",
+        "h13",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts",
+        "present-tree"
+      ],
+      "statement": "Agent probing .task-meta path with conflicting assumptions: directory structure may be under worktrees/ vs at lane root, or path resolution failing when worktree context expected vs provided Verifier: The path layout is observable and matches the confusion. The metadata directory is /home/leo/src/warm-lanes/worktrees/.task-meta, a sibling of the lane directories. /home/leo/src/warm-lanes/.task-meta does not exist. Each lane's .task entry is an absolute symlink into <worktree_base>/.task-meta/<lane>/. It dangles until the architect writes the plan, and iterations.jsonl is not among the files recorded there. The reify docs (warm-lane-audit-runbook.md A6, and scripts/warm-lane-audit.sh) mention '<worktree_base>/.task-meta/<lane>/' only abstractly. They never give the concrete path /home/leo/src/warm-lanes/worktrees/.task-meta/<lane>/ or the file list, so an agent has to guess between the lane root, worktrees/, and .task. The sightings give no target paths for the lane-25 session and do not show what actually caused the not-found errors. The cause is not directly verifiable, so this confirms only that the layout is ambiguous in the docs.",
+      "proposal": "In the A6 bullet, state the concrete task-metadata location (/home/leo/src/warm-lanes/worktrees/.task-meta/<lane>/, with .task symlinking to it and dangling until the plan is written) and list the files it holds (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts).",
+      "verdict": "confirmed",
+      "disposition": "filed:9430",
+      "first_seen": "census-reify-20261022",
+      "last_seen": [
+        "census-reify-20261022"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "entry-cand-20260726-13",
+      "key": "fk-eaa27e3e892f",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:watcher-rearm-cross-repo-invocation",
+      "tags": [
+        "h11",
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts",
+        "present-tree"
+      ],
+      "statement": "The rotation prompt for an autonomous L1 escalation watcher states only the target project's root and queue dir (e.g. \"Project root: /home/leo/src/reify ... Escalation queue: /home/leo/src/reify/data/escalations\") with no pointer to where the watcher-rearm tooling itself lives. The agent first hit 'no such file or directory' assuming the script was relative to the stated project root, then had to brute-force search common dark-factory install locations plus a full filesystem `find /`, which timed out after 2 minutes. After finally locating scripts/watcher-rearm.sh under /home/leo/src/dark-factory, `cd`-ing into that directory before invoking it was still insufficient \u2014 the script hard-requires the DARK_FACTORY_ROOT env var to be explicitly exported rather than inferring it from cwd, producing a second failure before the agent corrected the invocation on a later retry. Verifier: The reify tree contains no scripts/watcher-rearm.sh. The only DARK_FACTORY_ROOT use is in scripts/test_legibility_reify_config.py, which defaults to /home/leo/src/dark-factory. Neither /home/leo/CLAUDE.md nor /home/leo/src/reify/CLAUDE.md points to the dark-factory checkout for watcher tooling. The rotation prompt and the script's DARK_FACTORY_ROOT requirement belong to dark-factory, which this tree does not contain. I did not read the dark-factory checkout, so I did not check the script's own env-var behaviour.",
+      "proposal": null,
+      "verdict": "confirmed",
+      "disposition": "filed:9432",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "entry-cand-20260716-5",
+      "key": "fk-008cb070280b",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:escalation-watcher-write-tool-not-provisioned",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts",
+        "present-tree"
+      ],
+      "statement": "Agent tried to persist a distilled feedback lesson (a warm-lane merge-verify lock-divergence finding) using the Write tool, following the interactive-session auto-memory convention of writing a markdown file with frontmatter, but the autonomous escalation-watcher agent class does not have the Write tool enabled in this context. The write failed outright and the finding was not captured through any fallback (e.g. add_memory), risking silent loss of a discovery right before the session's rotation-limit exit. Verifier: The failure is a recurring, observable fact. Three sightings in reify sessions (2026-07-05, 07-12 and 07-16) show the same error: the Write tool is not enabled for the autonomous escalation-watcher agent class, so its memory-write attempts were lost. The tree already records the same signature in docs/legibility/confusion-codebook.yaml (around lines 6478 and 6931), so it is not novel. Tool provisioning for that agent class lives in dark-factory, not in this tree. dark-factory-orchestrator.yaml mentions the escalation-watcher only in comments. Reify's CLAUDE.md already tells agents to use `add_memory` for memory writes, so no existing file here teaches or fails to guard against the confusion.",
+      "proposal": null,
+      "verdict": "confirmed",
+      "disposition": "open",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "entry-cand-20260705-4",
+      "key": "fk-7fb018091f5a",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:structuredoutput-array-field-double-wrap",
+      "tags": [
+        "h10",
+        "h12",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts",
+        "present-tree"
+      ],
+      "statement": "When asked to tag a batch of items (here, tasks) with a schema whose top-level array field is itself named \"tasks\", the model reifies the batch concept twice, emitting {\"tasks\": {\"tasks\": [...]}} instead of {\"tasks\": [...]} \u2014 the field name collides with the natural noun for the collection being processed, producing a spurious extra wrapper object that fails schema validation (`/tasks: must be array`). Verifier: The pattern is recorded in this tree's docs/legibility/confusion-codebook.yaml, which has an entry for a StructuredOutput array field double-wrapped under its own key name (`{\"decisions\": {\"decisions\": [...]}}`, plus a `{\"tasks\": {\"tasks\": [...]}}` quote). I found no `tasks` StructuredOutput schema or decompose prompt in the tree. That tooling lives in dark-factory, so no file here produces or guards against it. I did not read the codebook entry in full or check whether this cluster duplicates it.",
+      "proposal": null,
+      "verdict": "confirmed",
+      "disposition": "filed:9588",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261012-5",
+      "key": "fk-7eb97b7eaa24",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:listagents-repeated-polling",
+      "tags": [
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The agent repeatedly calls ListAgents with no arguments, apparently polling for sub-agent state without varying the call or switching to a completion-notification mechanism. The digest does not show what the agent expected to learn, so the root cause is only inferred. Verifier: The cluster describes a runtime tool-use pattern: ListAgents called six times with empty arguments. It is not an observable fact about the current state of /home/leo/src/reify. The digest does not show what the agent expected to learn, so the root cause is inferred. ListAgents and the sub-agent completion notifications are harness tooling, which this tree does not contain. I did not search the tree for a file that teaches this polling.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261003-9",
+      "key": "fk-3a54e86a1a41",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:escalation-mcp-timeout-retry",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The escalation MCP call timed out with no diagnostic detail. The agent then called it three more times with near-identical arguments (level 1, compact true) instead of treating the timeout as a systemic failure or falling back to the queue directory on disk. Verifier: The cluster describes one session's runtime behavior: an escalation MCP call timed out and the agent re-issued it. That is not a state of the reify tree. The `mcp__escalation__get_pending_escalations` server is part of dark-factory tooling, which this tree does not contain. A grep for the tool name finds it only in docs (the confusion codebook, a PRD, and census notes), with no implementation or caller. I found no existing reify file that causes or teaches the retry behavior, or that should guard against it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261029-5",
+      "key": "fk-42aec6801130",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:t3-code-mcp-thread-id-format",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The watcher passed a raw thread UUID to mcp__t3-code__t3_thread_read. The tool only resolves ids in the 'mcp:<uuid>' form, so the call failed with thread_not_found. The id format is not documented where the watcher gets thread ids, so the next agent making this call can repeat the mistake. Fixing the id format or documenting it in the tool description would stop that. Verifier: A search of /home/leo/src/reify for 't3_thread_read' and 't3-code' returned no matches. The failure came from a call to the external t3-code MCP tool, whose thread-id format is defined in tooling outside this tree. Nothing in the tree teaches or produces the bare-UUID mistake, and no file here is the right place to guard against it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261004-7",
+      "key": "fk-71d54d882bfb",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:search-tool-timeout-reported-as-empty-ok-result",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The search tool reports an 'error: timeout' inside an (OK) result alongside an empty results list, and empty results for patterns known to exist (finalise_uniqueness exists in solver.rs) are consistent with a failed or truncated search. The agent can mistake this for absence of citations, producing an inconclusive verdict. The tool result status is OK, so the failure is easy to overlook. Verifier: The symbol `finalise_uniqueness` does exist in the tree, including in crates/reify-constraints/src/solver.rs, so the underlying code is fine. The reported problem is the verifier's search tool returning `error: timeout` with empty results inside an OK status. That behaviour comes from the tooling, not from anything in this repository, so the repository's files can't be checked for it or changed to fix it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261028-1",
+      "key": "fk-0a000661d478",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:escalation-mcp-empty-optional-param",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The agent built a get_task_escalations call with `\"status\": ,` (a key with no value), probably from an unset optional filter, so the harness rejected the whole input as unparseable JSON. The agent has no schema-level guard that omits unset optional parameters, and the error names only generic causes (backslashes, control characters, truncation) rather than the real defect, an empty value. This costs a wasted turn and a risk of repeat for anyone calling the tool with optional filters. Verifier: The only mention of get_task_escalations in /home/leo/src/reify is the codebook file docs/legibility/confusion-codebook.yaml. No tool definition, schema or caller exists in this tree. The malformed `\"status\": ,` call is a one-off agent output, and the JSON-parse error comes from the harness and the escalation MCP server, which live in dark-factory. So I cannot observe the confusion as a fact about the current state of this tree. No existing file here produces, teaches, or fails to guard against it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261027-3",
+      "key": "fk-22a8cad4e2fb",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:git-grep-option-ordering",
+      "tags": [
+        "comments",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The agent appended a context option (-A8) after the pattern and path arguments in a `git grep` call, so git rejected it with 'option must come before non-option arguments'. git grep requires options before the pattern, unlike GNU grep, which accepts them anywhere. The same compound command also ran a `sed -n` dump, so the output was mostly source text and the real error was one trailing line, which is easy to miss. The intended struct lookup produced nothing and had to be reissued. Verifier: The cluster describes a one-off mistake in an agent's shell invocation: `-A8` placed after the pattern in a `git grep` call. That is a fact about a past tool call, not about the current state of the reify tree, and no file in the tree could be checked to confirm or refute it. The tree's own CLAUDE.md already tells agents to use the Grep tool or `git grep` for searching, and the error came from the agent's tooling rather than from tree content.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261003-10",
+      "key": "fk-954b6f4ed613",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:nocapture-diff-interleaving",
+      "tags": [
+        "tests",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The agent diffed the captured --nocapture output of two cargo test runs to check run-to-run determinism. Tests in the same binary run in parallel, so their stdout lines interleave in a different order each run. The diff therefore exits 1 with only line-order hunks, even though cargo test returned rc=0 and every test passed. The compound command's exit code (diff's status) cannot tell an ordering artifact from a real numeric divergence, so the agent has to read the hunks to find out the run was actually clean. The next agent may chase a phantom nondeterminism or distrust a green result. Verifier: I found no file in /home/leo/src/reify that produces the `[ISO]` or `[ANISO]` output lines. A search of the Rust sources returned nothing. The confusion comes from an agent's own ad-hoc `diff` of two `--nocapture` runs, which is a property of how the agent ran the command. It is not something a tracked file in this tree produces or teaches. The interleaving itself is ordinary behaviour of parallel cargo tests.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20260728-52",
+      "key": "fk-15bcb91dea2a",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:warm-lane-missing-task-plan-json",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "Orchestrator's warm-lane worktree assignment/handoff does not guarantee .task/plan.json is present in the claimed worktree before the task agent starts, so the agent's own read of its task metadata (task_id, title, confirmation criteria) fails with FileNotFoundError, and the agent then thrashes rereading a task output file trying to recover its context. Verifier: I can't confirm from this tree that a dispatched warm-lane worktree lacks .task/plan.json. The evidence is agent session transcripts with FileNotFoundError on `_lane-N/.task/plan.json`, and those lanes are under /home/leo/src/warm-lanes, not in this repo. Reify's scripts only mention `.task/plan.json` in a comment in refresh-warm-base.sh, and in warm-lane-audit.sh, which only reports lane state. Reify's CLAUDE.md says the lane ACQUIRE step (`git clean -xfd -e target`, which would remove untracked files like .task) and the dispatch handoff belong to dark-factory's orchestrator, and `seed-warm-lane.sh` doesn't touch the source tree. Reify has no file that creates, teaches or fails to guard this, so the cause lies in tooling this tree doesn't contain.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20260709-8",
+      "key": "fk-28a44f8e0ef2",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:escalation-watcher-write-tool-disabled",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "Agent conflated the interactive Claude Code auto-memory system (file-based Write to a memory directory) with the fused-memory MCP tool surface that autonomous/dispatched escalation-watcher agents actually have. Nothing in the supervisor-injected role prompt ('You are running as an autonomous escalation watcher...') flagged that Write is disabled in this context, so the agent reached for the wrong persistence mechanism when trying to record a note about a pending L2 escalation. Verifier: The error text itself is real: 'Write exists but is not enabled in this context' appears in the sightings. But the cause is a supervisor-injected role prompt and a tool allowlist, and both live in dark-factory tooling. I searched this tree for the phrase 'autonomous escalation watcher'. The only hit is docs/legibility/confusion-codebook.yaml, which records past confusions and is not a prompt. No file in /home/leo/src/reify produces, teaches or fails to guard against this confusion. The tool harness already returned a clear error, so the cost to the next change is small.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261027-1",
+      "key": "fk-ff4d341071ac",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:plan-tools-guessed-argument-names",
+      "tags": [
+        "h1",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "The agent called mcp__plan-tools__add_plan_step with keyword arguments task_id and type, which the schema does not declare, and omitted the required step_id and step_type. It then called mark_step_committed with commit_sha instead of the declared sha. Each call was rejected at argument validation before running, so the agent had to re-issue it with corrected arguments. Verifier: The plan-tools MCP server, with its add_plan_step and mark_step_committed schemas, is not in this tree. The only matches in /home/leo/src/reify are the confusion codebook and census files, plus a comment in tests/infra/test_warm_lane_audit.sh that mentions mark_step_committed's SHA width. No file here defines, documents or teaches the plan-tool argument names. The calls were rejected at argument validation, so the rejection came from tooling outside this tree. I found no file in this tree that causes or fails to guard against the confusion.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20261008-1",
+      "key": "fk-d8684a864f9a",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:info-escalation-park-vs-stranded-sweep",
+      "tags": [
+        "h11",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "Parking an info-level escalation is assumed to keep its task out of the scheduler's stranded-task sweep. The sweep re-pends the task regardless, so the park silently fails to hold and the task can dispatch or be re-pended unexpectedly until it is set to deferred. Verifier: The scheduler's stranded-task sweep and the escalation park semantics are dark-factory tooling. Nothing in /home/leo/src/reify implements or documents them, so the claim can't be checked against this tree. The only matches for 'stranded task' here are census and codebook records of the confusion. docs/legibility/confusion-codebook.yaml already has an entry with this exact title at line 29938, so it isn't novel. I saw no file in this tree that teaches the wrong assumption or fails to guard against it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20260920-6",
+      "key": "fk-015c0a59e6d9",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:add-memory-mcp-envelope-markup-in-content",
+      "tags": [
+        "h10",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "Agent's string/template construction for add_memory content field includes raw XML wrapper tags (specifically `</content>`) that belong only in the MCP envelope layer, not the serialized content value Verifier: The only reify files that mention `mcp_markup_detected` or the 'MCP envelope markup' rejection are confusion-codebook and census records (docs/legibility/confusion-codebook.yaml, plans/confusion-census-*). Nothing in the tree builds, templates or validates add_memory payloads. The guard that rejects the payload sits in the MCP/fused-memory tooling, which this tree doesn't contain. The cluster's transcript evidence (turns 206, 212, 217 and 335) can't be checked from the tree. What the tree does show is that the confusion is already recorded: the codebook has an equivalent open entry, entry-cand-20260910-15, for envelope tags leaking into a tool-call field, plus a 2026-09-01 sighting of the same `</content>` pattern. I can't confirm this as a current observable fact about the tree, and no existing file produces or fails to guard against it.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    },
+    {
+      "id": "cand-20260916-15",
+      "key": "fk-a5c82316f84b",
+      "area": "repo",
+      "sub_area": null,
+      "anchor": "slug:python-oneliner-missing-statement-separators",
+      "tags": [
+        "h12",
+        "kind:confusion"
+      ],
+      "severity": "low",
+      "evidence_source": [
+        "agent-transcripts"
+      ],
+      "statement": "Agent constructs inline Python with multiple statements on one line but omits semicolons between completed expressions (after json.load() call), producing Python IndentationError during shell execution Verifier: The confusion is an agent writing a malformed `python3 -c` one-liner, with no semicolon between statements. That is agent behaviour in tooling this tree does not contain. The only place the malformed pattern appears in the tree is `docs/legibility/confusion-codebook.yaml`, which records the confusion itself. No tracked source, script or doc teaches or produces the malformed command, so there is no current observable fact about the tree to confirm.",
+      "proposal": null,
+      "verdict": "refuted",
+      "disposition": "refuted",
+      "first_seen": "census-reify-20261030",
+      "last_seen": [
+        "census-reify-20261030"
+      ],
+      "supersedes": []
+    }
+  ],
+  "area_map": {
+    "briefing": "review/briefing.yaml",
+    "areas": [
+      "analysis",
+      "assemblies",
+      "constraints-and-geometry",
+      "factory-infra",
+      "gui",
+      "kinematics-and-motion",
+      "language-pipeline",
+      "reify-audit",
+      "repo",
+      "tooling"
+    ],
+    "overlay": ".claude/skills/review-all/project.md",
+    "rules": [
+      [
+        "crates/reify-eval/src/{compute_persist,shell_extract_compute,morph_stage_*,engine_compute,modal_ops,dynamics_ops}.rs",
+        "analysis"
+      ],
+      [
+        "crates/reify-eval/src/trajectory_ops.rs",
+        "kinematics-and-motion"
+      ],
+      [
+        "crates/reify-eval/src/{geometry_ops*,topology_*,primitive_attribute_seed,selector_vocabulary_v2,sweep_classifier,structural_classifier,appearance,kernel_registry,dispatcher,warm_pool,realization_*,engine_constraints,relate_solve,tolerance_combine}",
+        "constraints-and-geometry"
+      ],
+      [
+        "crates/reify-eval/",
+        "language-pipeline"
+      ],
+      [
+        "crates/reify-stdlib/src/{trajectory/,joints,mechanism,loop_closure*,orientation,snapshot,flexures/}",
+        "kinematics-and-motion"
+      ],
+      [
+        "crates/reify-stdlib/src/{dynamics/,modal/,fea,analysis,loads,supports,tensegrity}",
+        "analysis"
+      ],
+      [
+        "crates/reify-stdlib/",
+        "constraints-and-geometry"
+      ],
+      [
+        "crates/reify-compiler/src/connect.rs",
+        "assemblies"
+      ],
+      [
+        "tree-sitter-reify/",
+        "language-pipeline"
+      ],
+      [
+        "crates/{reify-constraints,reify-kernel-*,reify-geometry}/",
+        "constraints-and-geometry"
+      ],
+      [
+        "crates/{reify-solver-elastic,reify-mesh-morph,reify-shell-extract,reify-fdm,reify-eval-fea-tests}/",
+        "analysis"
+      ],
+      [
+        "crates/reify-gcode/",
+        "kinematics-and-motion"
+      ],
+      [
+        "crates/{reify-cli,reify-lsp,reify-mcp,reify-config,reify-doc,reify-doc-build}/",
+        "tooling"
+      ],
+      [
+        "crates/reify-audit/",
+        "reify-audit"
+      ],
+      [
+        "dark-factory-orchestrator.yaml",
+        "factory-infra"
+      ],
+      [
+        "gui/**",
+        "gui"
+      ]
+    ],
+    "notes": []
+  },
+  "cost_note": "invoke calls: sonnet miner=60, sonnet verify=19, fable synthesis=1, haiku headroom-probe=4"
+}

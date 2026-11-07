@@ -61,7 +61,13 @@ pub fn register(registry: &mut ToolRegistry) {
                 },
                 "value": {
                     "type": "string",
-                    "description": "The new value as a string expression."
+                    "description": "The new value as a unit-bearing literal - the same \
+spelling you would write in the `.ri` source, e.g. '120mm', '0.5m', '30deg'. On a DIMENSIONED \
+cell whose dimension has typeable units (Length, Angle, Mass, and so on) the unit suffix is \
+REQUIRED and the literal is converted from that unit; a bare number is refused rather than \
+read as an SI magnitude, and the error suggests a dimensioned literal to send instead. \
+Dimensionless cells take a bare number. Call reify_get_parameters to learn a parameter's \
+dimension from its `unit` field before choosing a literal."
                 }
             },
             "required": ["cell_id", "value"]

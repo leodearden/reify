@@ -7,10 +7,13 @@
 //! - [`make_ts_parser`] — build a tree-sitter parser loaded with the Reify grammar
 //! - [`find_cst_node`] — depth-first search for the first node of a given kind
 //! - [`find_outermost_cst_nodes`] — depth-first search for all outermost nodes of a given kind
+//! - [`tracked_corpus`] — the repository's git-tracked `.ri` corpus listing
 
 // Not every test binary that includes `mod common;` uses every helper;
 // suppress the resulting dead-code warnings for the entire module.
 #![allow(dead_code)]
+
+pub mod tracked_corpus;
 
 /// Build a tree-sitter parser loaded with the Reify grammar.
 pub fn make_ts_parser() -> tree_sitter::Parser {

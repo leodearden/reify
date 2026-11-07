@@ -19,7 +19,7 @@
 //!
 //! Tolerance: 1e-9 kg·m² (OCCT Gauss quadrature on a planar box is essentially exact).
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_moment_of_inertia_smoke.rs`
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_moment_of_inertia_smoke.rs`
 //! (same SingleKernelHolder + OcctKernelHandle::spawn harness, same OCCT_AVAILABLE
 //! gating, same 1e-9 tolerance).
 
@@ -71,7 +71,7 @@ fn rigid_moment_of_inertia_auto_derives_from_geometry() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // ── Analytic centroidal moments for a 100×100×300 mm box at 7850 kg/m³ ────

@@ -37,7 +37,7 @@ const EXAMPLE_PATH: &str = concat!(
 ///   - MountBad.has_bore   = is_some(parse_length("garbage"))                  = false
 ///
 /// This is the formatter-agnostic integration-gate assertion; the companion
-/// `crates/reify-cli/tests/cli_eval_fallback_recovery.rs` pins the same
+/// `crates/reify-cli/tests/harness_cli/cli_eval_fallback_recovery.rs` pins the same
 /// signal at the rendered-stdout binary surface (§1).
 #[test]
 fn fallback_recovery_example_evals_end_to_end() {
@@ -53,7 +53,7 @@ fn fallback_recovery_example_evals_end_to_end() {
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

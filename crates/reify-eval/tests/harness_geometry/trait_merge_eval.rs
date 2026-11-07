@@ -53,7 +53,7 @@ structure def S : Safe {
     let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -93,7 +93,7 @@ structure def S : Bounded {
     let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -145,7 +145,7 @@ structure def S : A + B {
     let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -193,7 +193,7 @@ structure def S : A + B {
     let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -252,7 +252,7 @@ structure def S : WithComputed {
     let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Assert no eval-phase errors before accessing result.values — catches eval

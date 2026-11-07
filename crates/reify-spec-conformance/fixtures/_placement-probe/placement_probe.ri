@@ -1,0 +1,16 @@
+// Placement probe for leaf beta (#6759) — see ../README.md.
+// DELIBERATELY UNPARSEABLE, and bare-`Scalar`-bearing ON PURPOSE.
+// Not a conformance fixture; it exists so that "an unparseable, guard-violating
+// .ri in this tree is inert to every repo walker" stays a committed,
+// re-runnable observation rather than a claim.
+//
+// The `param w` line below is a real violation of the corpus-cleanliness guard
+// in crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs. That is the
+// point: this file is the live violator sitting under that guard's registered
+// exclusion arm for this tree, so the arm can never silently go vacuous.
+// Do NOT "fix" it — deleting or migrating this annotation would disarm the
+// only behavioural coverage the exclusion has (task #6759).
+structure PlacementProbe {
+    param w: Scalar = 10mm
+    @@@ not valid syntax
+}

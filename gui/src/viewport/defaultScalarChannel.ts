@@ -25,6 +25,11 @@ import type { MeshData } from '../types';
  * shells (the outermost tensile face).  The list is checked in order so the
  * highest-priority non-empty channel wins, regardless of insertion order in
  * the wire JSON.
+ *
+ * This list is a shared contract with two consumers: `pickDefaultScalarChannel`
+ * below (which channel to auto-select) and `feaToolbarChannels` (which shell
+ * surfaces to offer in the toolbar dropdown), so the two can never disagree
+ * about what counts as an FEA result surface.
  */
 export const PREFERRED_FEA_CHANNELS: readonly string[] = [
   'vonMises',

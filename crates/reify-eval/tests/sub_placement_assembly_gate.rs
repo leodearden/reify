@@ -19,9 +19,7 @@
 //! established by `sub_placement_surfacing.rs` (T5/T7).
 
 use reify_core::Severity;
-use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib, mesh_aabb,
-};
+use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel, mesh_aabb};
 
 /// Path to the committed example, relative to this crate's manifest.
 ///
@@ -34,13 +32,6 @@ const EXAMPLE_SRC: &str = concat!(
 
 // ── Engine builder helpers (copied from sub_placement_surfacing.rs) ───────────
 
-/// Build a Mock-kernel engine for structural surfacing assertions.
-fn mock_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
-}
-
 /// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
 ///
 /// Use for tessellation tests where a single-kernel planner suffices.
@@ -48,7 +39,7 @@ fn occt_engine_via_holder() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 /// Build a real-OCCT engine using `OcctKernelHandle` directly (no holder).
@@ -58,6 +49,7 @@ fn occt_engine_via_holder() -> reify_eval::Engine {
 fn occt_engine_direct() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     )
@@ -158,7 +150,7 @@ fn visible_chain_surfaces_at_composed_paths() {
     let motor_path = composed_path(motor, "Arm.motor", "body");
     let shaft_path = composed_path(shaft, "Arm.motor.shaft", "body");
 
-    let mut engine = mock_engine();
+    let mut engine = make_engine_with_mock_kernel();
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
         .diagnostics
@@ -385,7 +377,7 @@ fn assembly_has_four_surfaces_with_aux_hidden() {
     let shaft_path = composed_path(shaft, "Arm.motor.shaft", "body");
     let fixture_path = composed_path(fixture, "Arm.fixture", "body");
 
-    let mut engine = mock_engine();
+    let mut engine = make_engine_with_mock_kernel();
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
         .diagnostics

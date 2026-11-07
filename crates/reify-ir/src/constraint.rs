@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
+use crate::indeterminate::IndeterminateReason;
 use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
@@ -42,6 +43,9 @@ pub struct ConstraintResult {
     pub id: ConstraintNodeId,
     pub satisfaction: Satisfaction,
     pub diagnostics: ConstraintDiagnostics,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer
+    /// that decided it. `None` for a definite verdict.
+    pub indeterminate_reason: Option<IndeterminateReason>,
 }
 
 /// Diagnostic information from constraint checking.
@@ -81,6 +85,13 @@ pub struct ObjectiveTerm {
     pub sense: ObjectiveSense,
     pub expr: CompiledExpr,
     /// > 0; default 1.0 (PRD §6.1, invariant I3 — the WeightedSum cost contribution).
+    ///
+    /// That bound is NOT runtime-validated (task #6377): no construction site
+    /// checks positivity or even finiteness, so a NaN/±Inf weight can reach
+    /// every fold site listed at [`objective_terms_coherent`]. Of those, only
+    /// `reify-constraints/src/solver.rs::eval_objective_set` is known to fail
+    /// closed on one; what the others do is theirs to state, not this field's
+    /// to vouch for.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,
@@ -154,13 +165,10 @@ impl ObjectiveSet {
 /// Extracts the `DimensionVector` from a `Type`, defaulting to `DIMENSIONLESS`
 /// for any non-`Scalar` type. STATIC (no eval) — reads only `Type::Scalar { dimension }`.
 ///
-/// Canonical shared home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
-/// task α, #5018) for this extraction, reachable from reify-compiler (compile-time gate),
-/// reify-constraints / reify-eval (fold-site backstops), and any future solve-time
-/// consumer (e.g. #4785's merged cross-scope objective builder). The pre-existing
-/// private copy in `reify-constraints/src/solver.rs` (`dimension_of`, serving the hot
-/// `AutoParam.param_type` extraction path in `build_trial_values`) is intentionally left
-/// in place — de-duplicating that copy is out of scope for this task (see design notes).
+/// The single home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
+/// task α, #5018) for this extraction: [`objective_terms_coherent`] below and
+/// reify-constraints' `solver` (e.g. the `AutoParam.param_type` path in
+/// `build_trial_values`) and `solvespace` all call it rather than restating the match.
 pub fn dimension_of(ty: &Type) -> DimensionVector {
     match ty {
         Type::Scalar { dimension } => *dimension,
@@ -423,6 +431,12 @@ pub trait ConstraintChecker: Send + Sync {
     /// use domain-specific text can safely ignore it — the debug level is off
     /// by default and will not appear in production logs unless explicitly
     /// enabled (e.g. `RUST_LOG=reify_eval=debug`).
+    ///
+    /// # Indeterminate reasons
+    ///
+    /// Implementations **SHOULD** set [`ConstraintResult::indeterminate_reason`]
+    /// on every `Indeterminate` result (R1: the reported outcome renders it in
+    /// place of any guess) and **MUST NOT** set it on a definite one.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 
     /// Returns `true` if this checker is the compile-time indeterminate stub
@@ -506,6 +520,32 @@ pub trait OptimizedImpl: Send + Sync {
     fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput;
 }
 
+/// Callback for dispatching an `@optimized`-annotated function call to its
+/// registered ComputeNode implementation from *inside* the constraint solver's
+/// cost/constraint/objective evaluator (task #4880).
+///
+/// Lives in reify-ir (alongside [`ConstraintSolver`]) for the same dependency-inversion
+/// reason as [`OptimizedImpl`]: reify-constraints' `DimensionalSolver` threads an
+/// `Option<&dyn ComputeDispatch>` down through its `reify_expr::eval_expr` call sites
+/// without depending on reify-eval's concrete `Engine`; reify-eval supplies the real
+/// implementation (`OptimizedComputeDispatcher`) at the handful of sites where it invokes
+/// the solver.
+///
+/// # Scope
+///
+/// Distinct from [`OptimizedImpl`], which dispatches *checker*-path `constraint def`
+/// constraints. `ComputeDispatch` dispatches *function-call* expressions (i.e.
+/// `CompiledFunction::optimized_target`) reached while evaluating a constraint,
+/// objective, or bound expression inside the solver's per-candidate cost loop.
+pub trait ComputeDispatch: Send + Sync {
+    /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
+    /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,
+    /// determined arguments). Returns `None` when `target` has no registered
+    /// implementation, or when the underlying dispatch failed/was cancelled — callers
+    /// fall back to ordinary body evaluation in either case.
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value>;
+}
+
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintSolver: Send + Sync {
@@ -523,6 +563,10 @@ pub trait ConstraintSolver: Send + Sync {
     ///   `Ranked { candidates: [RankedCandidate { values, objective_score: None, unique }],
     ///             optimality: BestFound { "solver does not report optimality" } }`
     ///   when `problem.objective.is_some()`, or `FeasibilityOnly` when `objective` is `None`.
+    ///   The `completeness` field is always
+    ///   [`crate::Completeness::not_attempted`] (`Partial { NotAttempted }`) in the
+    ///   default lift: a solver that only implements `solve` did not reason about
+    ///   the solution set, so it may claim nothing about its size (BT13).
     /// - `Infeasible { diagnostics }` → `RankedSolveResult::Infeasible { diagnostics }`
     /// - `NoProgress { reason }` → `RankedSolveResult::NoProgress { reason }`
     ///
@@ -553,6 +597,10 @@ pub trait ConstraintSolver: Send + Sync {
                         unique,
                     }],
                     optimality,
+                    // A solver that only implements `solve` has established nothing
+                    // about the solution set, so `NotAttempted` is the honest
+                    // verdict here rather than a placeholder — see its doc.
+                    completeness: crate::completeness::Completeness::not_attempted(),
                 }
             }
             // Infeasible and NoProgress are structurally identical in both the
@@ -562,6 +610,42 @@ pub trait ConstraintSolver: Send + Sync {
                 .into_ranked_pass_through()
                 .expect("Solved arm already handled above"),
         }
+    }
+
+    /// `solve`, but with a compute-dispatch hook available to the evaluator for
+    /// `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        let _ = dispatch;
+        self.solve(problem)
+    }
+
+    /// `solve_ranked`, but with a compute-dispatch hook available to the evaluator
+    /// for `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve_ranked`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> crate::ranked::RankedSolveResult {
+        let _ = dispatch;
+        self.solve_ranked(problem)
     }
 }
 
@@ -973,7 +1057,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "FeasibilityOnly → score must be None");
@@ -1009,7 +1093,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "default lift → objective_score always None");
@@ -1027,6 +1111,91 @@ mod tests {
                 }
             }
             _ => panic!("expected Ranked, got {:?}", ranked),
+        }
+    }
+
+    /// BT13 (solution-set-completeness, #6706): the default `solve_ranked` lift
+    /// reports `Partial { NotAttempted }` — a solver that only implements `solve`
+    /// has, by construction, established nothing about the solution set — and
+    /// changes nothing else about the result it already produced.
+    ///
+    /// The optimality field is bound with `..` and asserted about NOWHERE: this
+    /// task does not touch the optimality axis, and pinning a `BestFoundReason`
+    /// variant here would couple this test to P2 μ #6680's landing.
+    #[test]
+    fn solve_ranked_default_lift_reports_not_attempted() {
+        use crate::completeness::{Completeness, PartialReason};
+        use crate::ranked::RankedSolveResult;
+
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "x"), Value::length(0.01));
+
+        // Both problem shapes the two lift tests above cover: objective None and
+        // objective Some. Completeness is orthogonal to that split (D6), so both
+        // must report the same verdict.
+        let problems = [
+            (
+                "objective: None",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: None,
+                    functions: vec![].into(),
+                },
+            ),
+            (
+                "objective: Some",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: Some(ObjectiveSet::single(
+                        ObjectiveSense::Minimize,
+                        make_literal_expr(),
+                    )),
+                    functions: vec![].into(),
+                },
+            ),
+        ];
+
+        for (label, problem) in &problems {
+            let solver = MockSolvedSolver { values: solved_values.clone(), unique: true };
+
+            // BT13, half 1: `solve()` is byte-identical to what it returned before.
+            match solver.solve(problem) {
+                SolveResult::Solved { values, unique } => {
+                    assert_eq!(values, solved_values, "{label}: solve() values unchanged");
+                    assert!(unique, "{label}: solve() unique unchanged");
+                }
+                other => panic!("{label}: expected Solved, got {other:?}"),
+            }
+
+            // BT13, half 2: the lift adds the completeness verdict and nothing else.
+            let ranked = solver.solve_ranked(problem);
+            match &ranked {
+                RankedSolveResult::Ranked { candidates, completeness, .. } => {
+                    assert_eq!(
+                        *completeness,
+                        Completeness::Partial { reason: PartialReason::NotAttempted },
+                        "{label}: a solver that only implements solve() establishes nothing"
+                    );
+                    assert!(!completeness.derived_unique(candidates.len()), "{label}: C1");
+                    assert!(!completeness.permits_proven_optimal(), "{label}: C2");
+
+                    assert_eq!(candidates.len(), 1, "{label}: candidate count unchanged");
+                    let c = &candidates[0];
+                    assert_eq!(c.values, solved_values, "{label}: candidate values unchanged");
+                    assert!(
+                        c.objective_score.is_none(),
+                        "{label}: default lift objective_score stays None"
+                    );
+                    assert!(c.unique, "{label}: candidate unique forwarded unchanged");
+                }
+                other => panic!("{label}: expected Ranked, got {other:?}"),
+            }
         }
     }
 
@@ -1083,6 +1252,59 @@ mod tests {
             }
             _ => panic!("expected NoProgress, got {:?}", ranked),
         }
+    }
+
+    // ---- ComputeDispatch default-method back-compat tests (step-1 RED / step-2 GREEN) ----
+
+    /// A `ComputeDispatch` that never resolves anything — used to prove the
+    /// `*_with_dispatch` default methods on `ConstraintSolver` ignore the dispatch
+    /// argument entirely and delegate unchanged to `solve`/`solve_ranked`.
+    struct NoopDispatch;
+
+    impl ComputeDispatch for NoopDispatch {
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
+            None
+        }
+    }
+
+    /// I1-style back-compat invariant (task #4880): adding the dispatch hook must not
+    /// change the observable behaviour of a non-overriding `ConstraintSolver`.
+    /// `MockSolvedSolver` does not override `solve_with_dispatch`/`solve_ranked_with_dispatch`,
+    /// so it must inherit the default methods, which ignore `dispatch` and delegate to
+    /// `solve`/`solve_ranked` unchanged.
+    #[test]
+    fn default_dispatch_methods_delegate_to_solve_and_solve_ranked() {
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "z"), Value::length(0.03));
+
+        let solver = MockSolvedSolver {
+            values: solved_values,
+            unique: true,
+        };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+            dependent_cells: Vec::new(),
+        };
+
+        let direct = solver.solve(&problem);
+        let via_dispatch = solver.solve_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct),
+            format!("{:?}", via_dispatch),
+            "solve_with_dispatch(Some(NoopDispatch)) must be identical to solve() for a non-overriding solver"
+        );
+
+        let direct_ranked = solver.solve_ranked(&problem);
+        let via_dispatch_ranked = solver.solve_ranked_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct_ranked),
+            format!("{:?}", via_dispatch_ranked),
+            "solve_ranked_with_dispatch(Some(NoopDispatch)) must be identical to solve_ranked() for a non-overriding solver"
+        );
     }
 
     // ---- objective_terms_coherent / dimension_of / DimensionIncoherence

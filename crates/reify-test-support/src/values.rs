@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_core::dimension::{DimensionVector, FORCE};
-use reify_ir::{DeterminacyState, Value};
+use reify_ir::{CompiledExpr, DeterminacyState, Value};
 
 // --- Range value constructors ---
 
@@ -61,6 +61,26 @@ pub fn mm(v: f64) -> Value {
     }
 }
 
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in millimetres.
+pub fn mm_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(mm(v), Type::length())
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in SI metres.
+pub fn length_literal(meters: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::length(meters), Type::length())
+}
+
+/// `CompiledExpr` literal of an ANGLE-dimensioned scalar given in SI radians.
+pub fn angle_literal(radians: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::angle(radians), Type::angle())
+}
+
+/// `CompiledExpr` literal of a dimensionless real scalar.
+pub fn real_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
+}
+
 /// Create a Scalar with ANGLE dimension from degrees.
 pub fn deg(v: f64) -> Value {
     Value::Scalar {
@@ -106,6 +126,56 @@ pub fn mm3(v: f64) -> Value {
     Value::Scalar {
         si_value: v * 1e-9,
         dimension: DimensionVector::VOLUME,
+    }
+}
+
+/// Assert that `v` is a dimensioned `Value::Scalar` carrying exactly
+/// `expected_si` in SI base units and exactly `expected_dim`.
+///
+/// Deliberately NOT routed through an f64-folding reader. A helper that folds
+/// `Value::Real`, `Value::Int` and `Value::Scalar` into one `f64` — the
+/// `read_real` / `num()` shape every call site has close to hand — passes
+/// IDENTICALLY before and after a dimensioned-ctor migration, and so is blind
+/// to the very property under test. Destructuring explicitly is what makes a
+/// wrong-dimension misparse fail as loudly as a wrong magnitude.
+///
+/// `si_value` is compared for EXACT equality on purpose: every value pinned
+/// through this helper is LITERAL-derived (a unit literal in a `.ri` ctor arg
+/// converted to SI at parse time), not solver-derived, so there is no float
+/// jitter to tolerate — an inert migration must reproduce the previous bare
+/// `Real` bit-for-bit. Solver-derived quantities get an explicit tolerance at
+/// their own call site instead.
+///
+/// The panic messages state the OBSERVABLE fact and stay task-neutral; `what`
+/// is where a call site supplies its own context, and is the only place a
+/// task or PRD citation belongs.
+pub fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension, expected_dim,
+                "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}. \
+                 The ctor arg parsed as a dimensioned Scalar but carries the wrong unit."
+            );
+            assert_eq!(
+                *si_value, expected_si,
+                "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}. \
+                 These are literal-derived values; a change here means the migrated \
+                 unit literal does not denote the same physical quantity."
+            );
+        }
+        Value::Real(r) => panic!(
+            "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
+             Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
+             This ctor arg has not been migrated to a unit literal."
+        ),
+        other => panic!(
+            "{what}: expected a dimensioned Value::Scalar {{ si_value: {expected_si}, \
+             dimension: {expected_dim:?} }}, got {other:?}"
+        ),
     }
 }
 
@@ -398,6 +468,39 @@ pub fn matrix3x3(
     ])
 }
 
+/// Uniaxial stress magnitude σ, in SI pascals.
+pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
+
+/// Row-major components of the uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`]
+/// at `[0][0]`, zero elsewhere. Flatten it for the `&[f64]` analysis kernels.
+pub const UNIAXIAL_STRESS_ROWS: [[f64; 3]; 3] =
+    [[UNIAXIAL_STRESS_PA, 0.0, 0.0], [0.0; 3], [0.0; 3]];
+
+/// Create a 3×3 `Value::Tensor` of `Value::Tensor` rows of `Value::Scalar`s,
+/// every element carrying `dimension` — the nested shape the analysis kernels
+/// read. Contrast [`matrix3x3`], which builds a `Value::Matrix` of bare `Real`s.
+pub fn dimensioned_tensor3x3(rows: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
+    Value::Tensor(
+        rows.iter()
+            .map(|row| {
+                Value::Tensor(
+                    row.iter()
+                        .map(|&si_value| Value::Scalar {
+                            si_value,
+                            dimension,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The uniaxial stress tensor: [`UNIAXIAL_STRESS_ROWS`] in PRESSURE.
+pub fn uniaxial_stress_tensor() -> Value {
+    dimensioned_tensor3x3(&UNIAXIAL_STRESS_ROWS, DimensionVector::PRESSURE)
+}
+
 // --- Complex value constructors ---
 
 /// Create a Value::Int.
@@ -650,7 +753,7 @@ pub fn multi_case_result_value(cases: &[(&str, Value)]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{DeterminacyState, Value};
+    use reify_ir::{CompiledExprKind, DeterminacyState, Value};
     use std::collections::HashMap;
 
     // step-1: failing tests for range value constructors
@@ -839,6 +942,62 @@ mod tests {
             }
             _ => panic!("expected Value::Scalar"),
         }
+    }
+
+    fn literal_value(expr: &CompiledExpr) -> &Value {
+        match &expr.kind {
+            CompiledExprKind::Literal(v) => v,
+            other => panic!("expected CompiledExprKind::Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mm_literal_carries_si_length_and_length_type() {
+        let expr = mm_literal(5.0);
+        match literal_value(&expr) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 0.005).abs() < 1e-12, "5 mm should be 0.005 m");
+                assert_eq!(*dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Value::Scalar, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn length_literal_carries_si_length_and_length_type() {
+        let expr = length_literal(0.25);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn angle_literal_carries_si_angle_and_angle_type() {
+        let expr = angle_literal(1.5);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::ANGLE,
+            }
+        );
+        assert_eq!(expr.result_type, Type::angle());
+    }
+
+    #[test]
+    fn real_literal_carries_real_and_dimensionless_type() {
+        let expr = real_literal(2.5);
+        assert_eq!(*literal_value(&expr), Value::Real(2.5));
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
     }
 
     // step-19: failing tests for SnapshotValuesBuilder
@@ -1644,6 +1803,61 @@ mod tests {
                 assert!(matches!(vals[0], Value::Real(1.0)));
             }
             _ => panic!("expected Value::Tensor"),
+        }
+    }
+
+    // --- dimensioned 3×3 tensor / uniaxial stress fixture tests ---
+
+    /// The `(si_value, dimension)` of each component of a 3×3 `Value::Tensor`
+    /// of `Value::Tensor` rows of `Value::Scalar`s, panicking on any other
+    /// shape.
+    fn tensor3x3_components(v: &Value) -> [[(f64, DimensionVector); 3]; 3] {
+        let Value::Tensor(rows) = v else {
+            panic!("expected an outer Value::Tensor (not matrix3x3's Value::Matrix), got {v:?}");
+        };
+        assert_eq!(rows.len(), 3, "three rows");
+        std::array::from_fn(|r| {
+            let Value::Tensor(cols) = &rows[r] else {
+                panic!("row {r}: expected a Value::Tensor, got {:?}", rows[r]);
+            };
+            assert_eq!(cols.len(), 3, "row {r} has three columns");
+            std::array::from_fn(|c| match &cols[c] {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => (*si_value, *dimension),
+                other => panic!("[{r}][{c}]: expected a Value::Scalar, got {other:?}"),
+            })
+        })
+    }
+
+    #[test]
+    fn dimensioned_tensor3x3_nests_three_rows_of_dimensioned_scalars() {
+        let input = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let v = dimensioned_tensor3x3(&input, DimensionVector::LENGTH);
+        for (r, row) in tensor3x3_components(&v).iter().enumerate() {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                assert_eq!(si_value, input[r][c], "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::LENGTH, "[{r}][{c}]");
+            }
+        }
+    }
+
+    #[test]
+    fn uniaxial_stress_tensor_loads_only_the_00_component_in_pressure() {
+        for (r, row) in tensor3x3_components(&uniaxial_stress_tensor())
+            .iter()
+            .enumerate()
+        {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                let expected = if (r, c) == (0, 0) {
+                    UNIAXIAL_STRESS_PA
+                } else {
+                    0.0
+                };
+                assert_eq!(si_value, expected, "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::PRESSURE, "[{r}][{c}]");
+            }
         }
     }
 

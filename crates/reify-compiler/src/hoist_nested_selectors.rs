@@ -1,12 +1,9 @@
 //! task 4370 AXIS-1 step-6: hoist nested selector constructors.
 //!
-//! A selector constructor (`faces(b)`, `face(b, "x_max")`, …) written INLINE as
-//! a `StructureInstanceCtor` field value never resolves on the eval path: the
-//! kernel-free symbolic selector mint
-//! ([`reify_eval::geometry_ops::mint_symbolic_topology_selectors_into_values`])
-//! only visits a template's top-level `value_cells` default exprs, not the
-//! constructor-argument exprs nested inside them, so the field stays
-//! `Value::Undef` (root-caused on the superseded Strategy-A WIP).
+//! Redundant for evaluation since #7875: `reify_expr::eval_expr` resolves kernel-free
+//! selector ctors at any depth via the `EvalContext` `symbolic_selector_ctor` capability
+//! (attached in reify-eval `eval_ctx_with_meta`). Do NOT extend this hoist to further
+//! expression kinds (e.g. FunctionCall/UserFunctionCall args); it awaits retirement in #7886.
 //!
 //! This pass performs an ANF-style let-hoist: for every selector-ctor
 //! `FunctionCall` sitting as a `StructureInstanceCtor` field value it mints a

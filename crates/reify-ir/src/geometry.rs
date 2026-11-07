@@ -3,114 +3,13 @@ use std::fmt;
 
 use reify_core::hash::ContentHash;
 use crate::boundary_attachment::BoundaryAssociation;
+use crate::dense_sdf::{DenseSdfGrid, ImplicitOptions};
 use crate::value::{SampledField, Value};
 
-/// Unique identifier for a geometry handle within a kernel session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GeometryHandleId(pub u64);
-
-impl GeometryHandleId {
-    /// Sentinel value representing a failed geometry operation.
-    ///
-    /// Pushed into `step_handles` when `compile_geometry_op` returns `None`
-    /// to maintain step index alignment so independent subsequent ops can
-    /// still be attempted. No real geometry kernel allocates handle ID
-    /// `u64::MAX` (kernels start from 1 and increment).
-    pub const INVALID: GeometryHandleId = GeometryHandleId(u64::MAX);
-
-    /// Compute a content hash for incremental caching.
-    /// Domain-separated with tag byte [11] followed by the id as le_bytes.
-    /// This serves as a proxy hash since OCCT shapes can't be hashed directly.
-    pub fn content_hash(&self) -> ContentHash {
-        debug_assert_ne!(self.0, u64::MAX, "INVALID handle must not be hashed");
-        let mut buf = [0u8; 9];
-        buf[0] = 11;
-        buf[1..].copy_from_slice(&self.0.to_le_bytes());
-        ContentHash::of(&buf)
-    }
-}
-
-/// Typed kernel discriminator — re-exported from `reify_core`, which is the
-/// single authoritative definition.
-///
-/// The canonical type lives at `reify_core::kernel::KernelId` and is re-exported
-/// here so that existing paths (`reify_ir::KernelId`,
-/// `reify_ir::geometry::KernelId`) continue to resolve, while reify-eval's
-/// dispatcher and engine_build compile unchanged.
-///
-/// See `reify_core::kernel::KernelId` for full documentation, including the
-/// determinism contract (derived `Ord` == dispatcher `BTreeMap` registry-name
-/// iteration order) and the `#[non_exhaustive]` / `ALL` extensibility contract.
-pub use reify_core::KernelId;
-
-/// A geometry handle tagged with the kernel that produced it.
-///
-/// Pairs an opaque [`GeometryHandleId`] with the [`KernelId`] of the kernel
-/// session that allocated it, so the executor can route a handle back to the
-/// right kernel for follow-on operations. `Copy + Eq + Hash`, so it serves as
-/// a `reify_eval::RealizationCache` value or a `HashMap` key/value directly.
-/// Per-kernel trait methods keep operating on the bare
-/// [`GeometryHandleId`]; the executor projects [`KernelHandle::id`] before a
-/// trait call and re-wraps the result with that kernel's [`KernelId`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KernelHandle {
-    /// The kernel that produced (and owns) `id`.
-    pub kernel: KernelId,
-    /// The kernel-local geometry handle.
-    pub id: GeometryHandleId,
-}
-
-#[cfg(test)]
-mod kernel_id_tests {
-    use super::*;
-
-    /// `KernelHandle` pairs a `KernelId` with a `GeometryHandleId` and
-    /// is a `Copy + Eq + Hash` value (usable as a `HashMap` key).
-    #[test]
-    fn kernel_handle_pairs_kernel_and_id() {
-        use std::collections::HashMap;
-
-        let h = KernelHandle {
-            kernel: KernelId::Manifold,
-            id: GeometryHandleId(5),
-        };
-
-        // Field access projects both halves of the pair.
-        assert_eq!(h.kernel, KernelId::Manifold);
-        assert_eq!(h.id, GeometryHandleId(5));
-
-        // Copy semantics: `h` stays usable after being copied into `copy`.
-        let copy = h;
-        assert_eq!(copy, h);
-
-        // Two identical handles are equal.
-        let same = KernelHandle {
-            kernel: KernelId::Manifold,
-            id: GeometryHandleId(5),
-        };
-        assert_eq!(h, same);
-
-        // Differing kernel OR id breaks equality.
-        let diff_kernel = KernelHandle {
-            kernel: KernelId::Occt,
-            id: GeometryHandleId(5),
-        };
-        let diff_id = KernelHandle {
-            kernel: KernelId::Manifold,
-            id: GeometryHandleId(6),
-        };
-        assert_ne!(h, diff_kernel);
-        assert_ne!(h, diff_id);
-
-        // Usable as a HashMap key (Eq + Hash): lookup by an equal handle hits,
-        // a differing handle misses.
-        let mut map: HashMap<KernelHandle, &str> = HashMap::new();
-        map.insert(h, "bracket");
-        assert_eq!(map.get(&same), Some(&"bracket"));
-        assert_eq!(map.get(&diff_kernel), None);
-        assert_eq!(map.get(&diff_id), None);
-    }
-}
+pub use crate::geometry_id::{
+    AxisSign, CapKind, DerivedKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, FeatureIdParseError,
+    GeometryHandleId, KernelHandle, KernelId, ModEntry, Role,
+};
 
 /// An opaque handle to a geometry object managed by a kernel.
 #[derive(Debug, Clone)]
@@ -301,6 +200,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a surface along its normal by distance (Skin/surface mode).
+    ModifyOffsetSurface,
     /// Offset a planar curve by distance, producing a fresh curve.
     ModifyOffsetCurve,
 
@@ -573,11 +474,11 @@ inventory::collect!(KernelRegistration);
 // optimization, out of scope for the half_space producer.
 #[allow(clippy::large_enum_variant)]
 pub enum GeometryOp {
-    /// Create a box primitive centered at origin.
+    /// Create a box primitive centered at origin; the slots are its full X/Y/Z extents.
     Box {
-        width: Value,
-        height: Value,
-        depth: Value,
+        size_x: Value,
+        size_y: Value,
+        size_z: Value,
     },
     /// Create a cylinder primitive along Z axis.
     Cylinder { radius: Value, height: Value },
@@ -696,6 +597,19 @@ pub enum GeometryOp {
         dz: f64,
     },
     /// Rotate around axis by angle.
+    ///
+    /// **Angular unit contract** (INV-AD-4; #6184). `angle_rad` is SI RADIANS,
+    /// and positive is right-handed about `axis`. The `_rad` SUFFIX IS THE
+    /// CONTRACT — it is load-bearing, not decoration, and it is the same name
+    /// the value carries all the way down: IR -> the cxx bridge
+    /// (`reify-kernel-occt/src/ffi.rs`) -> the C++ wrapper, where OCCT's
+    /// `gp_Trsf::SetRotation` takes radians too. Nothing on that path converts,
+    /// because every layer is SI-coherent (rad = 1). Contrast lengths, which
+    /// also cross unscaled here but ARE rescaled x1000 by the STEP writer at
+    /// export.
+    ///
+    /// The sibling angular variants [`GeometryOp::RotateAround`] and
+    /// [`GeometryOp::Revolve`] carry the same contract.
     Rotate {
         target: GeometryHandleId,
         axis: [f64; 3],
@@ -707,6 +621,9 @@ pub enum GeometryOp {
         factor: f64,
     },
     /// Rotate around an arbitrary axis passing through a given point.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184).
     RotateAround {
         target: GeometryHandleId,
         point: [f64; 3],
@@ -820,6 +737,10 @@ pub enum GeometryOp {
         distance: Value,
     },
     /// Create a revolved solid by rotating a profile around an axis.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis_dir` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184). A
+    /// full revolution is therefore `2.0 * PI`, not 360.
     Revolve {
         profile: GeometryHandleId,
         axis_origin: [f64; 3],
@@ -902,6 +823,63 @@ pub enum GeometryOp {
         z2: f64,
     },
     /// Create a circular arc wire.
+    ///
+    /// `start_angle`/`end_angle` are SI RADIANS — see [`GeometryOp::Rotate`]
+    /// for the full angular unit contract (INV-AD-4; #6184). They cross to
+    /// OCCT completely unconverted, where they are the CURVE PARAMETERS of the
+    /// `Geom_Circle` handed to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` in
+    /// `make_arc_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`). For a
+    /// `Geom_Circle` that parameter space IS radians, by OCCT's own
+    /// parameterisation rather than by an explicit angle argument — so a full
+    /// circle is `2.0 * PI`, not 360. Pinned end to end by
+    /// `export_step_declares_si_radians_for_wireframe_curve_parameters`
+    /// (`crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs`),
+    /// which reads the two angles back out of the exported STEP `TRIMMED_CURVE` as
+    /// its `PARAMETER_VALUE` bounds.
+    /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
+    ///
+    /// **Why these two carry no `_rad` suffix.** These are crate-local Rust
+    /// identifiers and the enum derives no serde, so a rename is
+    /// COMPILE-CHECKED: it would break loudly at every construct and
+    /// destructure site — eval's shorthand struct literal, the kernel's
+    /// dispatch arm, the tests — never silently. What it would also do is
+    /// diverge from two INDEPENDENT identifiers that merely spell the same:
+    /// the untyped string key of the compiler→eval boundary (`compile_curve_op`
+    /// in `reify-compiler/src/geometry_curve.rs` mints them as owned literals;
+    /// `curve_arc` in `reify-eval/src/geometry_ops.rs` looks them up by name),
+    /// and the published `arc(...)` signature in
+    /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
+    /// compiler checks an exact 9-argument count and assigns those keys
+    /// POSITIONALLY — so no design file is involved either way. Churn plus
+    /// cosmetic divergence, in exchange for a suffix: the rename was
+    /// CONSIDERED AND DECLINED (#6521), so the absence is a recorded decision,
+    /// not an oversight, and `Rotate`'s "the `_rad` suffix IS the contract" is
+    /// discharged HERE, by this comment, instead. The eval gate below does not
+    /// supersede the question either: `required_angle_args` hands back
+    /// `[f64; N]`, so these two fields are still raw SI-radian `f64` past it
+    /// and a `_rad` suffix would still be type-accurate.
+    ///
+    /// **GATED at eval.** A dimensioned `90deg` literal is resolved to radians
+    /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
+    /// `DimensionVector::ANGLE`), and a BARE number is REJECTED rather than
+    /// read silently as radians: `curve_arc` (`reify-eval/src/geometry_ops.rs`)
+    /// reads BOTH positions through `required_angle_args(["start_angle",
+    /// "end_angle"], ..)`, which classifies each against `angle_spec()` and,
+    /// on a dimensionless one, pushes the contract-C1 `Diagnostic::error`
+    /// coded `DimensionedArgRejected` ("expects Angle, got Real; pass a
+    /// dimensioned angle such as `45deg` or `1.5rad`") and drops the op. It is
+    /// the GROUP reader, so a pair of bare angles is named in ONE rebuild
+    /// rather than one slot per rebuild. What reaches these two fields FROM
+    /// EVAL is therefore always an ACCEPTED SI-radian magnitude — but
+    /// directly-constructed IR bypasses the gate entirely, and the kernel's
+    /// `Arc` dispatch (`reify-kernel-occt/src/lib.rs`) validates only `radius`
+    /// and `axis`, so a non-finite angle from hand-built IR reaches
+    /// `make_arc_wire` unchecked.
+    ///
+    /// Landed under #6924, which delivered leaves γ/δ/ε of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass;
+    /// chartered by #5779 (leaf γ, these two positions) and #5780 (leaf δ,
+    /// [`GeometryOp::Draft`]'s angle).
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -910,6 +888,40 @@ pub enum GeometryOp {
         axis: [f64; 3],
     },
     /// Create a helix wire.
+    ///
+    /// **No angular value crosses this boundary** (INV-AD-4; #6521) — that
+    /// absence is the declaration, not an omission of one. `radius`, `pitch`
+    /// and `height` are all LENGTHS, and all three are length-GATED at eval by
+    /// `required_length_args` in `curve_helix`
+    /// (`reify-eval/src/geometry_ops.rs`), whose note already records that
+    /// `pitch` is a length PER TURN rather than an angle. The turn count is the
+    /// dimensionless ratio `height / pitch`, so INV-AD-4's crossing clause is
+    /// not triggered here.
+    ///
+    /// **The only angle is internal to the C++ and is RADIANS.**
+    /// `make_helix_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`) derives
+    /// `n_turns = height / pitch` and then a total sweep `u_length = n_turns *
+    /// 2.0 * M_PI` in the u-parameter of a `Geom_CylindricalSurface`, whose
+    /// (u, v) space that source annotates "u = angle". The `2*PI` — not 360 —
+    /// is what makes it radians (doctrine D4,
+    /// `docs/prds/v0_6/angle-dimension-completion.md`). It is a DERIVED
+    /// INTERNAL quantity, so it is declared for the reader rather than gated:
+    /// there is no angular argument here to gate.
+    ///
+    /// **Helix is not on the wireframe STEP angle path AS EXERCISED TODAY**;
+    /// [`GeometryOp::Arc`] is. #6184's wireframe pin
+    /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
+    /// `crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs`) is
+    /// fixtured on an arc, and no test in
+    /// the tree exports a helix handle. That is a statement about the FIXTURES,
+    /// not a property of the system: `OcctKernel::export`
+    /// (`reify-kernel-occt/src/lib.rs`) is shape-type agnostic — it resolves
+    /// any handle through `get_shape` and hands it straight to
+    /// `ffi::export_step` — so a helix WIRE can be exported directly, exactly
+    /// as that pin exports a bare arc wire, at which point its pcurve on the
+    /// `Geom_CylindricalSurface` carries the radian u-parameter above into the
+    /// STEP output. In practice a helix usually reaches STEP as BRep instead,
+    /// after being consumed as a sweep/pipe spine into a solid.
     Helix {
         radius: f64,
         pitch: f64,
@@ -936,6 +948,51 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
         faces: Vec<GeometryHandleId>,
+        /// Draft angle. The `Value`'s SI magnitude is RADIANS — see
+        /// [`GeometryOp::Rotate`] for the full angular unit contract
+        /// (INV-AD-4; #6184).
+        ///
+        /// This position is weaker than every site #6184 touched: being a
+        /// `Value` rather than an `f64`, it carries neither a `_rad` suffix nor
+        /// an f64's implied convention, so the contract has nowhere to live but
+        /// here. The kernel DISCARDS the dimension tag — `extract_f64`
+        /// in the `GeometryOp::Draft` dispatch arm
+        /// (`reify-kernel-occt/src/lib.rs`) takes the SI magnitude and hands
+        /// the bare f64 to `BRepOffsetAPI_DraftAngle::Add`, which reads
+        /// radians. `Value::angle(x)` and `Value::Real(x)` are therefore
+        /// DELIBERATELY equivalent here, not accidentally so: pinned at the
+        /// `Value` layer by `angle_and_real_agree_bit_exactly_under_as_f64`
+        /// (`reify-ir/src/value.rs`) and at real OCCT output by
+        /// `draft_angle_dimensioned_matches_bare_real_volume`
+        /// (`crates/reify-kernel-occt/tests/harness_occt_kernel/modify_ops.rs`).
+        ///
+        /// Since the gate below landed, that equivalence reaches only
+        /// DIRECTLY-CONSTRUCTED IR — which is exactly what both pins build.
+        /// `required_angle_value` re-wraps the ACCEPTED radians through
+        /// `reify_ir::Value::angle`, so a bare `Value::Real` no longer arrives
+        /// here from eval at all. The equivalence still holds and still
+        /// matters — it is what lets the kernel read this field with a
+        /// tag-blind `extract_f64`, and lets a test hand-build the op either
+        /// way — but it is no longer what decides how an author's bare number
+        /// is read.
+        ///
+        /// **Magnitude pinned:** a draft angle of `0.1` means 0.1 RADIANS, not
+        /// 0.1 degrees — pinned at real OCCT output by
+        /// `draft_angle_magnitude_is_read_as_radians`
+        /// (`crates/reify-kernel-occt/tests/harness_occt/draft_integration.rs`),
+        /// which checks the drafted wall's tilt and the swept volume against
+        /// closed forms. The two tests above pin tag-transparency only.
+        ///
+        /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
+        /// number is REJECTED, not read silently as radians. `modify_draft`
+        /// (`reify-eval/src/geometry_ops.rs`) reads this slot through
+        /// `required_angle_value("angle", ..)`, above the plane resolution —
+        /// leaf δ's breadcrumb there records why that ONE read is the whole
+        /// gate, and that the `eval_arg` closure it replaced "died with the
+        /// change", so no ungated route from eval into this field survives.
+        /// Landed under #6924; chartered by #5780, leaf δ of
+        /// `docs/prds/v0_6/angle-units-surface-convergence.md`, whose C1
+        /// gated-position list carries this position and Arc's together.
         angle: Value,
         plane: GeometryHandleId,
     },
@@ -951,7 +1008,10 @@ pub enum GeometryOp {
     /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
-    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
+    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
+    ///   scales the displacement, and a zero-magnitude vector is rejected, so
+    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
@@ -968,7 +1028,20 @@ pub enum GeometryOp {
         width: Value,
     },
     /// Offset a solid outward (positive) or inward (negative) by distance.
+    /// Every face moves |distance| along its normal and sharp edges stay sharp.
     OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
+    },
+    /// Offset a surface along its normal by `distance`, using the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape` — distinct from
+    /// [`GeometryOp::OffsetSolid`], which takes a solid, not a face. Produces
+    /// fresh `BRepKind::Face` geometry via the early-return execute path,
+    /// like the profile producers (e.g. [`GeometryOp::RectangleProfile`]).
+    ///
+    /// A positive `distance` offsets along the face's +normal (e.g. a planar
+    /// face in the XY plane with +Z normal lands at z ≈ +distance).
+    OffsetSurface {
         target: GeometryHandleId,
         distance: Value,
     },
@@ -1328,6 +1401,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "OffsetSolid",
         names: &["offset_solid"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetSurface,
+        operation: Some(Operation::ModifyOffsetSurface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetSurface",
+        names: &["offset_surface"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Shell,
@@ -2004,9 +2084,10 @@ pub enum GeometryQuery {
     /// sign convention follows the Frenet frame: positive curvature bends
     /// toward the principal normal.
     ///
-    /// Returns `Value::Real` (SI units: 1/m = m⁻¹, i.e. the `Curvature`
-    /// dimension = 1/Length). The eval-side dispatcher wraps this in
-    /// `Value::Scalar { si_value, dimension: Dimension::Curvature }`.
+    /// Returns a raw, untagged `Value::Real` κ (numerically 1/r). The eval-side
+    /// dispatcher tags it as
+    /// `Value::Scalar { si_value, dimension: DimensionVector::CURVATURE }`
+    /// (rad·m⁻¹; η = 1, so the value is unchanged).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(curve: Curve, point: Point3<Length>) -> Scalar<Curvature>`
@@ -2034,9 +2115,10 @@ pub enum GeometryQuery {
     ///
     /// Returns a 2×2 diagonal principal-curvature matrix encoded as nested
     /// `Value::List`: `[[kappa_max, 0.0], [0.0, kappa_min]]` where both
-    /// values are in SI units (1/m). The trace/2 equals the mean curvature H
-    /// and the det equals the Gaussian curvature K = kappa_max * kappa_min.
-    /// The eval-side dispatcher repackages this as `Value::Matrix`.
+    /// values are raw, untagged κ (numerically 1/r). The trace/2 equals the mean
+    /// curvature H and the det equals the Gaussian curvature K = kappa_max * kappa_min.
+    /// The eval-side dispatcher repackages this as a `Value::Matrix` of cells
+    /// tagged `DimensionVector::CURVATURE` (rad·m⁻¹; η = 1).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(surface: Surface, point: Point3<Length>) -> Matrix<2,2,Curvature>`
@@ -2282,105 +2364,6 @@ impl GeometryQuery {
     }
 }
 
-/// Geometric kind of a face's underlying surface, matching OCCT's
-/// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
-///
-/// Returned (or implied via the `Value::String` wire format) by
-/// [`GeometryQuery::FaceSurfaceKind`]. Consumed by
-/// `selector_vocabulary_v2::faces_by_surface_kind` to implement PRD
-/// line 78's `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/`%Torus` slots.
-///
-/// The `BezierSurface`/`BSplineSurface` arms are kept distinct (rather
-/// than collapsed under a generic `Spline`) because OCCT's classification
-/// distinguishes them at the type level; the `OffsetSurface` arm is
-/// preserved for completeness against the OCCT taxonomy. `Other` is the
-/// safety-net arm for forward compatibility — a future OCCT version that
-/// adds a new GeomAbs variant will surface as `Other` here, not silently
-/// classify as one of the existing arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FaceSurfaceKind {
-    Plane,
-    Cylinder,
-    Cone,
-    Sphere,
-    Torus,
-    BezierSurface,
-    BSplineSurface,
-    OffsetSurface,
-    Other,
-}
-
-impl FaceSurfaceKind {
-    /// Decode a canonical surface-kind name into a [`FaceSurfaceKind`].
-    ///
-    /// Mirrors the wire format produced by
-    /// [`GeometryQuery::FaceSurfaceKind`] and consumed by
-    /// `selector_vocabulary_v2::faces_by_surface_kind`. Returns the
-    /// originating string (so callers can embed it in error diagnostics)
-    /// when the name is not one of the documented canonical strings.
-    pub fn try_from_str(s: &str) -> Result<Self, &str> {
-        match s {
-            "Plane" => Ok(FaceSurfaceKind::Plane),
-            "Cylinder" => Ok(FaceSurfaceKind::Cylinder),
-            "Cone" => Ok(FaceSurfaceKind::Cone),
-            "Sphere" => Ok(FaceSurfaceKind::Sphere),
-            "Torus" => Ok(FaceSurfaceKind::Torus),
-            "BezierSurface" => Ok(FaceSurfaceKind::BezierSurface),
-            "BSplineSurface" => Ok(FaceSurfaceKind::BSplineSurface),
-            "OffsetSurface" => Ok(FaceSurfaceKind::OffsetSurface),
-            "Other" => Ok(FaceSurfaceKind::Other),
-            _ => Err(s),
-        }
-    }
-}
-
-/// Geometric kind of an edge's underlying curve, matching OCCT's
-/// `GeomAbs_*` taxonomy via `BRepAdaptor_Curve::GetType()`.
-///
-/// Returned (or implied via the `Value::String` wire format) by
-/// [`GeometryQuery::EdgeCurveKind`]. Consumed by
-/// `selector_vocabulary_v2::edges_by_curve_kind` to implement PRD line
-/// 78's `%Line`/`%Circle`/`%Ellipse`/etc. slots.
-///
-/// `Other` is the safety-net arm for forward compatibility against new
-/// OCCT GeomAbs variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EdgeCurveKind {
-    Line,
-    Circle,
-    Ellipse,
-    Hyperbola,
-    Parabola,
-    BezierCurve,
-    BSplineCurve,
-    OffsetCurve,
-    Other,
-}
-
-impl EdgeCurveKind {
-    /// Decode a canonical curve-kind name into an [`EdgeCurveKind`].
-    ///
-    /// Mirrors the wire format produced by
-    /// [`GeometryQuery::EdgeCurveKind`] and consumed by
-    /// `selector_vocabulary_v2::edges_by_curve_kind`. Returns the
-    /// originating string (so callers can embed it in error diagnostics)
-    /// when the name is not one of the documented canonical strings.
-    pub fn try_from_str(s: &str) -> Result<Self, &str> {
-        match s {
-            "Line" => Ok(EdgeCurveKind::Line),
-            "Circle" => Ok(EdgeCurveKind::Circle),
-            "Ellipse" => Ok(EdgeCurveKind::Ellipse),
-            "Hyperbola" => Ok(EdgeCurveKind::Hyperbola),
-            "Parabola" => Ok(EdgeCurveKind::Parabola),
-            "BezierCurve" => Ok(EdgeCurveKind::BezierCurve),
-            "BSplineCurve" => Ok(EdgeCurveKind::BSplineCurve),
-            "OffsetCurve" => Ok(EdgeCurveKind::OffsetCurve),
-            "Other" => Ok(EdgeCurveKind::Other),
-            _ => Err(s),
-        }
-    }
-}
-
 /// Export formats for geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExportFormat {
@@ -2473,9 +2456,24 @@ pub enum ExportWarning {
 }
 
 /// Tessellated mesh for visualization.
+///
+/// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
+/// tessellation produces metres, and every consumer that needs another unit
+/// converts at its own boundary. In particular every export writer that carries
+/// a unit DECLARATION or targets a format with a settled unit CONVENTION scales
+/// to millimetres at its own vertex-emit site — [`write_3mf`] to match the
+/// `unit="millimeter"` it declares, [`write_stl_binary`] / [`write_stl_ascii`]
+/// to match STL's de-facto millimetre convention — so callers hand these
+/// writers metres and never pre-scale. Leaving this unstated is the root
+/// ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it here
+/// rather than at each use site.
+///
+/// `normals` carry NO length unit: they are dimensionless unit direction
+/// vectors, invariant under the uniform positive metre→millimetre scale the
+/// export writers apply, so no writer converts them (and none must).
 #[derive(Debug, Clone)]
 pub struct Mesh {
-    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
@@ -2511,6 +2509,36 @@ impl ValidatedMesh {
 
     /// Consume the wrapper and recover the plain [`Mesh`].
     pub fn into_inner(self) -> Mesh {
+        self.0
+    }
+}
+
+/// A position-weld remap proven to come from [`Mesh::weld_remap`] — a
+/// proof-carrying newtype witnessing that the wrapped `Vec<u32>` is exactly
+/// some mesh's bit-exact `weld_positions().1` output, using the identical
+/// keying (never a caller-hand-rolled reimplementation that might, say,
+/// skip the `-0.0` normalization).
+///
+/// Minted only by [`Mesh::weld_remap`]; there is no public constructor, so
+/// an external (cross-crate) caller cannot hand
+/// [`Mesh::check_mesh_contract_welded`] a remap whose *keying* diverges from
+/// `weld_positions`'s — the precondition that method documents becomes
+/// structurally guaranteed rather than merely caller-trusted. This does NOT
+/// prove the remap was computed from *this specific* mesh (a same-length
+/// `WeldRemap` minted for a different mesh can still be threaded in); that
+/// residual case is defended by `check_mesh_contract_welded`'s existing
+/// length/content checks, unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeldRemap(Vec<u32>);
+
+impl WeldRemap {
+    /// Borrow the underlying old-vertex-index → canonical-vertex-index remap.
+    pub fn as_slice(&self) -> &[u32] {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain `Vec<u32>`.
+    pub fn into_inner(self) -> Vec<u32> {
         self.0
     }
 }
@@ -2735,6 +2763,24 @@ impl Mesh {
         (canon_verts, remap)
     }
 
+    /// Sealed sibling of [`Self::weld_positions`] for cross-crate callers
+    /// that intend to thread the remap into
+    /// [`Self::check_mesh_contract_welded`]: identical computation (calls
+    /// `weld_positions` directly — single source of truth for the keying),
+    /// but wraps the remap in a [`WeldRemap`] witness instead of a bare
+    /// `Vec<u32>` so that method's precondition is structurally guaranteed
+    /// rather than merely documented.
+    ///
+    /// Returns `(canonical_vertices, remap)` — the same first element as
+    /// [`Self::weld_positions`]; use this when a single weld pass needs to
+    /// feed both the canonical positions AND a
+    /// `check_mesh_contract_welded`-ready remap (e.g. a kernel ingest hot
+    /// path that also needs the canonical positions for its own output).
+    pub fn weld_remap(&self) -> (Vec<[f32; 3]>, WeldRemap) {
+        let (canon_verts, remap) = self.weld_positions();
+        (canon_verts, WeldRemap(remap))
+    }
+
     /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
     /// already reference each distinct vertex position exactly once?
     ///
@@ -2760,7 +2806,16 @@ impl Mesh {
     /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
     /// the clone on hot paths) — see those methods' docs for the full mesh
     /// contract.
-    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+    ///
+    /// `welded`, when `Some`, is a caller-supplied position-weld remap (see
+    /// [`Self::weld_positions`]) threaded into the Closed/ConsistentWinding
+    /// obligation in place of a redundant internal re-weld; `None`
+    /// recomputes it via `weld_positions()`.
+    fn check_contract(
+        &self,
+        tol: f64,
+        welded: Option<&[u32]>,
+    ) -> Result<(), MeshContractViolation> {
         // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
         // must be a multiple of 3, and if `normals` is present its length
         // must equal `vertices.len()`. Checked FIRST, before Obligation 1
@@ -2958,7 +3013,67 @@ impl Mesh {
         // reverse absent, so both counts populate together for that input
         // — but ConsistentWinding is reported first (PRD §11.1): it is the
         // more specific diagnosis of the two.
-        let (_, welded_indices) = self.weld_positions();
+        // Reuse the caller's weld remap when threaded (already computed on
+        // this exact mesh — see `check_mesh_contract_welded`'s precondition),
+        // else recompute via `weld_positions()` as before. The owned
+        // `Vec<u32>` is declared here (outside the match) so a borrow of it
+        // can outlive the match and unify with the `Some`/fallback arms'
+        // `&[u32]`.
+        //
+        // A length mismatch would otherwise panic on out-of-bounds indexing
+        // below in release builds, where `debug_assert_eq!` alone doesn't
+        // fire — so it is checked in ALL build modes and defended by
+        // falling back to an internal reweld, keeping this public API
+        // panic-free even if a future caller violates the precondition.
+        // The `debug_assert_eq!` still fires first in debug/test builds, so
+        // a length mismatch is caught loudly during development rather
+        // than silently repaired.
+        //
+        // A same-length-but-wrong-content remap can't be defended the same
+        // way — there is no `MeshContractViolation` shape for "caller
+        // passed a bogus remap", so it remains an undetected "garbage in,
+        // garbage out" caller bug in release builds, per
+        // `check_mesh_contract_welded`'s precondition. The matching-length
+        // arm below does `debug_assert_eq!` the supplied remap's CONTENT
+        // against a freshly recomputed `weld_positions().1`, so a
+        // divergence is still caught loudly in debug/test builds even
+        // though release builds pay no cost for it.
+        //
+        // NOTE: that content check re-runs the full O(n) `weld_positions()`
+        // on EVERY threaded call whenever `debug_assertions` are on — which
+        // includes plain `cargo test` / dev-profile builds — fully negating
+        // this method's hot-path saving in that profile. This is intentional
+        // (see above), but it means dev-profile timing of
+        // `check_mesh_contract_welded` does not reflect its release-mode
+        // cost; benchmark or profile this path with `--release`.
+        let recomputed_weld: Vec<u32>;
+        let welded_indices: &[u32] = match welded {
+            Some(w) if w.len() == self.vertices.len() / 3 => {
+                debug_assert_eq!(
+                    w,
+                    self.weld_positions().1.as_slice(),
+                    "check_contract: threaded weld remap content must match \
+                     self.weld_positions().1 — a same-length-but-wrong-content \
+                     remap is an undetected caller bug (GIGO) in release builds, \
+                     per check_mesh_contract_welded's precondition"
+                );
+                w
+            }
+            Some(w) => {
+                debug_assert_eq!(
+                    w.len(),
+                    self.vertices.len() / 3,
+                    "check_contract: threaded weld remap length must equal vertex count \
+                     — falling back to an internal reweld in release builds"
+                );
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
+            }
+            None => {
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
+            }
+        };
         let remapped: Vec<u32> = self
             .indices
             .iter()
@@ -3056,7 +3171,7 @@ impl Mesh {
     /// original `Mesh` back after a successful check, prefer
     /// [`Self::into_validated`] to move it in instead and skip the clone.
     pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
-        self.check_contract(tol)?;
+        self.check_contract(tol, None)?;
         Ok(ValidatedMesh(self.clone()))
     }
 
@@ -3074,10 +3189,65 @@ impl Mesh {
         self,
         tol: f64,
     ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
-        match self.check_contract(tol) {
+        match self.check_contract(tol, None) {
             Ok(()) => Ok(ValidatedMesh(self)),
             Err(violation) => Err(Box::new((self, violation))),
         }
+    }
+
+    /// Non-cloning by-reference sibling of [`Self::validate`]: runs the
+    /// identical producer-obligation checks (see that method's docs for the
+    /// full mesh contract) but returns `Result<(), MeshContractViolation>`
+    /// without minting — and therefore without cloning `self` into — a
+    /// [`ValidatedMesh`] witness. Prefer this over `validate` on hot paths
+    /// (e.g. kernel ingest paths) that only need the `Err` side and don't
+    /// need the witness back.
+    ///
+    /// This is the precondition-free general entry point: unlike
+    /// [`Self::check_mesh_contract_welded`], it always (re)computes its own
+    /// weld internally, so it is safe to call on any `Mesh` regardless of
+    /// whether the caller has already welded it — the right choice for
+    /// external/cross-crate callers, and for any caller that hasn't already
+    /// computed a bit-exact position weld of this exact mesh.
+    ///
+    /// `tol` has the same [`MeshInvariant::NonDegenerate`] semantics as
+    /// `validate`'s `tol`.
+    pub fn check_mesh_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, None)
+    }
+
+    /// Weld-threaded sibling of [`Self::check_mesh_contract`], for callers
+    /// that have already position-welded this exact mesh via
+    /// [`Self::weld_remap`] and want to avoid a redundant internal re-weld
+    /// inside the Closed/ConsistentWinding obligation.
+    ///
+    /// # Precondition
+    ///
+    /// `welded_indices` MUST have been minted by [`Self::weld_remap`] on
+    /// THIS mesh, with length `self.vertices.len() / 3`. Taking a sealed
+    /// [`WeldRemap`] (rather than a bare `&[u32]`) rules out the *keying*
+    /// half of that precondition structurally: a [`WeldRemap`] cannot be
+    /// hand-rolled by an external caller, so it can never diverge from
+    /// `weld_positions`'s bit-exact `-0.0`-normalizing keying (e.g. by
+    /// skipping that normalization). It does NOT rule out threading a
+    /// same-length [`WeldRemap`] minted for a *different* mesh — that
+    /// residual "right shape, wrong mesh" case is still only a documented
+    /// caller obligation, defended exactly as before: a length mismatch is
+    /// defended in ALL build modes (debug builds assert it loudly; release
+    /// builds silently fall back to an internal reweld instead of indexing
+    /// out of bounds, so this method never panics), while a
+    /// same-length-but-wrong-content remap is checked by content against a
+    /// freshly recomputed `weld_positions().1` via `debug_assert_eq!` (loud
+    /// in debug/test builds) but remains a silent caller bug (garbage in,
+    /// garbage out) in release. Callers that cannot guarantee the
+    /// precondition must use [`Self::check_mesh_contract`] instead, which
+    /// recomputes the weld internally.
+    pub fn check_mesh_contract_welded(
+        &self,
+        tol: f64,
+        welded_indices: &WeldRemap,
+    ) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, Some(welded_indices.as_slice()))
     }
 }
 
@@ -3105,6 +3275,48 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
         [n[0] / len, n[1] / len, n[2] / len]
     }
 }
+
+/// Millimetres per metre — the single metre→millimetre conversion point for
+/// the 3MF and STL writers.
+///
+/// **Export length regime.** Reify model space is SI METRES. Reify's export
+/// formats emit MILLIMETRES, the CAD/3MF/STL interop default, so that the unit
+/// a file DECLARES — or, where the format carries no unit field, the unit its
+/// consumers universally ASSUME — and the coordinates it CARRIES agree.
+/// [`write_3mf`] declares `unit="millimeter"`, so it applies this factor at the
+/// vertex-emit site; [`write_stl_binary`] / [`write_stl_ascii`] apply it at
+/// theirs against STL's de-facto millimetre convention; the STEP writer makes
+/// the same promise through OCCT's per-model length units (see `export_step` in
+/// `reify-kernel-occt`'s `occt_wrapper.cpp`).
+///
+/// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
+/// the scaling is deliberately done in the source precision. Promoting to f64
+/// first (`f64::from(v) * 1000.0`) is exact — a 24-bit significand times
+/// `1000 = 2^3·125` needs 31 bits — but exactness here is a MISFEATURE: it
+/// preserves, and then prints, all 17 digits of the f32 input's binary
+/// representation error. Multiplying in f32 instead re-rounds onto the f32
+/// grid at the millimetre magnitude, whose ulp (1.9e-6 at 30) is COARSER than
+/// the scaled input's deviation from the round decimal (6.7e-7 at 30), so the
+/// product lands back exactly on the decimal the author wrote. Measured, with
+/// `{}` (shortest round-trip) formatting:
+///
+/// | input (m) | `v * MM_PER_METRE_F32` | `f64::from(v) * 1000.0` |
+/// |---|---|---|
+/// | `0.030`  | `30`   | `29.999999329447746` |
+/// | `0.0335` | `33.5` | `33.50000083446503`  |
+/// | `0.1`    | `100`  | `100.00000149011612` |
+///
+/// The f32 route is therefore the one that emits round, diffable coordinates
+/// and keeps every value exactly f32-round-trippable (the mesh's own
+/// precision); the f64 route emits false precision, and in the measured cases
+/// above it grows each coordinate literal from 2 to 18 characters.
+///
+/// The accuracy given up is bounded by 2^-23 relative — the input's own
+/// ≤2^-24 plus one re-rounding of ≤2^-24 — so it is within a FACTOR OF TWO of
+/// the precision the `Vec<f32>` buffer already has, and cannot meaningfully
+/// degrade data that is f32 to begin with. Worst case on a 30 mm part is
+/// ~3.6e-6 mm, i.e. nanometres.
+const MM_PER_METRE_F32: f32 = 1000.0;
 
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
 /// Returns `None` if `idx` is out of bounds.
@@ -3141,6 +3353,16 @@ fn triangle_verts(
 }
 
 /// Write a mesh to the STL binary format.
+///
+/// **Units:** takes a [`Mesh`] whose vertices are SI METRES (reify model space)
+/// and emits MILLIMETRES, converting the coordinates by [`MM_PER_METRE_F32`] as
+/// it writes them. STL carries no unit field, so there is no declaration to
+/// keep honest — but every STL consumer (PrusaSlicer, Cura, every mesh viewer)
+/// reads the coordinates as millimetres, so that de-facto convention IS the
+/// promise this writer makes, and a 0.030 m cube is written as 30 mm. Scaling
+/// here — at the site that makes the promise — rather than in the callers is
+/// what makes the promise un-bypassable: no caller can obtain a 1000×-shrunk
+/// file, and callers must NOT pre-scale (doing so is 1,000,000×).
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -3193,13 +3415,29 @@ pub fn write_stl_binary(
     // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Computed from the UNSCALED verts on purpose. The normal is a
+        // dimensionless unit direction, invariant under the uniform positive
+        // metre→millimetre scale (see [`Mesh`]), so scaling first would change
+        // nothing but the arithmetic — while magnifying the cross product by
+        // 1e6 and risking an f32 overflow on large meshes. Normalising the
+        // unscaled cross product keeps these bytes bit-identical.
         let n = compute_facet_normal(v0, v1, v2);
 
         // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
         let mut tri = [0u8; 50];
         let mut off = 0usize;
-        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+        for &c in n.iter() {
             tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
+        }
+        // Vertices convert SI metres → millimetres AT THE EMIT SITE — no `Mesh`
+        // clone, no extra allocation, exactly as `write_3mf` does. Multiply in
+        // f32, NOT via an `f64::from(v) * 1000.0` promotion: the f32
+        // re-rounding is what lands `0.030 m` back on `30` instead of
+        // `29.999999329447746`. That is measured on `MM_PER_METRE_F32` — do not
+        // "fix" it to f64 without re-reading it.
+        for &c in v0.iter().chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&(c * MM_PER_METRE_F32).to_le_bytes());
             off += 4;
         }
         // tri[48..50] = attribute byte count 0 (already zero-initialized)
@@ -3210,6 +3448,14 @@ pub fn write_stl_binary(
 }
 
 /// Write a mesh to the STL ASCII format.
+///
+/// **Units:** as with [`write_stl_binary`], takes a [`Mesh`] whose vertices are
+/// SI METRES (reify model space) and emits MILLIMETRES, converting by
+/// [`MM_PER_METRE_F32`] as it writes them. STL carries no unit field, so there
+/// is no declaration to keep honest — but its consumers universally read
+/// millimetres, so that de-facto convention IS the promise, and scaling here
+/// rather than in the callers makes it un-bypassable. Callers must NOT
+/// pre-scale.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -3248,15 +3494,22 @@ pub fn write_stl_ascii(
     let mut line_buf = String::with_capacity(200);
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Normal from the UNSCALED verts, identically to `write_stl_binary`:
+        // it is a dimensionless unit direction, invariant under the uniform
+        // positive metre→millimetre scale, so this text stays byte-unchanged.
         let n = compute_facet_normal(v0, v1, v2);
         line_buf.clear();
+        // Vertices convert SI metres → millimetres in the same single `write!`
+        // — no second format call and no extra allocation, so the reused-String
+        // / one-`write_all`-per-triangle buffering contract above survives.
+        // Multiply in f32; see `MM_PER_METRE_F32` for why not via f64.
         let _ = write!(
             line_buf,
             "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
             nx = n[0], ny = n[1], nz = n[2],
-            x0 = v0[0], y0 = v0[1], z0 = v0[2],
-            x1 = v1[0], y1 = v1[1], z1 = v1[2],
-            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+            x0 = v0[0] * MM_PER_METRE_F32, y0 = v0[1] * MM_PER_METRE_F32, z0 = v0[2] * MM_PER_METRE_F32,
+            x1 = v1[0] * MM_PER_METRE_F32, y1 = v1[1] * MM_PER_METRE_F32, z1 = v1[2] * MM_PER_METRE_F32,
+            x2 = v2[0] * MM_PER_METRE_F32, y2 = v2[1] * MM_PER_METRE_F32, z2 = v2[2] * MM_PER_METRE_F32,
         );
         writer.write_all(line_buf.as_bytes())?;
     }
@@ -3308,6 +3561,14 @@ impl ThreeMfWarning {
 
 /// Write `mesh` to the 3MF format (OPC ZIP package).
 ///
+/// **Units:** takes a `Mesh` whose vertices are SI METRES (reify model space)
+/// and emits a package declaring `unit="millimeter"`, converting the
+/// coordinates by [`MM_PER_METRE_F32`] as it writes them. The declaration and
+/// the payload therefore agree: a 0.030 m cube is written as 30 mm and reads
+/// back as 30 mm in any 3MF consumer. Scaling here — at the site that makes
+/// the `unit=` promise — rather than in the callers is what makes the promise
+/// un-bypassable: no caller can obtain a mislabelled package.
+///
 /// Produces a valid 3MF/OPC ZIP holding three parts:
 ///
 /// - `[Content_Types].xml` — OPC content-type declarations
@@ -3330,9 +3591,10 @@ impl ThreeMfWarning {
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
 ///
-/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
-/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
-/// that require IEEE-finite coordinates will reject such packages.
+/// **NaN/Inf coordinates:** non-finite `f32` values stay non-finite through
+/// the metre→millimetre multiply and are written as-is via `{}` formatting
+/// (matching `write_stl_ascii` behavior).  3MF consumers that require
+/// IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -3437,10 +3699,24 @@ pub fn write_3mf(
                 Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
             })?;
             line_buf.clear();
+            // Metres → millimetres, so the emitted coordinates match the
+            // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
+            //
+            // Multiply in f32, NOT via an `f64::from(v) * 1000.0` promotion:
+            // the f32 re-rounding is what lands `0.030 m` back on `30` instead
+            // of printing `29.999999329447746`. That is measured, and the
+            // reasoning is written out on `MM_PER_METRE_F32` — do not "fix" it
+            // to f64 without re-reading it.
+            //
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
-                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+                format_args!(
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    v[0] * MM_PER_METRE_F32,
+                    v[1] * MM_PER_METRE_F32,
+                    v[2] * MM_PER_METRE_F32
+                ),
             );
             zw.write_all(line_buf.as_bytes())?;
         }
@@ -3815,6 +4091,44 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+// `InvalidReference` is the only invalid-handle case; every other
+// `GeometryError` is a failure carrying its cause.
+impl GeometryError {
+    fn into_failure_text(self) -> String {
+        match self {
+            GeometryError::OperationFailed(msg) => msg,
+            other => other.to_string(),
+        }
+    }
+}
+
+impl From<GeometryError> for QueryError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => QueryError::InvalidHandle(id),
+            other => QueryError::QueryFailed(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for ExportError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => ExportError::InvalidHandle(id),
+            other => ExportError::FormatError(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for TessError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => TessError::InvalidHandle(id),
+            other => TessError::TessellationFailed(other.into_failure_text()),
+        }
+    }
+}
+
 /// Errors from constructing a [`BooleanOpParents`] value with mismatched
 /// slice lengths.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3995,6 +4309,85 @@ pub trait KernelAttributeHook: Send + Sync {
     ) -> Result<KernelAttributeOutcome, QueryError>;
 }
 
+/// A kernel-agnostic **request** for the spatial resolution at which a
+/// [`Mesh`] should be sampled into a voxel grid (task 6560).
+///
+/// # What this is (and is not)
+///
+/// This is a *request*, not a set of OpenVDB parameters: it says what the
+/// caller needs resolved, and leaves the kernel to derive its own native
+/// settings (voxel size, narrow-band width, …) from it. That is why it lives
+/// in `reify-ir` rather than following the bare-scalar precedent of
+/// [`GeometryKernel::realize_mesh_from_voxel`] (geometry.rs ~line 4882),
+/// whose signature takes bare `f64`/`bool` args only because the type it
+/// would otherwise name — `MarchingCubesOptions` — is owned by
+/// `reify-kernel-openvdb`, which depends on `reify-eval` → `reify-ir`;
+/// naming it in the trait would be a reverse dependency (a cycle).
+/// `VoxelResolution` carries no kernel-specific vocabulary, so defining it
+/// here lets `reify-eval` and every kernel crate name it directly with no
+/// cycle and no bare-scalar tuple to keep in sync.
+///
+/// # Units — model space, SI metres
+///
+/// Every length this type carries is a MODEL-SPACE length in the mesh's own
+/// units, i.e. SI metres per [`Mesh::vertices`]. The shells PRD states its
+/// motivating dimensions in millimetres; every worked example below converts
+/// them rather than passing them through, because a millimetre figure handed
+/// over verbatim is a silent 1000x error — `MinFeature(1.0)` meaning "1 mm"
+/// actually asks for a 1 metre feature. Leaving the unit unstated is what
+/// [`Mesh`] records as "the root ambiguity that produced the 1000x STEP/3MF
+/// unit mislabel".
+///
+/// # Why this exists
+///
+/// The only voxelization resolution policy before this type was
+/// `MeshToVoxelOptions::honest_floor` — `voxel_size = longest_extent / 64`,
+/// derived purely from the bounding box. For the shells PRD's own motivating
+/// case (`docs/prds/v0_4/structural-analysis-shells.md`, "Background" — a
+/// 1 mm flexure in a 100 mm part, which in model space is `MinFeature(0.001)`
+/// on a 0.1 m body) that yields 0.001_5625 m/voxel (1.5625 mm) and the
+/// feature is entirely sub-voxel. `VoxelResolution` is the seam through
+/// which a caller that KNOWS its thinnest feature can ask for a grid that
+/// actually resolves it.
+///
+/// # No `Eq` / `Hash`
+///
+/// Two variants carry `f64`, which is only `PartialEq`. This matches the
+/// house rule already followed by `MeshToVoxelOptions`,
+/// `MarchingCubesOptions` and `TessellateOptions` in the kernel crates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VoxelResolution {
+    /// Today's default: let the kernel derive the voxel size from the mesh's
+    /// bounding box alone (`MeshToVoxelOptions::honest_floor`'s
+    /// `longest_extent / VOXELS_PER_LONGEST_AXIS`). Bit-identical to the
+    /// pre-6560 behaviour, so every existing caller that does not care about
+    /// resolution keeps the grid it always got.
+    HonestFloor,
+    /// An explicit voxel side length, in the mesh's own units (SI metres, per
+    /// [`Mesh::vertices`]). The kernel uses it verbatim after validating that
+    /// it is finite, strictly positive, and within the kernel's dense-grid
+    /// budget.
+    TargetVoxelSize(f64),
+    /// The thinnest feature that MUST be resolved, in the mesh's own units.
+    /// The kernel derives a voxel size fine enough to resolve a feature of
+    /// this size (openvdb: `t / MIN_FEATURE_VOXELS_ACROSS`). Prefer this over
+    /// [`Self::TargetVoxelSize`] when the caller knows a physical dimension
+    /// (a wall thickness, a flexure width) but not a grid spacing.
+    ///
+    /// A model-space length, per the "Units" section above: a 1 mm wall is
+    /// `MinFeature(0.001)`, NOT `MinFeature(1.0)`.
+    MinFeature(f64),
+}
+
+/// The error a kernel `K` returns for [`GeometryKernel::ingest_dense_sdf`] when
+/// it does not support dense SDF ingest — the one home of that message.
+pub fn unsupported_dense_sdf_ingest<K: ?Sized>() -> GeometryError {
+    GeometryError::OperationFailed(format!(
+        "{} does not ingest dense SDF grids",
+        std::any::type_name::<K>()
+    ))
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -4025,6 +4418,37 @@ pub trait GeometryKernel: Send + Sync {
         let handle = self.execute(op)?;
         Ok((handle, AttributeHistory::None))
     }
+
+    /// Free all resident kernel state built for the previous whole-file
+    /// design, returning the kernel to an empty-but-reusable state, so a
+    /// long-lived kernel reused across GUI whole-file reloads does not
+    /// accumulate the prior design's native geometry unbounded (task 5212).
+    ///
+    /// The **default** is a no-op, so mocks, stubs and every adapter that is
+    /// not on the reload path stay compiling unchanged. Mirrors the
+    /// default-forwarding convention of
+    /// [`execute_with_history`](GeometryKernel::execute_with_history) and
+    /// [`query_many`](GeometryKernel::query_many).
+    ///
+    /// Only the OCCT handle overrides it today — whose `OcctKernel` owns a
+    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
+    /// routing an eviction over its actor channel. That is scope, not a claim
+    /// that the other adapters are already bounded: OCCT is the only kernel
+    /// the GUI's reload path can reach, because `Engine::with_registered_kernel`
+    /// (the production boot constructor) instantiates the single lex-min
+    /// BRep-capable registration. The Manifold, OpenVDB and Fidget adapters
+    /// each keep their own monotonic per-handle table that nothing clears
+    /// (`ManifoldKernel::shapes`/`sub_shapes`, `OpenVdbKernel::handles` —
+    /// native `cxx::UniquePtr` grids — and `FidgetKernel::trees`), so each
+    /// needs its own override before it may join a reload path; wiring one in
+    /// without that override reintroduces exactly the leak this method exists
+    /// to close. A delegating wrapper must forward instead of inheriting the
+    /// default (see `reify_geometry::SingleKernelHolder::reset`).
+    ///
+    /// Callers must invoke this exactly once per whole-file reload (see
+    /// `reify_eval::Engine::reset_geometry_for_reload`), never on a parameter
+    /// (slider) edit — a reset on every tick would needlessly wipe warm shapes.
+    fn reset(&mut self) {}
 
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
@@ -4307,6 +4731,51 @@ pub trait GeometryKernel: Send + Sync {
         )))
     }
 
+    /// Ingest a [`Mesh`] at a caller-requested spatial resolution
+    /// (task 6560 — the v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// # Contract
+    ///
+    /// Semantically identical to [`Self::ingest_mesh`] except that the kernel
+    /// is told what resolution the caller needs. A kernel whose native
+    /// representation has no notion of spatial resolution (OCCT's B-reps,
+    /// Manifold's meshes, Fidget's implicit SDFs, mocks, stubs) has nothing
+    /// to honour, so the **default body ignores `resolution` and delegates to
+    /// [`Self::ingest_mesh`]**.
+    ///
+    /// That delegation — rather than the `Err(OperationFailed)` default used
+    /// by [`Self::ingest_mesh`] itself — is deliberate and is the reason this
+    /// method could be added without touching a single other kernel, stub or
+    /// mock in the workspace: a resolution request is *advisory*, so a kernel
+    /// that cannot act on one must degrade to plain ingest, not to failure.
+    /// Contrast [`Self::register_mesh_handle`], which delegates for the same
+    /// structural reason.
+    ///
+    /// `OpenVdbKernel` is the only current KERNEL-level override: it maps
+    /// `resolution` through `MeshToVoxelOptions::for_resolution` to a voxel
+    /// size and narrow-band width before calling its `meshToVolume`
+    /// primitive, and rejects a request that is non-finite, non-positive,
+    /// coarser than the body's thinnest bounding-box extent, or beyond its
+    /// dense-grid budget (`Err(GeometryError::OperationFailed(_))`, with the
+    /// offending value named in the message).
+    /// `reify_geometry::SingleKernelHolder` additionally overrides it as a
+    /// pure delegating pass-through — it honours no request itself, but must
+    /// forward one rather than inherit the default, which would route through
+    /// its own `ingest_mesh` override and drop `resolution` silently.
+    ///
+    /// # Object safety
+    ///
+    /// `Self` appears only in the `&mut self` receiver, so the trait stays
+    /// object-safe and `Box<dyn GeometryKernel>` call sites keep compiling.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = resolution;
+        self.ingest_mesh(mesh)
+    }
+
     /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle, WITHOUT
     /// re-deriving or otherwise transforming it (task 5033, PRD
     /// `voxel-to-mesh-surfacing.md` §10 OQ-1 option (a)).
@@ -4331,6 +4800,22 @@ pub trait GeometryKernel: Send + Sync {
     /// verbatim in a side-table disjoint from its voxel-grid handles.
     fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         self.ingest_mesh(mesh)
+    }
+
+    /// Ingest a dense SDF sample grid as a Voxel-repr solid.
+    ///
+    /// The absence of an override is the not-supported contract (the
+    /// [`Self::ingest_mesh`] pattern). `OpenVdbKernel` overrides it under the
+    /// D-8 activation policy (`docs/prds/v0_6/implicit-solids.md`). Delegating
+    /// wrappers such as `reify_geometry::SingleKernelHolder` must forward it
+    /// rather than inherit this default.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = (grid, opts);
+        Err(unsupported_dense_sdf_ingest::<Self>())
     }
 
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
@@ -4674,440 +5159,6 @@ pub fn debug_assert_query_many_invariant<Q, R>(queries: &[Q], reply: &[R]) {
 // reference.
 // ----------------------------------------------------------------------
 
-/// Structured feature identifier for v0.2 persistent naming.
-///
-/// A `FeatureId` is either a *realization root* (a [`RealizationNodeId`], the
-/// geometry output of an entity feature) or a *derived* feature built on top of
-/// another `FeatureId` by a closed, append-only set of derivation kinds. The
-/// recursion bottoms out at `Realization`; [`entity()`](FeatureId::entity) and
-/// [`index()`](FeatureId::index) walk to that root. `Box` breaks the otherwise
-/// infinite size of the recursive variant.
-///
-/// Replaces the former stringly-typed `FeatureId(String)` (task 4806 / P1 α,
-/// PRD `docs/prds/naming-convergence/P1-structured-featureid-feature-value.md`).
-/// `PartialEq`/`Eq`/`Hash` are `#[derive]`d — structural, recursing through the
-/// `Box` — so identity is NEVER computed via the `Display` string.
-///
-/// [`RealizationNodeId`]: reify_core::identity::RealizationNodeId
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum FeatureId {
-    /// A realization root: the geometry output of an entity feature.
-    Realization(reify_core::identity::RealizationNodeId),
-    /// A feature derived from `base` by `kind` (e.g. a mid-surface).
-    Derived {
-        base: Box<FeatureId>,
-        kind: DerivedKind,
-    },
-}
-
-/// Closed, append-only set of [`FeatureId`] derivation kinds.
-///
-/// Intentionally has no `Other(String)` escape hatch — adding a derived kind is
-/// a deliberate, compile-checked extension (mirroring the [`Role`] enum's
-/// no-wildcard discipline). Today the only kind is `MidSurface`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DerivedKind {
-    /// The mid-surface derived from a shell-extract parent.
-    MidSurface,
-}
-
-impl FeatureId {
-    /// Construct a realization-root `FeatureId` for `entity`'s realization `index`.
-    ///
-    /// Replaces the former stringly-typed `FeatureId::new(String)` constructor.
-    pub fn realization(entity: impl Into<String>, index: u32) -> FeatureId {
-        FeatureId::Realization(reify_core::identity::RealizationNodeId::new(entity, index))
-    }
-
-    /// The entity name of the realization root this feature derives from.
-    ///
-    /// Walks through any `Derived` wrappers to the `Realization` root.
-    pub fn entity(&self) -> &str {
-        match self {
-            FeatureId::Realization(node) => &node.entity,
-            FeatureId::Derived { base, .. } => base.entity(),
-        }
-    }
-
-    /// The realization index of the realization root this feature derives from.
-    ///
-    /// Walks through any `Derived` wrappers to the `Realization` root.
-    pub fn index(&self) -> u32 {
-        match self {
-            FeatureId::Realization(node) => node.index,
-            FeatureId::Derived { base, .. } => base.index(),
-        }
-    }
-
-    /// Derive the `FeatureId` for the mid-surface of `parent`.
-    ///
-    /// Wraps `parent` in `Derived { kind: MidSurface }`; the [`fmt::Display`]
-    /// output is `<parent>/mid_surface`. Composition is well-defined: nesting
-    /// yields a doubly-`Derived` value displaying as
-    /// `<parent>/mid_surface/mid_surface`.
-    ///
-    /// Implements the derived-geometry naming sub-vocabulary from PRD
-    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20), built on
-    /// top of the realization-based feature identity established by PRD
-    /// `docs/prds/v0_2/persistent-naming-v2.md` line 33.
-    pub fn derived_mid_surface(parent: &FeatureId) -> FeatureId {
-        FeatureId::Derived {
-            base: Box::new(parent.clone()),
-            kind: DerivedKind::MidSurface,
-        }
-    }
-
-    /// Stable byte encoding of this feature id for content-hashing.
-    ///
-    /// Byte 0 is an explicit per-variant discriminant: `Realization` appends a
-    /// `u32`-LE length prefix + the entity bytes + the index `u32`-LE; `Derived`
-    /// appends a `DerivedKind` tag byte then recurses through `base` (hence a
-    /// variable-length `Vec<u8>`, unlike [`Role::content_hash_bytes`]'s fixed
-    /// `[u8; 4]`). This is a deliberate replacement for a
-    /// `format!("{self:?}")`/`Display`-derived hash input: neither the `Debug`
-    /// string nor the `Display` grammar is a hashing contract, so a future
-    /// rename (or a Display-grammar change) would silently change the hash and
-    /// invalidate every cached selector resolution. The length prefix keeps the
-    /// encoding unambiguous (e.g. entity `"Fo"` + index can never collide with a
-    /// different entity/index split). Both matches are intentionally
-    /// wildcard-free, so adding a `FeatureId` variant or a `DerivedKind` is a
-    /// compile error here until a fresh discriminant is assigned.
-    ///
-    /// INVARIANT: never renumber an existing discriminant — only append new
-    /// ones. The numbers below are a frozen serialization contract, not an
-    /// enum-layout detail.
-    //
-    // `pub(crate)` + allow(dead_code): in this task (P1 α, #4806) the only caller
-    // is the golden unit test; the production consumer is the `Value::content_hash`
-    // path introduced in P1 γ (`Value::Feature`), which lives in this same crate.
-    // See docs/prds/naming-convergence/P1-structured-featureid-feature-value.md.
-    #[allow(dead_code)]
-    pub(crate) fn content_hash_bytes(&self) -> Vec<u8> {
-        fn derived_kind_tag(kind: DerivedKind) -> u8 {
-            match kind {
-                DerivedKind::MidSurface => 0x00,
-            }
-        }
-        match self {
-            FeatureId::Realization(node) => {
-                let entity = node.entity.as_bytes();
-                let mut bytes = Vec::with_capacity(1 + 4 + entity.len() + 4);
-                bytes.push(0x00);
-                bytes.extend_from_slice(&(entity.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(entity);
-                bytes.extend_from_slice(&node.index.to_le_bytes());
-                bytes
-            }
-            FeatureId::Derived { base, kind } => {
-                let mut bytes = vec![0x01, derived_kind_tag(*kind)];
-                bytes.extend_from_slice(&base.content_hash_bytes());
-                bytes
-            }
-        }
-    }
-}
-
-impl fmt::Display for FeatureId {
-    /// Pinned OWNED grammar: the `Realization` root reuses
-    /// [`RealizationNodeId`](reify_core::identity::RealizationNodeId)'s Display
-    /// (`"<entity>#realization[<index>]"`) and each `Derived` step appends its
-    /// per-kind suffix (`"/mid_surface"`). The `FromStr` round-trip test pins
-    /// this grammar; changing it requires a codec `FORMAT_VERSION` bump.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FeatureId::Realization(node) => write!(f, "{node}"),
-            FeatureId::Derived { base, kind } => match kind {
-                DerivedKind::MidSurface => write!(f, "{base}/mid_surface"),
-            },
-        }
-    }
-}
-
-impl From<&reify_core::identity::RealizationNodeId> for FeatureId {
-    /// Lossless: the realization node becomes the `Realization` root.
-    fn from(id: &reify_core::identity::RealizationNodeId) -> Self {
-        FeatureId::Realization(id.clone())
-    }
-}
-
-/// Error returned by [`FeatureId`]'s [`FromStr`](std::str::FromStr) /
-/// [`TryFrom<&str>`] impls when the input does not match the pinned
-/// [`fmt::Display`](FeatureId) grammar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FeatureIdParseError {
-    /// The input was empty.
-    Empty,
-    /// The realization root did not match `"<entity>#realization[<index>]"`.
-    BadRealization,
-    /// A `"/<step>"` suffix named a derivation kind that is not recognized.
-    UnknownDerivedKind,
-    /// A derived step had no base feature to derive from (e.g. a bare
-    /// `"/mid_surface"` with an empty prefix).
-    Trailing,
-}
-
-impl fmt::Display for FeatureIdParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FeatureIdParseError::Empty => write!(f, "feature id must not be empty"),
-            FeatureIdParseError::BadRealization => {
-                write!(f, "feature id root must be '<entity>#realization[<index>]'")
-            }
-            FeatureIdParseError::UnknownDerivedKind => {
-                write!(f, "feature id has an unrecognized derived step")
-            }
-            FeatureIdParseError::Trailing => {
-                write!(f, "feature id derived step has no base feature")
-            }
-        }
-    }
-}
-
-impl std::error::Error for FeatureIdParseError {}
-
-impl std::str::FromStr for FeatureId {
-    type Err = FeatureIdParseError;
-
-    /// Parse the pinned [`fmt::Display`](FeatureId) grammar back into a
-    /// structured `FeatureId`. Right-peels a trailing `"/mid_surface"` step
-    /// (wrapping the parsed prefix in `Derived { kind: MidSurface }`) and
-    /// otherwise parses the residual root via [`RealizationNodeId`]'s `FromStr`.
-    /// This is the exact inverse of `Display` (round-trip pinned by test).
-    ///
-    /// [`RealizationNodeId`]: reify_core::identity::RealizationNodeId
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Err(FeatureIdParseError::Empty);
-        }
-        if let Some(prefix) = s.strip_suffix("/mid_surface") {
-            if prefix.is_empty() {
-                return Err(FeatureIdParseError::Trailing);
-            }
-            let base = prefix.parse::<FeatureId>()?;
-            return Ok(FeatureId::Derived {
-                base: Box::new(base),
-                kind: DerivedKind::MidSurface,
-            });
-        }
-        // Base case: a bare realization root. A residual '/' here means an
-        // unrecognized derived step (a realization entity never contains '/').
-        if s.contains('/') {
-            return Err(FeatureIdParseError::UnknownDerivedKind);
-        }
-        let node = s
-            .parse::<reify_core::identity::RealizationNodeId>()
-            .map_err(|_| FeatureIdParseError::BadRealization)?;
-        Ok(FeatureId::Realization(node))
-    }
-}
-
-impl TryFrom<&str> for FeatureId {
-    type Error = FeatureIdParseError;
-
-    /// Delegates to [`FromStr`](std::str::FromStr).
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        s.parse()
-    }
-}
-
-/// Per-axis sign discriminator for box-primitive corner vertices.
-///
-/// `Pos` selects the positive face along an axis, `Neg` the negative face.
-/// Used for all three axes in `Role::CornerVertex { x, y, z }` to uniquely
-/// name each of a box's 8 corners as a sign triple.
-/// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AxisSign {
-    Pos,
-    Neg,
-}
-
-/// Cap orientation for the `Role::Cap` variant.
-///
-/// Two semantic flavours of cap exist:
-///   - `Top` / `Bottom`: gravitational orientation, used by extrude
-///     (where `Top` is the swept-end face / `LastShape()` and `Bottom`
-///     is the profile-as-placed / `FirstShape()`).
-///   - `Start` / `End`: parametric sequence along a sweep parameter,
-///     used by revolve (where `Start` is the profile at angle 0 /
-///     `FirstShape()` and `End` is the profile at the angle endpoint /
-///     `LastShape()`). For full-2π revolutions both caps collapse and
-///     no `Cap` entries are emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CapKind {
-    Top,
-    Bottom,
-    Start,
-    End,
-}
-
-/// One entry in a topology entity's mod-history postfix.
-///
-/// Recorded each time a feature splits a parent topology entity into
-/// children — `splitting_feature_id` is the FeatureId whose op caused
-/// the split, and `split_index` distinguishes the resulting children
-/// (PRD lines 60, 64).
-///
-/// Populated by `reify_eval::propagate_attributes_via_brepalgoapi_history`
-/// when a parent topology entity is split into multiple result sub-shapes
-/// (count > 1 across same-kind Modified ∪ Generated). Tasks 5/7/8 add
-/// per-op coverage for sweeps/local-features/booleans.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModEntry {
-    pub splitting_feature_id: FeatureId,
-    pub split_index: u32,
-}
-
-/// Role of a topology entity within its originating feature.
-///
-/// The minimal initial set per PRD line 56. Tasks 5-8 (sweeps, primitives,
-/// local features, booleans) will add per-op variants here as a closed
-/// extension — there is intentionally no `Other(String)` escape hatch so
-/// that selector-resolution exhaustive matching remains auditable.
-///
-/// Per-op vocabulary:
-///   - **Extrude** (`GeometryOp::Extrude`): `Cap(Top)` / `Cap(Bottom)` for
-///     end faces, `Side` for lateral faces, `NewEdge` for cap-to-side edges.
-///   - **Revolve** (`GeometryOp::Revolve`): `Cap(Start)` / `Cap(End)` for
-///     profile faces of partial revolutions (omitted for full-2π),
-///     `RevolvedFace` for lateral revolved faces, `AxisFace` reserved for
-///     faces that touch the revolve axis (declared but not yet detected
-///     by `populate_revolve_attributes`; see task 5a design decisions).
-///   - **Sweep** (`GeometryOp::Sweep`): `Cap(Start)` / `Cap(End)` for
-///     profile-as-placed and swept-end caps (single profile follows a
-///     spine; parametric sequence along the spine), `SweptFace` for
-///     lateral faces generated by sweeping a profile edge along the
-///     spine (sweep convention; distinct from `Side` and `RevolvedFace`
-///     so selectors can match per-op).
-///   - **Loft** (`GeometryOp::Loft`): `Cap(Start)` / `Cap(End)` for the
-///     first / last profile-section caps under `is_solid=true` (closed
-///     ends of the multi-section solid), `LoftedFace` for lateral faces
-///     generated between consecutive section profiles (loft convention;
-///     distinct from `Side`, `RevolvedFace`, and `SweptFace` so selectors
-///     can match per-op).
-///   - **Mid-surface (derived geometry)**: `MidSurfaceFace` for per-region
-///     mid-surface patches (`local_index = region.label`), `MidSurfaceEdge`
-///     for inter-region adjacency curves (`local_index` = canonical sort
-///     position of the `(min, max)` region pair). Emitted by
-///     `reify_shell_extract::populate_mid_surface_attributes`; PRD
-///     `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Role {
-    /// A cap face (`top`/`bottom` for extrude, `start`/`end` for revolve)
-    /// of the feature.
-    Cap(CapKind),
-    /// A lateral side face of the feature (extrude convention).
-    Side,
-    /// An edge created by the feature's construction (e.g. cap-to-side
-    /// boundary edges of an extrude).
-    NewEdge,
-    /// A revolved lateral face — a face generated by sweeping a profile
-    /// edge around the revolve axis (revolve convention; distinct from
-    /// `Side` so selectors can match per-op).
-    RevolvedFace,
-    /// A face that touches the revolve axis (e.g. zero-area axis-coincident
-    /// face, or a face whose surface contains the axis). Reserved for
-    /// detection in a follow-up task; not currently emitted by
-    /// `populate_revolve_attributes` but declared here so the variant
-    /// space is stable for selector vocabulary v2 (PRD line 102).
-    AxisFace,
-    /// A swept lateral face — a face generated by sweeping a profile
-    /// edge along the sweep spine (sweep convention; distinct from
-    /// `Side` and `RevolvedFace` so selectors can match per-op).
-    /// Emitted by `populate_sweep_attributes` for `GeometryOp::Sweep`
-    /// (task 5b, #2619).
-    SweptFace,
-    /// A lofted lateral face — a face generated between consecutive
-    /// profile sections of a loft (loft convention; distinct from
-    /// `Side`, `RevolvedFace`, and `SweptFace` so selectors can match
-    /// per-op). Emitted by `populate_loft_attributes` for
-    /// `GeometryOp::Loft` (task 5b, #2619).
-    LoftedFace,
-    /// A mid-surface patch corresponding to one segmentation region of
-    /// a body's derived mid-surface (derived-geometry naming, PRD
-    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81).
-    /// `local_index = region.label` (BFS-discovery order from
-    /// `reify_shell_extract::segmentation`). Emitted by
-    /// `reify_shell_extract::populate_mid_surface_attributes`.
-    MidSurfaceFace,
-    /// An inter-region adjacency edge of a body's derived mid-surface.
-    /// `local_index` is the canonical sort position of the `(min, max)`
-    /// region pair (ascending tuple order). Emitted by
-    /// `reify_shell_extract::populate_mid_surface_attributes` from PRD
-    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
-    MidSurfaceEdge,
-    /// A corner vertex of a box primitive — uniquely identified by the
-    /// three face-signs (±X, ±Y, ±Z) that meet at it. Produces 8 distinct
-    /// values per box. Emitted by per-primitive vertex seeders (task C).
-    ///
-    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-    CornerVertex {
-        x: AxisSign,
-        y: AxisSign,
-        z: AxisSign,
-    },
-    /// A corner vertex of a swept solid where a cap face meets the lateral
-    /// envelope. Emitted by per-op vertex seeders for extrude / revolve /
-    /// sweep / loft (task C). `face` records which cap (top/bottom for
-    /// gravitational sweeps; start/end for parametric sweeps).
-    ///
-    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-    CapCornerVertex { face: CapKind },
-    /// A face generated by a local-feature op — fillet/chamfer blend
-    /// surface; distinct so provenance selectors can match
-    /// created_by/split_by per creating feature.
-    LocalFeatureFace,
-}
-
-impl Role {
-    /// Stable byte encoding of this role for content-hashing (task 4536
-    /// amendment, reviewer suggestion 4).
-    ///
-    /// Byte 0 is an explicit per-variant discriminant; bytes 1..4 encode the
-    /// payload (`CapKind`/`AxisSign`), 0-padded for unit variants. This is a
-    /// deliberate replacement for a `format!("{self:?}")`-derived hash input:
-    /// the derived `Debug` string is NOT a serialization contract, so a future
-    /// rename of a `Role` variant (or one of its `CapKind`/`AxisSign` payload
-    /// variants) would silently change the hash and invalidate every cached
-    /// selector resolution. The `match` is intentionally wildcard-free, so
-    /// adding a `Role` variant is a compile error here until a fresh
-    /// discriminant is assigned.
-    ///
-    /// INVARIANT: never renumber an existing discriminant — only append new
-    /// ones. The numbers below are a frozen serialization contract, not an
-    /// enum-layout detail.
-    pub(crate) fn content_hash_bytes(&self) -> [u8; 4] {
-        fn cap(k: CapKind) -> u8 {
-            match k {
-                CapKind::Top => 1,
-                CapKind::Bottom => 2,
-                CapKind::Start => 3,
-                CapKind::End => 4,
-            }
-        }
-        fn sign(s: AxisSign) -> u8 {
-            match s {
-                AxisSign::Pos => 1,
-                AxisSign::Neg => 2,
-            }
-        }
-        match self {
-            Role::Cap(k) => [0, cap(*k), 0, 0],
-            Role::Side => [1, 0, 0, 0],
-            Role::NewEdge => [2, 0, 0, 0],
-            Role::RevolvedFace => [3, 0, 0, 0],
-            Role::AxisFace => [4, 0, 0, 0],
-            Role::SweptFace => [5, 0, 0, 0],
-            Role::LoftedFace => [6, 0, 0, 0],
-            Role::MidSurfaceFace => [7, 0, 0, 0],
-            Role::MidSurfaceEdge => [8, 0, 0, 0],
-            Role::CornerVertex { x, y, z } => [9, sign(*x), sign(*y), sign(*z)],
-            Role::CapCornerVertex { face } => [10, cap(*face), 0, 0],
-            Role::LocalFeatureFace => [11, 0, 0, 0],
-        }
-    }
-}
-
 /// Per-topology-entity attribute record for v0.2 persistent naming.
 ///
 /// One of these is associated with each face/edge produced by a feature,
@@ -5406,11 +5457,9 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind or per-operand counter split (face vs. edge, left vs.
     /// right operand) remains an option if finer-grained diagnostics are needed;
@@ -5454,6 +5503,10 @@ pub struct LocalFeatureOpHistoryRecords {
     /// but could not map back into the result face/edge map (i.e. the child
     /// shape reported by BRep_Builder was absent from the result's TopExp
     /// map).  For well-formed BRep operations this should be zero.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5515,11 +5568,9 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind counter split (face vs. edge) remains an option if
     /// finer-grained diagnostics are needed; the current single counter matches
@@ -5561,6 +5612,10 @@ pub struct SweepOpHistoryRecords {
     /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
     /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
     /// so the test is agnostic to whether OCCT covers the edge independently.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub unsynthesized_profile_edge_count: u32,
     /// Count of `face_generated` records dropped by the post-sort dedup pass
     /// because their `parent_subshape_index` duplicated the immediately
@@ -5582,6 +5637,10 @@ pub struct SweepOpHistoryRecords {
     /// == 0` in happy-path full-revolve tests. The FFI fixture
     /// `revolve_synthesis_post_sort_for_test` enables white-box testing of
     /// the dedup logic on synthetic flat inputs without real OCCT geometry.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub duplicate_parent_subshape_index_count: u32,
 }
 
@@ -6750,106 +6809,6 @@ mod tests {
         assert_ne!(nested, mid);
     }
 
-    // --- task 4806 (P1 α): FeatureId FromStr / TryFrom (B3 round-trip, B4 reject) ---
-
-    #[test]
-    fn feature_id_from_str_round_trips_display() {
-        use std::str::FromStr;
-        let cases = [
-            FeatureId::realization("Foo", 3),
-            FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
-            FeatureId::derived_mid_surface(&FeatureId::derived_mid_surface(
-                &FeatureId::realization("Foo", 3),
-            )),
-        ];
-        for x in cases {
-            let s = x.to_string();
-            // I2/B3: from_str is the exact inverse of Display.
-            assert_eq!(FeatureId::from_str(&s), Ok(x.clone()), "from_str({s:?})");
-            // TryFrom<&str> agrees with from_str.
-            assert_eq!(
-                FeatureId::try_from(s.as_str()),
-                Ok(x.clone()),
-                "try_from({s:?})"
-            );
-            // and .parse() (the FromStr entry point) too.
-            assert_eq!(s.parse::<FeatureId>(), Ok(x));
-        }
-    }
-
-    #[test]
-    fn feature_id_from_str_rejects_malformed() {
-        use std::str::FromStr;
-        for bad in [
-            "",                       // empty
-            "Foo",                    // root not realization-shaped
-            "Foo#realization[]",      // empty index
-            "Foo/mid_surface",        // root not realization-shaped
-            "x#realization[0]/bogus", // unknown derived step
-        ] {
-            assert!(FeatureId::from_str(bad).is_err(), "expected Err for {bad:?}");
-            assert!(FeatureId::try_from(bad).is_err(), "expected Err for {bad:?}");
-        }
-    }
-
-    #[test]
-    fn feature_id_from_str_error_variants() {
-        use std::str::FromStr;
-        // Empty input.
-        assert_eq!(FeatureId::from_str(""), Err(FeatureIdParseError::Empty));
-        // A non-"/mid_surface" derived suffix is an unknown derived kind.
-        assert_eq!(
-            FeatureId::from_str("Foo#realization[0]/bogus"),
-            Err(FeatureIdParseError::UnknownDerivedKind)
-        );
-        // A root that is not realization-shaped is a bad realization.
-        assert_eq!(
-            FeatureId::from_str("Foo"),
-            Err(FeatureIdParseError::BadRealization)
-        );
-    }
-
-    // --- task 4806 (P1 α): FeatureId::content_hash_bytes golden (B5) ---
-    // A frozen, append-only serialization contract (mirrors Role::content_hash_bytes).
-    // The expected bytes are derived directly from the pinned spec, not guessed.
-
-    #[test]
-    fn feature_id_content_hash_bytes_golden() {
-        // Realization("Foo", 3): tag 0x00, u32-LE len=3, b"Foo", u32-LE index=3.
-        let realization = FeatureId::realization("Foo", 3);
-        let expected_realization: Vec<u8> = vec![
-            0x00, // Realization variant tag
-            0x03, 0x00, 0x00, 0x00, // entity length (u32-LE)
-            b'F', b'o', b'o', // entity bytes
-            0x03, 0x00, 0x00, 0x00, // realization index (u32-LE)
-        ];
-        assert_eq!(realization.content_hash_bytes(), expected_realization);
-
-        // Derived(MidSurface) of the above: tag 0x01, DerivedKind tag 0x00,
-        // then the Realization encoding recursively.
-        let derived = FeatureId::derived_mid_surface(&realization);
-        let mut expected_derived: Vec<u8> = vec![0x01, 0x00];
-        expected_derived.extend_from_slice(&expected_realization);
-        assert_eq!(derived.content_hash_bytes(), expected_derived);
-
-        // Identical structures hash identically.
-        assert_eq!(
-            FeatureId::realization("Foo", 3).content_hash_bytes(),
-            realization.content_hash_bytes()
-        );
-
-        // Changing the entity, the index, or wrapping in Derived changes the bytes.
-        assert_ne!(
-            FeatureId::realization("Bar", 3).content_hash_bytes(),
-            realization.content_hash_bytes()
-        );
-        assert_ne!(
-            FeatureId::realization("Foo", 4).content_hash_bytes(),
-            realization.content_hash_bytes()
-        );
-        assert_ne!(derived.content_hash_bytes(), realization.content_hash_bytes());
-    }
-
     #[test]
     fn role_cap_top_and_bottom_are_distinct() {
         assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
@@ -7493,66 +7452,6 @@ mod tests {
             assert_ne!(Role::MidSurfaceFace, existing);
             assert_ne!(Role::MidSurfaceEdge, existing);
         }
-    }
-
-    // --- task 4536 amendment: Role::content_hash_bytes stable encoding ---
-
-    #[test]
-    fn role_content_hash_bytes_are_distinct_deterministic_and_frozen() {
-        use std::collections::HashSet;
-
-        // One representative of every variant (every payload value enumerated),
-        // mirroring the distinctness discipline above. This list is the proof
-        // that `content_hash_bytes` is injective across the whole `Role` space —
-        // the property the selector content hash relies on.
-        let all = [
-            Role::Cap(CapKind::Top),
-            Role::Cap(CapKind::Bottom),
-            Role::Cap(CapKind::Start),
-            Role::Cap(CapKind::End),
-            Role::Side,
-            Role::NewEdge,
-            Role::RevolvedFace,
-            Role::AxisFace,
-            Role::SweptFace,
-            Role::LoftedFace,
-            Role::MidSurfaceFace,
-            Role::MidSurfaceEdge,
-            Role::CornerVertex {
-                x: AxisSign::Pos,
-                y: AxisSign::Neg,
-                z: AxisSign::Pos,
-            },
-            Role::CornerVertex {
-                x: AxisSign::Neg,
-                y: AxisSign::Pos,
-                z: AxisSign::Neg,
-            },
-            Role::CapCornerVertex { face: CapKind::Top },
-            Role::CapCornerVertex { face: CapKind::End },
-            Role::LocalFeatureFace,
-        ];
-
-        // (1) Deterministic: the encoding does not depend on call-site state.
-        for r in &all {
-            assert_eq!(r.content_hash_bytes(), r.content_hash_bytes());
-        }
-
-        // (2) Injective: no two distinct Role values collide on their bytes.
-        let mut seen: HashSet<[u8; 4]> = HashSet::new();
-        for r in &all {
-            assert!(
-                seen.insert(r.content_hash_bytes()),
-                "content_hash_bytes collision for {r:?}: {:?}",
-                r.content_hash_bytes()
-            );
-        }
-
-        // (3) Frozen contract for the roles this task's selectors address. These
-        // exact bytes are a serialization contract — a deliberate edit, never an
-        // incidental rename, may change them (see the INVARIANT doc).
-        assert_eq!(Role::MidSurfaceFace.content_hash_bytes(), [7, 0, 0, 0]);
-        assert_eq!(Role::MidSurfaceEdge.content_hash_bytes(), [8, 0, 0, 0]);
     }
 
     // --- task 5b (#2619): LoftOpHistoryRecords (multi-parent loft op) ---
@@ -8400,7 +8299,7 @@ mod tests {
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
             Operation::PrimitiveHalfSpace,
-            // Modify (8)
+            // Modify (9)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -8408,6 +8307,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetSurface,
             Operation::ModifyOffsetCurve,
             // Transform (6)
             Operation::TransformTranslate,
@@ -8519,6 +8419,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetSurface => {}
             Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
@@ -9311,9 +9212,9 @@ mod tests {
             (
                 "Box",
                 GeometryOp::Box {
-                    width: Value::Real(1.0),
-                    height: Value::Real(1.0),
-                    depth: Value::Real(1.0),
+                    size_x: Value::Real(1.0),
+                    size_y: Value::Real(1.0),
+                    size_z: Value::Real(1.0),
                 },
             ),
             (
@@ -9643,7 +9544,7 @@ mod tests {
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(2),
                 },
             ),
@@ -9673,6 +9574,13 @@ mod tests {
             (
                 "OffsetSolid",
                 GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSurface",
+                GeometryOp::OffsetSurface {
                     target: GeometryHandleId(1),
                     distance: Value::Real(0.002),
                 },
@@ -10228,6 +10136,123 @@ mod tests {
         }
     }
 
+    /// RED (task 6560, step-1) — the DEFAULT body of
+    /// `GeometryKernel::ingest_mesh_at_resolution` delegates to
+    /// [`GeometryKernel::ingest_mesh`] with the mesh unmodified, and the method
+    /// stays object-safe.
+    ///
+    /// That is the compile-time contract keeping every other kernel, stub and
+    /// mock in the workspace unchanged: a kernel that cannot honour a
+    /// resolution request simply never overrides the method, and the delegation
+    /// makes the request a no-op rather than a hard error. `OpenVdbKernel` is
+    /// the only kernel that overrides it (task 6560, step-8);
+    /// `reify_geometry::SingleKernelHolder` also overrides it, as a pure
+    /// delegating pass-through (step-12).
+    ///
+    /// `VoxelResolution`'s own `Copy`/`PartialEq`/`Debug` derives are exercised
+    /// by the bindings and assertions below rather than asserted separately —
+    /// pinning what `#[derive]` expands to would test rustc, not this crate.
+    #[test]
+    fn ingest_mesh_at_resolution_default_delegates_to_ingest_mesh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// In-test kernel that overrides ONLY `ingest_mesh`: it counts calls
+        /// and records the vertex count of the mesh it was handed, returning
+        /// a handle whose id encodes the call ordinal. Every other trait
+        /// member uses the not-supported default or a stub error, following
+        /// the in-file `CountingKernel` / `StubKernel` shape.
+        struct RecordingIngestKernel {
+            ingest_calls: AtomicUsize,
+            last_vertex_len: AtomicUsize,
+        }
+
+        impl GeometryKernel for RecordingIngestKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+            fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+                let ordinal = self.ingest_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                self.last_vertex_len
+                    .store(mesh.vertices.len(), Ordering::SeqCst);
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(ordinal as u64),
+                    repr: None,
+                })
+            }
+        }
+
+        // One request of each variant. Binding all three by value and reusing
+        // them in the loop below is what keeps `Copy` compile-enforced.
+        let honest: VoxelResolution = VoxelResolution::HonestFloor;
+        let target = VoxelResolution::TargetVoxelSize(0.25);
+        let feature = VoxelResolution::MinFeature(1.0);
+        assert_ne!(
+            VoxelResolution::MinFeature(1.0),
+            VoxelResolution::MinFeature(2.0),
+            "the payload must participate in equality, or a resolution log \
+             cannot tell two requests apart"
+        );
+
+        // The default body delegates to `ingest_mesh`, ignoring the resolution.
+        let mut kernel = RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        };
+        let mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+
+        for (i, resolution) in [honest, target, feature].into_iter().enumerate() {
+            let handle = kernel
+                .ingest_mesh_at_resolution(&mesh, resolution)
+                .unwrap_or_else(|e| panic!("default must delegate to ingest_mesh; got {e:?}"));
+            assert_eq!(
+                kernel.ingest_calls.load(Ordering::SeqCst),
+                i + 1,
+                "each ingest_mesh_at_resolution call must reach ingest_mesh exactly once \
+                 (resolution {resolution:?})"
+            );
+            assert_eq!(
+                handle.id,
+                GeometryHandleId((i + 1) as u64),
+                "the handle must be exactly what ingest_mesh returned"
+            );
+            assert_eq!(
+                kernel.last_vertex_len.load(Ordering::SeqCst),
+                9,
+                "the mesh must be forwarded unmodified"
+            );
+        }
+
+        // The seam is object-safe: reachable through `Box<dyn GeometryKernel>`.
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        });
+        assert!(
+            boxed
+                .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+                .is_ok(),
+            "ingest_mesh_at_resolution must remain callable through a trait object"
+        );
+    }
+
     /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`
     /// when called through a trait object on a kernel that does not override it.
     ///
@@ -10304,17 +10329,19 @@ mod tests {
             "|nz| should be ≈1 for z=0 triangle, got {nz}"
         );
 
-        // Vertex 0 at bytes 96..108: must round-trip exactly
+        // Vertices must round-trip exactly, converted to the writer's
+        // millimetre regime: the 1 m fixture edges emit as 1000 mm.
+        // Vertex 0 at bytes 96..108
         assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
         assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
         assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
         // Vertex 1 at bytes 108..120
-        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 108), 1000.0_f32, "v1.x");
         assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
         assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
         // Vertex 2 at bytes 120..132
         assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
-        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 124), 1000.0_f32, "v2.y");
         assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
 
         // Attribute byte count at bytes 132..134 must be 0
@@ -10378,6 +10405,87 @@ mod tests {
         );
     }
 
+    /// The binary STL writer must emit MILLIMETRES: a `[0, 0.030]^3` cube in
+    /// reify's SI-metre model space must land on exactly 0 and exactly 30 in the
+    /// payload, not on 0.03 — the de-facto STL convention every consumer
+    /// (PrusaSlicer, Cura, every mesh viewer) assumes is millimetres.
+    ///
+    /// **Why the bound is exact `==` rather than an epsilon.** The identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED, and the table
+    /// establishing it is written out on [`MM_PER_METRE_F32`]: multiplying in
+    /// f32 re-rounds onto the f32 grid at the millimetre magnitude, whose ulp
+    /// (1.9e-6 at 30) is COARSER than the scaled input's deviation from the
+    /// round decimal (6.7e-7 at 30), so the product lands back exactly on the
+    /// decimal. The identical fixture and the identical multiply are already
+    /// pinned GREEN for the 3MF writer by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// so the exactness transfers rather than being assumed here. Any epsilon
+    /// loose enough to be worth writing would also admit the f64-route noise
+    /// (`29.999999329447746`) that exactness exists to reject.
+    #[test]
+    fn write_stl_binary_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Binary STL: 80-byte header, u32 triangle count at 80..84, then a
+        // 50-byte record per triangle = 12-byte facet normal + 9×f32 vertices
+        // + 2-byte attribute count.
+        let tri_count = le_u32(&buf, 80) as usize;
+        assert_eq!(tri_count, 12, "a 12-triangle cube must emit 12 triangles");
+
+        let mut coords: Vec<[f32; 3]> = Vec::with_capacity(tri_count * 3);
+        for t in 0..tri_count {
+            let tri_base = 84 + t * 50 + 12; // skip the facet normal
+            for v in 0..3 {
+                let o = tri_base + v * 12;
+                coords.push([le_f32(&buf, o), le_f32(&buf, o + 4), le_f32(&buf, o + 8)]);
+            }
+        }
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime binary STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm — the physical
+        // quantity a consumer actually reads off the file.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
+    }
+
     // ── ASCII serializer unit tests ──────────────────────────────────────────
 
     #[test]
@@ -10424,20 +10532,109 @@ mod tests {
             "single triangle: expected 3 'vertex ' entries"
         );
 
-        // Each specific vertex line must appear verbatim in the output.
-        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
+        // Each specific vertex line must appear verbatim in the output. The
+        // writer emits millimetres, so the 1 m fixture edges appear as 1000.
+        // (Rust formats 0.0f32 as "0" and 1000.0f32 as "1000" via Display.)
         assert!(
             text.contains("vertex 0 0 0"),
             "vertex (0,0,0) must appear in ascii output"
         );
         assert!(
-            text.contains("vertex 1 0 0"),
-            "vertex (1,0,0) must appear in ascii output"
+            text.contains("vertex 1000 0 0"),
+            "vertex (1,0,0) m must appear as 1000 mm in ascii output"
         );
         assert!(
-            text.contains("vertex 0 1 0"),
-            "vertex (0,1,0) must appear in ascii output"
+            text.contains("vertex 0 1000 0"),
+            "vertex (0,1,0) m must appear as 1000 mm in ascii output"
         );
+    }
+
+    /// The ASCII sibling of `write_stl_binary_emits_exact_millimetre_vertices`:
+    /// a `[0, 0.030]^3` cube in reify's SI-metre model space must reach the
+    /// emitted text as exactly 0 and exactly 30, not 0.03.
+    ///
+    /// **Why exact `==`.** Identical reasoning to the binary test: the identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED in the table on
+    /// [`MM_PER_METRE_F32`], and the same fixture through the same multiply is
+    /// already pinned GREEN for the 3MF writer. Any epsilon worth writing would
+    /// also admit the f64-route noise (`29.999999329447746`).
+    ///
+    /// Asserted on the PARSED values, not on the literal decimal text, for the
+    /// reason given on
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`:
+    /// the property under test is EXACTNESS, and pinning literal strings would
+    /// additionally freeze the writer to `{}` shortest-round-trip formatting, so
+    /// a legitimate formatting change would read here as a precision regression
+    /// when it is not. `write_stl_ascii_single_triangle_structure` keeps its
+    /// literal-string asserts — that test is about ASCII STRUCTURE.
+    #[test]
+    fn write_stl_ascii_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Each `vertex X Y Z` line carries three whitespace-separated f32s.
+        let coords: Vec<[f32; 3]> = text
+            .split("vertex ")
+            .skip(1)
+            .map(|tail| {
+                let mut it = tail.split_whitespace();
+                let mut next = || {
+                    it.next()
+                        .expect("a `vertex ` line must carry 3 tokens")
+                        .parse::<f32>()
+                        .expect("each vertex token must parse as f32")
+                };
+                [next(), next(), next()]
+            })
+            .collect();
+        assert_eq!(
+            coords.len(),
+            36,
+            "a 12-triangle cube must emit 36 `vertex ` entries"
+        );
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime ASCII STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
     }
 
     #[test]
@@ -10533,6 +10730,15 @@ mod tests {
     // ── 3MF serializer tests ─────────────────────────────────────────────────
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    ///
+    /// Judgment call (task #7137): this cube cannot delegate to the canonical
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`. Its `Mesh` is the
+    /// `--test` build of this crate, a different type from the one
+    /// `reify-test-support` links, and a `reify-test-support` dev-dep would
+    /// invert the layering (it normal-deps `reify-compiler`, which normal-deps
+    /// this crate). So the vertices stay local, and the index block is the
+    /// shared data file `box_triangle_indices.rs` that the canonical builder
+    /// also `include!`s.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]
@@ -10546,23 +10752,56 @@ mod tests {
             1.0, 1.0, 1.0, // v6
             0.0, 1.0, 1.0, // v7
         ];
-        // 12 triangles (2 per face, 6 faces)
-        #[rustfmt::skip]
-        let indices: Vec<u32> = vec![
-            // -Z face
-            0, 2, 1,  0, 3, 2,
-            // +Z face
-            4, 5, 6,  4, 6, 7,
-            // -Y face
-            0, 1, 5,  0, 5, 4,
-            // +Y face
-            3, 6, 2,  3, 7, 6,
-            // -X face
-            0, 4, 7,  0, 7, 3,
-            // +X face
-            1, 2, 6,  1, 6, 5,
-        ];
+        let indices: Vec<u32> = include!("box_triangle_indices.rs").to_vec();
         Mesh { vertices, indices, normals: None }
+    }
+
+    /// [`unit_cube_mesh`]'s local corner literal follows the corner order
+    /// under which the shared index block is outward-wound: every triangle's
+    /// facet normal points away from the cube's centre.
+    ///
+    /// Per triangle rather than a divergence-theorem volume, because the -X,
+    /// -Y and -Z faces of `[0,1]^3` lie on the coordinate planes, where a
+    /// flipped triangle adds nothing to a volume taken about the origin.
+    #[test]
+    fn unit_cube_mesh_triangles_each_face_outward() {
+        let mesh = unit_cube_mesh();
+        let corner =
+            |i: u32| -> [f32; 3] { std::array::from_fn(|k| mesh.vertices[3 * i as usize + k]) };
+        let corner_count = (mesh.vertices.len() / 3) as f32;
+        let centre: [f32; 3] = std::array::from_fn(|k| {
+            mesh.vertices.iter().skip(k).step_by(3).sum::<f32>() / corner_count
+        });
+
+        for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+            let [a, b, c] = [corner(tri[0]), corner(tri[1]), corner(tri[2])];
+            let normal = compute_facet_normal(a, b, c);
+            let outward: f32 = (0..3)
+                .map(|k| normal[k] * ((a[k] + b[k] + c[k]) / 3.0 - centre[k]))
+                .sum();
+            assert!(
+                outward > 0.0,
+                "triangle {t} {tri:?} has facet normal {normal:?}, which does not \
+                 point out of the cube (dot with centroid - centre = {outward})"
+            );
+        }
+    }
+
+    /// Helper: [`unit_cube_mesh`]'s `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — a 30 mm cube, topology
+    /// unchanged.
+    ///
+    /// Shared by every test that pins an export writer's LENGTH REGIME (3MF and
+    /// both STL writers): 0.030 m is the fixture value whose f32 metre→mm
+    /// conversion is measured on [`MM_PER_METRE_F32`], so the same cube pins
+    /// magnitude and exactness for every writer that makes the millimetre
+    /// promise.
+    fn cube_30mm_mesh() -> Mesh {
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+        mesh
     }
 
     #[test]
@@ -10606,6 +10845,170 @@ mod tests {
         write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
             .expect("second write_3mf should succeed");
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    /// Write a 30 mm cube through [`write_3mf`] and read the package back:
+    /// returns the `3D/3dmodel.model` XML plus every `<vertex>`'s parsed
+    /// `[x, y, z]`.
+    ///
+    /// The mesh is the unit cube's `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — topology unchanged. Shared by
+    /// the two tests that pin the writer's length regime: one asserts the unit
+    /// DECLARATION and the coordinate MAGNITUDES agree, the other that the
+    /// metre→millimetre conversion adds no representation noise.
+    fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
+        use std::io::Cursor;
+
+        let mesh = cube_30mm_mesh();
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        drop(model_file);
+
+        fn attr(tail: &str, name: &str) -> f64 {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key).expect("vertex must carry the attribute") + key.len();
+            let end = tail[start..].find('"').expect("attribute must be quoted") + start;
+            tail[start..end]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("vertex {name} must be a parsable number"))
+        }
+
+        let coords = model_xml
+            .split("<vertex ")
+            .skip(1)
+            .map(|tail| [attr(tail, "x"), attr(tail, "y"), attr(tail, "z")])
+            .collect();
+        (model_xml, coords)
+    }
+
+    /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
+    /// agreement: reify model space is SI metres, the package declares
+    /// `unit="millimeter"`, so the vertices it carries must be millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes — `write_3mf` hardcodes
+    /// `unit="millimeter"` — while the payload half fails, because the vertex
+    /// buffer is emitted verbatim with no metre→millimetre conversion. A 30 mm
+    /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
+    /// 1000× shrink, the same mislabel as the STEP half of this bug.
+    ///
+    /// The 1e-5 mm bound is derived, not guessed. `Mesh::vertices` is
+    /// `Vec<f32>` and the conversion is done in f32 (see `MM_PER_METRE_F32`),
+    /// so each emitted coordinate carries at most 2^-23 relative error — the
+    /// input's own representation error plus one re-rounding at the millimetre
+    /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
+    /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
+    /// path's bound) is NOT derivable here. In practice the error is 0.0 — the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0` —
+    /// but that exactness is pinned by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// NOT here: this test stays about the unit regime alone, so a change to
+    /// how coordinates are formatted can never fail it as a unit regression.
+    /// 1e-5 sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it cannot
+    /// pass while the bug lives.
+    #[test]
+    fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
+        let (model_xml, coords) = read_back_30mm_cube_3mf();
+
+        // (1) DECLARATION half — passes today, and is otherwise unasserted
+        // anywhere in the tree.
+        assert!(
+            model_xml.contains("unit=\"millimeter\""),
+            "3MF model part should declare unit=\"millimeter\""
+        );
+
+        // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
+        // folded into a per-axis AABB.
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for c in &coords {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(c[axis]);
+                max[axis] = max[axis].max(c[axis]);
+            }
+        }
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-5,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// The metre→millimetre conversion must land EXACTLY on the millimetre
+    /// values the author wrote: the conversion arithmetic itself must add no
+    /// representation noise.
+    ///
+    /// This is what makes the f32-vs-f64 choice at the emit site a TESTED
+    /// behaviour rather than a comment. Doing the multiply as
+    /// `f64::from(v) * 1000.0` emits `29.999999329447746` for a `0.030 m`
+    /// coordinate — comfortably inside the sibling unit-regime test's 1e-5 mm
+    /// AABB tolerance, so that test stays green, while every emitted
+    /// coordinate grows from 2 to 18 characters of false precision. The
+    /// measured table and the full reasoning live on `MM_PER_METRE_F32`.
+    ///
+    /// Asserted on the PARSED values, not on the emitted decimal strings: the
+    /// property is exactness, and pinning the literal text would additionally
+    /// freeze the writer to f32 `{}` (shortest-round-trip) formatting, so a
+    /// legitimate formatting change — `{:.6}` for a picky consumer, a fixed
+    /// decimal count for byte-determinism — would fail here and read as a
+    /// precision regression when it is not.
+    ///
+    /// The `==` comparisons are exact ON PURPOSE. Both endpoints are exactly
+    /// representable in f32 and in f64, so exact equality is the correct
+    /// predicate here, and any epsilon loose enough to be worth writing would
+    /// also admit the `29.999999329447746` this test exists to reject.
+    #[test]
+    fn write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise() {
+        let (_model_xml, coords) = read_back_30mm_cube_3mf();
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+
+        // The cube's corners are [0, 0.030]^3 m, so in millimetres every
+        // emitted coordinate must be exactly 0 or exactly 30.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0 || v == 30.0,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-declared 3MF package; the metre→millimetre conversion is \
+                     introducing avoidable representation noise (see MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // ...and both values must actually OCCUR on every axis, so a collapsed
+        // or all-zero payload cannot satisfy the check above vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0),
+                "no vertex carries {name} = 30"
+            );
+        }
     }
 
     #[test]
@@ -11017,7 +11420,7 @@ mod tests {
         let curated = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![GeometryHandleId(2)],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match curated {
@@ -11035,7 +11438,7 @@ mod tests {
         let all_faces = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match all_faces {
@@ -11416,6 +11819,43 @@ mod tests {
         );
     }
 
+    /// Pins [`Mesh::weld_positions`]'s two documented keying edge cases: a
+    /// corner encoded as `-0.0` in one triangle vs `+0.0` in another (must
+    /// normalize to the same canonical vertex) and a bit-for-bit duplicate
+    /// corner (plain shared-vertex welding). Without a direct test of the
+    /// remap's actual content, only end-to-end `validate`/
+    /// `check_mesh_contract*` tests exercise `weld_positions` indirectly —
+    /// those only check the final Ok/Err verdict, so a keying regression
+    /// (e.g. dropping the `-0.0` normalization) could silently produce a
+    /// different-but-still-valid remap without any of them failing.
+    #[test]
+    fn weld_positions_normalizes_signed_zero_and_dedups_bit_exact_duplicates() {
+        let mesh = Mesh {
+            vertices: vec![
+                // triangle 0
+                -0.0, 0.0, 0.0, // corner A, encoded as -0.0
+                1.0, 0.0, 0.0, // corner B
+                0.0, 1.0, 0.0, // corner C
+                // triangle 1
+                0.0, 0.0, 0.0, // corner A again, encoded as +0.0 this time
+                1.0, 0.0, 0.0, // corner B again, bit-for-bit duplicate
+                0.0, 0.0, 1.0, // corner D
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            normals: None,
+        };
+
+        let (_, remap) = mesh.weld_positions();
+
+        assert_eq!(
+            remap,
+            vec![0, 1, 2, 0, 1, 3],
+            "weld_positions must collapse the -0.0/+0.0 corner pair (idx 0 \
+             and 3) and the bit-exact duplicate (idx 1 and 4) to shared \
+             canonical indices in first-seen order; got {remap:?}"
+        );
+    }
+
     #[test]
     fn validate_rejects_non_finite() {
         // A NaN vertex coordinate on vertex 1 (x-component).
@@ -11615,6 +12055,443 @@ mod tests {
             MeshWitness::Edge { .. } => {}
             other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
         }
+    }
+
+    /// Verdict-equivalence comparison shared by every `check_mesh_contract*`
+    /// equivalence test: given two `Result<(), MeshContractViolation>`
+    /// verdicts that are expected to agree (because both call sites
+    /// ultimately wrap the same private `check_contract` body), assert they
+    /// do — same `Ok`/`Err`, and on `Err` the same `invariant`/`counts`,
+    /// with a witness naming the same offender (compared via
+    /// [`assert_witness_bits_eq`]). `ctx` names the two methods being
+    /// compared, for the panic messages.
+    fn assert_verdicts_equivalent(
+        a: Result<(), MeshContractViolation>,
+        b: Result<(), MeshContractViolation>,
+        ctx: &str,
+    ) {
+        match (a, b) {
+            (Ok(()), Ok(())) => {}
+            (Err(a), Err(b)) => {
+                assert_eq!(
+                    a.invariant, b.invariant,
+                    "{ctx} must report the same invariant"
+                );
+                assert_eq!(a.counts, b.counts, "{ctx} must report the same counts");
+                assert_witness_bits_eq(a.witness, b.witness);
+            }
+            (a, b) => panic!("{ctx} must agree on verdict: {a:?} vs {b:?}"),
+        }
+    }
+
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) — see
+    /// [`assert_verdicts_equivalent`] for the comparison semantics.
+    fn assert_check_mesh_contract_matches_validate(mesh: &Mesh, tol: f64) {
+        let via_check = mesh.check_mesh_contract(tol);
+        let via_validate = mesh.validate(tol).map(|_| ());
+        assert_verdicts_equivalent(via_check, via_validate, "check_mesh_contract and validate");
+    }
+
+    /// NaN-safe structural comparison of two [`MeshWitness`] values — used
+    /// by [`assert_verdicts_equivalent`] because several witnesses embed
+    /// the mesh's own injected `f32::NAN` coordinate (or a synthetic
+    /// `[NAN, NAN, NAN]` marker), and IEEE-754 NaN is never equal to itself
+    /// under `PartialEq` — this is exactly why `MeshWitness` derives
+    /// `PartialEq` but not `Eq`.
+    fn assert_witness_bits_eq(a: MeshWitness, b: MeshWitness) {
+        match (a, b) {
+            (
+                MeshWitness::Vertex {
+                    index: i1,
+                    coord: c1,
+                },
+                MeshWitness::Vertex {
+                    index: i2,
+                    coord: c2,
+                },
+            ) => {
+                assert_eq!(i1, i2, "witness must name the same vertex");
+                assert_eq!(
+                    c1.map(f32::to_bits),
+                    c2.map(f32::to_bits),
+                    "witness coord bit patterns must match"
+                );
+            }
+            (
+                MeshWitness::Triangle {
+                    tri: t1,
+                    indices: idx1,
+                },
+                MeshWitness::Triangle {
+                    tri: t2,
+                    indices: idx2,
+                },
+            ) => {
+                assert_eq!(t1, t2, "witness must name the same triangle");
+                assert_eq!(idx1, idx2, "witness must name the same triangle indices");
+            }
+            (MeshWitness::Edge { u: u1, v: v1 }, MeshWitness::Edge { u: u2, v: v2 }) => {
+                assert_eq!(u1, u2, "witness must name the same edge start");
+                assert_eq!(v1, v2, "witness must name the same edge end");
+            }
+            // Same-variant pair that didn't match one of the explicit arms
+            // above: a `MeshWitness` variant added after this function was
+            // written. Panic instead of silently falling back to derived
+            // `PartialEq` — the whole reason this function exists is that
+            // derived `PartialEq` mishandles NaN in `f32` fields (as
+            // `Vertex`'s `[f32; 3]` coord does today), so a new variant
+            // carrying its own float field would reintroduce that exact
+            // pitfall and could let a genuine mismatch pass. Forcing a panic
+            // here means adding a variant requires consciously adding an
+            // explicit bit-exact arm above, not just falling through. A
+            // genuine cross-variant mismatch (different discriminants)
+            // still falls through to the panic below.
+            (a, b) if std::mem::discriminant(&a) == std::mem::discriminant(&b) => {
+                panic!("unhandled MeshWitness variant {a:?} vs {b:?} — add an explicit bit-exact comparison arm")
+            }
+            (a, b) => panic!("witness variant mismatch: {a:?} vs {b:?}"),
+        }
+    }
+
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) across every fixture
+    /// exercised by the `validate_accepts_*` / `validate_rejects_*` tests
+    /// above — it wraps the identical private `check_contract` body, just
+    /// without minting/cloning a `ValidatedMesh`.
+    ///
+    /// RED: fails to compile until `check_mesh_contract` is added to `Mesh`.
+    #[test]
+    fn check_mesh_contract_matches_validate_verdict() {
+        // Valid meshes — both methods must accept.
+        assert_check_mesh_contract_matches_validate(&welded_tetra_mesh(), 0.0);
+        assert_check_mesh_contract_matches_validate(&per_face_block_tetra_mesh(), 0.0);
+
+        // NaN vertex coordinate — mirrors `validate_rejects_non_finite`.
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[3] = f32::NAN;
+        assert_check_mesh_contract_matches_validate(&nan_vertex_mesh, 0.0);
+
+        // +Inf normal component — mirrors `validate_rejects_non_finite`.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        assert_check_mesh_contract_matches_validate(&inf_normal_mesh, 0.0);
+
+        // Out-of-bounds triangle index — mirrors
+        // `validate_rejects_out_of_bounds_index`.
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        assert_check_mesh_contract_matches_validate(&oob_mesh, 0.0);
+
+        // Dangling trailing index group — same test.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_check_mesh_contract_matches_validate(&truncated_mesh, 0.0);
+
+        // Non-multiple-of-3 vertex buffer — mirrors
+        // `validate_rejects_malformed_vertex_buffer_length`.
+        let mut malformed_vertices_mesh = welded_tetra_mesh();
+        malformed_vertices_mesh.vertices.push(0.0);
+        assert_check_mesh_contract_matches_validate(&malformed_vertices_mesh, 0.0);
+
+        // Mismatched normals length (short and long) — mirrors
+        // `validate_rejects_mismatched_normals_length`.
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]);
+        assert_check_mesh_contract_matches_validate(&short_normals, 0.0);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]);
+        assert_check_mesh_contract_matches_validate(&long_normals, 0.0);
+
+        // Degenerate triangle: repeated raw index — mirrors
+        // `validate_rejects_degenerate_triangle`.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&repeated_index_mesh, 0.0);
+
+        // Degenerate triangle: coincident positions, distinct indices —
+        // same test.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&coincident_position_mesh, 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&reversed_winding_mesh, 0.0);
+    }
+
+    /// [`Mesh::check_mesh_contract_welded`] must return the same verdict as
+    /// [`Mesh::check_mesh_contract`] when handed the mesh's own
+    /// `weld_positions().1` remap — verifying verdict-equivalence between
+    /// the threaded and recompute-internally paths. Note this does NOT by
+    /// itself prove the threaded remap is *consumed* rather than silently
+    /// ignored-and-recomputed: because the remap passed here is exactly
+    /// what the unthreaded path would compute internally, an
+    /// implementation that dropped the parameter and always recomputed
+    /// would produce byte-identical verdicts and still pass this test.
+    /// `per_face_block_tetra_mesh()` is still the most meaningful case:
+    /// its raw index buffer is open, and only the welded quotient is
+    /// closed, so it exercises a real (non-identity) remap rather than a
+    /// no-op one.
+    ///
+    /// RED: fails to compile until `check_mesh_contract_welded` is added to
+    /// `Mesh`.
+    #[test]
+    fn check_mesh_contract_welded_matches_unthreaded() {
+        fn assert_welded_matches_unthreaded(mesh: &Mesh, tol: f64) {
+            let (_, remap) = mesh.weld_remap();
+            let via_welded = mesh.check_mesh_contract_welded(tol, &remap);
+            let via_unthreaded = mesh.check_mesh_contract(tol);
+            assert_verdicts_equivalent(
+                via_welded,
+                via_unthreaded,
+                "check_mesh_contract_welded and check_mesh_contract",
+            );
+        }
+
+        // Already-welded valid tetra — both methods must accept.
+        assert_welded_matches_unthreaded(&welded_tetra_mesh(), 0.0);
+
+        // Unwelded per-face-block tetra: the raw buffer is open; only the
+        // welded quotient is closed. This is the most meaningful case — it
+        // exercises a real (non-identity) remap, though (per the docstring
+        // above) it still can't distinguish "consumed" from "ignored and
+        // recomputed".
+        assert_welded_matches_unthreaded(&per_face_block_tetra_mesh(), 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&reversed_winding_mesh, 0.0);
+    }
+
+    /// Debug-buildable happy-path smoke test for
+    /// [`Mesh::check_mesh_contract_welded`]: threads a genuinely
+    /// non-identity [`WeldRemap`] — minted by [`Mesh::weld_remap`] on
+    /// `per_face_block_tetra_mesh()`, whose 12 raw per-face-block vertices
+    /// collapse to 4 canonical corners — and asserts the call is accepted.
+    ///
+    /// The two tests below (`check_mesh_contract_welded_consumes_threaded_remap`
+    /// and `check_mesh_contract_welded_falls_back_on_length_mismatch`) are
+    /// `#[cfg(not(debug_assertions))]` because they deliberately feed a
+    /// *bogus* remap to observe release-only fallback behavior that a debug
+    /// `debug_assert_eq!` would otherwise trip — so neither runs under a
+    /// plain `cargo test` / task-role debug verify (see their docs). This
+    /// test threads a *correct* remap instead, so it has nothing to elide
+    /// and runs in every build profile, giving debug builds at least one
+    /// signal that `check_mesh_contract_welded`'s happy-path plumbing —
+    /// mint a real `WeldRemap`, thread it through, get `Ok(())` back —
+    /// hasn't broken. It cannot, on its own, distinguish "consumed" from
+    /// "ignored-and-recomputed" (see `check_mesh_contract_welded_matches_unthreaded`
+    /// above and `check_mesh_contract_welded_consumes_threaded_remap` below
+    /// for that guarantee).
+    #[test]
+    fn check_mesh_contract_welded_accepts_correct_non_identity_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let (_, remap) = mesh.weld_remap();
+
+        // Confirm the remap is genuinely non-identity (welds 12 raw
+        // vertices down to 4 canonical corners) so this smoke test can't
+        // silently degenerate into a vacuous already-welded check.
+        let mut canonical_indices = remap.as_slice().to_vec();
+        canonical_indices.sort_unstable();
+        canonical_indices.dedup();
+        assert_eq!(
+            canonical_indices.len(),
+            4,
+            "per_face_block_tetra_mesh's weld remap must collapse 12 raw \
+             vertices to 4 canonical corners; got {:?}",
+            remap.as_slice()
+        );
+
+        mesh.check_mesh_contract_welded(0.0, &remap).expect(
+            "a correct non-identity weld remap on a valid (if unwelded) mesh \
+             must be accepted",
+        );
+    }
+
+    /// [`Mesh::check_mesh_contract_welded`] must actually CONSUME the
+    /// threaded remap rather than silently ignoring it and recomputing its
+    /// own weld. `check_mesh_contract_welded_matches_unthreaded` above
+    /// cannot prove this on its own — as its docstring candidly notes,
+    /// every remap it passes is exactly what the unthreaded path would
+    /// recompute anyway, so an implementation that dropped the parameter
+    /// entirely would still pass it.
+    ///
+    /// Here the remap is deliberately WRONG: `per_face_block_tetra_mesh()`
+    /// is unwelded (12 vertices, a private corner triple per triangle; only
+    /// the welded quotient — 4 canonical corners — is closed), and the
+    /// identity remap `[0, 1, .., 11]` falsely claims no two vertices are
+    /// shared. If `check_mesh_contract_welded` threads this remap through
+    /// (as it must), the Closed obligation sees 4 pairwise-disjoint
+    /// triangles sharing no edges at all and must reject with `Closed`
+    /// (every one of the 12 directed edges lacks a reverse). If it instead
+    /// ignored the parameter and recomputed the TRUE weld internally, it
+    /// would collapse to the 4-corner tetrahedron and report `Ok(())`
+    /// instead — the verdict already pinned for the *correct* remap by
+    /// `check_mesh_contract_welded_matches_unthreaded` above. Asserting
+    /// `Err(Closed)` here therefore distinguishes "consumed" from
+    /// "ignored-and-recomputed".
+    ///
+    /// Constructs a [`WeldRemap`] directly from a bogus `Vec<u32>` via its
+    /// private tuple field — only possible because this test module is a
+    /// descendant of `geometry` (Rust's module-privacy rules give
+    /// descendants access to a private field), i.e. exactly the kind of
+    /// in-crate access [`WeldRemap`]'s sealing is not meant to stop; it is
+    /// used here purely to drive this negative test of the
+    /// defense-in-depth fallback.
+    ///
+    /// `#[cfg(not(debug_assertions))]`: a same-length-but-wrong-content
+    /// remap trips the matching-length arm's `debug_assert_eq!` (inside
+    /// `check_contract`) against a freshly recomputed `weld_positions().1`
+    /// — that assert exists precisely to catch this kind of bogus remap in
+    /// debug/test builds, so this test observes the release-mode behavior
+    /// where the assert is elided (per `check_mesh_contract_welded`'s
+    /// documented release-mode contract for a same-length-but-wrong-content
+    /// remap).
+    ///
+    /// Release-only here is not a silent coverage gap: a task's own
+    /// fast-feedback verify runs `DF_VERIFY_ROLE=task`, which
+    /// `scripts/verify.sh` defaults to `profile=debug`, so this test is
+    /// legitimately skipped there — but landing on `main` always goes
+    /// through `scripts/land.sh` (or the orchestrator merge queue), both of
+    /// which stamp `DF_VERIFY_ROLE=merge`; `verify.sh` then defaults
+    /// unstamped profile to `both` and force-widens scope to `all` (its
+    /// merge-gate contract C2), so this test still runs — and gates the
+    /// merge — before this "consumed, not ignored" guarantee ever reaches
+    /// `main`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_consumes_threaded_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let identity_remap: Vec<u32> = (0..(mesh.vertices.len() / 3) as u32).collect();
+
+        let err = mesh
+            .check_mesh_contract_welded(0.0, &WeldRemap(identity_remap))
+            .expect_err(
+                "a bogus identity remap on an unwelded mesh must be reported as \
+                 an open mesh if actually consumed — Ok(()) here would mean the \
+                 true weld was recomputed internally and the parameter ignored",
+            );
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::Closed,
+            "an identity remap over 12 pairwise-disjoint per-face vertices leaves \
+             every edge without a reverse; got {err:?}"
+        );
+        assert_eq!(
+            err.counts.open_edges, 12,
+            "all 4 triangles' 3 edges each lack a reverse under the identity \
+             remap; got {:?}",
+            err.counts
+        );
+        assert_eq!(
+            err.counts.reversed_edges, 0,
+            "an identity remap introduces no duplicate-direction edges, only \
+             missing reverses; got {:?}",
+            err.counts
+        );
+    }
+
+    /// Release-mode characterization of `check_mesh_contract_welded`'s
+    /// defensive length-mismatch fallback: a caller-supplied remap whose
+    /// length differs from `self.vertices.len() / 3` must not panic, and
+    /// must fall back to the exact verdict an internal reweld
+    /// (`check_mesh_contract`) would produce — the release-build guarantee
+    /// documented on `check_mesh_contract_welded`.
+    ///
+    /// Exercises both an `Ok` fixture (`per_face_block_tetra_mesh` — closed
+    /// only on the welded quotient, so the fallback must actually recompute
+    /// the weld rather than e.g. defaulting to `Ok`) and an `Err` fixture
+    /// (a single open triangle, `MeshInvariant::Closed`), each with both a
+    /// too-short and a too-long bogus remap.
+    ///
+    /// `#[cfg(not(debug_assertions))]`: in debug/test builds the length
+    /// `debug_assert_eq!` inside `check_contract` fires first — loudly, as
+    /// intended, to catch this same caller bug during development — before
+    /// the fallback branch's own logic ever runs, so the fallback path is
+    /// only observable (and only needs to be exercised) in release builds.
+    ///
+    /// Same release-gate coverage note as
+    /// `check_mesh_contract_welded_consumes_threaded_remap` above: skipped
+    /// under a task's own `DF_VERIFY_ROLE=task` (`profile=debug`)
+    /// fast-feedback verify, but exercised — and gating — at
+    /// `DF_VERIFY_ROLE=merge` (`scripts/land.sh` / the orchestrator merge
+    /// queue), which `scripts/verify.sh` defaults to `profile=both`, before
+    /// landing on `main`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_falls_back_on_length_mismatch() {
+        fn assert_fallback_matches(mesh: &Mesh, bogus_remap: &[u32]) {
+            // `WeldRemap`'s field is private (accessible from this
+            // descendant test module, not `pub(crate)`-restricted for
+            // external callers) — see
+            // `check_mesh_contract_welded_consumes_threaded_remap`'s doc
+            // for why constructing one directly here is expected and
+            // doesn't defeat the sealing.
+            assert_verdicts_equivalent(
+                mesh.check_mesh_contract_welded(0.0, &WeldRemap(bogus_remap.to_vec())),
+                mesh.check_mesh_contract(0.0),
+                "check_mesh_contract_welded with a length-mismatched remap \
+                 (release fallback) and check_mesh_contract",
+            );
+        }
+
+        let closed_mesh = per_face_block_tetra_mesh();
+        assert_fallback_matches(&closed_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&closed_mesh, &[0_u32; 100]); // too long
+
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_fallback_matches(&open_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&open_mesh, &[0_u32; 100]); // too long
     }
 
     // --- MeshContractMode env-knob parser (task #5105 δ, INV-GEO-1) ---

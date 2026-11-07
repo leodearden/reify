@@ -13,7 +13,8 @@
 //!    `diff_added_lines_in_commit(commit, path)`** — the surviving merge
 //!    commit's first-parent diff (`<commit>^1..<commit>`) recovers the task's
 //!    exact added lines even after the orchestrator has reaped the `task/N`
-//!    branch.
+//!    branch. Being historical, it drops a marker once the file on `main` is
+//!    known not to carry its trimmed line; a copy git cannot read keeps it.
 //!
 //! 2. **`done_provenance.commit` present but NOT reachable from `main`**
 //!    (gc'd / recycled SHA) → `file_lines_on("main", path)` — last-resort
@@ -31,9 +32,20 @@
 //! The reachability gate (`is_ancestor`) is evaluated once per task (not per
 //! path) to bound the extra `git merge-base --is-ancestor` invocation.
 //!
+//! ## Suppressions
+//!
+//! Beyond test paths and non-code files, P2 never reports the audit crate
+//! itself (PTODO's [`ptodo::AUDIT_CRATE_PREFIX`] exemption), a line carrying
+//! PTODO's `ptodo:allow` escape, or a marker
+//! citing a non-terminal task other than the one that introduced it (that
+//! task already owns the stub).
+//!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P2.
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::ptodo;
+use crate::task_rows::is_terminal_status;
+use crate::{AuditContext, EvidenceRef, Finding, GitOps, Pattern, Severity, TaskMetadata};
+use std::collections::{HashMap, HashSet};
 
 /// Returns `Some(label)` if the line matches any canonical stub-pattern family,
 /// or `None` if the line is clean.
@@ -216,6 +228,9 @@ fn is_test_cfg_attr(trimmed_lower: &str) -> bool {
 /// `#[cfg(not(test))]` (production-only guard) does **not** trigger the gate,
 /// so genuine production stubs following it remain detected.
 ///
+/// A line carrying PTODO's `ptodo:allow` escape is a reviewed, intentional
+/// marker and is never reported.
+///
 /// # Known limitation
 ///
 /// The gate fires only when the `#[cfg(test)]` attribute line itself appears
@@ -235,12 +250,29 @@ fn scan_file_added_lines(added: &[(usize, String)]) -> Vec<(usize, String, &'sta
                 in_cfg_test = true;
                 continue;
             }
+            if ptodo::line_escaped(content) {
+                continue;
+            }
             if let Some(label) = line_matches_stub(content) {
                 result.push((*line_no, content.clone(), label));
             }
         }
     }
     result
+}
+
+/// `true` when `line` cites a non-terminal task other than `introducer`: the
+/// stub already has a live owner, so a P2 follow-up would duplicate it.
+/// PTODO's liveness lane reads the same cite grammar against the same
+/// terminal set.
+fn cites_live_owner(line: &str, introducer: &str, tasks: &HashMap<String, TaskMetadata>) -> bool {
+    ptodo::canonical_cite_occurrences(line).any(|(_, id)| {
+        let id = id.to_string();
+        id != introducer
+            && tasks
+                .get(&id)
+                .is_some_and(|t| !is_terminal_status(&t.status))
+    })
 }
 
 /// Returns `true` when the task title itself signals that the task is
@@ -251,95 +283,133 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
-/// The detector's own source path, excluded from P2 scanning. The live code
-/// `return Some("TODO(post-)")` at line 41 lowercases to contain `todo(post-)`
-/// and self-matches Family 1 — excluding the file is the minimal correct fix.
-const SELF_SOURCE_PATH: &str = "crates/reify-audit/src/p2_consumer_stub.rs";
+/// The ref P2 treats as current code: the reachability gate, the
+/// unreachable-commit scan, the live-branch diff base and the presence check.
+const MAINLINE: &str = "main";
 
-/// Threshold above which `check()` warns about an unbounded backlog
-/// when both `target_task_id` and `window` are unset (sweep mode
-/// without pre-narrowing — see the `# Callers` rustdoc on `check`).
-/// 50 is well above every existing test fixture (max 7 tasks in
-/// `seven_prepd_legacy_tasks_produce_no_false_positives` /
-/// audit_integration.rs) and well below the unbounded-backlog
-/// scenario (hundreds of tasks loaded from fused-memory). The
-/// comparison is strict `>` so a backlog of exactly 50 does not warn.
-const SWEEP_BACKLOG_WARN_THRESHOLD: usize = 50;
+/// Where one task's added lines come from (the module doc's three routes),
+/// resolved once per task so the `is_ancestor` probe runs once, not per path.
+enum AddedLineSource<'a> {
+    /// (1) The merge commit, reachable from main: its first-parent diff.
+    MergeCommit(&'a str),
+    /// (2) A provenance commit main cannot reach (gc'd / recycled): a
+    /// last-resort content scan of the file on main.
+    MainlineScan,
+    /// (3) No provenance commit: the live `task/N` branch's diff against main.
+    LiveBranch(String),
+}
 
-/// Scan all tasks in `ctx.task_metadata` for canonical stub markers in their
+impl<'a> AddedLineSource<'a> {
+    /// NOTE (transient errors): `is_ancestor` also returns `false` on any git
+    /// error, so a transient error routes a provenance task to the noisier
+    /// `MainlineScan` rather than `LiveBranch`. Accepted: that route is gated to
+    /// tasks with a provenance commit, so it cannot reintroduce 4076's
+    /// false-positive volume; an `Option<bool>` `is_ancestor` would fix it at
+    /// the cost of a trait-breaking change.
+    fn resolve(meta: &'a TaskMetadata, git: &dyn GitOps) -> Self {
+        match meta
+            .done_provenance
+            .as_ref()
+            .and_then(|p| p.commit.as_deref())
+        {
+            Some(commit) if git.is_ancestor(commit, MAINLINE) => Self::MergeCommit(commit),
+            Some(_) => Self::MainlineScan,
+            None => Self::LiveBranch(format!("task/{}", meta.task_id)),
+        }
+    }
+
+    fn added_lines(&self, git: &dyn GitOps, path: &str) -> Vec<(usize, String)> {
+        match self {
+            Self::MergeCommit(commit) => git.diff_added_lines_in_commit(commit, path),
+            Self::MainlineScan => git.file_lines_on(MAINLINE, path),
+            Self::LiveBranch(branch) => git.diff_added_lines(MAINLINE, branch, path),
+        }
+    }
+
+    /// `true` only for the merge-commit route: the one that reads a historical
+    /// diff, whose lines main may since have removed.
+    fn can_be_stale(&self) -> bool {
+        matches!(self, Self::MergeCommit(_))
+    }
+}
+
+/// What one `check` call could learn about one file's copy on [`MAINLINE`].
+enum MainlineCopy {
+    /// Its trimmed lines; empty when main no longer tracks the file.
+    Read(HashSet<String>),
+    /// The read came back empty for a path main may still track: git failed
+    /// (`file_lines_on` reports an error as an empty file) or the file is empty.
+    Unread,
+}
+
+impl MainlineCopy {
+    /// An empty read counts as "file gone" only when git confirms main no
+    /// longer tracks the path; an unanswered probe leaves it [`Self::Unread`].
+    fn read(git: &dyn GitOps, path: &str) -> Self {
+        let lines = git.file_lines_on(MAINLINE, path);
+        if lines.is_empty() && !matches!(git.try_path_tracked_on(MAINLINE, path), Ok(false)) {
+            return Self::Unread;
+        }
+        Self::Read(
+            lines
+                .into_iter()
+                .map(|(_, l)| l.trim().to_string())
+                .collect(),
+        )
+    }
+}
+
+/// Each file's [`MainlineCopy`], read lazily and at most once per path for the
+/// duration of one `check` call.
+struct MainlineLines<'g> {
+    git: &'g dyn GitOps,
+    by_path: HashMap<String, MainlineCopy>,
+}
+
+impl<'g> MainlineLines<'g> {
+    fn new(git: &'g dyn GitOps) -> Self {
+        Self {
+            git,
+            by_path: HashMap::new(),
+        }
+    }
+
+    /// `true` only when main is known not to carry `line`, trimmed, in `path`:
+    /// a re-indented or moved marker is still carried, a reworded or removed
+    /// one is not. Fails open — an unreadable copy keeps the marker reported.
+    fn known_absent(&mut self, path: &str, line: &str) -> bool {
+        let git = self.git;
+        match self
+            .by_path
+            .entry(path.to_string())
+            .or_insert_with(|| MainlineCopy::read(git, path))
+        {
+            MainlineCopy::Read(lines) => !lines.contains(line.trim()),
+            MainlineCopy::Unread => false,
+        }
+    }
+}
+
+/// Key: `(task_id, path)` → `Vec<(line_no, content, label)>`
+type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
+
+/// Scan all tasks in `ctx.task_metadata()` for canonical stub markers in their
 /// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
 ///
 /// # Callers
 ///
-/// **Pre-done hook** (`check_pre_done`-style): set `ctx.target_task_id` to the
-/// single closing task.  The task's `status` will still be `"in_progress"` at
+/// **Pre-done hook** (`check_pre_done`-style): target the single closing task
+/// ([`AuditContext::targeting`]).  The task's `status` will still be `"in_progress"` at
 /// call time — the orchestrator has not yet flipped it to `"done"` — so P2
 /// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
 ///
-/// **Periodic sweep** (`--mode sweep`): narrow `ctx.task_metadata` to the
-/// closing-window tasks **before** calling this function.  Passing the full
-/// backlog will surface every in-progress `TODO(... pending)` as a finding,
-/// because P2 has no internal status filter to suppress legitimate WIP markers.
+/// **Sweep**: no target; pass the whole task corpus
+/// (`docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md` D6).
+/// P2 has no status filter, so a non-done task's added `TODO(... pending)`
+/// markers are reported too.
 ///
 /// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
-///
-/// Key: `(task_id, path)` → `Vec<(line_no, content, label)>`
-type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
-
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    // Sweep-mode contract enforcement (esc-3752-365). The # Callers rustdoc
-    // above requires sweep-mode callers to narrow `ctx.task_metadata` to
-    // closing-window tasks before invoking check(). A caller that forgets —
-    // runs --mode sweep with no --task and no --since against the full
-    // fused-memory backlog — would silently surface every in-progress WIP
-    // `TODO(... pending)` as a Medium-severity finding. Make the contract
-    // explicit per project convention "contract in production code is made
-    // explicit rather than relying on test coverage".
-    //
-    // KNOWN LIMITATION (esc-3752-365 review, suggestion 1): The `window.is_none()`
-    // conjunct is intended as a proxy for "no sweep scoping was requested", but
-    // `ctx.window` is NOT consumed by P2 — the AuditContext::window rustdoc says
-    // "None of the slice-1 detector paths consume this yet". The CLI also loads the
-    // full fused-memory backlog regardless of --since (it only builds `window`,
-    // never filters `task_metadata`). Consequently, a --since-scoped sweep
-    // (window=Some but task_metadata still contains the full backlog) BYPASSES this
-    // guard and still surfaces spurious findings. This guard therefore only catches
-    // the zero-scoping-flag case (--mode sweep with neither --task nor --since).
-    // Complete protection requires the CLI or loader to narrow `ctx.task_metadata`
-    // at load time before calling check().
-    //
-    // We use BOTH debug_assert! and eprintln!:
-    //   - debug_assert! panics in dev/test (loud fail-fast; the
-    //     `sweep_mode_unbounded_backlog_panics_in_debug` integration test
-    //     pins this signal via #[should_panic(expected = "unbounded backlog")]).
-    //   - eprintln! emits a `reify-audit:` breadcrumb so production release
-    //     builds (debug_assert compiled out) still surface the warning on
-    //     stderr alongside the spurious findings. Joins the existing breadcrumb
-    //     convention from lib.rs (git check-ignore) and p5_phantom_done.rs
-    //     (runs.db unreadable).
-    if ctx.target_task_id.is_none()
-        && ctx.window.is_none()
-        && ctx.task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD
-    {
-        eprintln!(
-            "reify-audit: p2::check called with unbounded backlog \
-             (target_task_id=None, window=None, {} tasks > threshold {}); \
-             callers MUST pre-narrow ctx.task_metadata to closing-window \
-             tasks per the # Callers rustdoc — else every in-progress WIP \
-             `TODO(... pending)` will surface as a Medium-severity finding",
-            ctx.task_metadata.len(),
-            SWEEP_BACKLOG_WARN_THRESHOLD,
-        );
-        debug_assert!(
-            false,
-            "p2::check called with unbounded backlog \
-             (target_task_id=None, window=None, {} tasks): callers MUST \
-             pre-narrow ctx.task_metadata to closing-window tasks per the \
-             # Callers rustdoc",
-            ctx.task_metadata.len(),
-        );
-    }
-
     // Phase 1 — collect all surviving (path, line_no, content, label) per task.
     //
     // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
@@ -349,11 +419,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     //   would suppress every finding on the primary call path (`check_pre_done`-style
     //   single-task narrowing via `target_task_id`).
     //
-    //   Constraint on periodic-sweep callers (e.g. T-4 CLI in `--mode sweep`): they
-    //   MUST narrow `ctx.task_metadata` to closing-window tasks themselves before
-    //   calling `check`. Passing the full backlog will surface every in-progress
-    //   task carrying a legitimate WIP `TODO(... pending)` as a finding — the marker
-    //   is what P2 looks for, and there is no further filter inside this function.
+    //   A sweep passes the whole task corpus (D6 of the PRD cited in this fn's
+    //   rustdoc), so a non-done task's added `TODO(... pending)` markers are
+    //   reported too.
     //
     //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 
@@ -370,50 +438,21 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     let mut raw: Vec<RawEntry> = Vec::new();
+    let mut mainline = MainlineLines::new(ctx.git());
 
-    for meta in ctx.task_metadata.values() {
+    for meta in ctx.task_metadata().values() {
         // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
-        if let Some(target) = ctx.target_task_id.as_deref()
+        if let Some(target) = ctx.target_task_id()
             && meta.task_id != target
         {
             continue;
         }
 
-        let task_branch = format!("task/{}", meta.task_id);
         let sort_key = (
             meta.done_at.unwrap_or(i64::MAX),
             meta.task_id.parse::<u64>().unwrap_or(u64::MAX),
         );
-
-        // Resolve the per-task routing mode once (not per path) to bound the
-        // extra `git merge-base --is-ancestor` invocation.
-        //
-        // `provenance_commit` = raw commit SHA from done_provenance (may be
-        // Some even for gc'd SHAs).
-        // `resolved_commit`   = Some(sha) only when the SHA is actually
-        // reachable from "main" (is_ancestor gate).
-        //
-        // NOTE (transient-error routing): `is_ancestor` is fail-safe — it
-        // returns `false` on ANY git error (lock contention, corrupted index,
-        // spawn failure) in addition to the legitimate "not an ancestor" case.
-        // When `provenance_commit` is Some but `is_ancestor` transiently
-        // errors, `resolved_commit` becomes `None` and routing falls to branch
-        // (2) — full-file content scan — rather than branch (3) — branch diff.
-        // Branch (2) is noisier: it re-surfaces pre-existing stubs that may be
-        // mis-attributed to this task. The accepted mitigation is that branch
-        // (2) is gated strictly to tasks with a provenance commit (the rare
-        // gc'd-SHA case plus transient errors), so it cannot reintroduce
-        // 4076's false-positive volume on the common reachable-commit path.
-        // A more robust fix — having `is_ancestor` return `Option<bool>` to
-        // distinguish an error from a genuine "not an ancestor" — would route
-        // transient errors to branch (3) instead, preserving the original
-        // branch-diff behaviour rather than escalating to the noisy content
-        // scan. That change is recorded as a known limitation; it requires a
-        // trait-breaking refactor that is out of scope for this task.
-        let provenance_commit: Option<&str> =
-            meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref());
-        let resolved_commit: Option<&str> = provenance_commit
-            .filter(|c| ctx.git.is_ancestor(c, "main"));
+        let source = AddedLineSource::resolve(meta, ctx.git());
 
         // Perf note: coalesce paths per task into a single
         //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
@@ -421,23 +460,17 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         for path in &meta.files {
             if crate::is_test_path(path) { continue; }
             if !is_code_ext(path) { continue; }
-            if path == SELF_SOURCE_PATH { continue; }
+            if path.starts_with(ptodo::AUDIT_CRATE_PREFIX) { continue; }
 
-            // Three-way routing — see module-level doc for rationale.
-            let added = match (resolved_commit, provenance_commit) {
-                // (1) Merge commit reachable from main → first-parent diff.
-                (Some(commit), _) => ctx.git.diff_added_lines_in_commit(commit, path),
-                // (2) Provenance commit present but not reachable (gc'd / recycled)
-                //     → full-file content scan as last-resort recall.
-                //     Documented precision/recall tradeoff; gated to this rare branch
-                //     so it does not reintroduce 4076's false-positive volume on the
-                //     common reachable-commit path.
-                (None, Some(_)) => ctx.git.file_lines_on("main", path),
-                // (3) No provenance commit (in-progress / pre-done-hook; task/N alive)
-                //     → original branch diff. Preserves all existing behaviour.
-                (None, None) => ctx.git.diff_added_lines("main", &task_branch, path),
-            };
-            for (line_no, content, label) in scan_file_added_lines(&added) {
+            // A stale match is dropped before the Phase-2 dedup, so it can
+            // never win introducer attribution over a live re-introduction.
+            let added = source.added_lines(ctx.git(), path);
+            let current = scan_file_added_lines(&added)
+                .into_iter()
+                .filter(|(_, content, _)| {
+                    !(source.can_be_stale() && mainline.known_absent(path, content))
+                });
+            for (line_no, content, label) in current {
                 raw.push(RawEntry {
                     path: path.clone(),
                     line_no,
@@ -467,9 +500,13 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         }
     }
 
-    // Phase 3 — group winners by (task_id, path).
+    // Phase 3 — group winners by (task_id, path). The live-owner rule runs
+    // here, on the winner, because it turns on who introduced the line.
     let mut groups: GroupMap = std::collections::HashMap::new();
-    for (_, entry) in dedup {
+    let unowned = dedup
+        .into_values()
+        .filter(|entry| !cites_live_owner(&entry.content, &entry.task_id, ctx.task_metadata()));
+    for entry in unowned {
         groups
             .entry((entry.task_id, entry.path))
             .or_default()
@@ -489,7 +526,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // OR (b) every match in the group is a `// fixme` maintenance label
         // (documented permanent maintenance trap, weaker signal than `// stub`
         // or `// placeholder`). Mixed groups (fixme + other families) stay Medium.
-        let severity = ctx.task_metadata
+        let severity = ctx.task_metadata()
             .get(&task_id)
             .map(|m| {
                 if title_signals_stub(&m.title)

@@ -90,18 +90,19 @@ pub fn coarse_pass_tuning(opts: &ProgressiveOptions) -> PassTuning {
 
 /// A snapshot of a single FEA solve at a given refinement level.
 ///
-/// Field names mirror `reify_eval::ElasticResult` (minus `solve_time_ms`,
-/// which is a cache-eviction metric rather than a solver output, and minus
-/// `shell_channels`, which is populated only by the v0_4 FEA trampoline).
+/// Field names are a subset of `reify_compute_contract::ElasticResult`'s.
 /// The correspondence is enforced at compile time by
-/// `impl From<&PartialElasticResult> for reify_eval::ElasticResult`
-/// in `reify-eval/src/persistent_cache.rs`: that impl uses an exhaustive
-/// struct literal, so any field rename, type change, or addition to
-/// `ElasticResult` becomes a hard compiler error in CI.
+/// `impl From<&PartialElasticResult> for reify_compute_contract::ElasticResult`
+/// (and its by-value sibling) in
+/// `reify-compute-contract/src/elastic_result.rs`: those impls use an
+/// exhaustive struct literal, so any field rename, type change, or addition
+/// to `ElasticResult` becomes a hard compiler error in CI. The
+/// `ElasticResult`-only fields, and the neutral defaults those impls give
+/// them, are spelled out there rather than restated here.
 ///
 /// Defined locally in this crate to avoid a `reify-solver-elastic →
-/// reify-eval` dependency edge (the reverse edge already exists per
-/// `persistent_cache.rs`).
+/// reify-compute-contract` dependency edge (the reverse edge already exists:
+/// `reify-compute-contract` depends on this crate).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartialElasticResult {
     /// Nodal displacement vector (3 DOFs per node, flat).

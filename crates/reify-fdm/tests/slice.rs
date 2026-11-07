@@ -21,7 +21,7 @@ use reify_fdm::slice::{
     SliceError, SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer,
     infill_pattern_arg, run_slicer, serialize_toolpath_canonical, slice_body,
 };
-use reify_fdm::{BeadRole, InfillPattern, parse_prusaslicer_gcode};
+use reify_fdm::{Bead, BeadRole, InfillPattern, Layer, Toolpath, parse_prusaslicer_gcode};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 const CANDIDATES: &[&str] = &[
@@ -501,5 +501,56 @@ fn toolpath_serialization_is_deterministic_and_golden_locked() {
     assert_eq!(
         s1, golden,
         "canonical serialization must match the committed golden snapshot"
+    );
+}
+
+/// A one-bead, one-layer Toolpath whose only varying field is the bead's
+/// `nominal_temp`.
+fn single_bead_toolpath(nominal_temp: Option<f64>) -> Toolpath {
+    Toolpath {
+        beads: vec![Bead {
+            centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+            width: 0.45,
+            height: 0.2,
+            role: BeadRole::Perimeter,
+            layer_index: 0,
+            layer_z: 0.2,
+            nominal_temp,
+            speed: 1800.0,
+        }],
+        layers: vec![Layer {
+            index: 0,
+            z: 0.2,
+            bead_indices: vec![0],
+        }],
+        in_layer_adjacency: Vec::new(),
+        inter_layer_adjacency: Vec::new(),
+    }
+}
+
+/// The canonical serialization keeps "no temperature was observed" apart from
+/// an observed 0 °C setpoint instead of rendering both as `0.000000`.
+#[test]
+fn canonical_serialization_distinguishes_unobserved_from_zero_celsius() {
+    let unobserved = serialize_toolpath_canonical(&single_bead_toolpath(None));
+    let zero_celsius = serialize_toolpath_canonical(&single_bead_toolpath(Some(0.0)));
+    let bead_line = |s: &str| {
+        s.lines()
+            .find(|l| l.trim_start().starts_with("bead 0 "))
+            .expect("serialization has a bead 0 line")
+            .to_owned()
+    };
+
+    assert!(
+        bead_line(&unobserved).contains("nominal_temp=none"),
+        "unobserved temperature must render as `none`: {unobserved}"
+    );
+    assert!(
+        bead_line(&zero_celsius).contains("nominal_temp=0.000000"),
+        "observed 0 °C must render as `0.000000`: {zero_celsius}"
+    );
+    assert_ne!(
+        unobserved, zero_celsius,
+        "the two states must not serialize identically"
     );
 }

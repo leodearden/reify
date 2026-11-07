@@ -17,6 +17,29 @@ pub enum PortDirection {
     Bidi,
 }
 
+impl PortDirection {
+    /// The direction's spelling in `.ri` source — what the parser accepts and
+    /// what a diagnostic must quote back for the designer to be able to write
+    /// it. Lives here, beside the enum, for the same reason the annotation-name
+    /// constants above do: a second copy elsewhere can drift.
+    ///
+    /// This is the LANGUAGE's vocabulary, not the doc model's, which spells
+    /// `Bidi` as `inout` (see `reify_doc::model`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PortDirection::In => "in",
+            PortDirection::Out => "out",
+            PortDirection::Bidi => "bidi",
+        }
+    }
+}
+
+impl std::fmt::Display for PortDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Canonical lowercase spelling of the `@test` annotation name.
 ///
 /// Use this constant instead of hard-coding `"test"` to keep the annotation

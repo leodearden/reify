@@ -32,7 +32,7 @@ its batch files.
   `prelude ++ local` inversion (`enums_phase.rs` / `type_resolution.rs`),
   eval-side first-wins `find_template_with_prelude`
   (`crates/reify-eval/src/engine_eval.rs:64-68`); both `structure def Mode`
-  decls live (`solver_buckling.ri:174`, `modal_analysis.ri:192`).
+  decls live (`solver_buckling.ri` — since renamed `BucklingMode` by #5496 — and `modal_analysis.ri`).
 - **mode-compile-eval-divergence-real** → PASS. Fixtures
   `tests/prd-gate/fixtures/stdlib_ns_mode_member.ri` (exit 1, `structure 'Mode'
   has no member 'eigenvalue'`) vs `stdlib_ns_mode_member_modal.ri` (exit 0)

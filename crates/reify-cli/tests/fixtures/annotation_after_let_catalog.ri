@@ -1,0 +1,5 @@
+structure S {
+    let sizes = [22mm, 24mm, 26mm]
+    @solver_hint("discrete_set", sizes)
+    param b : Length = auto
+}

@@ -1,0 +1,1 @@
+structure S<T: > { param a : Real = 1 }

@@ -9,10 +9,14 @@
 //! resolves unchanged. Explicit `#[path]` is required: this harness root is an
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
 //! `tests/<file>.rs`, not the `harness_patterns/` subdir. The shared `common` helper module
-//! is declared ONCE here at the harness root (via `#[path = "common/mod.rs"]`); the three
-//! former `mod common;`-using enum files now import it as `use crate::common::…`. Declaring it
+//! is declared ONCE here at the harness root (via `#[path = "common/mod.rs"]`); the five
+//! former `mod common;`-using members now import it as `use crate::common::…`. Declaring it
 //! per-file would load the same source file multiple times in this one compile unit, which
 //! `clippy::duplicate_mod` rejects.
+//!
+//! Task #5695 (leaf CMP-5) added `generic_enum_pattern_binder_tests` (match-arm binder
+//! substitution and exhaustiveness over generic enums) and `variant_construction_check_tests`
+//! (named-field enum-variant construction), both by subject.
 #[path = "common/mod.rs"]
 mod common;
 
@@ -24,6 +28,8 @@ mod enum_generic_ir_lowering_tests;
 mod enum_pattern_field_check_tests;
 #[path = "harness_patterns/enum_unknown_type_param_tests.rs"]
 mod enum_unknown_type_param_tests;
+#[path = "harness_patterns/generic_enum_pattern_binder_tests.rs"]
+mod generic_enum_pattern_binder_tests;
 #[path = "harness_patterns/match_arm_decl_group_compile_tests.rs"]
 mod match_arm_decl_group_compile_tests;
 #[path = "harness_patterns/match_arm_decl_group_typing_tests.rs"]
@@ -32,3 +38,5 @@ mod match_arm_decl_group_typing_tests;
 mod match_block_decl_lowering_tests;
 #[path = "harness_patterns/match_compile_tests.rs"]
 mod match_compile_tests;
+#[path = "harness_patterns/variant_construction_check_tests.rs"]
+mod variant_construction_check_tests;

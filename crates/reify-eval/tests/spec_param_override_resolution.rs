@@ -30,7 +30,7 @@ const BEARING_5MM: &str = "structure Bearing { param bore : Length = 5mm }";
 
 /// Build an Engine backed by `SimpleConstraintChecker` + `DimensionalSolver`.
 fn engine_with_solver() -> Engine {
-    Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver))
+    Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver))
 }
 
 /// Filter `diagnostics` to error-severity entries.

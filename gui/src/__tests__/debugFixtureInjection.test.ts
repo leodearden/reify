@@ -36,9 +36,12 @@ vi.mock('html-to-image', () => ({
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toPng } from 'html-to-image';
-import { initDebugBridge } from '../debug/bridge';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
+import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
 import type { DebugStores } from '../debug/types';
+import { LAYOUT_DIMENSIONS, defaultLayout, type LayoutStore } from '../stores/layoutStore';
+import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -46,7 +49,7 @@ type DebugRequestHandler = (event: {
 
 // ─── makeStores ───────────────────────────────────────────────────────────────
 
-function makeStores(): DebugStores {
+function makeStores(layout: LayoutStore = makeLayoutStore()): DebugStores {
   return {
     engine: {
       state: {
@@ -93,20 +96,8 @@ function makeStores(): DebugStores {
       },
     },
     viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout,
+    viewportDisplay: createViewportDisplayStore(),
   };
 }
 
@@ -288,9 +279,11 @@ describe('inject_diagnostics: bridge handler', () => {
 describe('reset_app_state: bridge handler', () => {
   let capturedHandler: DebugRequestHandler | undefined;
   let stores: DebugStores;
+  let layout: LayoutStore;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    localStorage.clear();
     capturedHandler = undefined;
 
     vi.mocked(listen).mockImplementation(async (_event, handler) => {
@@ -299,7 +292,8 @@ describe('reset_app_state: bridge handler', () => {
     });
 
     // Stub with two open files and a selected entity
-    stores = makeStores();
+    layout = makeLayoutStore();
+    stores = makeStores(layout);
     (stores.editor.state as any).openFiles = [
       { path: 'a.ri', content: '' },
       { path: 'b.ri', content: '' },
@@ -347,22 +341,71 @@ describe('reset_app_state: bridge handler', () => {
     expect(vi.mocked(stores.engine.setTessellationDiagnostics)).toHaveBeenCalledWith([]);
   });
 
-  it('resets each layout dimension to DEFAULT_* value', async () => {
+  it('restores every LAYOUT_DIMENSIONS row to its default', async () => {
+    for (const row of LAYOUT_DIMENSIONS) {
+      if (row.kind === 'px') layout.set(row.key, row.default + 37);
+      else layout.set(row.key, !row.default);
+    }
+    expect({ ...layout.state }).not.toEqual(defaultLayout());
+
     const result = await dispatchAndGetResult(capturedHandler!, 5, 'reset_app_state') as any;
 
     expect(result.ok).toBe(true);
-    // DEFAULT_EDITOR_WIDTH=300, DEFAULT_SIDE_WIDTH=300, DEFAULT_DESIGN_TREE_HEIGHT=160,
-    // DEFAULT_PROPERTY_HEIGHT=200, DEFAULT_CONSTRAINT_HEIGHT=140
-    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledWith(300);
-    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledWith(300);
-    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledWith(160);
-    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledWith(200);
-    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledWith(140);
+    expect({ ...layout.state }).toEqual(defaultLayout());
+  });
+});
+
+// Fake timers are installed before the only live layout store is built, so its
+// debounced write is the only one that can reach the storage key.
+describe('reset_app_state: B9 persisted layout', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let layout: LayoutStore;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    localStorage.clear();
+    capturedHandler = undefined;
+
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    layout = makeLayoutStore();
+    await initDebugBridge(makeStores(layout));
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function persistedLayoutAfterDebounce(id: number): Promise<unknown> {
+    await Promise.resolve();
+    vi.advanceTimersByTime(300);
+    const stored = await dispatchAndGetResult(capturedHandler!, id, 'get_local_storage', {
+      key: STORAGE_KEY,
+    }) as any;
+    expect(stored.present).toBe(true);
+    return JSON.parse(stored.value);
+  }
+
+  it('B9: after resize_panes {problemsHeight: 400} and a collapse toggle, the persisted layout holds the default problems pair', async () => {
+    const resized = await dispatchAndGetResult(capturedHandler!, 10, 'resize_panes', { problemsHeight: 400 }) as any;
+    expect(resized.ok).toBe(true);
+    // The store call App's handleToggleDiagnostics makes.
+    layout.setProblemsCollapsed((c) => !c);
+    expect(layout.state.problemsCollapsed).toBe(false);
+    expect(await persistedLayoutAfterDebounce(11)).toMatchObject({
+      problemsHeight: 400,
+      problemsCollapsed: false,
+    });
+
+    await dispatchAndGetResult(capturedHandler!, 12, 'reset_app_state');
+
+    expect(await persistedLayoutAfterDebounce(13)).toEqual(defaultLayout());
   });
 });
 
@@ -548,6 +591,137 @@ describe('element_screenshot: bridge handler', () => {
       expect(typeof result.size).toBe('number');
       expect(typeof result.limit).toBe('number');
       expect(result.size).toBeGreaterThan(result.limit);
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  // ─── viewport scoping (#5891) — step-9 RED → step-10 GREEN ─────────────────
+
+  /** The two panes' mocked bounds. Distinct so the crop rect identifies the pane. */
+  const PANE_RECTS = {
+    'design-main': { x: 10, y: 20, width: 100, height: 50 },
+    'pane-1': { x: 300, y: 400, width: 60, height: 30 },
+  } as const;
+
+  /**
+   * Two `[data-viewport-id]` wrappers, each holding a same-testid element with a
+   * DIFFERENT getBoundingClientRect. Asserting on the captured drawImage source
+   * rect therefore pins WHICH element was captured — a bare `{data}` assertion
+   * would pass just as happily on the wrong pane, since the fake canvas returns
+   * the same stub URL either way.
+   */
+  function twoPanesWithShotTarget() {
+    const root = document.createElement('div');
+    root.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="shot"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="shot"></div></div>
+    `;
+    document.body.appendChild(root);
+    for (const id of ['design-main', 'pane-1'] as const) {
+      const el = root.querySelector(
+        `[data-viewport-id="${id}"] [data-testid="shot"]`,
+      ) as HTMLElement;
+      const r = PANE_RECTS[id];
+      vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+        x: r.x, y: r.y, width: r.width, height: r.height,
+        top: r.y, left: r.x, right: r.x + r.width, bottom: r.y + r.height,
+        toJSON: () => ({}),
+      });
+    }
+    return root;
+  }
+
+  /** The source rect drawImage was called with — {sx, sy, sw, sh}. DPR is 1 here. */
+  function capturedSourceRect() {
+    expect(drawImageSpy).toHaveBeenCalledTimes(1);
+    const a = drawImageSpy.mock.calls[0];
+    // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+    return { sx: a[1], sy: a[2], sw: a[3], sh: a[4] };
+  }
+
+  it('#5891 scoped: crops the named pane\'s element, not the first match', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 6, 'element_screenshot', {
+        testId: 'shot', viewportId: 'pane-1',
+      }) as any;
+
+      expect(result).toEqual({ data: 'data:image/png;base64,CROP' });
+      // pane-1's bounds, NOT design-main's (10,20,100,50).
+      expect(capturedSourceRect()).toEqual({ sx: 300, sy: 400, sw: 60, sh: 30 });
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport and captures nothing', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 7, 'element_screenshot', {
+        testId: 'shot', viewportId: 'nope',
+      }) as any;
+
+      expect(result).toEqual({
+        error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('shot', 'nope'),
+      });
+      // Never silently falls back to the document-wide first match.
+      expect(drawImageSpy).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString and captures nothing', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 8, 'element_screenshot', {
+        testId: 'shot', viewportId: 5,
+      }) as any;
+
+      expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+      expect(drawImageSpy).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 unscoped multi-match crops the first and reports the guessed pane', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 9, 'element_screenshot', {
+        testId: 'shot',
+      }) as any;
+
+      expect(result).toEqual({
+        data: 'data:image/png;base64,CROP',
+        viewportId: 'design-main',
+        matchCount: 2,
+      });
+      // design-main's bounds — the mirror of the scoped case above, so a resolver
+      // keyed to the LAST match could not satisfy both.
+      expect(capturedSourceRect()).toEqual({ sx: 10, sy: 20, sw: 100, sh: 50 });
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 single match keeps today\'s exact {data} payload — no diagnostic keys leak', async () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'lonely-shot');
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, width: 40, height: 40,
+      top: 0, right: 40, bottom: 40, left: 0,
+      toJSON: () => ({}),
+    });
+
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 10, 'element_screenshot', {
+        testId: 'lonely-shot',
+      }) as any;
+
+      expect(result).toEqual({ data: 'data:image/png;base64,CROP' });
     } finally {
       document.body.removeChild(el);
     }

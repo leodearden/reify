@@ -11,7 +11,7 @@
 // test file's module header ("Why byte-identity").
 //
 // Golden: crates/reify-eval/tests/golden/bt7_objectiveless_centrality.txt
-// Test:   crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt7_objectiveless_centrality_byte_identity
+// Test:   crates/reify-cli/tests/harness_cli/cli_objective_inheritance_golden.rs::bt7_objectiveless_centrality_byte_identity
 structure Bar {
     param k: Length = auto
 

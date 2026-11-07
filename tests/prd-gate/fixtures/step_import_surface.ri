@@ -1,0 +1,30 @@
+// Target surface for docs/prds/v0_6/step-assembly-import.md (§1).
+// Does NOT parse on main as of 5340545275 (2026-09-28): the string-path import
+// (leaf δ), the dotted override path (leaf η) and `exclude` in a specialization
+// body (leaf θ) are new grammar. Per-leaf fixtures are one construct each; this
+// file is the whole target and parses only when δ, η and θ have all landed.
+// Sub-member reads are scope-posed under placement-relations-belt §7.1.5 (#5436).
+module step_import_surface
+import "vendor/container.step" as container
+
+structure def DoorBracket {
+    param geometry : Solid = box(120mm, 40mm, 200mm)
+    let seat_plane = single(faces_by_normal(geometry, vec3(0.0, -1.0, 0.0), 1deg)).plane
+}
+
+structure def Site {
+    aux let door_cut = box(900mm, 60mm, 2000mm)
+
+    aux sub stock = container.Assembly()
+
+    sub box : container.Assembly {
+        side_wall_1.panel_1.geometry = difference(stock.side_wall_1.panel_1.geometry, door_cut)
+        exclude roof_panel_3
+    }
+
+    // scope-posed sub-member read (placement-relations-belt §7.1.5): already in Site's frame
+    let door_plane = single(faces_by_normal(stock.side_wall_1.panel_1.geometry, vec3(0.0, 1.0, 0.0), 1deg)).plane
+
+    sub bracket = DoorBracket() at auto
+    relate { flush(bracket.seat_plane, door_plane) }
+}

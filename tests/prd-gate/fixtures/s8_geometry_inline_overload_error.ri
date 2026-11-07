@@ -1,0 +1,15 @@
+module s8_geometry_inline_overload_error
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: eta (geometry calls typed Geometry; a value-position call is a coded error).
+// Pins: the two forms rejected today only because an inline geometry call is
+// typed Real: a Geometry-taking user fn called with an inline box(..), and a
+// Length param initialised from a geometry call. After eta both are rejected
+// with diagnostics that name Geometry.
+
+fn takes_geo(g: Geometry) -> Int { 0 }
+
+structure def S8GeometryInlineOverloadError {
+    param pl : Length = box(1mm, 2mm, 3mm)
+    let t = takes_geo(box(1mm, 1mm, 1mm))
+}

@@ -1,7 +1,7 @@
 //! Real-git-ops integration tests.
 //!
 //! These tests build a real temporary git repository using `tempfile::tempdir()`
-//! and `common::git_env::git_cmd` — the shared `reify_audit::git_env`
+//! and `common::git_env::git_cmd` — the shared `reify_git_env`
 //! constructor, which yields a `git -C <dir>` with the repo-redirect
 //! environment variables stripped — to validate that `RealGitOps` shells out
 //! the correct git command with the correct argument form.  They exist because a
@@ -39,19 +39,19 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 8 is today's selection (7 real tests + this one). It exists
+/// The floor of 13 is today's selection (12 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 8);
+    common::replay::replay_self_under_hook_git_env(&[""], 13);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
 ///
 /// The single entry point for every repo-targeting git invocation in this
-/// file, so the `reify_audit::git_env` sanitizing is applied in exactly one
+/// file, so the `reify_git_env` sanitizing is applied in exactly one
 /// place. Without it an ambient hook `GIT_INDEX_FILE`/`GIT_DIR` overrides
 /// `-C <dir>` and the command silently operates on the parent repository.
 fn git_run(dir: &std::path::Path, args: &[&str]) {
@@ -319,6 +319,114 @@ fn last_commit_for_path_real_repo() {
     );
 }
 
+/// Pin that `RealGitOps::rename_target_for_path` resolves a real rename — and
+/// that it composes with `last_commit_for_path`, which is how the ζ inverse
+/// lane reaches it (the lane already holds the commit that last touched the
+/// cited path, and asks "did THAT commit rename it?").
+///
+/// This must be a real-git-repo test: a wrong argument form — omitting `-M`
+/// (so git reports the rename as an unrelated `D`/`A` pair), omitting
+/// `--format=` (so the commit header lines pollute the parse), or reading the
+/// wrong TAB field — would shell out perfectly happily, and `MockGitOps`,
+/// which returns whatever the test puts in, could never catch it.
+///
+/// Setup:
+///   - commit 1: add `old.rs` and `doomed.rs`
+///   - commit 2: `git mv old.rs sub/new.rs` (the rename commit)
+///   - commit 3: `git rm doomed.rs` (a genuine delete, for the fail-safe pin)
+///
+/// Assertions:
+///   - `last_commit_for_path("old.rs")` → `Some(c)` with `c.sha == rename sha`
+///     (the two seam calls compose: the lane's existing call hands this one its
+///     sha)
+///   - `rename_target_for_path("old.rs", rename_sha)` → `Some("sub/new.rs")`
+///   - fail-safe, all `None`:
+///     (a) a genuine delete commit queried for its deleted path
+///     (b) a bogus sha (`git show` exits non-zero with `fatal: bad object`)
+///     (c) a path present in the rename commit that is not its rename SOURCE
+///     (querying the rename TARGET must not match)
+#[test]
+fn rename_target_for_path_real_repo() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit 1: add old.rs (to be renamed) and doomed.rs (to be deleted).
+    write_file(root, "old.rs", "fn old() {}\n");
+    write_file(root, "doomed.rs", "fn doomed() {}\n");
+    git_commit(root, "add old.rs and doomed.rs");
+
+    // Commit 2: rename old.rs → sub/new.rs. `git mv` requires the destination
+    // directory to exist.
+    std::fs::create_dir_all(root.join("sub")).expect("create sub/");
+    git_run(root, &["mv", "old.rs", "sub/new.rs"]);
+    git_commit(root, "rename old.rs to sub/new.rs");
+    let rename_sha = rev_parse_head(root);
+
+    // Commit 3: genuine delete of an unrelated file.
+    git_run(root, &["rm", "doomed.rs"]);
+    git_commit(root, "delete doomed.rs");
+    let delete_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    // The two seam calls compose: the commit the inverse lane already resolved
+    // for the cited path IS the rename commit.
+    let last = git.last_commit_for_path("old.rs");
+    assert!(
+        last.is_some(),
+        "last_commit_for_path(\"old.rs\") must return Some after the rename; got None"
+    );
+    assert_eq!(
+        last.as_ref().unwrap().sha,
+        rename_sha,
+        "last_commit_for_path(\"old.rs\") must resolve to the rename commit; got {:?} expected {}",
+        last,
+        rename_sha,
+    );
+
+    // Core assertion: the rename target is recovered from that commit.
+    let target = git.rename_target_for_path("old.rs", &rename_sha);
+    assert_eq!(
+        target,
+        Some("sub/new.rs".to_string()),
+        "rename_target_for_path(\"old.rs\", <rename sha>) must return the new path; got {:?}",
+        target,
+    );
+
+    // Fail-safe (a): a genuine delete commit has no `R` line → None, so the
+    // inverse lane keeps emitting task-cites-deleted-path.
+    let deleted = git.rename_target_for_path("doomed.rs", &delete_sha);
+    assert!(
+        deleted.is_none(),
+        "a genuine delete must not resolve a rename target; got {:?}",
+        deleted,
+    );
+
+    // Fail-safe (b): a bogus sha makes git exit non-zero (`fatal: bad object`),
+    // which run_or_warn turns into None — a git failure can never manufacture a
+    // renamed classification.
+    let bogus = git.rename_target_for_path(
+        "old.rs",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    );
+    assert!(
+        bogus.is_none(),
+        "a bogus sha must return None; got {:?}",
+        bogus,
+    );
+
+    // Fail-safe (c): the rename TARGET appears in the rename commit's diff, but
+    // it is not the rename SOURCE — matching on it would invert the relation.
+    let target_as_source = git.rename_target_for_path("sub/new.rs", &rename_sha);
+    assert!(
+        target_as_source.is_none(),
+        "querying the rename TARGET as if it were the source must return None; got {:?}",
+        target_as_source,
+    );
+}
+
 // -----------------------------------------------------------------------
 // Trailing-newline invariant: both forms yield the same logical line count
 // -----------------------------------------------------------------------
@@ -461,5 +569,738 @@ fn run_exhausts_retries_and_degrades_to_empty() {
         "ls_files must degrade to vec![] when all retry attempts are exhausted; \
          got: {:?}",
         listed,
+    );
+}
+
+// -----------------------------------------------------------------------
+// changed_paths_in_commit — the commit's OWN delta (task 6345, Defect 2)
+// -----------------------------------------------------------------------
+
+/// Pin that `changed_paths_in_commit` reports a commit's own delta, and that
+/// `diff_changed_paths("main", <commit>)` demonstrably cannot once `<commit>`
+/// is an ancestor of main.
+///
+/// `main..<commit>` is a two-point TREE diff. Once `<commit>` has been merged,
+/// main and the commit agree on exactly the paths the commit introduced, so
+/// the task's own files are EXCLUDED by construction — the reverse-delta of
+/// whatever landed AFTER it is returned instead. MEASURED on the live repo:
+/// for merge `bc8f74a4d4`, `main..M` returned 6 paths and every one of the
+/// task's own six files was absent from that set.
+///
+/// This must run against REAL git: a mock returns whatever you seeded, so it
+/// cannot catch a wrong range string. That is this binary's stated purpose.
+#[test]
+fn changed_paths_in_commit_returns_the_commits_own_delta() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+
+    git_init(root);
+
+    // Base commit on main.
+    write_file(root, "base.txt", "base\n");
+    git_commit(root, "base commit");
+
+    // A task branch whose deliverable is `task_file.rs`, merged --no-ff.
+    run(&["checkout", "-b", "feat"]);
+    write_file(root, "task_file.rs", "fn task() {}\n");
+    git_commit(root, "feat: the task's deliverable");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feat into main", "feat"]);
+    let merge_sha = rev_parse_head(root);
+
+    // Main advances past M, so M is a non-tip ancestor — the production shape.
+    write_file(root, "later.txt", "unrelated later work\n");
+    git_commit(root, "unrelated commit after the merge");
+
+    let git = RealGitOps::new(root);
+
+    // The degenerate leg this fix exists to replace.
+    let reverse = git.diff_changed_paths("main", &merge_sha);
+    assert!(
+        !reverse.contains(&"task_file.rs".to_string()),
+        "main..<merge> must NOT surface the merge's own file once the merge is an \
+         ancestor of main — if it does, the premise of this fix changed; got: {:?}",
+        reverse,
+    );
+
+    // The correct leg.
+    let own = git.changed_paths_in_commit(&merge_sha);
+    assert!(
+        own.contains(&"task_file.rs".to_string()),
+        "changed_paths_in_commit({}) must contain the merge's own deliverable; got: {:?}",
+        merge_sha,
+        own,
+    );
+
+    // A DELETION is reported too. This is the property the pre-done gate's
+    // deletion/rename rescue depends on: a removed file has
+    // path_tracked_on(main, p) == false, and only the landing commit's own
+    // delta can show that the removal was the deliverable.
+    run(&["rm", "base.txt"]);
+    git_commit(root, "remove base.txt");
+    let del_sha = rev_parse_head(root);
+    let deleted = git.changed_paths_in_commit(&del_sha);
+    assert!(
+        deleted.contains(&"base.txt".to_string()),
+        "changed_paths_in_commit({}) must report the deleted path; got: {:?}",
+        del_sha,
+        deleted,
+    );
+
+    // Fail-safe: an unreachable / recycled SHA yields an empty vec rather than
+    // panicking — matching the contract of diff_added_lines_in_commit.
+    let unreachable = git.changed_paths_in_commit("0000000000000000000000000000000000000000");
+    assert!(
+        unreachable.is_empty(),
+        "changed_paths_in_commit on an unreachable SHA must fail safe to empty; got: {:?}",
+        unreachable,
+    );
+}
+
+// -----------------------------------------------------------------------
+// Rename detection must be OFF on both path-listing seams (task 6345)
+// -----------------------------------------------------------------------
+
+/// Pin that both `--name-only` path-listing seams report BOTH sides of a
+/// rename — the destination *and* the vanished source.
+///
+/// `diff.renames` has defaulted to true since git 2.9 and this repo sets no
+/// override (`git config --get diff.renames` exits 1). With detection on,
+/// `--name-only` collapses a detected rename to the DESTINATION path alone and
+/// the old path never appears. Measured on a throwaway repo: after
+/// `git mv a/old.rs a/new.rs`, `git diff --name-only HEAD^1..HEAD` prints
+/// `a/new.rs` alone, while `--no-renames` prints both `a/new.rs` and
+/// `a/old.rs`.
+///
+/// That silently breaks the pre-done gate. Both seams feed corroboration legs
+/// that only ever SUBTRACT from the "absent from main" set, so a task that
+/// declares its pre-rename path in `metadata.files` finds that path neither
+/// tracked on main (it was renamed away) nor present in its landing commit's
+/// delta (detection hid it) — and the flip is refused for work that in fact
+/// landed.
+///
+/// Both seams are covered here because both are reachable from
+/// `changed_paths_for_claim`: the ancestor arm calls `changed_paths_in_commit`
+/// (the landed case), the non-ancestor arm calls `diff_changed_paths(main, …)`
+/// (the un-landed D-1 branch-tip case).
+///
+/// `git mv` with content unchanged makes rename detection fire at 100%
+/// similarity, so the defect is deterministic rather than dependent on git's
+/// similarity threshold. And it must be a REAL-git test: a mock returns
+/// whatever the fixture seeded, so it is structurally incapable of catching a
+/// defect in git's argv.
+#[test]
+fn changed_paths_in_commit_reports_both_sides_of_a_rename() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+
+    git_init(root);
+
+    // Base commit on main: the file the landed task will rename, plus a second
+    // file for the un-landed branch-tip leg below.
+    write_file(root, "a/old.rs", "fn task() {}\n");
+    write_file(root, "b/stays.rs", "fn stays() {}\n");
+    git_commit(root, "base commit");
+
+    // --- Seam 1: changed_paths_in_commit, on a landed --no-ff merge. ---
+    run(&["checkout", "-b", "feat"]);
+    run(&["mv", "a/old.rs", "a/new.rs"]);
+    git_commit(root, "feat: move old.rs to new.rs");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feat into main", "feat"]);
+    let merge_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    let own = git.changed_paths_in_commit(&merge_sha);
+    assert!(
+        own.contains(&"a/new.rs".to_string()),
+        "changed_paths_in_commit({}) must report the rename DESTINATION; got: {:?}",
+        merge_sha,
+        own,
+    );
+    assert!(
+        own.contains(&"a/old.rs".to_string()),
+        "changed_paths_in_commit({}) must also report the rename SOURCE — a task \
+         declaring its pre-rename path is otherwise refused by the pre-done gate \
+         for work that did land; got: {:?}",
+        merge_sha,
+        own,
+    );
+
+    // --- Seam 2: diff_changed_paths(main, <tip>), on an UN-landed branch. ---
+    // This is the arm `changed_paths_for_claim` takes when the claimed commit
+    // is not yet an ancestor of main, where the two-point tree diff IS the
+    // right question — but it collapses renames identically.
+    run(&["checkout", "-b", "feat2"]);
+    run(&["mv", "b/stays.rs", "b/moved.rs"]);
+    git_commit(root, "feat2: move stays.rs to moved.rs");
+    let tip_sha = rev_parse_head(root);
+    run(&["checkout", "main"]);
+
+    let tip = git.diff_changed_paths("main", &tip_sha);
+    assert!(
+        tip.contains(&"b/moved.rs".to_string()),
+        "diff_changed_paths(main, {}) must report the rename DESTINATION; got: {:?}",
+        tip_sha,
+        tip,
+    );
+    assert!(
+        tip.contains(&"b/stays.rs".to_string()),
+        "diff_changed_paths(main, {}) must also report the rename SOURCE — the \
+         un-landed branch-tip leg has the identical false-refusal defect; got: {:?}",
+        tip_sha,
+        tip,
+    );
+}
+
+// -----------------------------------------------------------------------
+// The fallible gitignore seam: "not ignored" vs "could not tell"
+// -----------------------------------------------------------------------
+
+/// Pin that a gitignore probe git never answered is reported as `Err`, on the
+/// latched call as much as on the first.
+///
+/// A non-git tempdir is the fixture the two `cli.rs` breadcrumb tests already
+/// rely on: `git check-ignore` exits 128 there, which is neither 0 (ignored)
+/// nor 1 (not ignored).
+///
+/// The SECOND probe is the load-bearing assertion. `gitignore_unavailable` is
+/// a per-instance BREADCRUMB budget — it exists so N files against a broken
+/// repo emit one diagnostic rather than N. It is not a claim that the answer
+/// is known, so the short-circuit it guards must stay silent without becoming
+/// a silent `Ok(false)`: a latched call is still an unanswered question. Were
+/// it to answer `Ok(false)`, a task whose FIRST file latched the flag would
+/// arm the gate's advisory channel while every later file read as
+/// "answered: not ignored" — the exact fail-safe inversion this closes, one
+/// call later.
+///
+/// The third pair pins that the infallible seam is unchanged: every existing
+/// caller still sees `false`, and both `cli.rs` breadcrumb tests keep their
+/// exactly-one-breadcrumb expectation.
+#[test]
+fn try_is_gitignored_reports_an_unanswered_probe_as_err() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Deliberately NOT a git repo, and one instance so the latch is live.
+    let git = RealGitOps::new(root);
+
+    assert!(
+        git.try_is_gitignored("some/path.rs").is_err(),
+        "git did not answer, so the fallible seam must say so rather than \
+         collapsing to Ok(false)",
+    );
+    assert!(
+        git.try_is_gitignored("other/path.rs").is_err(),
+        "the latched short-circuit suppresses the repeated BREADCRUMB only — it \
+         must never downgrade an unanswered question to Ok(false)",
+    );
+
+    assert!(
+        !git.is_gitignored("some/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+    assert!(
+        !git.is_gitignored("other/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+}
+
+/// Pin that a `metadata.files` entry beginning with `-` is ANSWERED rather
+/// than poisoning the gitignore probe for the rest of the process.
+///
+/// `metadata.files` is hand-authored and nothing normalises it, so an entry
+/// like `--weird-file` reaches `git check-ignore` verbatim. Without an
+/// end-of-options `--` separator git parses it as an option and exits 129 —
+/// neither 0 (ignored) nor 1 (not ignored) — which latches `RealGitOps`'s
+/// per-instance breadcrumb budget and short-circuits EVERY later probe on that
+/// instance. The CLI constructs exactly one `RealGitOps` per invocation, so
+/// that latch is process-wide: `P5MetadataFilesGitignored` goes silent for the
+/// rest of the run, and at the pre-done gate the unfiltered entry stays in the
+/// declared set that a blocking refusal is built from.
+///
+/// The SECOND probe is the load-bearing assertion: it reads the latch's
+/// consequence through the public seam rather than the private `AtomicBool`,
+/// so it would still fail if the suppression were reintroduced by some other
+/// mechanism.
+///
+/// Asserted through the FALLIBLE seam because that is where `Ok(false)` and
+/// `Err` are distinguishable — the distinction the pre-done gate acts on. The
+/// infallible seam's `false`/`true` follows from these two by its
+/// `unwrap_or(false)` default, so it needs no test of its own.
+///
+/// Must be a real-git test: a mock returns whatever the fixture seeded, so it
+/// is structurally incapable of catching a defect in git's argv.
+#[test]
+fn try_is_gitignored_answers_for_a_leading_dash_path() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+    write_file(root, ".gitignore", "ignored.txt\n");
+    git_commit(root, "base commit");
+    write_file(root, "ignored.txt", "build artefact\n");
+
+    let git = RealGitOps::new(root);
+
+    assert_eq!(
+        git.try_is_gitignored("--weird-file"),
+        Ok(false),
+        "a declared entry beginning with `-` must reach git as a PATH — git RAN \
+         and answered \"not ignored\", rather than exiting 129 on an unknown \
+         option",
+    );
+    assert_eq!(
+        git.try_is_gitignored("ignored.txt"),
+        Ok(true),
+        "a genuinely-gitignored path must still be answered AFTER a \
+         leading-dash entry was probed — otherwise the first entry latched the \
+         instance and silenced every later probe. Also proves the Ok(false) \
+         above is not a constant",
+    );
+}
+
+// -----------------------------------------------------------------------
+// The opt-in history snapshot answers exactly like one git call per question
+// -----------------------------------------------------------------------
+
+/// `git <args…>` in `dir`, asserted successful, stdout trimmed.
+fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = common::git_env::git_cmd(dir)
+        .args(args)
+        .output()
+        .expect("git command failed to spawn");
+    assert!(out.status.success(), "git {:?} exited {:?}", args, out.status.code());
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+}
+
+/// The commits of the history-snapshot fixture the parity battery asks about.
+struct HistoryFixture {
+    /// Every commit reachable from `main`, root included.
+    main_shas: Vec<String>,
+    /// A commit on a branch that was never merged into `main`.
+    unmerged: String,
+}
+
+/// A `main` whose messages and deltas exercise every shape the snapshot
+/// answers from: digit-collision subjects (`12` inside `123`), a body-only
+/// mention, a `--no-ff` merge touching two files, a rename, and a root commit.
+/// The `feature` branch survives its merge so ancestry against a branch other
+/// than the snapshot's can be asked too.
+fn history_fixture(root: &std::path::Path) -> HistoryFixture {
+    let run = |args: &[&str]| git_run(root, args);
+    git_init(root);
+
+    write_file(root, "a.rs", "fn a() {}\n");
+    git_commit(root, "root commit");
+    write_file(root, "x.rs", "fn x() {}\n");
+    git_commit(root, "feat(12): x");
+    write_file(root, "y.rs", "fn y() {}\n");
+    git_commit(root, "feat(123): y");
+    write_file(root, "z.rs", "fn z() {}\n");
+    run(&["add", "."]);
+    run(&["commit", "-m", "chore: unrelated subject", "-m", "Refs task 45 in the body only."]);
+
+    run(&["checkout", "-b", "feature"]);
+    write_file(root, "f1.rs", "fn f1() {}\n");
+    write_file(root, "f2.rs", "fn f2() {}\n");
+    git_commit(root, "feature work");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/45 into main", "feature"]);
+
+    std::fs::create_dir_all(root.join("sub")).expect("create sub/");
+    run(&["mv", "a.rs", "sub/a.rs"]);
+    git_commit(root, "move a.rs into sub");
+
+    run(&["checkout", "-b", "unmerged"]);
+    write_file(root, "u.rs", "fn u() {}\n");
+    git_commit(root, "feat(12): never merged");
+    let unmerged = rev_parse_head(root);
+    run(&["checkout", "main"]);
+
+    let main_shas = git_stdout(root, &["rev-list", "main"])
+        .lines()
+        .map(str::to_string)
+        .collect();
+    HistoryFixture { main_shas, unmerged }
+}
+
+/// Ask `plain` and `other` every question the snapshot can intercept, and
+/// assert identical answers.
+fn assert_history_answers_match(plain: &RealGitOps, other: &RealGitOps, fx: &HistoryFixture) {
+    let unknown = "0123456789abcdef0123456789abcdef01234567".to_string();
+    let abbreviated = fx.main_shas[0][..7].to_string();
+    let mut candidates = fx.main_shas.clone();
+    candidates.extend([fx.unmerged.clone(), unknown, abbreviated]);
+
+    for x in &candidates {
+        for branch in ["main", "feature"] {
+            assert_eq!(
+                other.is_ancestor(x, branch),
+                plain.is_ancestor(x, branch),
+                "is_ancestor({x}, {branch}) must answer as one merge-base call does",
+            );
+        }
+    }
+    for pattern in ["12", "123", "45", "999", "1.2"] {
+        assert_eq!(
+            other.try_log_grep("main", pattern),
+            plain.try_log_grep("main", pattern),
+            "try_log_grep(main, {pattern}) must list the same commits in the same order",
+        );
+    }
+    let mut commits = fx.main_shas.clone();
+    commits.push(fx.unmerged.clone());
+    for c in &commits {
+        assert_eq!(
+            other.changed_paths_in_commit(c),
+            plain.changed_paths_in_commit(c),
+            "changed_paths_in_commit({c}) must list the same paths in the same order",
+        );
+    }
+}
+
+/// Pin that a history-snapshot instance answers ancestry, message grep and
+/// per-commit changed paths exactly as one git call per question does,
+/// including every question the snapshot must decline: an unmerged or unknown
+/// commit, an abbreviated SHA, a branch other than the snapshot's, a
+/// non-alphanumeric grep pattern, and the root commit (no first parent).
+#[test]
+fn history_snapshot_answers_like_per_call_git() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+
+    let plain = RealGitOps::new(root);
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let renamed = plain.changed_paths_in_commit(&fx.main_shas[0]);
+    assert!(
+        renamed.contains(&"a.rs".to_string()) && renamed.contains(&"sub/a.rs".to_string()),
+        "fixture premise: the rename commit lists both sides; got {renamed:?}",
+    );
+    assert_eq!(
+        plain.changed_paths_in_commit(&merge),
+        vec!["f1.rs".to_string(), "f2.rs".to_string()],
+        "fixture premise: the merge's first-parent delta is the feature's two files",
+    );
+    assert_eq!(
+        plain.try_log_grep("main", "45").map(|hits| hits.len()),
+        Ok(2),
+        "fixture premise: 45 is named by the merge subject and one body only",
+    );
+
+    assert_history_answers_match(&plain, &snap, &fx);
+}
+
+/// Commit `late.rs` on the checked-out `main` with a subject naming 77, and
+/// return its SHA.
+fn land_late_commit(root: &std::path::Path) -> String {
+    write_file(root, "late.rs", "fn late() {}\n");
+    git_commit(root, "feat(77): landed after the snapshot");
+    rev_parse_head(root)
+}
+
+/// Pin that the snapshot is point-in-time: a commit landing on `main` after
+/// the snapshot answered is invisible to its grep, while ancestry for that
+/// commit still answers truthfully through the per-call fallback. This is the
+/// observable proof that the snapshot, not a fork, answered.
+///
+/// The changed-paths half is proved the same way from the other side: once
+/// that part is loaded, every later fork is made to fail, and the snapshot
+/// still answers.
+#[test]
+fn history_snapshot_is_point_in_time() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let merge_paths = RealGitOps::new(root).changed_paths_in_commit(&merge);
+
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(snap.try_log_grep("main", "77"), Ok(vec![]));
+    assert_eq!(snap.changed_paths_in_commit(&merge), merge_paths);
+    snap.fail_next_spawns(16);
+    assert_eq!(
+        snap.changed_paths_in_commit(&merge),
+        merge_paths,
+        "a loaded snapshot answers changed paths without forking",
+    );
+    assert_eq!(
+        snap.try_log_grep("main", "45").map(|hits| hits.len()),
+        Ok(2),
+        "a loaded snapshot answers a literal grep without forking",
+    );
+    snap.fail_next_spawns(0);
+
+    let late = land_late_commit(root);
+
+    let fresh = RealGitOps::new(root);
+    assert!(
+        fresh
+            .try_log_grep("main", "77")
+            .expect("fresh grep runs")
+            .iter()
+            .any(|c| c.sha == late),
+        "fixture premise: a fresh instance sees the late commit",
+    );
+    assert_eq!(
+        snap.try_log_grep("main", "77"),
+        Ok(vec![]),
+        "the snapshot answers from the history it read, not from the moved main",
+    );
+    assert!(
+        snap.is_ancestor(&late, "main"),
+        "a SHA the snapshot does not hold falls back to merge-base, which is truthful",
+    );
+}
+
+/// Pin that a snapshot of a branch git cannot log answers every question
+/// exactly as one git call per question does.
+#[test]
+fn history_snapshot_on_unusable_branch_falls_back() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+
+    let plain = RealGitOps::new(root);
+    let broken = RealGitOps::new(root).with_history_snapshot("no-such-branch");
+    assert_history_answers_match(&plain, &broken, &fx);
+}
+
+/// Pin that both dumps read the tip the snapshot resolved first: the
+/// changed-paths dump, loaded after `main` moved, still does not hold the late
+/// commit, so asking about it forks. The forks are made to fail, which makes
+/// the fork observable as an empty answer where a dump of the moved `main`
+/// would have answered `late.rs`.
+#[test]
+fn history_snapshot_dumps_read_one_tip() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(snap.try_log_grep("main", "77"), Ok(vec![]));
+    let late = land_late_commit(root);
+    assert_eq!(
+        snap.changed_paths_in_commit(&merge),
+        RealGitOps::new(root).changed_paths_in_commit(&merge),
+        "the changed-paths dump loads after main moved",
+    );
+    assert_eq!(
+        RealGitOps::new(root).changed_paths_in_commit(&late),
+        vec!["late.rs".to_string()],
+        "fixture premise: the late commit's own delta",
+    );
+
+    snap.fail_next_spawns(16);
+    assert_eq!(
+        snap.changed_paths_in_commit(&late),
+        Vec::<String>::new(),
+        "the late commit is past the snapshot's tip, so the question forked",
+    );
+}
+
+/// Pin that a snapshot of the very branch asked about answers exactly as one
+/// git call per question does when one of its loads fails: the tip, before
+/// anything else loaded, or the message dump, after the tip and the
+/// changed-paths dump loaded.
+///
+/// Each failure is injected as exactly the 3 spawn attempts
+/// `spawn_with_retry` makes for one git call, so the load fails and every
+/// fork after it runs. A failed load is recorded, not retried, so a later
+/// grep forks and sees a commit that landed after the tip. Were the attempt
+/// budget raised, the load would succeed and that last assertion reds rather
+/// than passing for the wrong reason.
+#[test]
+fn history_snapshot_load_failures_fall_back() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let plain = RealGitOps::new(root);
+
+    let no_tip = RealGitOps::new(root).with_history_snapshot("main");
+    no_tip.fail_next_spawns(3);
+    assert_history_answers_match(&plain, &no_tip, &fx);
+
+    let no_messages = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(
+        no_messages.changed_paths_in_commit(&merge),
+        plain.changed_paths_in_commit(&merge),
+        "the tip and the changed-paths dump load",
+    );
+    no_messages.fail_next_spawns(3);
+    assert_history_answers_match(&plain, &no_messages, &fx);
+
+    let late = land_late_commit(root);
+    for (name, snap) in [("no_tip", &no_tip), ("no_messages", &no_messages)] {
+        assert!(
+            snap.try_log_grep("main", "77")
+                .expect("the per-call grep runs")
+                .iter()
+                .any(|c| c.sha == late),
+            "{name}: after a failed load, grep forks and sees the moved main",
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// The batched gitignore probe answers exactly like one probe per path
+// -----------------------------------------------------------------------
+
+/// A repo whose committed `.gitignore` ignores `build/*.rs` but re-includes
+/// `build/keep.rs`, with a force-added tracked file under the ignored pattern
+/// (git never reports a tracked file as ignored), an untracked ignored file,
+/// an untracked plain file and a leading-dash file. Returns the paths to ask
+/// about, including two spellings git echoes back verbatim.
+fn gitignore_fixture(root: &std::path::Path) -> Vec<String> {
+    git_init(root);
+    write_file(root, ".gitignore", "build/*.rs\n!build/keep.rs\n");
+    write_file(root, "src/lib.rs", "fn lib() {}\n");
+    write_file(root, "build/tracked.rs", "fn tracked() {}\n");
+    git_run(root, &["add", ".gitignore", "src/lib.rs"]);
+    git_run(root, &["add", "-f", "build/tracked.rs"]);
+    git_run(root, &["commit", "-m", "base commit"]);
+    write_file(root, "build/gen.rs", "fn generated() {}\n");
+    write_file(root, "build/keep.rs", "fn keep() {}\n");
+    write_file(root, "notes.txt", "untracked\n");
+    write_file(root, "-weird", "leading dash\n");
+    [
+        "src/lib.rs",
+        "build/tracked.rs",
+        "build/gen.rs",
+        "build/keep.rs",
+        "notes.txt",
+        "-weird",
+        "./build/gen.rs",
+        "build/gen.rs",
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// Pin that one batched probe gives, path by path and in order, the answer a
+/// per-path probe gives.
+#[test]
+fn try_is_gitignored_each_answers_like_per_path_probes() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let paths = gitignore_fixture(root);
+
+    let per_path = RealGitOps::new(root);
+    let expected: Vec<Result<bool, String>> =
+        paths.iter().map(|p| per_path.try_is_gitignored(p)).collect();
+    assert_eq!(
+        expected,
+        [false, false, true, false, false, false, true, true].map(Ok).to_vec(),
+        "fixture premise: the per-path answers",
+    );
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&paths), expected);
+}
+
+/// Pin that a batch git refuses as a whole still answers path by path exactly
+/// as one probe per path does, latched breadcrumb budget included: every
+/// answer before the rejected path, then `Err` from it on.
+#[test]
+fn try_is_gitignored_each_falls_back_when_git_rejects_a_path() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut paths = gitignore_fixture(root);
+    paths.insert(3, "../outside".to_string());
+
+    let per_path = RealGitOps::new(root);
+    let expected: Vec<Result<bool, String>> =
+        paths.iter().map(|p| per_path.try_is_gitignored(p)).collect();
+    assert!(
+        expected[3].is_err() && expected[2] == Ok(true),
+        "fixture premise: git answers before the rejected path and not at it; got {expected:?}",
+    );
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&paths), expected);
+}
+
+/// Pin that no paths ask nothing.
+#[test]
+fn try_is_gitignored_each_of_no_paths_is_empty() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    gitignore_fixture(root);
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&[]), vec![]);
+}
+
+// -----------------------------------------------------------------------
+// The H1 prefilter's union diff is a superset of every per-path diff
+// -----------------------------------------------------------------------
+
+/// Pin the property the H1 prefilter rests on: every `+` line a per-path
+/// `diff_added_lines_in_commit(M, p)` returns is a `+` line of the one
+/// `--no-renames` diff over all declared paths. That includes a rename INSIDE
+/// a declared directory, which the per-path diff pairs and the union renders
+/// as a whole-file add, and a deletion, which adds nothing.
+#[test]
+fn no_renames_union_is_a_superset_of_each_per_path_diff() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+    git_init(root);
+
+    let body: String = (1..=10).map(|i| format!("fn kept_{i}() {{}}\n")).collect();
+    write_file(root, "tests/a.rs", "fn a() {}\n");
+    write_file(root, "tests/dir/old.rs", &body);
+    write_file(root, "tests/gone.rs", "fn gone() {}\n");
+    git_commit(root, "base commit");
+
+    run(&["checkout", "-b", "feature"]);
+    write_file(root, "tests/a.rs", "fn a() {}\nfn a_added() {}\n");
+    write_file(root, "tests/new.rs", "fn brand_new() {}\n");
+    run(&["mv", "tests/dir/old.rs", "tests/dir/moved.rs"]);
+    write_file(root, "tests/dir/moved.rs", &format!("{body}fn moved_extra() {{}}\n"));
+    run(&["rm", "-q", "tests/gone.rs"]);
+    git_commit(root, "feature work");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feature into main", "feature"]);
+    let merge = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+    let paths: Vec<String> = ["tests/a.rs", "tests/new.rs", "tests/dir", "tests/gone.rs"]
+        .map(str::to_string)
+        .to_vec();
+    let union: Vec<String> = git
+        .try_added_lines_in_commit_superset(&merge, &paths)
+        .expect("the union diff runs")
+        .into_iter()
+        .map(|(_, content)| content)
+        .collect();
+
+    let mut per_path_total = 0;
+    for p in &paths {
+        for (_, content) in git.diff_added_lines_in_commit(&merge, p) {
+            per_path_total += 1;
+            assert!(
+                union.contains(&content),
+                "{content:?} from the per-path diff of {p} is missing from the union {union:?}",
+            );
+        }
+    }
+    assert!(
+        git.diff_added_lines_in_commit(&merge, "tests/dir")
+            .iter()
+            .any(|(_, c)| c == "fn moved_extra() {}"),
+        "fixture premise: the per-path diff pairs the rename and adds only its new line",
+    );
+    assert!(per_path_total >= 3, "fixture premise: the per-path diffs add lines");
+
+    assert!(
+        git.try_added_lines_in_commit_superset(
+            "0123456789abcdef0123456789abcdef01234567",
+            &paths,
+        )
+        .is_err(),
+        "an unknown commit is an unanswered question, not an empty diff",
     );
 }

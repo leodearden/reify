@@ -1,0 +1,16 @@
+// enum-shadow-coherence.md fixture: obligation collision, REDECLARED member (R1).
+// Local `enum Appearance` shadows prelude `structure def Appearance`
+// (std.materials.appearance); trait Visual's defaulted obligation
+// `appearance : Appearance` refers to the prelude structure.
+// Pre-#5429 (merge-base 5df2f9f1f1): exit 0 + Warning TypeNotConformingToStructureRef.
+// Post-#5429 (main after bc8f74a4d4): hard Error TypeMismatchForTraitMember
+//   "expected Appearance, got Enum(Appearance)" (probe 2026-08-19/20).
+// Target (task gamma): exactly one obligation Error naming trait Visual,
+// std.materials.appearance, and labelling the local enum declaration.
+module shadow_oblig_redeclared
+
+enum Appearance { Matte, Glossy }
+
+structure def Widget : Visual {
+    param appearance : Appearance = Appearance.Matte
+}

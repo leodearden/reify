@@ -76,13 +76,14 @@ structure AnisotropicBar {
         density_provenance:     prov,
     )
     // MaterialFrame: weak axial (z_axis) aligned with global x (beam length).
-    // rotate_voigt normalises each axis to unit magnitude so the Length unit is
-    // observationally irrelevant; 1m canonical per constitutive.ri §MaterialFrame.
+    // The axes are dimensionless directions and MUST be supplied unit: nothing
+    // normalises them, and D_global is homogeneous of degree 4 in the frame
+    // entries, so a non-unit frame silently rescales the stiffness.
     let ti_frame = MaterialFrame(
         origin: point3(0m, 0m, 0m),
-        x_axis: vec3(0m, 1m, 0m),   // in-plane dir 1 (y-global)
-        y_axis: vec3(0m, 0m, 1m),   // in-plane dir 2 (z-global)
-        z_axis: vec3(1m, 0m, 0m),   // weak axial dir along beam length (x-global)
+        x_axis: vec3(0, 1, 0),      // in-plane dir 1 (y-global)
+        y_axis: vec3(0, 0, 1),      // in-plane dir 2 (z-global)
+        z_axis: vec3(1, 0, 0),      // weak axial dir along beam length (x-global)
     )
     let ti_result = solve_elastic_static(
         ti_material, length, width, height, [tip_load], [mount], ElasticOptions()

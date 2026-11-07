@@ -1,0 +1,39 @@
+module solver_unification_tangent_silent_accept
+// PRD evidence — docs/prds/v0_6/geometry-algebra-solver-unification.md §2.4, signals B1/B2.
+//
+// MEASURED ON MAIN 2128c3692c (2026-08-26): `reify check`, `reify eval` and
+// `reify build` ALL exit 0 on this file, `check` prints "All constraints
+// satisfied." with EMPTY stderr, and `__auto_pose` is emitted as the identity
+// frame. All six pose DOF of `pin` are unconstrained.
+//
+// WHY: `tangent` is in RELATION_FN_NAMES and types as Relation publishing
+// codim 2, but `residual_dispatch` (crates/reify-constraints/src/relate_solve.rs)
+// routes it to the `_ => Vec::new()` catch-all. A zero-row relation is not
+// refused, it is ABSORBED: `relation_jacobian` yields no rows,
+// `partition_driving_set` scores rank_contribution 0 and files it under
+// `redundant`, and `max_relation_residual` then verifies it as 0.0 <= assertion.
+//
+// AFTER leaf beta of the PRD this file must exit NONZERO with
+// E_RELATION_NOT_LOWERABLE naming the relation and both operand kinds.
+// This fixture is the regression pin for "a confident wrong answer".
+pub structure UnifPin {
+    let pin = cylinder(3mm, 20mm)
+    let pin_axis : Axis = pin.axis
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}
+pub structure UnifHost {
+    let body = box(40mm, 40mm, 5mm)
+    let bore = translate(cylinder(3.2mm, 5mm), 15mm, 0mm, 0mm)
+    let bore_axis : Axis = bore.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+}
+pub structure SolverUnificationTangentSilentAccept {
+    sub pin : UnifPin at auto
+    sub host : UnifHost
+    relate {
+        tangent(pin.pin_axis, host.bore_axis)
+        tangent(pin.seat_plane, host.top_plane)
+    }
+}

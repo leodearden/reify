@@ -4253,6 +4253,7 @@ dependencies = [
  "reify-core",
  "serde",
  "serde_json",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4260,27 +4261,45 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-git-env",
+ "reify-syntax",
  "reify-test-support",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "ureq",
+ "workspace-feature-union",
 ]
 
 [[package]]
 name = "reify-build-utils"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
+ "serde",
+ "syn 2.0.117",
  "tempfile",
+ "toml 0.8.2",
+]
+
+[[package]]
+name = "reify-builtins"
+version = "0.1.0"
+dependencies = [
+ "reify-core",
+ "strum 0.26.3",
+ "workspace-feature-union",
 ]
 
 [[package]]
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reify-build-utils",
  "reify-compiler",
+ "reify-compute-contract",
  "reify-config",
  "reify-constraints",
  "reify-core",
@@ -4293,7 +4312,6 @@ dependencies = [
  "reify-kernel-occt",
  "reify-kernel-openvdb",
  "reify-lsp",
- "reify-mcp",
  "reify-mesh-morph",
  "reify-runtime",
  "reify-stdlib",
@@ -4304,6 +4322,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4312,18 +4331,23 @@ version = "0.1.0"
 dependencies = [
  "indexmap 2.14.0",
  "reify-ast",
+ "reify-builtins",
  "reify-compiler",
  "reify-config",
+ "reify-constraints",
  "reify-core",
  "reify-eval",
  "reify-expr",
+ "reify-git-env",
  "reify-ir",
+ "reify-mcp",
  "reify-syntax",
  "reify-test-support",
  "stacker",
  "strum 0.26.3",
  "tempfile",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4336,6 +4360,7 @@ dependencies = [
  "reify-ir",
  "reify-solver-elastic",
  "serde",
+ "workspace-feature-union",
  "zstd",
 ]
 
@@ -4354,6 +4379,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml 0.8.2",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4368,9 +4394,9 @@ dependencies = [
  "reify-core",
  "reify-expr",
  "reify-ir",
- "reify-stdlib",
  "reify-test-support",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4380,6 +4406,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.26.3",
+ "workspace-feature-union",
  "xxhash-rust",
 ]
 
@@ -4390,6 +4417,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4405,6 +4433,7 @@ dependencies = [
  "reify-test-support",
  "serde",
  "serde_json",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4417,6 +4446,7 @@ dependencies = [
  "inventory",
  "reify-ast",
  "reify-build-utils",
+ "reify-builtins",
  "reify-compiler",
  "reify-compute-contract",
  "reify-config",
@@ -4442,10 +4472,12 @@ dependencies = [
  "reify-test-support",
  "rustc-hash",
  "serde",
+ "serde_json",
  "strum 0.26.3",
  "tempfile",
  "tokio",
  "tracing",
+ "workspace-feature-union",
  "xxhash-rust",
  "zstd",
 ]
@@ -4455,14 +4487,17 @@ name = "reify-eval-fea-tests"
 version = "0.1.0"
 dependencies = [
  "reify-compiler",
+ "reify-compute-contract",
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
  "tempfile",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4477,6 +4512,7 @@ dependencies = [
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4486,18 +4522,33 @@ dependencies = [
  "libc",
  "reify-gcode",
  "tempfile",
+ "workspace-feature-union",
 ]
 
 [[package]]
 name = "reify-gcode"
 version = "0.1.0"
+dependencies = [
+ "workspace-feature-union",
+]
 
 [[package]]
 name = "reify-geometry"
 version = "0.1.0"
 dependencies = [
+ "reify-core",
  "reify-ir",
  "reify-test-support",
+ "syn 2.0.117",
+ "workspace-feature-union",
+]
+
+[[package]]
+name = "reify-git-env"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4505,6 +4556,7 @@ name = "reify-gui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "notify",
  "reify-ast",
  "reify-build-utils",
@@ -4516,6 +4568,7 @@ dependencies = [
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-mesh-morph",
@@ -4532,6 +4585,7 @@ dependencies = [
  "tokio",
  "tower-lsp",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4544,6 +4598,7 @@ dependencies = [
  "reify-core",
  "serde_json",
  "strum 0.26.3",
+ "workspace-feature-union",
  "xxhash-rust",
  "zip",
 ]
@@ -4556,9 +4611,13 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-kernel-conformance",
+ "reify-kernel-fidget",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
+ "strum 0.26.3",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4571,6 +4630,8 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-test-support",
+ "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4585,6 +4646,7 @@ dependencies = [
  "reify-kernel-gmsh",
  "reify-test-support",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4599,6 +4661,7 @@ dependencies = [
  "reify-kernel-manifold",
  "reify-test-support",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4619,6 +4682,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4637,6 +4701,7 @@ dependencies = [
  "reify-kernel-openvdb",
  "reify-test-support",
  "tempfile",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4656,6 +4721,7 @@ dependencies = [
  "tokio",
  "tower-lsp",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4668,21 +4734,25 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "workspace-feature-union",
 ]
 
 [[package]]
 name = "reify-mesh-morph"
 version = "0.1.0"
 dependencies = [
+ "reify-build-utils",
  "reify-compiler",
  "reify-core",
  "reify-eval",
  "reify-ir",
+ "reify-kernel-gmsh",
  "reify-solver-elastic",
  "reify-test-support",
  "serde",
  "serde_json",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4700,6 +4770,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4712,6 +4783,7 @@ dependencies = [
  "reify-ir",
  "rustc-hash",
  "serde",
+ "workspace-feature-union",
  "zstd",
 ]
 
@@ -4724,8 +4796,17 @@ dependencies = [
  "reify-build-utils",
  "reify-ir",
  "reify-kernel-gmsh",
+ "reify-solver-elastic",
  "reify-test-support",
  "tracing",
+ "workspace-feature-union",
+]
+
+[[package]]
+name = "reify-spec-conformance"
+version = "0.1.0"
+dependencies = [
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4734,11 +4815,14 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "nalgebra",
+ "reify-builtins",
  "reify-core",
  "reify-gcode",
  "reify-ir",
+ "reify-stdlib",
  "reify-test-support",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4747,9 +4831,11 @@ version = "0.1.0"
 dependencies = [
  "reify-ast",
  "reify-core",
+ "reify-git-env",
  "reify-test-support",
  "tree-sitter",
  "tree-sitter-reify",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -4761,11 +4847,14 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
+ "reify-git-env",
  "reify-ir",
  "reify-syntax",
  "serde_json",
  "tempfile",
  "tracing",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -6336,6 +6425,7 @@ dependencies = [
  "tempfile",
  "tree-sitter",
  "tree-sitter-language",
+ "workspace-feature-union",
 ]
 
 [[package]]
@@ -7458,6 +7548,47 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workspace-feature-union"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "bytemuck",
+ "cc",
+ "crossbeam-utils",
+ "fastrand",
+ "foldhash 0.2.0",
+ "futures-channel",
+ "futures-util",
+ "getrandom 0.4.2",
+ "hashbrown 0.14.5",
+ "hashbrown 0.17.1",
+ "libc",
+ "matrixmultiply",
+ "memchr",
+ "nalgebra",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "once_cell",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "rand_core 0.6.4",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "smallvec 1.15.1",
+ "syn 2.0.117",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zerocopy",
 ]
 
 [[package]]

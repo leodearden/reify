@@ -272,3 +272,160 @@ fn stdlib_strain_alias_resolves_to_dimensionless() {
         "param `elongation : Strain` must resolve to Type:: Scalar<Real> via stdlib prelude alias"
     );
 }
+
+/// Acceptance test (task 6092): `pub type Pressure2 = Pressure * Pressure` and
+/// `pub type Pressure3 = Pressure2 * Pressure` in `units.ri` must be visible in
+/// user modules compiled with the stdlib prelude, and must resolve to EXACTLY
+/// PRESSURE² / PRESSURE³.
+///
+/// These aliases exist so `std.fea`'s `StressInvariants` fields can carry the
+/// dimensions the `stress_invariants` builtin already emits. The expected
+/// dimensions are derived here with `DimensionVector::mul` the same way the
+/// producer derives the real ones (`crates/reify-stdlib/src/analysis.rs`:
+/// `let dim2 = dim.mul(&dim); let dim3 = dim2.mul(&dim);`) rather than being
+/// hardcoded exponent literals, so the test and the runtime cannot silently
+/// disagree about what "PRESSURE squared" means.
+///
+/// `Pressure3` chains through `Pressure2` — this also pins that the transitive
+/// alias path (alias RHS naming another alias) resolves without precision loss.
+#[test]
+fn stdlib_pressure_power_aliases_resolve_to_squared_and_cubed_pressure() {
+    let source = r#"
+structure def PressurePowers {
+    param a : Pressure
+    param b : Pressure2
+    param c : Pressure3
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "structure with `Pressure`/`Pressure2`/`Pressure3` params must compile clean \
+         with stdlib; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "PressurePowers")
+        .expect("template `PressurePowers` not found in compiled module");
+
+    let find_cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| panic!("value cell `{}` not found on `PressurePowers`", member))
+            .cell_type
+            .clone()
+    };
+
+    let p1 = DimensionVector::PRESSURE;
+    let p2 = p1.mul(&DimensionVector::PRESSURE);
+    let p3 = p2.mul(&DimensionVector::PRESSURE);
+
+    assert_eq!(
+        find_cell_type("a"),
+        Type::Scalar { dimension: p1 },
+        "param `a : Pressure` must resolve to Type::Scalar<PRESSURE>"
+    );
+    assert_eq!(
+        find_cell_type("b"),
+        Type::Scalar { dimension: p2 },
+        "param `b : Pressure2` must resolve to Type::Scalar<PRESSURE²> \
+         (= DimensionVector::PRESSURE.mul(&PRESSURE))"
+    );
+    assert_eq!(
+        find_cell_type("c"),
+        Type::Scalar { dimension: p3 },
+        "param `c : Pressure3` must resolve to Type::Scalar<PRESSURE³> via the \
+         transitive alias chain Pressure3 -> Pressure2 * Pressure"
+    );
+}
+
+/// Acceptance test (task 6092), compile side: the three `StressInvariants`
+/// fields must be ACCEPTED where a `Pressure` / `Pressure2` / `Pressure3` is
+/// demanded.
+///
+/// The `fn` params are the load-bearing part. Overload resolution is what makes
+/// the declared field type observable: while the fields were typed `Real`, this
+/// fixture failed with `no matching overload for takes_p3(Real), candidates:
+/// takes_p3(Scalar[kg^3·m^-3·s^-6])`. So the test cannot pass by accident —
+/// it can only pass once `fea.ri` declares the dimensions the runtime already
+/// produces.
+///
+/// Expected dimensions are `.mul()`-derived, matching the producer, exactly as
+/// in `stdlib_pressure_power_aliases_resolve_to_squared_and_cubed_pressure`.
+#[test]
+fn stress_invariants_fields_accepted_at_pressure_power_fn_params() {
+    let source = r#"
+fn takes_p(p : Pressure) -> Pressure { p }
+fn takes_p2(p : Pressure2) -> Pressure2 { p }
+fn takes_p3(p : Pressure3) -> Pressure3 { p }
+
+structure def InvariantTyping {
+    param sigma : Tensor<2, 3, Pressure>
+
+    let inv = stress_invariants(sigma)
+    let a   = takes_p(inv.i1)
+    let b   = takes_p2(inv.i2)
+    let c   = takes_p3(inv.i3)
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "StressInvariants fields must be accepted at Pressure/Pressure2/Pressure3 \
+         fn params; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "InvariantTyping")
+        .expect("template `InvariantTyping` not found in compiled module");
+
+    let find_cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| panic!("value cell `{}` not found on `InvariantTyping`", member))
+            .cell_type
+            .clone()
+    };
+
+    let p1 = DimensionVector::PRESSURE;
+    let p2 = p1.mul(&DimensionVector::PRESSURE);
+    let p3 = p2.mul(&DimensionVector::PRESSURE);
+
+    assert_eq!(
+        find_cell_type("a"),
+        Type::Scalar { dimension: p1 },
+        "takes_p(inv.i1) must resolve to Type::Scalar<PRESSURE>"
+    );
+    assert_eq!(
+        find_cell_type("b"),
+        Type::Scalar { dimension: p2 },
+        "takes_p2(inv.i2) must resolve to Type::Scalar<PRESSURE²>"
+    );
+    assert_eq!(
+        find_cell_type("c"),
+        Type::Scalar { dimension: p3 },
+        "takes_p3(inv.i3) must resolve to Type::Scalar<PRESSURE³>"
+    );
+}

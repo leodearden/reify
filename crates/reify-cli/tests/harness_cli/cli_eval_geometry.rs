@@ -207,6 +207,153 @@ fn eval_pattern_arbitrary_transforms_honors_rotation() {
     );
 }
 
+/// End-to-end CLI regression for task 5208: curated 3-arg
+/// `fillet(solid, <edge selector>, r)` must be reachable through the **production
+/// `.ri` pipeline** — the literal `reify eval` entry point a designer types.
+///
+/// Before task 5208 the capability was a phantom: the producers (3205 fillet
+/// field / 4360 in-loop dispatch / 4362 UnifiedDag default) had landed and the
+/// in-process e2e passed, but every passing test drove a FLAT
+/// `let b = box(); let e = edges_at_height(b, …); let f = fillet(b, e, 2mm)`
+/// program with a *named-let* selector. The shapes a designer actually writes —
+/// an **inline** selector expression in the fillet call — died at build time with
+/// `error: … [edge selector evaluated to Undef]`, cascading into
+/// `unresolvable GeomRef::Sub(<name>)` for any downstream consumer, so
+/// `reify eval` exited FAILURE with a wall of geometry-op errors and no mass.
+///
+/// `examples/topology_selectors/bottom_deck_selectors.ri` (task 5208 prereq-1)
+/// exercises all three previously-broken shapes in one designer-authored file:
+///   1. three blank-box `let`s filleted via an inline `edges_parallel_to` on that
+///      same `let` (the plan-view vertical corners),
+///   2. curated fillets applied to a boolean-composed (`difference`) body, and
+///   3. four CHAINED curated fillets, each stage a named `let` referencing the
+///      prior via an inline `edges_at_height`.
+///
+/// The structure conforms to `Physical`, so a clean build surfaces
+/// `mass = volume(geometry) * material.density` over the final filleted body —
+/// the observable designer signal this test pins.
+///
+/// Exit status and the stderr guards are asserted unconditionally (a clean file
+/// must exit 0 whether or not OCCT is compiled in — without OCCT the curated
+/// fillet is simply not dispatched, it must not *error*). The mass assertions are
+/// gated on `reify_kernel_occt::OCCT_AVAILABLE`, mirroring
+/// `eval_spec_shape_physical_surfaces_mass_and_centroid` above.
+///
+/// Scope note (no lockstep duplication): the strict *directional* geometric
+/// invariant for this example — filleted volume strictly less than the un-filleted
+/// blank — is pinned in-process by
+/// `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`. This CLI test
+/// deliberately pins only what is unique to the CLI surface: the process exits 0,
+/// stderr carries no geometry-op error, and `mass` reaches stdout as a real
+/// positive `Scalar<Mass>` rather than `undef`.
+///
+/// RED (pre-fix, verified on this example at HEAD~ of the seam fix): `reify eval`
+/// exited FAILURE with six `failed to compile geometry operation` /
+/// `curated edge selection …` errors and `mass = undef`.
+#[test]
+fn eval_bottom_deck_selectors_curated_fillets_build_clean() {
+    let path = common::example_path("topology_selectors/bottom_deck_selectors.ri");
+
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    // Exit 0 unconditionally — a clean file with no Error diagnostics.
+    assert!(
+        status.success(),
+        "reify eval topology_selectors/bottom_deck_selectors.ri should exit 0 — curated 3-arg \
+         fillet must be reachable through the production .ri pipeline (task 5208).\
+         \nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // No Error-severity diagnostic reached the designer. cmd_eval renders each
+    // diagnostic as "<severity>: <message>" on stderr (Severity::Error Displays
+    // lowercase "error"), so an Error diagnostic is exactly an "error:" line.
+    // Warnings (e.g. "topology correspondence dropped") are expected and allowed.
+    let error_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.trim_start().to_ascii_lowercase().starts_with("error:"))
+        .collect();
+    assert!(
+        error_lines.is_empty(),
+        "reify eval produced Error diagnostics for a program whose curated fillets must all \
+         resolve.\nerror lines: {error_lines:#?}\nstderr: {stderr}"
+    );
+
+    // The two specific pre-5208 failure signatures must be absent. The second
+    // substring is deliberately the stable prefix "curated edge selection" rather
+    // than the full legacy sentence ("… is not yet available on the current
+    // build …"), so this guard survives the step-14 reword of that diagnostic
+    // into an actionable message.
+    for signature in [
+        "failed to compile geometry operation",
+        "curated edge selection",
+    ] {
+        assert!(
+            !stderr.contains(signature),
+            "reify eval stderr must not contain {signature:?} — the curated fillets in \
+             bottom_deck_selectors.ri must all resolve.\nstderr: {stderr}"
+        );
+    }
+
+    // Geometry/mass assertions only when the OCCT kernel is compiled in.
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping mass assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // Expect a line like "BottomDeckSelectors.mass = 1.514227852007 kg".
+    let mass_line = stdout
+        .lines()
+        .find(|l| l.contains("BottomDeckSelectors.mass"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a 'BottomDeckSelectors.mass' line in stdout.\nstdout: {stdout}\nstderr: {stderr}"
+            )
+        });
+
+    let mass_rhs = mass_line
+        .split_once('=')
+        .map(|(_, rhs)| rhs.trim())
+        .unwrap_or_else(|| panic!("BottomDeckSelectors.mass line has no '=': {mass_line}"));
+
+    assert_ne!(
+        mass_rhs, "undef",
+        "BottomDeckSelectors.mass must not be undef — the final curated fillet must produce a \
+         real solid for volume() to measure.\nline: {mass_line}"
+    );
+
+    assert!(
+        mass_rhs.contains("kg"),
+        "BottomDeckSelectors.mass RHS must contain 'kg' (MASS dimension).\nline: {mass_line}"
+    );
+
+    let numeric_token = mass_rhs.split_whitespace().next().unwrap_or("");
+    let mass_kg: f64 = numeric_token.parse().unwrap_or_else(|_| {
+        panic!(
+            "could not parse BottomDeckSelectors.mass numeric token as f64: {numeric_token:?}\nline: {mass_line}"
+        )
+    });
+
+    assert!(
+        mass_kg.is_finite() && mass_kg > 0.0,
+        "BottomDeckSelectors.mass = {mass_kg} kg must be finite and strictly positive.\nline: {mass_line}"
+    );
+
+    // Sanity band. The hollowed shell measures ≈1.207e-3 m³ before corner
+    // rounding; × 1270 kg·m⁻³ (PETG) ≈ 1.53 kg, and the seven fillets remove a
+    // little more (measured 1.514 kg). The band is wide enough to absorb OCCT
+    // version-to-version fillet jitter while still catching a gross regression
+    // (e.g. a cut silently dropped, or the whole shell collapsing to the blank
+    // 0.48×0.26×0.08 m box at ≈12.7 kg).
+    assert!(
+        (1.35..=1.65).contains(&mass_kg),
+        "BottomDeckSelectors.mass = {mass_kg} kg is outside the expected band [1.35, 1.65] kg \
+         for the seven-fillet hollowed deck.\nline: {mass_line}"
+    );
+}
+
 /// Back-compat guard (CLI level): task 4168 additively wired a LIST form into
 /// `arbitrary_pattern` alongside the existing scalar-triple (translation-only)
 /// form; this guards that the triple form did not regress into a *crash* under
@@ -252,5 +399,54 @@ fn eval_pattern_composition_triple_form_does_not_crash() {
         !stderr.contains("panicked at"),
         "reify eval pattern_composition.ri panicked — the triple form must not \
          panic under the additive list-form wiring.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// Task #7270: the shipped flat_map-over-lambda topology walk resolves its
+/// curated fillet edges on every CLI surface. Pre-fix, `check`, `eval` and
+/// `build` each exited 1 with "the edge selector did not resolve to a concrete
+/// edge list … [edge selector evaluated to Undef]".
+#[test]
+fn fillet_top_edges_example_check_eval_build_exit_clean() {
+    let path = common::example_path("topology_selectors/fillet_top_edges.ri");
+    let mut eval_stdout = String::new();
+    for subcommand in ["check", "eval"] {
+        let (status, stdout, stderr) = common::run_subcommand(subcommand, &path);
+        let has_error_line = stderr
+            .lines()
+            .any(|l| l.trim_start().to_ascii_lowercase().starts_with("error:"));
+        assert!(
+            status.success()
+                && !has_error_line
+                && !stderr.contains("did not resolve to a concrete edge list"),
+            "reify {subcommand} fillet_top_edges.ri must exit 0 with no error line.\
+             \nstdout: {stdout}\nstderr: {stderr}"
+        );
+        eval_stdout = stdout;
+    }
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping top_edges/build assertions: OCCT unavailable");
+        return;
+    }
+    let top_edges_rhs = eval_stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("FilletTopEdges.top_edges ="))
+        .unwrap_or_else(|| panic!("no FilletTopEdges.top_edges line.\nstdout: {eval_stdout}"))
+        .trim();
+    assert!(
+        top_edges_rhs.starts_with('[') && top_edges_rhs.matches("<Geometry:").count() == 4,
+        "FilletTopEdges.top_edges must resolve to a list of the box's four top-perimeter \
+         edge handles, got {top_edges_rhs:?}"
+    );
+
+    let built = common::run_build_at(&path);
+    let written = std::fs::metadata(&built.output_path).map_or(0, |m| m.len());
+    assert!(
+        built.status.success() && written > 0,
+        "reify build fillet_top_edges.ri must exit 0 and write a non-empty file \
+         ({written} bytes).\nstdout: {}\nstderr: {}",
+        built.stdout,
+        built.stderr
     );
 }

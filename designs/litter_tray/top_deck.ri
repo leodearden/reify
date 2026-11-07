@@ -1,32 +1,36 @@
 module top_deck
 
-// Two-deck cat litter tray — TOP DECK (sieve tray), first cut.
+// Two-deck cat litter tray — TOP DECK (sieve tray), v2 (round 3, 2026-09-03).
 //
 // Function: holds the fresh compressed-wood pellets (Ø6mm). Cats use it;
 // shaking the deck drops urine-spent sawdust through the Ø3mm sieve floor
 // into the bottom deck while intact pellets and faeces stay on top.
 //
-// Interface (matches bottom_deck_split.ri as built): drops recess_depth=15mm
-// into the bottom deck's rim recess (opening 475.2 x 255.2, corner r 22.6,
-// upper_wall 2.4); the wall/floor perimeter ring bears on the 5mm ledge seat.
-// fit_clearance 0.4mm/side => outer 474.4 x 254.4, corner r 22.2.
+// Interface (matches bottom_deck.ri / bottom_deck_split.ri): drops
+// recess_depth=15mm into the bottom deck's rim recess (opening 475.2 x 255.2,
+// corner r 22.6, upper_wall 2.4); the wall/floor perimeter ring bears on the
+// 5mm ledge seat. fit_clearance 0.4mm/side => outer 474.4 x 254.4, corner r 22.2.
 //
 // Sieve: Ø3mm holes on a 5mm hex pitch (two interleaved rectangular grids,
-// rows staggered by pitch/2 and pitch*0.866) — ~4,600 holes, ~33% open area
+// rows staggered by pitch/2 and pitch*0.866) — 4,602 holes, ~33% open area
 // in the field. Solid features in the field:
 //   - 12mm solid margin ring (floor-wall fillet zone + strength ring)
-//   - two Ø26 solid pads at x = ±120 (bearing spots for optional mid-span
-//     pedestals rising from the bottom deck floor — proposed, not yet added
-//     to the bottom deck; also the wear spots when shaking)
+//   - two Ø26 solid pads at x = ±120 (bearing spots for the bottom deck's
+//     mid-span pedestals; also the wear spots when shaking)
 //
 // Ergonomics: hand slots (60 x 22, rounded ends) through both end walls in
 // the proud zone above the bottom-deck rim, for lifting and shaking.
 //
+// v2 construction (selector-driven, as bottom_deck.ri v3): box blanks with
+// `edges_parallel_to` corner fillets; rim / floor-junction / base softened by
+// `edges_at_height` fillets on the composed shell BEFORE the sieve is punched
+// (a height selector at floor level would otherwise pick up every hole rim).
+// NOT `rounded_box` — its lowering breaks height-selected fillets (round-3
+// finding). Intermediates are `aux let` (hidden by default).
+//
 // Printing (Snapmaker U1): floor-down, holes print cleanly, no supports.
-// Full tray exceeds the bed in X — same two-part split as the bottom deck
-// (pinwheel scarf through the SOLID seam margin; split file is a follow-up).
-// Cat-load stiffness: 5mm perforated floor + (proposed) pedestal support at
-// the pads; end-wall slots leave a 9mm web below the rim.
+// Full tray exceeds the bed in X — two-part split in top_deck_split.ri
+// (pinwheel scarf through a SOLID seam strip, glue-only, internal tabs).
 
 structure def TopDeck : Rigid {
     // ── Interface to the bottom deck ────────────────────────────────────
@@ -39,8 +43,9 @@ structure def TopDeck : Rigid {
     param wall_t       : Length = 2.4mm
     param floor_t      : Length = 5mm       // perforated floor: stiffness matters
     param deck_height  : Length = 60mm      // 15 in the recess + 45 proud
-    param edge_fillet  : Length = 1.5mm     // rim + base softening
+    param rim_fillet   : Length = 1mm       // both rim edges (rim is wall_t wide)
     param floor_fillet : Length = 4mm       // interior floor-wall junction
+    param base_fillet  : Length = 1.5mm     // outer base perimeter (bearing ring edge)
 
     // ── Sieve field ─────────────────────────────────────────────────────
     param hole_d     : Length = 3mm         // sawdust passes, Ø6 pellets don't
@@ -95,61 +100,54 @@ structure def TopDeck : Rigid {
     constraint slot_z - slot_h / 2 > 15mm + 5mm            // slot above bottom rim
     constraint slot_z + slot_h / 2 <= deck_height - 8mm    // web below the rim
     constraint floor_t >= 4mm                              // cat-load stiffness
+    constraint 2 * rim_fillet < wall_t                     // both rim edges filleted
+    constraint base_fillet < floor_t
+    constraint base_fillet + 2mm < 5mm - fit_clearance     // bearing ring survives on the 5mm seat
 
     // ── Geometry ────────────────────────────────────────────────────────
-    let cx = outer_length / 2 - corner_r
-    let cy = outer_width / 2 - corner_r
     let cav_r = corner_r - wall_t
     let end_x = outer_length / 2                           // end-wall mid-plane
     let slot_flat = slot_w - slot_h                        // straight part of slot
+    let up = vec3(0.0, 0.0, 1.0)
 
-    // tray shell (rounded prism minus rounded cavity, as bottom_deck.ri)
-    // → punch grid A → punch grid B → union pedestal pads → cut hand slots
-    param geometry : Solid = difference(union_all(
-        difference(
-            difference(
-                // outer rounded prism
-                fillet(union_all(
-                    translate(box(outer_length - 2 * corner_r, outer_width, deck_height), 0mm, 0mm, deck_height / 2),
-                    translate(box(outer_length, outer_width - 2 * corner_r, deck_height), 0mm, 0mm, deck_height / 2),
-                    translate(cylinder(corner_r, deck_height), cx, cy, 0mm),
-                    translate(cylinder(corner_r, deck_height), -cx, cy, 0mm),
-                    translate(cylinder(corner_r, deck_height), -cx, -cy, 0mm),
-                    translate(cylinder(corner_r, deck_height), cx, -cy, 0mm)
-                ), edge_fillet),
-                // interior cavity above the floor
-                fillet(union_all(
-                    translate(box(inner_length - 2 * cav_r, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2),
-                    translate(box(inner_length, inner_width - 2 * cav_r, deck_height), 0mm, 0mm, floor_t + deck_height / 2),
-                    translate(cylinder(cav_r, deck_height), cx, cy, floor_t),
-                    translate(cylinder(cav_r, deck_height), -cx, cy, floor_t),
-                    translate(cylinder(cav_r, deck_height), -cx, -cy, floor_t),
-                    translate(cylinder(cav_r, deck_height), cx, -cy, floor_t)
-                ), floor_fillet)
-            ),
-            // sieve field: two interleaved grids = hex packing.
-            // Spacings MUST carry units (hole_pitch / 2*row_step): a bare
-            // number here is read as SI metres, silently scattering every
-            // instance after the first ~5m apart — see task #5318.
-            union_all(
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step),
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
-            )
-        ),
-        // solid pedestal/wear pads (re-plug the punched holes)
+    // Shell: rounded prism minus rounded cavity above the floor.
+    aux let outer_blank = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)
+    aux let outer       = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_r)
+    aux let cav_blank   = translate(box(inner_length, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2)
+    aux let cav_cut     = fillet(cav_blank, edges_parallel_to(cav_blank, up, 1deg), cav_r)
+    aux let shell       = difference(outer, cav_cut)
+
+    // Soften rim, floor junction, base — BEFORE the sieve is punched.
+    aux let rim_soft   = fillet(shell,      edges_at_height(shell,      deck_height, 0.5mm), rim_fillet)
+    aux let floor_soft = fillet(rim_soft,   edges_at_height(rim_soft,   floor_t,     0.5mm), floor_fillet)
+    aux let base_soft  = fillet(floor_soft, edges_at_height(floor_soft, 0mm,         0.5mm), base_fillet)
+
+    // Sieve field: two interleaved grids = hex packing. Spacings carry units
+    // (a bare number is an eval error since task #5214).
+    aux let holes = union_all(
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step),
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
+    )
+    aux let perforated = difference(base_soft, holes)
+
+    // Solid pedestal/wear pads (re-plug the punched holes).
+    aux let padded = union_all(
+        perforated,
         translate(cylinder(pad_r, floor_t), pad_x, 0mm, 0mm),
         translate(cylinder(pad_r, floor_t), 0mm - pad_x, 0mm, 0mm)
-    ),
-        // hand slots through both end walls (rounded ends)
-        union_all(
-            translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
-            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
-            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
-            translate(box(4 * wall_t, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
-            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
-            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
-        )
     )
+
+    // Hand slots through both end walls (rounded ends).
+    aux let slots = union_all(
+        translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
+        translate(box(4 * wall_t, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+    )
+
+    param geometry : Solid = difference(padded, slots)
 
     sub display = DisplayOutput(subject: geometry)
 }

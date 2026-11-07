@@ -1,3 +1,7 @@
+use reify_ast::{
+    ChainDecl, Declaration, ForallConnectBody, ForallConnectDecl, MemberDecl, ParsedModule,
+    walk_all_member_bodies,
+};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
 use crate::analysis::{AnalysisContext, format_value};
@@ -29,7 +33,7 @@ pub fn compute_hover_in_context(
     position: Position,
 ) -> Option<Hover> {
     let offset = position_to_offset(source, position);
-    let (_word_start, word) = find_word_at_offset(source, offset)?;
+    let (word_start, word) = find_word_at_offset(source, offset)?;
 
     // Determine the enclosing structure so member lookup is scoped correctly
     let enclosing = ctx.enclosing_decl_name_at(offset);
@@ -166,6 +170,45 @@ pub fn compute_hover_in_context(
                 }
                 return Some(make_hover_markdown(md));
             }
+            reify_ast::Declaration::TypeAlias(t) if t.name == word => {
+                let mut md = format!("```reify\n{}\n```", format_type_alias_signature(t));
+                // Surface the compiler's resolved type additively, but only when it
+                // adds information. `resolved_type` is `None` for entity-named aliases
+                // (`type F = Fit`, #6259) and for parameterized aliases — expected, not
+                // exceptional — and its Display coincides with the source spelling for
+                // aliases like `type Nickname = Bool`, where the line would be noise.
+                if let Some(resolved) = ctx
+                    .find_type_alias(&t.name)
+                    .and_then(|a| a.resolved_type.as_ref())
+                {
+                    let resolved_str = resolved.to_string();
+                    if resolved_str != t.type_expr.to_string() {
+                        md.push_str(&format!("\n\nresolves to `{resolved_str}`"));
+                    }
+                }
+                if let Some(doc) = ctx.find_entity_doc(word) {
+                    md.push_str("\n\n");
+                    md.push_str(doc);
+                }
+                return Some(make_hover_markdown(md));
+            }
+            reify_ast::Declaration::Unit(u) if u.name == word => {
+                let mut md = format!("```reify\n{}\n```", format_unit_signature(u));
+                // Surface the compiler's SI conversion additively, but only when it
+                // adds information. The signature line is identical for
+                // `unit hoopm : Length` and `unit hoopm : Length = 0.001`, so a
+                // non-unity factor or any offset is information the signature does
+                // not carry; a factor of exactly 1 with no offset is not, and the
+                // line would be noise. Same rule as the TypeAlias arm's
+                // resolves-to line above. `find_unit` returning None is expected
+                // for a prelude-duplicate name -- the signature still renders.
+                if let Some(unit) = ctx.find_unit(&u.name)
+                    && let Some(line) = format_si_conversion(unit)
+                {
+                    md.push_str(&format!("\n\n{line}"));
+                }
+                return Some(make_hover_markdown(md));
+            }
             _ => {}
         }
     }
@@ -188,13 +231,106 @@ pub fn compute_hover_in_context(
         return Some(make_hover_markdown(md));
     }
 
-    // Try keyword
-    if let Some(desc) = keyword_description(word) {
+    // Try keyword. This arm runs last, so a contextual keyword's spelling alone
+    // is not enough: an identifier the lookups above do not resolve (a sub, a
+    // loop variable, a `.field` segment) lands here too.
+    if let Some(desc) = keyword_description(word)
+        && is_keyword_use(&ctx.parsed, word, word_start)
+    {
         let md = format!("**{word}** — {desc}");
         return Some(make_hover_markdown(md));
     }
 
     None
+}
+
+/// Render a type-alias declaration's signature line, e.g. `type Speed = Length / Time`.
+///
+/// The right-hand side is the author's own `type_expr` surface spelling, NOT the
+/// resolved [`reify_core::Type`], whose `Display` is semantic (`Scalar[m·s^-1]`,
+/// `Enum(...)`, `Function(...) -> ...`) and would print a `type` line the user never
+/// wrote. `TypeAliasDecl.type_expr` is not an `Option`, and `impl Display for TypeExpr`
+/// matches all six `TypeExprKind` variants exhaustively, so this render cannot fail.
+///
+/// Visibility (`pub`) is deliberately not rendered, matching the sibling fn/trait/enum
+/// hover arms.
+///
+/// Exposed as `pub(crate)` so completion can reuse it for an alias item's `detail`,
+/// keeping the hover and completion surfaces byte-identical. Task #6341.
+pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> String {
+    format!(
+        "type {}{} = {}",
+        t.name,
+        format_type_params(&t.type_params),
+        t.type_expr
+    )
+}
+
+/// Render a unit declaration's signature line, e.g. `unit hoop : Length`.
+///
+/// `UnitDecl.dimension_type` is a non-optional [`reify_ast::TypeExpr`], and
+/// `impl Display for TypeExpr` matches all six `TypeExprKind` variants
+/// exhaustively, so this render cannot fail.
+///
+/// The conversion factor and offset are deliberately NOT rendered here:
+/// `UnitDecl.conversion`/`.offset` are `Option<Expr>` and reify-ast has no
+/// `impl Display for Expr`, so the only renderable source for those values is
+/// the COMPILED side (`CompiledUnit.factor`/`.offset`). The hover arm appends
+/// them additively from there, the way the type-alias arm appends its
+/// resolves-to line.
+///
+/// Visibility (`pub`) is deliberately not rendered, matching the sibling
+/// fn/trait/enum/type-alias hover arms.
+///
+/// Private, unlike [`format_type_alias_signature`]: no completion surface
+/// consumes a unit's signature today, and the narrower scope is the right one
+/// until one does. Task #6500.
+fn format_unit_signature(u: &reify_ast::UnitDecl) -> String {
+    format!("unit {} : {}", u.name, u.dimension_type)
+}
+
+/// Render a compiled unit's SI conversion as `SI: x{factor}` (with a real
+/// multiplication sign) -- plus `, offset {offset}` for an affine unit -- or
+/// `None` when the conversion adds nothing to the signature line.
+///
+/// The `None` case is `factor == 1.0 && offset.is_none()`: a unit that is
+/// exactly its dimension's SI base. Note the two halves are gated TOGETHER, not
+/// independently: `unit hoopC : Temperature = 1 offset 273.15` compiles to
+/// `factor: 1.0, offset: Some(273.15)`, so gating on `factor != 1.0` alone would
+/// drop the offset -- the half a reader most needs, since it is why the unit is
+/// not a pure scaling. Task #6500.
+fn format_si_conversion(unit: &reify_compiler::CompiledUnit) -> Option<String> {
+    if unit.factor == 1.0 && unit.offset.is_none() {
+        return None;
+    }
+    let mut line = format!("SI: \u{d7}{}", unit.factor);
+    if let Some(offset) = unit.offset {
+        line.push_str(&format!(", offset {offset}"));
+    }
+    Some(line)
+}
+
+/// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
+/// string when there are none (so a zero-param alias never emits a bare `<>`).
+///
+/// Each entry comes from [`reify_ast::render_type_param`]. The default goes in as
+/// the author's `TypeExpr`, so it renders as written (see
+/// [`format_type_alias_signature`]). Task #6341.
+fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let entries: Vec<String> = params
+        .iter()
+        .map(|p| {
+            reify_ast::render_type_param(
+                &p.name,
+                p.bounds.iter().map(String::as_str),
+                p.default.as_ref(),
+            )
+        })
+        .collect();
+    format!("<{}>", entries.join(", "))
 }
 
 /// Create a Hover with markdown content.
@@ -247,6 +383,7 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("fn", "Declares a function."),
     ("trait", "Declares a trait."),
     ("enum", "Declares an enumeration type."),
+    ("type", "Declares a type alias."),
     (
         "purpose",
         "Declares the optimization objective of the structure.",
@@ -255,6 +392,10 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("maximize", "Declares a quantity to maximize."),
     ("port", "Declares an interface port for connections."),
     ("connect", "Declares a connection between ports."),
+    (
+        "chain",
+        "Connects a sequence of ports or occurrences in series; an occurrence's unique output/input port is inferred for each hop.",
+    ),
     ("where", "Introduces additional type or value constraints."),
 ];
 
@@ -266,9 +407,88 @@ fn keyword_description(word: &str) -> Option<&'static str> {
         .map(|(_, desc)| *desc)
 }
 
+/// Whether `word`, read at byte offset `start`, is the keyword it spells rather
+/// than an identifier that happens to share its spelling.
+///
+/// Every keyword in [`KEYWORD_DESCRIPTIONS`] is a reserved word and answers by
+/// spelling alone, except `chain`: the grammar reads it as the keyword only at
+/// the head of a chain statement and leaves it an ordinary identifier everywhere
+/// else (`sub chain = Pipe()`). The parsed module settles it, since a chain
+/// statement starts at `start` or it does not. Completion's
+/// `CONTEXTUAL_BODY_KEYWORDS` names the words that need this.
+///
+/// A half-typed statement (`chain a ->`) lowers to no chain, so it gets no
+/// description until it parses. The concrete syntax tree would cover it, but
+/// this crate only sees the AST.
+fn is_keyword_use(parsed: &ParsedModule, word: &str, start: usize) -> bool {
+    match word {
+        "chain" => chain_statement_starts_at(parsed, start),
+        _ => true,
+    }
+}
+
+/// Whether a `chain` statement, bare or as the body of a `forall`, starts at
+/// byte offset `start`: where its keyword sits.
+fn chain_statement_starts_at(parsed: &ParsedModule, start: usize) -> bool {
+    parsed
+        .declarations
+        .iter()
+        .flat_map(member_bodies)
+        .any(|members| {
+            let mut found = false;
+            walk_all_member_bodies(members, &mut |member| {
+                found |= chain_statement_of(member)
+                    .is_some_and(|chain| chain.span.start as usize == start);
+            });
+            found
+        })
+}
+
+/// The chain statement `member` is, or carries as its `forall` body.
+fn chain_statement_of(member: &MemberDecl) -> Option<&ChainDecl> {
+    match member {
+        MemberDecl::Chain(chain)
+        | MemberDecl::ForallConnect(ForallConnectDecl {
+            body: ForallConnectBody::Chain(chain),
+            ..
+        }) => Some(chain),
+        _ => None,
+    }
+}
+
+/// The member lists a declaration owns: its own body, plus the `structure def`s
+/// nested in a `purpose`, which the AST keeps out of the purpose's `members`.
+///
+/// WILDCARD-FREE, like `decl_oracle::decl_name_and_span`: a new `Declaration`
+/// kind is a compile error here instead of a body whose chain statements lose
+/// their hover.
+fn member_bodies(decl: &Declaration) -> Vec<&[MemberDecl]> {
+    match decl {
+        Declaration::Structure(s) => vec![&s.members],
+        Declaration::Occurrence(o) => vec![&o.members],
+        Declaration::Trait(t) => vec![&t.members],
+        Declaration::Purpose(p) => std::iter::once(&p.members)
+            .chain(p.structures.iter().map(|s| &s.members))
+            .map(Vec::as_slice)
+            .collect(),
+        Declaration::Import(_)
+        | Declaration::Enum(_)
+        | Declaration::Function(_)
+        | Declaration::Field(_)
+        | Declaration::Constraint(_)
+        | Declaration::Unit(_)
+        | Declaration::TypeAlias(_)
+        | Declaration::Default(_)
+        | Declaration::Module(_)
+        | Declaration::Joint(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::occurrences;
+    use crate::convert::offset_to_position;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
@@ -875,11 +1095,14 @@ structure B {
     fn all_completion_keywords_have_hover_descriptions() {
         use std::collections::HashSet;
 
-        use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
+        use crate::completion::{
+            BODY_KEYWORDS, CONTEXTUAL_BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS,
+        };
 
         let completion_union: HashSet<&str> = TOP_LEVEL_KEYWORDS
             .iter()
             .chain(BODY_KEYWORDS.iter())
+            .chain(CONTEXTUAL_BODY_KEYWORDS.iter())
             .chain(EXPR_KEYWORDS.iter())
             .copied()
             .collect();
@@ -1185,6 +1408,602 @@ structure Bolt {
         assert!(
             md.contains("SocketHead"),
             "hover on cluster member should name SocketHead arm type, got: {md}"
+        );
+    }
+
+    // --- task #6341: hover on type-alias declarations ---
+
+    /// Hover on an alias whose RHS names a structure. The compiler leaves
+    /// `resolved_type` as `None` here (the alias DFS runs before structures are
+    /// compiled — see #6259), so the signature must come from the author's
+    /// `type_expr` spelling, which is always available on the parsed decl.
+    #[test]
+    fn hover_on_unresolvable_type_alias_shows_source_spelling() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        // Line 3 is "type F = Fit"; column 5 is the 'F' name token.
+        let position = Position::new(3, 5);
+        let md =
+            hover_markdown(source, position).expect("hover on a type-alias name must return Some");
+        assert!(
+            md.contains("```reify\ntype F = Fit\n```"),
+            "hover should render the alias signature fence, got: {md}"
+        );
+    }
+
+    /// The signature line echoes the author's surface spelling, NOT the resolved
+    /// `Type`'s semantic Display (which would print `type Speed = Scalar[m·s^-1]`
+    /// — a `type` line the user never wrote).
+    #[test]
+    fn hover_on_resolvable_type_alias_shows_source_spelling_not_resolved_type() {
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let position = Position::new(0, 6); // on 'Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a resolvable type-alias name must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must echo the source spelling, got: {md}"
+        );
+        assert!(
+            !md.contains("type Speed = Scalar["),
+            "signature must not render the resolved Type in the `type ... =` slot, got: {md}"
+        );
+    }
+
+    /// The new alias arm must not swallow positions on the alias RHS: the `Fit`
+    /// token still resolves through the structure-name hover.
+    #[test]
+    fn hover_on_type_alias_rhs_name_is_unaffected() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        // Line 3 "type F = Fit": column 10 is inside the 'Fit' RHS token.
+        let position = Position::new(3, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover on the alias RHS structure name must return Some");
+        assert!(
+            md.contains("structure Fit"),
+            "RHS name should still resolve as a structure, got: {md}"
+        );
+    }
+    /// A parameterized alias must render its type-parameter list, including bounds.
+    /// Probe-verified: `Vel2` has `type_params.len() == 1` and `type_expr` Display
+    /// `Q / Time`.
+    #[test]
+    fn hover_on_parameterized_type_alias_shows_type_params() {
+        let source = "pub type Vel2<Q: Dimension> = Q / Time\n";
+        let position = Position::new(0, 10); // on 'Vel2'
+        let md = hover_markdown(source, position)
+            .expect("hover on a parameterized type-alias name must return Some");
+        assert!(
+            md.contains("type Vel2<Q: Dimension> = Q / Time"),
+            "signature must render the type-parameter list, got: {md}"
+        );
+    }
+
+    /// A zero-parameter alias must emit no empty bracket pair.
+    #[test]
+    fn hover_on_simple_alias_has_no_angle_brackets() {
+        let source = "type Nickname = Bool\n";
+        let position = Position::new(0, 7); // on 'Nickname'
+        let md = hover_markdown(source, position)
+            .expect("hover on a simple type alias must return Some");
+        assert!(
+            md.contains("type Nickname = Bool"),
+            "signature must render the alias, got: {md}"
+        );
+        assert!(
+            !md.contains("<>"),
+            "a zero-param alias must not emit an empty bracket pair, got: {md}"
+        );
+    }
+
+    /// `format_type_params` advertises `<T, U: Numeric, V: A + B = Int>`, but only
+    /// the single-bound single-param shape (`<Q: Dimension>`, above) and the empty
+    /// shape were pinned. The multi-bound ` + ` join and the ` = default` suffix are
+    /// both live — `lower_type_params_inner` (crates/reify-syntax/src/ts_parser.rs)
+    /// fills `bounds` from a trait-bound list and `default` from the `default`
+    /// field — and the same string is reused as the completion `detail`, so a
+    /// separator or spacing bug there would ship silently on two surfaces at once.
+    #[test]
+    fn hover_on_multi_bound_defaulted_type_alias_renders_full_param_list() {
+        let source = "pub type Foo<T, U: Dimension + Numeric = Length> = U / Time\n";
+        let position = Position::new(0, 10); // on 'Foo'
+        let md = hover_markdown(source, position)
+            .expect("hover on a multi-parameter type-alias name must return Some");
+        assert!(
+            md.contains("type Foo<T, U: Dimension + Numeric = Length> = U / Time"),
+            "signature must render both params, join bounds with ' + ', and append \
+             the default, got: {md}"
+        );
+    }
+
+    /// The behaviour this feature mostly delivers is hovering an alias at a USE
+    /// site (`param v: Speed`), yet every other alias test puts the cursor on the
+    /// declaration's own name. The use-site path is materially different: with a
+    /// cursor inside the structure body `enclosing` resolves to that structure, so
+    /// the scoped-member lookups run (and must miss) before control reaches the
+    /// alias arm. A future change there could swallow the alias hover with no
+    /// other test failing.
+    #[test]
+    fn hover_on_type_alias_at_use_site_shows_signature() {
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let position = Position::new(2, 14); // on 'Speed' in 'param v: Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a type-alias USE site must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "the alias use site must resolve to the alias signature, got: {md}"
+        );
+    }
+
+    /// An alias doc comment is appended below the signature, exactly as the
+    /// fn/trait/enum arms already do.
+    #[test]
+    fn hover_on_documented_type_alias_appends_doc() {
+        let source = "/// Speed of travel.\ntype Speed = Length / Time\n";
+        let position = Position::new(1, 6); // on 'Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a documented type-alias name must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must still render, got: {md}"
+        );
+        assert!(
+            md.contains("Speed of travel."),
+            "doc comment must be appended, got: {md}"
+        );
+    }
+
+    /// The resolved type is surfaced additively when it ADDS information.
+    #[test]
+    fn hover_on_resolvable_alias_appends_resolved_type() {
+        let source = "type Speed = Length / Time\n";
+        let position = Position::new(0, 6); // on 'Speed'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("Scalar[m\u{b7}s^-1]"),
+            "resolved type must be surfaced, got: {md}"
+        );
+    }
+
+    /// `resolved_type` is None for an entity-named alias (#6259 phase ordering), so
+    /// there is nothing to add and no resolves-to line may appear.
+    #[test]
+    fn hover_on_unresolvable_alias_omits_resolved_line() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        let position = Position::new(3, 5); // on 'F'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type F = Fit"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("resolves to"),
+            "no resolves-to line when resolved_type is None, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_parameterized_alias_omits_resolved_line() {
+        let source = "pub type Vel2<Q: Dimension> = Q / Time\n";
+        let position = Position::new(0, 10); // on 'Vel2'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            !md.contains("resolves to"),
+            "a parameterized alias has no resolved_type, got: {md}"
+        );
+    }
+
+    /// When the resolved Display is byte-identical to the source spelling the line
+    /// is pure noise, so it is suppressed.
+    #[test]
+    fn hover_on_alias_omits_redundant_resolved_line() {
+        let source = "type Nickname = Bool\n";
+        let position = Position::new(0, 7); // on 'Nickname'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Nickname = Bool"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("resolves to"),
+            "a redundant resolves-to line must be suppressed, got: {md}"
+        );
+    }
+
+    /// Shadow path, hover half. A user alias reusing a prelude alias name is
+    /// registered as user-declared (`phase_aliases` skips prelude seeding for any
+    /// redeclared name), so it must render the USER's body and still reach
+    /// `compiled.type_aliases` for the resolves-to line. If the compiler ever
+    /// marked a shadowed name as prelude-seeded, `into_compiled` would drop it and
+    /// the resolves-to line would silently vanish while the negative tests above
+    /// (which use never-shadowed names) kept passing. `Rate` is a real stdlib alias.
+    #[test]
+    fn hover_on_user_alias_shadowing_a_prelude_alias_uses_the_user_body() {
+        let source = "type Rate = Length\n";
+        let position = Position::new(0, 6); // on 'Rate'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Rate = Length"),
+            "the USER's body must render, not the prelude's, got: {md}"
+        );
+        assert!(
+            md.contains("resolves to `Scalar[m]`"),
+            "the shadowing alias must still reach compiled.type_aliases, got: {md}"
+        );
+    }
+
+    // --- task #6500: hover on unit declarations ---
+
+    /// The fixture name is deliberately non-SI. `si_units.rs` emits a `pub unit`
+    /// for every SI base, prefixed and derived unit into the prelude, and a
+    /// module-local unit duplicating one of those names is REJECTED with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and never
+    /// reaches `compiled.units` — which would make every assertion below vacuous.
+    /// `hoop` was probe-verified to compile with zero diagnostics and to appear in
+    /// `AnalysisContext.compiled.units`.
+    #[test]
+    fn hover_on_unit_declaration_name_shows_signature() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 6 is inside the 'hoop' name token.
+        let position = Position::new(0, 6);
+        let md = hover_markdown(source, position).expect("hover on a unit name must return Some");
+        assert!(
+            md.contains("```reify\nunit hoop : Length\n```"),
+            "hover should render the unit signature fence, got: {md}"
+        );
+    }
+
+    /// The new unit arm must not swallow positions on the unit's DIMENSION type,
+    /// mirroring `hover_on_type_alias_rhs_name_is_unaffected`.
+    ///
+    /// Stated as "must not render the unit signature" rather than "must be None":
+    /// a dimension type is restricted by the compiler to the builtin dimension
+    /// names (probe: `unit hoop : HoopDim` reds with "unknown dimension type"), and
+    /// no hover surface covers those today — but a future one is a legitimate
+    /// addition, and this test must pin the swallow property, not the absence.
+    #[test]
+    fn hover_on_unit_dimension_type_is_unaffected() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 13 is inside the 'Length' token.
+        let position = Position::new(0, 13);
+        if let Some(md) = hover_markdown(source, position) {
+            assert!(
+                !md.contains("unit hoop"),
+                "the dimension-type position must not resolve to the unit signature, got: {md}"
+            );
+        }
+    }
+
+    /// (a) A plain unit adds no information beyond its signature, so no
+    /// conversion line may appear — the same "only when it adds information"
+    /// rule the type-alias arm applies to its resolves-to line.
+    ///
+    /// Probe-verified compiled values: `unit hoop : Length` yields
+    /// `CompiledUnit { factor: 1.0, offset: None }`.
+    #[test]
+    fn hover_on_unit_without_conversion_omits_conversion_line() {
+        let source = "unit hoop : Length\n";
+        let position = Position::new(0, 6); // on 'hoop'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoop : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "a factor-1 offset-free unit must emit no conversion line, got: {md}"
+        );
+    }
+
+    /// (b) A conversion factor is information the signature does not carry — the
+    /// signature line is identical for `unit hoopm : Length` and
+    /// `unit hoopm : Length = 0.001`, so the factor must be surfaced.
+    ///
+    /// Probe-verified: `CompiledUnit { factor: 0.001, offset: None }`.
+    #[test]
+    fn hover_on_unit_with_conversion_shows_factor() {
+        let source = "unit hoopm : Length = 0.001\n";
+        let position = Position::new(0, 6); // on 'hoopm'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopm : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("0.001"),
+            "the SI conversion factor must be surfaced, got: {md}"
+        );
+    }
+
+    /// (c) An affine unit carries BOTH a factor and an offset, and the offset is
+    /// the half a reader most needs (it is why the unit is not a pure scaling).
+    ///
+    /// Probe-verified: `unit hoopC : Temperature = 1 offset 273.15` yields
+    /// `CompiledUnit { factor: 1.0, offset: Some(273.15) }` — note the factor is
+    /// 1.0 here, so an implementation gating the whole line on `factor != 1.0`
+    /// would drop the offset silently. That is exactly what this case pins.
+    #[test]
+    fn hover_on_affine_unit_shows_factor_and_offset() {
+        let source = "unit hoopC : Temperature = 1 offset 273.15\n";
+        let position = Position::new(0, 6); // on 'hoopC'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopC : Temperature"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("273.15"),
+            "the affine offset must be surfaced, got: {md}"
+        );
+        // Pinned against the rendered factor token, not a bare `1`: `273.15`
+        // already contains a `1`, so a bare-digit assertion would pass even with
+        // the factor half dropped entirely.
+        assert!(
+            md.contains("\u{d7}1"),
+            "the conversion factor must be surfaced alongside the offset, got: {md}"
+        );
+    }
+
+    /// (d) THE DOCUMENTED DEGRADE PATH, which the four cases above deliberately
+    /// avoid by using non-SI names.
+    ///
+    /// `AnalysisContext::find_unit`'s contract names one non-exceptional `None`:
+    /// a module-local unit duplicating a PRELUDE unit is rejected with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and
+    /// never reaches `compiled.units`, so the declaration exists in the AST
+    /// while the compiled entry does not. The hover arm must then render the
+    /// signature ALONE rather than treat the miss as a bug — and until this
+    /// test, nothing exercised that path, so an arm that grew an `expect()` on
+    /// the compiled entry, or that made the signature conditional on it, would
+    /// have shipped green.
+    ///
+    /// `find_unit` is asserted directly, not just inferred from the absent
+    /// conversion line: a factor-1 offset-free unit ALSO emits no `SI:` line
+    /// (case (a)), so the markdown alone cannot tell the degrade path from the
+    /// adds-no-information path. Task #6500.
+    #[test]
+    fn hover_on_prelude_duplicate_unit_degrades_to_signature() {
+        // `mm` is a PRELUDE unit symbol: `si_units.rs` emits `pub unit <prefix><base>`
+        // for every SI prefix/base pair, so the prelude names are symbols
+        // (`m`, `mm`, `kg`, `Pa`), never spelled-out words like `meter`.
+        let source = "unit mm : Length\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.find_unit("mm").is_none(),
+            "fixture must actually hit the prelude-duplicate path, or this test \
+             exercises the ordinary lookup instead"
+        );
+
+        let position = Position::new(0, 5); // on 'mm'
+        let md = hover_markdown(source, position)
+            .expect("hover must still return Some when the compiled entry is absent");
+        assert!(
+            md.contains("```reify\nunit mm : Length\n```"),
+            "the signature must render from the AST alone, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "no compiled entry means no conversion line to append, got: {md}"
+        );
+    }
+
+    /// The `type` keyword itself must have a hover description, like every other
+    /// declaration-introducing keyword. Task #6341.
+    #[test]
+    fn hover_on_type_keyword_shows_description() {
+        let source = "type Speed = Length / Time\n";
+        let position = Position::new(0, 1); // on the 'type' token
+        let md =
+            hover_markdown(source, position).expect("hover on the 'type' keyword must return Some");
+        assert!(
+            md.contains("**type**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    // --- `chain`: a keyword only at the head of a body statement ---
+
+    /// The keyword hover is the last arm of `compute_hover_in_context`, reached
+    /// only after the member, entity, declaration and relation lookups all miss,
+    /// so hovering the `chain` of a real chain statement also pins that none of
+    /// them claims it first.
+    #[test]
+    fn hover_on_chain_keyword_of_chain_statement_shows_description() {
+        let source = "\
+trait FluidPort { param diameter : Length }
+occurrence def Pipe {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outlet : out FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub p1 = Pipe()
+    sub p2 = Pipe()
+    chain p1 -> p2
+}
+";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+            .expect("hover on the 'chain' keyword must return Some");
+        assert!(
+            md.contains("**chain**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    /// `chain` is an ordinary identifier outside statement position, so a binding
+    /// that borrows the name hovers as that binding, at its declaration and at a
+    /// use, and never as the keyword.
+    #[test]
+    fn hover_on_binding_named_chain_shows_the_binding_not_the_keyword() {
+        let source = "structure def S {\n    param a : Length = 1mm\n    param b : Length = 2mm\n    let chain = a < b\n    constraint chain\n}\n";
+        let sites = occurrences(source, "chain");
+        assert_eq!(
+            sites.len(),
+            2,
+            "fixture should hold the declaration and one use of `chain`"
+        );
+        for site in sites {
+            let md = hover_markdown(source, offset_to_position(source, site as u32))
+                .expect("hover on a binding named 'chain' must return Some");
+            assert!(
+                md.contains("let chain"),
+                "should show the binding, got: {md}"
+            );
+            assert!(
+                !md.contains("**chain**"),
+                "must not show the keyword description, got: {md}"
+            );
+        }
+    }
+
+    /// The other form that carries the keyword: the `chain` that is a `forall`'s
+    /// body, which sits mid-line after the `forall … :` head.
+    #[test]
+    fn hover_on_chain_keyword_of_forall_chain_shows_description() {
+        let source = "structure def S {\n    forall v in vents: chain v.out -> hub.a -> hub.b\n}\n";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+            .expect("hover on the 'chain' of a forall body must return Some");
+        assert!(
+            md.contains("**chain**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    /// The keyword is found wherever the grammar lets a chain statement stand
+    /// beyond a structure body: an occurrence's body, and a `structure def`
+    /// nested in a `purpose`, which the AST keeps out of the purpose's own members.
+    #[test]
+    fn hover_on_chain_keyword_shows_description_in_occurrence_and_purpose_nested_structure() {
+        let fixtures = [
+            (
+                "occurrence",
+                "occurrence def Line {\n    sub p1 = Pipe()\n    sub p2 = Pipe()\n    chain p1 -> p2\n}\n",
+            ),
+            (
+                "structure nested in a purpose",
+                "purpose Exploration() {\n    structure def Inner {\n        sub p1 = Pipe()\n        sub p2 = Pipe()\n        chain p1 -> p2\n    }\n}\n",
+            ),
+        ];
+        for (container, source) in fixtures {
+            let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "{container} fixture must parse clean: {:?}",
+                parsed.errors
+            );
+            let keyword = occurrences(source, "chain")[0];
+            let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+                .unwrap_or_else(|| panic!("hover on the 'chain' in {container} must return Some"));
+            assert!(
+                md.contains("**chain**"),
+                "{container}: keyword hover should bold the keyword, got: {md}"
+            );
+        }
+    }
+
+    /// An identifier hover does not resolve reaches the keyword arm, and must not
+    /// read as the keyword there: a name no binding declares (a typo, or one
+    /// declared further down), a `.field` segment, a `forall` loop variable.
+    #[test]
+    fn hover_on_chain_identifier_no_lookup_resolves_shows_no_keyword_description() {
+        let fixtures = [
+            (
+                "unresolved name",
+                "structure def S {\n    param a : Length = 1mm\n    let x = chain\n}\n",
+            ),
+            (
+                "field segment",
+                "structure def S {\n    sub s = T()\n    let x = s.chain\n}\n",
+            ),
+            (
+                "forall variable",
+                "structure def S {\n    forall chain in vents: connect chain.a -> hub.b\n}\n",
+            ),
+        ];
+        for (position, source) in fixtures {
+            let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "{position} fixture must parse clean, so `chain` is an identifier: {:?}",
+                parsed.errors
+            );
+            for site in occurrences(source, "chain") {
+                let md = hover_markdown(source, offset_to_position(source, site as u32));
+                assert!(
+                    md.as_deref().is_none_or(|md| !md.contains("**chain**")),
+                    "{position}: an identifier must not read as the keyword, got: {md:?}"
+                );
+            }
+        }
+    }
+
+    /// A sub is not among the names hover resolves, so one named like a
+    /// contextual keyword reaches the keyword arm at its declaration and at a
+    /// use. Looping over completion's contextual keywords also makes this the
+    /// guard that `is_keyword_use` gates every one of them.
+    #[test]
+    fn hover_on_sub_named_like_a_contextual_keyword_shows_no_keyword_description() {
+        use crate::completion::CONTEXTUAL_BODY_KEYWORDS;
+
+        for keyword in CONTEXTUAL_BODY_KEYWORDS {
+            let source = "structure def Drive {\n    sub KEYWORD = Pipe()\n    sub other = Pipe()\n    connect KEYWORD.outlet -> other.inlet\n}\n"
+                .replace("KEYWORD", keyword);
+            let parsed = reify_syntax::parse(&source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "fixture must parse clean: {:?}",
+                parsed.errors
+            );
+            let sites = occurrences(&source, keyword);
+            assert_eq!(
+                sites.len(),
+                2,
+                "fixture should hold the declaration and one use of `{keyword}`"
+            );
+            for site in sites {
+                let md = hover_markdown(&source, offset_to_position(&source, site as u32));
+                assert!(
+                    md.as_deref()
+                        .is_none_or(|md| !md.contains(&format!("**{keyword}**"))),
+                    "a sub named `{keyword}` must not read as the keyword, got: {md:?}"
+                );
+            }
+        }
+    }
+
+    /// A statement still being typed lowers to no chain, so nothing in the AST
+    /// shows that its `chain` is the keyword and hover stays silent until it
+    /// parses. Pinned on purpose: `is_keyword_use` documents the trade, and a
+    /// check backed by the syntax tree would turn this into a description.
+    #[test]
+    fn hover_on_chain_keyword_of_half_typed_statement_shows_no_keyword_description() {
+        let source = "structure def S {\n    param a : Length = 1mm\n    chain a ->\n}\n";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            !parsed.errors.is_empty(),
+            "fixture must be half-typed: the statement must not parse"
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32));
+        assert!(
+            md.as_deref().is_none_or(|md| !md.contains("**chain**")),
+            "a statement that has not parsed has no chain to show, got: {md:?}"
         );
     }
 }

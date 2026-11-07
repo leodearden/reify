@@ -5,25 +5,59 @@ edition.workspace = true
 license.workspace = true
 description = "Test builders, fixtures, and mock implementations for Reify"
 
+# A dev-dependency only, enforced by crate rule `reify-test-support-is-dev-only`
+# in scripts/crate-strata.json; scripts/audit-orphan-producers.sh's
+# EXCLUDE_CRATES rests on that.
+
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
+# Needed by the library body (not just this crate's tests): `mocks.rs`'s shared
+# `ContainmentQuery` double (`MockContainmentQuery`) implements
+# `reify_expr::ContainmentQuery` — the geometry-free trait that `EvalContext`
+# carries. Hence a [dependencies] entry rather than a [dev-dependencies] one.
+#
+# Gated behind `containment-doubles` (see [features]; `eval-helpers` includes
+# it) rather than left ungated, so a consumer that dev-depends on this crate
+# without needing eval doubles does not compile reify-expr's whole closure
+# (reify-stdlib → faer / nalgebra / gemm).
+#
+# The gate is free for `eval-helpers` consumers (that feature pulls reify-eval,
+# which itself normal-deps reify-expr, so reify-expr was already in the graph).
+# It is NOT free in general, and the cost is taken knowingly: `crates/reify-expr`
+# dev-deps this crate with `features = ["containment-doubles"]` — the
+# fine-grained gate that lets `tests/field_op_dispatch_tests.rs` see
+# `MockContainmentQuery` without pulling reify-eval into reify-expr's own test
+# graph (task #6322, follow-up to #6216).
+reify-expr = { workspace = true, optional = true }
 reify-ir.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+reify-git-env.workspace = true
 reify-eval = { workspace = true, optional = true }
 reify-constraints = { workspace = true, optional = true }
 serde_json.workspace = true
 tracing.workspace = true
 # Normal (not dev) dependency: `temp_dirs::prefixed_tempdir` is a PUBLIC fn
-# returning `tempfile::TempDir`, which a dev-dependency cannot back. See the
-# paired design decision — `crates/reify-audit` carries reify-test-support as a
-# normal dependency, so this makes tempfile a normal transitive dep there.
+# returning `tempfile::TempDir`, which a dev-dependency cannot back.
 tempfile.workspace = true
 
 [dev-dependencies]
 reify-core.workspace = true
 reify-ir.workspace = true
+# `test-utils` for orphan_audit's in-lib tests (`removed_vars`); the library
+# body uses the [dependencies] entry's featureless surface only.
+reify-git-env = { workspace = true, features = ["test-utils"] }
 
 [features]
-eval-helpers = ["dep:reify-eval", "dep:reify-constraints"]
+eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "containment-doubles"]
+# Fine-grained gate for the reify-expr edge alone (task #6322 follow-up to
+# #6216): lets a reify-expr-side consumer (crates/reify-expr's dev-dep) pull
+# in just `MockContainmentQuery` without dragging reify-eval into
+# reify-expr's own test graph. `eval-helpers` includes it so today's
+# consumers (which enable `eval-helpers`) are unaffected.
+#
+# Coverage gap (no workspace-wide invocation builds the containment-doubles-only
+# configuration): tracked as the second item of task #7123.
+containment-doubles = ["dep:reify-expr"]

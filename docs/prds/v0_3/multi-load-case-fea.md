@@ -2,7 +2,19 @@
 
 Status: design resolved + decomposed (2026-05-05) — deferred, candidate v0.3.x. Stdlib pattern over the v0.3 FEA kernel; no language-feature changes. Filed 2026-05-02 from FEA PRD spillover.
 
-> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> **2026-08-25 CORRECTION — the 2026-05-12 sweep swapped one fiction for another.**
+> That sweep retired `subject to` (correctly — it is not in the grammar) in favour of
+> `minimize ... where ...`, on the evidence that `ts_parser.rs::lower_minimize_decl`
+> parses it. It verified the PARSER and never the compiler. The `where` guard on
+> `minimize`/`maximize` is parsed into `MinimizeDecl.where_clause` and then **silently
+> discarded** — the compiler's Minimize/Maximize arms never read that field, so the
+> predicate registers **zero** constraints and the objective runs unopposed with no
+> diagnostic. Ruled **reject** (Leo, 2026-08-25; owner task **6575**): objectives take
+> no `where` guard, in either form. The design-loop demo below has been rewritten again,
+> to the form the compiler actually honours — a bare `minimize` plus a separate
+> `constraint` member. Do not re-spell it as `where`.
+>
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md) — superseded above for the `minimize` spelling:
 > Design-loop demo previously used `subject to` clause which is not in the
 > Reify grammar. Replaced with the shipped `where`-clause spelling of
 > `minimize` (per `crates/reify-syntax/src/ts_parser.rs`). `param thickness : Length = auto` retained — `auto` as a value-default keyword
@@ -66,13 +78,23 @@ results = solve_load_cases(bracket, Steel_AISI_1045, [
     LoadCase{name: "transport", loads: [...], supports: [...]},
 ])
 
-minimize mass(bracket) where max(envelope_von_mises(results)) < material.yield_stress
+let mass = volume(bracket) * material.density
+constraint max(envelope_von_mises(results)) < material.yield_stress
+minimize mass
 ```
 
-> **Grammar note.** The `where`-clause spelling is what the current
-> `minimize` form (`crates/reify-syntax/src/ts_parser.rs::lower_minimize_decl`)
-> parses. An earlier draft of this PRD used `subject to` which is **not** in
-> the grammar; the rewrite preserves the design intent.
+> **Grammar note (rewritten 2026-08-25).** Three separate corrections are folded into the
+> form above, so do not "simplify" it back:
+> 1. **The predicate is a separate `constraint` member.** `subject to` is not in the
+>    grammar, and `minimize ... where ...` — this PRD's spelling from 2026-05-12 until
+>    today — parses but is **silently discarded** by the compiler (task **6575**;
+>    objectives take no guard, ruled 2026-08-25).
+> 2. **`mass(bracket)` is not a callable.** There is no `"mass"` entry in
+>    `crates/reify-compiler/src/units.rs` and no `fn mass` in any stdlib `.ri`. The real
+>    spelling is `volume(body) * material.density`, which is what the `Physical` trait
+>    itself uses (`crates/reify-compiler/stdlib/structural_physical.ri:46`).
+> 3. `envelope_von_mises` and the field reduction `max` are real and wired
+>    (`reify-stdlib/src/fea.rs`), so only the objective/predicate shape needed changing.
 
 ## Pre-conditions for activating
 
@@ -138,7 +160,7 @@ Ten tasks. All depend on v0.3 FEA kernel landing first; the GUI task additionall
 
 **End-to-end and documentation:**
 
-7. End-to-end example file: `examples/m6/multi_load_bracket.ri`. Bracket with three load cases (operating, overload, transport), `param thickness : Length = auto` (the `auto` value-default keyword is in grammar.js:`auto_keyword`), `minimize mass(bracket) where max(envelope_von_mises(results)) < material.yield_stress`. Closes the design-loop demo from this PRD's Goal section. **Gate:** tasks 2 + 4 + #2929 (single-case bracket demo).
+7. End-to-end example file: `examples/m6/multi_load_bracket.ri`. Bracket with three load cases (operating, overload, transport), `param thickness : Length = auto` (the `auto` value-default keyword is in grammar.js:`auto_keyword`), `let mass = volume(bracket) * material.density`, `constraint max(envelope_von_mises(results)) < material.yield_stress`, and a bare `minimize mass`. Closes the design-loop demo from this PRD's Goal section. **Do not write `minimize ... where ...`** — that guard parses and is silently discarded (task **6575**); see the Goal-section grammar note. **Gate:** tasks 2 + 4 + #2929 (single-case bracket demo).
 8. PRD-aligned documentation: stdlib doc page on multi-load cases covering (a) the basic `solve_load_cases` pattern, (b) envelope construction with the convenience helpers and the compositional primitives, (c) `linear_combine` with the linear-elastic constraint and combination-sweep example, (d) per-case options compatibility matrix. **Gate:** tasks 1-7.
 
 **GUI integration (gates on FEA-GUI infrastructure):**

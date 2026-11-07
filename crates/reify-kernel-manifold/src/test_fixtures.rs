@@ -20,6 +20,22 @@
 //! manually. Extracting once into this module gives a single source of
 //! truth without widening the production surface (the module is gated
 //! behind test-fixtures so it never reaches production link closures).
+//!
+//! # Relationship to the workspace-canonical fixtures
+//!
+//! Since task #6387 the workspace's canonical box/cube fixtures live in
+//! `reify_test_support::mesh_fixtures` — `prismatic_box_mesh`,
+//! `unit_cube_mesh`, `unwelded_prismatic_box_mesh` and the curved
+//! `tessellated_cylinder_mesh`, together with the derived
+//! `F32_STORAGE_REL` tolerance. Prefer those in any test that CAN reach
+//! them. This module is the deliberate exception rather than a fourth
+//! copy: see the "Judgment call (task #6387)" section on
+//! [`unit_cube_mesh`] for the link constraint that forces it. The cube's
+//! triangle index block is not local: it is the shared data file
+//! `crates/reify-ir/src/box_triangle_indices.rs`, which the canonical
+//! builder also `include!`s. Only the offset vertex literal stays here, and
+//! `tests/cube_fixture_agreement.rs` is the executable guard that keeps it
+//! in agreement with the canonical vertices.
 
 use reify_ir::Mesh;
 use crate::kernel::manifold_from_reify_mesh;
@@ -36,6 +52,43 @@ use crate::kernel::manifold_from_reify_mesh;
 ///
 /// Triangle winding follows right-hand-rule outward normals so the
 /// resulting Manifold is well-oriented and Boolean operations succeed.
+///
+/// # Judgment call (task #6387)
+///
+/// This function keeps its own offset vertex literal and deliberately
+/// does NOT delegate to `reify_test_support::mesh_fixtures::unit_cube_mesh`,
+/// even though that is now the workspace-canonical copy. Its triangle index
+/// block is shared rather than copied: it `include!`s
+/// `crates/reify-ir/src/box_triangle_indices.rs`, the same data file the
+/// canonical builder includes, which needs no Cargo edge. Three reasons the
+/// vertices stay local, in order of how binding they are:
+///
+/// 1. **It would not compile.** This module is gated on
+///    `cfg(any(test, feature = "test-fixtures"))`, and the
+///    `test-fixtures` arm is reached from the crate's PLAIN library
+///    artifact — that is exactly what the self-dev-dep in `Cargo.toml`
+///    exists for, since cross-crate `tests/` binaries are separate
+///    compilation units that do not inherit `cfg(test)`.
+///    `reify-test-support` is only a `[dev-dependencies]` entry here, so
+///    it is absent from that rlib's link closure. Referencing it from
+///    this function is an unresolved-crate error, not a style
+///    preference.
+/// 2. **The fix would be worse than the duplication.** Making it resolve
+///    means promoting `reify-test-support` to a normal, feature-gated
+///    dependency of a kernel ADAPTER crate, dragging `reify-compiler`
+///    and `reify-syntax` into the adapter's graph. That cuts against the
+///    deliberately-inverted adapter -> eval layering this crate's own
+///    manifest comments protect, and is a production-adjacent
+///    dependency-graph change well outside a test-fixture dedup.
+/// 3. **The divergence is watched, not forgotten.**
+///    `crates/reify-kernel-manifold/tests/cube_fixture_agreement.rs` is
+///    the executable guard: it asserts this fixture is bit-identical to
+///    the canonical one at zero offset, and an exact per-component
+///    translation of it at a dyadic offset. Edit either vertex literal in
+///    isolation and that test reds immediately.
+///
+/// So the goal #6387 was filed for — kill DRIFT, not bytes — is met here
+/// by an assertion rather than by deletion.
 pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
     let [dx, dy, dz] = offset;
     Mesh {
@@ -66,21 +119,7 @@ pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
             1.0 + dy,
             1.0 + dz, // 7
         ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
+        indices: include!("../../reify-ir/src/box_triangle_indices.rs").to_vec(),
         normals: None,
     }
 }

@@ -1,0 +1,14 @@
+// Fixture (γ decompose-phase premise, builtin-signature-registry leaf
+// tau2-orientation): `frame_to_frame(a, b)` compiles clean TODAY with no
+// diagnostic — `reify check` exit 0. Frames come from default-less
+// `param a : Frame`-style annotations (the datum_projections.ri precedent:
+// a typed default-less param is enough to type-check). The PRD post-state
+// (result typed Transform3 instead of Frame(3)) is NOT asserted here.
+
+module frame_to_frame_resolves
+
+structure FrameToFrameResolves {
+    param a : Frame
+    param b : Frame
+    let t = frame_to_frame(a, b)
+}

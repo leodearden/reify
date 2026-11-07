@@ -1,0 +1,28 @@
+// γ-verification ADVERSARY baseline fixture — instantiation-value-flow.md §5 B8
+// (leaf γ "loud-failure convergence"), today-baseline counterpart the prover's
+// premise set left unbound: a constraint over the same undef flow whose backing
+// geometry never realizes stays Indeterminate at WARNING severity and the run
+// PASSES today.
+// Verified 2026-08-26 @ 041554eae5 (fresh debug binary):
+//   `reify check`: exit 0; stdout "  INDETERMINATE Top#constraint[0]" +
+//     "No constraints violated (1 indeterminate)."; stderr only
+//     "warning: constraint Top#constraint[0] indeterminate: undefined inputs:
+//      Top.probe_k" — generic warning, no Error severity, no UndefCause, no
+//     coded diagnostic, exit 0.
+// Post-γ (contract C4 / INV-SF-4): the constraint verdict must STAY
+// Indeterminate (never-false-Violated) with an attributable cause, but the RUN
+// must fail via the severity-exit gate because an Error-severity coded
+// diagnostic was emitted for the unrealized backing geometry / undef flow.
+module adv_ivf_undef_flow_constraint_indeterminate_exit0
+
+pub structure Leaf {
+    param k : Length = 10mm
+    let body = translate(cylinder(2mm, k), 0mm, 0mm, 0mm - k / 2)
+}
+
+pub structure Top {
+    sub a = Leaf(k: self.b.k) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub b = Leaf(k: 20mm)     at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+    let probe_k = self.a.k
+    constraint probe_k > 0mm
+}

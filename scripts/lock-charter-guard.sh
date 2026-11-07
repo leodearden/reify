@@ -50,15 +50,65 @@
 #
 #   There are now TWO shared vectors across this seam, at different stages.
 #
-#   STATUS 2026-07-31 (#5890) — EXTENSION vector: CONVERGED.  dark_factory:3117
-#   has landed; DF main carries 58 CODE_EXTENSIONS entries, set-identical to
-#   _EXTS (measured, both sides).  The former "γ still pins 36 entries" note and
-#   both of its consequences are obsolete and have been removed rather than
-#   dated — they described a state that no longer exists.  Its predecessor reify
-#   #5737 was cancelled as a cross-repo misfile and drained INTO 3117 — cite
-#   3117, never #5737.  (Origin ticket: tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
+#   STATUS 2026-08-07 (#6067) — EXTENSION vector: CONVERGED.  Both sides now
+#   carry 59 entries, set-identical (measured, both sides).  dark_factory:3117
+#   converged the two at 58 first; dark-factory commit 43410b3418 then widened
+#   γ to 59 by adding `csv`, and this task (#6067) followed with the matching
+#   α widening.  THE SEQUENCING INVERTED THIS TIME, and that is the finding,
+#   not an aside: γ landed `csv` FIRST, to heal a ~13.7h DF main-red /
+#   merge-lane deadlock (DF corpus plans/evidence/scheduler-scoring-2026-08-06/
+#   *.csv, landed e1c51efa8d, RED'd DF's
+#   test_every_tracked_extension_is_allowlisted), and α followed after.  That
+#   is the opposite of this block's own "α ships the primitive, γ mirrors it"
+#   rule (below) and of the repo-wide CLAUDE.md convention "reify ships the
+#   primitive, dark-factory wires the invocation" — the prior convergence
+#   (dark_factory:3117) was α-first, so this is the first documented case of
+#   the inversion.  The former "γ still pins 36 entries" note and both of its
+#   consequences remain obsolete and removed rather than dated.  Its
+#   predecessor reify #5737 was cancelled as a cross-repo misfile and drained
+#   INTO 3117 — cite 3117, never #5737.  (Origin ticket:
+#   tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
 #
-#   STATUS 2026-07-31 (#5890) — EXTENSIONLESS vector: α LEADS, γ LAGS.  This
+#   STATUS 2026-08-27 (#6758), SUPERSEDED SAME DAY (#6856, below) — EXTENSION
+#   vector AT TIME OF WRITING: α LEADS AGAIN at 60.  α added `tombstones`
+#   (reify-evidenced: docs/reify-language-spec.tombstones, the spec-conformance
+#   anchor tombstone sidecar, whose filename is PRD-normative —
+#   docs/prds/v0_6/spec-conformance-suite.md D3).  It landed as the repair for a
+#   RED Cycle 10 corpus alarm (esc-6758-3), i.e. exactly the #5726 shape this
+#   alarm exists to catch.  γ carried 59 at that moment; the mirroring follow-up
+#   was filed from that escalation.  CONSEQUENCE while that held: a `.tombstones`
+#   path was declarable in a lock charter at α but still REJECTed at the γ
+#   submit_task backstop — the same reify-leads shape as #5726 -> 3117, handled
+#   the same way.
+#
+#   MEASURED 2026-08-27 (#6856), SUPERSEDED 2026-10-15 (#9058, below) —
+#   EXTENSION vector AT TIME OF WRITING: CONVERGED again at 60.  The
+#   γ mirror landed the SAME day as the α widening above (dark-factory commit
+#   9b824da7db, "Widen lock-charter extension allowlist 59 -> 60: add
+#   'tombstones'", confirmed an ancestor of dark-factory main).  Measured by
+#   importing both γ copies named elsewhere in this block —
+#   shared/src/shared/locking.py and
+#   fused-memory/src/fused_memory/middleware/lock_charter_guard.py — and
+#   diffing their FILE_EXTENSIONS against this script's --list-extensions
+#   output: 60 entries each, set-identical, `tombstones` present on both sides.
+#   So the "still REJECTed at the γ submit_task backstop" consequence above is
+#   DISCHARGED, and the α-lead window it describes is CLOSED — no DF main-red
+#   window is open on this vector as of that measurement.  The window was
+#   real while it lasted, which is the point of the discipline recorded below,
+#   not a reason to relax it.
+#
+#   STATUS 2026-10-15 (#9058) — EXTENSION vector: α LEADS at 61.  α added `tsv`
+#   (reify-evidenced: tests/infra/affected-crates-direct-sets.tsv, landed by
+#   #8662) as the repair for a RED Cycle 10 corpus alarm on main.  Measured at
+#   DF main bbf3a231bb: neither γ copy named below carries `tsv`.  The γ mirror
+#   is dark_factory:6992.  CONSEQUENCE until it lands: a `.tsv` path is
+#   declarable in a lock charter at α but REJECTed at the γ submit_task
+#   backstop, and once this widening reaches reify main γ's Tier-2 drift guard
+#   (described below) reds — the live DF main-red window this block warns
+#   about, open again.
+#
+#   STATUS 2026-07-31 (#5890), SUPERSEDED 2026-08-27 (#6856, below) —
+#   EXTENSIONLESS vector AT TIME OF WRITING: α LEADS, γ LAGS.  This
 #   script accepts the 8 _EXTLESS basenames as of this task; γ does not.
 #   dark_factory:3248 is the mirroring task and had NOT landed at time of
 #   writing (DF main b525c6ee92 still has CODE_EXTENSIONS, no rename to
@@ -70,12 +120,76 @@
 #   backstop.  This task alone does not make those paths declarable end-to-end.
 #   This is the same reify-leads shape as #5726 → 3117 and is handled the same
 #   way: α ships the primitive, γ mirrors it, and this block is the seam record.
-#   It is SAFE to lead, because γ's existing Tier-2 cross-source drift test
-#   (fused-memory/tests/test_lock_charter_guard.py
-#   ::test_extension_drift_guard_vs_reify_script) invokes only --list-extensions
-#   and compares against sorted(CODE_EXTENSIONS) — a surface this task leaves
-#   byte-identical.  The new --list-extensionless emitter is what lets 3248 add
-#   the matching Tier-2 comparison for the second vector from its side.
+#
+#   MEASURED 2026-08-27 (#6856): the α LEADS / γ LAGS status above is stale,
+#   not current.  Both γ copies this note named as lacking the vector —
+#   shared/src/shared/locking.py and
+#   fused-memory/src/fused_memory/middleware/lock_charter_guard.py — now
+#   define EXTENSIONLESS_FILENAMES, holding the identical 8 names as this
+#   script's _EXTLESS.  The vector is CONVERGED, and the "passes α here but
+#   still FAILS at the γ submit_task / scheduler backstop" consequence above
+#   is discharged.  Sequencing finding for the seam record: dark_factory:3248
+#   was planned believing this was a dark_factory-only lead; that premise was
+#   refuted by measurement on 2026-08-09 — reify #5890 had already landed the
+#   identical vector and added --list-extensionless specifically so the other
+#   side could pin against it.  So, unlike the extension vector's documented
+#   γ-first inversion (STATUS 2026-08-07 (#6067) above), this vector was
+#   α-first after all, matching this block's own rule.
+#
+#   This block used to argue it was SAFE to lead because γ's Tier-2
+#   cross-source drift test (fused-memory/tests/test_lock_charter_guard.py
+#   ::test_extension_drift_guard_vs_reify_script) was live and comparing
+#   against this script.  MEASURED 2026-08-07 (#6067), SUPERSEDED 2026-08-27
+#   (#6856, below): that premise was FALSE at the time.  That test resolved
+#   this script's path relative to its own file location; the resolution did
+#   not land on a real file, so its skipif marker dropped the test AT
+#   COLLECTION on every run — it had never compared anything.  Repair was
+#   recorded as dark-factory's, not reify's.  The measured paths, the
+#   confirming SKIPPED line, and the located-symptom hypothesis are recorded
+#   in escalation esc-6067-2 (which also carries the dark-factory tracking
+#   ticket) and are deliberately NOT restated here: foreign-repo line cites
+#   and host paths rot on the next edit to that file, and nothing on either
+#   side gates them — which is exactly the failure this seam exists to catch.
+#   CONSEQUENCE AT THE TIME, plainly: while that guard skipped, this seam had
+#   NO live automated cross-source check on EITHER vector — γ's Tier-1 drift
+#   test compared γ only to γ, and α's Cycle 4 in
+#   tests/infra/test_lock_charter_guard.sh compared α only to a pin inside α.
+#   The csv drift that motivated #6067 (α at 58 while γ had already moved to
+#   59) was found by human/reconciliation review, not by a gate.
+#
+#   MEASURED 2026-08-27 (#6856): the premise above is stale, not current.
+#   dark-factory tasks 3843 and 4080 replaced the broken parents[5] path
+#   arithmetic with a layout-independent shared.reify_checkout resolver
+#   (REIFY_ROOT env override), which re-armed the Tier-2 test.  A single
+#   -rs run against dark-factory main so a skip could not hide confirms both
+#   that the guard now runs (baseline: all its `drift`/`tracked`-keyed cases
+#   pass, none skipped) and that it fires (pointing REIFY_ROOT at a reify
+#   worktree missing an extension γ carries reds the extension-vector
+#   comparison).  So: the extension vector now HAS a live automated
+#   cross-source check, running from γ's side.  A unilateral α widening is
+#   therefore no longer silent — it reds dark-factory's suite as soon as the
+#   new tracked file reaches reify main, the same fleet-time incident shape
+#   recorded 2026-07-29 in dark_factory task 3226.  That makes the α-first +
+#   prompt-γ-mirror discipline in this block MORE important, not less: a lag
+#   between an α widening landing and its γ mirror landing is now a live DF
+#   main-red window, not a quiet gap.  The extensionless vector (the STATUS
+#   2026-07-31 note above) is NOT exempt from this: γ's test module
+#   (fused-memory/tests/test_lock_charter_guard.py) defines the two Tier-2
+#   cross-source guards symmetrically, test_extension_drift_guard_vs_reify_script
+#   and test_extensionless_drift_guard_vs_reify_script — the latter invoking
+#   --list-extensionless against this very script — both under the same
+#   import-time _REIFY_SKIP_REASON skipif and both routed through
+#   _reify_guard_vector, which HARD-FAILS rather than skips when this script's
+#   emitter exits non-zero, so dropping or renaming --list-extensionless is
+#   loud, not a silent retirement.  A `-rs` run scoped to the extensionless
+#   case (`pytest -rs -q -k extensionless`) shows 19 passed, 0 skipped — the
+#   guard RUNS — and pointing REIFY_ROOT at a temp reify root whose _EXTLESS
+#   drops `Dockerfile` reds test_extensionless_drift_guard_vs_reify_script on
+#   the α/γ/bash drift assertion — the guard FIRES.  So the α-first +
+#   prompt-γ-mirror discipline two sentences up applies to BOTH vectors, not
+#   just the one that motivated this measurement: a unilateral α widening of
+#   EITHER allowlist — _EXTS or _EXTLESS — now opens a live DF main-red
+#   window until its γ mirror lands.
 
 set -euo pipefail
 
@@ -84,10 +198,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
 # Single source of truth for the α (reify) enforcement point: used by
-# _is_file_path(), classify, and --list-extensions.  α/γ-converged at 58 entries
-# since dark_factory:3117 landed — see the "Cross-repo seam: γ" status note in
-# the header above, which is also where the still-diverged extensionless vector
-# is recorded.
+# _is_file_path(), classify, and --list-extensions.  The current α/γ convergence
+# state of this vector, and of the extensionless one, is recorded in the
+# "Cross-repo seam: γ" status notes in the header above, not here.
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
 # Corpus-evidenced: css mjs html jsonc gcode service
 # Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
@@ -98,8 +211,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   conf diff envrc example example-systemd-config gitattributes gitignore gitkeep
 #   gitmodules golden grammar icns ico jq jsonl log manifest npmrc python-version
 #   template timer typed
+# Widened 58 -> 59 on 2026-08-07 (#6067): `csv` — dark-factory-evidenced only.  reify tracks
+# zero .csv files (measured: git ls-files '*.csv' | wc -l -> 0); the evidence is DF's
+# plans/evidence/scheduler-scoring-2026-08-06/*.csv (landed e1c51efa8d), which RED'd DF's
+# corpus->allowlist guard for ~13.7h until dark_factory 43410b3418 widened all four γ copies.
+# Kept for the same reason Dockerfile is kept in _EXTLESS: this is a SHARED α/γ vector, and an
+# entry with no reify file behind it costs nothing while a missing one costs a rejected charter.
+# NOTE: γ LED this one, inverting the normal α-first sequencing — see the seam note in the header.
+# Widened 59 -> 60 on 2026-08-27 (#6758): `tombstones` — reify-evidenced, and the first entry
+# added because Cycle 10's live-corpus alarm went RED rather than because a human swept:
+# docs/reify-language-spec.tombstones (spec-conformance anchor tombstone sidecar; the filename
+# is PRD-normative, docs/prds/v0_6/spec-conformance-suite.md D3, so renaming it to dodge the
+# allowlist was not available).  γ mirrored it the same day (dark-factory 9b824da7db), so this
+# vector is converged again at 60 — see the header status note.
+# Widened 60 -> 61 on 2026-10-15 (#9058): `tsv` — reify-evidenced: #8662 landed the tracked
+# tests/infra/affected-crates-direct-sets.tsv (chosen deliberately, so not renamed), which
+# Cycle 10's live-corpus alarm flagged RED on main.  The γ mirror is dark_factory:6992 — see
+# the header status note.
+# A LIVE ALARM NOW GUARDS THIS LIST: Cycle 10 of tests/infra/test_lock_charter_guard.sh
+# sweeps the tracked corpus and goes RED if a tracked reify extension is missing here —
+# the standing signal a pin inside this repo (Cycle 4's CANONICAL_EXTS) cannot give, since
+# that pin moves whenever this list moves.  Widening this list is therefore a FOUR-part
+# lockstep edit spanning α and γ, NOT an edit to this line alone.  The enumeration of
+# those four sites is owned by Cycle 4's comment in tests/infra/test_lock_charter_guard.sh
+# and is deliberately not restated here — follow it rather than guessing, because this is
+# a SHARED α/γ vector and a unilateral α widening re-opens the seam divergence noted above.
 # ---------------------------------------------------------------------------
-_EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
+_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer tombstones toml ts tsv tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
 # Canonical extensionless-basename allowlist (C-P1 clause (ii) — PRD §11 Q2;
@@ -265,9 +403,9 @@ case "$_subcmd" in
         # LC_ALL=C for the same reason as --list-extensionless below: γ's Tier-2
         # comparison is against Python sorted() (code-point order), so byte order
         # is the only ordering the two sides can agree on and the only one that is
-        # host-independent as C-P3 requires.  Today's 58 entries happen to sort
-        # identically under C and en_US.UTF-8 (measured, md5-identical), so this
-        # is a no-op on the current vector — but the list already carries
+        # host-independent as C-P3 requires.  Re-measured 2026-10-15 after #9058
+        # added `tsv`, the vector still sorts identically under C and en_US.UTF-8
+        # (md5-identical), so this was a no-op on it then — but the list already carries
         # hyphenated members (example-systemd-config, python-version) and glibc
         # collation ignores punctuation at the primary level, so one future
         # hyphen/underscore entry could silently reorder this output on a

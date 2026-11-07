@@ -85,14 +85,14 @@ for the assoc-fn machinery (G4 seam owner: that PRD).
 ```reify
 // Compile-time error: half_space is Unbounded, volume requires Bounded.
 fn err_unbounded_volume() -> Real {
-    let h = half_space(plane_xy(0mm))
+    let h = half_space(plane_xy(0mm));
     volume(h)            // error[GeometryUnbounded] at this call site
 }
 
 // OK: intersection with a Bounded solid restores Bounded.
 fn ok_clipped_volume() -> Real {
-    let h = half_space(plane_xy(0mm))
-    let clip = box(10mm, 10mm, 10mm)
+    let h = half_space(plane_xy(0mm));
+    let clip = box(10mm, 10mm, 10mm);
     volume(intersection(h, clip))   // Bounded inferred → no diagnostic
 }
 
@@ -303,7 +303,7 @@ access). The correct file list is the table above.
    generic `conforms<T,R>`, escape-hatch deferred). Tests: known-good
    (`box(10mm,10mm,10mm)` → true on all three) and known-bad (open shell
    built via direct BRep — see fixture pattern in
-   `crates/reify-kernel-occt/tests/conformance_integration.rs`) shapes.
+   `crates/reify-kernel-occt/tests/harness_occt/conformance_integration.rs`) shapes.
 6. **Specialization escape hatch — compile-time warning + runtime
    short-circuit.** Compile-time: emit `W_TRAIT_USER_ASSERTED` once per
    `(structure_def, geometry_marker_bound)` pair when `: Watertight` (or

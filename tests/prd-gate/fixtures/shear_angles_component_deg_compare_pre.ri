@@ -1,0 +1,33 @@
+module shear_angles_component_deg_compare_pre
+
+// Adversary fixture (γ decompose-phase, PRD angle-dimension-completion leaf σ):
+// PRE-STATE probe for the B4 pin's SECOND half — "compares against deg
+// literals" (PRD §9 B4; §1:59 consumer column "vs deg literals in CI").
+//
+// σ ships a worked shear-limit consumer example same-diff (§1, §10). An
+// in-language shear-limit comparison needs a path from Vector3<Angle> to an
+// Angle comparable against a deg literal. This fixture uses the natural
+// spelling (`v.x < 5deg`). As of 2026-08-10 (main 5db884e30b) it FAILS:
+//   .x        -> "member access not yet supported: .x" (exit 1)
+// and the alternate idioms fail too (probed separately, same date):
+//   v[0]      -> "cannot index into non-collection type 'Vector3<Scalar[rad]>'"
+//   norm(v)<5deg -> "comparison `<` left operand must be a comparable kind,
+//                    got `Vector3<Scalar[rad]>`" (norm is fallback-passthrough
+//                    at the check surface; bare unknown fns silently accept —
+//                    positive control: zzz_definitely_nonexistent_fn(axis)
+//                    exits 0).
+//
+// ADJUDICATED 2026-08-10 (chartering session, D3 record in the PRD's
+// capability manifest): the compare half is Rust-e2e-harness-level
+// (differential_field_ops_e2e.rs, same home as #6164's pins); the .ri example
+// scopes to sampling + typed passing. This fixture is RETAINED as the
+// gap-documenting record cited by PRD §12 Q6 — it is EXPECTED to fail
+// `reify check` until in-language Vector3 component access exists.
+
+fn worst(v : Vector3<Angle>) -> Bool { v.x < 5deg }
+
+structure def ShearAnglesComponentDegComparePre {
+    param a : Angle = 1deg
+    let axis = vec3(a, a, a)
+    let ok   = worst(axis)
+}

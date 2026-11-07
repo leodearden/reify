@@ -17,12 +17,12 @@
 //!
 //! | Row | Description                                                      | Owner (this file fn)                                               |
 //! |-----|------------------------------------------------------------------|--------------------------------------------------------------------|
-//! | 1   | parse forms: top-level + purpose-nested both accepted            | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs` |
+//! | 1   | parse forms: top-level + purpose-nested both accepted            | `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs` |
 //! | 2   | injection fills required param + mass evaluates (e2e positive)   | `ci_example_compiles_clean_and_evaluates_steel` (rows 2 + e2e)   |
-//! | 3   | explicit member wins over ambient default (DD3)                  | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs` |
-//! | 4   | file-level + purpose-nested coexist, no cross-scope duplicate    | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs` |
-//! | 5   | duplicate same-scope → exactly one DuplicateAmbientDefault error | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs` |
-//! | 6   | wrong value type → AmbientDefaultTypeMismatch at decl span       | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs` |
+//! | 3   | explicit member wins over ambient default (DD3)                  | `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs` |
+//! | 4   | file-level + purpose-nested coexist, no cross-scope duplicate    | `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs` |
+//! | 5   | duplicate same-scope → exactly one DuplicateAmbientDefault error | `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs` |
+//! | 6   | wrong value type → AmbientDefaultTypeMismatch at decl span       | `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs` |
 //! | 7   | no ambient + no material → E_DynamicsNoDensity (hard error)      | `row_7_no_ambient_no_material_errors_no_density`                  |
 //! | 8   | water-default symbol absent from production source               | `row_8_water_default_symbol_absent_from_source`                   |
 //! | e2e | line removed → MissingRequiredMember naming `material`           | `line_removed_errors_naming_mechanism`                            |
@@ -118,7 +118,7 @@ fn ci_example_compiles_clean_and_evaluates_steel() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // No Error-severity build diagnostics either.
@@ -312,7 +312,7 @@ structure def BmpNoAmbient {
     // before any geometry query).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Exactly one DynamicsNoDensity Error.

@@ -40,19 +40,20 @@
 //!
 //! # Snapshot determinism
 //!
-//! Inputs are synthetic literals built via [`lit`]; `CompiledExpr::literal`
-//! attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
+//! Inputs are synthetic literals built via the shared `reify_test_support`
+//! constructors ([`real_literal`], [`length_literal`], [`angle_literal`]) and the
+//! local `lit_raw`/vector helpers; `CompiledExpr::literal` attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
 //! string and the `(severity, message)` diagnostic projection are byte-stable
 //! across runs. Goldens were captured via a RED→GREEN bootstrap (placeholder →
 //! run on current code → paste actual).
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 10 `CompiledGeometryOp` variant families × 53 nested kinds, across 11 tests:
-//! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
+//! 10 `CompiledGeometryOp` variant families × 54 nested kinds, across 11 tests:
+//! Primitive 8, Boolean 3, Modify 10 (+3 edges-selector branch cases), Transform
 //! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1, Isosurface 1 (8+3+9+7+5+9+6+4+1+1 = 53). The `coverage_*` test pins
-//! the 10-family / 53-kind census; the per-family `characterize_*` tests plus
+//! Surface 1, Isosurface 1 (8+3+10+7+5+9+6+4+1+1 = 54). The `coverage_*` test pins
+//! the 10-family / 54-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 11 tests byte-identical
 //! green.
@@ -65,31 +66,13 @@ use reify_compiler::{
 };
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
+use reify_test_support::{angle_literal, length_literal, real_literal};
 
 use reify_eval::geometry_op_characterization_probe::compile_geometry_op_probe;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/// Build a `CompiledExpr` literal from a constant f64 (dimensionless scalar).
-///
-/// Mirrors the in-module `literal_f64` helper at `geometry_ops.rs` so the
-/// characterization inputs match the production unit tests' representative args.
-fn lit(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), reify_core::Type::dimensionless_scalar())
-}
-
-/// Build a `CompiledExpr` literal from a LENGTH-dimensioned scalar (SI metres).
-///
-/// Mirrors the in-module `literal_length` helper at `geometry_ops.rs`. The
-/// length-semantic pattern args (spacing, mirror-plane origin, circular-pattern
-/// axis origin, arbitrary-pattern offsets) require a dimensioned Length after
-/// tasks 5214 and 5350 — a bare `lit(..)` in those positions is now rejected at
-/// eval.
-fn lit_len(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::length(v), reify_core::Type::length())
-}
 
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
@@ -143,39 +126,78 @@ fn lit_raw(v: Value) -> CompiledExpr {
     CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
 }
 
-/// A `Value::Vector` of 3 dimensionless `Real` components (accepted by the
-/// production `point3_components` decoder used by `decode_axis`/`decode_plane`).
+/// A `Value::Vector` of 3 dimensionless `Real` components — the shape a
+/// unit-vector DIRECTION has.
+///
+/// Since task 5745 this is the right fixture for exactly the un-gated
+/// positions of `decode_axis`/`decode_plane`: the axis DIRECTION and the plane
+/// NORMAL. Their ORIGINS are LENGTH-gated and use [`point3_len`] instead — a
+/// bare `Real` triple in an origin is now rejected, which is the whole point of
+/// δ.
 fn vec3_value(c: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
 }
 
+/// A `Value::Point` of 3 LENGTH-dimensioned components (SI metres) — the shape
+/// a dimensioned `point3(1mm, 2mm, 3mm)` origin has once `reify-stdlib` has
+/// produced it, and what the `decode_axis`/`decode_plane` ORIGIN positions
+/// require since task 5745.
+///
+/// The numeric SI values are IDENTICAL to what `vec3_value` carried before the
+/// migration: the gate returns `si_value` by copy and performs no arithmetic, so
+/// the captured goldens stay byte-identical across this change. Any golden churn
+/// here is a defect to investigate, not to re-baseline.
+fn point3_len(c: [f64; 3]) -> Value {
+    Value::Point(vec![
+        Value::length(c[0]),
+        Value::length(c[1]),
+        Value::length(c[2]),
+    ])
+}
+
 /// A `Value::Axis` for the Circular pattern value-form sub-branch (decoded by
 /// `decode_axis`; the direction is normalized to unit length by production).
+///
+/// The ORIGIN is a LENGTH `Point` and the DIRECTION a bare `Real` `Vector` — the
+/// ORIGIN-vs-DIRECTION split task 5745 drew, and the shape a real
+/// `axis_z(point3(10mm, 20mm, 30mm))` actually has.
 fn axis_value(origin: [f64; 3], direction: [f64; 3]) -> Value {
     Value::Axis {
-        origin: Box::new(vec3_value(origin)),
+        origin: Box::new(point3_len(origin)),
         direction: Box::new(vec3_value(direction)),
     }
 }
 
 /// A `Value::Plane` for the Mirror pattern value-form sub-branch (decoded by
 /// `decode_plane`; the normal is normalized to unit length by production).
+///
+/// The ORIGIN is a LENGTH `Point` and the NORMAL a bare `Real` `Vector` — the
+/// ORIGIN-vs-DIRECTION split task 5745 drew, and the shape a real
+/// `plane_yz(10mm)` actually has.
 fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
     Value::Plane {
-        origin: Box::new(vec3_value(origin)),
+        origin: Box::new(point3_len(origin)),
         normal: Box::new(vec3_value(normal)),
     }
 }
 
-/// Build positional coordinate args (`c0`, `c1`, …) from a slice of f64. The
-/// production `eval_all_args_to_f64` iterates `args` in Vec order (names are
-/// inert), so this is how InterpCurve/BezierCurve/NurbsCurve/Polygon receive
-/// their flat coordinate streams.
+/// Build positional LENGTH coordinate args (`c0`, `c1`, …) from a slice of SI
+/// metres. The production reader iterates `args` in Vec order (names are
+/// inert), so this is how a variadic builtin receives its flat coordinate
+/// stream.
+///
+/// Every position minted here is DIMENSIONED, because this helper's only
+/// wholesale user is Polygon: every `polygon` argument is a LENGTH-gated 2-D
+/// vertex coordinate in the XY plane (task 5661), at every arity, with no
+/// dimensionless neighbour to leave bare. The curve arms are written out
+/// explicitly below instead of calling this: InterpCurve/BezierCurve are also
+/// wholesale-gated but interleave nothing, while NurbsCurve gates ONLY its pole
+/// span and so cannot be swapped wholesale at all.
 fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
     coords
         .iter()
         .enumerate()
-        .map(|(i, &v)| (format!("c{i}"), lit(v)))
+        .map(|(i, &v)| (format!("c{i}"), length_literal(v)))
         .collect()
 }
 
@@ -291,42 +313,47 @@ const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
 fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
     let args = match k {
         PrimitiveKind::Box => vec![
-            ("width".to_string(), lit(0.01)),
-            ("height".to_string(), lit(0.02)),
-            ("depth".to_string(), lit(0.03)),
+            ("size_x".to_string(), length_literal(0.01)),
+            ("size_y".to_string(), length_literal(0.02)),
+            ("size_z".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Cylinder => vec![
-            ("radius".to_string(), lit(0.01)),
-            ("height".to_string(), lit(0.02)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.02)),
         ],
-        PrimitiveKind::Sphere => vec![("radius".to_string(), lit(0.01))],
+        PrimitiveKind::Sphere => vec![("radius".to_string(), length_literal(0.01))],
         PrimitiveKind::Tube => vec![
-            ("outer_r".to_string(), lit(0.02)),
-            ("inner_r".to_string(), lit(0.01)),
-            ("height".to_string(), lit(0.03)),
+            ("outer_r".to_string(), length_literal(0.02)),
+            ("inner_r".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Cone => vec![
-            ("bottom_radius".to_string(), lit(0.02)),
-            ("top_radius".to_string(), lit(0.01)),
-            ("height".to_string(), lit(0.03)),
+            ("bottom_radius".to_string(), length_literal(0.02)),
+            ("top_radius".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Wedge => vec![
-            ("width".to_string(), lit(0.02)),
-            ("depth".to_string(), lit(0.03)),
-            ("height".to_string(), lit(0.04)),
-            ("top_width".to_string(), lit(0.01)),
+            ("width".to_string(), length_literal(0.02)),
+            ("depth".to_string(), length_literal(0.03)),
+            ("height".to_string(), length_literal(0.04)),
+            ("top_width".to_string(), length_literal(0.01)),
         ],
         PrimitiveKind::Torus => vec![
-            ("major_radius".to_string(), lit(0.03)),
-            ("minor_radius".to_string(), lit(0.01)),
+            ("major_radius".to_string(), length_literal(0.03)),
+            ("minor_radius".to_string(), length_literal(0.01)),
         ],
+        // MIXED, and deliberately so: `(px, py, pz)` is a point on the boundary
+        // plane and is gated, but `(nx, ny, nz)` is a DIMENSIONLESS unit normal
+        // and stays a bare `real_literal(..)`. Swapping the normal to `length_literal` here
+        // would hide an over-broad gate rather than characterize the real one —
+        // `examples/half_space.ri` writes exactly this shape.
         PrimitiveKind::HalfSpace => vec![
-            ("px".to_string(), lit(0.0)),
-            ("py".to_string(), lit(0.0)),
-            ("pz".to_string(), lit(0.0)),
-            ("nx".to_string(), lit(0.0)),
-            ("ny".to_string(), lit(0.0)),
-            ("nz".to_string(), lit(1.0)),
+            ("px".to_string(), length_literal(0.0)),
+            ("py".to_string(), length_literal(0.0)),
+            ("pz".to_string(), length_literal(0.0)),
+            ("nx".to_string(), real_literal(0.0)),
+            ("ny".to_string(), real_literal(0.0)),
+            ("nz".to_string(), real_literal(1.0)),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
@@ -339,97 +366,1021 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
         PrimitiveKind::Box => r#"Ok(
     Box {
-        width: Real(
-            0.01,
-        ),
-        height: Real(
-            0.02,
-        ),
-        depth: Real(
-            0.03,
-        ),
+        size_x: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        size_y: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        size_z: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Cylinder => r#"Ok(
     Cylinder {
-        radius: Real(
-            0.01,
-        ),
-        height: Real(
-            0.02,
-        ),
+        radius: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Sphere => r#"Ok(
     Sphere {
-        radius: Real(
-            0.01,
-        ),
+        radius: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Tube => r#"Ok(
     Tube {
-        outer_r: Real(
-            0.02,
-        ),
-        inner_r: Real(
-            0.01,
-        ),
-        height: Real(
-            0.03,
-        ),
+        outer_r: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        inner_r: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Cone => r#"Ok(
     Cone {
-        bottom_radius: Real(
-            0.02,
-        ),
-        top_radius: Real(
-            0.01,
-        ),
-        height: Real(
-            0.03,
-        ),
+        bottom_radius: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        top_radius: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Wedge => r#"Ok(
     Wedge {
-        width: Real(
-            0.02,
-        ),
-        depth: Real(
-            0.03,
-        ),
-        height: Real(
-            0.04,
-        ),
-        top_width: Real(
-            0.01,
-        ),
+        width: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        depth: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.04,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        top_width: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Torus => r#"Ok(
     Torus {
-        major_radius: Real(
-            0.03,
-        ),
-        minor_radius: Real(
-            0.01,
-        ),
+        major_radius: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        minor_radius: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::HalfSpace => r#"Ok(
     HalfSpace {
-        px: Real(
-            0.0,
-        ),
-        py: Real(
-            0.0,
-        ),
-        pz: Real(
-            0.0,
-        ),
+        px: Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        py: Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        pz: Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         nx: Real(
             0.0,
         ),
@@ -582,26 +1533,32 @@ const ALL_TRANSFORM: [TransformKind; 7] = [
 /// unit tests; ApplyTransform uses an identity-rotation `lit_transform`.
 fn transform_case(k: TransformKind) -> CompiledGeometryOp {
     let args = match k {
+        // Translation components are LENGTH-semantic (task 5623) — `length_literal`.
+        // The golden below is unchanged: `Value::length(0.01).as_f64()` and
+        // `Value::Real(0.01).as_f64()` are both `0.01`.
         TransformKind::Translate => vec![
-            ("dx".to_string(), lit(0.01)),
-            ("dy".to_string(), lit(0.02)),
-            ("dz".to_string(), lit(0.03)),
+            ("dx".to_string(), length_literal(0.01)),
+            ("dy".to_string(), length_literal(0.02)),
+            ("dz".to_string(), length_literal(0.03)),
         ],
         TransformKind::Rotate => vec![
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("angle".to_string(), angle_literal(1.0)),
         ],
-        TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
+        TransformKind::Scale => vec![("factor".to_string(), real_literal(2.0))],
+        // Only the PIVOT is LENGTH-semantic (task 5623); the ax/ay/az direction
+        // stays on `real_literal`, and `angle` is ANGLE-dimensioned via
+        // `angle_literal` (angle-units PRD leaf γ). Golden unchanged.
         TransformKind::RotateAround => vec![
-            ("px".to_string(), lit(0.05)),
-            ("py".to_string(), lit(0.0)),
-            ("pz".to_string(), lit(0.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("px".to_string(), length_literal(0.05)),
+            ("py".to_string(), length_literal(0.0)),
+            ("pz".to_string(), length_literal(0.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("angle".to_string(), angle_literal(1.0)),
         ],
         TransformKind::ApplyTransform => vec![(
             "transform".to_string(),
@@ -772,7 +1729,7 @@ fn modify_step_handles() -> Vec<GeometryHandleId> {
 /// count — so adding a new `ModifyKind` in `reify-compiler` without updating
 /// this array fails the test at runtime even if the exhaustive matches were
 /// already patched.
-const ALL_MODIFY: [ModifyKind; 9] = [
+const ALL_MODIFY: [ModifyKind; 10] = [
     ModifyKind::Fillet,
     ModifyKind::Chamfer,
     ModifyKind::ChamferAsymmetric,
@@ -781,6 +1738,7 @@ const ALL_MODIFY: [ModifyKind; 9] = [
     ModifyKind::Thicken,
     ModifyKind::ZoneSlab,
     ModifyKind::OffsetSolid,
+    ModifyKind::OffsetSurface,
     ModifyKind::OffsetCurve,
 ];
 
@@ -795,18 +1753,21 @@ const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
 /// see `geometry_ops.rs` Modify arm for each kind's required `eval_arg` names.
 fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
     let args = match k {
-        ModifyKind::Fillet => vec![("radius".to_string(), lit(0.005))],
-        ModifyKind::Chamfer => vec![("distance".to_string(), lit(0.005))],
+        ModifyKind::Fillet => vec![("radius".to_string(), length_literal(0.005))],
+        ModifyKind::Chamfer => vec![("distance".to_string(), length_literal(0.005))],
         ModifyKind::ChamferAsymmetric => vec![
-            ("d1".to_string(), lit(0.004)),
-            ("d2".to_string(), lit(0.006)),
+            ("d1".to_string(), length_literal(0.004)),
+            ("d2".to_string(), length_literal(0.006)),
         ],
-        ModifyKind::Shell => vec![("thickness".to_string(), lit(0.002))],
-        ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
-        ModifyKind::Thicken => vec![("offset".to_string(), lit(0.003))],
-        ModifyKind::ZoneSlab => vec![("width".to_string(), lit(0.01))],
-        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit(0.002))],
-        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit(0.002))],
+        ModifyKind::Shell => vec![("thickness".to_string(), length_literal(0.002))],
+        // `Draft`'s `angle` is an ANGLE position, dimensioned via `angle_literal`
+        // (`docs/prds/v0_6/angle-units-surface-convergence.md` leaf δ).
+        ModifyKind::Draft => vec![("angle".to_string(), angle_literal(0.1))],
+        ModifyKind::Thicken => vec![("offset".to_string(), length_literal(0.003))],
+        ModifyKind::ZoneSlab => vec![("width".to_string(), length_literal(0.01))],
+        ModifyKind::OffsetSolid => vec![("distance".to_string(), length_literal(0.002))],
+        ModifyKind::OffsetSurface => vec![("distance".to_string(), length_literal(0.002))],
+        ModifyKind::OffsetCurve => vec![("distance".to_string(), length_literal(0.002))],
     };
     CompiledGeometryOp::Modify {
         kind: k,
@@ -837,9 +1798,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        radius: Real(
-            0.005,
-        ),
+        radius: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::Chamfer => r#"Ok(
@@ -848,9 +1853,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        distance: Real(
-            0.005,
-        ),
+        distance: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::ChamferAsymmetric => r#"Ok(
@@ -859,12 +1908,100 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        d1: Real(
-            0.004,
-        ),
-        d2: Real(
-            0.006,
-        ),
+        d1: Scalar {
+            si_value: 0.004,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        d2: Scalar {
+            si_value: 0.006,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::Shell => r#"Ok(
@@ -872,9 +2009,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        thickness: Real(
-            0.002,
-        ),
+        thickness: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         faces_to_remove: [],
         open_face_handles: [],
     },
@@ -885,9 +2066,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         faces: [],
-        angle: Real(
-            0.1,
-        ),
+        angle: Scalar {
+            si_value: 0.1,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         plane: GeometryHandleId(
             50,
         ),
@@ -898,9 +2123,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        offset: Real(
-            0.003,
-        ),
+        offset: Scalar {
+            si_value: 0.003,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::ZoneSlab => r#"Ok(
@@ -908,9 +2177,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        width: Real(
-            0.01,
-        ),
+        width: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::OffsetSolid => r#"Ok(
@@ -918,9 +2231,107 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        distance: Real(
-            0.002,
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)"#,
+        ModifyKind::OffsetSurface => r#"Ok(
+    OffsetSurface {
+        target: GeometryHandleId(
+            50,
         ),
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::OffsetCurve => r#"Ok(
@@ -928,9 +2339,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        distance: Real(
-            0.002,
-        ),
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         reference: None,
         direction: None,
     },
@@ -1020,57 +2475,58 @@ const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, Pattern
 
 /// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
 /// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
-/// arm. Circular's bare numeric `angle` exercises the degrees→radians warning.
+/// arm. Circular's `angle` is ANGLE-dimensioned via `angle_literal` (angle-units
+/// PRD leaf ε retired the bare-number degrees→radians path).
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Linear => vec![
-            ("dx".to_string(), lit(1.0)),
-            ("dy".to_string(), lit(0.0)),
-            ("dz".to_string(), lit(0.0)),
-            ("count".to_string(), lit(3.0)),
+            ("dx".to_string(), real_literal(1.0)),
+            ("dy".to_string(), real_literal(0.0)),
+            ("dz".to_string(), real_literal(0.0)),
+            ("count".to_string(), real_literal(3.0)),
             // spacing is length-semantic → dimensioned Length (task 5214).
-            ("spacing".to_string(), lit_len(0.01)),
+            ("spacing".to_string(), length_literal(0.01)),
         ],
         PatternKind::Circular => vec![
             // Axis ORIGIN is length-semantic → dimensioned Length (task 5350);
             // axis DIRECTION stays a bare dimensionless unit vector.
-            ("ox".to_string(), lit_len(0.0)),
-            ("oy".to_string(), lit_len(0.0)),
-            ("oz".to_string(), lit_len(0.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("ox".to_string(), length_literal(0.0)),
+            ("oy".to_string(), length_literal(0.0)),
+            ("oz".to_string(), length_literal(0.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("count".to_string(), real_literal(4.0)),
+            ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![
             // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
             // plane NORMAL stays a bare dimensionless unit vector.
-            ("ox".to_string(), lit_len(0.0)),
-            ("oy".to_string(), lit_len(0.0)),
-            ("oz".to_string(), lit_len(0.0)),
-            ("nx".to_string(), lit(0.0)),
-            ("ny".to_string(), lit(0.0)),
-            ("nz".to_string(), lit(1.0)),
+            ("ox".to_string(), length_literal(0.0)),
+            ("oy".to_string(), length_literal(0.0)),
+            ("oz".to_string(), length_literal(0.0)),
+            ("nx".to_string(), real_literal(0.0)),
+            ("ny".to_string(), real_literal(0.0)),
+            ("nz".to_string(), real_literal(1.0)),
         ],
         PatternKind::Linear2D => vec![
-            ("dx1".to_string(), lit(1.0)),
-            ("dy1".to_string(), lit(0.0)),
-            ("dz1".to_string(), lit(0.0)),
-            ("count1".to_string(), lit(2.0)),
+            ("dx1".to_string(), real_literal(1.0)),
+            ("dy1".to_string(), real_literal(0.0)),
+            ("dz1".to_string(), real_literal(0.0)),
+            ("count1".to_string(), real_literal(2.0)),
             // spacings are length-semantic → dimensioned Length (task 5214).
-            ("spacing1".to_string(), lit_len(0.01)),
-            ("dx2".to_string(), lit(0.0)),
-            ("dy2".to_string(), lit(1.0)),
-            ("dz2".to_string(), lit(0.0)),
-            ("count2".to_string(), lit(3.0)),
-            ("spacing2".to_string(), lit_len(0.02)),
+            ("spacing1".to_string(), length_literal(0.01)),
+            ("dx2".to_string(), real_literal(0.0)),
+            ("dy2".to_string(), real_literal(1.0)),
+            ("dz2".to_string(), real_literal(0.0)),
+            ("count2".to_string(), real_literal(3.0)),
+            ("spacing2".to_string(), length_literal(0.02)),
         ],
         PatternKind::Arbitrary => vec![
             // Offsets are translations (length-semantic) → dimensioned Length.
-            ("t0_dx".to_string(), lit_len(0.01)),
-            ("t0_dy".to_string(), lit_len(0.02)),
-            ("t0_dz".to_string(), lit_len(0.03)),
+            ("t0_dx".to_string(), length_literal(0.01)),
+            ("t0_dy".to_string(), length_literal(0.02)),
+            ("t0_dz".to_string(), length_literal(0.03)),
         ],
     };
     CompiledGeometryOp::Pattern {
@@ -1087,8 +2543,8 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Circular => vec![
             ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
-            ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("count".to_string(), real_literal(4.0)),
+            ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![(
             "plane".to_string(),
@@ -1240,24 +2696,28 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Loft => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::Extrude => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), length_literal(0.02))],
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
             vec![
-                ("ax".to_string(), lit(0.0)),
-                ("ay".to_string(), lit(0.0)),
-                ("az".to_string(), lit(1.0)),
-                ("angle".to_string(), lit(1.0)),
-                ("ox".to_string(), lit(0.0)),
-                ("oy".to_string(), lit(0.0)),
-                ("oz".to_string(), lit(0.0)),
+                ("ax".to_string(), real_literal(0.0)),
+                ("ay".to_string(), real_literal(0.0)),
+                ("az".to_string(), real_literal(1.0)),
+                ("angle".to_string(), angle_literal(1.0)),
+                // Only the axis ORIGIN is LENGTH-semantic (task 5623); the
+                // ax/ay/az direction stays on `real_literal`, and `angle` is
+                // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ).
+                // Golden unchanged.
+                ("ox".to_string(), length_literal(0.0)),
+                ("oy".to_string(), length_literal(0.0)),
+                ("oz".to_string(), length_literal(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::ExtrudeSymmetric => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), length_literal(0.02))],
         ),
         SweepKind::SweepGuided => (
             vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
@@ -1269,14 +2729,16 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Pipe => (
             vec![GeomRef::Step(0)],
-            vec![("radius".to_string(), lit(0.005))],
+            vec![("radius".to_string(), length_literal(0.005))],
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
             vec![
-                ("dx".to_string(), lit(0.0)),
-                ("dy".to_string(), lit(0.0)),
-                ("dz".to_string(), lit(1.0)),
+                // `dx`/`dy`/`dz` are a dimensionless DIRECTION, not a length —
+                // they stay on `real_literal` (task 5744 boundary). Golden unchanged.
+                ("dx".to_string(), real_literal(0.0)),
+                ("dy".to_string(), real_literal(0.0)),
+                ("dz".to_string(), real_literal(1.0)),
                 ("direction".to_string(), lit_raw(Value::String("positive".into()))),
             ],
         ),
@@ -1309,9 +2771,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         profile: GeometryHandleId(
             60,
         ),
-        distance: Real(
-            0.02,
-        ),
+        distance: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::Revolve => r#"Ok(
@@ -1347,9 +2853,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         profile: GeometryHandleId(
             60,
         ),
-        distance: Real(
-            0.02,
-        ),
+        distance: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::SweepGuided => r#"Ok(
@@ -1387,9 +2937,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         path: GeometryHandleId(
             60,
         ),
-        radius: Real(
-            0.005,
-        ),
+        radius: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::ExtrudeInfinite => r#"Ok(
@@ -1448,41 +3042,83 @@ const ALL_CURVE: [CurveKind; 6] = [
 /// degree-1 / 2-point curve).
 fn curve_case(k: CurveKind) -> CompiledGeometryOp {
     let args = match k {
+        // Both endpoints are LENGTH-gated (task 5623). The golden below is
+        // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         CurveKind::LineSegment => vec![
-            ("x1".to_string(), lit(0.0)),
-            ("y1".to_string(), lit(0.0)),
-            ("z1".to_string(), lit(0.0)),
-            ("x2".to_string(), lit(0.01)),
-            ("y2".to_string(), lit(0.02)),
-            ("z2".to_string(), lit(0.03)),
+            ("x1".to_string(), length_literal(0.0)),
+            ("y1".to_string(), length_literal(0.0)),
+            ("z1".to_string(), length_literal(0.0)),
+            ("x2".to_string(), length_literal(0.01)),
+            ("y2".to_string(), length_literal(0.02)),
+            ("z2".to_string(), length_literal(0.03)),
         ],
+        // Centre and radius are LENGTH-gated (task 5623); the two angles are
+        // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ); the
+        // ax/ay/az unit vector stays deliberately bare. Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), lit(0.0)),
-            ("cy".to_string(), lit(0.0)),
-            ("cz".to_string(), lit(0.0)),
-            ("radius".to_string(), lit(0.01)),
-            ("start_angle".to_string(), lit(0.0)),
-            ("end_angle".to_string(), lit(1.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
+            ("cx".to_string(), length_literal(0.0)),
+            ("cy".to_string(), length_literal(0.0)),
+            ("cz".to_string(), length_literal(0.0)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("start_angle".to_string(), angle_literal(0.0)),
+            ("end_angle".to_string(), angle_literal(1.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
         ],
+        // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
+        // rise per turn, not an angle. Golden below unchanged.
         CurveKind::Helix => vec![
-            ("radius".to_string(), lit(0.01)),
-            ("pitch".to_string(), lit(0.005)),
-            ("height".to_string(), lit(0.05)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("pitch".to_string(), length_literal(0.005)),
+            ("height".to_string(), length_literal(0.05)),
         ],
-        // 2 points → 6 coords.
-        CurveKind::InterpCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.02, 0.03]),
-        // 3 control points → 9 coords.
-        CurveKind::BezierCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.01, 0.0, 0.02, 0.0, 0.0]),
+        // 2 points → 6 coords. EVERY position is a point coordinate and so is
+        // LENGTH-gated (task 5658). The golden below is unchanged:
+        // `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
+        CurveKind::InterpCurve => vec![
+            ("c0".to_string(), length_literal(0.0)),
+            ("c1".to_string(), length_literal(0.0)),
+            ("c2".to_string(), length_literal(0.0)),
+            ("c3".to_string(), length_literal(0.01)),
+            ("c4".to_string(), length_literal(0.02)),
+            ("c5".to_string(), length_literal(0.03)),
+        ],
+        // 3 control points → 9 coords. EVERY position is a control-point
+        // coordinate and so is LENGTH-gated (task 5658). Golden unchanged.
+        CurveKind::BezierCurve => vec![
+            ("c0".to_string(), length_literal(0.0)),
+            ("c1".to_string(), length_literal(0.0)),
+            ("c2".to_string(), length_literal(0.0)),
+            ("c3".to_string(), length_literal(0.01)),
+            ("c4".to_string(), length_literal(0.01)),
+            ("c5".to_string(), length_literal(0.0)),
+            ("c6".to_string(), length_literal(0.02)),
+            ("c7".to_string(), length_literal(0.0)),
+            ("c8".to_string(), length_literal(0.0)),
+        ],
         // degree=1, n_points=2, poles(2×3), weights(2), knots(n+deg+1=4).
-        CurveKind::NurbsCurve => coord_args(&[
-            1.0, 2.0, // degree, n_points
-            0.0, 0.0, 0.0, 0.01, 0.0, 0.0, // poles
-            1.0, 1.0, // weights
-            0.0, 0.0, 1.0, 1.0, // knots
-        ]),
+        // ONLY the pole span is LENGTH-gated (task 5658) — `coord_args` cannot
+        // be swapped wholesale here. `degree` is a polynomial degree (a count),
+        // `n_points` is a count, the weights are rational blending factors and
+        // the knots are parameter-space values, so all eight stay deliberately
+        // BARE. Golden unchanged, same `as_f64` identity as above.
+        CurveKind::NurbsCurve => vec![
+            ("c0".to_string(), real_literal(1.0)),      // degree
+            ("c1".to_string(), real_literal(2.0)),      // n_points
+            ("c2".to_string(), length_literal(0.0)),  // pole 1 x
+            ("c3".to_string(), length_literal(0.0)),  // pole 1 y
+            ("c4".to_string(), length_literal(0.0)),  // pole 1 z
+            ("c5".to_string(), length_literal(0.01)), // pole 2 x
+            ("c6".to_string(), length_literal(0.0)),  // pole 2 y
+            ("c7".to_string(), length_literal(0.0)),  // pole 2 z
+            ("c8".to_string(), real_literal(1.0)),      // weight 1
+            ("c9".to_string(), real_literal(1.0)),      // weight 2
+            ("c10".to_string(), real_literal(0.0)),     // knot 1
+            ("c11".to_string(), real_literal(0.0)),     // knot 2
+            ("c12".to_string(), real_literal(1.0)),     // knot 3
+            ("c13".to_string(), real_literal(1.0)),     // knot 4
+        ],
     };
     CompiledGeometryOp::Curve { kind: k, args }
 }
@@ -1628,15 +3264,18 @@ const ALL_PROFILE: [ProfileKind; 4] = [
 fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
     let args = match k {
         ProfileKind::Rectangle => vec![
-            ("width".to_string(), lit(0.02)),
-            ("height".to_string(), lit(0.03)),
+            ("width".to_string(), length_literal(0.02)),
+            ("height".to_string(), length_literal(0.03)),
         ],
-        ProfileKind::Circle => vec![("radius".to_string(), lit(0.01))],
-        // 3 points → 6 coords (chunks of 2).
+        ProfileKind::Circle => vec![("radius".to_string(), length_literal(0.01))],
+        // 3 points → 6 coords (chunks of 2). EVERY position is a vertex
+        // coordinate in the XY plane and so is LENGTH-gated (task 5661), which
+        // is why `coord_args` mints dimensioned literals. The golden below is
+        // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         ProfileKind::Polygon => coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
         ProfileKind::Ellipse => vec![
-            ("semi_major".to_string(), lit(0.02)),
-            ("semi_minor".to_string(), lit(0.01)),
+            ("semi_major".to_string(), length_literal(0.02)),
+            ("semi_minor".to_string(), length_literal(0.01)),
         ],
     };
     CompiledGeometryOp::Profile { kind: k, args }
@@ -1648,19 +3287,151 @@ fn profile_golden(k: ProfileKind) -> &'static str {
     match k {
         ProfileKind::Rectangle => r#"Ok(
     RectangleProfile {
-        width: Real(
-            0.02,
-        ),
-        height: Real(
-            0.03,
-        ),
+        width: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ProfileKind::Circle => r#"Ok(
     CircleProfile {
-        radius: Real(
-            0.01,
-        ),
+        radius: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ProfileKind::Polygon => r#"Ok(
@@ -1683,12 +3454,100 @@ fn profile_golden(k: ProfileKind) -> &'static str {
 )"#,
         ProfileKind::Ellipse => r#"Ok(
     EllipseProfile {
-        semi_major: Real(
-            0.02,
-        ),
-        semi_minor: Real(
-            0.01,
-        ),
+        semi_major: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        semi_minor: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
     }
@@ -1962,7 +3821,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// Kept as a named constant so the prose and the assertion cannot drift apart
 /// silently: the test compares this against the sum of the nine
 /// `VARIANT_COUNT`s, so if the doc arithmetic is wrong the test fails.
-const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
+const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 53;
 
 /// Runtime census cross-check for the 10-family / 53-nested-kind oracle
 /// (nine kind families totalling 52, plus the Isosurface marker family).
@@ -2005,8 +3864,8 @@ const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
 /// variant is added, forcing the author through `ALL`. `VARIANT_COUNT` then
 /// catches the unregistered registry row.
 ///
-/// Census: 8 + 3 + 9 + 7 + 5 + 9 + 6 + 4 + 1 = 52 across the nine kind families
-/// (53 including the `ALL_ISOSURFACE` marker family).
+/// Census: 8 + 3 + 10 + 7 + 5 + 9 + 6 + 4 + 1 = 53 across the nine kind families
+/// (54 including the `ALL_ISOSURFACE` marker family).
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths, each cross-checked against the compiler's
@@ -2018,7 +3877,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // and Boolean/Surface beside theirs above.)
     assert_eq!(ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT, "ALL_PRIMITIVE is out of sync with PrimitiveKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_BOOLEAN.len(), BooleanOp::VARIANT_COUNT, "ALL_BOOLEAN is out of sync with BooleanOp::VARIANT_COUNT — update both together");
-    assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
+    assert_eq!(ALL_MODIFY.len(), 10, "ALL_MODIFY census");
     assert_eq!(ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT, "ALL_TRANSFORM is out of sync with TransformKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_PATTERN.len(), PatternKind::VARIANT_COUNT, "ALL_PATTERN is out of sync with PatternKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_SWEEP.len(), SweepKind::VARIANT_COUNT, "ALL_SWEEP is out of sync with SweepKind::VARIANT_COUNT — update both together");
@@ -2082,5 +3941,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // Total nested-kind census across all ten families (the nine kind families
     // plus the Isosurface marker).
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 54, "total nested-kind census; update if any ALL_* array is resized");
 }

@@ -140,10 +140,10 @@ fn user_fn_call_content_hash_matches_compiler() {
     );
 }
 
-/// Multi-arg FunctionCall: `fn t() -> Real { atan2(0.0, 1.0) }`
+/// Multi-arg FunctionCall: `fn t() -> Angle { atan2(0.5, 1.5) }`
 ///
 /// Verifies that argument hashes are combined in order — a two-arg call with
-/// distinct arg values (0.0 ≠ 1.0) detects any argument-ordering regression
+/// distinct arg values (0.5 ≠ 1.5) detects any argument-ordering regression
 /// that the single-arg `sin` test cannot catch.  The qualified_name is
 /// extracted from the compiled output so the test is about hash-algorithm
 /// agreement rather than resolver format.
@@ -152,7 +152,7 @@ fn fn_call_multi_arg_content_hash_matches_compiler() {
     // Use non-whole literals (0.5, 1.5) so the compiler represents them as
     // Value::Real rather than Value::Int (whole numbers like 0.0 and 1.0 are
     // folded to Int by the compiler's number-literal path).
-    let source = "fn t() -> Real { atan2(0.5, 1.5) }";
+    let source = "fn t() -> Angle { atan2(0.5, 1.5) }";
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     let compiled = reify_compiler::compile(&parsed);
 

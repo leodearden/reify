@@ -51,8 +51,10 @@
 //   3. TYPE-ALIAS TIGHTENING (partial — Pose3/Vec3 only): `Pose3` is now
 //      aliased to the core `Transform3` rigid-transform type (rotation +
 //      translation), making Pose3 nominally distinct from `Real` (task 4577).
-//      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
-//      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
+//      `Vec3<Q>` aliases `Vector3<Q>`: tightened from `Real` by task #4575
+//      (per affine-map-type.md §4.2) and generalised over any Dimension by
+//      task #4794; which Q a field takes is the RULING on the alias block
+//      below. Also nominally distinct from Real/Pose3.
 //      `LocationId` is now a `FaceSelector` (resolved #4655 / R3c): routing it
 //      to the topology-`Selector` substrate was deliberately split out of task
 //      4577 because the trajectory accessors run on the VALUE-EVAL path, where a
@@ -79,7 +81,8 @@ pub type JointValue = Real
 // Pose3: 3-D rigid-body pose (position + orientation) at a single location
 // and time instant. Aliased to the core `Transform3` rigid-transform type
 // (rotation + translation) — task 4577. `Type::Transform(3)` is the
-// landed rigid-pose substrate (crates/reify-core/src/ty.rs:305/462).
+// landed rigid-pose substrate (the `Type::Transform(n)` variant and its
+// `Type::transform` shorthand in crates/reify-core/src/ty.rs).
 // Aliasing to Transform3 (rather than a distinct struct) makes the round-trip
 // identity-sound: a function expecting Transform3 accepts a Pose3 arg and
 // vice versa, while Pose3 stays nominally distinct from LocationId
@@ -92,12 +95,26 @@ pub type Pose3 = Transform3
 
 // Vec3<Q>: parametric 3-D Euclidean vector over any Dimension Q.
 // Generalised from the monomorphic `Vec3 = Vector3<Length>` by task #4794.
-// Vec3<Length> is the canonical concrete form for trajectory and kinematic
-// axis parameters (dimension is observationally irrelevant for normalized
-// directions, but a concrete Dimension is required syntactically).
-// Per affine-map-type.md §4.2 and the established stdlib convention:
-//   fdm.ri `build_direction : Vec3<Length>`,
-//   ports.ri Frame3 members : Vec3<Length>.
+//
+// RULING (task 5848) — which Q a stdlib field takes is decided by what the
+// field DENOTES, not by what its neighbours spell:
+//   - a DIRECTION (joint axis, frame axis, build direction) takes a
+//     DIMENSIONLESS slot: a unit vector is genuinely dimensionless.
+//   - a POSITION or DISPLACEMENT takes Length.
+// This retired the former guidance here, which claimed a concrete Dimension
+// was "required syntactically" and named fdm.ri's `build_direction` and
+// ports.ri's Frame3 members as the convention to copy. `build_direction` was
+// mis-typed outright and is now dimensionless. Frame3 was mis-typed only in
+// part, and is the clearest illustration of the rule: its three axes moved to
+// the dimensionless slot while `origin` KEEPS Length, because a position is
+// not a direction. Copying a neighbour's spelling is what produced both bugs.
+//
+// Two anchors make the ruling checkable rather than advisory:
+// `validate_dimensionless_unit_axis_vec3` (reify-stdlib/src/helpers.rs), the
+// evaluator guard that already REJECTED a dimensioned joint axis, and the
+// landed `ModalOptions.reference_direction : Vector3<Dimensionless>`
+// (modal_analysis.ri).
+//
 // Vec3<Pressure> (and other non-Length instantiations) exercises the full
 // parametric path — previously this was an arity error on the old 0-param alias.
 pub type Vec3<Q: Dimension> = Vector3<Q>
@@ -283,7 +300,8 @@ structure def PiecewisePolynomialProfile : Profile {
     // production code rather than relying solely on test coverage (task
     // 2544 convention; same shape `BucklingOptions.n_modes > 0` uses in
     // `solver_buckling.ri`). The `.count` method on `List` is recognised
-    // in constraint position (`reify-expr/src/lib.rs:1349` evaluator arm;
+    // in constraint position (the `"count"` arm of `eval_method_call` in
+    // `crates/reify-expr/src/lib.rs`;
     // precedent: `constraint vents.count == n` in
     // `forall_statement_lower_tests.rs`).
     //
@@ -353,7 +371,7 @@ structure def EndEffectorTrack {
 //
 // These four functions delegate to undeclared `*_at` intrinsics via the same
 // delegate-to-undeclared-name pattern used by `gcode_import` → `gcode_import_lower`
-// (trajectory.ri:820) and `input_shape` → `input_shape_apply` (trajectory.ri:895).
+// and `input_shape` → `input_shape_apply` (both declared below in this file).
 //
 // Dispatch path for, e.g., `evaluate_profile(p, t)`:
 //   1. The `.ri` declaration shadows the same-named `eval_builtin` entry
@@ -468,39 +486,108 @@ pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length {
 // Kept empty by design: each variant carries its own per-strategy fields;
 // the trait exists only to give the `shaper` param on the `input_shape`
 // dispatcher a single nominal type so the SIR-α nominal type-tag dispatches
-// correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
-// `trait BoundaryCondition { }` (:83).
+// correctly. Same marker-trait discipline as `trait Profile { }` and
+// `trait BoundaryCondition { }` (both declared above in this file).
 trait Shaper { }
+
+// ── ActuatorLimit marker trait (task 6096) ────────────────────────────────────
+
+// ActuatorLimit — marker trait rooting the per-joint-kind actuator-limit
+// family (task 6096).
+//
+// Two structures refine it, one per joint kind, sharing every param NAME and
+// differing ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit         : Scalar<Force>   — prismatic / translational
+//   - RevoluteJointLimit : Scalar<Torque>  — revolute / rotational
+//
+// The trait exists so that duality is pinned in the TYPE SYSTEM rather than in
+// prose. The shaper half of the same duality gets this for free from the
+// pre-existing `trait Shaper { }` above (TOTSShaper / RevoluteTOTSShaper);
+// without this marker the limit half would be the asymmetric one.
+//
+// CONSUMERS — be honest about the asymmetry with `trait Shaper`: Shaper is
+// LOAD-BEARING (it is the declared param type of `pub fn input_shape(profile:
+// Profile, shaper: Shaper)` below), whereas NO signature, param or alias is
+// declared `ActuatorLimit` today, and the shaper halves deliberately declare
+// the CONCRETE element type (`List<JointLimit>` / `List<RevoluteJointLimit>`)
+// — they must, since the element type is exactly what follows the joint kind.
+// So this marker is currently a declaration of family membership, not a
+// dispatch surface, and it is pinned only by the two `trait_bounds ==
+// ["ActuatorLimit"]` assertions in trajectory_stdlib_compile.rs.
+//
+// The named candidate first consumer is task #6240 — the wrong-kind PAIRING
+// diagnostic descoped from #6096 (dep-gated on strictness leaf #5627). Its
+// brief is to answer "is this limit the wrong KIND for this joint?", and a
+// family root is where that question is answerable without hard-coding the
+// member list at the asking site. If #6240 lands without needing it, delete
+// this trait and let the per-half param-shape tests carry the duality — an
+// empty marker with no consumer is not worth keeping on its own.
+//
+// That disposition is not left to whoever next reads this comment: #6096
+// filed it as a follow-up, and it now lives INSIDE #6240's own scope as an
+// explicit "DISPOSITION CHECK" bullet carrying the exact deletion recipe
+// (this decl, both `: ActuatorLimit` refinements, and step (a) of
+// `assert_actuator_limit_param_shape` in trajectory_stdlib_compile.rs). So
+// there is no separate dep-gated task to chase — the SAME implementer who
+// answers the pairing question answers this one, in the same pass, with the
+// evidence in front of them. Deleting the trait early, before #6240 has
+// answered, is the one thing that would waste that gating.
+//
+// Kept empty by design, same marker-trait discipline as `trait Shaper { }`,
+// `trait Profile { }` and `trait BoundaryCondition { }`.
+trait ActuatorLimit { }
 
 // ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
 
 // JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
 //
+// This is the PRISMATIC / translational half of the per-joint-kind
+// actuator-limit duality (task 6096); `RevoluteJointLimit` below is the
+// rotational half. Both refine `trait ActuatorLimit` and are identical apart
+// from the dimension of `max_force` (Force here, Torque there) — the same
+// shape as the `spring_rate` precedent in kinematic.ri
+// (`Prismatic.spring_rate : Option<TranslationalStiffness>` vs
+// `Revolute.spring_rate : Option<RotationalStiffness>`).
+//
+// Supplying a Force-dimensioned limit to a revolute joint (or vice versa) is
+// a wrong-kind PAIRING; DIAGNOSING that at the ctor call site is task #6240's
+// (dep-gated on #5627) and is deliberately not enforced here. What IS enforced
+// today is the field-READ dimension: `limit.max_force` carries the declared
+// dimension, so arithmetic against the wrong family is rejected.
+//
 // Fields:
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (:211, TODO(mechanism-type)) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          Real` (its TODO(mechanism-type) note) and as // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          `RevoluteJointLimit.joint` below (task 6096) —
+//                          THREE sites, all referencing
 //                          kinematic-completion-PRD-owned types that have not
-//                          yet landed. When kinematic-completion lands, both
-//                          retarget via the same refactor sweep.
-//   - max_force : Scalar<Force>  — RESOLVED(force-scalar): tightened from Real
-//                                  by task 4580. Constraint RHS updated to
-//                                  dimensioned-zero `0 * 1N` (esc-3115 rule:
-//                                  bare `0` is dimensionless; Scalar<Force>
-//                                  LHS requires a dimensioned RHS literal).
+//                          yet landed. When kinematic-completion lands, all
+//                          three retarget via the same refactor sweep. The
+//                          sweep set is discovered by grepping the placeholder
+//                          markers, so every member carries its own marker —
+//                          adding a fourth placeholder without one silently
+//                          drops it from the sweep.
+//   - max_force : Scalar<Force>  — the TRANSLATIONAL actuator limit
+//                                  (m·kg·s⁻²). Tightened from Real by task
+//                                  4580; the per-joint-kind counterpart is
+//                                  `RevoluteJointLimit.max_force :
+//                                  Scalar<Torque>` (task 6096).
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
 //
-// Constraint `max_force > 0 * 1N` is added in step-34, tightened in task 4580.
+// Constraint `max_force > 0` is added in step-34, tightened in task 4580.
 // Explicitly NOT constrained:
 // `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
 // predicate on a handle.
 //
-// Refines no trait (JointLimit is a plain data container, not a Shaper
-// variant or a BoundaryCondition).
-structure def JointLimit {
+// Refines exactly `trait ActuatorLimit` (task 6096) — the family marker, not a
+// Shaper variant and not a BoundaryCondition. It previously refined NO trait;
+// that contract changed deliberately when 6096 introduced the duality.
+structure def JointLimit : ActuatorLimit {
     param joint : Real
     param max_force : Scalar<Force>
 
@@ -512,8 +599,58 @@ structure def JointLimit {
     // Fires automatically at construction via SIR-α's
     // `check_constraints_against_templates` machinery (task 3540, landed).
     //
-    // Bare `0` coerced to Scalar<Force> at compile time by task-4485/β
-    // polymorphic-zero rewrite (esc-3115-112 resolved).
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
+    //
+    // NOTE — explicitly NOT constrained:
+    //   `joint : Real` — placeholder for an entity-handle type; no
+    //   meaningful scalar predicate on a handle.
+    constraint max_force > 0
+}
+
+// ── RevoluteJointLimit (task 6096) ────────────────────────────────────────────
+
+// RevoluteJointLimit — the REVOLUTE / rotational half of the per-joint-kind
+// actuator-limit duality (task 6096). Mirrors `JointLimit` above exactly —
+// same param names, same canonical order, same positivity constraint — and
+// differs ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit.max_force         : Scalar<Force>   (m·kg·s⁻²)
+//   - RevoluteJointLimit.max_force : Scalar<Torque>  (m²·kg·s⁻²·rad⁻¹)
+//
+// Reify's Torque carries an explicit Angle⁻¹ slot (N·m/rad), which is what
+// keeps it a DISTINCT vector from Energy — do not hand-compose it as
+// Force·Length anywhere.
+//
+// The field NAME stays `max_force` rather than `max_torque`: the `spring_rate`
+// precedent this task extends (kinematic.ri Prismatic/Revolute) keeps ONE name
+// across joint kinds and varies only the dimension, and the dimension-blind
+// `field_f64(data, "max_force", ..)` marshalling readers in reify-stdlib stay
+// uniform across both kinds as a result.
+//
+// No defaults: both fields are caller-supplied (same rationale as JointLimit).
+//
+// Fields:
+//   - joint     : Real   — TODO(joint-type): the SAME entity-handle // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          placeholder as `JointLimit.joint` above (and as
+//                          `PiecewisePolynomialProfile.mechanism`). It carries
+//                          its OWN marker deliberately: the
+//                          kinematic-completion retarget sweep is discovered by
+//                          grepping these markers, so a third placeholder
+//                          without one would be invisible to the sweep that is
+//                          supposed to retire it.
+//   - max_force : Scalar<Torque> — the ROTATIONAL actuator limit
+//                                  (m²·kg·s⁻²·rad⁻¹); the per-joint-kind
+//                                  counterpart of `JointLimit.max_force :
+//                                  Scalar<Force>`.
+structure def RevoluteJointLimit : ActuatorLimit {
+    param joint : Real
+    param max_force : Scalar<Torque>
+
+    // Same physical rationale as JointLimit's: a zero max torque means the
+    // joint can exert nothing, and a negative one is non-physical. Bare `0`
+    // coerces to Scalar<Torque> here (Scalar<Force> for the prismatic half).
+    //
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
@@ -534,9 +671,8 @@ structure def JointLimit {
 // Dimensional encoding (task 4580 tightening):
 // velocity_limit and acceleration_limit are Scalar<Velocity>/Scalar<Acceleration>
 // (Velocity added to NAMED_DIMENSIONS in task 4580; Force/Acceleration were
-// already named). Their constraints use bare `0` — coerced to the correct
-// Scalar<D> at compile time by task-4485/β polymorphic-zero rewrite
-// (esc-3115-112 resolved).
+// already named). Their constraints use bare `0`.
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
 // vibration_tolerance/max_iters/tol remain dimensionless (plain > 0 / <= 1).
 //
 // Fields:
@@ -544,7 +680,7 @@ structure def JointLimit {
 //                                              the growing-prelude cross-module
 //                                              mechanism (std.modal.analysis
 //                                              loaded before std.trajectory per
-//                                              stdlib_loader.rs:110-116).
+//                                              `stdlib_loader::stdlib_sources`).
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
 //   - velocity_limit     : Scalar<Velocity>  — RESOLVED(velocity-scalar): tightened
@@ -577,8 +713,9 @@ structure def TOTSShaper : Shaper {
 
     // tol = 0.000001 = 1e-6 per PRD §5.2. Encoded as the decimal literal
     // because Reify's number-literal grammar has no scientific notation (same
-    // convention as modal_analysis.ri:356 tol = 0.000000001 = 1e-9 and
-    // solver_buckling.ri:79 tol = 0.00000001 = 1e-8). IEEE-754 round-to-
+    // convention as `ModalOptions.tol` = 0.000000001 = 1e-9 in
+    // modal_analysis.ri and `BucklingOptions.tol` = 0.00000001 = 1e-8 in
+    // solver_buckling.ri). IEEE-754 round-to-
     // nearest of this exact decimal literal is deterministic.
     param tol : Real = 0.000001
 
@@ -593,8 +730,7 @@ structure def TOTSShaper : Shaper {
     // velocity_limit, acceleration_limit: must be strictly positive — a zero or
     // negative kinematic limit is non-physical (the robot cannot move at all if
     // the velocity limit is zero, and a negative limit has no physical meaning).
-    // Bare `0` coerced to Scalar<Velocity> / Scalar<Acceleration> at compile time
-    // by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved).
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint velocity_limit > 0
     constraint acceleration_limit > 0
 
@@ -621,10 +757,81 @@ structure def TOTSShaper : Shaper {
     //   rationale (producer/consumer-enforced at the SQP loop).
 }
 
+// ── RevoluteTOTSShaper (task 6096) ────────────────────────────────────────────
+
+// RevoluteTOTSShaper — the REVOLUTE / rotational half of the TOTS-shaper
+// duality (task 6096). Mirrors `TOTSShaper` above exactly: same 7 params in
+// the same canonical order, the same `Shaper` refinement, the same 6 ctor
+// constraints. It differs ONLY in the three per-joint-kind types:
+//
+//   - actuator_limits    : List<RevoluteJointLimit>  (vs List<JointLimit>)
+//   - velocity_limit     : Scalar<AngularVelocity>   (rad·s⁻¹, vs m·s⁻¹)
+//   - acceleration_limit : Rate<AngularVelocity>     (rad·s⁻², vs m·s⁻²)
+//
+// WHY `Rate<AngularVelocity>` AND NOT A NAMED `AngularAcceleration`:
+// there is no `ANGULAR_ACCELERATION` DimensionVector const and no
+// "AngularAcceleration" NAMED_DIMENSIONS row in reify-core today (zero hits
+// repo-wide). That name is chartered to a DIFFERENT PRD leaf —
+// `docs/prds/v0_6/angle-dimension-completion.md` leaf δ ("ANGULAR_ACCELERATION
+// + closure exemplar") — so adding it here would be cross-PRD scope theft of
+// an owned leaf. It is also unnecessary: the prelude alias
+// `pub type Rate<Q: Dimension> = Q / Time` (units.ri:116) composes the
+// IDENTICAL rad·s⁻² vector today. The cost is a spelling asymmetry
+// (`Scalar<AngularVelocity>` beside `Rate<AngularVelocity>`); retype this
+// field to the named dimension when δ lands.
+//
+// The `velocity_limit > 0` / `acceleration_limit > 0` constraints use bare
+// `0`, coerced per-field to Scalar<AngularVelocity> / Rate<AngularVelocity>,
+// exactly as TOTSShaper's do. The constraint SOURCE TEXT is therefore
+// byte-identical across the two halves; the per-kind difference lives
+// entirely in the param declarations.
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
+//
+// TOTSShaper above stays byte-identical as the LINEAR / prismatic half, so no
+// existing caller of it moves.
+structure def RevoluteTOTSShaper : Shaper {
+    param modes : List<Mode>
+    param actuator_limits : List<RevoluteJointLimit>
+    param velocity_limit : Scalar<AngularVelocity>
+    param acceleration_limit : Rate<AngularVelocity>
+    param vibration_tolerance : Real
+
+    // Solver-loop knobs, identical to the linear half's — these are entirely
+    // independent of the joint kind, so the two halves must not diverge here.
+    param max_iters : Int = 100
+
+    // 0.000001 = 1e-6, spelled as a decimal literal because Reify's
+    // number-literal grammar has no scientific notation (same convention as
+    // TOTSShaper.tol above and ModalOptions.tol in modal_analysis.ri).
+    param tol : Real = 0.000001
+
+    // Same 6 constraints as the linear half, same rationale:
+    // a zero or negative angular velocity/acceleration limit is non-physical,
+    // vibration_tolerance ∈ (0, 1] is the residual-vibration fraction, and
+    // max_iters / tol must be strictly positive for the solver to run and
+    // converge. All fire at construction via SIR-α's
+    // `check_constraints_against_templates` machinery.
+    constraint velocity_limit > 0
+    constraint acceleration_limit > 0
+
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+
+    constraint max_iters > 0
+
+    constraint tol > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   `modes : List<Mode>` — collection invariants deferred to the κ-task
+    //   SQP-loop trampoline (same discipline as ModalResult.modes).
+    //   `actuator_limits : List<RevoluteJointLimit>` — same collection-
+    //   invariant rationale (producer/consumer-enforced at the SQP loop).
+}
+
 // ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
 //
 // δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
-// refining the `trait Shaper { }` marker declared above (:322).
+// refining the `trait Shaper { }` marker declared above.
 // Type/encoding rationale is documented per-structure below; see ZVShaper for
 // the canonical type-decision commentary (Frequency dim, 0Hz constraint, etc.).
 
@@ -648,10 +855,10 @@ structure def TOTSShaper : Shaper {
 //
 // Constraint:
 //   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
-//   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
-//   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
-//   dim-incompatible with Frequency per the esc-3115 rule documented at
-//   modal_analysis.ri:564-566.
+//   `0Hz` is retained because it reads as an explicit frequency bound; a bare
+//   `0` compiles to the same Value::Scalar{si_value:0.0, dimension:FREQUENCY}.
+//   DIMENSIONED-ZERO CONVENTION — see
+//   docs/notes/dimensioned-zero-coercion.md.
 structure def ZVShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real = 0.0
@@ -674,7 +881,7 @@ structure def ZVShaper : Shaper {
 //                                     must supply per PRD §5.1 / task spec).
 //
 // Constraint:
-//   target_frequency > 0Hz — same dimensioned literal as ZVShaper (0Hz, not 0).
+//   target_frequency > 0Hz — `0Hz` by the same convention as ZVShaper above.
 structure def ZVDShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real
@@ -703,10 +910,11 @@ structure def ZVDShaper : Shaper {
 //                                        (degenerate). Two scalar predicates
 //                                        because Reify's constraint grammar has
 //                                        no interval form — same decomposition
-//                                        as TOTSShaper (:450-451).
+//                                        as `TOTSShaper.vibration_tolerance`.
 //
 // Constraints:
-//   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
+//   target_frequency > 0Hz     — `0Hz` by the same convention as ZVShaper
+//                                above.
 //   vibration_tolerance > 0    — lower bound of (0, 1] interval.
 //   vibration_tolerance <= 1   — upper bound of (0, 1] interval.
 structure def EIShaper : Shaper {
@@ -728,13 +936,13 @@ structure def EIShaper : Shaper {
 // identity (convolving with nothing = no shaping), so no `shapers.count > 0`
 // constraint is declared. Collection invariants (e.g. non-empty, compatible
 // frequencies) are deferred to the ε consumer, matching the TOTSShaper.modes /
-// actuator_limits discipline (:461-465).
+// actuator_limits discipline (TOTSShaper's "NOT constrained" note above).
 //
 // Fields:
 //   - shapers : List<Shaper>  — the ordered sequence of shapers to cascade.
 //                               Type::List(TraitObject("Shaper")) — same
 //                               encoding as CompositeForce.sources:
-//                               List<ForcingFunction> (modal_analysis.ri:701).
+//                               List<ForcingFunction> (modal_analysis.ri).
 //
 // NOTE — explicitly NOT constrained:
 //   `shapers : List<Shaper>` — an empty cascade is a valid identity (no-op);
@@ -777,24 +985,84 @@ structure def MarlinDialect : GcodeDialect { }
 // authoring-time params or constraints.
 structure def KlipperDialect : GcodeDialect { }
 
-// gcode_import — lower a g-code program to a list of motion profiles
+// GcodeWaypoint — one resolved g-code move TARGET, in SI (PRD §7.2).
+// x / y / z / e are `Length` (metres); `feedrate` is the `Velocity` (m/s) in
+// effect for the move, `none` when no F word is in effect — never a 0 sentinel.
+structure def GcodeWaypoint {
+    param x : Length
+    param y : Length
+    param z : Length
+    param e : Length
+    param feedrate : Option<Velocity>
+}
+
+// GcodeMotionSegment — one contiguous motion run of a g-code program.
+// Its waypoints are move TARGETS: the start position is the running position
+// carried over from the previous segment and is not re-recorded. Deliberately
+// NOT a `Profile` refinement: it has no time parameterisation.
+structure def GcodeMotionSegment {
+    param waypoints : List<GcodeWaypoint>
+}
+
+// gcode_import — lower a g-code program to a list of motion segments
 // (PRD §7.2, §11 task ο).
 //
 // `source` is the raw g-code text. `dialect : GcodeDialect` selects the parser
 // (`MarlinDialect` / `KlipperDialect`) via the SIR-α nominal type-tag — the same
-// marker-trait dispatch `evaluate_profile(p: Profile, …)` (:368) uses to accept
-// any concrete variant. The result is one `Profile` per contiguous motion
-// segment: non-motion commands (temperature/fan/extruder M-codes,
-// SET_VELOCITY_LIMIT, INPUT_SHAPER) split the motion run, while G92 set-position
+// marker-trait dispatch `evaluate_profile(p: Profile, …)` uses to accept
+// any concrete variant. The result is one `GcodeMotionSegment` per contiguous
+// motion run: non-motion commands (temperature/fan/extruder M-codes,
+// SET_VELOCITY_LIMIT, INPUT_SHAPER) split the run, while G92 set-position
 // and standalone F feed-rate updates are in-segment state that do not split.
 //
 // Runtime dispatch lives in the Rust eval path
 // (`reify-stdlib/src/trajectory/gcode_import.rs::eval_gcode_import`, wired
 // through `trajectory/mod.rs::eval_trajectory`): it marshals the
-// `(String, StructureInstance)` arguments into a `Value::List` of profile
-// records, mirroring the `mechanism` builtin's `Value::Map` structured-result
-// encoding (the `eval_builtin` path has no `StructureRegistry` to mint a real
-// `Value::StructureInstance`).
+// `(String, StructureInstance)` arguments into a `Value::List` of registry-free
+// `Value::StructureInstance`s of the two types declared above, minted by type
+// name (the `eval_builtin` path has no `StructureRegistry`) — the same
+// convention as `dynamics.ri`'s `MotionTrajectory` / `ramp_profile`.
+//
+// UNITS — the returned payload is SI and dimensioned; the field types are
+// declared on `GcodeWaypoint` / `GcodeMotionSegment` above.
+//
+// The conversion happens in `waypoint_to_value`
+// (`reify-stdlib/src/trajectory/gcode_import.rs`), which is the unit-regime
+// BOUNDARY: the parser-side `Waypoint` struct and the whole pure lowering layer
+// below it stay in native g-code millimetres / mm-per-minute for lossless parse
+// fidelity, and only this DSL-visible projection is SI. G-code text is still
+// authored in millimetres — `examples/trajectory/gcode_import_smoke.ri`'s
+// `"G1 X10 Y10"` is a move to (10 mm, 10 mm), and it surfaces here as
+// (0.01 m, 0.01 m).
+//
+// The FDM slice surface does the same thing, so authoring against both is one
+// rule, not two. `fdm_slice.ri` declares `Bead.width`, `.height`, `.layer_z`
+// and `Layer.z` as `Length`, `.speed` as `Velocity`, `.nominal_temp` as
+// `Temperature` and the centerline as `List<Point3<Length>>` (see the
+// field-type ↔ marshalling contract at the top of that file), and its
+// `toolpath_to_value` converts at that projection just as `waypoint_to_value`
+// does here — while its parser-side `Toolpath` stays native for the same
+// lossless-fidelity reason.
+//
+// So converting at the projection is THE convention for a DSL-visible payload:
+// it is what lets a design author's dimensional
+// arithmetic see the units at all, and it puts the whole conversion at one
+// nameable boundary instead of leaving every consumer to remember which axis
+// is in what.
+//
+// Two tests keep this paragraph honest: `gcode_import_smoke_waypoints_are_si_lengths`
+// in `crates/reify-eval/tests/gcode_import_eval_e2e.rs` pins the positions
+// end-to-end through the real evaluator against that shipped example, and
+// `waypoint_feedrate_is_si_velocity` in
+// `crates/reify-stdlib/src/trajectory/gcode_import.rs` pins the feedrate
+// (its F1800 fixture is chosen to discriminate the mm/min -> m/s divisor from a
+// multiply-by-reciprocal, which differ by one ULP — see that test's comment).
+//
+// NOTE — a segment is NOT a `Profile`: passing one to a `Profile` param
+// (`evaluate_profile`, `profile_duration`, …) is a compile-time
+// `TypeNotConformingToTrait` error. An evaluable profile needs a time
+// parameterisation the g-code does not carry, so build a
+// `PiecewisePolynomialProfile` from the typed waypoints instead.
 //
 // The body delegates to the `gcode_import_lower` intrinsic rather than
 // returning a stub `[]`. Because this fn has a `.ri` declaration the compiler's
@@ -803,23 +1071,25 @@ structure def KlipperDialect : GcodeDialect { }
 // …)` directly. `gcode_import_lower` has no `.ri` declaration, so a call to it
 // inside the body resolves `NoUserFunctions` → `FunctionCall` → `eval_builtin`
 // → `eval_trajectory("gcode_import_lower", …)` → `eval_gcode_import`. The fn
-// signature (`List<Profile>`) and the call site's `UserFunctionCall` result type
-// are unchanged, so `imported.count` and the `profile_count > 0` constraint
-// typecheck correctly. `compile_function` applies no body-vs-return-type check,
-// so the delegate body produces zero Error diagnostics.
+// signature (`List<GcodeMotionSegment>`) and the call site's `UserFunctionCall`
+// result type are unchanged, so `imported.count` and the `segment_count > 0`
+// constraint typecheck correctly. `compile_function` applies no
+// body-vs-return-type check, so the delegate body produces zero Error
+// diagnostics.
 //
 // NOTE — inner-call type discard: `gcode_import_lower(source, dialect)` inside
 // the body is typed by the compiler via the first-arg fallback (result_type =
-// `String`, the type of `source`), NOT as `List<Profile>`. This mis-typed
-// inferred type is intentionally discarded; the outer `UserFunctionCall` at the
-// call site uses the declared return type (`List<Profile>`) as its result_type,
-// so callers typecheck correctly. The discard is load-bearing: if a future
+// `String`, the type of `source`), NOT as `List<GcodeMotionSegment>`. This
+// mis-typed inferred type is intentionally discarded; the outer
+// `UserFunctionCall` at the call site uses the declared return type
+// (`List<GcodeMotionSegment>`) as its result_type, so callers typecheck
+// correctly. The discard is load-bearing: if a future
 // body-vs-declared-return-type check is added to `compile_function`, or the
 // first-arg fallback changes, this delegate pattern will need revisiting.
 // The IR dispatch contract (UserFunctionCall at the call site, FunctionCall
 // inside the body) is pinned by `gcode_import_dispatch_ir_contract` in
 // `crates/reify-eval/tests/gcode_import_eval_e2e.rs`.
-pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
+pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<GcodeMotionSegment> { gcode_import_lower(source, dialect) }
 
 // input_shape — apply an input shaper to a motion profile
 // (PRD §5.3, §11 Phase 2 task ζ).

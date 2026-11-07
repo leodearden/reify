@@ -30,6 +30,21 @@
                     "stderr_contains": "EvalError"
                 }
             }
+        },
+        {
+            "capability": "printed value is finite and in range (value kind)",
+            "probe_kind": "value",
+            "fixture": "tests/prd-gate/fixtures/value_clean_eval_cells.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "stdout_value": {
+                        "pattern": "ValueCleanEvalCells\\.damping_ratio = ([-+0-9.eE]+)",
+                        "min": 0.01,
+                        "max": 0.03
+                    }
+                }
+            }
         }
     ]
 }

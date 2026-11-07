@@ -1,0 +1,11 @@
+// Fixture (γ decompose-phase ADVERSARY premise, tau1-numeric): regression
+// floor for the legitimate dimensionless case. `sinh(1.0)` resolves clean
+// today (`reify check` exit 0) and must KEEP resolving after the dimensioned
+// silent-accept is fixed — the fix must gate dimensioned arguments, not
+// reject sinh() wholesale.
+
+module numeric_sinh_bare_baseline
+
+structure def NumericSinhBareBaseline {
+    let s = sinh(1.0)
+}

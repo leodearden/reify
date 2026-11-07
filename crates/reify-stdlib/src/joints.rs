@@ -422,8 +422,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // above) with explicit guards. A Map built by a trusted `couple`
                     // call always has them, but hand-built Maps used in tests or future
                     // serialisation paths may not.
-                    let parent_map = match map.get(&Value::String("parent".to_string())) {
-                        Some(Value::Map(pm)) => pm,
+                    let (parent, parent_map) = match map.get(&Value::String("parent".to_string())) {
+                        Some(parent @ Value::Map(pm)) => (parent, pm),
                         _ => return Some(Value::Undef),
                     };
                     let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
@@ -443,10 +443,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         _ => return Some(Value::Undef),
                     };
                     // Validate the stored parent kind — defense-in-depth against
-                    // hand-built Map fixtures with invalid parent kinds.
-                    // Extracting the kind as a &str (rather than a bool) means this
-                    // is the single validation point; transform_at_simple_joint
-                    // receives the already-validated kind and never re-reads it.
+                    // hand-built Map fixtures with invalid parent kinds. The kind picks
+                    // the coupled value's dimension below; the recursive `transform_at`
+                    // call re-dispatches on it.
                     let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
                         Some(Value::String(s))
                             if matches!(s.as_str(), "prismatic" | "revolute") =>
@@ -483,11 +482,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     } else {
                         Value::angle(coupled_si)
                     };
-                    // Delegate to the parent joint via the private helper.
-                    // Termination is guaranteed: `couple` rejects coupling parents
-                    // at construction, so the recursion always reaches a
-                    // prismatic/revolute arm at depth 1.
-                    transform_at_simple_joint(parent_kind, parent_map, &coupled_value)
+                    // Re-drive the parent through the one `transform_at` primitive every
+                    // consumer uses, so the coupling inherits the parent's mount (task 7187).
+                    // `parent` is the copy `couple` captured: a relate-solved mount written
+                    // into the parent's cell after eval does not reach it (#7194).
+                    // Depth 1: the kind guard above admits only prismatic/revolute parents.
+                    crate::eval_builtin("transform_at", &[parent.clone(), coupled_value])
                 }
                 _ => Value::Undef,
             };
@@ -566,7 +566,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // `Value::Undef`, the wrapper propagates that Undef unchanged.
         // See design decisions in the task-2676 plan.json.
         //
-        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+        // End-to-end coverage lives in crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_stdlib_smoke.rs.
 
         // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
         //
@@ -731,7 +731,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
         "joint_jacobian" => {
-            // SE(3) twist column for a joint, returned as
+            // Jacobian column for a joint — the `JacobianColumn` nominal type
+            // (dpose/dq, NOT a Twist / spatial velocity), returned as
             // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
             //
             // Per-kind formula (constant w.r.t. the motion variable for v0.1
@@ -977,7 +978,6 @@ fn joint_jacobian_value(value: &Value) -> Value {
 ///
 /// Reference: PRD §5.1 (motion-subspace per joint kind) and §12 Q4 (cylindrical
 /// column ordering).
-#[allow(dead_code)] // consumed by RBD-ε RNEA (not yet landed)
 pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector6>> {
     let map = match joint {
         Value::Map(m) => m,
@@ -1429,6 +1429,7 @@ pub(crate) const DRIVING_JOINT_KINDS: &[&str] =
 /// Used by `snapshot::eval_snapshot` (`bind` arm) and
 /// `sweep::eval_sweep` (`dim` / `sweep` / `sweep_grid` arms) to reject
 /// coupling and fixed joints before constructing a binding or sweep-dim Map.
+/// `loop_closure::is_driving_kind` is its typed twin for the loop-closure solve.
 ///
 /// Tied to [`DRIVING_JOINT_KINDS`] via `contains` so a future kind addition
 /// only needs to be made in the constant — the predicate follows automatically.
@@ -1748,10 +1749,6 @@ fn axis_angle_quaternion(nax: f64, nay: f64, naz: f64, theta: f64) -> Value {
 /// added to the caller and this match — not to both separately.
 /// Returns `Value::Undef` as a defence-in-depth fallback for any unrecognised kind,
 /// and for any missing axis or invalid value argument.
-///
-/// This helper is also the terminal dispatch target for the coupling arm of
-/// `transform_at` — `couple` rejects coupling parents at construction, so the
-/// recursion always reaches this helper at depth 1, guaranteeing termination.
 fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &Value) -> Value {
     match kind {
         "prismatic" => {
@@ -7381,16 +7378,18 @@ mod tests {
     // α (task 4331) only tested revolute/prismatic byte-identity for the
     // absent-origin path.  This test closes the gap: every JOINT_KINDS member
     // built WITHOUT an "origin" key must return the expected bare-motion
-    // transform from `transform_at` — i.e. the uniform pre-compose at
-    // joints.rs:494-504 is a true no-op when origin is absent (PRD §7.4).
+    // transform from `transform_at` — i.e. the uniform origin pre-compose at the
+    // tail of `eval_joints`' `"transform_at"` arm is a true no-op when origin is
+    // absent (PRD §7.4).
 
     /// B2 cross-kind: `transform_at` on a joint built WITHOUT an "origin" key
     /// returns the expected bare-motion transform for EVERY kind in JOINT_KINDS
     /// (prismatic, revolute, coupling, fixed, planar, spherical, cylindrical).
     ///
     /// α (task 4331) already covered revolute + prismatic.  This test adds
-    /// the remaining five kinds so the absent-origin no-op invariance at
-    /// joints.rs:494-504 is exhaustively pinned across ALL JOINT_KINDS.
+    /// the remaining five kinds so the absent-origin no-op invariance of the
+    /// `"transform_at"` arm's uniform origin tail is exhaustively pinned across
+    /// ALL JOINT_KINDS.
     ///
     /// Expected GREEN against post-α main; RED would mean a kind silently
     /// broke the absent-origin path (PRD §7.4).
@@ -7888,6 +7887,134 @@ mod tests {
                     "set_mount_origin B9: no 'origin' key must be present for non-liftable mount"
                 );
             }
+        }
+    }
+
+    // ── task 5848: the decl/runtime divergence the retype corrects ───────────
+
+    /// Re-tag a dimensionless axis `Value::Vector` as LENGTH, keeping every
+    /// component number bit-identical. The two legs of the pin below then
+    /// differ ONLY in the dimension tag, so nothing else can explain a
+    /// rejection.
+    fn as_length_axis(axis: &Value) -> Value {
+        match axis {
+            Value::Vector(comps) => Value::Vector(
+                comps
+                    .iter()
+                    .map(|c| match c {
+                        Value::Real(r) => Value::length(*r),
+                        other => {
+                            panic!("as_length_axis: expected a Real component, got {other:?}")
+                        }
+                    })
+                    .collect(),
+            ),
+            other => panic!("as_length_axis: expected Value::Vector, got {other:?}"),
+        }
+    }
+
+    /// Characterization pin for task 5848's ruling that stdlib direction fields
+    /// are DIMENSIONLESS: across ALL FIVE of the joint direction params the
+    /// evaluator ALREADY required a dimensionless axis and evaluated a
+    /// `Length`-dimensioned one to `Undef` — while `kinematic.ri` declared
+    /// `Vec3<Length>`.
+    ///
+    /// That is what makes the retype a CORRECTION rather than a risk. The old
+    /// declaration was not merely "observationally irrelevant"; it was actively
+    /// contradicted by `validate_dimensionless_unit_axis_vec3` (helpers.rs) at
+    /// every constructor guard, so `revolute(vec3(0mm, 0mm, 1mm), …)` was
+    /// already dead on arrival. Steps 1-2 made the declaration honest; they did
+    /// not change what the evaluator accepts.
+    ///
+    /// NOT a copy of the per-constructor validation surfaces
+    /// (`prismatic_length_dimensioned_axis_returns_undef`,
+    /// `revolute_length_dimensioned_axis_returns_undef`,
+    /// `cylindrical_constructor_validation_table`,
+    /// `planar_invalid_args_returns_undef`). Each of those enumerates ONE
+    /// constructor's rejection set, mixing the dimension case in with arity,
+    /// arity-of-vector, zero, NaN and range cases. The claim here is the
+    /// cross-cutting one none of them states: the set of params the evaluator
+    /// requires dimensionless is exactly the set kinematic.ri now declares
+    /// dimensionless, with no member unmatched on either side — and it isolates
+    /// the dimension tag as the sole variable by deriving the rejected axis
+    /// from the accepted one.
+    #[test]
+    fn every_retyped_joint_direction_param_requires_a_dimensionless_axis() {
+        let lr = length_range_0_to_1m();
+        let ar = angle_range_0_to_pi();
+
+        // (kinematic.ri field, builtin — which is also the Map's "kind",
+        //  full arg list with every axis dimensionless, index of THIS field's
+        //  axis slot). The five entries are exactly the five params retyped in
+        //  kinematic.ri; Planar contributes two rows because it has two axes.
+        let cases: Vec<(&str, &str, Vec<Value>, usize)> = vec![
+            (
+                "Prismatic.axis",
+                "prismatic",
+                vec![axis_x_unit(), lr.clone()],
+                0,
+            ),
+            (
+                "Revolute.axis",
+                "revolute",
+                vec![axis_z_unit(), ar.clone()],
+                0,
+            ),
+            (
+                "Cylindrical.axis",
+                "cylindrical",
+                vec![axis_z_unit(), lr.clone(), ar.clone()],
+                0,
+            ),
+            (
+                "Planar.axis_x",
+                "planar",
+                vec![
+                    axis_x_unit(),
+                    axis_y_unit(),
+                    lr.clone(),
+                    lr.clone(),
+                    ar.clone(),
+                ],
+                0,
+            ),
+            (
+                "Planar.axis_y",
+                "planar",
+                vec![
+                    axis_x_unit(),
+                    axis_y_unit(),
+                    lr.clone(),
+                    lr.clone(),
+                    ar.clone(),
+                ],
+                1,
+            ),
+        ];
+
+        for (field, builtin, args, axis_slot) in &cases {
+            // Leg 1 — dimensionless (what kinematic.ri now declares): the
+            // constructor yields a well-formed joint Map.
+            match eval_builtin(builtin, args) {
+                Value::Map(m) => assert_eq!(
+                    m.get(&Value::String("kind".to_string())),
+                    Some(&Value::String((*builtin).to_string())),
+                    "{field}: a dimensionless axis must construct a {builtin} joint Map"
+                ),
+                other => panic!(
+                    "{field}: a dimensionless axis must construct a joint Map, got {other:?}"
+                ),
+            }
+
+            // Leg 2 — identical numbers, LENGTH tag (what kinematic.ri used to
+            // declare): rejected outright.
+            let mut dimensioned = args.clone();
+            dimensioned[*axis_slot] = as_length_axis(&args[*axis_slot]);
+            assert!(
+                eval_builtin(builtin, &dimensioned).is_undef(),
+                "{field}: an axis carrying the SAME components with a LENGTH tag must \
+                 evaluate to Undef — this is the divergence task 5848's retype closes"
+            );
         }
     }
 }

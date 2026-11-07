@@ -14,6 +14,15 @@ module dcr_solver_load_dropped_bare
 // MEASURED at decompose (2026-07-28, main efba5a8036):
 //   result.max_von_mises = 5139325.408614099 kg*m^-1*s^-2,  iterations = 719
 //
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 0 / `reify eval` EXIT 0, UNCHANGED. No Error diagnostic,
+//   and no ctor-conformance diagnostic of any severity.
+//   result.max_von_mises = 5139325.408614099 Pa, iterations = 719, UNCHANGED.
+//   δ cannot reach this file: PointLoad.force is still `Real` and receives a
+//   bare Real. This control's predicted post-γ2 (#6941) state:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
+//
 // γ1 must leave this number UNCHANGED while making the dimensioned twin match it.
 
 structure DcrSolverLoadDroppedBare {

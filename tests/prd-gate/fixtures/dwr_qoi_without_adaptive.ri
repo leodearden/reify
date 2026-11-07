@@ -1,0 +1,35 @@
+module dwr_qoi_without_adaptive
+
+// PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf γ, §5.7 row 1
+// (negative assertion, BT4 through the CLI). A quantity of interest is named
+// but `adaptive` is left at its `false` default, so the QoI cannot be honored.
+// Expected after γ lands: `reify eval` emits `E_QoiRequiresAdaptive` (Error)
+// and exits non-zero — NEVER a silent `qoi: none`. The one-solve-no-refine
+// idiom is `adaptive: true, max_refinement_iterations: 0`, not this.
+//
+// Measured 2026-09-11 at main 191d6c85ba: `reify check` exits 1 with
+// `unknown variant 'LocalDisplacement': no enum in scope declares it` (the
+// empty stub enum), so the rejection this fixture asserts is unobservable
+// until α and γ land — it is γ's deliverable, not a property of today's tree.
+// Dims overload and box placement: see dwr_cantilever_energy.ri.
+structure DwrQoiWithoutAdaptive {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(
+            target_quantity_of_interest: LocalDisplacement {
+                at: point3(length, width / 2.0, height / 2.0),
+                radius: 20mm,
+                direction: vec3(0.0, 0.0, -1.0),
+            },
+        )
+    )
+}

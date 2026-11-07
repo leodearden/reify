@@ -2,34 +2,69 @@
 # hooks/main-gate-lib.sh — shared helpers for the main-branch landing gate.
 #
 # Sourced by hooks/pre-commit, hooks/pre-merge-commit, hooks/reference-transaction
-# and scripts/land.sh. Implements a tiny file-sentinel handshake so the
+# and scripts/main-gate-mark.sh. Implements a tiny file-sentinel handshake so the
 # reference-transaction tripwire can tell a *sanctioned* move of refs/heads/main
-# (one made right after a verify gate passed, or via scripts/land.sh) from an
-# *unsanctioned* one (a raw `git update-ref` / `git reset` / fast-forward that
-# skips the pre-commit / pre-merge-commit verify gates entirely — the exact gap
-# through which an unverified GUI-typecheck break reached main).
+# (one made right after a verify gate passed) from an *unsanctioned* one (a raw
+# `git update-ref` / `git reset` / fast-forward that skips the pre-commit /
+# pre-merge-commit verify gates entirely — the exact gap through which an
+# unverified GUI-typecheck break reached main).
 #
 # Why a file and not an env var: git fires sibling hook processes that do not
 # share an environment, so the sanctioning step (pre-commit / pre-merge-commit /
-# land.sh) and the consuming step (reference-transaction) cannot hand off a flag
-# in memory. The sentinel lives in the *common* git dir (git rev-parse
-# --git-common-dir) so it is one shared location across every linked worktree.
+# scripts/main-gate-mark.sh) and the consuming step (reference-transaction)
+# cannot hand off a flag in memory. The sentinel lives in the *common* git dir
+# (git rev-parse --git-common-dir) so it is one shared location across every
+# linked worktree.
 
 # main_gate_sentinel — path to the one-shot "this main move is sanctioned" marker.
 main_gate_sentinel() {
     echo "$(git rev-parse --git-common-dir)/reify-main-gate-ok"
 }
 
-# main_gate_logfile — path to the append-only audit log of main-ref moves.
+# main_gate_logfile — path to the append-only audit log of gated ref moves.
+# Shared by BOTH arms of hooks/reference-transaction: refs/heads/main landings
+# (unprefixed messages) and refs/stash pushes (messages prefixed "stash-guard:",
+# so the two event classes stay greppable apart in one file). One log means one
+# path to keep durable across every linked worktree and one thing to rotate.
 main_gate_logfile() {
     echo "$(git rev-parse --git-common-dir)/reify-main-gate.log"
 }
 
-# main_gate_mark — create the sentinel. Called ONLY after a verify gate passes
-# (pre-commit / pre-merge-commit) or by scripts/land.sh just before its
-# sanctioned merge. An empty file is enough; presence is the signal.
+# main_gate_tip — print the refs/heads/main oid a token binds to (non-zero on an
+# unborn main).
+main_gate_tip() {
+    git rev-parse --verify --quiet refs/heads/main
+}
+
+# main_gate_mark — write the sentinel holding the main tip it sanctions a move
+# FROM. Called ONLY after a verify gate passes. Published by rename so a reader
+# never sees a half-written token; a failed publish removes its temp file and
+# returns 1. An unborn main writes nothing and returns 0: hooks that end with
+# this call must not fail a commit over it.
 main_gate_mark() {
-    : > "$(main_gate_sentinel)"
+    local _tip _sentinel _tmp
+    _tip="$(main_gate_tip)" || return 0
+    _sentinel="$(main_gate_sentinel)"
+    _tmp="${_sentinel}.tmp.$$"
+    { printf '%s\n' "$_tip" > "$_tmp" && mv -f "$_tmp" "$_sentinel"; } || { rm -f "$_tmp"; return 1; }
+}
+
+# main_gate_unmark — compare-and-delete: remove the sentinel only when it holds
+# the token a mark would write now (cleanup after a failed CAS), never a token
+# bound to another tip. Always returns 0.
+main_gate_unmark() {
+    local _sentinel _tip
+    _sentinel="$(main_gate_sentinel)"
+    [ -e "$_sentinel" ] || return 0
+    _tip="$(main_gate_tip)" || return 0
+    [ "$(main_gate_token)" = "$_tip" ] && rm -f "$_sentinel"
+    return 0
+}
+
+# main_gate_token — print the sentinel's token: the main tip the mark was bound
+# to. An empty token matches no tip, so an unbound mark sanctions nothing.
+main_gate_token() {
+    cat "$(main_gate_sentinel)" 2>/dev/null
 }
 
 # main_gate_log MSG — append a timestamped line to the audit log and echo it to
@@ -42,37 +77,57 @@ main_gate_log() {
     echo "$_line" >&2
 }
 
-# main_gate_enforce_on — is ENFORCE active? (return 0 = yes → abort unsanctioned
-# main moves). Resolved from a DURABLE, multi-source switch because an env var
-# does not reliably reach the `git update-ref` subprocess this hook fires under
-# (the orchestrator merge worker is a long-lived process; task 4367). Precedence:
-#   1. env REIFY_MAIN_GATE_ENFORCE — override when set non-empty: "1" => on,
-#      any other non-empty value => off (overrides a durable on).
-#   2. git config --bool reify.mainGate.enforce == true
-#   3. flag file  <git-common-dir>/reify-main-gate-enforce  exists
+# gate_switch_on <ENV_VAR_NAME> <git-config-key> <flag-file-basename> — the ONE
+# implementation of a staged-rollout switch (return 0 = on). Resolved from a
+# DURABLE, multi-source switch because an env var does not reliably reach the
+# `git update-ref` subprocess a hook fires under (the orchestrator merge worker
+# is a long-lived process; task 4367). Precedence:
+#   1. env <ENV_VAR_NAME> — override when set non-empty: "1" => on, any other
+#      non-empty value => off (overrides a durable on).
+#   2. git config --bool <git-config-key> == true
+#   3. flag file  <git-common-dir>/<flag-file-basename>  exists
 # Unset/empty env falls through to the durable sources (config, then flag file).
-main_gate_enforce_on() {
-    case "${REIFY_MAIN_GATE_ENFORCE:-__unset__}" in
+#
+# The env var is read by INDIRECT expansion with a default (${!name:-__unset__}),
+# which keeps the empty-value-falls-through semantics AND stays safe under a
+# caller's `set -u`.
+gate_switch_on() {
+    local _env_name="$1" _config_key="$2" _flag_file="$3"
+    case "${!_env_name:-__unset__}" in
         1) return 0 ;;
         __unset__) ;;                  # unset/empty → consult durable sources
         *) return 1 ;;                 # any explicit non-1 value → force off
     esac
-    [ "$(git config --bool --get reify.mainGate.enforce 2>/dev/null)" = "true" ] && return 0
-    [ -e "$(git rev-parse --git-common-dir 2>/dev/null)/reify-main-gate-enforce" ] && return 0
+    [ "$(git config --bool --get "$_config_key" 2>/dev/null)" = "true" ] && return 0
+    [ -e "$(git rev-parse --git-common-dir 2>/dev/null)/$_flag_file" ] && return 0
     return 1
 }
 
-# main_gate_bypass_on — is BYPASS active? (return 0 = yes → always allow,
-# break-glass). Same durable precedence shape as main_gate_enforce_on, over the
-# bypass sources: env REIFY_MAIN_GATE_BYPASS / git config reify.mainGate.bypass /
-# flag file <git-common-dir>/reify-main-gate-bypass.
+# main_gate_enforce_on — is the LANDING-gate ENFORCE active? (return 0 = yes →
+# abort unsanctioned refs/heads/main moves).
+main_gate_enforce_on() {
+    gate_switch_on REIFY_MAIN_GATE_ENFORCE reify.mainGate.enforce reify-main-gate-enforce
+}
+
+# main_gate_bypass_on — is the LANDING-gate BYPASS active? (return 0 = yes →
+# always allow, break-glass).
 main_gate_bypass_on() {
-    case "${REIFY_MAIN_GATE_BYPASS:-__unset__}" in
-        1) return 0 ;;
-        __unset__) ;;
-        *) return 1 ;;
-    esac
-    [ "$(git config --bool --get reify.mainGate.bypass 2>/dev/null)" = "true" ] && return 0
-    [ -e "$(git rev-parse --git-common-dir 2>/dev/null)/reify-main-gate-bypass" ] && return 0
-    return 1
+    gate_switch_on REIFY_MAIN_GATE_BYPASS reify.mainGate.bypass reify-main-gate-bypass
+}
+
+# stash_guard_enforce_on / stash_guard_bypass_on — the same staged rollout for
+# the refs/stash arm of hooks/reference-transaction (the guard against
+# `git stash` in a shared checkout; task 5981).
+#
+# DELIBERATELY SEPARATE SWITCHES, not a reuse of the main-gate pair: these are
+# two unrelated rollouts. Coupling them would mean arming the landing gate
+# silently armed the stash guard, and a break-glass bypass taken for a red-main
+# rollback silently disarmed it. They share the resolution helper above (one
+# implementation, no four copies to rot apart) and nothing else.
+stash_guard_enforce_on() {
+    gate_switch_on REIFY_STASH_GUARD_ENFORCE reify.stashGuard.enforce reify-stash-guard-enforce
+}
+
+stash_guard_bypass_on() {
+    gate_switch_on REIFY_STASH_GUARD_BYPASS reify.stashGuard.bypass reify-stash-guard-bypass
 }

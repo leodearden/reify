@@ -16,13 +16,17 @@
 #[path = "calibration/fixtures.rs"]
 mod fixtures;
 
+#[path = "calibration/mesh_asserts.rs"]
+mod mesh_asserts;
+
 #[path = "calibration/sweep.rs"]
 mod sweep;
 
 // Module wiring is exercised transitively by every test below (each one
-// references `fixtures::*` and/or `sweep::*`); the `#[path = …]` declarations
-// above are validated at compile time by Cargo, so a missing helper module
-// blocks build rather than passing through to a runtime smoke test.
+// references `fixtures::*`, `mesh_asserts::*`, and/or `sweep::*`); the
+// `#[path = …]` declarations above are validated at compile time by Cargo,
+// so a missing helper module blocks build rather than passing through to a
+// runtime smoke test.
 
 // ── Step-5: plate_with_hole fixture validity ──────────────────────────────────
 
@@ -283,6 +287,130 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
         saw_fillet_arc,
         "surface must include curved fillet-arc nodes (r≈fillet_radius from inner corner)"
     );
+}
+
+// ── Step-7b: fixture conformity ────────────────────────────────────────────────
+
+#[test]
+fn calibration_fixtures_are_conforming_simplicial_complexes() {
+    // bracket(1.0, 0.2, 0.1, n) across resolutions. Genus 0 (solid block —
+    // the fillet is a concave edge, not a through-hole), so expected
+    // chi = 2 at every n. n=8 (9,936 tets) is included: it is one of the
+    // two scale points task #6638 consumes, and measured cost is
+    // negligible (O(F) face hashing stays well under the sub-second
+    // budget) — step-3's count-only check pins element count at this
+    // scale but does not exercise conformity or handedness there.
+    for &n in &[1usize, 2, 3, 4, 5, 8] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
+        mesh_asserts::assert_boundary_is_conforming_manifold(
+            &mesh,
+            "bracket",
+            &format!("n={n}"),
+            2,
+        );
+        mesh_asserts::assert_all_tets_have_positive_signed_volume(
+            &mesh,
+            "bracket",
+            &format!("n={n}"),
+        );
+    }
+
+    // bracket fillet_radius sweep at n=4 — a few radii spanning the legal
+    // (0, thickness) range. fillet_radius moves vertices, not connectivity,
+    // so conformity is radius-invariant; expected chi = 2 at every radius.
+    for &r in &[0.05_f64, 0.15, 0.19] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, r, 4);
+        mesh_asserts::assert_boundary_is_conforming_manifold(
+            &mesh,
+            "bracket",
+            &format!("fillet_radius={r}"),
+            2,
+        );
+        mesh_asserts::assert_all_tets_have_positive_signed_volume(
+            &mesh,
+            "bracket",
+            &format!("fillet_radius={r}"),
+        );
+    }
+
+    // plate_with_hole — the control. Already conforming both before and
+    // after the bracket repair, so this must stay green throughout. Its
+    // boundary is a TORUS (the plate has a through-hole), not a sphere, so
+    // expected chi = 0, not 2 — asserting 2 here would be a doomed RED no
+    // implementation could green. Proves the check discriminates (it is
+    // not vacuously satisfied) and that the defect is scoped to `bracket`.
+    for &(n_radial, n_through) in &[(4usize, 2usize), (2, 1)] {
+        let (mesh, _surface) = fixtures::plate_with_hole(1.0, 0.3, 0.1, n_radial, n_through);
+        let case_desc = format!("n_radial={n_radial},n_through={n_through}");
+        mesh_asserts::assert_boundary_is_conforming_manifold(
+            &mesh,
+            "plate_with_hole",
+            &case_desc,
+            0,
+        );
+        mesh_asserts::assert_all_tets_have_positive_signed_volume(
+            &mesh,
+            "plate_with_hole",
+            &case_desc,
+        );
+    }
+}
+
+/// Characterisation guard, not a RED-then-GREEN step: this passes on
+/// arrival BECAUSE step-2 preserved `bracket`'s mesh size exactly (only
+/// which diagonal splits each shared interface quad changed). Its value is
+/// forward-looking — it makes the size-preservation property explicit and
+/// executable, so that a future attempt to "fix" a conformity problem by
+/// SPLITTING an interface (adding vertices or elements) trips a named
+/// assertion instead of silently invalidating the calibration goldens and
+/// task #6638's scale ladder.
+#[test]
+fn bracket_element_count_follows_the_documented_closed_form() {
+    // tets(n) = 18n³ + 12n² - 6n for n ≥ 2 — measured 180, 576, 1320, 2520,
+    // 9936 at n=2,3,4,5,8 respectively; all five agree with the closed
+    // form. Five points overdetermine a 3-parameter cubic, so this
+    // genuinely pins the form rather than just a lookup table.
+    for &n in &[2usize, 3, 4, 5, 8] {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
+        let n_tets = (mesh.tet_indices().unwrap().len() / 4) as i64;
+        let nf = n as i64;
+        let expected = 18 * nf * nf * nf + 12 * nf * nf - 6 * nf;
+        assert_eq!(
+            n_tets, expected,
+            "bracket(1.0, 0.2, 0.1, n={n}): tet count {n_tets} does not match the \
+             documented closed form 18n³+12n²-6n = {expected}"
+        );
+    }
+
+    // n=1 is the documented EXCEPTION: 108 tets, not the closed form's 24,
+    // because n_a/n_arm/n_z are `max(n, 2)` (= 2 at n=1) while n_r is `n`
+    // (= 1), so the closed form (which assumes all four subdivision counts
+    // equal n) does not apply.
+    {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, 1);
+        let n_tets = mesh.tet_indices().unwrap().len() / 4;
+        assert_eq!(
+            n_tets, 108,
+            "bracket(1.0, 0.2, 0.1, n=1): tet count {n_tets} != 108 (the documented n=1 \
+             exception to the closed form — n_a/n_arm/n_z=max(1,2)=2 while n_r=1)"
+        );
+    }
+
+    // Vertex-count anchor: bracket(1.0, 0.2, 0.1, 4) has exactly 365
+    // vertices — bit-identical before and after step-2's interface repair
+    // (only which diagonal splits each shared quad changed, never the
+    // vertex table or element count). The matching tet-count anchor (1320,
+    // also bit-identical) is already covered by the closed-form loop above
+    // (n=4: 18·4³+12·4²-6·4 = 1320), so it is not re-asserted here.
+    {
+        let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, 4);
+        let n_vertices = mesh.vertices.len() / 3;
+        assert_eq!(
+            n_vertices, 365,
+            "bracket(1.0, 0.2, 0.1, n=4): vertex count {n_vertices} != 365 (bit-identical \
+             before/after the step-2 interface repair)"
+        );
+    }
 }
 
 // ── Step-9: sweep runner returns morph + from-scratch metrics ─────────────────

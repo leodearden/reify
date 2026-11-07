@@ -140,7 +140,7 @@ fn surface_shell_stats(source: &str, entity: &str) -> ShellStats {
     // lazily-acquired OpenVDB (adds ONLY the openvdb adapter, leaves
     // default_kernel_name == "occt").
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let acquired = engine.ensure_openvdb_kernel();
     assert!(
         acquired,

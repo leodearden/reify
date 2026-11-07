@@ -76,6 +76,12 @@ The brief asks to "wire the solver dispatch so a typed `Gravity` is consumed **l
 
 ### 4.1 `Gravity` carries a scalar magnitude + a dimensionless direction (not a `Vector3<Acceleration>`)
 
+> **Retyped by task 5905 (merge `217b8e1647`) — this section's ruling SURVIVED; only the spelling moved.** `direction` is still dimensionless and still not a `Vector3<Acceleration>`, exactly as decided here. What changed is how a dimensionless 3-tuple is *spelled*: `List<Real> = [0.0, 0.0, -1.0]` was only ever a stand-in from before one could be spelled at all (as at authoring, 2026-06-09), and the field now reads `Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)` — live on both `PointLoad.direction` and `Gravity.direction` in `crates/reify-compiler/stdlib/fea_multi_case.ri`. Canonical rationale, deliberately not restated here: the `RULING (task 5848)` in the `Vec3<Q>` header of `crates/reify-compiler/stdlib/trajectory.ri`, restated once for this cluster in the comment block directly above `PointLoad.direction`.
+>
+> The `structure def Gravity : Load` code block and the **Rationale** paragraph that follow are retained as authored — they record the *basis* of the ruling, and rationale (i) (the `vec3(0 m/s^2, …)` parse failure that killed `Vector3<Acceleration>`) is still the live reason `magnitude` stays a scalar.
+>
+> *Cites in this note are by SYMBOL, not `file:line`, deliberately: a symbol cite survives arbitrary edits above it, and this PRD is live (Status: active). The as-of-2026-08-08 measured offsets for the 5905 retype — with the per-cite drift history — are recorded once, in the 2026-08-08 row of §10.9.1 in `docs/notes/dimensioned-construction-blast-radius-2026-07-29.md`; that row is the canonical home for the numbers, and it re-measures rather than assumes.*
+
 Mirror `PointLoad`'s established field shape (force scalar + unit `direction : List<Real>`, fea_multi_case.ri:296-320):
 ```reify
 structure def Gravity : Load {
@@ -111,7 +117,7 @@ Tightening `LoadCase.loads`→`List<Load>` must land **after** `Gravity : Load` 
 - **`solve_load_cases` live engine integration** (task **3009**) — `multi_load_bracket.ri` keeps its `MultiCaseResult(...)` constructor stub; this PRD does **not** make the multi-case path live-solve. The (a) self-weight leaf uses **direct** `solve_elastic_static`, not `solve_load_cases`.
 - **`FEAMaterialInput` removal.** Verified vestigial this session — `solve_buckling(Steel_AISI_1045(), …)` already compiles clean *without* the wrapper (Steel conforms to `ElasticMaterial` directly). But `FEAMaterialInput` is shared with `solve_buckling`; the supertrait approach does not touch it, satisfying the brief's "preserve `solve_buckling`" caution. Removing the vestigial `FEAMaterialInput` is a separate cleanup, deliberately left out to keep blast radius minimal.
 - **Heterogeneous anisotropic material field** call surface (`Field<Point3, AnisotropicMaterial>`, anisotropic PRD task ε) — untouched.
-- **Dimensional tightening** of other `Real` placeholders (`PointLoad.force`→`Scalar<Force>`, `direction`→`Vec3`, the `Vector3`-typed traction/body-force densities) — that is the broader Real-placeholder audit, not this PRD.
+- **Dimensional tightening** of other `Real` placeholders (`PointLoad.force`→`Scalar<Force>`, `direction`→`Vec3`, the `Vector3`-typed traction/body-force densities) — that is the broader Real-placeholder audit, not this PRD. [2026-08-08: the `direction` half of this non-goal has since been **discharged** — outside this PRD, exactly as this bullet anticipated — by task 5905 (merge `217b8e1647`). The resolved type is `Vector3<Dimensionless>`, **not** the `Vec3` (= `Vector3<Length>`) guessed at here: a direction is dimensionless per the `RULING (task 5848)`. `PointLoad.force`→`Scalar<Force>` and the traction/body-force densities remain open.]
 
 ---
 

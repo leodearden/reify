@@ -60,4 +60,9 @@ fn eval_gdt_zones_example_succeeds() {
         "stdout should contain 'prof_zone' (zone_profile result);\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    assert!(
+        stdout.contains("slab_zone"),
+        "stdout should contain 'slab_zone' (zone_slab result);\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }

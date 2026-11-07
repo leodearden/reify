@@ -20,6 +20,10 @@
 #   E — seed fail-closed abort ⇒ the caller DISCARDS the uncertified
 #       <lane>/target it aborted onto (task 5635; PRD
 #       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation)
+#   F — live-process-reference gate: a lane whose target/ is referenced by a
+#       live process (cwd / open fd / mmap) is PRESERVED even when its flock is
+#       free (task 5823; the flock is a reseed mutex, not a liveness oracle —
+#       esc-5334-6)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -194,6 +198,28 @@ assert "A10: --reseed without --base exits 2" test "$RC" -eq 2
 run_helper /tmp --base
 assert "A11: --base with no value exits 2" test "$RC" -eq 2
 
+# A12: a MISSING sibling scripts/lib_live_refs.sh is a fail-LOUD wiring error
+# (task 5823). The whole point of the gate is that the liveness check must never
+# be silently absent, so the guard that enforces its presence cannot itself be
+# untested. Technique copied from tests/infra/test_warm_lane_gc.sh A9: the script
+# is copied ALONE into a temp dir — no sibling lib — and invoked with --help,
+# which normally exits 0 (A4 above), so a 2 here also pins that the guard fires
+# BEFORE argv is parsed. Exit 2, not 1: an incomplete deployment is a WIRING
+# error, matching this script's own exit-code table and gc.sh's identical choice.
+# It matters at the dark-factory seam too — _run_thin_warm_lane logs rc=2 at
+# WARNING, so a broken deployment is loud rather than silently fail-open.
+A12_DIR="$(mktemp -d /tmp/test-thin-warm-lane-a12-XXXXXX)"
+_TMPDIRS+=("$A12_DIR")
+cp "$SCRIPT" "$A12_DIR/thin-warm-lane.sh"
+assert "A12: fixture — the copy really has no sibling lib_live_refs.sh" \
+    bash -c '[ ! -e "$1/lib_live_refs.sh" ]' _ "$A12_DIR"
+A12_RC=0
+A12_ERR="$(bash "$A12_DIR/thin-warm-lane.sh" --help 2>&1 >/dev/null)" || A12_RC=$?
+assert "A12: missing sibling lib_live_refs.sh exits 2 (wiring error, not runtime 1)" \
+    test "$A12_RC" -eq 2
+assert "A12: stderr names the missing library (fail LOUD, not silent)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "lib_live_refs.sh not found"' _ "$A12_ERR"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — precondition-refusal + T3 flock guard
 # ──────────────────────────────────────────────────────────────────────────────
@@ -249,6 +275,80 @@ assert "B3: target/ byte-intact under lock contention (T3)" \
     test -f "$B3_LANE/target/MARKER"
 assert "B3: stderr mentions the lock/live-consumer refusal" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer|assigned"' _ "$ERR_OUT"
+# Inverse of Block F's F4 (task 5823). BOTH refusals exit 75, so the stderr
+# reason is the only thing that tells them apart in dark-factory's logs — and it
+# has to be pinned in both directions or a single shared message would keep each
+# one-sided assert green. F4 pins that a process-reference refusal never carries
+# the lock-contention token; this pins that a flock-held lane never carries the
+# process-reference one.
+#
+# Pin the machine-greppable TOKEN, not the English prose. Task 5568 ratified
+# that discriminant for seed-warm-lane.sh's identical exit-75-overload problem
+# (cow-seeding §9.5 inv.11, "Refusal signal"), and thin reuses ITS literal
+# LANE_LOCK_CONTENDED: for the flock arm so one grep separates lock contention
+# across both scripts. Prose is free to be reworded; the token is the contract.
+#
+# NOTE the scope of this arm: it pins NON-MISATTRIBUTION only. It does NOT pin
+# gate ORDERING — B3_LANE is a fresh mktemp dir and this holder's cwd is the
+# suite's cwd, so B3_LANE has no live process reference at all; with the two
+# gates in the opposite order the T4 check would simply pass, the flock check
+# would still refuse, and this assert would stay green. B3b below is the fixture
+# in which the ordering is actually observable.
+assert "B3: stderr carries the LANE_LOCK_CONTENDED token (task 5568 discriminant)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED:"' _ "$ERR_OUT"
+assert "B3: stderr does NOT carry the LANE_LIVE_REF token (the two exit-75 reasons stay distinguishable; task 5823)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF"' _ "$ERR_OUT"
+
+# ── B3b: BOTH gates armed at once — the flock gate must fire FIRST ────────────
+# The claim B3 cannot make. Here the SAME holder both holds <lane>.lock AND has
+# its cwd inside <lane>/target, so T3 and T4 would each independently refuse.
+# Only the evaluation ORDER decides which token reaches stderr, which makes this
+# the one fixture where "flock first" is falsifiable: swap the two gates in
+# thin-warm-lane.sh and this arm goes red while every other assert in the file
+# stays green.
+#
+# Ordering is not cosmetic. It is what spares a flock-held (ASSIGNED, mid-
+# acquire-reseed) lane the ~1.9s O(processes × fds) /proc walk on the hot path,
+# and what keeps dark-factory's operator-facing attribution stable for the
+# common case.
+B3B_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-b3b-XXXXXX)"
+_TMPDIRS+=("$B3B_ROOT")
+B3B_LANE="$B3B_ROOT/_lane-b3b"
+mkdir -p "$B3B_LANE/target"
+touch "$B3B_LANE/target/MARKER"
+B3B_LOCK="${B3B_LANE}.lock"
+touch "$B3B_LOCK"
+B3B_READY="$B3B_ROOT/holder.ready"
+
+# cd into <lane>/target BEFORE touching READY, and acquire the flock on FD 9 of
+# the same process, so by the time thin runs BOTH references are provably live.
+# `exec sleep` keeps the tracked PID the one owning the cwd and the lock.
+( cd "$B3B_LANE/target" && flock -x 9 && touch "$B3B_READY" && exec sleep 300 ) 9>"$B3B_LOCK" &
+B3B_PID=$!
+_BGPIDS+=("$B3B_PID")
+_wait_for_reader_lock "$B3B_READY" 30
+
+# Fixture non-vacuity: both references really are established, so a green
+# result below cannot come from a fixture that armed only one gate. (Same
+# discipline as Block F's F-fd1/F-fd2 fixture asserts.)
+assert "B3b-fixture: the holder's cwd really is under <lane>/target (T4 would fire)" \
+    bash -c 'case "$(readlink -f /proc/$1/cwd)/" in "$(readlink -f "$2")"/*) exit 0;; *) exit 1;; esac' \
+    _ "$B3B_PID" "$B3B_LANE"
+assert "B3b-fixture: the lane flock really is held (T3 would fire)" \
+    bash -c '! flock -n 9 2>/dev/null' _ 9<"$B3B_LOCK"
+
+run_helper "$B3B_LANE"
+assert "B3b: a lane that is BOTH flock-held and live-referenced exits 75" \
+    test "$RC" -eq 75
+assert "B3b: target/ byte-intact (neither gate frees anything)" \
+    test -f "$B3B_LANE/target/MARKER"
+assert "B3b: ORDERING — the flock gate fires first, so stderr carries LANE_LOCK_CONTENDED" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED:"' _ "$ERR_OUT"
+assert "B3b: ORDERING — the T4 walk is never reached, so stderr carries no LANE_LIVE_REF" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF"' _ "$ERR_OUT"
+
+kill "$B3B_PID" 2>/dev/null || true
+wait "$B3B_PID" 2>/dev/null || true
 
 kill "$B3_LOCK_PID" 2>/dev/null || true
 wait "$B3_LOCK_PID" 2>/dev/null || true
@@ -446,7 +546,7 @@ assert "D2: --reseed run exits 0" test "$RC" -eq 0
 assert "D2: seed-script WAS invoked" bash -c '[ -s "$1" ]' _ "$D_SEED_LOG"
 assert "D2: seed-script argv includes --fresh-checkout" \
     bash -c 'grep -q -- "--fresh-checkout" "$1"' _ "$D_SEED_LOG"
-# thin holds ${LANE_DIR}.lock on FD 9 (T3, line 236) across the seed call, so
+# thin holds ${LANE_DIR}.lock on FD 9 (T3, the `flock -n 9` acquire) across the seed call, so
 # the seed must NOT re-acquire it — else it self-refuses under seed-warm-lane.sh's
 # fail-safe lane-lock default (esc-5214/task 5354). thin therefore passes
 # --assume-lane-lock-held so the seed skips its own acquire.
@@ -608,6 +708,222 @@ if [ "$(id -u)" -ne 0 ]; then
 else
     echo "  SKIP: E3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — live-process-reference gate (task 5823)
+#
+# ROOT CAUSE (esc-5334-6, 2026-07-26): the lane flock is a reseed MUTEX, not a
+# liveness oracle. <lane>.lock is held only across the ACQUIRE reseed (task 5354)
+# and across dark-factory's run_scoped_verification (DF 3027) — NEVER across the
+# implement phase, where an agent runs cargo build/test for tens of minutes. So
+# Block B's `flock -n 9` gate is BLIND for most of an ASSIGNED lane's life, and
+# thin would happily `rm -rf <lane>/target` out from under a live build (the
+# _lane-5 218-target "No such file or directory" storm of 2026-07-25, on the
+# sibling gc path task 5572 closed).
+#
+# Every lane in this block therefore has a FREE flock — no holder is started
+# anywhere in Block F — so the existing T3 gate cannot account for ANY refusal
+# observed here. The only thing that can is the /proc live-reference check.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: live-process-reference gate (task 5823) ---"
+
+# --seed-script stub: records invocations, so "the refusal precedes any work" is
+# observable rather than assumed. Same shape as Block C's stub.
+F_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-f-seedlog-XXXXXX)"
+_TMPDIRS+=("$F_SEED_LOG")
+F_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-f-seedstub-XXXXXX)"
+_TMPDIRS+=("$F_SEED_STUB")
+cat > "$F_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+exit 0
+STUB_EOF
+chmod +x "$F_SEED_STUB"
+export SEED_LOG="$F_SEED_LOG"
+
+# ── F-cwd: a live helper whose CWD is <lane>/target ───────────────────────────
+# The exact build-cwd shape a cargo/rustc process holds. Mirrors
+# tests/infra/test_warm_lane_gc.sh's P-basic fixture (:1520-1557).
+F_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-f-XXXXXX)"
+_TMPDIRS+=("$F_ROOT")
+F_LANE="$F_ROOT/_lane-f"
+mkdir -p "$F_LANE/target"
+touch "$F_LANE/target/DIVERGENT_MARKER"
+# The lane lock exists (pool acquire/release convention, inv.2) and is FREE.
+touch "${F_LANE}.lock"
+
+# The helper touches READY only AFTER cd'ing in, so _wait_for_reader_lock proves
+# the cwd is established before thin runs (causal ordering, technique R — never a
+# fixed sleep). `exec sleep` so the tracked PID is the one holding the cwd.
+F_READY="$F_ROOT/helper.ready"
+( cd "$F_LANE/target" && touch "$F_READY" && exec sleep 300 ) &
+F_HELPER_PID=$!
+_BGPIDS+=("$F_HELPER_PID")
+_wait_for_reader_lock "$F_READY" 30
+
+run_helper "$F_LANE" --seed-script "$F_SEED_STUB"
+
+# 75 (EX_TEMPFAIL) SPECIFICALLY, not merely non-zero: dark-factory's
+# _run_thin_warm_lane logs rc=75 at DEBUG as a benign skip ("release-thin is not
+# an escalation/fault", §9.5 inv.11) and EVERY other non-zero rc at WARNING, so a
+# code that merely refuses would turn each lingering-reference release into a
+# false fault in the operator's log.
+assert "F1: a live-cwd-referenced lane exits 75 (EX_TEMPFAIL), with the flock FREE" \
+    test "$RC" -eq 75
+assert "F2: <lane>/target still exists (nothing was freed)" \
+    test -d "$F_LANE/target"
+assert "F2: target/DIVERGENT_MARKER byte-intact (the live build's cache is untouched)" \
+    test -f "$F_LANE/target/DIVERGENT_MARKER"
+# Pin the machine-greppable TOKEN, not the English prose. dark-factory's rc=75
+# log line names the flock as the cause unconditionally, so on the (b) path the
+# operator-facing text is an outright misattribution until that string is
+# widened DF-side; `grep LANE_LIVE_REF` on thin's own stderr is what recovers
+# the true cause meanwhile. Token convention ratified by task 5568 for
+# seed-warm-lane.sh (cow-seeding §9.5 inv.11, "Refusal signal").
+assert "F3: stderr carries the LANE_LIVE_REF token (the PROCESS-REFERENCE refusal)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF:"' _ "$ERR_OUT"
+# The mirror of the B3 assert added above: with every lock in this block FREE,
+# carrying the lock-contention token here would be a misattribution — and would
+# mean the refusal came from the wrong gate entirely. Mirrors gc's P7.
+assert "F4: stderr does NOT carry LANE_LOCK_CONTENDED (no misattribution; every lock in Block F is FREE)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED"' _ "$ERR_OUT"
+assert "F5: seed-script log is EMPTY (the refusal precedes any work)" \
+    bash -c '[ ! -s "$1" ]' _ "$F_SEED_LOG"
+
+# ── F-fd: the OPEN-FD leg, holder cwd deliberately OUTSIDE the lane ───────────
+# The scanner advertises THREE reference kinds — cwd, open fd, mmap — and F-cwd
+# above drives only the first. The `-path '*/fd/*'` leg is the one most likely to
+# matter in production: a rustc/linker holding an output fd under <lane>/target
+# while its own cwd sits elsewhere. A regression that dropped it would leave
+# every other assertion in this file green (the same gap task 5572's review
+# found on the gc side; mirrors its P-fd).
+#
+# The holder's cwd is $FFD_ROOT — OUTSIDE the lane — so the cwd leg CANNOT
+# account for the refusal, and `sleep`'s own mappings live in /usr, so the mmap
+# leg cannot either. The open fd is the sole reference. `exec 9>` (not a redirect
+# on `exec sleep`) is what makes the descriptor survive the exec into the
+# tracked PID.
+FFD_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-ffd-XXXXXX)"
+_TMPDIRS+=("$FFD_ROOT")
+FFD_LANE="$FFD_ROOT/_lane-fd"
+mkdir -p "$FFD_LANE/target"
+touch "$FFD_LANE/target/DIVERGENT_MARKER"
+touch "${FFD_LANE}.lock"
+
+FFD_READY="$FFD_ROOT/fd-holder.ready"
+( cd "$FFD_ROOT" && exec 9>"$FFD_LANE/target/held.tmp" \
+    && touch "$FFD_READY" && exec sleep 300 ) &
+FFD_HELPER_PID=$!
+_BGPIDS+=("$FFD_HELPER_PID")
+_wait_for_reader_lock "$FFD_READY" 30
+
+# Non-vacuity, captured BEFORE the run: were the holder's cwd (or under) the
+# lane, this arm would silently degenerate into a second copy of F-cwd and prove
+# nothing about the fd leg.
+FFD_HELPER_CWD="$(readlink "/proc/$FFD_HELPER_PID/cwd" 2>/dev/null || true)"
+FFD_HELPER_FD9="$(readlink "/proc/$FFD_HELPER_PID/fd/9" 2>/dev/null || true)"
+
+run_helper "$FFD_LANE" --seed-script "$F_SEED_STUB"
+
+assert "F-fd1: fixture — holder cwd is OUTSIDE the lane (the cwd leg cannot explain the refusal)" \
+    bash -c 'case "$1" in "$2"|"$2"/*) exit 1 ;; *) exit 0 ;; esac' _ \
+    "$FFD_HELPER_CWD" "$(readlink -f "$FFD_LANE")"
+assert "F-fd2: fixture — fd 9 survived the exec and points under <lane>/target" \
+    bash -c 'case "$1" in "$2"/target/*) exit 0 ;; *) exit 1 ;; esac' _ \
+    "$FFD_HELPER_FD9" "$(readlink -f "$FFD_LANE")"
+assert "F-fd3: an fd-referenced lane exits 75 (open-fd leg alone refuses)" \
+    test "$RC" -eq 75
+assert "F-fd4: target/DIVERGENT_MARKER byte-intact" \
+    test -f "$FFD_LANE/target/DIVERGENT_MARKER"
+assert "F-fd5: seed-script log still EMPTY" \
+    bash -c '[ ! -s "$1" ]' _ "$F_SEED_LOG"
+
+# ── F-free: DISCRIMINATION, not a blanket freeze ──────────────────────────────
+# Without this the gate could regress to "always refuse" and every other
+# assertion in Block F would stay green. Mirrors gc's P-fd6. Same fixture shape,
+# no reference of any kind. The name deliberately shares no prefix with the
+# referenced lanes above, so a fixture mix-up cannot masquerade as a real
+# verdict.
+FQ_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-fq-XXXXXX)"
+_TMPDIRS+=("$FQ_ROOT")
+FQ_LANE="$FQ_ROOT/_lane-quiet"
+mkdir -p "$FQ_LANE/target"
+touch "$FQ_LANE/target/DIVERGENT_MARKER"
+touch "${FQ_LANE}.lock"
+
+run_helper "$FQ_LANE" --seed-script "$F_SEED_STUB"
+
+assert "F-free1: an unreferenced lane still thins (exit 0) — the gate discriminates" \
+    test "$RC" -eq 0
+assert "F-free2: <lane>/target is GONE (the free-first rm still runs)" \
+    bash -c '[ ! -e "$1" ]' _ "$FQ_LANE/target"
+assert "F-free3: stdout is still exactly the resolved lane_dir (single-line contract intact)" \
+    test "$OUT" = "$(realpath -m "$FQ_LANE")"
+
+# ── F-temp: preserving is TEMPORARY, bounding the over-preserve bias ──────────
+# Mirrors gc's P10/P11. Kill the F-cwd holder, reap it (so its /proc entry is
+# provably gone — causal, not a sleep), then re-run thin on the SAME lane.
+# _drop_bgpid removes just that PID from the EXIT-trap list rather than gc's
+# wholesale `_BGPIDS=()`: Block F's open-fd holder is still live here and must
+# stay registered for cleanup. Dropping the reaped PID matters because the kernel
+# may recycle it onto an unrelated process before the trap fires.
+_drop_bgpid() {
+    local drop="$1"
+    local keep=()
+    local p
+    for p in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
+        [ "$p" = "$drop" ] || keep+=("$p")
+    done
+    _BGPIDS=("${keep[@]+${keep[@]}}")
+}
+
+# Non-vacuity control for this arm: target/ must still be here, carried over from
+# the refusal above. Without it, a gate that never fired would leave target/
+# already deleted and F-temp2 would go green for the wrong reason.
+assert "F-temp0: fixture — <lane>/target survived the first, REFUSED run" \
+    test -f "$F_LANE/target/DIVERGENT_MARKER"
+
+kill "$F_HELPER_PID" 2>/dev/null || true
+wait "$F_HELPER_PID" 2>/dev/null || true
+_drop_bgpid "$F_HELPER_PID"
+
+run_helper "$F_LANE" --seed-script "$F_SEED_STUB"
+
+assert "F-temp1: the same lane thins once its reference clears (exit 0)" \
+    test "$RC" -eq 0
+assert "F-temp2: <lane>/target is now GONE — a refusal shields for one cycle, not forever" \
+    bash -c '[ ! -e "$1" ]' _ "$F_LANE/target"
+
+# ── F-reseed: the gate covers the DESTRUCTIVE branch on BOTH paths ────────────
+# thin's analogue of gc's K5 both-branches arm. The gate sits above the free, so
+# --reseed inherits it: a refusal must precede the free, the seed invocation, AND
+# the post-abort discard of an uncertified clone that task #5635 added inside
+# that branch (§9.5 inv.13). This pins that growing --reseed did not open a
+# bypass.
+FRS_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-frs-XXXXXX)"
+_TMPDIRS+=("$FRS_ROOT")
+FRS_LANE="$FRS_ROOT/_lane-rs"
+mkdir -p "$FRS_LANE/target"
+touch "$FRS_LANE/target/DIVERGENT_MARKER"
+touch "${FRS_LANE}.lock"
+FRS_BASE="$FRS_ROOT/base-target.gen.1"
+mkdir -p "$FRS_BASE"
+
+FRS_READY="$FRS_ROOT/helper.ready"
+( cd "$FRS_LANE/target" && touch "$FRS_READY" && exec sleep 300 ) &
+FRS_HELPER_PID=$!
+_BGPIDS+=("$FRS_HELPER_PID")
+_wait_for_reader_lock "$FRS_READY" 30
+
+run_helper "$FRS_LANE" --reseed --base "$FRS_BASE" --seed-script "$F_SEED_STUB"
+
+assert "F-reseed1: --reseed against a live-referenced lane exits 75 (the gate covers this branch too)" \
+    test "$RC" -eq 75
+assert "F-reseed2: target/DIVERGENT_MARKER byte-intact (the refusal precedes the free)" \
+    test -f "$FRS_LANE/target/DIVERGENT_MARKER"
+assert "F-reseed3: seed-script log is EMPTY (the refusal precedes the stage AND the post-abort discard)" \
+    bash -c '[ ! -s "$1" ]' _ "$F_SEED_LOG"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

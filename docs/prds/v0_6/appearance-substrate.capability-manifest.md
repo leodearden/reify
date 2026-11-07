@@ -39,6 +39,26 @@ wiring greps = paths below; empty-value sentinel = `Value::Undef` / `None` / `(0
 | structure member-default eval to **non-`Undef`** (editorial appearance) | `MaterialPropertyProvenance` member defaults are the in-tree precedent (`materials_fea.ri:160-183`) | **PASS (field-population)** |
 | `Visual` trait + `Appearance`/`Color` types in scope | producer:task-α (upstream); `Visual` member added via `: ElasticMaterial + Visual` (multi-trait, PASS above) | **producer-upstream (α)** |
 
+> **CORRECTION 2026-09-03 (#6877) — the presets' declared bound is now `: DampedMaterial + Visual`;
+> both γ rows still resolve PASS and neither is downgraded.** #6877 added a `Damped` mixin trait
+> (`loss_factor : Real`) and the named intersection `trait DampedMaterial : ElasticMaterial + Damped {}`
+> (`materials_fea.ri:224`); the four presets now declare `: DampedMaterial + Visual` at
+> `materials_fea.ri:272` (Steel), `:329` (Al), `:386` (Ti), `:446` (ABS).
+>
+> - The first row's claim — the 4 library materials "exist as `: ElasticMaterial` structures" — stays
+>   **literally true**, because `DampedMaterial` *refines* `ElasticMaterial` and conformance is
+>   transitive: every preset still satisfies `ElasticMaterial` (and `ConstitutiveLaw` through it).
+> - The third row's capability — a multi-trait `: A + B` bound carrying the `Visual` member — is if
+>   anything **more strongly demonstrated** now, since the presets exercise a *refined* intersection
+>   bound rather than a bare two-trait list.
+> - The `grep:` anchors in the first two rows (`:154`, `:192`, `:230`, `:271`, and `:160-183` for
+>   `MaterialPropertyProvenance`, which today sits at `:79-83`) are **2026-06-24 dated provenance that
+>   has since drifted**. Grep the named symbol rather than trusting the number.
+>
+> The rows above are **preserved verbatim as the record of what was gated on 2026-06-24** — this is a
+> dated snapshot, not a live status board, so no evidence cell or verdict is edited and no re-gate is
+> implied.
+
 ## δ — 3MF per-body color egress (LEAF / integration gate)
 
 | Capability | Evidence | Verdict |

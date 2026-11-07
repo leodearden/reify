@@ -35,7 +35,9 @@
 //! `crates/reify-kernel-occt/build.rs` — system-library detection pattern.
 
 pub mod auto_size;
+pub mod background_size_field;
 pub mod cache_key;
+pub mod fill_metrics;
 #[cfg(feature = "mesh-morph")]
 pub mod mesh_boundary;
 pub mod mesh_profile_2d;
@@ -59,6 +61,34 @@ pub mod ffi;
 #[cfg(has_gmsh)]
 pub mod init;
 
+// The shared mesh-size option-table discipline — only compiled when has_gmsh
+// is set (it writes through `crate::ffi`, itself has_gmsh-gated).
+// Deliberately NOT re-exported at the crate root: each constant keeps exactly
+// one public path, so a citation cannot drift between two spellings of the
+// same value.
+#[cfg(has_gmsh)]
+pub mod mesh_size_scope;
+
+// The shared gmsh message-capture discipline — only compiled when has_gmsh
+// is set (it drives `crate::ffi`'s logger family, itself has_gmsh-gated).
+// `pub` for the same reason as `init` and `mesh_size_scope`: the `tests/`
+// binaries are separate compilation units and cannot reach `pub(crate)`.
+// Deliberately NOT re-exported at the crate root, so the cap constant keeps
+// exactly one public path and a citation cannot drift between spellings.
+#[cfg(has_gmsh)]
+pub mod log_capture;
+
+// Tet-mesh readback validation shared by the three tet meshers — only compiled
+// when has_gmsh is set (it reads through `crate::ffi`, itself has_gmsh-gated).
+#[cfg(has_gmsh)]
+pub(crate) mod tet_readback;
+
+// The region builder and tet readback shared by the three tet producers — sits
+// above `tet_readback` and below the producers (`kernel_real`, `refine_volume`,
+// `mesh_boundary`). Only compiled when has_gmsh is set.
+#[cfg(has_gmsh)]
+pub(crate) mod meshable_region;
+
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
 pub mod kernel_real;
@@ -73,6 +103,12 @@ pub mod kernel;
 pub use kernel::GmshKernel;
 #[cfg(has_gmsh)]
 pub use kernel_real::GmshKernel;
+/// The `classify_surfaces` angles `mesh_to_volume` actually uses. Re-exported
+/// (single definition, in `meshable_region`) so the B-rep census guard in
+/// `tests/classify_feature_angle.rs` pins the production values rather than a
+/// copied literal that could drift away from them (#6200).
+#[cfg(has_gmsh)]
+pub use meshable_region::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
 
 pub use cache_key::volume_mesh_cache_key;
 // MeshSurfaceToVolumeReport is the return type of the cfg(has_gmsh)-gated
@@ -122,6 +158,10 @@ pub use volume_mesh_options::VolumeMeshOptions;
 // Unconditional re-export — uniform signature in both cfg(has_gmsh) (real FFI
 // remesh) and cfg(not(has_gmsh)) (stub returning STUB_UNAVAILABLE_MARKER).
 pub use refine_volume::refine_volume_with_size_field;
+// The size field `refine_volume_with_size_field` consumes. Unconditional for
+// the same reason the function is: it is plain data with no FFI, and both
+// build arms take it, so the signature is uniform across build modes.
+pub use background_size_field::BackgroundSizeField;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
 /// (real FFI surface available); `false` otherwise (stub-only build).

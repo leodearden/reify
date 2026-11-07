@@ -271,7 +271,7 @@ const VALID_MASS_PROPS_SRC: &str = r#"
 structure MpModel {
     param touched : Bool = false
     let flag = touched
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0.0, 0.0, 0.0), y_axis: vec3(0.0, 0.0, 0.0), z_axis: vec3(0.0, 0.0, 0.0)))
 }
 "#;
 

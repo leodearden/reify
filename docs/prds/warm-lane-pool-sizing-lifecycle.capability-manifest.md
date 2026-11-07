@@ -1,6 +1,8 @@
 # Capability Manifest — warm-lane-pool-sizing-lifecycle.md
 
-Mechanizes G3 + G6 per leaf. This PRD is shell/XFS/systemd/git/dark-factory-Python infrastructure — **no `.ri` grammar or semantic substrate**, so the grammar-fixture and numeric-floor (FEA) forms are **N/A**; the load-bearing forms here are **anti-orphan/wired-consumer** and **host-check evidence**, plus the **G6 no-frozen-number** binding (all disk/footprint figures are measured, never test constants). Every capability was verified live on the running pool 2026-07-11.
+Mechanizes G3 + G6 per leaf. **Any `path:line` written below is dated evidence from that verification, not a live
+breadcrumb** — do not re-anchor it; grep the symbol named beside it to find the code today.
+ This PRD is shell/XFS/systemd/git/dark-factory-Python infrastructure — **no `.ri` grammar or semantic substrate**, so the grammar-fixture and numeric-floor (FEA) forms are **N/A**; the load-bearing forms here are **anti-orphan/wired-consumer** and **host-check evidence**, plus the **G6 no-frozen-number** binding (all disk/footprint figures are measured, never test constants). Every capability was verified live on the running pool 2026-07-11.
 
 | Leaf | Asserted capability | Evidence form | Binding | Verdict |
 |---|---|---|---|---|

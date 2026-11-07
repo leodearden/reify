@@ -1,9 +1,13 @@
 // G-code import smoke example  (task ο — gcode_import)
 //
-// Demonstrates the `gcode_import(source, dialect) -> List<Profile>` stdlib
-// entry point (PRD docs/prds/v0_3/trajectory-input-shaping.md §7.2, §11 task ο):
-// a Marlin g-code source string is lowered to a list of motion profiles — one
-// per contiguous motion segment — and the resulting list is exercised.
+// Demonstrates the `gcode_import(source, dialect) -> List<GcodeMotionSegment>`
+// stdlib entry point (PRD docs/prds/v0_3/trajectory-input-shaping.md §7.2, §11
+// task ο): a Marlin g-code source string is lowered to a list of motion
+// segments — one per contiguous run of moves — and the typed waypoints are read.
+//
+// A segment is NOT a Profile: it carries move-target waypoints (x/y/z/e Length,
+// optional feedrate Velocity) with no time parameterisation, so it cannot be
+// passed to evaluate_profile / profile_duration.
 //
 // Verification: the reify-compiler examples_smoke gate
 // (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
@@ -13,9 +17,9 @@
 // The Reify string-literal lexer stores text verbatim — it does NOT process
 // `\n` escapes (crates/reify-syntax/src/ts_parser.rs::lower_string_literal).
 // A single G1 move is therefore used as the source: it lowers to exactly one
-// motion profile, so `imported` is a non-empty `List<Profile>`. Multi-segment
-// lowering (M-code splits, G92 rebase, Klipper INPUT_SHAPER → ShaperConflict)
-// is exercised at the Rust eval layer instead — see the unit tests in
+// motion segment, so `imported` is a non-empty `List<GcodeMotionSegment>`.
+// Multi-segment lowering (M-code splits, G92 rebase, Klipper INPUT_SHAPER →
+// ShaperConflict) is exercised at the Rust eval layer instead — see the unit tests in
 // crates/reify-stdlib/src/trajectory/gcode_import.rs and the eval-boundary
 // test in crates/reify-stdlib/src/trajectory/mod.rs.
 //
@@ -27,7 +31,7 @@ structure def GcodeImportSmoke {
     // A one-move Marlin program: linear move to (10 mm, 10 mm) in the XY plane.
     let source = "G1 X10 Y10"
 
-    // Lower the g-code to a list of motion profiles under the Marlin dialect.
+    // Lower the g-code to a list of motion segments under the Marlin dialect.
     // The concrete `MarlinDialect()` is passed DIRECTLY to gcode_import's
     // `dialect: GcodeDialect` trait param — the entity-scope conformance
     // post-pass accepts a conforming concrete at a trait-typed param, so no
@@ -36,8 +40,14 @@ structure def GcodeImportSmoke {
     let imported = gcode_import(source, MarlinDialect())
 
     // Exercise the result: a contiguous one-move program lowers to a single
-    // profile, so the imported list is non-empty.
-    let profile_count = imported.count
+    // segment, so the imported list is non-empty.
+    let segment_count = imported.count
 
-    constraint profile_count > 0
+    // The waypoints are typed: the first move target's x is a Length (10 mm).
+    let first_segment = imported[0]
+    let first_waypoints = first_segment.waypoints
+    let first_waypoint = first_waypoints[0]
+    let first_x = first_waypoint.x
+
+    constraint segment_count > 0
 }

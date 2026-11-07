@@ -1,0 +1,8 @@
+module s7_resolution_alias_cycle
+
+type C1 = C2
+type C2 = C1
+
+structure def S {
+    param x : C1
+}

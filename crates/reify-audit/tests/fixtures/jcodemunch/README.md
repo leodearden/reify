@@ -11,10 +11,34 @@ the Rust client without a live serve.
 | serve version    | v1.108.27 (`git+https://github.com/jgravelle/jcodemunch-mcp.git@v1.108.27`) |
 | python           | 3.12 (via `uvx --python 3.12`)                             |
 | transport        | streamable-HTTP, `http://127.0.0.1:8901/mcp`               |
-| repo id          | `leodearden/reify`                                         |
+| repo id          | `leodearden/reify` — as captured; **retired for live use**, see below |
 | storage path     | `~/.code-index` (schema v16, maintained by jcodemunch-watcher.service) |
 | commit range     | `00f56f1a20be3a66a0797663506280be4db9ccf3..27b212c61cfe86bf57055d769921805e34d8b467` |
 | capture date     | 2026-05-30T21:19:24Z                                       |
+
+### The `repo id` row is dated provenance, not a live identity
+
+The value above records what the 2026-05-30 capture session actually sent, and is
+left unaltered for that reason — rewriting a dated snapshot to today's value would
+manufacture provenance the capture never had. **Do not copy it into a new
+invocation.** `leodearden/reify` is jcodemunch's *git* identity for this origin;
+since the §4.2/§4.3 work it is retired on two independent counts:
+
+- It collides across reify's ~239 linked worktrees — every checkout resolves to the
+  same `leodearden/reify` with a different `git_root`, and jcodemunch's
+  `index_folder` collision guard hard-refuses.
+- On this host it maps to `~/.code-index/leodearden-reify.db`, which is the
+  documented **empty husk**: `meta` carries only `call_refs_missing` and
+  `index_version` (no `git_head`), and `symbols` is 0. Upstream re-creates that
+  husk as a side effect of any run, so deleting it is not a fix. `reify-audit`'s
+  §4.3 gate refuses against it with `E_JC_INDEX_EMPTY` and exit 125.
+
+The live identity is the per-path one `reify-audit` derives from `--project-root`
+(`local/<basename>-<sha1(abs_path)[..8]>`; for `/home/leo/src/reify` that is
+`local/reify-4ae45bbd`). Omitting `--jcodemunch-repo` selects it. The command
+examples further down are likewise reproduced **as captured** and carry the same
+retired id in their `--data` payloads; re-running them today needs that field
+swapped for the derived identity.
 
 ## Fixture formats
 

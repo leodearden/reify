@@ -9,7 +9,7 @@
 //! `GeometryHandle`, `kernel_handle: None`, for any `Type::Geometry` cell
 //! with a name-matching realization, `engine_build.rs:8436`). Unlike the
 //! `build()`-path GHR-δ S12 precedent
-//! (`crates/reify-eval/tests/geometry_handle_freshness.rs`
+//! (`crates/reify-eval/tests/harness_geometry/geometry_handle_freshness.rs`
 //! `removed_realization_donates_invalidation_to_surviving_geometry_cell`,
 //! param-backed) — where an invalidated cache entry stays ABSENT until a
 //! later on-demand rebuild — the kernel-free eval path eagerly re-derives
@@ -69,7 +69,7 @@ fn scalar_conversion_does_not_leave_a_stale_geometry_handle() {
     let compiled_geo = compile_source_with_stdlib(SRC_GEOMETRY_LET);
     assert_no_compile_errors(&compiled_geo);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let baseline = engine.eval(&compiled_geo);
 
     let loc_box = ValueCellId::new("Widget", "loc_box");
@@ -166,7 +166,7 @@ fn removed_realization_donates_invalidation_to_surviving_let_backed_geometry_cel
     let compiled_a = compile_source_with_stdlib(SRC_A);
     assert_no_compile_errors(&compiled_a);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let baseline = engine.eval(&compiled_a);
 
     let b = ValueCellId::new("Widget", "b");

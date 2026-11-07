@@ -167,7 +167,7 @@ mod tests {
     /// Build the tilted triangle nodes from UNIT_TRI rotated by Q = Ry(45°)·Rz(30°).
     fn tilted_tri() -> [[f64; 3]; 3] {
         const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
         let mut nodes = [[0.0_f64; 3]; 3];
         for (ni, node) in UNIT_TRI.iter().enumerate() {
             for i in 0..3 {

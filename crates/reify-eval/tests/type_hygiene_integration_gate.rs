@@ -12,27 +12,27 @@
 //! **Row ownership:** each §10 row is tested in exactly ONE canonical file;
 //! this gate is the *collected-view* for the eval-layer rows.  Compiler-layer
 //! rows (1, 3, 4a, 5, 7a, 10, 11) live in
-//! `crates/reify-compiler/tests/type_hygiene_integration_gate.rs`; the CLI
-//! row (12) lives in `crates/reify-cli/tests/cli_type_hygiene_strict.rs`.
+//! `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`; the CLI
+//! row (12) lives in `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`.
 //!
 //! # §10 boundary-test table + row→owner cross-reference
 //!
 //! | Row | Description                                                  | Owner (eval gate fn)                                                  |
 //! |-----|--------------------------------------------------------------|-----------------------------------------------------------------------|
-//! | 1   | tensor>scalar → CmpOperandKind+fixit                         | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 1   | tensor>scalar → CmpOperandKind+fixit                         | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 2   | mass>0 OK / VIOLATED                                         | `ci_example_compiles_clean_and_evaluates_green` (OK) + `row_2_mass_constraint_violated` (VIOLATED) |
-//! | 3   | bare 0 vs tensor → CmpOperandKind                            | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
-//! | 4a  | `x and 5` err                                                | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 3   | bare 0 vs tensor → CmpOperandKind                            | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
+//! | 4a  | `x and 5` err                                                | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 4b  | Kleene runtime preserved                                     | `row_4b_kleene_runtime_preserved`                                     |
-//! | 5   | TypeParam gradualism no-diag                                 | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 5   | TypeParam gradualism no-diag                                 | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 6   | moi(b,material.density) via let → non-Undef tensor           | `ci_example_compiles_clean_and_evaluates_green` (OCCT-gated)          |
-//! | 7a  | moi(b,7850.0) → ArgTypeMismatch                              | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 7a  | moi(b,7850.0) → ArgTypeMismatch                              | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 7b  | moi runtime density rejection never-silent                   | `row_7b_inline_density_rejection_never_silent`                        |
 //! | 8   | body_mass_props(b,Pressure) loud reject                      | `row_8_body_mass_props_pressure_as_density_warns`                     |
 //! | 9   | body_mass_props(b) no-Material warn + water UNCHANGED        | `row_9_body_mass_props_no_material_warns_and_uses_water`              |
-//! | 10  | scalar override of tensor-defaulted trait param → mismatch   | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
-//! | 11  | compatible override conforms                                 | `reify-compiler/tests/type_hygiene_integration_gate.rs` + example     |
-//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/cli_type_hygiene_strict.rs`                  |
+//! | 10  | scalar override of tensor-defaulted trait param → mismatch   | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
+//! | 11  | compatible override conforms                                 | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs` + example     |
+//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`                  |
 //! | 13  | distinct indeterminacy messages                              | `row_13_distinct_indeterminacy_messages`                              |
 //! | 14  | RNEA identical post-κ                                        | `row_14_rnea_numerically_identical_post_kappa`                        |
 
@@ -41,7 +41,7 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{
     MockGeometryKernel, check_source, check_source_with_stdlib, compile_source_with_stdlib,
-    eval_source, parse_and_compile_with_stdlib,
+    eval_source, parse_and_compile_with_stdlib, read_f64,
 };
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ fn ci_example_compiles_clean_and_evaluates_green() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // §10 row 6: `let d = material.density; let i = moment_of_inertia(b, d)` →
@@ -320,7 +320,7 @@ structure def MoiRejection {
     // Build with MockGeometryKernel so density-arg resolution runs (OCCT-independent).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // The runtime Warning must contain "expects Density" AND the "7850kg/m^3" hint.
@@ -362,7 +362,7 @@ structure def BmpPressure {
     let compiled = compile_source_with_stdlib(SRC);
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let pressure_warn = result
@@ -415,7 +415,7 @@ structure def BmpNoMaterial {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // §10 row 9 invariant (post-task-4498 flip): EXACTLY ONE DynamicsNoDensity error.
@@ -613,7 +613,7 @@ fn row_14_rnea_numerically_identical_post_kappa() {
     // Kernel-independent: inverse_dynamics reads mass from MassProperties solid.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Extract PendulumIdyn.forces.
@@ -634,7 +634,10 @@ fn row_14_rnea_numerically_identical_post_kappa() {
 
     // Extract ScalarTorque.magnitude.
     let value = field(&forces[0], "JointForce", "value");
-    let torque = num(field(value, "ScalarTorque", "magnitude"));
+    let torque = read_f64(
+        field(value, "ScalarTorque", "magnitude"),
+        "§10 row 14: ScalarTorque.magnitude",
+    );
 
     let expected = 0.4905_f64; // m·g·L·sin(30°) = 1·9.81·0.1·0.5
     let tol = 1e-6_f64; // 1 µN·m
@@ -646,15 +649,6 @@ fn row_14_rnea_numerically_identical_post_kappa() {
 }
 
 // ── Field-extraction helpers (row 14) ────────────────────────────────────────
-
-fn num(v: &Value) -> f64 {
-    match v {
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("§10 row 14: expected a numeric Value, got {other:?}"),
-    }
-}
 
 fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
     match v {

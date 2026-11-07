@@ -24,6 +24,8 @@ import {
   type RenameUi,
   type ApplyEditFn,
 } from './rename';
+import { createDocumentVersions } from './documentVersions';
+import type { VersionSkewGuard } from './versionSkew';
 import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
@@ -76,9 +78,8 @@ export interface EditorProps {
   /**
    * Called when Shift+F12 (Find uses) resolves references for the symbol under
    * the cursor.  App opens the Find-uses panel with these results.  Results are
-   * in native LSP (0-based) coordinates; the +1 conversion to the editor's
-   * 1-based SourceLocation happens at App's onNavigate click handler, mirroring
-   * the diagnostics setScrollToLocation path.
+   * in native LSP (0-based) coordinates; a navigated row is converted by
+   * referenceSourceLocation and revealed through App's revealInEditor.
    */
   onShowReferences?: (results: ReferenceResult[]) => void;
 }
@@ -89,7 +90,7 @@ export function Editor(props: EditorProps) {
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let lspDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
-  let lspVersion = 1;
+  const docVersions = createDocumentVersions();
   const fileStates = new Map<string, EditorState>();
   let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
@@ -143,12 +144,72 @@ export function Editor(props: EditorProps) {
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
 
+  /** Tell the server about `text`, advancing that document's own version. */
+  const sendDidChange = (uri: string, text: string): Promise<void> =>
+    lspClient
+      .didChange(uri, text, docVersions.next(canonicalizeKey(uri)))
+      .catch((err: unknown) => console.error('LSP didChange error:', err));
+
+  /** Drop a pending didChange unsent — the text it described is no longer live. */
+  const cancelPendingLspChange = (): void => {
+    clearTimeout(lspDebounceTimer);
+    lspDebounceTimer = undefined;
+  };
+
+  /**
+   * Send the debounced didChange NOW, or null when the server is already current.
+   *
+   * Requests that must be answered against the text the user is looking at
+   * call this first — via onceServerIsCurrent, or as the version-skew guard's
+   * syncServer. Without it the server answers from text up to
+   * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
+   * skew that no version comparison downstream can detect, because the stale
+   * answer is stamped with the version the client itself last sent.
+   *
+   * Returns null when there is nothing pending, so the common case stays
+   * synchronous rather than deferring the caller behind a settled promise.
+   */
+  const flushPendingLspChange = (cmView: EditorView): Promise<void> | null => {
+    if (lspDebounceTimer === undefined) return null;
+    cancelPendingLspChange();
+    const path = props.store.state.activeFile;
+    if (!path) return null;
+    return sendDidChange(pathToUri(path), cmView.state.doc.toString());
+  };
+
+  /**
+   * Wrap a keymap command so it runs only after the server has the text on
+   * screen: any pending didChange goes out FIRST, and the command waits for it.
+   *
+   * Position-based requests (rename, find uses) are only meaningful against
+   * the text they were computed from, and pressing the key straight after
+   * typing is the most likely way to ask about text the server has not
+   * received yet. The key is consumed either way, and a command whose document
+   * was switched away from (or whose view was torn down) while it waited is
+   * dropped rather than run against whatever the view shows now.
+   */
+  const onceServerIsCurrent =
+    (command: (cmView: EditorView) => boolean) =>
+    (cmView: EditorView): boolean => {
+      const flushed = flushPendingLspChange(cmView);
+      if (!flushed) return command(cmView);
+      const uriAtKeypress = currentUri;
+      flushed
+        .then(() => {
+          if (!cmView.dom.isConnected || !isSameFile(currentUri, uriAtKeypress)) return;
+          command(cmView);
+        })
+        .catch((err: unknown) => console.error('LSP command after didChange flush failed:', err));
+      return true;
+    };
+
   onMount(() => {
     const activeFile = props.store.state.activeFile;
     previousActiveFile = activeFile;
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const doc = file?.content ?? '';
     currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
+    const initialUri = currentUri;
 
     // Named cross-file navigate callback shared by reifyGotoDefinition (Ctrl+Click)
     // and gotoDefinitionCommand (F12). Extracted so both handlers use identical
@@ -332,21 +393,12 @@ export function Editor(props: EditorProps) {
           saveFile(file.path, newContent).catch((err: unknown) =>
             console.error('rename: failed to save inactive buffer', err),
           );
-          // Notify the LSP server (file may not be LSP-open yet — ignore any error).
-          lspVersion++;
-          lspClient
-            .didChange(uri, newContent, lspVersion)
-            .catch((_err: unknown) => {
-              /* file may not be didOpen'd in LSP yet — ignore */
-            });
+          // Notify the LSP server. A document it never opened is only logged
+          // server-side, so a rejection here is a transport failure worth reporting.
+          sendDidChange(uri, newContent);
           // Invalidate cached EditorState so switching to this tab reloads from
           // the updated store content rather than the pre-rename CM snapshot.
-          // Use pathToUri(key) — the same decoded, non-percent-encoded form that
-          // fileStates entries are keyed by — rather than the raw WorkspaceEdit URI
-          // (which may be percent-encoded by Url::from_file_path on the backend).
-          // For ASCII-only paths both are equal; for paths with spaces/non-ASCII the
-          // raw URI would be a no-op delete and leave a stale EditorState in the map.
-          fileStates.delete(pathToUri(key));
+          fileStates.delete(key);
         },
         applyClosed: (uri, edits) => {
           const path = normalizePath(uri);
@@ -361,6 +413,13 @@ export function Editor(props: EditorProps) {
         },
       });
     };
+
+    // Shared version-skew guard for position-based commands.
+    const versionSkewGuard: VersionSkewGuard = {
+      currentVersion: (uri) => docVersions.current(canonicalizeKey(uri)),
+      syncServer: flushPendingLspChange,
+    };
+    const renameF2 = renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, versionSkewGuard);
 
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
@@ -403,8 +462,9 @@ export function Editor(props: EditorProps) {
           // F2 inline rename. prepareRename gates the edit (Invariant-4 refusal),
           // and applying the WorkspaceEdit dispatches one CM change that flows
           // through the updateListener below → markDirty + updateSource + didChange.
+          // Waits for a pending didChange first (see onceServerIsCurrent).
           key: 'F2',
-          run: renameCommand(() => currentUri, lspClient, renameUi, applyEditFn),
+          run: onceServerIsCurrent(renameF2),
           preventDefault: true,
         },
         {
@@ -412,11 +472,15 @@ export function Editor(props: EditorProps) {
           // through the CM keymap (not the global useKeyboardShortcuts handler,
           // which bails inside the contentEditable editor) because it needs the
           // live cursor; mirrors the F12 goto-definition precedent above.
+          // Waits for a pending didChange first (see onceServerIsCurrent).
           key: 'Shift-F12',
-          run: findUsesCommand(
-            () => currentUri,
-            lspClient,
-            (r) => props.onShowReferences?.(r),
+          run: onceServerIsCurrent(
+            findUsesCommand(
+              () => currentUri,
+              lspClient,
+              (r) => props.onShowReferences?.(r),
+              versionSkewGuard,
+            ),
           ),
           preventDefault: true,
         },
@@ -535,13 +599,13 @@ export function Editor(props: EditorProps) {
               );
             }, EDITOR_DEBOUNCE_MS);
 
-            // Send didChange to LSP (debounced)
-            clearTimeout(lspDebounceTimer);
+            // Send didChange to LSP (debounced). The handle is cleared as the
+            // timer fires so `lspDebounceTimer` means "a change the server has
+            // not seen yet" — what flushPendingLspChange keys off.
+            cancelPendingLspChange();
             lspDebounceTimer = setTimeout(() => {
-              lspVersion++;
-              lspClient
-                .didChange(pathToUri(path), update.state.doc.toString(), lspVersion)
-                .catch((err: unknown) => console.error('LSP didChange error:', err));
+              lspDebounceTimer = undefined;
+              sendDidChange(pathToUri(path), update.state.doc.toString());
             }, EDITOR_DEBOUNCE_MS);
           }
         }
@@ -549,10 +613,10 @@ export function Editor(props: EditorProps) {
           const pos = update.state.selection.main.head;
           const line = update.state.doc.lineAt(pos);
           // Emit 1-based column to match the backend convention required by
-          // getEntityAtSourceLocation (engine.rs:2227, documented 1-based at
-          // engine.rs:2208) and getContainingDefinition (engine.rs:2153,
-          // documented 1-based at engine.rs:2134). CodeMirror's `pos - line.from`
-          // is 0-based; adding 1 converts to 1-based codepoint offset.
+          // `get_entity_at_source_location` and `get_containing_definition`
+          // (both in gui/src-tauri/src/engine.rs), which document their line/col
+          // arguments as 1-based. CodeMirror's `pos - line.from` is 0-based;
+          // adding 1 converts to 1-based codepoint offset.
           props.store.setCursorPosition(line.number, pos - line.from + 1);
         }
       }),
@@ -574,17 +638,21 @@ export function Editor(props: EditorProps) {
     }
 
     // Initialize LSP, send 'initialized' notification, then open the document.
+    // This is the first link of fileOpsPromise, so every file-switch and cleanup
+    // notification queues behind it. The opened URI, text and version are the
+    // mount-time snapshot, and the didOpen is skipped after teardown like the
+    // switch chain's.
     // Pass the workspace root URI (directory of the active .ri file) so the
     // backend sets workspace_root and activates κ cross-file references/rename.
     // When no file is active, workspaceRootUriForFile returns undefined which
     // preserves the existing single-file fallback behaviour.
-    lspClient
+    const initialVersion = activeFile ? docVersions.next(canonicalizeKey(initialUri)) : undefined;
+    fileOpsPromise = lspClient
       .initialize(workspaceRootUriForFile(activeFile))
       .then(() => lspClient.initialized())
       .then(() => {
-        if (activeFile) {
-          return lspClient.didOpen(currentUri, doc, lspVersion);
-        }
+        if (destroyed || initialVersion === undefined) return;
+        return lspClient.didOpen(initialUri, doc, initialVersion);
       })
       .catch((_err: unknown) =>
         props.onError?.('LSP initialization failed — completions and diagnostics may be unavailable'),
@@ -597,7 +665,7 @@ export function Editor(props: EditorProps) {
     createDiagnosticsListener((event) => {
       if (!view) return;
       // Only apply diagnostics for the currently active file
-      if (event.uri !== currentUri) return;
+      if (!isSameFile(event.uri, currentUri)) return;
       lspCmDiagnostics = event.diagnostics
         .map((d) => {
           try {
@@ -626,7 +694,7 @@ export function Editor(props: EditorProps) {
 
     // Cancel any pending debounced operations from the previous file
     clearTimeout(debounceTimer);
-    clearTimeout(lspDebounceTimer);
+    cancelPendingLspChange();
 
     // Discard previous-file CmDiagnostics from both channels.  Their from/to
     // offsets were computed against the old document; re-using them after the view
@@ -649,19 +717,19 @@ export function Editor(props: EditorProps) {
     // Update the mutable URI so extension getters resolve to the new file
     currentUri = newUri;
 
-    // Save current file's EditorState (keyed by URI) before switching
-    fileStates.set(oldUri, view.state);
+    // Save current file's EditorState (keyed by document identity) before switching
+    fileStates.set(canonicalizeKey(oldUri), view.state);
 
     // Restore or create EditorState for the new file.
     //
-    // The per-URI fileStates cache preserves cursor/scroll/undo and, crucially, a
+    // The per-document fileStates cache preserves cursor/scroll/undo and, crucially, a
     // dirty file's unsaved edits across tab switches.  But when a CLEAN file's store
     // content was refreshed while it was inactive (debug open_file / reload of an
     // already-open path — task-5359), the cached buffer holds stale disk content and
     // must be rebuilt from the fresh store content.  Restore the cache only when the
     // file is dirty (preserve unsaved edits) or the cache already matches the store;
     // otherwise rebuild from newContent so a clean, diverged tab reflects disk.
-    const savedState = fileStates.get(newUri);
+    const savedState = fileStates.get(canonicalizeKey(newUri));
     const isDirty = activeFile ? props.store.state.dirtyFiles.includes(activeFile) : false;
     if (savedState && (isDirty || savedState.doc.toString() === newContent)) {
       view.setState(savedState);
@@ -675,8 +743,13 @@ export function Editor(props: EditorProps) {
 
     // Close old document and open new one in the LSP server.
     // Chain off fileOpsPromise to serialize rapid file switches.
-    lspVersion++;
-    const version = lspVersion;
+    //
+    // The version is taken here, not inside the chain, so rapid switches keep
+    // the numbers in the order their notifications were queued. didClose ends
+    // the old document's life on the server, so its counter is dropped with it —
+    // a later reopen then starts a fresh sequence at 1, as a new didOpen must.
+    const version = docVersions.next(canonicalizeKey(newUri));
+    docVersions.forget(canonicalizeKey(oldUri));
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(oldUri))
       .then(() => {
@@ -823,7 +896,7 @@ export function Editor(props: EditorProps) {
 
   onCleanup(() => {
     clearTimeout(debounceTimer);
-    clearTimeout(lspDebounceTimer);
+    cancelPendingLspChange();
     // Tear down any open F2 rename overlay (field/message) + its dismiss timer.
     clearRenameOverlay();
     // Mark diagnostics listener as cancelled so that if the listen

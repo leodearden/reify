@@ -1,0 +1,195 @@
+module top_deck_split
+
+// Two-deck cat litter tray — TOP DECK, two-part split (v1, round 3, 2026-09-03).
+//
+// Joint (Leo, 2026-09-03): GLUE-ONLY. The 2.4mm walls cannot take M3 inserts
+// and any external proud tab in the 0..15mm engagement zone would foul the
+// bottom deck's recess (0.4mm clearance), so:
+//   - Floor seam: the same 45° "pinwheel scarf" as the bottom deck, through a
+//     SOLID strip of the sieve field (no holes within |x| < x0a_h - hole_d/2).
+//     IDENTICAL halves: a half mates with a copy of itself rotated 180° about
+//     Z; the hex lattice stays continuous across the seam because the first
+//     hole column sits at x ≡ 1.25 (mod pitch): the rotation maps grid-A
+//     columns (phase 1.25) onto the mate's grid-B phase (3.75) and A-rows
+//     onto B-rows (row parity flips), so the two half-lattices are ONE lattice.
+//   - Walls/rim butt at the seam plane (seam_gap glue gap).
+//   - One INTERNAL overlap tab per side: a 2.4mm plate on the +y inner wall
+//     face bridging the seam (x ∈ [-tab_len/2, +tab_len/2]), glued flat onto
+//     the mate's inner wall face. It starts ABOVE the floor fillet (so it
+//     cannot interfere with the mate's fillet) and its overhanging half
+//     (x < 0) carries a 45° underside so the plate prints support-free.
+//   - Adhesive on scarf + butts + tabs. No sealant needed (dry deck).
+//
+// Sieve per half: grid A 44 columns (x 6.25..221.25), grid B 43 columns
+// (x 8.75..218.75), 26 rows each => 2,262 holes/half, 4,524 per tray
+// (the solid seam strip costs 78 of the monolithic 4,602).
+//
+// Print check per half: footprint x -2.5..+237.2 (239.7mm), y 254.4mm — well
+// inside the 265mm U1 envelope (no proud features).
+
+structure def TopDeckHalf : Rigid {
+    // ── Interface to the bottom deck (matches top_deck.ri) ──────────────
+    param recess_length : Length = 475.2mm
+    param recess_width  : Length = 255.2mm
+    param recess_corner : Length = 22.6mm
+    param fit_clearance : Length = 0.4mm
+
+    // ── Body ────────────────────────────────────────────────────────────
+    param wall_t       : Length = 2.4mm
+    param floor_t      : Length = 5mm
+    param deck_height  : Length = 60mm
+    param rim_fillet   : Length = 1mm
+    param floor_fillet : Length = 4mm
+    param base_fillet  : Length = 1.5mm
+
+    // ── Sieve field ─────────────────────────────────────────────────────
+    param hole_d     : Length = 3mm
+    param hole_pitch : Length = 5mm
+    param margin     : Length = 12mm
+    param pad_r      : Length = 13mm
+    param pad_x      : Length = 120mm       // this half's pad (mate supplies -pad_x)
+    param seam_web   : Length = 2mm         // solid web between scarf strip and first hole
+
+    // ── Hand slot (this half's end wall) ────────────────────────────────
+    param slot_w : Length = 60mm
+    param slot_h : Length = 22mm
+    param slot_z : Length = 40mm
+
+    // ── Seam / joint ────────────────────────────────────────────────────
+    param seam_gap : Length = 0.2mm         // glue gap at the wall butts
+    param tab_len  : Length = 36mm          // internal tab, centred on the seam
+    param tab_t    : Length = 2.4mm         // tab plate thickness (into the cavity)
+    param tab_h    : Length = 30mm          // tab height
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let outer_length = recess_length - 2 * fit_clearance   // 474.4
+    let outer_width  = recess_width  - 2 * fit_clearance   // 254.4
+    let corner_r     = recess_corner - fit_clearance       // 22.2
+    let inner_length = outer_length - 2 * wall_t
+    let inner_width  = outer_width  - 2 * wall_t
+    let inner_y  = inner_width / 2                         // side-wall inner face
+    let field_x  = inner_length - 2 * margin
+    let field_y  = inner_width  - 2 * margin
+    let row_step = hole_pitch * 0.866
+    let strip_half = floor_t / 2                           // scarf strip x ∈ [-2.5, +2.5]
+    let tab_z0 = floor_t + floor_fillet + 0.5mm            // tab bottom clears the mate's fillet
+
+    // Hole counts per half; column origin snapped to the 1.25-mod-5 phase.
+    let nx_a = 44
+    let ny_a = 26
+    let nx_b = 43
+    let ny_b = 26
+    let hole_count = nx_a * ny_a + nx_b * ny_b             // 2262
+    let x0a = strip_half + seam_web + hole_d / 2 + 0.25mm  // 6.25
+    let y0a = 0mm - (row_step * (ny_a + ny_b - 1)) / 2     // -110.4 (row 0)
+    let x0b = x0a + hole_pitch / 2                         // 8.75
+    let y0b = y0a + row_step
+
+    // ── Constraints ─────────────────────────────────────────────────────
+    let bed_limit = 265mm
+    constraint outer_width <= bed_limit
+    constraint outer_length / 2 + strip_half <= bed_limit
+    constraint hole_d < 4mm
+    constraint hole_d >= 2.5mm
+    constraint hole_pitch - hole_d >= 1.8mm
+    constraint x0a - hole_d / 2 >= strip_half + seam_web              // solid seam strip
+    constraint x0a + hole_pitch * (nx_a - 1) + hole_d / 2 <= field_x / 2   // grid A fits
+    constraint x0b + hole_pitch * (nx_b - 1) + hole_d / 2 <= field_x / 2   // grid B fits
+    constraint row_step * (ny_a + ny_b - 1) + hole_d <= field_y
+    constraint margin >= floor_fillet + 6mm
+    constraint pad_r > hole_pitch
+    constraint pad_x - pad_r > x0a                                    // pad clear of the seam strip
+    constraint fit_clearance >= 0.2mm
+    constraint fit_clearance <= 0.6mm
+    constraint slot_z - slot_h / 2 > 15mm + 5mm
+    constraint slot_z + slot_h / 2 <= deck_height - 8mm
+    constraint floor_t >= 4mm
+    constraint 2 * rim_fillet < wall_t
+    constraint base_fillet < floor_t
+    constraint seam_gap < 1mm
+    constraint tab_z0 + tab_h <= deck_height - 15mm                   // tab well below the rim
+    constraint tab_len / 2 > strip_half + 5mm                         // tab actually bridges the seam
+    constraint field_y / 2 + hole_d / 2 < inner_y - tab_t - 2mm       // holes clear the mate's tab
+
+    // ── Geometry ────────────────────────────────────────────────────────
+    let cav_r = corner_r - wall_t
+    let end_x = outer_length / 2
+    let slot_flat = slot_w - slot_h
+    let scw = outer_width / 2 + 10mm                       // scarf cutter y reach
+    let tab_y = inner_y - tab_t / 2
+    let up = vec3(0.0, 0.0, 1.0)
+
+    // Full shell + fillets (identical to top_deck.ri v2).
+    aux let outer_blank = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)
+    aux let outer       = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_r)
+    aux let cav_blank   = translate(box(inner_length, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2)
+    aux let cav_cut     = fillet(cav_blank, edges_parallel_to(cav_blank, up, 1deg), cav_r)
+    aux let shell       = difference(outer, cav_cut)
+    aux let rim_soft    = fillet(shell,      edges_at_height(shell,      deck_height, 0.5mm), rim_fillet)
+    aux let floor_soft  = fillet(rim_soft,   edges_at_height(rim_soft,   floor_t,     0.5mm), floor_fillet)
+    aux let base_soft   = fillet(floor_soft, edges_at_height(floor_soft, 0mm,         0.5mm), base_fillet)
+
+    // This half's sieve (x > seam strip only), pad, and hand slot.
+    aux let holes = union_all(
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step),
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
+    )
+    aux let perforated = difference(base_soft, holes)
+    aux let padded = union_all(perforated, translate(cylinder(pad_r, floor_t), pad_x, 0mm, 0mm))
+    aux let slots = union_all(
+        translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+    )
+    aux let slotted = difference(padded, slots)
+
+    // Seam: cut past the scarf strip, trim walls back to the seam plane above
+    // the floor, then the pinwheel scarf wedges — ramp planes z = x + strip_half
+    // (y>0, keep the bottom wedge) and z = strip_half - x (y<0, keep the top
+    // wedge). Cutter placement is parametric in strip_half (45°-rotated 40mm
+    // boxes; the ±28.284mm terms are the box half-diagonal).
+    aux let trimmed = difference(difference(difference(difference(
+            slotted,
+            translate(box(outer_length, outer_width + 40mm, 4 * deck_height), -strip_half - outer_length / 2, 0mm, 0mm)
+        ),
+            translate(box(outer_length, outer_width + 40mm, 2 * deck_height), seam_gap / 2 - outer_length / 2, 0mm, floor_t + deck_height)
+        ),
+            intersection(
+                translate(box(2 * strip_half, scw, 3 * floor_t), 0mm, scw / 2, floor_t - 1.5 * floor_t),
+                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -6mm, scw / 2, strip_half - 6mm + 28.284mm)
+            )
+        ),
+            intersection(
+                translate(box(2 * strip_half, scw, 3 * floor_t), 0mm, -scw / 2, floor_t - 1.5 * floor_t),
+                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -16mm, -scw / 2, strip_half - 28.284mm + 16mm)
+            )
+        )
+
+    // Internal overlap tab on the +y inner wall face: plate bridging the seam,
+    // 45° underside on the overhanging (x < 0) part so it prints from the
+    // wall end without support. Unioned AFTER the trims (it bridges the seam).
+    aux let tab = difference(
+        translate(box(tab_len, tab_t, tab_h), 0mm, tab_y, tab_z0 + tab_h / 2),
+        translate(rotate(box(40mm, 10mm, 40mm), 0, 1, 0, 45deg), -25mm, tab_y, tab_z0 - 3.284mm)
+    )
+
+    param geometry : Solid = union_all(trimmed, tab)
+
+    // Fit-test print: one half as its own STEP. `reify build top_deck_split.ri --out-dir <dir>`
+    // drives this occurrence (declarative export; `-o` would instead write the
+    // whole file's product bodies — both posed assembly instances — into one file).
+    sub step_out = STEPOutput(subject: geometry, path: "top_half.step")
+}
+
+// Exploded assembly: two IDENTICAL halves, the second rotated 180° about Z.
+// Set explode = 0mm to check the mated state.
+structure def TopDeckSplit {
+    param explode : Length = 40mm
+
+    sub half_a : TopDeckHalf at transform3(orient_identity(), vec3(explode / 2, 0mm, 0mm))
+    sub half_b : TopDeckHalf at transform3(orient_axis_angle(vec3(0, 0, 1), 3.141592653589793rad), vec3(0mm - explode / 2, 0mm, 0mm))
+
+    constraint explode >= 0mm
+}

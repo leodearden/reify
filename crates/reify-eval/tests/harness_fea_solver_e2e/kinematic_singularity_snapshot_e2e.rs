@@ -31,50 +31,65 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 }
 
 /// Rank-deficient closed-chain mechanism: FOUR bodies, THREE prismatic-X
-/// joints. `solidC` anchors the closing joint `j_x` to `j_a` (open,
-/// spanning-tree edge); `solidD` re-anchors the SAME `j_x` to `j_b` (closing
-/// edge) — `path_b = [world, j_b, j_x]`. Binding only `j_a` leaves both
-/// `j_b` and `j_x` free; both are prismatic on the SAME +X axis, so their
-/// finite-difference Jacobian columns are identical → rank-1 `JᵀJ` →
-/// `NewtonOutcome::Singular` — the `.ri`-source analog of
-/// `snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain` in
+/// joints. `solidA` anchors the closing joint `j_x` directly to world
+/// (spanning-tree edge); `solidB` anchors `j_a` to world and `solidC` stacks
+/// `j_b` on top of `j_a`, giving the closing side a TWO-DEEP walk; `solidD`
+/// re-anchors the SAME `j_x` on top of `j_b` (closing edge). The resulting
+/// paths are `path_a = [world, j_x]` and `path_b = [world, j_a, j_b]`.
+///
+/// Free variables come from `chain_b` ONLY —
+/// `loop_closure::extract_loop_closure_chains` resolves every `chain_a`
+/// joint and iterates none of them. Binding/sweeping `j_x` therefore leaves
+/// `j_a` and `j_b` as the two free variables, and both are prismatic on the
+/// SAME +X axis, so their finite-difference Jacobian columns are identical →
+/// rank-1 `JᵀJ` → `NewtonOutcome::Singular`. This is the `.ri`-source analog
+/// of `snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain` in
 /// `reify-stdlib::snapshot`'s co-located unit tests.
 ///
-/// `j_a`/`j_b`/`j_x` use three DIFFERENT ranges (rather than three identical
+/// **Task 7186 defect A.** The rank deficiency used to come from the closing
+/// joint being appended to `path_b` as well: `chain_b` was `[j_b, j_x]`, two
+/// unbound +X prismatics with identical columns. With the closing joint
+/// composed exactly once (`path_a` only), that `chain_b` collapses to a
+/// single free joint and the fixture stops exhibiting the condition it
+/// exists to pin. The two identical free columns are therefore re-homed onto
+/// a genuine two-deep closing-side walk rather than recovered from a
+/// double-counted joint. The PROPERTY under test is unchanged: a genuinely
+/// rank-deficient `chain_b` must surface `is_singular` plus the diagnostic.
+///
+/// `j_x`/`j_a`/`j_b` use three DIFFERENT ranges (rather than three identical
 /// `prismatic(vec3(1,0,0), 0mm .. 1000mm)` calls) for two reasons:
 ///   1. **Distinct `Value`s.** Identical-range joints would be byte-identical
 ///      `Value::Map`s that alias in `joint_parents`, collapsing the intended
 ///      2-free-joint/1-loop-closure topology into a spurious second closure
 ///      (see the doc comment on the unit test named above).
-///   2. **Non-zero closure residual at the Newton starting guess.** The
-///      residual reduces to `midpoint(j_b) − bound_or_swept(j_a)` (`j_x`'s
-///      midpoint appears on both sides of the closure and cancels). `j_b`'s
-///      range (0..2100mm, midpoint 1050mm) is chosen so this never collides
-///      with `j_a`'s value, which stays within 0..1000mm below (both the
-///      static 500mm bind and the full sweep range) — a collision would let
-///      Newton converge trivially at iteration 0 without ever inverting the
-///      rank-deficient Jacobian (see the offset-0.1-vs-0.0 note on that same
-///      unit test).
+///   2. **Non-zero closure residual at the Newton starting guess.** With the
+///      closing joint on `path_a` alone, the residual reduces to
+///      `bound_or_swept(j_x) − (midpoint(j_a) + midpoint(j_b))`. The free
+///      side starts at `1050mm + 1250mm = 2300mm`, while `j_x` stays within
+///      `0..1000mm` (both the static 500mm bind and the full sweep range), so
+///      the two sides never collide — a collision would let Newton converge
+///      trivially at iteration 0 without ever inverting the rank-deficient
+///      Jacobian (see the offset-0.1-vs-0.0 note on that same unit test).
 ///
-/// Both a static `snapshot()` cell (`snap`, bound at `j_a = 500mm`) and a
-/// `sweep()` cell (`snaps`, driving `j_a` over its full range) are computed
+/// Both a static `snapshot()` cell (`snap`, bound at `j_x = 500mm`) and a
+/// `sweep()` cell (`snaps`, driving `j_x` over its full range) are computed
 /// from the same mechanism so both surfacing paths share one fixture.
 const SINGULAR_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 3000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2500mm)
 
     let m0 = mechanism()
-    let m1 = body(m0, "solidA", j_a)
-    let m2 = body(m1, "solidB", j_b)
-    let m3 = body(m2, "solidC", j_x, j_a)
+    let m1 = body(m0, "solidA", j_x)
+    let m2 = body(m1, "solidB", j_a)
+    let m3 = body(m2, "solidC", j_b, j_a)
     let m4 = body(m3, "solidD", j_x, j_b)
 
-    let bind_a = bind(j_a, 500mm)
-    let snap = snapshot(m4, [bind_a])
+    let bind_x = bind(j_x, 500mm)
+    let snap = snapshot(m4, [bind_x])
 
-    let snaps = sweep(m4, j_a, 0mm .. 1000mm, 5)
+    let snaps = sweep(m4, j_x, 0mm .. 1000mm, 5)
 }
 "#;
 

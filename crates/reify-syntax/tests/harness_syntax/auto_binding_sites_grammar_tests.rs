@@ -1,7 +1,7 @@
 //! Rust integration tests for task 3802: `auto` keyword reservation + shared
 //! `_binding_value` grammar rule at five binding sites.
 //!
-//! User-observable signal: `cargo test -p reify-syntax --test auto_binding_sites_grammar_tests`
+//! User-observable signal: `cargo test -p reify-syntax --test harness_syntax -- auto_binding_sites_grammar_tests::`
 //! passes.
 //!
 //! Coverage:

@@ -36,6 +36,15 @@
 # convention (PRD §3.3), not by this regex lint. The reverse pass covers them
 # via the permissive literal scan.
 #
+# SCOPE — what this lint does NOT cover (task 6236): BOTH passes key exclusively
+# on COLUMN 1 of docs/gui-event-channels.md, the backticked kebab-case channel
+# name. No pass reads the Producer, Consumer or Notes columns, so a Consumer cell
+# naming a `bridge.ts` export that has since been deleted leaves this lint fully
+# green — the channel still exists, still emits, still appears in the inventory;
+# only the frontend symbol the doc points the next reader at is gone.
+# That column is guarded separately, by the vitest suite
+# gui/src/__tests__/eventChannelConsumerCoverage.test.ts.
+#
 # Usage: scripts/check_event_inventory.sh [--strict] [--bidirectional] [--repo-root <dir>]
 #
 # Exit codes:

@@ -75,7 +75,7 @@ conditional_compilation/
 
 ## Note on the bulk examples smoke test
 
-`crates/reify-compiler/tests/examples_smoke.rs` compiles every `examples/**/*.ri`
+`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` compiles every `examples/**/*.ri`
 **single-file** (`compile_with_stdlib`, no cfg DAG).  `main.ri`'s `param p : Platform`
 is resolvable only through the cfg-gated import, so single-file it is a hard
 `unresolved type` error — `main.ri` is therefore listed in the smoke `SKIP_SET` with
@@ -85,4 +85,4 @@ The siblings (`platform_linux.ri`, `platform_wasm.ri`) define their own types, c
 clean single-file, and are **not** skipped.
 
 The full two-way behaviour is exercised end-to-end by
-`crates/reify-cli/tests/cli_check_cfg_example.rs` running the real `reify` binary.
+`crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs` running the real `reify` binary.

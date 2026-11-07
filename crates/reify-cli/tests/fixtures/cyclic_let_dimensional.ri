@@ -1,0 +1,5 @@
+structure P {
+    let a = b + 5mm
+    let b = a + 2mm
+    let body = box(1mm, 1mm, 1mm)
+}

@@ -24,7 +24,8 @@ use reify_ast::{
     OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
     PragmaValue, PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl,
     TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause, classify_number_literal,
-    find_named_member_span, has_test_annotation, walk_specialization_scope_members,
+    find_named_member_span, find_param_default_span, has_test_annotation,
+    walk_specialization_scope_members,
 };
 
 // ── module-path imports ──────────────────────────────────────────────────────

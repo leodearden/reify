@@ -4,12 +4,12 @@ Parameters (`param`) are the public interface of a structure. They represent con
 
 ## Syntax
 
-```
+```reify-fragment
 param thickness : Length                        // No default, starts as undef
 param width : Length = 50mm                     // Has default value
 param material : M                              // Type parameter
 param coating : Option<CoatingSpec> = none      // Optional parameter
-param wall_thickness : Length = auto            // Solver decides
+param wall_thickness : Length = auto            // Solver decides; see the solving chunk
 param wall_thickness : Length = auto(free)      // Free exploration mode
 ```
 
@@ -19,7 +19,7 @@ Parameters exist on a determinacy spectrum:
 1. **`undef`** — not yet decided (no default, not specified)
 2. **Default value** — has default, not overridden
 3. **Determined** — explicitly set or computed to a concrete value
-4. **`auto`** — delegated to the constraint solver
+4. **`auto`** — delegated to the constraint solver; how to bound it, and which commands resolve it: the `solving` chunk — topic `solving` of `reify_language_reference`
 5. **Constrained** — bounded by constraints but not fully determined
 
 ## Rules
@@ -33,7 +33,7 @@ Parameters exist on a determinacy spectrum:
 
 ## Determinacy Predicates
 
-```
+```reify-schematic
 determined(p)              // Has a concrete value
 constrained(p)             // Has constraints but may not be fully determined
 undetermined(p)            // No value, no constraints
@@ -43,7 +43,7 @@ partially_determined(p)    // Some but not all dimensions determined
 ## Setting Parameters
 
 When instantiating a sub-structure:
-```
+```reify-fragment
 sub bracket : Bracket {
     thickness = 3mm
     width = 100mm

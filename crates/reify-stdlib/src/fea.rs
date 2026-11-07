@@ -69,8 +69,10 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         // The arm here is a permanent stub returning `Value::Undef` — fired
         // only when the lib.rs dispatch declines (e.g., wrong arg shape).
         // Preserves the "recognised name" contract for direct `eval_builtin`
-        // callers; mirrors the dual-arm pattern of `von_mises`'s lib.rs
-        // Field-arg arm coexisting with `eval_analysis`'s tensor-arg arm.
+        // callers; mirrors the dual-arm pattern of `von_mises`, whose lib.rs
+        // Field-arg intercept coexists with its registry tensor-arg arm
+        // (`EvalBuiltinId::VonMises` in `crate::registry_dispatch`, since
+        // registry α / task #6001 retired the `eval_analysis` string matcher).
         "worst_case" => Value::Undef,
         // `solve_load_cases` primary path is the `@optimized("solver::multi_case")`
         // ComputeNode trampoline (`crates/reify-eval/src/compute_targets/multi_case.rs`),
@@ -1018,6 +1020,9 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[2] is the largest.
                     Some(eigs) => eigs[2],
+                    // Reached for a non-finite (out-of-solid sentinel) window
+                    // since task #6376 — yields the NaN sentinel the
+                    // downstream is_finite() gates already skip.
                     None => f64::NAN,
                 }
             }
@@ -1025,6 +1030,9 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[0] is the smallest.
                     Some(eigs) => eigs[0],
+                    // Reached for a non-finite (out-of-solid sentinel) window
+                    // since task #6376 — yields the NaN sentinel the
+                    // downstream is_finite() gates already skip.
                     None => f64::NAN,
                 }
             }
@@ -2145,8 +2153,10 @@ mod tests {
         // cannot supply), but the name is also reserved here as a stub
         // returning `Value::Undef`. The stub preserves the "recognised name"
         // contract for callers that route through `eval_builtin` directly,
-        // matching the dual-arm pattern of `von_mises`'s lib.rs Field-arg
-        // arm coexisting with `eval_analysis`'s tensor-arg arm.
+        // matching the dual-arm pattern of `von_mises`, whose lib.rs Field-arg
+        // intercept coexists with its registry tensor-arg arm
+        // (`EvalBuiltinId::VonMises` in `crate::registry_dispatch`, since
+        // registry α / task #6001 retired the `eval_analysis` string matcher).
         assert!(eval_fea("worst_case", &[]).is_some());
     }
 

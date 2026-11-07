@@ -8,6 +8,10 @@
 // The mapping from FeaFailure → reify_core::Diagnostic lives in
 // reify-eval/src/compute_targets/fea_diagnostics.rs.
 
+use std::fmt;
+
+use crate::result::tet_signed_volume_p1;
+
 /// The 6 rigid-body degrees of freedom of a connected 3D elastic continuum.
 ///
 /// These are the exact rigid-body null-space modes: 3 translations (X/Y/Z axis)
@@ -94,8 +98,9 @@ pub enum FeaDiagnosticDetail {
 pub enum FeaFailure {
     /// Root face auto-clamp model has no user-specified supports.
     UnderConstrained { support_count: usize },
-    /// One or more elements have near-zero volume (degenerate mesh).
-    SingularStiffness { element_id: usize },
+    /// The mesh's worst tet fails the [`MIN_TET_SHAPE_QUALITY`] gate, so its
+    /// stiffness matrix is numerically singular.
+    SingularStiffness(DegenerateTet),
     /// CG solver reached max iterations without converging.
     NonConvergence {
         iterations: usize,
@@ -126,9 +131,9 @@ impl FeaFailure {
                  the root face is auto-clamped but results may not reflect design intent. \
                  Add a FixedSupport or PinnedSupport to constrain the structure."
             ),
-            FeaFailure::SingularStiffness { element_id } => format!(
-                "stiffness matrix is singular: element {element_id} has near-zero volume \
-                 (degenerate mesh). Refine the mesh or check geometry for collapsed elements."
+            FeaFailure::SingularStiffness(d) => format!(
+                "stiffness matrix is singular: {d}. Refine the mesh or check the geometry \
+                 for collapsed or inverted elements."
             ),
             FeaFailure::NonConvergence {
                 iterations,
@@ -177,8 +182,8 @@ impl FeaFailure {
     ///   6-DOF rigid-body null space (see [`DofDirection::all_rigid_body_modes`]).
     ///   A fully-unsupported body always has exactly all 6 free-body modes; partial-
     ///   constraint mode-subset analysis (needing a K null-space solver) is out of scope.
-    /// - `SingularStiffness { element_id }` → [`FeaDiagnosticDetail::ProblemElements`]
-    ///   containing `[ElementId(element_id)]` — the degenerate element to highlight.
+    /// - `SingularStiffness(d)` → [`FeaDiagnosticDetail::ProblemElements`]
+    ///   containing `[ElementId(d.element_id)]` — the degenerate element to highlight.
     /// - `SelectorNoMatch { selector, .. }` → [`FeaDiagnosticDetail::UnresolvedSelector`]
     ///   with `selector_path = selector.clone()`.
     ///
@@ -206,10 +211,10 @@ impl FeaFailure {
                     rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
                 })
             }
-            FeaFailure::SingularStiffness { element_id } => {
-                // Re-wrap the existing element_id into ProblemElements for outline rendering.
+            FeaFailure::SingularStiffness(d) => {
+                // Re-wrap the degenerate element into ProblemElements for outline rendering.
                 Some(FeaDiagnosticDetail::ProblemElements {
-                    ids: vec![ElementId(*element_id)],
+                    ids: vec![ElementId(d.element_id)],
                 })
             }
             FeaFailure::SelectorNoMatch { selector, .. } => {
@@ -231,7 +236,7 @@ impl FeaFailure {
     pub fn is_error(&self) -> bool {
         matches!(
             self,
-            FeaFailure::SingularStiffness { .. }
+            FeaFailure::SingularStiffness(_)
                 | FeaFailure::LoadOnInterior { .. }
                 | FeaFailure::SelectorNoMatch { .. }
         )
@@ -285,20 +290,89 @@ pub fn classify_convergence(
     }
 }
 
-/// Classify a degenerate element.
+/// The smallest oriented [`tet_shape_quality`] a P1 tet may have. q is 1 for a regular
+/// tet at any size, and a P1 tet's stiffness entries scale as E·ℓ/q, so below 1e-8 one
+/// element swamps more f64 digits than the 1e-6 CG tolerance leaves room for.
+pub const MIN_TET_SHAPE_QUALITY: f64 = 1e-8;
+
+/// Signed volume-length shape quality `q = 6√2·V/ℓ_rms³` of a P1 tet, where `V` is its
+/// signed volume and `ℓ_rms` the RMS of its 6 edge lengths.
 ///
-/// Returns `Some(FeaFailure::SingularStiffness { element_id })` when
-/// `min_tet_volume < eps`; `None` otherwise.
-pub fn classify_degenerate(
-    min_tet_volume: f64,
-    eps: f64,
-    element_id: usize,
-) -> Option<FeaFailure> {
-    if min_tet_volume < eps {
-        Some(FeaFailure::SingularStiffness { element_id })
-    } else {
-        None
+/// `q` is 1 for a regular tet, independent of scale, tends to 0 for slivers, needles,
+/// caps and flat tets, and changes sign with the node ordering. A tet with two or three
+/// coincident nodes has q = 0; all four coincident, or a non-finite coordinate, gives
+/// NaN.
+pub fn tet_shape_quality(phys: &[[f64; 3]; 4]) -> f64 {
+    const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let squared_length =
+        |(a, b): (usize, usize)| -> f64 { (0..3).map(|i| (phys[b][i] - phys[a][i]).powi(2)).sum() };
+    let mean_squared_edge = EDGES.into_iter().map(squared_length).sum::<f64>() / 6.0;
+    let rms_edge_cubed = mean_squared_edge * mean_squared_edge.sqrt();
+    6.0 * std::f64::consts::SQRT_2 * tet_signed_volume_p1(phys) / rms_edge_cubed
+}
+
+/// A tet that fails the [`MIN_TET_SHAPE_QUALITY`] gate, as found by
+/// [`find_degenerate_tet`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DegenerateTet {
+    /// Index of the element in the mesh's tet list.
+    pub element_id: usize,
+    /// Its [`tet_shape_quality`] ORIENTED against the mesh: negative means the tet is
+    /// inverted relative to the rest of the mesh, NaN means a non-finite coordinate or
+    /// all four nodes coincident.
+    pub quality: f64,
+}
+
+impl fmt::Display for DegenerateTet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cause = if self.quality.is_nan() {
+            "it has a non-finite coordinate or all four nodes coincident"
+        } else if self.quality < 0.0 {
+            "it is inverted relative to the rest of the mesh: folded, or its node ordering \
+             disagrees with the other tets'"
+        } else {
+            "it is a sliver, needle or flat tet"
+        };
+        write!(
+            f,
+            "element {} has oriented shape quality q = 6√2·V/ℓ_rms³ = {:e}, failing the \
+             minimum q ≥ {MIN_TET_SHAPE_QUALITY:e} ({cause})",
+            self.element_id, self.quality
+        )
     }
+}
+
+/// The worst tet of a P1 mesh if it fails the [`MIN_TET_SHAPE_QUALITY`] gate, else `None`.
+///
+/// Orientation is relative to the mesh: each tet's [`tet_shape_quality`] is signed by the
+/// mesh's total signed volume, so a consistently mirrored mesh passes, matching the
+/// orientation-agnostic `|det J|` of assembly. This makes consistent node ordering a
+/// requirement on the input: every tet must share one orientation, and a tet ordered
+/// against the rest is rejected as inverted even when the mesh does not fold. A NaN
+/// quality fails closed. Every index in `tets` must be in range for `coords`, as for
+/// assembly.
+pub fn find_degenerate_tet(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Option<DegenerateTet> {
+    let nodes = |tet: &[usize; 4]| tet.map(|n| coords[n]);
+    let total_signed_volume: f64 = tets.iter().map(|t| tet_signed_volume_p1(&nodes(t))).sum();
+    let orientation = if total_signed_volume >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut worst: Option<DegenerateTet> = None;
+    for (element_id, tet) in tets.iter().enumerate() {
+        let candidate = DegenerateTet {
+            element_id,
+            quality: orientation * tet_shape_quality(&nodes(tet)),
+        };
+        if candidate.quality.is_nan() {
+            return Some(candidate);
+        }
+        if worst.is_none_or(|w| candidate.quality < w.quality) {
+            worst = Some(candidate);
+        }
+    }
+    worst.filter(|w| w.quality < MIN_TET_SHAPE_QUALITY)
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -354,12 +428,36 @@ mod tests {
     }
 
     #[test]
-    fn singular_stiffness_message_contains_key_phrase() {
-        let f = FeaFailure::SingularStiffness { element_id: 7 };
+    fn singular_stiffness_message_names_the_element_metric_and_threshold() {
+        let d = DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        };
+        let message = FeaFailure::SingularStiffness(d).message();
         assert!(
-            f.message().contains("near-zero volume"),
-            "SingularStiffness message must contain 'near-zero volume', got: {}",
-            f.message()
+            message.contains(&d.to_string()),
+            "message must embed DegenerateTet's Display, got: {message}"
+        );
+        assert!(
+            message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+            "message must name the threshold, got: {message}"
+        );
+        assert!(
+            message.contains('7'),
+            "message must name the element, got: {message}"
+        );
+    }
+
+    #[test]
+    fn singular_stiffness_message_says_inverted_for_negative_quality() {
+        let message = FeaFailure::SingularStiffness(DegenerateTet {
+            element_id: 7,
+            quality: -0.5,
+        })
+        .message();
+        assert!(
+            message.contains("inverted"),
+            "inverted-tet message must say so, got: {message}"
         );
     }
 
@@ -392,7 +490,11 @@ mod tests {
 
     #[test]
     fn singular_stiffness_is_error() {
-        assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+        let d = DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        };
+        assert!(FeaFailure::SingularStiffness(d).is_error());
     }
 
     #[test]
@@ -500,37 +602,213 @@ mod tests {
         }
     }
 
-    // ── classify_degenerate ───────────────────────────────────────────────────
+    // ── tet shape quality / find_degenerate_tet ───────────────────────────────
+
+    /// A `reps`-hex grid over a `dims` box, each hex split into the 6
+    /// positively oriented Freudenthal tets around the c0→c6 diagonal (the
+    /// split `elastic_static`'s box builder uses).
+    fn freudenthal_box(dims: [f64; 3], reps: [usize; 3]) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let [rx, ry, rz] = reps;
+        let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
+        let node = |ix: usize, iy: usize, iz: usize| iz * ny1 * nx1 + iy * nx1 + ix;
+        let mut coords = Vec::with_capacity(nx1 * ny1 * nz1);
+        for iz in 0..nz1 {
+            for iy in 0..ny1 {
+                for ix in 0..nx1 {
+                    coords.push([
+                        ix as f64 * dims[0] / rx as f64,
+                        iy as f64 * dims[1] / ry as f64,
+                        iz as f64 * dims[2] / rz as f64,
+                    ]);
+                }
+            }
+        }
+        let mut tets = Vec::with_capacity(rx * ry * rz * 6);
+        for hz in 0..rz {
+            for hy in 0..ry {
+                for hx in 0..rx {
+                    let c = [
+                        node(hx, hy, hz),
+                        node(hx + 1, hy, hz),
+                        node(hx + 1, hy + 1, hz),
+                        node(hx, hy + 1, hz),
+                        node(hx, hy, hz + 1),
+                        node(hx + 1, hy, hz + 1),
+                        node(hx + 1, hy + 1, hz + 1),
+                        node(hx, hy + 1, hz + 1),
+                    ];
+                    tets.extend([
+                        [c[0], c[1], c[2], c[6]],
+                        [c[0], c[2], c[3], c[6]],
+                        [c[0], c[5], c[1], c[6]],
+                        [c[0], c[3], c[7], c[6]],
+                        [c[0], c[4], c[5], c[6]],
+                        [c[0], c[7], c[4], c[6]],
+                    ]);
+                }
+            }
+        }
+        (coords, tets)
+    }
+
+    fn scaled(coords: &[[f64; 3]], s: f64) -> Vec<[f64; 3]> {
+        coords.iter().map(|p| p.map(|x| x * s)).collect()
+    }
+
+    fn tet_nodes(coords: &[[f64; 3]], tet: [usize; 4]) -> [[f64; 3]; 4] {
+        tet.map(|n| coords[n])
+    }
 
     #[test]
-    fn classify_degenerate_tiny_volume_returns_failure() {
-        let result = classify_degenerate(1e-15, 1e-12, 3);
+    fn tet_shape_quality_is_one_for_a_regular_tet() {
+        let regular = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
+            [0.5, 3.0_f64.sqrt() / 6.0, (2.0_f64 / 3.0).sqrt()],
+        ];
+        let q = tet_shape_quality(&regular);
+        assert!((q - 1.0).abs() < 1e-12, "regular tet quality = {q}");
+    }
+
+    #[test]
+    fn tet_shape_quality_of_the_cube_freudenthal_tet() {
+        let tet = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let expected = 2.0_f64.sqrt() / (10.0_f64 / 6.0).powf(1.5);
+        let q = tet_shape_quality(&tet);
         assert!(
-            matches!(result, Some(FeaFailure::SingularStiffness { element_id: 3 })),
-            "tiny tet volume must yield SingularStiffness{{element_id:3}}, got {:?}",
-            result
+            (q - expected).abs() < 1e-12,
+            "Freudenthal tet quality = {q}, expected {expected}"
+        );
+        assert!((q - 0.6573).abs() < 1e-4, "Freudenthal tet quality = {q}");
+    }
+
+    #[test]
+    fn tet_shape_quality_is_signed_by_orientation() {
+        let tet = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let swapped = [tet[1], tet[0], tet[2], tet[3]];
+        assert_eq!(tet_shape_quality(&swapped), -tet_shape_quality(&tet));
+    }
+
+    #[test]
+    fn tet_shape_quality_of_coplanar_points_is_zero() {
+        let flat = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        assert_eq!(tet_shape_quality(&flat), 0.0);
+    }
+
+    #[test]
+    fn well_shaped_mesh_passes_the_degenerate_tet_gate_at_any_scale() {
+        let (unit_coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        for s in [1e-6, 1e-4, 1e-3, 1.0, 1e3] {
+            let coords = scaled(&unit_coords, s);
+            assert_eq!(
+                find_degenerate_tet(&coords, &tets),
+                None,
+                "well-shaped box mesh scaled by {s} must pass the gate"
+            );
+            for &tet in &tets {
+                let q_unit = tet_shape_quality(&tet_nodes(&unit_coords, tet));
+                let q_scaled = tet_shape_quality(&tet_nodes(&coords, tet));
+                assert!(
+                    ((q_scaled - q_unit) / q_unit).abs() < 1e-9,
+                    "quality must be scale-invariant: {q_scaled} at scale {s} vs {q_unit} at 1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_an_appended_flat_tet() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        // Nodes 0, 1, 4, 3 are hex (0,0,0)'s z = 0 bottom face.
+        tets.push([0, 1, 4, 3]);
+        let flat_id = tets.len() - 1;
+        let d = find_degenerate_tet(&coords, &tets).expect("flat tet must be flagged");
+        assert_eq!(d.element_id, flat_id);
+        assert!(
+            d.quality < MIN_TET_SHAPE_QUALITY,
+            "flat tet quality = {}",
+            d.quality
         );
     }
 
     #[test]
-    fn classify_degenerate_normal_volume_returns_none() {
-        let result = classify_degenerate(1.0, 1e-12, 3);
+    fn find_degenerate_tet_flags_a_near_flat_sliver_at_any_scale() {
+        let sliver = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 1e-12],
+        ];
+        for s in [1e-4, 1.0, 1e3] {
+            let coords = scaled(&sliver, s);
+            let d = find_degenerate_tet(&coords, &[[0, 1, 2, 3]])
+                .unwrap_or_else(|| panic!("sliver scaled by {s} must be flagged"));
+            assert_eq!(d.element_id, 0);
+            assert!(
+                d.quality > 0.0 && d.quality < MIN_TET_SHAPE_QUALITY,
+                "sliver (not inverted) quality at scale {s} = {}",
+                d.quality
+            );
+        }
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_a_tet_inverted_against_the_mesh() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        let k = 13;
+        tets[k].swap(0, 1);
+        let d = find_degenerate_tet(&coords, &tets).expect("inverted tet must be flagged");
+        assert_eq!(d.element_id, k);
+        assert!(d.quality < 0.0, "inverted tet quality = {}", d.quality);
+    }
+
+    #[test]
+    fn find_degenerate_tet_accepts_a_consistently_mirrored_mesh() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        for tet in &mut tets {
+            tet.swap(0, 1);
+        }
+        assert_eq!(find_degenerate_tet(&coords, &tets), None);
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_a_non_finite_coordinate() {
+        let (mut coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        let poisoned = coords.len() - 1;
+        coords[poisoned][2] = f64::NAN;
+        let d = find_degenerate_tet(&coords, &tets).expect("NaN coordinate must be flagged");
+        assert!(d.quality.is_nan(), "quality = {}", d.quality);
         assert!(
-            result.is_none(),
-            "normal tet volume must yield None, got {:?}",
-            result
+            tets[d.element_id].contains(&poisoned),
+            "flagged element {} must reference the NaN node {poisoned}",
+            d.element_id
+        );
+        let message = d.to_string();
+        assert!(
+            message.contains("non-finite") && !message.contains("sliver"),
+            "a NaN quality must be reported as non-finite geometry, got: {message}"
         );
     }
 
     #[test]
-    fn classify_degenerate_at_eps_returns_none() {
-        // volume == eps is NOT strictly less than eps → None.
-        let result = classify_degenerate(1e-12, 1e-12, 0);
-        assert!(
-            result.is_none(),
-            "volume exactly at eps must yield None (must be strictly <), got {:?}",
-            result
-        );
+    fn find_degenerate_tet_on_an_empty_mesh_is_none() {
+        assert_eq!(find_degenerate_tet(&[], &[]), None);
     }
 
     // ── DofDirection ──────────────────────────────────────────────────────────
@@ -635,13 +913,16 @@ mod tests {
 
     #[test]
     fn structured_detail_singular_stiffness_yields_problem_elements() {
-        let f = FeaFailure::SingularStiffness { element_id: 4 };
+        let f = FeaFailure::SingularStiffness(DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        });
         assert_eq!(
             f.structured_detail(),
             Some(FeaDiagnosticDetail::ProblemElements {
-                ids: vec![ElementId(4)],
+                ids: vec![ElementId(7)],
             }),
-            "SingularStiffness{{element_id:4}} must map to ProblemElements{{ids:[ElementId(4)]}}"
+            "SingularStiffness(element 7) must map to ProblemElements{{ids:[ElementId(7)]}}"
         );
     }
 

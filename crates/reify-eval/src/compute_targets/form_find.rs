@@ -13,6 +13,17 @@
 //! [3] surface_stresses  : List<Real>      (OPTIONAL; γ / NFDM surfaces)
 //! ```
 //!
+//! The `List<Real>` positions — `force_densities` and `surface_stresses` here,
+//! plus `seed_ratios` on the free-standing path — are DIMENSIONLESS-GATED. They
+//! are nullity-invariant RELATIVE ratios, so every bare numeric spelling reads
+//! (`Real`, `Int`, and a `Scalar` carrying DIMENSIONLESS) while a *dimensioned*
+//! `Scalar` is rejected with a located `"{what}[{i}] has the wrong unit …"`
+//! diagnostic rather than having its unit silently stripped and its SI magnitude
+//! reinterpreted as the ratio. That is Leg B's two-sided "Deliberately bare"
+//! contract (`docs/prds/v0_6/dimension-checked-readers.md`); the gate itself
+//! lives in `tensegrity_crack::crack_dimensionless_list`, which every one of
+//! these positions reaches through this module's `crack_reals`.
+//!
 //! It cracks the Tensegrity into node coordinates + member connectivity (struts
 //! then cables, so `force_densities` indexing is unambiguous — the same ordering
 //! `tensegrity_wires` emits) + surface triangle connectivity (from
@@ -56,12 +67,14 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError, MemberKind,
+    ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
+    FreeFormError, GroupSpecDefect, MemberKind, RealInput, SpectrumError,
     form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
 };
+use std::borrow::Cow;
 
 use super::tensegrity_crack::{
-    check_index, crack_index_pairs, crack_index_triples, crack_nodes, scalar_f64,
+    check_index, crack_dimensionless_list, crack_index_pairs, crack_index_triples, crack_nodes,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -69,6 +82,18 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// `tensegrity_crack` helpers so their located errors carry the same prefix as
 /// the inline guards below.
 const CODE: &str = "E_FormFindInfeasible";
+
+/// Trailing clause on every wrong-unit diagnostic from a dimensionless position
+/// (`force_densities` / `seed_ratios` / `surface_stresses`), threaded through
+/// [`crack_dimensionless_list`] as this trampoline's caller-owned `hint`.
+///
+/// Grounded in the landed `form_find_free` stdlib doc ("Overall scaling of q is
+/// nullity-invariant, so only relative ratios matter"): these positions are read
+/// as RELATIVE ratios, so attaching a unit does not make the input more precise
+/// — it makes the reader guess which magnitude the author meant.
+const DIMENSIONLESS_HINT: &str = "force densities, seed ratios and surface stresses are \
+     nullity-invariant RELATIVE ratios, not physical quantities — only their relative \
+     magnitudes and signs matter, so drop the unit (write `1.0`, not `1N/1m`)";
 
 /// Trampoline for `solver::form_find`. See the module doc for the input/output
 /// contract.
@@ -226,28 +251,20 @@ fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     Ok(out)
 }
 
-/// Crack a `List<Real>` (accepting bare Real or dimensionless Scalar entries).
+/// Crack a `List<Real>` at a DIMENSIONLESS position: every bare numeric spelling
+/// reads, a *dimensioned* `Scalar` is REJECTED.
+///
+/// The named, self-documenting reader for all four of this trampoline's
+/// dimensionless positions — anchored `force_densities` / `surface_stresses` and
+/// free `seed_ratios` / `surface_stresses` — over the shared
+/// [`crack_dimensionless_list`], to which it supplies this trampoline's [`CODE`]
+/// and [`DIMENSIONLESS_HINT`]. A dimensioned entry therefore yields a located
+/// `"{what}[{i}] has the wrong unit …"` error naming WHICH entry carries the
+/// unit, rather than being silently stripped to its SI magnitude and
+/// reinterpreted as the bare ratio. See `crack_dimensionless_scalar` for the Leg
+/// B "Deliberately bare" rationale and the accepted spellings.
 fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_FormFindInfeasible: {what} must be a list of reals, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        match scalar_f64(item) {
-            Some(x) => out.push(x),
-            None => {
-                return Err(format!(
-                    "E_FormFindInfeasible: {what}[{i}] must be a real, got {item:?}"
-                ));
-            }
-        }
-    }
-    Ok(out)
+    crack_dimensionless_list(v, what, CODE, DIMENSIONLESS_HINT)
 }
 
 // ── result construction ──────────────────────────────────────────────────────
@@ -265,7 +282,8 @@ fn build_result(solve: &FormFindSolve) -> Value {
         .iter()
         .map(|&p| super::point3_length(p))
         .collect();
-    // member_forces Nᵢ = qᵢ·Lᵢ are forces (N/m · m), so FORCE-dimensioned.
+    // FORCE via the q_ref ≡ 1 N/m gauge — see the "Dimensional bridge" paragraph
+    // in crates/reify-compiler/stdlib/tensegrity.ri.
     let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
     let force_densities: Vec<Value> = solve
         .force_densities
@@ -305,35 +323,97 @@ fn build_result(solve: &FormFindSolve) -> Value {
     }))
 }
 
+/// The cause shared by [`describe`] and [`describe_free`] for a node index past
+/// the node list — unreachable through the crackers, which range-check first.
+const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
+     surface corner indexes past the node list";
+
+/// The cause shared by [`describe`] and [`describe_free`] for an anisotropic
+/// surface whose warp direction fixes no frame — unreachable on these isotropic
+/// trampolines.
+const DEGENERATE_MATERIAL_FRAME: &str = "degenerate material frame — a surface's warp \
+     direction is zero or non-finite, so it fixes no warp/weft axes";
+
+/// The cause shared by [`describe`] and [`describe_free`] for a NaN or
+/// infinite input value, naming where it was read.
+fn describe_non_finite(what: RealInput, index: usize) -> String {
+    match what {
+        RealInput::NodeCoordinate => format!(
+            "non-finite node coordinate — nodes[{index}] has a NaN or infinite coordinate; \
+             every node needs finite coordinates"
+        ),
+    }
+}
+
+/// The cause shared by [`describe`] and [`describe_free`] for a `GroupRatios`
+/// spec that cannot seed the search — reachable only on the free-standing path.
+fn describe_group_spec(defect: GroupSpecDefect) -> &'static str {
+    match defect {
+        GroupSpecDefect::GroupIdsNotPerMember => {
+            "dimension mismatch — group_ids length does not match the member count \
+             (struts + cables)"
+        }
+        GroupSpecDefect::UnseededGroup { .. } => {
+            "dimension mismatch — a group_ids entry names a group past the end of \
+             seed_ratios; every group id needs a seed ratio"
+        }
+        GroupSpecDefect::UnseededReferenceGroup => {
+            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+        }
+        GroupSpecDefect::ZeroSeed { .. } => {
+            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
+             strut groups < 0), so it cannot be zero"
+        }
+    }
+}
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
-fn describe(e: FormFindError) -> &'static str {
+fn describe(e: FormFindError) -> Cow<'static, str> {
     match e {
-        FormFindError::SignViolation => {
+        FormFindError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — every cable requires q > 0 (tension) and every strut requires q < 0 (compression)"
+                .into()
         }
         FormFindError::SingularReducedStiffness => {
             "singular reduced stiffness — the free-node system is rank-deficient \
              (a free node with no member path to an anchor, or a disconnected component)"
+                .into()
         }
         FormFindError::EmptyFreeSet => {
-            "every node is anchored — there is no free node to solve for"
+            "every node is anchored — there is no free node to solve for".into()
         }
-        FormFindError::DimensionMismatch => {
-            "force_densities length does not match the member count (struts + cables)"
+        FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
+            "force_densities length does not match the member count (struts + cables)".into()
         }
-        FormFindError::DegenerateTriangle => {
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            INDEX_OUT_OF_RANGE.into()
+        }
+        FormFindError::DegenerateTriangle
+        | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
+                .into()
         }
-        FormFindError::NonTensionSurfaceStress => {
+        FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+                .into()
         }
-        FormFindError::SurfaceCountMismatch => {
+        FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
+                .into()
+        }
+        FormFindError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
+        }
+        FormFindError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
+        }
+        FormFindError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
     }
 }
@@ -476,6 +556,8 @@ fn build_result_free(
     surface_stresses: &[f64],
 ) -> Value {
     let nodes_val: Vec<Value> = nodes.iter().map(|&p| super::point3_length(p)).collect();
+    // FORCE via the same q_ref ≡ 1 N/m gauge as `build_result` above — see the
+    // "Dimensional bridge" paragraph in crates/reify-compiler/stdlib/tensegrity.ri.
     let forces_val = super::scalar_list(member_forces, DimensionVector::FORCE);
     let fds_val: Vec<Value> = force_densities.iter().map(|&q| Value::Real(q)).collect();
     let ss_val: Vec<Value> = surface_stresses.iter().map(|&s| Value::Real(s)).collect();
@@ -500,42 +582,97 @@ fn build_result_free(
 
 /// Human-readable cause for a kernel [`FreeFormError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
-fn describe_free(e: FreeFormError) -> &'static str {
+fn describe_free(e: FreeFormError) -> Cow<'static, str> {
     match e {
-        FreeFormError::SignViolation => {
+        FreeFormError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — cable groups require positive seed ratios (q > 0) \
              and strut groups require negative seed ratios (q < 0)"
+                .into()
         }
-        FreeFormError::NullityMismatch { .. } => {
-            "nullity mismatch — the force-density matrix D must be rank-deficient by \
-             exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
-             achieve this"
+        FreeFormError::NotAForm(defect) => format!(
+            "not a free-standing form — the solve settled on a {}; a disconnected \
+             piece adds a translation mode of its own",
+            describe_defect(defect)
+        )
+        .into(),
+        FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
+            "dimension mismatch — the members and their kinds disagree in length".into()
         }
-        FreeFormError::DimensionMismatch => {
-            "dimension mismatch — group_ids, seed_ratios, or reference_group length \
-             disagrees with the member count or contains out-of-range ids"
+        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
-        FreeFormError::SearchDidNotConverge => {
-            "search did not converge — the adaptive GroupRatios search exhausted its \
-             iteration budget without reaching a nullity-4 configuration; verify that \
-             the seed signs are consistent (struts compressive, cables tensile)"
+        FreeFormError::SearchDidNotConverge {
+            defect: Some(defect),
+        } => format!(
+            "search did not converge — the adaptive GroupRatios search or the combined \
+             fixed point stopped on a {}; verify that the seed signs are consistent \
+             (struts compressive, cables tensile) and that no node or piece is \
+             disconnected from the rest",
+            describe_defect(defect)
+        )
+        .into(),
+        FreeFormError::SearchDidNotConverge { defect: None } => {
+            "search did not converge — the combined fixed point's force-density matrix \
+             is a valid free-standing form, but its geometry did not reach equilibrium \
+             before the iteration budget or stall guard ended the search; try an \
+             initial node placement closer to the expected form"
+                .into()
         }
         FreeFormError::SingularRecovery => {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
+                .into()
         }
-        FreeFormError::DegenerateTriangle => {
+        FreeFormError::Spectrum(SpectrumError::NonFinite { row, col }) => format!(
+            "non-finite force-density matrix — D[{row},{col}] is NaN or infinite, so D \
+             has no spectrum to classify; try smaller force densities"
+        )
+        .into(),
+        FreeFormError::Spectrum(SpectrumError::NoConvergence) => {
+            "force-density matrix D has no dense spectrum — its eigendecomposition did \
+             not converge; check for extreme or near-degenerate force densities"
+                .into()
+        }
+        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            INDEX_OUT_OF_RANGE.into()
+        }
+        FreeFormError::DegenerateTriangle
+        | FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
+                .into()
         }
-        FreeFormError::NonTensionSurfaceStress => {
+        FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+                .into()
         }
-        FreeFormError::SurfaceCountMismatch => {
+        FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
+                .into()
+        }
+        FreeFormError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
+        }
+        FreeFormError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
         }
     }
+}
+
+/// The observed shape of a force-density matrix that is not a free-standing
+/// form, against what a form needs.
+fn describe_defect(defect: FormDefect) -> String {
+    let FormDefect {
+        nullity,
+        components,
+    } = defect;
+    let pieces = if components == 1 { "piece" } else { "pieces" };
+    format!(
+        "force-density matrix D with nullity {nullity} over {components} connected \
+         {pieces}, where a 3-D free-standing form needs nullity d+1 = 4 on ONE \
+         connected structure"
+    )
 }

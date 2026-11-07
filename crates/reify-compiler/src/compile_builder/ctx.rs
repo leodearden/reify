@@ -100,13 +100,13 @@ pub(crate) struct CompilationCtx {
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
-    /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums_from_cache`.
+    /// module-local `enum_defs`. Populated by `enums_phase::bind_resolution_enums`.
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
-    /// prelude functions via [`crate::merge_prelude_functions`]. Seeded with
-    /// signature-only stubs by `functions_phase::phase_fn_signatures`, then
-    /// rewritten with the fully-compiled functions (param defaults and bodies)
-    /// by the unified source-order pass in `entities_phase::phase_entities`.
+    /// prelude functions via `functions_phase::build_resolution_functions`.
+    /// Seeded with signature-only stubs by `functions_phase::phase_fn_signatures`,
+    /// then rewritten with the fully-compiled functions (param defaults and
+    /// bodies) by the unified source-order pass in `entities_phase::phase_entities`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
@@ -122,6 +122,23 @@ pub(crate) struct CompilationCtx {
     /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
     /// and (as `local_structure_names`) the unified pass in `phase_entities`.
     pub(crate) resolution_structure_names: HashSet<String>,
+    /// Names this module DECLARES as functions: every local `fn` declaration +
+    /// every prelude function. Populated by `names_phase::build_resolution_names`
+    /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
+    /// `phase_entities` and `phase_traits` (task #5371). Why a fn body needs it:
+    /// [`crate::scope::CompilationScope::declared_callable_names`].
+    ///
+    /// Deliberately NOT `resolution_functions`, and the difference is the whole
+    /// reason this field exists. `resolution_functions` is a table of compiled
+    /// SIGNATURES and is only complete once `phase_fn_signatures` has finished. This
+    /// set answers the weaker question ("does the module declare this name at
+    /// all?") and is complete before the first body compiles.
+    ///
+    /// Derived from the `fn_refs` DECLARATION list rather than from compiled
+    /// output: a fn whose signature fails to compile is absent from
+    /// `ctx.functions` but is still a name the user declared, and reporting it
+    /// as unresolved at every call site would cascade off one root-cause error.
+    pub(crate) declared_fn_names: HashSet<String>,
 }
 
 impl CompilationCtx {
@@ -155,6 +172,7 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
+            declared_fn_names: HashSet::new(),
         }
     }
 
@@ -492,6 +510,10 @@ mod tests {
         assert!(
             ctx.resolution_structure_names.is_empty(),
             "resolution_structure_names should be empty"
+        );
+        assert!(
+            ctx.declared_fn_names.is_empty(),
+            "declared_fn_names should be empty"
         );
         assert!(
             ctx.seen_entity_names.is_empty(),

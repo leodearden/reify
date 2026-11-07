@@ -34,15 +34,25 @@ assert "lint plan contains 'npm run typecheck'" \
 assert "lint plan does NOT contain raw 'npx tsc --noEmit'" \
     bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'npx tsc --noEmit'"
 
-# -- Test 2: gui tests run via 'npm test' (fires pretest=build:grammar) --------
+# -- Test 2: gui tests reach vitest via 'npm test' (fires pretest=build:grammar) --
 echo ""
 echo "--- Test 2: test plan runs gui via 'npm test' not 'npx vitest run' ---"
 
 # Task 3766 deliverable: the hook formerly ran `npx vitest run`, which skips the
 # pretest=build:grammar lezer codegen and lets grammar drift go uncaught. The
-# unified plan runs `npm test`, which fires the pretest hook.
-assert "test plan gui block runs 'npm test'" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cd gui &&' && printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'npm test'"
+# unified plan reaches vitest through `npm test`, which fires the pretest hook.
+#
+# Task 7630 moved that `npm test` ONE INDIRECTION DEEPER: the plan's gui leaf is
+# now ../scripts/gui-vitest-run.sh (which adds the bounded worker-RPC retry), and
+# the runner is what invokes `npm test`. 3766's guarantee is unchanged but is no
+# longer visible in the plan string alone, so it is asserted across BOTH hops --
+# plan -> runner, and runner -> npm test. Asserting only the first hop would let
+# the runner be rewritten to `npx vitest run` with this guard still green.
+assert "test plan gui block runs the vitest runner" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cd gui &&' && printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'gui-vitest-run.sh'"
+
+assert "the runner reaches vitest via 'npm test' (pretest=build:grammar still fires)" \
+    bash -c "grep -qE '^[[:space:]]*npm test( --)?( \"\\\$@\")?[[:space:]]*$' '$REPO_ROOT/scripts/gui-vitest-run.sh'"
 
 assert "test plan does NOT run 'npx vitest run' (the pretest bypass)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'npx vitest'"

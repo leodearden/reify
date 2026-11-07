@@ -9,38 +9,12 @@
 // Shared fixture
 // ---------------------------------------------------------------------------
 
-/// Build a closed 2.0 mm box mesh centred at the origin (vertices at ±1.0).
-/// 8 corners, 12 outward-wound triangles.
+/// Closed 2.0 mm box mesh centred at the origin (vertices at ±1.0).
 ///
 /// This is the canonical α test fixture (PRD §α "2.0 mm box", φ(centre)
 /// ≈ −1.0 mm).
 fn box_2mm() -> reify_ir::Mesh {
-    let v: Vec<f32> = vec![
-        -1.0, -1.0, -1.0, // 0
-         1.0, -1.0, -1.0, // 1
-         1.0,  1.0, -1.0, // 2
-        -1.0,  1.0, -1.0, // 3
-        -1.0, -1.0,  1.0, // 4
-         1.0, -1.0,  1.0, // 5
-         1.0,  1.0,  1.0, // 6
-        -1.0,  1.0,  1.0, // 7
-    ];
-    #[rustfmt::skip]
-    let i: Vec<u32> = vec![
-        // Bottom (-Z)
-        0, 2, 1,  0, 3, 2,
-        // Top (+Z)
-        4, 5, 6,  4, 6, 7,
-        // Front (-Y)
-        0, 1, 5,  0, 5, 4,
-        // Back (+Y)
-        2, 3, 7,  2, 7, 6,
-        // Left (-X)
-        0, 4, 7,  0, 7, 3,
-        // Right (+X)
-        1, 2, 6,  1, 6, 5,
-    ];
-    reify_ir::Mesh { vertices: v, indices: i, normals: None }
+    reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------

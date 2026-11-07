@@ -1,0 +1,43 @@
+# Tombstones for docs/reify-language-spec.md sc-anchor IDs.
+#
+# An sc-anchor ID is a stable, opaque cite target for the spec-conformance
+# suite. When the paragraph an ID anchors is DELETED, the ID does not simply
+# disappear — it is RETIRED here, in the SAME diff as the deletion. That is
+# what lets a downstream consumer distinguish "this clause moved / was
+# reworded" (the ID is still live, grep still finds it) from "this clause is
+# gone" (the ID is here, with a reason and, where one exists, a forwarding
+# anchor).
+#
+# ROW GRAMMAR — one retired ID per data row:
+#
+#     sc-XXXXXX <YYYY-MM-DD> <reason / forwarding anchor>
+#
+#   - `sc-XXXXXX` is the retired ID, matching `sc-[0-9a-f]{6}`.
+#   - the date is the retirement date, ISO-8601, exactly `YYYY-MM-DD`.
+#   - the reason is free text and must be non-empty. Name the forwarding
+#     anchor when the clause was superseded rather than dropped.
+#   - the three fields are separated by single spaces; the reason may contain
+#     spaces.
+#
+# RULES (all enforced by scripts/spec-anchor-lint.sh, which HARD-FAILS):
+#
+#   - Data rows are sorted by ID in LC_ALL=C ascending order.
+#   - `#` comment lines and blank lines are ignored ANYWHERE in this file and
+#     are NOT sort keys — they may be interleaved freely between data rows.
+#   - A tombstoned ID is retired FOREVER and is NEVER reused. Minting is
+#     random (`openssl rand -hex 3`), so exhaustion is not a concern and
+#     reuse would silently re-point every existing cite.
+#   - An ID may not be simultaneously live in the spec and listed here. If the
+#     lint reports that, one of the two is wrong — resolve it, do not delete
+#     the row.
+#   - Deleting an anchored paragraph REQUIRES adding its ID here in the SAME
+#     diff. The lint compares the current spec against its base revision and
+#     fails on any ID that vanished without a row appearing here.
+#
+# This file must EXIST even while empty: the lint treats an absent sidecar as
+# a scan failure (exit 2), never as an empty pass.
+#
+# Full contract: docs/notes/spec-anchor-contract.md
+# Owning PRD:    docs/prds/v0_6/spec-conformance-suite.md (D3, §8.1)
+#
+# --- data rows (none yet: nothing has been retired) ---

@@ -78,8 +78,24 @@ it is supported via `auto_keyword` at `grammar.js:430` (the distinct gap of
 
 **User-observable behavior.**
 - *Retained:* the design-loop demo "minimize mass subject to envelope
-  constraint" — expressible today as `minimize ... where ...`.
+  constraint" — ~~expressible today as `minimize ... where ...`~~.
+  **CORRECTED 2026-08-25: it is NOT.** `minimize ... where ...` parses, and the
+  parser populates `MinimizeDecl.where_clause`, but the compiler's Minimize/Maximize
+  lowering arms never read that field — the guard is **silently discarded**, the
+  objective runs unopposed, and no diagnostic is emitted. This sweep checked the
+  PARSER (`lower_minimize_decl`) and inferred capability from it; that inference was
+  the error, and it swapped a loud fiction (`subject to`, which fails to parse) for a
+  silent one. Ruled **reject** (Leo, 2026-08-25; owner task **6575**) — objectives
+  take no `where` guard, in either form. The demo IS expressible today, as a bare
+  `minimize` plus a separate `constraint` member; `docs/prds/v0_3/multi-load-case-fea.md`
+  has been rewritten to that form.
 - *Retired:* none functionally; only the spelling.
+
+> **Method note for future sweeps (added 2026-08-25).** "The parser accepts it" is not
+> "the compiler implements it". When retiring a fiction in favour of a real spelling,
+> check that the compiler CONSUMES the AST field the parser populates — a `git grep` for
+> the field name in the lowering arm is enough. A form that parses and is then dropped is
+> worse than one that fails to parse, because it produces a wrong answer instead of an error.
 
 **2026-05-27 amendment.** A2 correctly observed that the `= auto`
 value-default was not retired from the multi-load-case-fea PRD because it

@@ -61,11 +61,11 @@ enum OcctRequest {
         tolerance: f64,
         reply: oneshot::Sender<Result<Mesh, TessError>>,
     },
-    WarmState {
-        reply: oneshot::Sender<Option<OpaqueState>>,
-    },
-    WithWarmState {
-        state: OpaqueState,
+    /// Task 5212: evict every resident native shape (+ derived caches) on the
+    /// kernel thread while keeping `next_id` monotonic, bounding OCCT native
+    /// memory across GUI whole-file reloads. Routed here because `OcctKernel`
+    /// is `!Send`. Reply is `()` (fire-and-confirm).
+    Reset {
         reply: oneshot::Sender<()>,
     },
     /// T7: assemble N placed product solids into a TopoDS_Compound.
@@ -146,7 +146,7 @@ enum OcctRequest {
     /// ONLY the selected `edges` of `shape` with the given `radius`, capturing
     /// Modified/Generated/Deleted records. Mirrors `FilletWithHistory` but
     /// carries the curated edge subset. An empty `edges` vector is rejected by
-    /// the kernel — the all-edges path is `FilletWithHistory` / `fillet_all_edges`.
+    /// the kernel — the all-edges path is `FilletWithHistory`.
     FilletEdgesWithHistory {
         shape: GeometryHandleId,
         radius: f64,
@@ -168,8 +168,7 @@ enum OcctRequest {
     /// to ONLY the selected `edges` of `shape` with the given `distance`,
     /// capturing Modified/Generated/Deleted records. Mirrors `ChamferWithHistory`
     /// but carries the curated edge subset. An empty `edges` vector is rejected
-    /// by the kernel — the all-edges path is `ChamferWithHistory` /
-    /// `chamfer_all_edges`.
+    /// by the kernel — the all-edges path is `ChamferWithHistory`.
     ChamferEdgesWithHistory {
         shape: GeometryHandleId,
         distance: f64,
@@ -191,11 +190,35 @@ enum OcctRequest {
         reply:
             oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
-    /// v0.2 persistent-naming-v2 sweep history: dispatches per-op to a
-    /// kernel-side history-aware primitive (Extrude → `extrude_with_history`,
-    /// future variants → analogous), returning `AttributeHistory::None` for
-    /// ops without a history-aware variant. The single dispatch site
-    /// (`Engine::execute_realization_ops`) routes through this variant.
+    /// Extrude `profile` by `distance` (SI metres) with sweep history.
+    ExtrudeWithHistory {
+        profile: GeometryHandleId,
+        distance: f64,
+        reply: oneshot::Sender<Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError>>,
+    },
+    /// Revolve `profile` about an axis with sweep history.
+    RevolveWithHistory {
+        profile: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        angle_rad: f64,
+        reply: oneshot::Sender<Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError>>,
+    },
+    /// Sweep `profile` along `path` with sweep history.
+    SweepWithHistory {
+        profile: GeometryHandleId,
+        path: GeometryHandleId,
+        reply: oneshot::Sender<Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError>>,
+    },
+    /// Loft through `profiles` with per-section history.
+    LoftWithHistory {
+        profiles: Vec<GeometryHandleId>,
+        reply: oneshot::Sender<Result<(GeometryHandle, LoftOpHistoryRecords), GeometryError>>,
+    },
+    /// Execute `op` with attribute history: forwards to
+    /// `OcctKernel::execute_with_history`, the single op-to-history lowering.
+    /// The single dispatch site (`Engine::execute_realization_ops`) routes
+    /// through this variant.
     ExecuteWithHistory {
         op: Box<GeometryOp>,
         reply: oneshot::Sender<Result<(GeometryHandle, AttributeHistory), GeometryError>>,
@@ -282,8 +305,8 @@ enum OcctRequest {
 /// `export_async`, `tessellate_async`) from async code.
 ///
 /// The `WarmStartable` trait methods (`warm_state`, `with_warm_state`) are
-/// safe to call from both sync and async contexts — they detect the runtime
-/// and use `block_in_place` when needed.
+/// the trait no-op, answered on the calling thread without touching the
+/// channel, so they are safe from both sync and async contexts.
 ///
 /// # Drop behaviour
 ///
@@ -597,8 +620,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -622,8 +646,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_cut_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -647,8 +672,9 @@ impl OcctKernelHandle {
     /// history records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_common_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -673,7 +699,7 @@ impl OcctKernelHandle {
     /// emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::fillet_with_history`] across the kernel-thread
-    /// channel. Result handle is registered with `BRepKind::Solid`.
+    /// channel.
     ///
     /// # Panics
     ///
@@ -702,9 +728,8 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::fillet_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
-    /// path is [`Self::fillet_with_history`].
+    /// kernel-thread channel. An empty `edges` slice is rejected — the
+    /// all-edges path is [`Self::fillet_with_history`].
     ///
     /// # Panics
     ///
@@ -736,7 +761,7 @@ impl OcctKernelHandle {
     /// emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_with_history`] across the kernel-thread
-    /// channel. Result handle is registered with `BRepKind::Solid`.
+    /// channel.
     ///
     /// # Panics
     ///
@@ -765,9 +790,8 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
-    /// path is [`Self::chamfer_with_history`].
+    /// kernel-thread channel. An empty `edges` slice is rejected — the
+    /// all-edges path is [`Self::chamfer_with_history`].
     ///
     /// # Panics
     ///
@@ -799,7 +823,7 @@ impl OcctKernelHandle {
     /// (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_asymmetric_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with `BRepKind::Solid`.
+    /// kernel-thread channel.
     /// An empty `edges` slice means ALL edges (back-compat); both `d1` and `d2`
     /// must be finite positive.
     ///
@@ -832,15 +856,11 @@ impl OcctKernelHandle {
     /// Execute `op` on the kernel thread, returning the result handle and
     /// any kernel-emitted [`AttributeHistory`] for the op.
     ///
-    /// For ops the kernel has a history-aware primitive for (currently
-    /// `GeometryOp::Extrude`; revolve in step-10), this returns the
-    /// op-specific `AttributeHistory` variant carrying the
-    /// `SweepOpHistoryRecords`. For all other ops, this returns
-    /// `AttributeHistory::None` and is functionally identical to
+    /// Forwards to `OcctKernel::execute_with_history`, the single
+    /// op-to-history lowering: a history op returns its op-specific
+    /// `AttributeHistory` variant, and every other op returns
+    /// `AttributeHistory::None`, functionally identical to
     /// [`OcctKernelHandle::execute`].
-    ///
-    /// Channel-routed to the kernel thread's inherent
-    /// `OcctKernel::execute_with_history` dispatcher.
     ///
     /// # Panics
     ///
@@ -860,19 +880,10 @@ impl OcctKernelHandle {
         )?
     }
 
-    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
-    /// for the [`GeometryOp::Extrude`] case: returns `(handle_id,
-    /// SweepOpHistoryRecords)` directly, matching the call shape of
+    /// Extrude `profile` by `distance` (SI metres) via
+    /// `OcctKernel::extrude_with_history` on the kernel thread, returning
+    /// `(handle_id, SweepOpHistoryRecords)` in the call shape of
     /// [`boolean_fuse_with_history`](Self::boolean_fuse_with_history).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GeometryError::OperationFailed` if the kernel reported
-    /// an unexpected `AttributeHistory` variant — e.g. `None`, indicating
-    /// the kernel built but failed to populate sweep history. This is a
-    /// programming-error guard (the kernel-side dispatcher always returns
-    /// `Extrude(_)` for `Extrude` ops); it is exposed as an `Err` rather
-    /// than a panic so test code can pin the contract.
     ///
     /// # Panics
     ///
@@ -884,22 +895,19 @@ impl OcctKernelHandle {
         profile: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
-        let op = GeometryOp::Extrude {
-            profile,
-            distance: Value::Real(distance),
-        };
-        let (handle, history) = self.execute_with_history(&op)?;
-        match history {
-            AttributeHistory::Extrude(records) => Ok((handle.id, records)),
-            other => Err(GeometryError::OperationFailed(format!(
-                "extrude_with_history expected AttributeHistory::Extrude, got {other:?}"
-            ))),
-        }
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::ExtrudeWithHistory {
+                profile,
+                distance,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
     }
 
-    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
-    /// for the [`GeometryOp::Revolve`] case: returns `(handle_id,
-    /// SweepOpHistoryRecords)` directly.
+    /// Revolve `profile` via `OcctKernel::revolve_with_history` on the kernel
+    /// thread, returning `(handle_id, SweepOpHistoryRecords)`.
     ///
     /// `axis_origin` and `axis_dir` are 3-element arrays in metres /
     /// (dimensionless direction); `angle_rad` is the revolve angle in
@@ -907,14 +915,6 @@ impl OcctKernelHandle {
     /// [`OcctKernel::revolve_with_history`] (axis must be finite +
     /// magnitude > AXIS_MAG_SQ_MIN; angle must be finite + magnitude >
     /// ANGLE_ABS_MIN).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GeometryError::OperationFailed` if the kernel reported
-    /// an unexpected `AttributeHistory` variant — e.g. `None`, indicating
-    /// the kernel built but failed to populate sweep history. This is a
-    /// programming-error guard; it is exposed as an `Err` rather than a
-    /// panic so test code can pin the contract.
     ///
     /// # Panics
     ///
@@ -928,24 +928,21 @@ impl OcctKernelHandle {
         axis_dir: [f64; 3],
         angle_rad: f64,
     ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
-        let op = GeometryOp::Revolve {
-            profile,
-            axis_origin,
-            axis_dir,
-            angle_rad,
-        };
-        let (handle, history) = self.execute_with_history(&op)?;
-        match history {
-            AttributeHistory::Revolve(records) => Ok((handle.id, records)),
-            other => Err(GeometryError::OperationFailed(format!(
-                "revolve_with_history expected AttributeHistory::Revolve, got {other:?}"
-            ))),
-        }
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::RevolveWithHistory {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
     }
 
-    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
-    /// for the [`GeometryOp::Sweep`] case: returns `(handle_id,
-    /// SweepOpHistoryRecords)` directly.
+    /// Sweep `profile` along `path` via `OcctKernel::sweep_with_history` on
+    /// the kernel thread, returning `(handle_id, SweepOpHistoryRecords)`.
     ///
     /// Sweep is single-parent — the profile is the operand whose
     /// sub-shapes propagate to the result; the path is the spine along
@@ -953,14 +950,6 @@ impl OcctKernelHandle {
     /// `0`. `start_cap_face_indices` carries the FirstShape() face
     /// index (profile-as-placed); `end_cap_face_indices` carries the
     /// LastShape() face index (profile at the spine end).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GeometryError::OperationFailed` if the kernel reported
-    /// an unexpected `AttributeHistory` variant — e.g. `None`, indicating
-    /// the kernel built but failed to populate sweep history. This is a
-    /// programming-error guard; it is exposed as an `Err` rather than a
-    /// panic so test code can pin the contract.
     ///
     /// # Panics
     ///
@@ -972,19 +961,19 @@ impl OcctKernelHandle {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
-        let op = GeometryOp::Sweep { profile, path };
-        let (handle, history) = self.execute_with_history(&op)?;
-        match history {
-            AttributeHistory::Sweep(records) => Ok((handle.id, records)),
-            other => Err(GeometryError::OperationFailed(format!(
-                "sweep_with_history expected AttributeHistory::Sweep, got {other:?}"
-            ))),
-        }
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::SweepWithHistory {
+                profile,
+                path,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
     }
 
-    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
-    /// for the [`GeometryOp::Loft`] case: returns `(handle_id,
-    /// LoftOpHistoryRecords)` directly.
+    /// Loft through `profiles` via `OcctKernel::loft_with_history` on the
+    /// kernel thread, returning `(handle_id, LoftOpHistoryRecords)`.
     ///
     /// Loft is **multi-parent** — each profile section indexed `0..N-1`
     /// is a distinct parent, and the `parent_index` field in every
@@ -996,14 +985,10 @@ impl OcctKernelHandle {
     ///
     /// # Errors
     ///
-    /// - `GeometryError::OperationFailed("Loft requires at least 2 profiles")`
-    ///   when `profiles.len() < 2`. Mirrors the `GeometryOp::Loft` arm of
-    ///   `OcctKernel::execute` and the C++ `make_loft_with_history`
-    ///   validation.
-    /// - `GeometryError::OperationFailed` if the kernel reported an
-    ///   unexpected `AttributeHistory` variant. This is a programming-
-    ///   error guard (the dispatcher always returns `Loft(_)` for `Loft`
-    ///   ops); exposed as `Err` so test code can pin the contract.
+    /// `GeometryError::OperationFailed("Loft requires at least 2 profiles")`
+    /// when `profiles.len() < 2`. Mirrors the `GeometryOp::Loft` arm of
+    /// `OcctKernel::execute` and the C++ `make_loft_with_history`
+    /// validation.
     ///
     /// # Panics
     ///
@@ -1014,16 +999,14 @@ impl OcctKernelHandle {
         &self,
         profiles: &[GeometryHandleId],
     ) -> Result<(GeometryHandleId, LoftOpHistoryRecords), GeometryError> {
-        let op = GeometryOp::Loft {
-            profiles: profiles.to_vec(),
-        };
-        let (handle, history) = self.execute_with_history(&op)?;
-        match history {
-            AttributeHistory::Loft(records) => Ok((handle.id, records)),
-            other => Err(GeometryError::OperationFailed(format!(
-                "loft_with_history expected AttributeHistory::Loft, got {other:?}"
-            ))),
-        }
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::LoftWithHistory {
+                profiles: profiles.to_vec(),
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
     }
 
     /// Test-fixture: build a `width × height` rect_face profile on the
@@ -1234,12 +1217,8 @@ impl OcctKernelHandle {
                         let result = kernel.tessellate(handle, tolerance);
                         let _ = reply.send(result);
                     }
-                    OcctRequest::WarmState { reply } => {
-                        let result = kernel.warm_state();
-                        let _ = reply.send(result);
-                    }
-                    OcctRequest::WithWarmState { state, reply } => {
-                        kernel.with_warm_state(state);
+                    OcctRequest::Reset { reply } => {
+                        kernel.reset();
                         let _ = reply.send(());
                     }
                     OcctRequest::MakeCompound { handles, reply } => {
@@ -1333,110 +1312,36 @@ impl OcctKernelHandle {
                             kernel.chamfer_asymmetric_edges_with_history(shape, d1, d2, &edges);
                         let _ = reply.send(result);
                     }
-                    OcctRequest::ExecuteWithHistory { op, reply } => {
-                        // Per-op dispatcher: route Extrude/Revolve to the
-                        // history-aware kernel primitives; fall through to
-                        // `execute(op)` (returning `AttributeHistory::None`)
-                        // for ops without a history-aware variant. Future
-                        // task-5b/6/7/8 add Sweep/Loft/primitive/local/boolean
-                        // arms here.
-                        let result = match op.as_ref() {
-                            GeometryOp::Extrude { profile, distance } => {
-                                // Mirror the validation in
-                                // `OcctKernel::extrude_with_history`: distance
-                                // must be a finite, non-zero numeric Value.
-                                match distance.as_f64() {
-                                    Some(d) => kernel
-                                        .extrude_with_history(*profile, d)
-                                        .map(|(h, recs)| (h, AttributeHistory::Extrude(recs))),
-                                    None => Err(GeometryError::OperationFailed(
-                                        "extrude distance must be numeric".into(),
-                                    )),
-                                }
-                            }
-                            GeometryOp::Revolve {
-                                profile,
-                                axis_origin,
-                                axis_dir,
-                                angle_rad,
-                            } => kernel
-                                .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
-                                .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
-                            // Task 5b (#2619): GeometryOp::Sweep routes to
-                            // `OcctKernel::sweep_with_history`, which uses
-                            // `BRepOffsetAPI_MakePipe` and the same templated
-                            // history-emit helpers as extrude / revolve.
-                            GeometryOp::Sweep { profile, path } => kernel
-                                .sweep_with_history(*profile, *path)
-                                .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
-                            // Task 5b (#2619): GeometryOp::Loft routes to
-                            // `OcctKernel::loft_with_history`, which uses
-                            // `BRepOffsetAPI_ThruSections::GeneratedFace(edge)`
-                            // for per-section face correspondence (multi-parent).
-                            GeometryOp::Loft { profiles } => kernel
-                                .loft_with_history(profiles)
-                                .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
-                            // Task 8 (#2656): Binary boolean ops route to the
-                            // matching history-aware BRepAlgoAPI primitives.
-                            // All three share the same parent-index semantics:
-                            // parent_index 0 = left, 1 = right.
-                            GeometryOp::Union { left, right } => kernel
-                                .boolean_fuse_with_history(*left, *right)
-                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
-                            GeometryOp::Difference { left, right } => kernel
-                                .boolean_cut_with_history(*left, *right)
-                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
-                            GeometryOp::Intersection { left, right } => kernel
-                                .boolean_common_with_history(*left, *right)
-                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
-                            // Task 7b (#2831): Fillet branches on
-                            // edges.is_empty() — all-edges vs curated-edge —
-                            // mirroring OcctKernel::execute (lib.rs Fillet arm).
-                            // Both producers return (GeometryHandle,
-                            // LocalFeatureOpHistoryRecords) and map uniformly
-                            // to AttributeHistory::LocalFeature.
-                            GeometryOp::Fillet {
-                                target,
-                                edges,
-                                radius,
-                            } => match radius.as_f64() {
-                                Some(r) => (if edges.is_empty() {
-                                    kernel.fillet_with_history(*target, r)
-                                } else {
-                                    kernel.fillet_edges_with_history(*target, r, edges)
-                                })
-                                .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
-                                None => Err(GeometryError::OperationFailed(
-                                    "fillet radius must be numeric".into(),
-                                )),
-                            },
-                            // Task β (#4185): Chamfer branches on
-                            // edges.is_empty() — all-edges vs curated-edge —
-                            // mirroring OcctKernel::execute (lib.rs Chamfer arm)
-                            // and the Fillet arm above. Both producers return
-                            // (GeometryHandle, LocalFeatureOpHistoryRecords) and
-                            // map uniformly to AttributeHistory::LocalFeature.
-                            GeometryOp::Chamfer {
-                                target,
-                                edges,
-                                distance,
-                            } => match distance.as_f64() {
-                                Some(d) => (if edges.is_empty() {
-                                    kernel.chamfer_with_history(*target, d)
-                                } else {
-                                    kernel.chamfer_edges_with_history(*target, d, edges)
-                                })
-                                .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
-                                None => Err(GeometryError::OperationFailed(
-                                    "chamfer distance must be numeric".into(),
-                                )),
-                            },
-                            // Default arm: no history-aware primitive yet for
-                            // this op. Forward to plain `execute` and emit
-                            // `AttributeHistory::None`.
-                            _ => kernel.execute(&op).map(|h| (h, AttributeHistory::None)),
-                        };
+                    OcctRequest::ExtrudeWithHistory {
+                        profile,
+                        distance,
+                        reply,
+                    } => {
+                        let _ = reply.send(kernel.extrude_with_history(profile, distance));
+                    }
+                    OcctRequest::RevolveWithHistory {
+                        profile,
+                        axis_origin,
+                        axis_dir,
+                        angle_rad,
+                        reply,
+                    } => {
+                        let result =
+                            kernel.revolve_with_history(profile, axis_origin, axis_dir, angle_rad);
                         let _ = reply.send(result);
+                    }
+                    OcctRequest::SweepWithHistory {
+                        profile,
+                        path,
+                        reply,
+                    } => {
+                        let _ = reply.send(kernel.sweep_with_history(profile, path));
+                    }
+                    OcctRequest::LoftWithHistory { profiles, reply } => {
+                        let _ = reply.send(kernel.loft_with_history(&profiles));
+                    }
+                    OcctRequest::ExecuteWithHistory { op, reply } => {
+                        let _ = reply.send(kernel.execute_with_history(&op));
                     }
                     #[cfg(feature = "test-fixtures")]
                     OcctRequest::MakeRectProfileForTest {
@@ -1532,11 +1437,6 @@ impl OcctKernelHandle {
     ///
     /// `chan_died` is `FnOnce` because the two failure paths (send failure and
     /// recv failure) are mutually exclusive — only one can occur per call.
-    ///
-    /// Note: `warm_state_async` and `with_warm_state_async` intentionally do
-    /// not use this helper — their channel-death semantics differ (`Option`/`()`
-    /// with `.ok()?` rather than a typed error), so they inline the pattern
-    /// directly. See the TODO on each of those methods.
     ///
     /// Safe to call from within a tokio async execution context.
     async fn send_request_async<Resp, E>(
@@ -1668,50 +1568,20 @@ impl OcctKernelHandle {
         .await?
     }
 
-    /// Extract warm-start state from the kernel thread (async version).
+    /// Reset the kernel thread's `OcctKernel`: evict every resident native
+    /// shape and clear the derived caches while keeping `next_id` monotonic
+    /// (see `OcctKernel::reset`), bounding OCCT native memory across GUI
+    /// whole-file reloads.
     ///
-    /// Safe to call from within a tokio async execution context.
-    ///
-    /// # Design note
-    ///
-    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
-    /// because its channel-death semantics differ: a dead kernel is treated as
-    /// "no warm state" (`Option` / `.ok()?`) rather than as a typed error.
-    /// Routing through the helper would require a fake error type or a third
-    /// helper variant — neither improves clarity over the explicit inline form.
-    pub async fn warm_state_async(&self) -> Option<OpaqueState> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::WarmState { reply: reply_tx })
-            .await
-            .ok()?;
-        reply_rx.await.ok()?
-    }
-
-    /// Restore warm-start state on the kernel thread (async version).
-    ///
-    /// Safe to call from within a tokio async execution context.
-    ///
-    /// # Design note
-    ///
-    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
-    /// because its channel-death semantics differ: failure is silently ignored
-    /// (`()` return, fire-and-forget) rather than mapped to a typed error.
-    /// Routing through the helper would require a fake error type or a third
-    /// helper variant — neither improves clarity over the explicit inline form.
-    pub async fn with_warm_state_async(&self, state: OpaqueState) {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .send(OcctRequest::WithWarmState {
-                state,
-                reply: reply_tx,
-            })
-            .await
-            .is_ok()
-        {
-            let _ = reply_rx.await;
-        }
+    /// Routed over the actor channel because `OcctKernel` is `!Send` and lives
+    /// on the dedicated OS thread. Blocks until the kernel thread confirms;
+    /// safe from both sync and async contexts (via `send_recv`). A dead kernel
+    /// thread is a silent no-op — there is nothing left to reset. Takes `&self`
+    /// because the actor channel sender only needs a shared borrow; the
+    /// `GeometryKernel::reset` override takes `&mut self` and delegates here.
+    pub fn reset(&self) {
+        let (reply_tx, reply_rx) = oneshot::channel::<()>();
+        send_recv(&self.tx, OcctRequest::Reset { reply: reply_tx }, reply_rx);
     }
 
     /// Explicitly shut down the kernel thread from an async context.
@@ -1764,27 +1634,14 @@ fn send_recv<T: Send + 'static>(
     }
 }
 
+/// The kernel thread's `OcctKernel` is stateless across warm starts, so the
+/// handle answers directly with no channel round-trip.
 impl WarmStartable for OcctKernelHandle {
     fn warm_state(&self) -> Option<OpaqueState> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        send_recv(
-            &self.tx,
-            OcctRequest::WarmState { reply: reply_tx },
-            reply_rx,
-        )?
+        None
     }
 
-    fn with_warm_state(&mut self, state: OpaqueState) {
-        let (reply_tx, reply_rx) = oneshot::channel::<()>();
-        send_recv(
-            &self.tx,
-            OcctRequest::WithWarmState {
-                state,
-                reply: reply_tx,
-            },
-            reply_rx,
-        );
-    }
+    fn with_warm_state(&mut self, _state: OpaqueState) {}
 }
 
 impl Drop for OcctKernelHandle {
@@ -1802,6 +1659,16 @@ impl Drop for OcctKernelHandle {
                 // naturally when its recv loop sees the closed channel.
                 // OCCT resources are freed when the thread exits (just
                 // asynchronously). For deterministic cleanup, use shutdown().
+                //
+                // FORWARD-LOOKING HAZARD (task 5212, harmless today): skipping
+                // thread.join() here is safe ONLY because the OcctKernelHandle
+                // session is never dropped-and-rebuilt inside the tokio runtime
+                // today. If an 'open file' / session-swap flow is ever wired to
+                // recreate this handle inside the async runtime, the old kernel
+                // thread could still be draining while a new one spawns — two
+                // OS threads mutating OCCT's process-global state concurrently
+                // (UB). Such a flow must route teardown through shutdown()
+                // (which joins via spawn_blocking) rather than relying on Drop.
             } else {
                 // Outside async context: safe to block on join for
                 // deterministic cleanup.
@@ -1815,6 +1682,14 @@ impl GeometryKernel for OcctKernelHandle {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         // Delegate to inherent method (which only needs &self).
         OcctKernelHandle::execute(self, op)
+    }
+
+    /// Override the trait no-op default: `OcctKernel` owns a growing table of
+    /// native B-rep shapes that must be freed on whole-file reload. Delegates
+    /// to the channel-routed inherent `OcctKernelHandle::reset` (which only
+    /// needs `&self`).
+    fn reset(&mut self) {
+        OcctKernelHandle::reset(self)
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -1921,10 +1796,9 @@ impl GeometryKernel for OcctKernelHandle {
     }
 
     /// Override the trait default with a real channel-routed implementation
-    /// that surfaces kernel-emitted [`AttributeHistory`] for ops with
-    /// history-aware primitives (currently `GeometryOp::Extrude`; revolve
-    /// in step-10). Delegates to the inherent `execute_with_history`
-    /// (which only needs `&self`).
+    /// that surfaces kernel-emitted [`AttributeHistory`] from
+    /// `OcctKernel::execute_with_history`. Delegates to the inherent
+    /// `execute_with_history` (which only needs `&self`).
     fn execute_with_history(
         &mut self,
         op: &GeometryOp,
@@ -1945,1085 +1819,5 @@ impl GeometryKernel for OcctKernelHandle {
         mesh: &Mesh,
     ) -> Option<f64> {
         OcctKernelHandle::measure_mesh_deviation(self, handle, mesh)
-    }
-}
-
-#[cfg(all(test, has_occt))]
-mod tests {
-    use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
-
-    /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
-    const _: fn() = || {
-        fn must_be_send_sync<T: Send + Sync>() {}
-        must_be_send_sync::<super::OcctKernelHandle>();
-    };
-
-    #[test]
-    fn spawn_returns_handle_without_panic() {
-        let handle = super::OcctKernelHandle::spawn();
-        // Just verifying spawn() returns successfully without panic.
-        drop(handle);
-    }
-
-    #[test]
-    fn execute_creates_box_and_returns_handle() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let result = handle.execute(&op).unwrap();
-        assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, Some(BRepKind::Solid));
-    }
-
-    #[test]
-    fn query_volume_returns_correct_value() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let result = handle
-            .query(&reify_ir::GeometryQuery::Volume(gh.id))
-            .unwrap();
-        match result {
-            Value::Real(v) => {
-                // 10 * 20 * 30 = 6000
-                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn query_invalid_handle_returns_error() {
-        let handle = super::OcctKernelHandle::spawn();
-        let result = handle.query(&reify_ir::GeometryQuery::Volume(GeometryHandleId(999)));
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_ir::QueryError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn query_many_returns_ordered_values_for_heterogeneous_batch() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let result = handle
-            .query_many(&[
-                GeometryQuery::Volume(gh.id),
-                GeometryQuery::SurfaceArea(gh.id),
-            ])
-            .expect("query_many should succeed for valid handles");
-        assert_eq!(result.len(), 2, "expected one Value per query");
-        match (&result[0], &result[1]) {
-            (Value::Real(vol), Value::Real(area)) => {
-                // 10 * 20 * 30 = 6000
-                assert!(
-                    (vol - 6000.0).abs() < 1.0,
-                    "expected volume ~6000, got {vol}"
-                );
-                // 2 * (10*20 + 10*30 + 20*30) = 2200
-                assert!(
-                    (area - 2200.0).abs() < 1.0,
-                    "expected surface area ~2200, got {area}"
-                );
-            }
-            other => panic!("expected two Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn query_many_short_circuits_on_first_invalid_handle() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let result = handle.query_many(&[
-            GeometryQuery::Volume(GeometryHandleId(999)),
-            GeometryQuery::SurfaceArea(gh.id),
-        ]);
-        assert!(result.is_err(), "query_many must propagate the bad handle");
-        match result.unwrap_err() {
-            reify_ir::QueryError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn query_many_empty_batch_returns_ok_empty_vec() {
-        // The empty-batch fast path should return Ok(Vec::new()) without
-        // routing through the actor channel. Observable behaviour is the
-        // empty Ok result; the channel skip is documented in the doc-comment.
-        let handle = super::OcctKernelHandle::spawn();
-        let result = handle
-            .query_many(&[])
-            .expect("empty query_many should succeed");
-        assert!(
-            result.is_empty(),
-            "empty batch should return empty Vec, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn export_step_contains_iso_header() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let mut buf = Vec::new();
-        handle
-            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
-            .unwrap();
-        let content = String::from_utf8(buf).unwrap();
-        assert!(
-            content.contains("ISO-10303-21"),
-            "STEP export should contain ISO-10303-21 header"
-        );
-    }
-
-    /// Real-OCCT schema selection through the new `export_with_options`.
-    ///
-    /// Asserts the declared STEP schema reaches the OCCT writer and is
-    /// observable in the written FILE_SCHEMA. The assertions use the actual
-    /// OCCT EXPRESS schema identifiers (verified against linked OCCT 7.9.3):
-    /// AP203 → `CONFIG_CONTROL_DESIGN`, AP214 → `AUTOMOTIVE_DESIGN`,
-    /// AP242 → a name containing `AP242`. The literal token "AP203" is never
-    /// written by OCCT, so we assert the EXPRESS schema name instead.
-    ///
-    /// All three exports run in one process, so they share the process-global
-    /// `write.step.schema` static — this is exactly the case the per-call
-    /// `Interface_Static::SetCVal` must make deterministic.
-    #[test]
-    fn export_with_options_selects_step_schema() {
-        use reify_ir::{ExportFormat, ExportOptions, StepSchema};
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-
-        // (a) AP203 → CONFIG_CONTROL_DESIGN, never AUTOMOTIVE_DESIGN.
-        let mut buf_203 = Vec::new();
-        let w_203 = handle
-            .export_with_options(
-                gh.id,
-                ExportFormat::Step,
-                &ExportOptions {
-                    step_schema: StepSchema::Ap203,
-                    ..ExportOptions::default()
-                },
-                &mut buf_203,
-            )
-            .unwrap();
-        let content_203 = String::from_utf8(buf_203).unwrap();
-        assert!(
-            content_203.contains("CONFIG_CONTROL_DESIGN"),
-            "AP203 export must write the CONFIG_CONTROL_DESIGN EXPRESS schema"
-        );
-        assert!(
-            !content_203.contains("AUTOMOTIVE_DESIGN"),
-            "AP203 export must NOT write the AP214 AUTOMOTIVE_DESIGN schema"
-        );
-        assert!(w_203.is_empty(), "AP203 export raises no warnings");
-
-        // (b) default (AP214) → AUTOMOTIVE_DESIGN.
-        let mut buf_def = Vec::new();
-        let w_def = handle
-            .export_with_options(
-                gh.id,
-                ExportFormat::Step,
-                &ExportOptions::default(),
-                &mut buf_def,
-            )
-            .unwrap();
-        let content_def = String::from_utf8(buf_def).unwrap();
-        assert!(
-            content_def.contains("AUTOMOTIVE_DESIGN"),
-            "default (AP214) export must write the AUTOMOTIVE_DESIGN schema"
-        );
-        assert!(w_def.is_empty());
-
-        // (c) The schema really changed: AP203 and AP214 bytes differ.
-        assert_ne!(
-            content_203, content_def,
-            "AP203 and AP214 exports must differ in their FILE_SCHEMA"
-        );
-
-        // (d) AP242 → schema name contains "AP242". OCCT 7.9.3 supports
-        // AP242DIS, so the happy path succeeds with no fallback warning.
-        let mut buf_242 = Vec::new();
-        let w_242 = handle
-            .export_with_options(
-                gh.id,
-                ExportFormat::Step,
-                &ExportOptions {
-                    step_schema: StepSchema::Ap242,
-                    ..ExportOptions::default()
-                },
-                &mut buf_242,
-            )
-            .unwrap();
-        let content_242 = String::from_utf8(buf_242).unwrap();
-        assert!(
-            content_242.contains("AP242"),
-            "AP242 export must write a schema name containing AP242"
-        );
-        assert!(
-            w_242.is_empty(),
-            "OCCT 7.9.3 supports AP242DIS — AP242 happy path raises no warning"
-        );
-    }
-
-    /// The plain `export(Step)` path is unchanged by the options plumbing: it
-    /// still writes the ISO-10303-21 header and defaults to the AP214
-    /// AUTOMOTIVE_DESIGN schema (the per-call SetCVal on the default path
-    /// keeps this deterministic even after a prior AP203 export in-process).
-    #[test]
-    fn plain_export_step_still_writes_default_ap214_schema() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let mut buf = Vec::new();
-        handle
-            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
-            .unwrap();
-        let content = String::from_utf8(buf).unwrap();
-        assert!(
-            content.contains("ISO-10303-21"),
-            "plain export must still write the ISO-10303-21 header"
-        );
-        assert!(
-            content.contains("AUTOMOTIVE_DESIGN"),
-            "plain export must default to the AP214 AUTOMOTIVE_DESIGN schema"
-        );
-    }
-
-    #[test]
-    fn export_unsupported_format_returns_error() {
-        // Stl is now wired; use Obj (explicitly unsupported) to pin the
-        // error-path contract for an unsupported format.
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let mut buf = Vec::new();
-        let result = handle.export(gh.id, reify_ir::ExportFormat::Obj, &mut buf);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn handle_implements_geometry_kernel_trait() {
-        use reify_ir::GeometryKernel;
-        let mut handle = super::OcctKernelHandle::spawn();
-        // Use it through the trait interface as Box<dyn GeometryKernel>
-        let kernel: &mut dyn GeometryKernel = &mut handle;
-        let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
-        };
-        let gh = kernel.execute(&op).unwrap();
-        assert_eq!(gh.id, GeometryHandleId(1));
-    }
-
-    #[test]
-    fn tessellate_returns_valid_mesh() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute(&op).unwrap();
-        let mesh = handle.tessellate(gh.id, 0.1).unwrap();
-        assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
-        assert!(!mesh.indices.is_empty(), "mesh should have indices");
-        assert_eq!(
-            mesh.indices.len() % 3,
-            0,
-            "indices should be divisible by 3 (triangles)"
-        );
-        assert!(mesh.normals.is_some(), "mesh should have normals");
-    }
-
-    #[test]
-    fn chamfer_all_edges_through_channel() {
-        let handle = super::OcctKernelHandle::spawn();
-        let box_op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
-        };
-        let gh = handle.execute(&box_op).unwrap();
-        let chamfer_op = GeometryOp::Chamfer {
-            target: gh.id,
-            edges: vec![],
-            distance: Value::Real(1.0),
-        };
-        let result = handle.execute(&chamfer_op);
-        assert!(
-            result.is_ok(),
-            "chamfer should succeed, got: {:?}",
-            result.unwrap_err()
-        );
-        let chamfered = result.unwrap();
-        assert!(
-            chamfered.id.0 > 0,
-            "chamfered shape should have a valid handle id, got {:?}",
-            chamfered.id
-        );
-        // Verify the resulting shape is exportable and topologically valid by
-        // exporting to STEP and checking the ISO-10303-21 header is present.
-        let mut buf = Vec::new();
-        handle
-            .export(chamfered.id, reify_ir::ExportFormat::Step, &mut buf)
-            .expect("chamfered shape should be exportable to STEP");
-        let content = String::from_utf8(buf).expect("STEP output should be valid UTF-8");
-        assert!(
-            content.contains("ISO-10303-21"),
-            "chamfered STEP export should contain ISO-10303-21 header"
-        );
-    }
-
-    #[test]
-    fn export_invalid_handle_returns_error() {
-        let handle = super::OcctKernelHandle::spawn();
-        let mut buf = Vec::new();
-        let result = handle.export(
-            GeometryHandleId(999),
-            reify_ir::ExportFormat::Step,
-            &mut buf,
-        );
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_ir::ExportError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn tessellate_invalid_handle_returns_error() {
-        let handle = super::OcctKernelHandle::spawn();
-        let result = handle.tessellate(GeometryHandleId(999), 0.1);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_ir::TessError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn drop_handle_exits_thread_cleanly() {
-        let handle = super::OcctKernelHandle::spawn();
-        // Execute an op to ensure kernel thread is alive and working
-        let op = GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
-        };
-        handle.execute(&op).unwrap();
-        // Drop should not panic — thread exits cleanly
-        drop(handle);
-    }
-
-    #[test]
-    fn multiple_sequential_handles() {
-        for _ in 0..3 {
-            let handle = super::OcctKernelHandle::spawn();
-            let op = GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
-            };
-            let gh = handle.execute(&op).unwrap();
-            // Each handle starts with its own id counter
-            assert_eq!(gh.id, GeometryHandleId(1));
-            drop(handle);
-        }
-    }
-
-    #[test]
-    fn multi_operation_sequence() {
-        let handle = super::OcctKernelHandle::spawn();
-
-        // Create box
-        let box_h = handle
-            .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        assert_eq!(box_h.id, GeometryHandleId(1));
-
-        // Create cylinder
-        let cyl_h = handle
-            .execute(&GeometryOp::Cylinder {
-                radius: Value::Real(5.0),
-                height: Value::Real(20.0),
-            })
-            .unwrap();
-        assert_eq!(cyl_h.id, GeometryHandleId(2));
-
-        // Boolean union
-        let union_h = handle
-            .execute(&GeometryOp::Union {
-                left: box_h.id,
-                right: cyl_h.id,
-            })
-            .unwrap();
-        assert_eq!(union_h.id, GeometryHandleId(3));
-
-        // Fillet
-        let fillet_h = handle
-            .execute(&GeometryOp::Fillet {
-                target: union_h.id,
-                edges: vec![],
-                radius: Value::Real(2.0),
-            })
-            .unwrap();
-        assert_eq!(fillet_h.id, GeometryHandleId(4));
-
-        // Query volume
-        let vol = handle
-            .query(&reify_ir::GeometryQuery::Volume(fillet_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => assert!(v > 0.0, "volume should be positive, got {v}"),
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-
-        // Tessellate
-        let mesh = handle.tessellate(fillet_h.id, 0.1).unwrap();
-        assert!(!mesh.vertices.is_empty());
-        assert!(!mesh.indices.is_empty());
-
-        // Export STEP
-        let mut buf = Vec::new();
-        handle
-            .export(fillet_h.id, reify_ir::ExportFormat::Step, &mut buf)
-            .unwrap();
-        let content = String::from_utf8(buf).unwrap();
-        assert!(content.contains("ISO-10303-21"));
-    }
-
-    // --- Async companion method tests (step-21) ---
-
-    #[tokio::test]
-    async fn execute_async_creates_box() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let result = handle.execute_async(&op).await.unwrap();
-        assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, Some(BRepKind::Solid));
-    }
-
-    #[tokio::test]
-    async fn query_async_volume() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute_async(&op).await.unwrap();
-        let result = handle
-            .query_async(&GeometryQuery::Volume(gh.id))
-            .await
-            .unwrap();
-        match result {
-            Value::Real(v) => {
-                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn query_async_invalid_handle() {
-        let handle = super::OcctKernelHandle::spawn();
-        let result = handle
-            .query_async(&GeometryQuery::Volume(GeometryHandleId(999)))
-            .await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_ir::QueryError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn export_async_returns_step_bytes() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute_async(&op).await.unwrap();
-        let bytes = handle
-            .export_async(gh.id, reify_ir::ExportFormat::Step)
-            .await
-            .unwrap();
-        let content = String::from_utf8(bytes).unwrap();
-        assert!(
-            content.contains("ISO-10303-21"),
-            "STEP export should contain ISO-10303-21 header"
-        );
-    }
-
-    #[tokio::test]
-    async fn export_async_invalid_handle() {
-        let handle = super::OcctKernelHandle::spawn();
-        let result = handle
-            .export_async(GeometryHandleId(999), reify_ir::ExportFormat::Step)
-            .await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_ir::ExportError::InvalidHandle(id) => {
-                assert_eq!(id, GeometryHandleId(999));
-            }
-            other => panic!("expected InvalidHandle, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn tessellate_async_returns_valid_mesh() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        let gh = handle.execute_async(&op).await.unwrap();
-        let mesh = handle.tessellate_async(gh.id, 0.1).await.unwrap();
-        assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
-        assert!(!mesh.indices.is_empty(), "mesh should have indices");
-        assert_eq!(
-            mesh.indices.len() % 3,
-            0,
-            "indices should be divisible by 3 (triangles)"
-        );
-        assert!(mesh.normals.is_some(), "mesh should have normals");
-    }
-
-    #[tokio::test]
-    async fn async_multi_op_sequence() {
-        let handle = super::OcctKernelHandle::spawn();
-
-        // Create box
-        let box_h = handle
-            .execute_async(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
-            })
-            .await
-            .unwrap();
-        assert_eq!(box_h.id, GeometryHandleId(1));
-
-        // Create cylinder
-        let cyl_h = handle
-            .execute_async(&GeometryOp::Cylinder {
-                radius: Value::Real(5.0),
-                height: Value::Real(20.0),
-            })
-            .await
-            .unwrap();
-        assert_eq!(cyl_h.id, GeometryHandleId(2));
-
-        // Boolean union
-        let union_h = handle
-            .execute_async(&GeometryOp::Union {
-                left: box_h.id,
-                right: cyl_h.id,
-            })
-            .await
-            .unwrap();
-        assert_eq!(union_h.id, GeometryHandleId(3));
-
-        // Fillet
-        let fillet_h = handle
-            .execute_async(&GeometryOp::Fillet {
-                target: union_h.id,
-                edges: vec![],
-                radius: Value::Real(2.0),
-            })
-            .await
-            .unwrap();
-        assert_eq!(fillet_h.id, GeometryHandleId(4));
-
-        // Query volume via async
-        let vol = handle
-            .query_async(&GeometryQuery::Volume(fillet_h.id))
-            .await
-            .unwrap();
-        match vol {
-            Value::Real(v) => assert!(v > 0.0, "volume should be positive, got {v}"),
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-
-        // Tessellate via async
-        let mesh = handle.tessellate_async(fillet_h.id, 0.1).await.unwrap();
-        assert!(!mesh.vertices.is_empty());
-        assert!(!mesh.indices.is_empty());
-
-        // Export STEP via async (returns Vec<u8>)
-        let bytes = handle
-            .export_async(fillet_h.id, reify_ir::ExportFormat::Step)
-            .await
-            .unwrap();
-        let content = String::from_utf8(bytes).unwrap();
-        assert!(content.contains("ISO-10303-21"));
-    }
-
-    // --- Async-safe Drop and shutdown tests (step-23) ---
-
-    #[tokio::test]
-    async fn drop_in_async_context_does_not_block() {
-        // Dropping OcctKernelHandle inside an async context must not block
-        // the tokio worker thread (i.e., must not call thread.join()).
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
-        };
-        handle.execute_async(&op).await.unwrap();
-        // Drop inside async context — must complete without blocking
-        drop(handle);
-    }
-
-    #[tokio::test]
-    async fn shutdown_completes_cleanly() {
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
-        };
-        handle.execute_async(&op).await.unwrap();
-        // Explicit async shutdown — should complete cleanly
-        handle.shutdown().await;
-        // After shutdown, spawning a new handle should work (kernel thread exited)
-        let handle2 = super::OcctKernelHandle::spawn();
-        let result = handle2.execute_async(&op).await.unwrap();
-        assert_eq!(result.id, GeometryHandleId(1)); // fresh kernel, fresh ids
-    }
-
-    // --- Warm-start tests ---
-
-    #[test]
-    fn handle_warm_state_returns_some_after_op() {
-        use reify_ir::WarmStartable;
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        handle.execute(&op).unwrap();
-        let state = handle.warm_state();
-        assert!(state.is_some(), "handle with shapes should have warm state");
-        assert!(
-            state.unwrap().estimated_size_bytes() > 0,
-            "estimated size should be positive"
-        );
-    }
-
-    #[test]
-    fn cross_handle_warm_start_transfer() {
-        use reify_ir::WarmStartable;
-        // Handle A: create box
-        let handle_a = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        handle_a.execute(&op).unwrap();
-
-        // Extract warm state from handle A
-        let state = handle_a.warm_state().expect("should have warm state");
-
-        // Handle B: restore warm state
-        let mut handle_b = super::OcctKernelHandle::spawn();
-        handle_b.with_warm_state(state);
-
-        // Query volume on handle B using handle ID 1
-        let vol = handle_b
-            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn async_warm_start_roundtrip() {
-        let handle_a = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        handle_a.execute_async(&op).await.unwrap();
-
-        // Extract warm state via async
-        let state = handle_a
-            .warm_state_async()
-            .await
-            .expect("should have warm state");
-
-        // Restore on new handle via async
-        let handle_b = super::OcctKernelHandle::spawn();
-        handle_b.with_warm_state_async(state).await;
-
-        // Query volume via async
-        let vol = handle_b
-            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
-            .await
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn handle_warm_state_none_on_empty_kernel() {
-        use reify_ir::WarmStartable;
-        let handle = super::OcctKernelHandle::spawn();
-        // No ops executed — warm_state should return None
-        let state = handle.warm_state();
-        assert!(state.is_none(), "empty kernel should have no warm state");
-    }
-
-    #[tokio::test]
-    async fn warm_startable_trait_safe_in_async_context() {
-        use reify_ir::WarmStartable;
-        // Calling the sync WarmStartable trait methods from an async context
-        // must not panic (previously used blocking_send/blocking_recv which
-        // panicked inside tokio runtime).
-        let handle_a = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
-        };
-        handle_a.execute_async(&op).await.unwrap();
-
-        // Call sync warm_state() from async context — must not panic
-        let state = handle_a.warm_state().expect("should have warm state");
-
-        // Call sync with_warm_state() from async context — must not panic
-        let mut handle_b = super::OcctKernelHandle::spawn();
-        handle_b.with_warm_state(state);
-
-        // Verify restored state works
-        let vol = handle_b
-            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
-            .await
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn concurrent_export_step_from_multiple_handles() {
-        // Regression test: spawn N OcctKernelHandle instances, each on its own
-        // dedicated thread, create a box on each, and export to STEP concurrently.
-        // This reliably triggers the OCCT global STEP writer state race condition
-        // when the C++ export_step() function is not guarded by a mutex.
-        const N: usize = 4;
-        std::thread::scope(|s| {
-            let threads: Vec<_> = (0..N)
-                .map(|_| {
-                    s.spawn(|| {
-                        let handle = super::OcctKernelHandle::spawn();
-                        let op = GeometryOp::Box {
-                            width: Value::Real(10.0),
-                            height: Value::Real(20.0),
-                            depth: Value::Real(30.0),
-                        };
-                        let gh = handle.execute(&op).unwrap();
-                        let mut buf = Vec::new();
-                        handle
-                            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
-                            .expect("STEP export should succeed under concurrent access");
-                        let content = String::from_utf8(buf).unwrap();
-                        assert!(
-                            content.contains("ISO-10303-21"),
-                            "STEP export should contain ISO-10303-21 header"
-                        );
-                    })
-                })
-                .collect();
-            for t in threads {
-                t.join().unwrap();
-            }
-        });
-    }
-
-    #[test]
-    fn kernel_thread_responsive_after_errors() {
-        let handle = super::OcctKernelHandle::spawn();
-
-        // 1. Create a valid box (id=1) — should succeed
-        let box_h = handle
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
-            })
-            .unwrap();
-        assert_eq!(box_h.id, GeometryHandleId(1));
-
-        // 2. Union with invalid handles — should return Err(InvalidReference)
-        let union_result = handle.execute(&GeometryOp::Union {
-            left: GeometryHandleId(999),
-            right: GeometryHandleId(998),
-        });
-        assert!(union_result.is_err());
-
-        // 3. Box with zero width — should return Err(OperationFailed) from validation
-        let zero_result = handle.execute(&GeometryOp::Box {
-            width: Value::Real(0.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
-        });
-        assert!(zero_result.is_err());
-
-        // 4. Query volume on invalid handle — should return Err
-        let query_result = handle.query(&GeometryQuery::Volume(GeometryHandleId(999)));
-        assert!(query_result.is_err());
-
-        // 5. Create another valid box — proves kernel thread is still alive
-        let box2_h = handle
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
-            })
-            .unwrap();
-
-        // 6. Query volume of the new box — should return correct value
-        let vol = handle.query(&GeometryQuery::Volume(box2_h.id)).unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn sync_drop_still_joins_thread() {
-        // Sync (non-async) Drop should preserve existing join behavior
-        let handle = super::OcctKernelHandle::spawn();
-        let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
-        };
-        handle.execute(&op).unwrap();
-        // Drop outside async context — should join the thread
-        drop(handle);
-        // No panic means success
-    }
-
-    // --- Topology extraction through the handle channel (step-21) ---
-
-    /// Helper: build a box on a fresh handle and return both.
-    fn handle_with_box(w: f64, h: f64, d: f64) -> (super::OcctKernelHandle, GeometryHandleId) {
-        let handle = super::OcctKernelHandle::spawn();
-        let gh = handle
-            .execute(&GeometryOp::Box {
-                width: Value::Real(w),
-                height: Value::Real(h),
-                depth: Value::Real(d),
-            })
-            .expect("Box execute should succeed");
-        (handle, gh.id)
-    }
-
-    /// Assert all ids in `ids` are pairwise distinct, none are
-    /// `GeometryHandleId::INVALID`, and none equal `excluded`.
-    fn assert_distinct_valid(ids: &[GeometryHandleId], excluded: GeometryHandleId) {
-        for id in ids {
-            assert_ne!(*id, GeometryHandleId::INVALID, "id should not be INVALID");
-            assert_ne!(*id, excluded, "extracted id should not equal source handle");
-        }
-        let mut seen = std::collections::HashSet::new();
-        for id in ids {
-            assert!(seen.insert(*id), "duplicate id in extracted vec: {id:?}");
-        }
-    }
-
-    #[test]
-    fn extract_edges_through_handle_channel_returns_twelve_handles() {
-        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
-        let edges = handle
-            .extract_edges(box_id)
-            .expect("extract_edges through channel should succeed");
-        assert_eq!(
-            edges.len(),
-            12,
-            "a box should have 12 edges, got {}",
-            edges.len()
-        );
-        assert_distinct_valid(&edges, box_id);
-    }
-
-    #[tokio::test]
-    async fn extract_edges_async_through_handle_channel_returns_twelve_handles() {
-        let handle = super::OcctKernelHandle::spawn();
-        let gh = handle
-            .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
-            })
-            .await
-            .unwrap();
-        let edges = handle
-            .extract_edges_async(gh.id)
-            .await
-            .expect("extract_edges_async through channel should succeed");
-        assert_eq!(
-            edges.len(),
-            12,
-            "a box should have 12 edges, got {}",
-            edges.len()
-        );
-        assert_distinct_valid(&edges, gh.id);
-    }
-
-    #[test]
-    fn extract_faces_through_handle_channel_returns_six_handles() {
-        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
-        let faces = handle
-            .extract_faces(box_id)
-            .expect("extract_faces through channel should succeed");
-        assert_eq!(
-            faces.len(),
-            6,
-            "a box should have 6 faces, got {}",
-            faces.len()
-        );
-        assert_distinct_valid(&faces, box_id);
-    }
-
-    #[tokio::test]
-    async fn extract_faces_async_through_handle_channel_returns_six_handles() {
-        let handle = super::OcctKernelHandle::spawn();
-        let gh = handle
-            .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
-            })
-            .await
-            .unwrap();
-        let faces = handle
-            .extract_faces_async(gh.id)
-            .await
-            .expect("extract_faces_async through channel should succeed");
-        assert_eq!(
-            faces.len(),
-            6,
-            "a box should have 6 faces, got {}",
-            faces.len()
-        );
-        assert_distinct_valid(&faces, gh.id);
-    }
-
-    #[test]
-    fn extract_vertices_through_handle_channel_returns_eight_handles() {
-        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
-        let vertices = handle
-            .extract_vertices(box_id)
-            .expect("extract_vertices through channel should succeed");
-        assert_eq!(
-            vertices.len(),
-            8,
-            "a box should have 8 vertices, got {}",
-            vertices.len()
-        );
-        assert_distinct_valid(&vertices, box_id);
-    }
-
-    #[tokio::test]
-    async fn extract_vertices_async_through_handle_channel_returns_eight_handles() {
-        let handle = super::OcctKernelHandle::spawn();
-        let gh = handle
-            .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
-            })
-            .await
-            .unwrap();
-        let vertices = handle
-            .extract_vertices_async(gh.id)
-            .await
-            .expect("extract_vertices_async through channel should succeed");
-        assert_eq!(
-            vertices.len(),
-            8,
-            "a box should have 8 vertices, got {}",
-            vertices.len()
-        );
-        assert_distinct_valid(&vertices, gh.id);
     }
 }

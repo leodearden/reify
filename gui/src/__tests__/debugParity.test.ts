@@ -22,34 +22,68 @@ vi.mock('html-to-image', () => ({
   toPng: vi.fn().mockResolvedValue('data:image/png;base64,STUB'),
 }));
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 // Namespace import — a missing export surfaces as a clean assertion
 // (bridge.buildHandlers === undefined) rather than a module-load error.
 import * as bridge from '../debug/bridge';
 
 // --- source parsing ---
 
-// Path: gui/src/__tests__ → ../../src-tauri/src/debug_server.rs
-const RUST = readFileSync(
-  join(__dirname, '../../src-tauri/src/debug_server.rs'),
-  'utf-8',
-);
+// The read, the extraction regex and the raw-count cross-check live in
+// ./toolDefNames (task 6065) — one home, shared with
+// gui/test/visual/assertions.test.ts, which held a byte-identical copy.
+import { analyzeToolDefs, readDebugServerSource } from './toolDefNames';
 
-// Captures 56 ToolDef literals.  \s spans the newline between `ToolDef {`
-// and `name:`.  `struct ToolDef {`'s field `name: &'static str` is unquoted
-// so it is NOT captured — only the string-literal name fields are.
-const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)].map(
-  (m) => m[1],
-);
+const debugServerSource = readDebugServerSource();
+const extraction = analyzeToolDefs(debugServerSource);
+const toolDefNames = extraction.names;
+
+/**
+ * Every tool name appearing as a LITERAL match arm in debug_server.rs's two
+ * dispatchers — `dispatch_tool` and the `dispatch_stateless_tool` delegate it
+ * consults first.
+ *
+ * WHY (task 5097 δ amendment, review finding). PURE_ENGINE_SIDE tools are
+ * exempted from (c)'s handler check by construction: they resolve in Rust, so
+ * there is no TS handler to look for. That exemption left their Rust half
+ * unguarded from this side — deleting or misspelling a `dispatch_tool` arm makes
+ * the tool fall through to the `_ => query_frontend(name, …)` default and fail
+ * at runtime with "unknown command", while every test here stays green because
+ * the ToolDef is still advertised. This closes that gap the same way
+ * ./toolDefNames closes the ToolDef one: by regex over the real source, no
+ * on-disk fixture.
+ *
+ * Grammar, matching how every arm in that file is actually written:
+ *   - one or more quoted names, `|`-separated, then `=>`, starting a line;
+ *   - a name outside [a-z0-9_] is DROPPED, exactly as `extractToolDefNames`
+ *     drops it, so such drift surfaces as a missing name rather than a silent
+ *     pass;
+ *   - arms are read only up to the dispatcher's `_ =>` wildcard, so nothing
+ *     after it can be mistaken for an arm.
+ */
+export function extractDispatchArmNames(rustSource: string): string[] {
+  const names: string[] = [];
+  for (const decl of ['async fn dispatch_stateless_tool(', 'async fn dispatch_tool(']) {
+    const fnStart = rustSource.indexOf(decl);
+    if (fnStart < 0) continue;
+    const matchStart = rustSource.indexOf('match name {', fnStart);
+    if (matchStart < 0) continue;
+    const wildcard = rustSource.indexOf('_ =>', matchStart);
+    const body = rustSource.slice(matchStart, wildcard < 0 ? undefined : wildcard);
+    for (const arm of body.matchAll(/^\s*"[a-z0-9_]+"(?:\s*\|\s*"[a-z0-9_]+")*\s*=>/gm)) {
+      for (const quoted of arm[0].matchAll(/"([a-z0-9_]+)"/g)) names.push(quoted[1]);
+    }
+  }
+  return names;
+}
+
+const dispatchArmNames = extractDispatchArmNames(debugServerSource);
 
 // --- documented allowlists ---
 
 /**
  * Tools with a named dispatch_tool arm resolved entirely in Rust.
  * None sends its OWN command to query_frontend, so no TS handler is needed:
- *   - health / engine_state / demand_dispatch / mesh_stats / morph_stats /
+ *   - health / engine_state / demand_dispatch / mesh_stats /
  *       mesh_morph_stats: fully resolved in the Rust dispatch_tool match arm.
  *   - load_fixture: handle_load_fixture resolves a fixture path then reuses
  *       the existing "open_file" frontend command — there is no "load_fixture"
@@ -60,6 +94,9 @@ const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)
  */
 const PURE_ENGINE_SIDE = [
   'health',
+  // engine_status (task 6752): named Rust arm, a lock-free probe that never
+  // calls query_frontend.
+  'engine_status',
   'engine_state',
   // demand_dispatch (selective-demand ε, task 4741) has a named dispatch_tool
   // arm (handle_demand_dispatch → demand_dispatch_on_engine → run_on_engine /
@@ -67,13 +104,29 @@ const PURE_ENGINE_SIDE = [
   // query_frontend, so no TS handler is needed (mirrors engine_state).
   'demand_dispatch',
   'mesh_stats',
-  'morph_stats',
   'mesh_morph_stats',
   'load_fixture',
   // set_fea_case has a named dispatch_tool arm in Rust (handle_set_fea_case)
-  // that calls session.set_active_fea_case() — no query_frontend call, so no
-  // TS handler is needed (task 3026).
+  // that calls session.set_active_fea_case() (task 3026).  It DOES push to the
+  // frontend — but under the DIFFERENT command name 'apply_gui_state', which
+  // has its own REST_ONLY handler, so no handler keyed 'set_fea_case' exists
+  // or should.  (The wording here previously read "no query_frontend call",
+  // which went stale when the apply_gui_state push landed.)
   'set_fea_case',
+  // Task 5097 δ: the five reify-mcp AI write tools.  Same asymmetry as
+  // set_fea_case — each has a named Rust dispatch_tool arm, and every one of
+  // them pushes under a DIFFERENT command name than its own: 'open_file' for
+  // reify_open_file (which shares the open_file funnel outright), and
+  // 'apply_gui_state' for the other four.  That includes reify_save_file and
+  // reify_export: they commit no new engine state, but they still push their
+  // rebuilt GuiState, because the seam's build_gui_state() rebuild is what
+  // refreshed the baseline and must therefore reach the frontend too.  So no
+  // handler keyed by any of these five names exists or should.
+  'reify_set_parameter',
+  'reify_update_source',
+  'reify_open_file',
+  'reify_save_file',
+  'reify_export',
 ];
 
 /**
@@ -103,15 +156,20 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
   });
 
   it('(b) extraction sanity — exact count matches raw ToolDef literals, no duplicates', () => {
+    // The single real-file drift guard for the extraction (./toolDefNames.test.ts
+    // pins the regex semantics on synthetic sources only, deliberately).
+    //
     // Cross-check against the raw `ToolDef {` literal count minus the struct
     // definition itself.  If a future tool name contains chars outside
     // [a-z0-9_] (e.g. uppercase or hyphen), the name regex silently drops it
     // while the raw count still includes it — surfacing drift rather than
     // masking it behind a >= floor.
-    const rawToolDefCount = RUST.match(/ToolDef\s*\{/g)?.length ?? 0;
-    expect(toolDefNames.length).toBe(rawToolDefCount - 1); // -1 for `struct ToolDef {` itself
-    // No duplicate tool_def names in debug_server.rs.
-    expect(new Set(toolDefNames).size).toBe(toolDefNames.length);
+    // expectedNameCount discounts the `struct ToolDef {` declaration(s) that
+    // analyzeToolDefs counts in the source — not a hardcoded -1.
+    expect(extraction.names.length).toBe(extraction.expectedNameCount);
+    // No duplicate tool_def names in debug_server.rs — a failure names the
+    // offending tool rather than reporting a bare count mismatch.
+    expect(extraction.duplicates).toStrictEqual([]);
   });
 
   it('(c) every frontend-mediated tool_def has a handler (no runtime "unknown command")', () => {
@@ -144,5 +202,66 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
         `REST_ONLY '${name}' must NOT appear in tool_defs()`,
       ).not.toContain(name);
     }
+  });
+
+  /**
+   * (f) task 5097 (δ): the five reify-mcp AI write tools are advertised on the
+   * reify-debug surface AND classified pure-engine-side.
+   *
+   * They earn the PURE_ENGINE_SIDE classification the same way `set_fea_case`
+   * does: each has a named Rust `dispatch_tool` arm, and the frontend pushes
+   * some of them make use the DIFFERENT command names `apply_gui_state` /
+   * `open_file`, so no TS handler keyed by the tool's own name exists or
+   * should.  Listing them explicitly here (rather than leaning on (c)'s
+   * filter) means dropping a ToolDef reds this test by name instead of
+   * silently shrinking the set (c) checks.
+   */
+  it('(f) the five AI write tools are advertised and pure-engine-side', () => {
+    const AI_WRITE_TOOLS = [
+      'reify_set_parameter',
+      'reify_update_source',
+      'reify_open_file',
+      'reify_save_file',
+      'reify_export',
+    ];
+    for (const name of AI_WRITE_TOOLS) {
+      expect(toolDefNames, `'${name}' must be advertised in tool_defs()`).toContain(name);
+      expect(
+        PURE_ENGINE_SIDE,
+        `'${name}' must be classified PURE_ENGINE_SIDE (named Rust arm, no same-named TS handler)`,
+      ).toContain(name);
+    }
+  });
+
+  /**
+   * (g) task 5097 (δ) amendment: the PURE_ENGINE_SIDE claim is checked against
+   * the Rust source, not just asserted.
+   *
+   * (e) proves each PURE_ENGINE_SIDE entry is advertised and has no TS handler
+   * — i.e. that it is NOT frontend-mediated. Nothing proved the other half of
+   * the classification: that it really does have the "named Rust arm" the
+   * allowlist's own docstring claims. Without that, deleting or misspelling a
+   * `dispatch_tool` arm left every test green while the tool fell through to
+   * the `_ =>` default and failed at runtime with "unknown command".
+   */
+  it('(g) every PURE_ENGINE_SIDE tool has a literal Rust dispatch arm', () => {
+    // Extraction sanity FIRST: a renamed dispatcher or a reshaped match block
+    // would otherwise yield an empty set and make the real check vacuous.
+    expect(
+      dispatchArmNames.length,
+      'extractDispatchArmNames found no arms at all — the dispatcher shape it parses has changed',
+    ).toBeGreaterThanOrEqual(PURE_ENGINE_SIDE.length);
+    expect(
+      dispatchArmNames,
+      'sanity: the debug-native open_file arm must be found',
+    ).toContain('open_file');
+
+    const missing = PURE_ENGINE_SIDE.filter((n) => !dispatchArmNames.includes(n));
+    expect(missing, 'PURE_ENGINE_SIDE tools with no named Rust dispatch arm').toStrictEqual([]);
+
+    // …and the converse: an arm nobody advertises is dead weight the client
+    // can never reach, so every dispatch arm must have a ToolDef.
+    const unadvertised = dispatchArmNames.filter((n) => !toolDefNames.includes(n));
+    expect(unadvertised, 'dispatch arms with no ToolDef in tool_defs()').toStrictEqual([]);
   });
 });

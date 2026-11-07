@@ -1,0 +1,30 @@
+module getar_match_over_let_construct_panics
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
+// before-image (defect P-1). MEASURED 2026-09-29 with target/debug/reify
+// built 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 101, `reify eval` EXIT 101 — both PANIC at
+//   crates/reify-eval/src/engine_eval.rs `is_representable_cell_type`:
+//   "unrepresentable cell_type: value cell `W.v` has cell_type TypeParam("T")".
+// Path: the `let r` cell takes the initializer's erased type `Enum("Result")`;
+// the match discriminant therefore has an empty binder substitution; binder
+// `x` is typed `TypeParam("T")`; the match's result type is the first arm's
+// body type, so `let v` is typed `TypeParam("T")`, which the debug-build
+// representability assert rejects.
+// RELEASE build (target/release/reify, 2026-09-01): `reify check` EXIT 0,
+// `reify eval` EXIT 0 printing `W.v = 0.005 m` — the runtime value is RIGHT;
+// only the static cell type is wrong (TypeParam("T")), which the release
+// profile never checks. The probe harness prefers target/release/reify but
+// honours REIFY_BIN, so the POST-state probe must run with
+// REIFY_BIN=target/debug/reify on a REBUILT debug binary; its dispatch-time
+// cover is a Rust-level debug-profile test asserting the let cell's
+// cell_type is Scalar[m], with the fixture registered in
+// `_RUST_COUPLED_RI_FIXTURES`. δ alone closes THIS file (the Ok arm comes
+// first and T is bound); the R5 rule is exercised by
+// getar_match_err_first_arm_panics.ri instead.
+// EXPECTED after δ (debug build): `reify check` EXIT 0; `reify eval` prints `W.v = 0.005 m`.
+
+structure def W {
+    let r = Ok { value: 5mm }
+    let v = match r { Ok { value: x } => x, Err { error: e } => 1mm }
+}

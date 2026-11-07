@@ -1,8 +1,9 @@
 # Reify Language Specification
 
-**Version:** 0.1
-**Date:** 2026-03-13
-**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions
+**Language version:** 0.6 -- the version of the LANGUAGE this document specifies. (Not the toolchain crate version, which is versioned separately and independently.)
+**Scope:** A living specification tracking the current language version, not a dated snapshot -- so there is deliberately no date pin here. See §14 (Language Versioning and Stability) for the versioning scheme and its terminology.
+**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions. Clauses remain subject to change and carry no backwards-compatibility guarantee (§14.3).
+**Anchor contract:** Paragraph-level cite targets for the conformance suite are defined in [docs/notes/spec-anchor-contract.md](notes/spec-anchor-contract.md). Resolve one only by grepping its literal id -- never by parsing a section number.
 
 ---
 
@@ -658,7 +659,7 @@ End-to-end runnable examples:
 - `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
 - `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
 
-See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+See also the `fn gap<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
 #### 3.9.2 Generic enums
 
@@ -673,6 +674,8 @@ A type annotation pins every type argument positionally and overrides payload-dr
 ```
 param r : Result<Length, String> = Ok { value: 5mm }
 ```
+
+An annotation must supply every type argument: a bare generic enum name such as `param r : Result` is the arity error "enum `Result` expects 2 type arguments, found 0", the same diagnostic a wrong-length argument list gets. The one exception is an enum whose every declared type parameter has a default (`enum Wrapper<T = Length>`): there the bare name means the defaults, so `param w : Wrapper` is `Wrapper<Length>`. A default may name an earlier type parameter: for `enum Pair<A = Length, B = A>`, bare `Pair` is `Pair<Length, Length>`. A partially defaulted enum written bare is still an arity error. Defaults fill annotations only; construction inference never consults them. **Known limitation (#9358).** Enum variant payload fields and `let` annotations do not yet apply this rule: a bare generic enum there is accepted with its type arguments erased. **Known limitation (#5994).** A default written with type arguments, such as `B = Option<A>`, currently loses them, so it does not yet fill as `Option<Length>`.
 
 Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
 
@@ -842,7 +845,7 @@ pub trait Rigid : Physical {
 | Member kind       | Description |
 |-------------------|-------------|
 | Parameters        | Required named parameters with types |
-| Ports             | Required interaction points |
+| Ports *(deferred)* | Required interaction points. **Not implemented:** a `port` line in a trait body is not a trait member today. Trait-required ports are deferred to the generic-assemblies programme; see [generic-assemblies-interface-traits.md](prds/v0_6/generic-assemblies-interface-traits.md) (tracker #7882). Ports *typed by* a trait (`port x : RotaryPort` in a structure) are unaffected. |
 | Sub-structure slots | Required contained sub-structures satisfying a trait |
 | Associated types  | Type-level members that implementing types must bind |
 | Constraints       | Logical requirements on relationships between members |
@@ -887,12 +890,12 @@ trait Cylindrical {
 
 ```
 // Valid: same name, different parameter types
-fn area(surface: Surface) -> Scalar<Area> { ... }
-fn area(solid: Solid) -> Scalar<Area> { ... }
+fn footprint(surface: Surface) -> Scalar<Area> { ... }
+fn footprint(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 ```
 
 ### 4.3 Function Declarations (`fn`)
@@ -900,24 +903,24 @@ fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ...
 Functions are non-entity declarations: no identity, no determinacy state, no evaluation graph presence. They are pure computations.
 
 ```
-fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
-    let dx = t.xx - t.yy
-    let dy = t.yy - t.zz
-    let dz = t.zz - t.xx
-    sqrt(0.5 * (dx^2 + dy^2 + dz^2))
+fn hoop_stress(p : Scalar<Pressure>, r : Length, t : Length) -> Scalar<Pressure> {
+    let ratio = r / t;
+    p * ratio
 }
 
-fn clamp(x : Real, lo : Real, hi : Real) -> Real {
-    if x < lo then lo else if x > hi then hi else x
+fn friction_factor(re : Real) -> Real {
+    if re < 2300 then 64 / re else 0.316 / re^0.25
 }
+
+fn as_percent(fraction : Real) -> Real = fraction * 100
 ```
 
 Semantics:
 - **Pure** -- no side effects, no state.
-- **Block body** -- `{ }` block containing `let` bindings and a final expression (the return value). No `return` keyword.
+- **Block body** -- `{ }` block containing `let` bindings, each terminated by `;`, and a final expression (the return value). No `return` keyword. A body with no bindings may instead be written `= expr` (as `as_percent` shows).
 - **Type annotations mandatory** on parameters and return type.
 - **Can be `pub`** for cross-module reuse.
-- **Supports type parameters:** `fn distance<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
+- **Supports type parameters:** `fn gap<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
 - **`@optimized` hook available** for built-in fast paths.
 - **Recursion permitted.** Self-recursion and mutual recursion are both permitted. Infinite recursion is a runtime error (stack overflow), not a compile-time error. The compiler does not attempt termination checking.
 
@@ -1058,6 +1061,26 @@ aux sub jig : Jig at tool_frame
 
 **`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
+**Derived sub (v0.6).** A sub-entity may be *derived* from a sibling sub rather than instantiated, in one of two surface forms:
+
+```
+sub unit_b = mirror of unit_a across plane_yz { z = 55mm  keep capstan }
+sub rail_l = image of rail_r under c2_z      { span_bu = default  exclude web.hub }
+```
+
+The *prototype* (`unit_a`, `rail_r`) is a bare identifier naming a **sibling sub** of the same structure -- not a dotted path, and not a structure name. `mirror of ... across <plane>` reflects the prototype across a plane; `image of ... under <transform>` maps it through an arbitrary transform.
+
+The block is **required** (an empty `{ }` is legal -- the derivation alone is a complete specification). Its items are:
+
+- **parameter overrides** -- `z = 55mm`, and `<param> = default` to *reset* an inherited value back to the prototype's declared default. Overrides accept the same values a specialization body does, including `auto` and `auto(free)`, and each may carry a `where` guard.
+- **`keep <path>`** -- retain the named feature of the prototype unreflected. This is the explicit **chirality break**: the default policy is reflect-all (always geometrically correct; achiral children come out identical), and `keep` opts a feature out of it. The default compensation `M_c` is the derivation plane conjugated into the child's local frame through the child origin.
+- **`exclude <path>`** -- omit the named feature from the derived copy. Paths are dotted (`web.hub`).
+- local **`let`** and **`constraint`** members.
+
+Placement of a derived sub is *derived* from its prototype, so an `at` clause on a derived sub is a **compile error** (`E_DERIVED_SUB_EXPLICIT_AT`), not a parse error -- the grammar accepts it so the compiler can reject it with a good message, the same division of labour `at` on a collection-form sub already uses.
+
+**Reserved, with no v0.6 meaning:** `keep <path> using <plane>` parses (a CATIA-style declared equivalence plane) but carries no semantics; `symmetry` is reserved as a future contextual keyword; and `xs[<element>]` element addressing inside a disposition path is reserved. None of the three is implemented. See [docs/prds/v0_6/assembly-derivation-toolbox.md](docs/prds/v0_6/assembly-derivation-toolbox.md) and §15 for the grammar production.
+
 #### `let` -- Computed Bindings
 
 ```
@@ -1121,6 +1144,107 @@ Semantics:
 - Accessible via `entity.meta.key_name`.
 
 `meta` blocks can appear in any entity body and at the module level.
+
+### 4.9 Constructor Argument Conformance
+
+Every argument of a structure construction is checked at compile time against the declared type of the `param` it binds to. Positional arguments are checked exactly like named ones. Every user path (`reify check`, eval, the GUI, the LSP) compiles first, so the check runs on all of them. The covered construction forms are:
+
+- `T(field: v)` and `T(v1, v2)` in any expression position: a `let`, a `constraint`, a `forall` body, a free `fn` body, or a nested argument;
+- `sub x = T(...)`;
+- `sub x : T { field = v }`.
+
+Parameter defaults obey the same rule (`param label : String = 42` is an error). A non-conforming argument is an Error, so `reify check` exits non-zero. Evaluation does not re-check: compilation is the single enforcement point.
+
+```reify
+structure def Clamp {
+    param face : FaceSelector = undef
+    param preload : Force = 0N
+    param label : Option<String> = none
+}
+
+structure def Fixture {
+    let body = box(100mm, 50mm, 5mm)
+
+    let ok    = Clamp(face: face(body, "z_max"), preload: 2kN)   // legal
+    let named = Clamp(face: face(body, "z_max"), label: "A")     // legal: implicit-Some
+    let bad1  = Clamp(face: edges(body))       // error: selector kind 'EdgeSelector', requires 'FaceSelector'
+    let bad2  = Clamp(face: "z_max")           // error: a String is not a selector
+    let bad3  = Clamp(face: face(body, "z_max"), preload: 5)   // error: pass a dimensioned Force literal
+}
+```
+
+**Legality.**
+
+| Field declares | Argument supplies | Verdict |
+|---|---|---|
+| `T` | a value of `T` | legal |
+| `Real` (dimensionless scalar) | `Int` | legal |
+| dimensioned scalar, e.g. `Length` | a quantity of the same dimension (`5mm`) | legal |
+| dimensioned scalar | a bare `Int`/`Real`, or a quantity of another dimension | illegal; the message adds a hint such as "pass a dimensioned Length literal such as `1m`" |
+| `VectorN<Q>` | a vector of arity `N`, or a rank-1 tensor | legal. A dimensionless vector is accepted at any `Q` (`vec3(1, 2, 3)` at `Vector3<Length>`); a dimensioned vector must match `Q` (`vec3(1kg, 2kg, 3kg)` at `Vector3<Length>` is illegal) |
+| `VectorN<Q>` | another arity, or a non-vector | illegal |
+| `PointN<Q>` | a point | same arity and quantity rule as `VectorN<Q>`: a `point2(...)` at `Point3<Length>` is illegal |
+| `Matrix<M, N, Q>` / `Tensor<R, N, Q>` | a matrix, a tensor, a vector, a scalar, or a numeric nested list literal (`[[1, 0], [0, 1]]`) | legal; element counts are not checked |
+| `Field<D, C>` | a field value or a lambda | legal; anything else is illegal |
+| enum `E` | a value of `E` (generic arguments are not compared) | legal |
+| enum `E` | a value of another enum, or a non-enum | illegal |
+| `Selector` (kind-agnostic, §8.12) | a `FaceSelector`, `EdgeSelector`, `VertexSelector` or `BodySelector` | legal (one-way) |
+| `FaceSelector` (or any single-kind selector) | a selector of another kind, or a kind-agnostic `Selector` value | illegal |
+| selector-typed (bare or inside `Option`) | a pose: a `Frame`, `Transform3` or `Point` value such as `frame3(...)` | illegal, with the pose hint |
+| selector-typed (bare or inside `Option`) | a `String` (the legacy `"x_max"` form) | illegal; write `face(body, "x_max")` instead |
+| `Option<T>` | `none` | legal |
+| `Option<T>` | a bare argument that is legal for `T` | legal: the implicit-Some rule. An illegal bare argument is reported against `T` |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a collection of the same kind | checked element by element |
+| `List<T>` / `Set<T>` / `Map<K, V>` | an empty `[]` | legal: its element type is unresolved and skipped. Typed enforcement belongs to [the expected-type pushdown stub](prds/expected-type-pushdown-return-field.md) |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a non-collection value | illegal (wrapper shape) |
+| `List<Geometry>` | a single selector such as `face(body, "y_max")` | **illegal at construction sites** today, though legal as a `fn` argument (see Known limitations) |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a structure conforming to `Tr`, directly or through refinement | legal |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a non-conforming structure | illegal |
+| bare trait `Tr` | anything | **not checked** in expression-position constructors (`let`, `fn` body, ...), a deliberate escape hatch; **checked** in both `sub` forms |
+| structure `S` | another structure, or a primitive | illegal |
+| `String` / `Int` / `Bool` | any type not compatible with it | illegal |
+| any field | an argument whose type is unknown at compile time: the result of an earlier error, an unresolved generic `T`, a geometry value, or a trait-typed value | **skipped**, never rejected. The collection-shape check still applies: such a value at a `List`/`Set`/`Map` field is illegal |
+
+The bare-trait row in practice:
+
+```reify
+trait Law { param stiffness : Pressure }
+structure def Linear : Law { param stiffness : Pressure = 200GPa }
+structure def Rubber { param shore : Real = 60 }
+structure def Mount { param law : Law = undef }
+
+structure def Assembly {
+    let loose = Mount(law: Rubber())   // not checked: bare trait field, expression position
+    sub tight = Mount(law: Rubber())   // error: type 'Rubber' does not conform to trait 'Law' required by param 'law'
+    sub fine  = Mount(law: Linear())   // legal
+}
+```
+
+**Diagnostics.** All are Error severity.
+
+| LSP code | Mnemonic | Raised when | Message shape |
+|---|---|---|---|
+| `ArgTypeMismatch` | `E_ARG_TYPE_MISMATCH` | a concrete type mismatch | `argument 'f' has type 'A' but param 'f' requires type 'B'`. A selector field reads `requires selector type 'B'`; a pose adds `; a coordinate pose is not a region target; select a face/edge/vertex instead`; a dimensioned scalar adds the literal hint; a vector whose quantity alone disagrees reads `argument 'f' has quantity 'A' but param 'f' requires quantity 'B' (...)` |
+| `SelectorKindMismatch` | `E_SELECTOR_KIND_MISMATCH` | a wrong-kind selector | `argument 'f' has selector kind 'EdgeSelector' but param 'f' requires selector kind 'FaceSelector'` |
+| `TypeNotConformingToTrait` | — | trait non-conformance, or a collection-shape mismatch | `type 'X' does not conform to trait 'Tr' required by param 'f'`, or `type 'X' does not match wrapper shape required by param 'f' (expected 'List<T>')` |
+| `TypeNotConformingToStructureRef` | — | a structure-typed field given another type | `argument 'f' has type 'A' but param 'f' requires structure type 'S'` |
+| `TypeNotConformingToVector` | — | a vector field given another arity or a non-vector | `argument 'f' has type 'A' but param 'f' requires vector type 'B'` |
+| `CtorUnknownField` | `E_CTOR_UNKNOWN_FIELD` | a named argument that matches no `param` | `E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'K'; 'K' has no parameter with that name` |
+| `CtorArity` | `E_CTOR_ARITY` | more positional arguments than `param`s (one per call) | `E_CTOR_ARITY: K() expects at most N arguments, got M` |
+
+`reify check` prints `error: <message>`. The LSP `code` field carries the first column. Only the two `E_CTOR_*` mnemonics appear inside the message text. Each offending argument yields one diagnostic, and so does each offending element of a collection argument. A named argument supplied twice in an expression-position constructor is a separate error that carries no code. In the block form `sub x : T { ... }`, assigning a field twice is a warning, and the first assignment wins.
+
+**Known limitations.** Each of these is a gap, not a rule:
+
+- **Known limitation (#7956).** A single selector given to a `List<Geometry>` field is rejected at construction sites, though the same argument to a `fn` parameter is accepted.
+- **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Frame`, `Transform3`, `Direction`, `Axis`, `Plane`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
+- **Known limitation (#8101).** A `Geometry`-typed field accepts any argument, though a `Geometry` parameter default is checked.
+- **Known limitation (#8121).** A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
+- **Known limitation (#8100).** Constructors inside associated-function bodies (structure-body and trait default `fn`s) are not checked.
+- **Known limitation (#7874).** Omitting a field that has no default is not diagnosed; the field is simply absent.
+- **Known limitation (#6946).** In the `sub x = T(...)` form, neither an unknown named field nor a named argument supplied twice is diagnosed. The block form `sub x : T { ... }` reports the unknown field and warns on the repeated assignment.
+
+Design record and rationale: [struct-ctor-field-type-conformance.md](prds/struct-ctor-field-type-conformance.md).
 
 ---
 
@@ -1202,6 +1326,8 @@ a < b       a > b       a <= b      a >= b
 ```
 
 Equality is structural for value types, identity for structure references.
+
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
 
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
@@ -1376,7 +1502,7 @@ param width : Length = auto          // Delegated to solver
 let area = thickness * width         // area is undef if either input is undef
 ```
 
-`undef` and `auto` are valid in any expression position where a value is expected. Detailed propagation rules for `undef` through all operator and expression types are specified in Section 9.2.
+`undef` is valid in any expression position where a value is expected; `auto` is valid only at the binding sites listed in §2.9, never as an expression operand. Detailed propagation rules for `undef` through all operator and expression types are specified in Section 9.2.
 
 ---
 
@@ -1469,7 +1595,7 @@ connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive  // A
 connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
 ```
 
-The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`.
+The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`. The selector `@` must be on the same line as the expression it selects from; an `@` that begins a line always begins an annotation (§12.1).
 
 **Canonical region-reference model (P0 D1/D3).** A region reference is a `Selector` value — representation-aware, content-hash-stable, and a deferred query spec resolved per-kernel at solve time. Topology selection is *one* resolution strategy, not the model's foundation: a region is named by *intent* (a predicate, a role, or a provenance feature) and resolved against whatever representation the body is realized as. Resolution is **fail-closed**: when the realized representation cannot answer the intent, `reify eval`/`check` emits `E_QUERY_NOT_SUPPORTED_ON_REPR` and the cell stays `Value::Undef` — never a silent fake. See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D1/D3/D5.
 
@@ -1501,19 +1627,38 @@ Strengthened persistent naming and advanced topological queries are deferred to 
 chain casting -> machining -> heat_treat -> finishing
 ```
 
-`chain` is sugar for connecting each occurrence's default output port to the next's default input port. Uses fully implicit matching via default ports only. Non-default port mapping requires explicit `connect`.
+`chain` is sugar for connecting each occurrence's output port to the next's input port, so the designer writes N occurrence names instead of 2N port names. The port each element contributes is inferred from the element alone; anything else requires naming the port explicitly, on that element or with `connect`.
 
-**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element must be an occurrence with exactly one `out` port and one `in` port (or ports marked as default for their direction). The desugaring is:
+**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element is resolved once **per role** — as a hop's source it contributes a port usable as `out`, as that hop's destination one usable as `in` — and exactly one of its ports must be usable in that role. Candidates are **tiered**, not pooled: the element's ports declared in the needed direction are the candidates, and only when it declares *none* in that direction do its `bidi` ports become the candidates (a `bidi` port is direction-valid in either role). So the common element declaring one `in`, one `out` and some `bidi` ports resolves to its `in`/`out` pair, while an element whose only port is `bidi` resolves to that port in both roles. Given
+
+```
+occurrence def Step {
+    port stock : in Workpiece
+    port part : out Workpiece
+}
+```
+
+the desugaring is:
 
 ```
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
-connect casting.default_out -> machining.default_in
-connect machining.default_out -> heat_treat.default_in
-connect heat_treat.default_out -> finishing.default_in
+connect casting.part -> machining.stock
+connect machining.part -> heat_treat.stock
+connect heat_treat.part -> finishing.stock
 ```
 
-If any element has multiple `in` or `out` ports and none is marked as default, `chain` is a compile error for that element. The designer must use explicit `connect` statements instead.
+Resolving per role is what makes a chain longer than two elements direction-valid: `machining` means `machining.stock` as the first hop arrives and `machining.part` as the second leaves, so every hop is `out -> in`.
+
+If an element offers several candidate ports for the role it plays — or none at all — `chain` is a compile error for that element, naming what was found. The designer disambiguates by naming the port on that element (`chain casting.part -> machining`), which the grammar accepts for any element. A named port is taken verbatim in **both** the element's roles, so naming one on an *interior* element pins the same port for the hop arriving and the hop leaving: that resolves an element carrying *several* `bidi` ports, and otherwise the chain is split into explicit `connect` statements. An element naming one of the *enclosing* entity's own ports is likewise taken as that port and never re-inferred, which is what lets `chain` compose an enclosing structure's own `out` → `bidi` → `in` ports.
+
+**A chain element must denote exactly one occurrence.** Inference is per-instance, so naming a `List<T>` or `Keyed<T>` sub *without* an indexer is a compile error: such a name denotes N occurrences, and the port that would be inferred belongs to none of them. An indexer selects an occurrence only of a `List<T>` or `Keyed<T>` sub (on any other sub it selects nothing, and the element is an undefined port). Index the element (`chain vents[0] -> hub`), or chain the collection's occurrences with `forall`:
+
+```
+forall v in vents: chain v -> hub
+```
+
+The same inference applies inside a `forall … : chain …` body, after the bound variable is substituted for each element of the collection — the substituted variable denotes one occurrence, which is what makes it a valid chain element.
 
 ### 6.3 `where` Guards and Blocks
 
@@ -1539,6 +1684,28 @@ where needs_cooling {
 ```
 
 Desugars to per-declaration guards. `where` blocks do NOT introduce a new lexical scope.
+
+**Objectives take no guard, in either form.** `minimize`/`maximize` accept no
+`where_guard?` suffix and may not appear inside a `where` block. Because `where`
+controls structural *presence*, `minimize E where C` would mean "this objective
+exists only when C holds" -- and C invariably reads the very `auto` parameters the
+objective drives, so the objective's presence would depend on the solution it
+determines. The predicate an author wants there is a *constraint*, already
+spelled as a separate member:
+
+```
+constraint peak_stress < material.yield_stress
+minimize mass
+```
+
+The tree-sitter grammar does still *parse* a `where` suffix on `minimize`/`maximize`
+-- an artefact of the March-2026 six-way guard sweep (commit `66866d6311`) that this
+spec never authorised. The compiler MUST reject it with an error; until that lands
+(task 6575) it silently DISCARDS the guard -- the objective then runs unopposed with
+no diagnostic, so do not use the form. (Contrast `sub`,
+`forall connect` and `forall constraint` inside a `where` block: those are "not yet
+supported" -- deferred implementation, not excluded by design -- and they stay in the
+§15 productions.)
 
 **`else` clause (v0.1):**
 
@@ -1961,12 +2128,15 @@ Every parameter sits on a determinacy spectrum:
 3. **`auto`** -- Delegated to the system. A decision, not an absence. "I want this to have a value; figure it out for me."
 4. **Determined** -- Specific value or fully resolved expression (`wall_thickness = 3mm`).
 
+<!-- sc-anchor: sc-f31e89 -->
 ### 9.2 `undef` Semantics
 
 `undef` means "not yet decided." It is the default state of every unassigned parameter without a default value. `undef` is always valid syntactically and semantically -- a design with `undef` parameters is a legitimate, partially-specified design.
 
+<!-- sc-anchor: sc-dc50ac -->
 **Core propagation principle:** `undef` propagates strictly through computations, except where the result is provably independent of the unknown operand under the semantics of the operator. The rules below are exhaustive for v0.1.
 
+<!-- sc-anchor: sc-da4bd2 -->
 #### 9.2.1 Arithmetic Operators
 
 `undef` propagates strictly through all arithmetic. No algebraic identities are exploited.
@@ -1981,8 +2151,10 @@ Every parameter sits on a determinacy spectrum:
 | `-undef` | `undef` | Unary negation propagates |
 | `undef % 5` | `undef` | Modulo propagates |
 
+<!-- sc-anchor: sc-a88f22 -->
 **Rationale for strict arithmetic:** Exploiting algebraic identities (like `0 * x = 0`) would require the compiler to reason about mathematical properties of operators, creating implementation complexity and surprising edge cases (e.g., `0 / 0`, overflow). Strict propagation is simpler, predictable, and sufficient -- expressions like `0 * param` with a literal zero are vanishingly rare in engineering designs.
 
+<!-- sc-anchor: sc-f3d1cd -->
 #### 9.2.2 Comparison Operators
 
 Comparisons with any `undef` operand produce `undef` (of type `Bool`).
@@ -1994,8 +2166,10 @@ Comparisons with any `undef` operand produce `undef` (of type `Bool`).
 | `undef == undef` | `undef` |
 | `2mm < undef < 10mm` | `undef` (desugars to `2mm < undef and undef < 10mm`) |
 
+<!-- sc-anchor: sc-7879c0 -->
 An `undef`-valued `Bool` in a constraint context makes the constraint **indeterminate** -- neither satisfied nor violated.
 
+<!-- sc-anchor: sc-4b453f -->
 #### 9.2.3 Logical Operators (Kleene Three-Valued Logic)
 
 Logical operators follow **Kleene's strong three-valued logic**, where `undef` acts as "unknown." A logical operator absorbs `undef` only when the result is determined regardless of the unknown operand's value.
@@ -2012,10 +2186,13 @@ Logical operators follow **Kleene's strong three-valued logic**, where `undef` a
 | `undef` | `false` | `false`   | `undef`  |         | `undef`       |
 | `undef` | `undef` | `undef`   | `undef`  |         | `undef`       |
 
+<!-- sc-anchor: sc-b99f58 -->
 Logical operators are **commutative with respect to `undef`** -- operand order does not affect propagation. This is consistent with Reify's declarative semantics (not imperative short-circuit evaluation).
 
+<!-- sc-anchor: sc-d40fab -->
 **Rationale for Kleene but not algebraic identities in arithmetic:** Boolean absorption is cheap to verify (two rules per operator, finite truth table). Arithmetic identity exploitation opens unbounded complexity (must reason about `0 * infinity`, dimensional edge cases, etc.). The asymmetry is deliberate.
 
+<!-- sc-anchor: sc-7d950c -->
 #### 9.2.4 Conditional Expressions
 
 ```
@@ -2028,8 +2205,10 @@ if condition then expr_a else expr_b
 | `false`     | `expr_b` (evaluated; `expr_a` does not contribute) |
 | `undef`     | `undef` (neither branch can be selected) |
 
+<!-- sc-anchor: sc-29c0df -->
 When the condition is determined, only the selected branch's determinacy matters. `if true then 5mm else undef` evaluates to `5mm`. The compiler does not attempt to prove branch equivalence when the condition is `undef` -- even `if undef then 5mm else 5mm` evaluates to `undef`.
 
+<!-- sc-anchor: sc-2d7b07 -->
 #### 9.2.5 `match` Expressions
 
 | Discriminant state | Result |
@@ -2038,10 +2217,13 @@ When the condition is determined, only the selected branch's determinacy matters
 | `undef` (tag undetermined — no variant selectable) | `undef` (no branch can be selected) |
 | Tag determined, payload field `undef` (e.g. `Circle { radius: undef }`) | Tagged arm IS selected; field binder receives `undef`; body propagates per §9.2.7 |
 
+<!-- sc-anchor: sc-81a5d5 -->
 **D2/INV-4 note:** A discriminant whose variant tag is determined always selects that arm, even when a payload field is `undef`. The `undef` payload is bound to the field binder and propagates through the arm body per the normal `undef`-propagation rules (§9.2.7). This is distinct from a wholly-`undef` discriminant (second row above, D3), where no arm can be selected. See `examples/m6_data_carrying_enum_undef.ri` for an observable example (`Circle { radius: undef }` selects the `Circle` arm; `area` evaluates to `undef`).
 
+<!-- sc-anchor: sc-e56c05 -->
 #### 9.2.6 Collection Operations
 
+<!-- sc-anchor: sc-ed61c2 -->
 **Collection structure vs element values:** A collection's structure (count, keys) is independent of its element values. When the collection structure is determined but elements contain `undef`, structural operations produce determined results.
 
 | Expression | Collection state | Result |
@@ -2055,6 +2237,7 @@ When the condition is determined, only the selected branch's determinacy matters
 | `map[key]` | Structure determined, key absent | Evaluation failure (not `undef`) |
 | `map[key]` | Map itself `undef` | `undef` |
 
+<!-- sc-anchor: sc-7fb580 -->
 **`forall` and `exists`:** Quantifiers follow Kleene semantics, consistent with their interpretation as iterated `and` / `or`:
 
 | Quantifier | Predicate results across elements | Result |
@@ -2068,14 +2251,18 @@ When the condition is determined, only the selected branch's determinacy matters
 | `exists` | No `true`, some `undef` | `undef` |
 | `exists` | Empty collection | `false` (vacuous falsity) |
 
+<!-- sc-anchor: sc-17ef2f -->
 When the collection itself is `undef`, quantifiers produce `undef`.
 
+<!-- sc-anchor: sc-677679 -->
 #### 9.2.7 Function Application
 
 `undef` propagates strictly through function calls. If any argument is `undef`, the result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
 
+<!-- sc-anchor: sc-46bce6 -->
 **Exception:** Determinacy predicates (`determined()`, `constrained()`, `undetermined()`, `partially_determined()`) operate on the determinacy state itself, not the value. `determined(undef_param)` returns `false`, not `undef`.
 
+<!-- sc-anchor: sc-da611a -->
 #### 9.2.8 `Option` Constructors
 
 `some(undef)` is valid and distinct from both `none` and `undef`:
@@ -2087,6 +2274,7 @@ When the collection itself is `undef`, quantifiers produce `undef`.
 | `none` | Value absent |
 | `undef` (of type `Option<T>`) | Existence itself not yet decided |
 
+<!-- sc-anchor: sc-e0bc61 -->
 `Option<Option<T>>` is a valid type. `some(none)`, `some(some(x))`, `none`, and `undef` are all distinguishable states. Pattern matching on `Option<Option<T>>`:
 
 ```
@@ -2097,12 +2285,17 @@ match outer {
 }
 ```
 
+<!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
-A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation rejected an undef argument), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
+A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation returned `undef` although every input was determined -- a type or contract violation), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
 
-Three tooling surfaces expose the tracer: the CLI (`reify eval`, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`).
+These causes classify as **expected** or **unexpected** (INV-SF-4, `docs/legibility/design-invariants.md`). `Unbound` and `UserUndef` are expected: the design is declaredly unfinished at that point. The rest are unexpected, because a mechanism failed to deliver a value: `SolveFailed`, `OpContractFailed`, and `AwaitingSolve` on a driver that resolves `auto` (§9.3, §10.2). What gates today: `reify check --strict` fails on every indeterminate constraint, whatever its cause. Plain `reify check` exits 0 for an indeterminate constraint and fails on errors, such as an infeasible solve or a strict `auto` missing a bound. Plain `check` does not yet fail on every unexpected cause: a constraint that reads a sub-instance member as `x.length` instead of `self.x.length` is reported INDETERMINATE (`operator undefined for these operand kinds: StructureInstance`), and `check` still exits 0.
 
+<!-- sc-anchor: sc-66993d -->
+Three tooling surfaces expose the tracer: the CLI's `reify eval` (a `note: <cell> is undef (because: <causes>)` line per printed undef cell, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`). `reify check` and `reify build` do not run the tracer: they print each indeterminate constraint's direct reason, such as `undefined inputs: Plate.b`, where `reify eval` traces that cell to its root (`Plate.b is undef (because: Plate.a unbound)`).
+
+<!-- sc-anchor: sc-1a4c93 -->
 This is a tooling/implementation concern, not a language semantics concern: the tracer is purely additive and read-only, with no effect on `undef` value identity, content-hash, or the propagation rules above. See §9.4 for the complementary determinacy predicates, which answer *whether* a param is determined -- the tracer answers *why* it is not.
 
 ### 9.3 `auto` Resolution
@@ -2110,6 +2303,8 @@ This is a tooling/implementation concern, not a language semantics concern: the 
 - A decision, not an absence.
 - **Strict `auto` (default):** Resolved value must be uniquely determined or uniquely optimal. If not, resolution failure with diagnostic.
 - **Free `auto`:** Returns a feasible solution, warns about non-uniqueness.
+
+**Which commands resolve `auto`:** every CLI subcommand that evaluates a model (`reify check` with or without `--strict`, `test`, `build`, `eval` / `run`, `report` and `explain`) and the GUI viewport; the other drivers are covered in §10.2. A driver that does not resolve shows the value as `undef` (`AwaitingSolve`, §9.2.9). A strict `auto` that its constraints bound on one side only is a compile-time error naming the missing bound (e.g. ``no constraint bounds `Flange.radius` above``): the solve could only return the edge of the solver's internal default domain.
 
 **`auto` for type parameters:** Valid -- means "pick a type that satisfies the bounds." See §3.9 and `docs/auto-type-param-resolution.md` for the resolution algorithm (per-parameter BFS, cap of 10, lexicographic tiebreak by FQN).
 
@@ -2191,7 +2386,9 @@ constraint def Coincident(a : Point3<Length>, b : Point3<Length>) {
 2. **Solving:** Given a partially determined design with `auto` parameters, find values satisfying all constraints.
 3. **Proposing:** Given a highly underdetermined design, provide useful feedback about what is constrainable, what is in conflict, and what would need to be determined to make progress.
 
-Three modes form a hierarchy with graceful degradation.
+These are three capabilities of one resolution, not three modes a tool chooses between: resolving a model solves its `auto` parameters (§9.3), checks every constraint against the result, and reports what is still undetermined, unbounded or in conflict.
+
+A **driver** is a tool that evaluates a model: a CLI subcommand, the language server, or the GUI. Drivers are not the sub-solvers of §10.3, which the engine dispatches to inside a single resolution. Two drivers may differ only in iteration budget and in staleness (whether they may serve a previously computed result); no driver may skip the solve (`docs/prds/v0_6/solver-driver-parity.md`, invariant I5). Every CLI subcommand that evaluates a model already resolves, and so does the GUI viewport. Whether the language server and the GUI definition preview do yet is recorded in one place, the `solving` chunk of the language reference (`crates/reify-mcp/src/tools/chunks/solving.md`).
 
 ### 10.3 Constraint Domains
 
@@ -2269,7 +2466,11 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 minimize price_per_kg * density * volume_expr(self.thickness)
 ```
 
-`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it reads already-resolved child cost and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described in the next paragraph. A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
+`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it is intended to read already-resolved child cost (subject to the resolution boundary below) and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described under "Subtree / whole-model cost" below.
+
+**Known limitation (#5835).** One boundary applies to that observational form regardless of coupling: when the aggregated child cell is itself resolved by the solver in a cross-sub scope (a child `auto` feeding `line_cost`), a parent-scope `let` reading that cost stays `Undef` post-solve today -- in BOTH the merged and the no-cluster frozen-cascade shapes -- so read the child's own cells instead. That is an engine gap, not a language rule. See the known-limitation pin `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`, which asserts exactly that in both halves, and the "Reading the result" section of `examples/whole_model_joint_drive.ri`. A `let` over children whose `line_cost` folds from constants alone is unaffected -- `examples/cost_subtree_aggregate.ri` resolves its `subtree_cost` to 42.64 USD.
+
+A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
 
 **Subtree / whole-model cost.** A parent's `minimize cost(self.descendants)`, written INLINED in the `minimize` -- never behind a `let` -- forms a merged solve cluster spanning parent and child, so the child's `auto` parameters are jointly resolved under the parent's cost objective rather than treated as frozen constants read bottom-up (M-WHOLE β/δ + the joint-drive seam). See `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE) and `docs/prds/v0_6/whole-model-joint-drive-seam.md` for the coupling mechanism. Worked example: `examples/whole_model_joint_drive.ri`, asserted end-to-end by `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade` (the child auto resolves strictly below its frozen-cascade freeze; the merged whole-assembly cost strictly below the frozen baseline). This is a v1 slice with real boundaries, not an aspirational note: the aggregate must stay inlined in the `minimize` to couple -- an unexpanded `let subtree = cost(...)` followed by `minimize subtree` forms no cluster at all (the example file's header works this boundary case in detail); only depth-1 `Costed` descendants participate (as above); the coupled structure must be reachable by exactly one non-collection instance path for the parent-side surfacing to resolve; and a cluster wider than a fixed auto-dimension cap degrades to the ordinary bottom-up frozen-approximate solve plus a `W_COUPLING_APPROXIMATED` diagnostic instead of failing outright.
 
@@ -2277,9 +2478,13 @@ minimize price_per_kg * density * volume_expr(self.thickness)
 
 Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
 
-**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost (the constraint boundary); `lambda = 0` resolves to the robustness-oriented centrality default (§10.7); intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
+**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost -- the argmin of the cost expression, which is the constraint boundary only when the cost is MONOTONE; `lambda = 0` resolves to the robustness-oriented centrality default (§10.7) -- the max-min-slack point, which is the *geometric* Chebyshev centre only when every constraint has unit gradient. Both qualifications are spelled out two paragraphs below. Intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
 
-Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point). Note: at today's eval layer the `lambda = 1` run lands boundary-*adjacent* rather than pinned exactly to the 1mm boundary -- `.ri`-compiled `auto` params get wide default bounds, so the example's e2e test asserts the strict ordering `t(1) < t(0.5) < t(0)` rather than an exact boundary value; the true zero-margin-boundary invariant is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: one `Money` cost and one constraint set swept across `lambda = 1`, `lambda = 0.5`, and `lambda = 0`. Two features of that example are deliberate, and each pins one anchor to an independently-derived target. Its cost has a closed-form INTERIOR optimum (`5USD * (t/1mm + 25mm/t)`, minimised at `sqrt(1mm * 25mm) = 5mm`), so `lambda = 1` resolves there; and its constraints are ASYMMETRIC (`t > 1mm`, `t < 25mm`, `t * 2 < 30mm`), so the centrality default's argmax `31/3 mm` is a different point from the solver's constraint-derived starting midpoint -- and `lambda = 0` resolves there, matched by an objectiveless `CentralityReference` structure in the same file. `lambda = 0.5` lands strictly between, and all three are separated from the seed.
+
+Two qualifications on those anchor names. **(1) Naming.** The `lambda = 0` target is the max-min-SLACK point, not the *geometric* Chebyshev centre of the feasible region (the largest ball inscribed in `(1mm, 15mm)` is centred at `8mm`): `collect_slack_terms` folds each inequality's signed slack un-normalised by that constraint's gradient, so a scaled constraint such as `t * 2 < 30mm` weighs double its geometric distance. The two coincide when every constraint has unit gradient -- the usual case, and the reason "Chebyshev centre" is the customary shorthand for the §10.7 default -- but `lambda = 0` is defined to reduce to the ENGINE's centrality objective, so the max-min-slack point is contract-correct whenever they differ. **(2) Layer.** BOTH `lambda = 1` forms are observable at today's eval layer -- the general one (the argmin of the cost) and the zero-margin *boundary* special case. `.ri`-compiled `auto` params still get `bounds: None`, so `effective_bounds` supplies only the wide `Length` default `[1um, 10m]`; the tradeoff form therefore derives its clamp box from the constraints themselves, strict bounds included, because the boundary is precisely this form's contracted `lambda = 1` answer. A floor-free monotone `lambda = 1` consequently reaches that boundary instead of drifting infeasible into the solver's seed-reporting safety net (task #6465). Measured at the eval layer, monotone `5USD * (t / 1mm)` under `1mm < t < 4mm`: `lambda = 1` resolves the nearest representable value above `1mm` regardless of seed, so the strict `t > 1mm` holds and `reify check` passes; `lambda = 0` resolves the `2.5mm` centre. The example nonetheless uses an interior optimum, for an independent reason: an interior `lambda = 1` target is a *different point* from the `lambda = 0` centrality argmax, which is what makes the sweep's two anchors distinguishable. Both forms are also verified at the solver layer (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+
+The derivations behind both qualifications -- and the measured values -- are OWNED by that example file's header, not restated here or in the PRD (`docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 carries the PRD-side citation).
 
 **Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Three extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`, and remain deferred. (A fourth, subtree/whole-model cost, was originally scoped here too; it has since landed -- see "Subtree / whole-model cost" above.)
 
@@ -2392,7 +2597,7 @@ The complete API reference for all `std.*` modules is in the [Standard Library R
 
 ### 12.1 Annotations
 
-Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain.
+Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain. An annotation on its own line attaches to the following member or declaration, whatever the preceding member ends with.
 
 **`@optimized`** -- registers that a language-level definition has a semantically equivalent optimized implementation in the runtime. The optimized implementation must produce identical results; it is a pure performance optimization:
 
@@ -2637,19 +2842,22 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
                      (':' trait_ref ('+' trait_ref)*)? where_clause?
                      '{' trait_member* '}'
 
-trait_member    ::= param_decl | port_decl | sub_decl | let_decl | constraint_line
+trait_member    ::= param_decl | sub_decl | let_decl | constraint_line
                    | assoc_type_decl
+                   (* port_decl: deferred -- see section 4.2 and
+                      prds/v0_6/generic-assemblies-interface-traits.md *)
 
 assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated type *)
 
 (* --- Function declarations --- *)
 fn_decl         ::= 'pub'? 'fn' IDENT type_params? '(' fn_params? ')' '->' type_expr
-                     '{' fn_body '}'
+                     fn_body
 
 fn_params       ::= fn_param (',' fn_param)*
 fn_param        ::= IDENT ':' type_expr
 
-fn_body         ::= (let_decl)* expr
+fn_body         ::= '{' fn_let_decl* expr '}' | '=' expr
+fn_let_decl     ::= 'let' IDENT (':' type_expr)? '=' expr ';'
 
 (* --- Type alias declarations --- *)
 type_alias_decl ::= 'pub'? 'type' TYPE_IDENT type_params? '=' type_expr
@@ -2664,10 +2872,16 @@ purpose_param   ::= IDENT ':' type_expr
 purpose_member  ::= constraint_line | sub_decl | let_decl | minimize_decl | maximize_decl
                   | guarded_block
 
-guarded_block   ::= 'where' expr '{' purpose_member* '}' ('else' '{' purpose_member* '}')?
+(* Objectives take no guard, in either form (§6.3): minimize_decl/maximize_decl
+   carry no where_guard? suffix and are excluded from guarded bodies. *)
+guarded_purpose_member
+                ::= constraint_line | sub_decl | let_decl | guarded_block
 
-minimize_decl   ::= 'minimize' expr
-maximize_decl   ::= 'maximize' expr
+guarded_block   ::= 'where' expr '{' guarded_purpose_member* '}'
+                    ('else' '{' guarded_purpose_member* '}')?
+
+minimize_decl   ::= 'minimize' expr                      (* no where_guard? -- §6.3 *)
+maximize_decl   ::= 'maximize' expr                      (* no where_guard? -- §6.3 *)
 
 (* --- Enum declarations --- *)
 enum_decl       ::= 'pub'? 'enum' TYPE_IDENT type_params? '{' enum_variant (',' enum_variant)* '}'
@@ -2708,11 +2922,34 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
                    | where_block | match_block | meta_block
                    | minimize_decl | maximize_decl
 
+(* Objectives take no guard, in either form (§6.3): excluded from guarded bodies.
+   sub_decl/forall statements ARE admitted here -- the compiler's "not yet
+   supported" on those is deferred implementation, not a design exclusion. *)
+guarded_member  ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
+                   | constraint_line | connect_stmt | chain_stmt
+                   | entity_decl | field_body | fn_decl
+                   | where_block | match_block | meta_block
+
 where_guard     ::= 'where' expr                         (* per-declaration guard *)
 
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
 sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body ('at' expr)?   (* v0.6 derived sub *)
+
+(* The derived alternative's 'at' tail is deliberate: an explicit 'at' on a
+   derived sub PARSES, and is rejected at COMPILE time as
+   E_DERIVED_SUB_EXPLICIT_AT (§4.7) -- the same division of labour 'at' on a
+   collection-form sub already uses.  Dropping it from this production would
+   invite a "fix" to the grammar that pre-empts the diagnostic. *)
+
+sub_derivation  ::= 'mirror' 'of' IDENT 'across' expr
+                  | 'image'  'of' IDENT 'under'  expr
+derived_body    ::= '{' (derived_override | disposition | let_decl | constraint_line)* '}'
+derived_override ::= IDENT '=' ('default' | expr) where_guard?
+disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVED, no v0.6 meaning *)
+                  | 'exclude' disposition_path
+disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
@@ -2732,11 +2969,19 @@ connect_block   ::= '{' (param_assign | port_mapping)* '}'
 param_assign    ::= IDENT '=' expr
 port_mapping    ::= IDENT '->' IDENT
 
-chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
+chain_stmt      ::= 'chain' chain_elem ('->' chain_elem)+
+chain_elem      ::= IDENT chain_index? ('.' IDENT)* ('@' IDENT ('(' args ')')? )?
+chain_index     ::= '[' (INT_LIT | STRING_LIT) ']'
+
+(* A chain element is a port_ref whose head may carry one indexer. Naming the
+   port on an element (a.p, vents[0].inlet) is how §6.2 inference is
+   disambiguated, so the dotted form is load-bearing rather than merely
+   tolerated; the indexer (vents[0], vents["intake"]) is how an element of a
+   collection or keyed sub is named as the one occurrence §6.2 requires. *)
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 
-where_block     ::= 'where' expr '{' member* '}' ('else' '{' member* '}')?
+where_block     ::= 'where' expr '{' guarded_member* '}' ('else' '{' guarded_member* '}')?
 
 match_block     ::= 'match' expr '{' match_arm* '}'
 match_arm       ::= pattern '=>' (member+ | expr)
@@ -2828,7 +3073,7 @@ map_entry       ::= expr '=>' expr
 BOOL_LIT        ::= 'true' | 'false'
 ```
 
-### 13.1 Newline and Continuation Rules
+### 15.1 Newline and Continuation Rules
 
 Reify is newline-significant: newlines terminate declarations and statements within `{ }` blocks.
 
@@ -2875,6 +3120,8 @@ From highest to lowest precedence:
 
 Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
 
+Binder bodies have no row because they are not operators. That covers a quantifier predicate (the expression after `forall`/`exists` … `:`), a conditional's `else` branch and a lambda body. Each body extends as far right as possible, past every operator in the table, `implies` included. So `forall v in xs: v > 0 and v < 3` means `forall v in xs: (v > 0 and v < 3)`, and `if c then a else b and d` means `if c then a else (b and d)`. To end a body early, parenthesise the binder: `(forall v in xs: p) and q`.
+
 ---
 
 ## 17. Appendix: Complete Keyword List
@@ -2911,7 +3158,7 @@ where
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
-| 10 | Expression-body sugar for `fn` | Deferred | `fn f(x: T) -> T = expr` shorthand |
+| 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
 | 12 | No `priv` modifier | Deferred | Hidden parameters on public definitions not yet justified |
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |

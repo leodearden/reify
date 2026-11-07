@@ -21,15 +21,36 @@
 //! - Per task: not `done`; no `done_at`; `audit_foundation`
 //!   (foundation/scaffold task); a pending/in-progress/review consumer task
 //!   whose `consumer_ref` matches this producer's `prd`; no `done_provenance.commit`.
-//! - Per symbol: `#[allow(dead_code)]` / `#[cfg(test)]` attribute opt-out;
-//!   a non-blank `// G-allow:` marker; a non-test workspace caller.
+//! - Per symbol: the declaration could not be located, so whether its author
+//!   opted out is UNKNOWN ([`crate::ChangedSymbol::decl_located`]) — SKIPPED outright
+//!   rather than downgraded, since unknown is not "no opt-out"; an opt-out the
+//!   located declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
+//!   a non-blank `// G-allow:` marker ([`crate::ChangedSymbol::opts_out`]);
+//!   a non-test workspace caller ([`crate::caller_lookup::has_non_test_caller`]).
 //! - Surviving symbols: severity is Medium only once *strictly more than*
 //!   14 days have elapsed since the done-flip (design §5 P1, line 83:
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
 //!   is Low ("log only").
+//!
+//! A task whose `get_changed_symbols` query FAILS is not a task that
+//! introduced nothing: it yields one Low [`Pattern::P1TaskUnexamined`]
+//! ([`task_unexamined`]) and the sweep moves on, so the failure shows in the
+//! findings rather than hiding among the clean tasks. Likewise a symbol whose
+//! `find_references` lookup FAILS is not a symbol with no caller: it is
+//! skipped, the task's other symbols are still examined, and the task yields
+//! one Low [`Pattern::P1TaskUnexamined`] naming every skipped symbol
+//! ([`symbols_unexamined`]). A run with no usable jcodemunch session at all
+//! records P1 once, run-level ([`run_unexamined`]).
+//!
+//! When the FIRST of those per-symbol guards eats a task's entire symbol list,
+//! zero findings means "examined nothing", not "corpus clean", so
+//! [`unexamined_sweep_breadcrumb`] annotates it on stderr.
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::caller_lookup::CallerLookups;
+use crate::{
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, JCodemunchCallFailed, Pattern, Severity,
+};
+use std::collections::HashSet;
 
 /// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
 /// producer-orphan is "flagged only if **>14 days** have passed since
@@ -39,10 +60,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is downgraded to Low ("log only").
 const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 
-/// Returns `true` when some active-consumer task's `consumer_ref` points at
-/// `producer_prd` — i.e. a downstream consumer is already in flight, so the
-/// producer's symbols are not truly orphaned (design §5 P1 false-positive
-/// guard). The canonical Taskmaster pending-consumer statuses are:
+/// The PRDs some active-consumer task's `consumer_ref` points at. A producer
+/// whose `prd` is in this set has a downstream consumer already in flight, so
+/// its symbols are not truly orphaned (design §5 P1 false-positive guard).
+/// Built from the whole task corpus, never the targeted subset: the consumer
+/// is a different task from the producer being audited. The canonical
+/// Taskmaster pending-consumer statuses are:
 ///   `"pending"`, `"in-progress"`, `"review"`.
 /// Using an explicit allow-list (rather than inverting against `{done,
 /// cancelled, deferred, blocked}`) keeps semantic intent visible and
@@ -50,49 +73,25 @@ const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 /// Status strings follow Taskmaster's canonical form (`in-progress`,
 /// hyphenated); the T-4 CLI normalizes at the boundary. Per
 /// `f-infra-design.md` §5 P1.
-// Perf note: this rescans every task for each done producer that has a
-//   `prd`, so the producer↔consumer correlation is O(tasks²). Harmless at
-//   solo-OSS task volumes (the audit window is ~14 days of done-flips), but
-//   if `task_metadata` ever grows, precompute a `HashSet<&str>` of the
-//   `consumer_ref`s of pending/in-progress/review tasks once before the
-//   producer loop and do an O(1) membership check here. Not required at
-//   current scale. Reference: docs/architecture-audit/f-infra-design.md §5 P1.
-fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
-    ctx.task_metadata.values().any(|t| {
-        matches!(t.status.as_str(), "pending" | "in-progress" | "review")
-            && t.consumer_ref.as_deref() == Some(producer_prd)
-    })
-}
-
-/// Returns `true` when the symbol carries a non-blank `// G-allow:` marker.
-///
-/// Mirrors `scripts/audit-orphan-producers.sh:150`
-/// `G_ALLOW_RE = //\s*G-allow:\s*(.+)`: the `(.+)` requires at least one
-/// non-whitespace character, so a blank/whitespace-only marker does NOT
-/// suppress — keeping this detector and the orphan script in lockstep.
-fn is_g_allow_suppressed(symbol: &ChangedSymbol) -> bool {
-    symbol
-        .g_allow_marker
-        .as_deref()
-        .is_some_and(|r| !r.trim().is_empty())
+fn pending_consumer_prds<'c>(ctx: &'c AuditContext) -> HashSet<&'c str> {
+    ctx.task_metadata()
+        .values()
+        .filter(|t| matches!(t.status.as_str(), "pending" | "in-progress" | "review"))
+        .filter_map(|t| t.consumer_ref.as_deref())
+        .collect()
 }
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    // Synthetic clock when provided (deterministic tests); else wall clock.
-    let now_secs = ctx.now.unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after UNIX_EPOCH")
-            .as_secs() as i64
-    });
+    let now_secs = ctx.now();
+    let pending_consumer_prds = pending_consumer_prds(ctx);
 
-    for meta in ctx.task_metadata.values() {
+    for meta in ctx.task_metadata().values() {
         // Optional single-task narrowing: mirrors p2_consumer_stub::check at
         // lines 132-136 and p5_phantom_done::check_with_target — keeps all
         // three detectors' scoping behaviour in lockstep.
-        if let Some(target) = ctx.target_task_id.as_deref()
+        if let Some(target) = ctx.target_task_id()
             && meta.task_id != target
         {
             continue;
@@ -112,7 +111,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // Per-task guard: a pending/in-progress/review consumer task already
         // references this producer's PRD (design §5 P1 false-positive guard).
         if let Some(prd) = meta.prd.as_deref()
-            && has_pending_consumer(ctx, prd)
+            && pending_consumer_prds.contains(prd)
         {
             continue;
         }
@@ -128,64 +127,279 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let since_sha = format!("{commit}^1");
         let until_sha = commit;
 
-        for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
-            // Per-symbol guard: intentional-orphan opt-outs —
-            // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
-            if symbol.has_allow_dead_code || symbol.has_cfg_test {
+        let symbols = match ctx.jcodemunch().get_changed_symbols(&since_sha, until_sha) {
+            Ok(symbols) => symbols,
+            Err(failure) => {
+                findings.push(task_unexamined(
+                    &meta.task_id,
+                    &since_sha,
+                    until_sha,
+                    &failure,
+                ));
                 continue;
             }
-            // Per-symbol guard: a non-blank `// G-allow:` marker on the
-            // declaration (design §5 P1; mirrors the orphan-script regex).
-            if is_g_allow_suppressed(&symbol) {
-                continue;
-            }
-            // A non-test workspace caller proves the symbol is consumed —
-            // suppress (design §5 P1: refs filtered to non-`*/tests/*`).
-            let has_non_test_caller = ctx
-                .jcodemunch
-                .find_references(&symbol)
-                .iter()
-                .any(|r| !crate::is_test_path(&r.file));
-            if has_non_test_caller {
-                continue;
-            }
-
-            let age = now_secs.saturating_sub(done_at);
-            // Strict `>` per design §5 P1 line 83 (">14 days"): at exactly
-            // the boundary the finding stays Low (still inside the window).
-            let (severity, summary) = if age > GRACE_WINDOW_SECS {
-                (
-                    Severity::Medium,
-                    format!(
-                        "producer-orphan: public symbol `{}` introduced by done task {} \
-                         at {}:{}; {} days past done-flip (beyond the 14-day grace window)",
-                        symbol.name,
-                        meta.task_id,
-                        symbol.file,
-                        symbol.line,
-                        age / 86_400
-                    ),
-                )
-            } else {
-                (
-                    Severity::Low,
-                    format!(
-                        "producer-orphan: public symbol `{}` introduced by done task {} \
-                         at {}:{}; within the 14-day grace window; log only \
-                         (per f-infra-design.md §5 P1)",
-                        symbol.name, meta.task_id, symbol.file, symbol.line
-                    ),
-                )
-            };
-            findings.push(Finding {
-                pattern: Pattern::P1ProducerOrphan,
-                severity,
-                task_id: meta.task_id.clone(),
-                summary,
-                evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
-            });
+        };
+        if let Some(msg) =
+            unexamined_sweep_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha)
+        {
+            eprintln!("{msg}");
         }
+
+        let examinable = symbols.into_iter().filter(|symbol| {
+            // Per-symbol guard: the declaration could not be located, so whether
+            // its author opted out is UNKNOWN, not "no". Reporting here is what
+            // turns a jcodemunch grammar drift (a release that stops emitting
+            // `line`, as 1.108.54 already did for `find_references`), a stale
+            // index, or an unreadable file into a false-positive storm over
+            // every intentionally suppressed symbol. The enrichment pass has
+            // already told the operator.
+            //
+            // Per-symbol guard: an intentional-orphan opt-out the located
+            // declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
+            // a non-blank `// G-allow:` marker, whose shared rule (and the
+            // orphan-script regex it mirrors) lives in `DeclSuppression`
+            // (design §5 P1).
+            symbol.decl_located() && !symbol.opts_out()
+        });
+        // A non-test workspace caller proves the symbol is consumed —
+        // suppress. A failed lookup proves nothing either way, so the
+        // symbol is skipped and recorded, never reported as an orphan;
+        // the task's remaining symbols are still examined.
+        let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch(), examinable);
+        let age = now_secs.saturating_sub(done_at);
+        findings.extend(
+            lookups
+                .unconsumed
+                .iter()
+                .map(|symbol| orphan_finding(&meta.task_id, symbol, age)),
+        );
+        findings.extend(symbols_unexamined(
+            &meta.task_id,
+            &since_sha,
+            until_sha,
+            &lookups,
+        ));
     }
 
     findings
+}
+
+/// The producer-orphan finding for `symbol`, introduced by done task
+/// `task_id` `age` seconds ago: Medium only strictly past the grace window
+/// (design §5 P1 line 83, ">14 days"), Low at the boundary and inside it.
+fn orphan_finding(task_id: &str, symbol: &ChangedSymbol, age: i64) -> Finding {
+    let (severity, summary) = if age > GRACE_WINDOW_SECS {
+        (
+            Severity::Medium,
+            format!(
+                "producer-orphan: public symbol `{}` introduced by done task {} \
+                 at {}:{}; {} days past done-flip (beyond the 14-day grace window)",
+                symbol.name,
+                task_id,
+                symbol.file,
+                symbol.line,
+                age / 86_400
+            ),
+        )
+    } else {
+        (
+            Severity::Low,
+            format!(
+                "producer-orphan: public symbol `{}` introduced by done task {} \
+                 at {}:{}; within the 14-day grace window; log only \
+                 (per f-infra-design.md §5 P1)",
+                symbol.name, task_id, symbol.file, symbol.line
+            ),
+        )
+    };
+    Finding {
+        pattern: Pattern::P1ProducerOrphan,
+        severity,
+        task_id: task_id.to_string(),
+        summary,
+        evidence: vec![EvidenceRef::File {
+            path: symbol.file.clone(),
+        }],
+    }
+}
+
+/// The finding for a done task P1 could not examine because its
+/// `get_changed_symbols` query failed. Low, so it never moves the exit code,
+/// and worded so that this task's lack of producer-orphan findings cannot be
+/// read as a clean result.
+///
+/// `evidence` is empty: the failed query returned no symbol or file, and the
+/// commit subject an [`EvidenceRef::Commit`] carries is not known here.
+fn task_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    failure: &JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "task-unexamined: P1 could not examine done task {task_id}: the \
+             {since_sha}..{until_sha} query failed ({failure}); zero \
+             producer-orphan findings for this task are not a clean result \
+             — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a done task some of whose symbols P1 could not examine
+/// because their `find_references` lookups failed, or `None` when every
+/// lookup answered. Low, so it never moves the exit code, and worded so that
+/// those symbols' lack of producer-orphan findings cannot be read as a clean
+/// result. The task's other symbols were examined, so an orphan reported
+/// beside it is genuine.
+///
+/// One finding per task however many lookups failed: the summary names every
+/// skipped symbol and the first failure, and `evidence` cites each skipped
+/// symbol's declaration ([`crate::caller_lookup::SkippedSymbols`]).
+fn symbols_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    lookups: &CallerLookups,
+) -> Option<Finding> {
+    let skipped = lookups.skipped()?;
+    Some(Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "task-unexamined: P1 could not examine {count} symbol(s) of done \
+             task {task_id} from {since_sha}..{until_sha} ({names}): \
+             {first_failure}; zero producer-orphan findings for them are not a \
+             clean result — re-run once jcodemunch answers",
+            count = skipped.count,
+            names = skipped.names,
+            first_failure = skipped.first_failure,
+        ),
+        evidence: skipped.evidence,
+    })
+}
+
+/// The finding for a run in which P1 had no usable jcodemunch session at all,
+/// so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`, as for the corpus-level detectors), and worded so that the
+/// run's lack of producer-orphan findings cannot be read as a clean result.
+pub fn run_unexamined(reason: &str) -> Finding {
+    Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "task-unexamined: P1 ran without jcodemunch this run ({reason}); zero \
+             producer-orphan findings are not a clean result — re-run once \
+             jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// Returns a `reify-audit:` prefixed stderr breadcrumb when every symbol this
+/// task's `get_changed_symbols` returned had an unlocatable declaration, so P1
+/// skipped all of them and its zero findings report a degraded jcodemunch
+/// substrate rather than a clean corpus.
+///
+/// Returns `None` otherwise, including for an EMPTY result: a done task that
+/// introduced no public symbol has always been an ordinary no-op here, and P1
+/// visits every done task, so annotating that would be one line per task on
+/// the (common) unwired-jcodemunch path. The vacuity rule itself lives in
+/// [`crate::jcodemunch_ops::wholly_unlocatable_count`], shared with P5 H2's breadcrumb.
+///
+/// Mirrors `p5_phantom_done::h2_vacuous_breadcrumb`'s "return the diagnostic,
+/// let the caller `eprintln!` it" idiom — an in-process test cannot read its
+/// own process's stderr, so a message printed from inside here could be
+/// deleted with the whole suite still green.
+fn unexamined_sweep_breadcrumb(
+    symbols: &[ChangedSymbol],
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+) -> Option<String> {
+    let unlocatable = crate::jcodemunch_ops::wholly_unlocatable_count(symbols)?;
+    Some(format!(
+        "reify-audit: P1 (producer-orphan) vacuous for task {task_id}: all \
+         {unlocatable} symbol(s) from {since_sha}..{until_sha} had an unlocatable \
+         declaration and were skipped unexamined — P1 produced no findings for \
+         this task (jcodemunch substrate degraded, not a clean corpus)"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unexamined_sweep_breadcrumb;
+    use crate::{ChangedSymbol, DeclSuppression};
+
+    fn symbol(name: &str, suppression: Option<DeclSuppression>) -> ChangedSymbol {
+        ChangedSymbol {
+            name: name.to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            line: 42,
+            suppression,
+        }
+    }
+
+    /// The quiet-degradation case this breadcrumb exists for: a NON-empty
+    /// symbol list in which not one declaration was locatable. P1 skips every
+    /// row, so a zero-finding sweep would otherwise read as "corpus clean"
+    /// — the same jcodemunch grammar drift that was loud (a false-positive
+    /// storm) before unlocatable symbols were skipped.
+    #[test]
+    fn unexamined_sweep_breadcrumb_fires_when_no_declaration_was_locatable() {
+        let symbols = vec![symbol("alpha", None), symbol("beta", None)];
+        let msg = unexamined_sweep_breadcrumb(&symbols, "7600", "abc123^1", "abc123")
+            .expect("an all-unlocatable sweep must produce a breadcrumb");
+        assert!(
+            msg.contains("7600"),
+            "breadcrumb must name the task id; got: {msg}"
+        );
+        assert!(
+            msg.contains("vacuous"),
+            "breadcrumb must name the sweep as vacuous; got: {msg}"
+        );
+        assert!(
+            msg.contains('2'),
+            "breadcrumb must name how many symbols went unexamined; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "breadcrumb must stay one line; got: {msg:?}"
+        );
+    }
+
+    /// One examinable symbol is enough to make the sweep real: the detector
+    /// applied its guards to something, so zero findings is a genuine result
+    /// and an operator must not be told otherwise.
+    #[test]
+    fn unexamined_sweep_breadcrumb_is_silent_when_any_declaration_was_located() {
+        let symbols = vec![
+            symbol("alpha", None),
+            symbol("beta", Some(DeclSuppression::default())),
+        ];
+        assert_eq!(
+            unexamined_sweep_breadcrumb(&symbols, "7600", "abc123^1", "abc123"),
+            None,
+            "a sweep that examined even one declaration is not vacuous"
+        );
+    }
+
+    /// An empty result is P1's ordinary no-op — a done task can legitimately
+    /// introduce no public symbol, and P1 visits every done task, so this
+    /// branch must not annotate.
+    #[test]
+    fn unexamined_sweep_breadcrumb_is_silent_for_an_empty_sweep() {
+        assert_eq!(
+            unexamined_sweep_breadcrumb(&[], "7600", "abc123^1", "abc123"),
+            None,
+            "no symbols at all is not the same fact as none examinable"
+        );
+    }
 }

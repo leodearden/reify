@@ -40,11 +40,22 @@ mod tests {
             "re-exported unit_ladders() must not be empty"
         );
 
-        // All 10 curated dimensions (the original 7 plus Force/Energy/Power)
-        // must be reachable through the re-export.
+        // All 12 curated dimensions (the original 7 plus
+        // Force/Energy/Power/Frequency/Stiffness) must be reachable through
+        // the re-export.
         for dimension in [
-            "Length", "Area", "Volume", "Angle", "Mass", "Pressure", "Density", "Force", "Energy",
+            "Length",
+            "Area",
+            "Volume",
+            "Angle",
+            "Mass",
+            "Pressure",
+            "Density",
+            "Force",
+            "Energy",
             "Power",
+            "Frequency",
+            "Stiffness",
         ] {
             let l = ladders
                 .iter()

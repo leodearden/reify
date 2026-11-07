@@ -9,7 +9,7 @@ implementing).
 
 **Rungs 0–3 delivered (2026-06-15):** α/4474 · β/4475 · γ/4476 · δ/4477 · ε/4478 · ζ/4479 ·
 η/4480 · **θ/4481** (critical leaf) all done. §9 boundary-test matrix gated as one CI suite
-(`crates/reify-cli/tests/cli_gdt_integration_gate.rs`: B4 regression + B5 oracle cross-check +
+(`crates/reify-cli/tests/harness_cli/cli_gdt_integration_gate.rs`: B4 regression + B5 oracle cross-check +
 B9 pass-weave); engine-integration-norm §3.11 entry committed (cites §3.8, DFM walk, 4408
 landed first). Remaining rungs: ι (datum-anchored zones, dep 4382/4385 pending) · κ (DRF
 diagnostics, dep 4388 pending).
@@ -122,7 +122,7 @@ deviation is B-rep-sampled). Per-instance `.ri` constraint enforcement (general 
 
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| #4269 (deferred zone-REGION task) | absorbs | zone-region construction scope | **this PRD** (γ+δ) | decompose closes 4269 cancelled-superseded citing γ/δ |
+| #4269 (zone-REGION task) | absorbs | zone-region construction scope | **this PRD** (γ+δ) | decompose closes 4269 cancelled-superseded citing γ/δ |
 | `geometric-relations.md` (4382/4385) | consumes | typed datums + feature→datum projections for ι/κ | **geometric-relations** | dep edges ι←4382,4385 (pending) |
 | `geometric-relations.md` (4388) | consumes | DOF ledger for DRF-arrest diagnosis (κ) | **geometric-relations** | dep edge κ←4388 (pending) |
 | `process-dfm-overhang-draft.md` (4408/4410) | sibling pattern | check-time measure-pass shape; each pass owns its OWN engine-integration-norm §3 entry | each PRD its own | **θ landed second** — §3.11 (GD&T conformance walk) authored by θ/4481, cross-references §3.8 (DFM walk, 4408 landed first); engine-integration-norm §11 cross-PRD row added |
@@ -240,7 +240,7 @@ Intra-batch deps by letter; out-of-batch by ID. All tasks `grammar_confirmed=tru
 - **θ — Integration gate + norm entry** (**critical leaf**). Full §9 matrix as one CI suite
   (incl. B4 regression, B5 boolean-oracle cross-check, B9 weave); authors the GD&T pass's
   engine-integration-norm §3.11 entry (citing §3.8, 4408/DFM walk, which landed first); PRD/doc
-  reconcile. **Signal: DELIVERED (2026-06-15)** — `crates/reify-cli/tests/cli_gdt_integration_gate.rs`
+  reconcile. **Signal: DELIVERED (2026-06-15)** — `crates/reify-cli/tests/harness_cli/cli_gdt_integration_gate.rs`
   green in CI (B4/B5/B9 direct; B1–B3/B6–B8 mapped); §3.11 entry committed and cross-referenced
   to §3.8. Task θ/4481 done. Deps: γ, δ, ε, η.
 - **ι — Datum-anchored zones**. Position/orientation/runout zones anchored to projected datum

@@ -7,6 +7,12 @@
 **Gap count:** 16
 **WIRED:** 9 — **PARTIAL:** 9 — **TODO:** 5 — **FICTION:** 1 — **DRIFT:** 1 — **ORPHAN:** 0
 
+> **Overlay notice (2026-09-14):** this is a **dated 2026-05-12 snapshot** that now carries a dated
+> `CORRECTION` overlay below, under M-025. Its third Top-concerns bullet ("OpenVDB Voxel ReprKind is
+> half-realized") is **partly superseded**: it is deliberately left as written below (it was true on
+> 2026-05-12); read it together with the M-025 overlay, which records what task 6560 changed and what
+> still holds.
+
 ## Top concerns
 
 - **MITC3 / MITC3+ DRIFT is the headline architectural divergence.** The PRD picks MITC3+ specifically to avoid the "silent inaccuracy in the L/t=5–20 marginal-thickness regime" of plain-MITC3. What shipped is **bare MITC3 on flat-facet triangles**, with a divergence-theorem proof (task 3349) that the cubic-bubble enrichment is mathematically inert for flat-facet elements. Benchmarks (task 3034) show **21–2200× under-prediction** vs published MacNeal-Harder references on the three curved-shell tests (pinched cylinder, Scordelis-Lo roof, hemisphere); test bands were widened to make them pass. The "credibility-killing bug class" the PRD explicitly chose MITC3+ to avoid is now present. Curved-element formulation (the actual MITC3+ path) is filed as task 3392 (pending, low priority).
@@ -203,6 +209,50 @@
 - **Evidence:** `crates/reify-kernel-openvdb/src/register.rs:30-33`: "Voxel→Mesh surfacing (`Convert { from: Voxel } → Mesh`): marching-cubes / level-set surfacing... deferred as a follow-up task" and "BRep→Voxel sampling: deferred to a separate follow-up." Capability descriptor declares only `(BooleanUnion|Difference|Intersection, Voxel)`. `realize_voxel_from_mesh` (FFI) exists at `kernel_real.rs:82` — Mesh→Voxel works, but BRep→Mesh→Voxel dispatcher chain has no shipping consumer for the shells path. `reify-shell-extract` doc (`lib.rs:21-34`) admits it currently works on synthetic `SampledField` because the OpenVDB-FFI producer isn't wired.
 - **Blocks:** Real end-to-end shell extraction from user geometry (M-018, M-022, M-023).
 - **Note:** This is the PRD's hard precondition. It's not part of the shells task list (it's in the v0.2 multi-kernel PRD's territory) but the shells PRD assumes it ships.
+
+> **CORRECTION 2026-09-14 (task 6560, landed in merge `fe7e200c93` / commits `eee72dc436` +
+> `bf7cfa9a5a`) — M-025's Evidence and the *rationale* for its State are SUPERSEDED; the State
+> *value* (PARTIAL) is unchanged.** This is a dated audit snapshot (**Date:** 2026-05-12), so the
+> bullets above are preserved as the record of what was measured then. What task 6560 changed:
+>
+> - The quoted register.rs bullet **"BRep→Voxel sampling: deferred to a separate follow-up" no longer
+>   exists.** `register.rs` now carries a "# BRep→Voxel (task 6560)" module-doc section recording the
+>   landed disposition.
+> - **Failure mode F4's second clause is retired too** — "B-rep→Voxel sampling deferred" quoted the
+>   same retired bullet and no longer holds. F4's first clause (FFI gated on `cfg(has_openvdb)`) is
+>   untouched by task 6560 and still holds.
+> - **Anchor drift:** `register.rs:30-33` no longer contains either quoted string. The BRep→Voxel one
+>   is superseded by the "# BRep→Voxel (task 6560)" module-doc section (below). The Voxel→Mesh
+>   "deferred as a follow-up task" quote no longer appears anywhere in `register.rs` either — that
+>   mechanism belongs to a different PRD (`docs/prds/v0_3/voxel-to-mesh-surfacing.md`, task 5033) and
+>   is not otherwise re-verified by this overlay. Grep the named section rather than trusting these
+>   line numbers.
+> - **The Evidence claim "Capability descriptor declares only `(BooleanUnion|Difference|Intersection,
+>   Voxel)`" is FALSE**, and has been since commit `0bd745c20a` (task 3438), landed 2026-05-27 — two
+>   weeks after this audit's own 2026-05-12 date stamp. The descriptor declares **six** entries;
+>   `0bd745c20a` added `(Convert { from: ReprKind::Mesh }, ReprKind::Voxel)`, now
+>   `openvdb_capability_descriptor` (`register.rs:169`). The Top-concerns claim that "`(Convert,
+>   Voxel)` is excluded from the capability descriptor" is the same claim and is equally false as of
+>   that commit.
+> - **BRep→Voxel is served** by the two-stage `BRep --occt--> Mesh --openvdb--> Voxel` chain over that
+>   Mesh-sourced entry. The full mechanism, resolution API, and all three carried caveats (cache-key
+>   aliasing, **#6989**; DENSE-lowering budget, **#6988**; deliberate absence of a BRep-sourced
+>   descriptor entry) are recorded in the parent shells PRD's 2026-09-01 Updates bullet
+>   (`docs/prds/v0_4/structural-analysis-shells.md`) and register.rs's module-doc section (cited
+>   above) — cited here rather than restated (SPOT). Note the split: the Updates bullet carries only
+>   the first two caveats; the third (deliberate non-entry) is register.rs's alone.
+>
+> **What still holds:** the producer seam has no wired consumer. See
+> `docs/prds/v0_4/shell-extract-engine-bridge.md` §11 open question 2 for the residual-gap analysis
+> and its owning task (**#6989**, pending). M-025's **Blocks** line (real end-to-end shell extraction
+> from user geometry) and the Evidence's observation that `reify-shell-extract` still runs on synthetic
+> `SampledField` therefore remain accurate, but for a different reason than stated above: the producer
+> seam now exists but has no wired consumer, rather than not existing at all. **State: PARTIAL still
+> holds** — not WIRED — but for that different reason.
+
+> **NON-EXHAUSTIVE — this overlay re-verified M-025 and the third Top-concerns bullet ONLY.**
+> M-001…M-024 and M-026 were *not* re-checked against the landed task-6560 work and must be
+> re-verified rather than trusted.
 
 ### M-026: `param thickness : Length = auto` for end-to-end example (T23)
 

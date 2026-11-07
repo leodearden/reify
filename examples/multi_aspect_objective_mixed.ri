@@ -10,7 +10,7 @@ module multi_aspect_objective_mixed
 // `E_OBJECTIVE_MIXED_DIMENSION`, naming both dimensions.
 //
 // Do NOT "fix" this file to compile clean — it is a negative fixture, listed
-// in `crates/reify-compiler/tests/examples_smoke.rs::SKIP_SET`. Its diagnostic
+// in `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::SKIP_SET`. Its diagnostic
 // is asserted by
 // `crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs::multi_aspect_objective_mixed_negative_emits_e_objective_mixed_dimension`.
 // Positive (coherent) multi-aspect coverage lives in the sibling

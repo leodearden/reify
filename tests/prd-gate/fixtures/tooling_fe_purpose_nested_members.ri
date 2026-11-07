@@ -1,0 +1,12 @@
+// /prd S27 tooling-front-end evidence: members of a structure nested in a
+// purpose. goto-definition / hover / find-references on `depth` inside
+// `Probe` must resolve to `Probe.depth`, not stop at the purpose's own members.
+module tooling_fe_purpose_nested_members
+
+purpose exploration(subject : Structure) {
+    structure def Probe {
+        param depth : Length = 5mm
+        let doubled = depth * 2
+    }
+    minimize subject.mass
+}

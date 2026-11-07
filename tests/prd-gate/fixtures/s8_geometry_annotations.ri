@@ -1,0 +1,17 @@
+module s8_geometry_annotations
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: eta (geometry calls typed Geometry; annotation mismatches are coded errors).
+// Pins: params and lets annotated with a non-geometry type but initialised from
+// a geometry call, plus an unannotated user fn whose body is a geometry call.
+// Every case here is silent at check today. The one annotation rejected today
+// (a Length param) is in s8_geometry_inline_overload_error.ri.
+
+fn mk(w: Length) { box(w, w, w) }
+
+structure def S8GeometryAnnotations {
+    param pr : Real = box(1mm, 2mm, 3mm)
+    let ll : Length = cylinder(1mm, 2mm)
+    let li : Int = sphere(1mm)
+    let a = mk(1mm)
+}

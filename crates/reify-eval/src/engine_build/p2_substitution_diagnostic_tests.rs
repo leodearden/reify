@@ -7,6 +7,7 @@
         crate::sweep_classifier::SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         }
     }
 
@@ -77,6 +78,7 @@
             axis_origin: [0.0, 0.0, 0.0],
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
 
         let sweep_linear_kind = crate::sweep_classifier::SweptKind::SweepLinear {

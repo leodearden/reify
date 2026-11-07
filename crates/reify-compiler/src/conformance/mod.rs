@@ -1,35 +1,78 @@
 pub(super) mod checker;
 use checker::*;
 
+mod realization_let_env;
+use realization_let_env::RealizationLetEnv;
+
 pub(super) mod sub_component_validation;
 pub(crate) use sub_component_validation::check_sub_structure_existence;
 
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
-use crate::geometry_traits_inference::{
-    GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
-};
-use std::cell::RefCell;
+use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
+use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
 
-/// Severity knob for struct-constructor field-conformance diagnostics
-/// (task 5302, struct-ctor-conformance α).
+/// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
-/// α generalizes the 4584 struct-ctor conformance chokepoint from its original
-/// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
-/// `Selector`) to ALL concrete field types, at **Warning** severity behind this
-/// single const. The ctor field-conformance surface reads its severity from
-/// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
-/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+/// Task 5302 (α) generalized the 4584 struct-ctor conformance chokepoint from
+/// its original 4-family allowlist (`List<TraitObject>` / `StructureRef` /
+/// `Vector` / `Selector`) to ALL concrete field types; task 5303 (ε) added the
+/// two structural codes. Both landed at `Severity::Warning` behind this const —
+/// a landing convenience under PRD decision D4, so a large diagnostic surface
+/// could reach the corpus before it could reject. **Task 5306 (δ) closed that
+/// warn window.** A non-conforming ctor argument is now an Error, so
+/// `reify check` exits 1 on it (`crates/reify-cli/src/main.rs`,
+/// `.any(|d| d.severity == Severity::Error)`).
 ///
-/// **Two emit sites are deliberately outside this knob** and will NOT flip with
-/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
-/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
-/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
-/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
-/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
-/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
-/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
-const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+/// The surface still reads its severity from HERE (threaded through
+/// `WalkCtx.severity`) rather than hard-coding `Severity::Error` at each emit
+/// site, because that is what made δ a one-const flip and what keeps every
+/// knob-governed site provably uniform. **There is no config flag and no
+/// environment variable behind this const, and none may be added**: a
+/// per-invocation severity would make `reify check`'s exit code depend on
+/// something other than the source, which is the failure mode the whole staged
+/// promotion existed to avoid.
+///
+/// **Two emit sites are deliberately outside this knob** and did NOT move with
+/// δ, because they were already Error: (1) the fn-call conformance entry
+/// (`check_fn_arg_conformance`) hard-codes `Severity::Error` (out of scope; see
+/// the `WalkCtx.severity` field doc); (2) the geometry-trait leaf (`Bounded` /
+/// `Connected` / `Convex`, reached via [`emit_geometry_unbounded`] /
+/// [`emit_geometry_trait_violation`]) hard-codes `Severity::Error` because those
+/// codes (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong
+/// to the geometry-primitive-constructors PRD, not to this ctor-field knob (see
+/// the `WalkCtx.severity` doc's carve-out note). Both carve-outs remain live: a
+/// future re-scoping of this const must not silently absorb them.
+///
+/// **ε (task 5303) additionally reads this knob from outside this module.** The
+/// two structural emit sites in the `StructureInstanceCtor` by-name binder
+/// (`crates/reify-compiler/src/expr.rs`) — unknown named argument
+/// ([`DiagnosticCode::CtorUnknownField`]) and over-arity positional argument
+/// ([`DiagnosticCode::CtorArity`]) — build their diagnostics with
+/// [`diag_at`]`(CTOR_FIELD_CONFORMANCE_SEVERITY, …)` rather than a literal
+/// severity, which is why both this const and [`diag_at`] are `pub(crate)`. That
+/// is what made δ a literal one-const flip; a duplicated `Severity::Warning`
+/// literal in expr.rs would have silently survived it (the C2(iv)
+/// severity-invariance failure mode). The same reasoning applies to any emit site
+/// added here later: read the const, never a literal.
+///
+/// # Language contract and deferred variants
+///
+/// The user-facing statement of what this knob governs is
+/// `docs/reify-language-spec.md` §4.9. Around it:
+///
+/// * **No eval-time check, by ruling.** The eval-time ctor inserts args
+///   verbatim; this compile-time surface is the single enforcement point
+///   (`docs/prds/struct-ctor-field-type-conformance.md` D7).
+/// * **Empty-collection args are skipped, not rejected.** They compile with no
+///   expected type; typed enforcement belongs to
+///   `docs/prds/expected-type-pushdown-return-field.md` (stub).
+/// * **Bare `TraitObject` fields are exempt** on the expression-position path.
+///   The exemption, its scope and its revisit condition live at
+///   `check_expr_struct_ctor_args` in `compile_builder/entities_phase.rs` (PRD D6).
+/// * **Construction-site gaps this knob does not yet reach** are listed under
+///   spec §4.9 "Known limitations", each with its owner.
+pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
 ///
@@ -39,7 +82,12 @@ const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
 /// governs the whole surface. `Diagnostic.severity` is a public field, so this
 /// sets it directly after building — keeping the change confined to this crate
 /// (no reify-core change, per task 5302).
-fn diag_at(severity: Severity, message: impl Into<String>) -> Diagnostic {
+///
+/// `pub(crate)` since task 5303 (ε): the two structural ctor emit sites in
+/// `crates/reify-compiler/src/expr.rs` need the same severity-parameterized
+/// builder so they read [`CTOR_FIELD_CONFORMANCE_SEVERITY`] instead of
+/// hard-coding a severity.
+pub(crate) fn diag_at(severity: Severity, message: impl Into<String>) -> Diagnostic {
     let mut d = Diagnostic::error(message);
     d.severity = severity;
     d
@@ -129,9 +177,9 @@ pub(crate) fn check_trait_conformance(
         );
 
     // Build a combined name→type view for phases that only need to know whether the
-    // structure declares a member by name (conflict-suppression, injection-skip, scope
-    // pre-registration). Phases that must distinguish param from let members use
-    // `structure_param_members` / `structure_let_members` directly (phase 5).
+    // structure declares a member by name (conflict-suppression, scope pre-registration,
+    // which records the overrides injection skips). Phases that must distinguish param from
+    // let members use `structure_param_members` / `structure_let_members` directly (phase 5).
     //
     // If a name appears in both maps (no upstream diagnostic prevents it today),
     // the param entry wins: let-first chain means param entries overwrite let entries.
@@ -175,14 +223,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let available_defaults = check_phase_build_available_defaults_map(
-        &ctx,
-        &pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
-    );
+    let available_defaults = check_phase_build_available_defaults_map(&ctx, &pre);
 
     check_phase_check_members_against_requirements(
         &ctx,
@@ -248,13 +289,8 @@ pub(crate) fn check_trait_conformance(
     check_phase_inject_defaults(
         &ctx,
         structure,
-        &structure_all_members,
         &structure_constraint_labels,
-        pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
+        pre,
         scope,
         value_cells,
         constraints,
@@ -382,9 +418,65 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
-/// Check that each `Param`-kind value cell with a default expression in
-/// `template` has a default whose type is compatible with the declared
-/// `cell_type`, for nominal leaf types (task-4584):
+/// The value cells subject to param-default conformance: `value_cells` ∪ the
+/// members of every port body.
+///
+/// `TopologyTemplate.value_cells` is NOT the whole surface: port-body params are
+/// compiled separately (`entity.rs` port arm) under the composite member name
+/// `ValueCellId(entity, "<port>.<param>")` and stored on `CompiledPort.members`,
+/// a DISJOINT list that is deliberately never merged into `value_cells`
+/// (`reify_ast::decl`'s `collect_param_default_candidates` doc-comment records
+/// why: `set_parameter`, the GUI property panel, and
+/// `find_param_default_expr`/`find_param_default_span` cell_id resolution all
+/// key off `value_cells` and must not see port-internal names).
+///
+/// Walking only `value_cells` therefore left every port-member param default
+/// unchecked at EVERY arm below — a `Geometry`, `String` or `StructureRef`
+/// default inside a `port { }` block compiled with zero diagnostics (task 7174).
+/// Chaining here rather than adding a second call site keeps ONE loop body, so
+/// the two lists cannot drift apart again.
+///
+/// `CompiledGuardedGroup.members` / `.else_members` is deliberately OUT of this
+/// chain. A guarded param already carries its own separately-owned decision
+/// about default checking — `guards.rs` omits the sibling `check_param_default_type`
+/// at that site on purpose, pinned by
+/// `guarded_param_dimension_mismatched_default_does_not_check_param_default_type`
+/// — so extending conformance there is a change with its own acceptance
+/// criteria, not a ride-along on this one. Mechanically it would be one more
+/// `.chain(…)` here; structurally it still needs no second call site.
+///
+/// UNANNOTATED cells ARE judged here, against the `Type::dimensionless_scalar()`
+/// INFERENCE FALLBACK the compiler assigns when a `param` names no type — so
+/// `param c = Color.Red` reports `Enum(Color)` vs `Real`, naming a type the
+/// source never wrote. That is deliberate, and it is not something the port
+/// cells introduce: the walk is site-blind by construction (ONE loop body), and
+/// the top-level half has reported the fallback this way since α. The asymmetry
+/// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
+/// which IS gated on `param.type_expr.is_some()` at both its call sites and so
+/// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
+/// The two checks are complementary, not alike-gated; what holds both SITES to
+/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+///
+/// Whether an inference fallback should be judged AT ALL is a live question, and
+/// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
+/// hard error on source that named no type. It is recorded here rather than
+/// pre-empted because
+/// gating it is a behaviour change at BOTH sites — this chain cannot skip the
+/// fallback for port cells without also skipping it for top-level ones, which is
+/// exactly the parity this task established. The bit such a gate would need
+/// (`param.type_expr.is_some()`, already computed at both `check_param_default_type`
+/// call sites) is not carried on `ValueCellDecl` today.
+fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    template
+        .value_cells
+        .iter()
+        .chain(template.ports.iter().flat_map(|p| p.members.iter()))
+}
+
+/// Check that each `Param`-kind cell enumerated by [`param_default_cells`]
+/// (template value cells ∪ port-body members) with a default expression has a
+/// default whose type is compatible with the declared `cell_type`, for nominal
+/// leaf types (task-4584):
 ///
 /// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
 ///   comment below for rationale — concretely, a `StructureRef` default for a
@@ -405,7 +497,7 @@ pub(crate) fn check_param_default_conformance(
     registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for vc in &template.value_cells {
+    for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
@@ -506,10 +598,9 @@ pub(crate) fn check_param_default_conformance(
             // The old `_ => continue` silently accepted every non-StructureRef/
             // non-Geometry default (the "future work" hole this task fills). The
             // walker single-sources both the anti-cascade skip list and the
-            // param-family gating: its `reject_if_incompatible` skips
-            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and its
-            // general concrete-leaf arm judges a PARAM type only when
-            // [`general_leaf_param_family_is_validated`] vets it. So routing here
+            // param-family gating: its relation, `conformance_accepts`, skips
+            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and judges
+            // a PARAM type only when one of its family arms checks it. So routing here
             // is unconditional but diagnosing is not — a default at an
             // un-vetted family stays silent, and no gating logic is duplicated
             // at this call site. Only the top-level `Error`-default guard is
@@ -558,9 +649,9 @@ pub(crate) fn check_param_default_conformance(
 /// frame later.
 ///
 /// Adding a fourth table is now a one-line change here rather than a ninth
-/// parameter and a fourth suppression — which matters because
-/// [`general_leaf_param_family_is_validated`]'s "still unexamined" list names
-/// sixteen more `Type` variants, several of which will need their own lookup.
+/// parameter and a fourth suppression — which matters because the field types
+/// [`conformance_accepts`] leaves unexamined (spec §4.9 Known limitation #7958)
+/// may each need their own lookup.
 ///
 /// `Copy` because it is three shared references; callers pass it by value and
 /// [`WalkCtx`] stores it by value, so no reborrow ceremony is needed at the
@@ -571,22 +662,7 @@ pub(crate) struct ConformanceRegistries<'a> {
     pub templates: &'a HashMap<String, &'a TopologyTemplate>,
     /// Compiled traits visible at the call site, keyed by name.
     pub traits: &'a HashMap<String, &'a CompiledTrait>,
-    /// Declared enums visible at the call site — `prelude ++ module-local`, i.e.
-    /// exactly `CompilationCtx.resolution_enums` (task 5465, family 4).
-    ///
-    /// Exists SOLELY so the general concrete-leaf arm can tolerate D1/F-Mono
-    /// enum erasure: a constructed variant's `result_type` is always the bare
-    /// `Type::Enum(name)`, never the applied form, so a declared
-    /// `Type::Applied { name: "Result", args: [...] }` param would spuriously
-    /// fail raw [`type_compatible`], which has no Applied-vs-Enum arm in EITHER
-    /// direction. The general concrete-leaf arm maps BOTH sides through
-    /// [`base_enum_name`], which needs this table to recognise an applied ENUM
-    /// (vs. an applied generic STRUCTURE like `Coupling<T>`, which is spelled
-    /// the same way) while keeping a genuine cross-enum mismatch rejected.
-    ///
-    /// [`base_enum_name`] is the same oracle [`enum_payload_compatible`] uses at
-    /// the payload-field site in `variant_construct.rs`, so the two decisions
-    /// cannot drift.
+    /// Declared enums visible at the call site, read by [`conformance_accepts`]'s enum arm.
     pub enum_defs: &'a [reify_ir::EnumDef],
 }
 
@@ -599,14 +675,15 @@ struct WalkCtx<'a> {
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
     /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
-    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
+    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α, `Error` since
+    /// δ / task #5306); the fn-call
     /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
     /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
     /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
     /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
     /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
-    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
-    /// flips only the const.
+    /// exactly one place per walk (C2(iv) severity-invariance), which is what let
+    /// δ (task #5306) promote the whole family by flipping only the const.
     ///
     /// **Carve-out — geometry-trait conformance stays always-Error.** The
     /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
@@ -663,9 +740,9 @@ fn promote_function_call_to_structure_ref(
     Some(Type::StructureRef(name.to_owned()))
 }
 
-/// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
-/// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
-/// to the leaf helper.
+/// Walk `param_type` against `compiled_arg`, recursing into literal Option/List/Set/Map
+/// wrappers. Every other pair goes to [`walk_param_against_arg_type`] with the literal
+/// attached, so each leaf verdict comes from [`conformance_accepts`].
 fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &mut WalkCtx<'_>) {
     match (param_type, &compiled_arg.kind) {
         // Option wrapper: recurse into the inner value.
@@ -701,27 +778,13 @@ fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &
                 walk_param_against_arg(val_p, val_expr, ctx);
             }
         }
-        // Leaf: param type is a trait object — call the existing conformance logic.
-        (Type::TraitObject(required_trait), _) => {
-            check_leaf_trait_conformance(required_trait, compiled_arg, ctx);
-        }
-        // Fallback: for non-literal wrapped args (e.g. ValueRef), attempt a type-level
-        // wrapper walk comparing param_type against compiled_arg.result_type. This handles
-        // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
-        // where `Physical : Material`. Non-wrapper and non-trait params fall through
-        // silently inside walk_param_against_arg_type.
-        //
-        // Apply StructureRef promotion when the compiled arg is a FunctionCall whose
-        // result_type defaulted to Real/Int (the expression compiler's numeric fallback
-        // for structure calls) and the callee is a known structure template. Without this,
-        // wrapper-shape diagnostics would show the misleading numeric fallback type (e.g.
-        // 'Real') instead of the structure name (e.g. 'Steel') for cases like
-        // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
+        // A structure call whose result type fell back to Real/Int is promoted to its
+        // StructureRef, so diagnostics name the structure (e.g. 'Steel', not 'Real').
         _ => {
             let promoted =
                 promote_function_call_to_structure_ref(compiled_arg, ctx.registries.templates);
             let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
-            walk_param_against_arg_type(param_type, effective_type, ctx);
+            walk_param_against_arg_type(param_type, effective_type, Some(compiled_arg), ctx);
         }
     }
 }
@@ -946,15 +1009,7 @@ fn emit_structure_ref_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// Emit a single `Diagnostic::error` with
 /// [`DiagnosticCode::TypeNotConformingToVector`] when an arg does not conform to a
 /// `Type::Vector`-typed param (task-4622): either the arg is not vector-shaped, or it is
-/// `Type::Vector` with a mismatched arity (n).
-///
-/// Conformance rules:
-/// - A `Type::Vector { n, .. }` arg is accepted only when `n` matches the param's `n`.
-///   Arity mismatch (e.g. vec2 passed to a vec3 param) is a genuine type error.
-/// - A `Type::Tensor { rank: 1, .. }` arg is accepted regardless of element count
-///   (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
-/// - The quantity slot is intentionally loose (ty.rs Point/Vector quantity-slot convention).
-/// - Bare scalars, strings, bools, and other non-vector kinds are rejected.
+/// `Type::Vector` with a mismatched arity (n). The verdict is [`conformance_accepts`]'s.
 ///
 /// Modelled on [`emit_structure_ref_mismatch`]: one diagnostic, one label at `ctx.span`,
 /// message names the required vector type and the offending arg type.
@@ -1001,7 +1056,7 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
 /// diagnostics.rs). Severity is `ctx.severity` in BOTH branches (severity-invariant:
 /// the 5302 knob governs the whole selector surface uniformly — see design decision
 /// Q3/Option-A). The same-kind case (`Selector(k)` arg vs `Selector(k)` param) never
-/// reaches here — `reject_if_incompatible`'s `type_compatible` gate accepts it — so
+/// reaches here — the relation's `type_compatible` arm accepts it — so
 /// the `j != k` guard is defensive, not load-bearing.
 fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     let is_kind_mismatch = match (param_type, arg_type) {
@@ -1057,19 +1112,6 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
     }
 }
 
-/// Skip-guard + `type_compatible` gate shared by the `StructureRef` and `Selector/AnySelector`
-/// leaf arms in [`walk_param_against_arg_type`] (task-4584, task-4598).
-///
-/// Returns without emitting when `arg_ty` is one of the conservatively-skipped kinds:
-/// - `Error` — anti-cascade poison sentinel.
-/// - `TypeParam` — unresolved generic; conformance decided at instantiation.
-/// - `Geometry` — carries no nominal identity verifiable at the type level.
-/// - `TraitObject` — may resolve to a conforming type; defer.
-///
-/// For all other concrete arg types, calls `type_compatible`; if that returns false,
-/// delegates to `emit` to push the mismatch diagnostic. Encapsulating the three-line
-/// body prevents the anti-cascade skip list from drifting between the two arms.
-///
 /// Emit a single `DiagnosticCode::ArgTypeMismatch` diagnostic (at `ctx.severity`)
 /// for a general concrete-leaf param/arg type mismatch (task 5302 α — the fully
 /// general arg-shape pass that replaces the old silent `_` fall-through in
@@ -1081,734 +1123,236 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// arg type is not `type_compatible` with the declared param type (String←Int,
 /// Bool←String, dimensioned-scalar mismatch, …). No new diagnostic code is minted
 /// — `ArgTypeMismatch` already exists.
+///
+/// A rejection at a DIMENSIONED `Scalar` param additionally carries the D4-6
+/// migration hint (see [`dimensioned_scalar_migration_hint`]); every other
+/// family's message is byte-identical to what it was before task 5627.
 fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    let mut message = format!(
+        "argument '{}' has type '{}' but param '{}' requires type '{}'",
+        ctx.arg_name, arg_ty, ctx.arg_name, param_type,
+    );
+    // Gated on the param being a DIMENSIONED scalar, not applied unconditionally:
+    // this emitter is shared with the `Bool` / `Int` / `String` / dimensionless
+    // `Real` families task 5465 promoted, where the clause would be nonsense
+    // ("pass a dimensioned Bool literal") and would silently reword four
+    // already-shipped diagnostics.
+    let dimensioned = match param_type {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(dimension),
+        _ => None,
+    };
+    if let Some(dimension) = dimensioned {
+        message.push_str("; ");
+        message.push_str(&dimensioned_scalar_migration_hint(dimension));
+    }
+    ctx.diagnostics.push(
+        diag_at(ctx.severity, message)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                ctx.span,
+                format!("expected '{}', got '{}'", param_type, arg_ty),
+            )),
+    );
+}
+
+/// An example unit literal for `dimension`: `"1m"`, `"1m/s^2"`, `"1kg/m^3"`,
+/// `"1Pa"`.
+///
+/// The unit is [`reify_core::ri_compound_unit_expr`]'s, the spelling `.ri`
+/// value emission writes, so the hint and the emitter cannot disagree and every
+/// `NAMED_DIMENSIONS` row is covered with no per-dimension table.
+///
+/// `None` where that emitter declines (see its doc). Also `None` for a
+/// dimension with no positive exponent (`Frequency`, s⁻¹), which the emitter
+/// writes as signed powers (`s^-1`): the hint offers an example only in the
+/// numerator/denominator form.
+///
+/// Declining is deliberate: an example that does not parse is worse than none,
+/// because the reader would paste it. The round-trip guard in
+/// `struct_ctor_field_conformance_tests.rs` walks every `NAMED_DIMENSIONS` row
+/// and fails the build if any offered example stops resolving to its own
+/// dimension.
+fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
+    if !dimension.0.iter().any(|exponent| exponent.num() > 0) {
+        return None;
+    }
+    reify_core::ri_compound_unit_expr(dimension).map(|unit| format!("1{unit}"))
+}
+
+/// The D4-6 migration hint clause appended to a rejection at a DIMENSIONED
+/// `Scalar` ctor slot.
+///
+/// Shape: ``"pass a dimensioned <Dimension> literal such as `<example>`"``,
+/// COPIED from `ArgRejection::message` in `crates/reify-ir/src/arg_acceptance.rs`
+/// so the compile-time and runtime diagnostics for the same authoring mistake
+/// read the same way. The clause itself is computed here rather than imported:
+/// the only hints `reify-ir` renders are the fixed LENGTH / Density / Angle
+/// literals it reads from `reify_core::units`, nothing that works for an
+/// arbitrary dimension — and the ctor-slot LENGTH wording deliberately differs
+/// from the shared one (pinned by
+/// `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`).
+///
+/// Degrades rather than disappearing, so the hint is present unconditionally at
+/// a dimensioned slot:
+/// * a composite dimension not in `NAMED_DIMENSIONS` has no `canonical_name()`,
+///   and falls back to the `Display` form as the NAME (where `·`/`^-1` are fine
+///   — it is prose, not something the reader pastes);
+/// * a dimension with no clean example literal keeps the clause and drops only
+///   the `such as` tail.
+fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
+    let name = dimension
+        .canonical_name()
+        .map(str::to_owned)
+        .unwrap_or_else(|| dimension.to_string());
+    match example_unit_literal(dimension) {
+        Some(example) => format!("pass a dimensioned {name} literal such as `{example}`"),
+        None => format!("pass a dimensioned {name} literal"),
+    }
+}
+
+/// Type-level walker: recurse `param_type` against `arg_type` through wrapper pairs and the
+/// implicit-Some unwrap, and judge every other pair with [`judge_leaf`], whose verdicts all
+/// come from [`conformance_accepts`]. Recursing first is that relation's precondition.
+/// `literal` is the compiled arg at the top-level pair only: every recursion, the
+/// implicit-Some unwrap included, passes `None`.
+fn walk_param_against_arg_type(
+    param_type: &Type,
+    arg_type: &Type,
+    literal: Option<&CompiledExpr>,
+    ctx: &mut WalkCtx<'_>,
+) {
+    match (param_type, arg_type) {
+        (Type::Option(inner_p), Type::Option(inner_a)) => {
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
+        }
+        (Type::List(inner_p), Type::List(inner_a)) => {
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
+        }
+        (Type::Set(inner_p), Type::Set(inner_a)) => {
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
+        }
+        (Type::Map(key_p, val_p), Type::Map(key_a, val_a)) => {
+            walk_param_against_arg_type(key_p, key_a, None, ctx);
+            walk_param_against_arg_type(val_p, val_a, None, ctx);
+        }
+        // Implicit-Some (spec §4.9 `Option<T>` row): a bare arg is checked against `T`.
+        (Type::Option(inner_p), arg_ty) if !matches!(arg_ty, Type::Option(_)) => {
+            walk_param_against_arg_type(inner_p, arg_ty, None, ctx);
+        }
+        _ => judge_leaf(param_type, arg_type, literal, ctx),
+    }
+}
+
+/// The walker's single leaf funnel: emits whatever [`conformance_accepts`] decides for
+/// `param_type` against `arg_ty`.
+fn judge_leaf(
+    param_type: &Type,
+    arg_ty: &Type,
+    literal: Option<&CompiledExpr>,
+    ctx: &mut WalkCtx<'_>,
+) {
+    match conformance_accepts(param_type, arg_ty, ctx.registries.enum_defs) {
+        ArgVerdict::Accept | ArgVerdict::Unverifiable => {}
+        ArgVerdict::Reject(family) => emit_rejection(family, param_type, arg_ty, ctx),
+        ArgVerdict::QuantityConflict { param_q, arg_q } => {
+            emit_quantity_conflict(param_type, arg_ty, param_q, arg_q, ctx);
+        }
+        ArgVerdict::RequiresTraitConformance(required_trait) => match literal {
+            Some(compiled_arg) => check_leaf_trait_conformance(required_trait, compiled_arg, ctx),
+            None => check_type_level_trait_conformance(required_trait, arg_ty, ctx),
+        },
+    }
+}
+
+/// Trait conformance of an arg known only by its type (no literal to inspect) at a
+/// trait-object param.
+fn check_type_level_trait_conformance(required_trait: &str, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    match arg_ty {
+        Type::StructureRef(_) | Type::TraitObject(_) => {
+            emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
+        }
+        // Unverifiable without a literal: geometry conformance needs the op-array, an
+        // error was already reported, and a type parameter is decided at instantiation.
+        Type::Geometry | Type::Error | Type::TypeParam(_) => {}
+        // Any other leaf type cannot carry trait bounds.
+        _ => {
+            ctx.diagnostics.push(
+                diag_at(
+                    ctx.severity,
+                    format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_ty, required_trait, ctx.arg_name
+                    ),
+                )
+                .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                .with_label(DiagnosticLabel::new(
+                    ctx.span,
+                    format!("expected a type conforming to trait '{}'", required_trait),
+                )),
+            );
+        }
+    }
+}
+
+/// Emits the mismatch diagnostic of the param `family` an [`ArgVerdict::Reject`] names.
+fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    match family {
+        ParamFamily::StructureRef => emit_structure_ref_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Vector => emit_vector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Selector => emit_selector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Wrapper => emit_wrapper_shape_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Point
+        | ParamFamily::MatrixTensor
+        | ParamFamily::Field
+        | ParamFamily::Enum
+        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+    }
+}
+
+/// Emit [`DiagnosticCode::TypeNotConformingToTrait`] when a `List`/`Set`/`Map` param is
+/// supplied an arg of another shape (a bare leaf, or a differently-shaped wrapper).
+fn emit_wrapper_shape_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     ctx.diagnostics.push(
         diag_at(
             ctx.severity,
             format!(
-                "argument '{}' has type '{}' but param '{}' requires type '{}'",
-                ctx.arg_name, arg_ty, ctx.arg_name, param_type,
+                "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
+                arg_type, ctx.arg_name, param_type
+            ),
+        )
+        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
+/// Emit [`DiagnosticCode::ArgTypeMismatch`] for an [`ArgVerdict::QuantityConflict`]. The
+/// message names "the compared shape": under wrapper recursion that is the inner type.
+fn emit_quantity_conflict(
+    param_type: &Type,
+    arg_ty: &Type,
+    param_quantity: &Type,
+    arg_quantity: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has quantity '{}' but param '{}' requires quantity '{}' \
+                 (the compared shape '{}' is otherwise accepted at '{}'; only the quantity \
+                 slot disagrees)",
+                ctx.arg_name, arg_quantity, ctx.arg_name, param_quantity, arg_ty, param_type,
             ),
         )
         .with_code(DiagnosticCode::ArgTypeMismatch)
         .with_label(DiagnosticLabel::new(
             ctx.span,
-            format!("expected '{}', got '{}'", param_type, arg_ty),
+            format!("quantity mismatch: expected '{param_quantity}', got '{arg_quantity}'"),
         )),
     );
-}
-
-/// The arg types that every leaf gate in this walker conservatively SKIPS rather
-/// than judges: each is "unknown / unverifiable here", NOT "definitely
-/// non-conforming", so emitting on one would be a false positive.
-///
-/// * `Error` — anti-cascade poison sentinel; the root-cause diagnostic already fired.
-/// * `TypeParam` — an unresolved generic type variable; real conformance is
-///   decided when the var is bound at instantiation.
-/// * `Geometry` — carries no nominal identity verifiable at the type level
-///   (geometry conformance is decided from the compiled op-array, reachable only
-///   through the literal walker).
-/// * `TraitObject` — may resolve to a conforming type at evaluation; defer.
-///
-/// # Why a named helper rather than a repeated `matches!`
-///
-/// [`reject_if_incompatible`] and the four SHAPE-BASED leaf arms (`Vector`,
-/// `Point`, `Matrix`/`Tensor`, `Field`) all need exactly this set. Before task
-/// 5465's amendment pass each spelled it out inline and the arm comments claimed
-/// the copies were "character-for-character" identical so they "cannot drift" —
-/// a claim enforced only by comment. Routing every caller through one function
-/// makes it structurally true.
-///
-/// # `Type::ScalarParam` is deliberately NOT in this set
-///
-/// `Type::ScalarParam(Q)` is the unresolved *dimension*-parameter placeholder
-/// (`type_resolution.rs:3134`), which superficially looks like a sibling of
-/// `TypeParam`. It is not, for this purpose: with `TypeParam` the whole type is
-/// unknown, whereas with `ScalarParam` the FAMILY is known (it is a scalar) and
-/// only its dimension is open. Adding it here would silence genuine family-level
-/// mismatches such as `String ← Scalar<Q>` at every arm at once. Instead, the
-/// arms that already tolerate a scalar-family arg as the expression compiler's
-/// numeric-fallback placeholder (`Point`, `Matrix`/`Tensor`) accept it through
-/// [`is_numeric_placeholder_leaf`], which is where its scalar-ness — not its
-/// unknown-ness — is the load-bearing property.
-fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
-    matches!(
-        arg_ty,
-        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-    )
-}
-
-/// The NARROW numeric-leaf predicate the `Point` and `Matrix`/`Tensor` shape
-/// arms use to accept the expression compiler's numeric-fallback placeholder
-/// (task 5465).
-///
-/// `point3(…)` and friends are stdlib eval-builtins with no `.ri` return type,
-/// so their calls compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather
-/// than `Type::Point`. `Type::ScalarParam(_)` is the same shape with an
-/// unresolved dimension (see [`arg_type_is_unverifiable`]'s closing note).
-///
-/// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
-/// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
-/// would make `Anchor(origin: "origin")` silent and defeat the value floors.
-fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
-}
-
-/// Whether a `Type::List` arg at a `Matrix`/`Tensor` param is plausibly the
-/// idiomatic nested-list-literal spelling of that matrix — i.e. it bottoms out
-/// in a NUMERIC (or already tensor-shaped) element type.
-///
-/// The `Matrix`/`Tensor` arm accepts `Type::List` because
-/// `[[0.0, …], [0.0, …], [0.0, …]]` is how every `examples/dynamics/*_idyn.ri`
-/// spells a `MassProperties.inertia`, and that literal compiles to
-/// `List<List<Real>>`. But "is a list" is not the same claim as "is a matrix
-/// literal": an UNCONSTRAINED `Type::List(_)` accept also swallows
-/// `Body(inertia: ["a", "b"])` (arg type `List<String>`), because a
-/// `Matrix`-typed param never pairs with the literal walker's
-/// `(Type::List(param), ListLiteral)` arm and so arrives here as a bare type.
-/// That left the just-promoted family with a hole on exactly the shape the
-/// accept was written for (reviewer_comprehensive, correctness-coverage-gap).
-///
-/// Peeling `List` recursively (rather than checking one level) keeps the rule
-/// rank-agnostic: `List<Real>` for a rank-1 tensor, `List<List<Real>>` for a
-/// 3×3 matrix, `List<List<List<Real>>>` for a rank-3 tensor. ARITY is still not
-/// checked — see the arm comment for why that asymmetry with `Point`/`Vector` is
-/// deliberate — only the element FAMILY is.
-///
-/// `Error` and `TypeParam` bottoms return true: those elements are unknown, not
-/// definitely non-numeric, and rejecting them would violate the same
-/// anti-cascade / defer-to-instantiation contract [`arg_type_is_unverifiable`]
-/// encodes at the top level. `Geometry` / `TraitObject` are NOT included: a
-/// `List<Geometry>` at a matrix slot is a genuine family mismatch, and neither
-/// is a numeric-literal shape.
-fn list_bottoms_out_numeric(ty: &Type) -> bool {
-    match ty {
-        Type::List(inner) => list_bottoms_out_numeric(inner),
-        Type::Vector { .. } | Type::Matrix { .. } | Type::Tensor { .. } => true,
-        Type::Error | Type::TypeParam(_) => true,
-        other => is_numeric_placeholder_leaf(other),
-    }
-}
-
-/// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
-fn reject_if_incompatible<F>(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>, emit: F)
-where
-    F: FnOnce(&Type, &Type, &mut WalkCtx<'_>),
-{
-    if !arg_type_is_unverifiable(arg_ty) && !type_compatible(param_type, arg_ty) {
-        emit(param_type, arg_ty, ctx);
-    }
-}
-
-/// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
-///
-/// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
-/// expressions are not available for inspection. Walks the wrapper structure of
-/// `arg_type` in lockstep with `param_type`. At a `Type::TraitObject` leaf,
-/// `StructureRef`/`TraitObject` args defer to `emit_leaf_conformance_for_arg_type`;
-/// `Geometry`/`Error`/`TypeParam` args are skipped (unverifiable at the type level /
-/// anti-cascade / unresolved generic); any other leaf type (scalar, enum, point, …)
-/// cannot carry trait bounds and emits a
-/// `TypeNotConformingToTrait` directly — mirroring the literal walker's fallback so a
-/// wrapper-nested trait param reached with a non-literal scalar arg is not silently
-/// accepted (task-4081 soundness, esc-4081-174).
-///
-/// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
-/// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
-/// `Option/List/Set/Map`. A top-level `Type::Error` in either `param_type` or `arg_type`
-/// short-circuits the whole walk via an early return, so no diagnostic — wrapper-shape,
-/// leaf-conformance, or future-arm — is emitted on top of an already-reported upstream
-/// error. The guard runs before the match, making the anti-cascade contract uniform
-/// across all arms (current and future). Note: this guard is top-level only — an `Error`
-/// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
-/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
-/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
-/// arg-shape pass is tracked as future work.
-fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
-    // Anti-cascade: skip when either type carries the poison sentinel so no
-    // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
-    // of an already-reported upstream error. Hoisted above the match so the
-    // contract is explicit and uniform across all current and future arms.
-    if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
-        return;
-    }
-    match (param_type, arg_type) {
-        // Wrapper pairs: recurse into inner types lockstep.
-        (Type::Option(inner_p), Type::Option(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
-        }
-        (Type::List(inner_p), Type::List(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
-        }
-        (Type::Set(inner_p), Type::Set(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
-        }
-        (Type::Map(key_p, val_p), Type::Map(key_a, val_a)) => {
-            walk_param_against_arg_type(key_p, key_a, ctx);
-            walk_param_against_arg_type(val_p, val_a, ctx);
-        }
-        // Leaf: param type is a trait object.
-        // No FunctionCall promotion needed here — we work with the resolved result_type.
-        (Type::TraitObject(required_trait), arg_ty) => match arg_ty {
-            // StructureRef / TraitObject args: walk trait bounds via the shared helper.
-            Type::StructureRef(_) | Type::TraitObject(_) => {
-                emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
-            }
-            // Geometry conformance (Bounded/Connected/Convex) is decided from the
-            // compiled op-array, which is only reachable through the literal walker
-            // (`check_leaf_trait_conformance`). A type-level `Type::Geometry` leaf
-            // (e.g. an `Option<Geometry>` ValueRef) carries no op-array here, so we
-            // cannot verify it — skip rather than risk a false positive. `Type::Error`
-            // is anti-cascade (a nested poison sentinel reaching this leaf).
-            // `Type::TypeParam` is an unresolved generic type variable (e.g. `T` in a
-            // generic structure/function that forwards a type-param-typed value to a
-            // trait param). It is "unknown/unresolved", NOT "definitely
-            // non-conforming" — its real conformance is decided once `T` is bound to a
-            // concrete type at instantiation — so it is unverifiable at this leaf and
-            // skipped. Emitting here would be a false positive (esc-4081 amend,
-            // reviewer_comprehensive robustness_false_positive).
-            Type::Geometry | Type::Error | Type::TypeParam(_) => {}
-            // Any other leaf type (scalar, enum, point, vector, …) can never carry
-            // trait bounds, so it cannot conform to a trait param. Emit the same
-            // diagnostic the literal walker emits for non-struct/non-trait leaves.
-            // Without this arm, a wrapper-nested trait param reached with a
-            // non-literal arg — e.g. `param j : Option<DrivingJoint>` given an
-            // `Option<Real>` ValueRef — would silently lose the previously-existing
-            // "no matching overload" hard error (task-4081 soundness regression,
-            // esc-4081-174). The bare (unwrapped) trait-param case is already
-            // covered by the literal walker's own fallback arm.
-            _ => {
-                ctx.diagnostics.push(
-                    diag_at(
-                        ctx.severity,
-                        format!(
-                            "type '{}' does not conform to trait '{}' required by param '{}'",
-                            arg_ty, required_trait, ctx.arg_name
-                        ),
-                    )
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        ctx.span,
-                        format!("expected a type conforming to trait '{}'", required_trait),
-                    )),
-                );
-            }
-        },
-        // Leaf: param type is a StructureRef (nominal structure type, task-4584).
-        // Skip/gate logic is in `reject_if_incompatible` (Error anti-cascade,
-        // TypeParam unresolved, Geometry unverifiable, TraitObject may resolve).
-        (Type::StructureRef(_), arg_ty) => {
-            reject_if_incompatible(param_type, arg_ty, ctx, emit_structure_ref_mismatch);
-        }
-        // Leaf: param type is a Vector (task-4622). SHAPE-BASED with arity check:
-        // accept any vector-shaped arg regardless of quantity — the quantity slot is
-        // intentionally loose (ty.rs convention). For `Type::Vector` args, additionally
-        // require matching arity (n): `vec2` is NOT a valid substitute for a `vec3` param.
-        // `Type::Tensor { rank: 1, .. }` args are accepted regardless of element count
-        // (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
-        // Reject bare scalars, strings, bools, and any other non-vector kind.
-        //
-        // Unverifiable arg kinds are skipped through the shared
-        // [`arg_type_is_unverifiable`] gate (Error anti-cascade, TypeParam
-        // unresolved-generic, Geometry, TraitObject) — the SAME function the other
-        // three shape arms and `reject_if_incompatible` call, so the set cannot
-        // drift between them. For all other concrete arg types, reject unless the
-        // arg is vector-shaped with matching arity.
-        //
-        // NOT type_compatible: implicitly_converts_to has no Vector<->Vector
-        // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
-        // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
-        // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
-        (Type::Vector { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            // Accept vector-shaped args; for Type::Vector args, also require matching
-            // arity (n). A Tensor{rank:1} is accepted regardless of its element count.
-            let is_conforming = match arg_ty {
-                Type::Vector { n: arg_n, .. } => match param_type {
-                    Type::Vector { n: param_n, .. } => param_n == arg_n,
-                    _ => true, // unreachable: outer arm guards param_type as Type::Vector
-                },
-                Type::Tensor { rank: 1, .. } => true,
-                _ => false,
-            };
-            if !is_conforming {
-                emit_vector_mismatch(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
-        // arity check, modelled directly on the `Type::Vector` arm above and
-        // sharing its anti-cascade/unverifiable skip guard via the same
-        // [`arg_type_is_unverifiable`] function.
-        //
-        // Accepts:
-        //   • `Type::Point { n: arg_n, .. }` when `arg_n` matches the param's
-        //     `n`. The QUANTITY slot is intentionally loose — see the
-        //     "Point / Vector quantity-slot convention" section of
-        //     `crates/reify-core/src/ty.rs`, which records that the resolver
-        //     always wraps `Q` in `Type::Scalar` while `Value::Point::infer_type`
-        //     may yield a dimensionless or `Int` quantity, and that "the
-        //     looseness is intentional".
-        //   • Scalar-like numeric args, as the expression compiler's
-        //     numeric-fallback placeholder for point-producing builtins.
-        //
-        // The placeholder predicate is deliberately NARROW — see
-        // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
-        // `type_compat.rs::is_scalar_like_leaf` is NOT reused: it also admits
-        // `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and
-        // `Geometry`, which would make `Anchor(origin: "origin")` silent.
-        //
-        // WHY THE TOLERANCE LIVES INSIDE THIS ARM rather than as an arg-side
-        // `CompiledExpr` skip in the shared fallback. A broad "skip any
-        // FunctionCall arg whose result_type is Scalar/Int" would punch a hole
-        // through the ALREADY-allowlisted families — `Widget(label:
-        // some_scalar_fn())` at a `String` param would go silent. Keyed on
-        // `Type::Point`, this arm structurally cannot be reached by a `String` /
-        // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
-        // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
-        // shape, which an arg-side skip would MISS: the placeholder type
-        // propagates through the value cell and only the type-level walker sees
-        // the resulting `ValueRef`.
-        //
-        // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
-        // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
-        // pre-existing `Type::Geometry` placeholder exclusion (geometry
-        // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
-        // The tolerance can be tightened to a FunctionCall-shaped check once
-        // `point3` carries a real return type — tracked by the family-5 /
-        // placeholder follow-up filed with this task.
-        (Type::Point { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            let is_conforming = match arg_ty {
-                Type::Point { n: arg_n, .. } => match param_type {
-                    Type::Point { n: param_n, .. } => param_n == arg_n,
-                    _ => true, // unreachable: outer arm guards param_type as Type::Point
-                },
-                // Numeric-fallback placeholder for point-producing builtins.
-                other => is_numeric_placeholder_leaf(other),
-            };
-            if !is_conforming {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
-        // SHAPE-BASED, sharing the other shape arms' anti-cascade/unverifiable
-        // skip guard through [`arg_type_is_unverifiable`]. Handled as ONE arm
-        // because `type_compat.rs` already treats the two families as
-        // interconvertible.
-        //
-        // Accepts, each for a stated reason:
-        //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
-        //     Rule 3 (`type_compat.rs:163-179`) already makes
-        //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal, and the quantity slot is
-        //     loose per the ty.rs convention.
-        //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
-        //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
-        //   • `Type::List` — the idiomatic nested-list-literal spelling of a
-        //     matrix, which compiles to `List<List<Real>>` — but ONLY when it
-        //     bottoms out in a numeric/tensor element type. See
-        //     [`list_bottoms_out_numeric`]: an unconstrained `Type::List(_)`
-        //     accept also swallowed `Body(inertia: ["a", "b"])`, leaving the
-        //     promoted family a hole on the very shape the accept exists for.
-        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — rank-0 scalar
-        //     equivalence (Rules 2a/2b) plus matrix/tensor-builtin
-        //     numeric-fallback placeholders, via the same narrow
-        //     [`is_numeric_placeholder_leaf`] the `Point` arm uses.
-        //
-        // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
-        // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
-        // `Set`, `Map`, a non-numeric `List`, …) is rejected via the shared
-        // `emit_arg_type_mismatch`.
-        //
-        // NO ARITY CHECK, in deliberate contrast to the `Point` and `Vector`
-        // arms. `List<List<Real>>` — the idiomatic spelling — carries no element
-        // counts in its type, so an m/n (or rank) check would either false-reject
-        // every list-literal matrix or be silently unenforceable for exactly the
-        // shape that matters. Constraining the ELEMENT FAMILY (above) is the part
-        // that is decidable from the type alone; arity/PSD validation for
-        // `MassProperties.inertia` is the ctor-time inertia hook's job (see
-        // `examples/dynamics/pendulum_idyn.ri:24-26`), not this walker's.
-        (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
-            if !arg_type_is_unverifiable(arg_ty) =>
-        {
-            let is_conforming = match arg_ty {
-                Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
-                Type::List(_) => list_bottoms_out_numeric(arg_ty),
-                other => is_numeric_placeholder_leaf(other),
-            };
-            if !is_conforming {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Selector or AnySelector (task-4598).
-        // Skip/gate logic is in `reject_if_incompatible`; `type_compat.rs` AnySelector
-        // arms encode: AnySelector accepts any Selector(k), rejects Real/String/Int/…;
-        // Selector(k) accepts only Selector(k), rejects AnySelector/others.
-        (Type::Selector(_) | Type::AnySelector, arg_ty) => {
-            reject_if_incompatible(param_type, arg_ty, ctx, emit_selector_mismatch);
-        }
-        // Leaf: param type is a Field (task 5465, family 3). SHAPE-BASED, and
-        // deliberately WITHOUT a domain/codomain check.
-        //
-        // Both `Field` slots erase to the expression compiler's numeric
-        // fallback: a legitimate arg's `result_type` is `Field<Real, Real>`
-        // however the field was declared (an analytical `field def` is the
-        // common case — `examples/fea_shell_channels.ri` alone produced six such
-        // false warnings before this arm existed: top / mid / bottom /
-        // displacement / stress / frame). Comparing the declared slots against
-        // that placeholder would compare a declaration against a hole, so this
-        // arm is NOT routed through `type_compatible` — the same reason the
-        // `Type::Vector` arm above is shape-based (task-4622 D1).
-        //
-        // The skip guard is the shared [`arg_type_is_unverifiable`] function, so
-        // the anti-cascade / unverifiable set cannot drift between the arms:
-        // Error (anti-cascade), TypeParam (unresolved generic, decided at
-        // instantiation), Geometry (unverifiable at the type level), TraitObject
-        // (may resolve to a field-producing type).
-        (Type::Field { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            // Accept any field-shaped arg, plus a lambda: `Type::Function` is a
-            // legitimate spelling of a field-shaped arg at a `Field` slot.
-            // Everything else (String, Bool, Int, Scalar, Point, List, …) is
-            // rejected through the shared `emit_arg_type_mismatch`, which already
-            // emits `ArgTypeMismatch` at `ctx.severity` — no new DiagnosticCode.
-            if !matches!(arg_ty, Type::Field { .. } | Type::Function { .. }) {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            }
-        }
-        // Option-unwrap (implicit-Some, C1 rule 6 — task 5302 α): an `Option<T>`
-        // param supplied a bare non-Option arg of type `T` is a valid `Some(arg)`.
-        // Recurse on the inner param type so the arg is checked against `T`. This
-        // MUST precede the wrapper-shape catch-all below: without it, a valid
-        // implicit-Some arg (e.g. `Option<FaceSelector>` ← `Selector(Face)`) would
-        // fall through to the wrapper-shape arm and spuriously warn — the live hole
-        // this task closes. The `Option`/`Option` pair is handled by the wrapper-
-        // pair arm at the top of this match, so the guard here only ever fires for a
-        // non-Option arg.
-        (Type::Option(inner_p), arg_ty) if !matches!(arg_ty, Type::Option(_)) => {
-            walk_param_against_arg_type(inner_p, arg_ty, ctx);
-        }
-        // Wrapper-shape mismatch OR general concrete-leaf mismatch.
-        _ => {
-            if matches!(
-                param_type,
-                Type::List(_) | Type::Set(_) | Type::Map(_, _)
-            ) {
-                // Wrapper-shape mismatch: a `List/Set/Map<T>` param supplied an arg
-                // whose shape doesn't match (e.g. a bare leaf, or a differently-
-                // shaped wrapper). (`Option<T>` params never reach here — the
-                // Option-unwrap arm above handles every non-Option arg, and the
-                // wrapper-pair arm handles `Option`/`Option`.) Emitted at ctx.severity.
-                ctx.diagnostics.push(
-                    diag_at(
-                        ctx.severity,
-                        format!(
-                            "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
-                            arg_type, ctx.arg_name, param_type
-                        ),
-                    )
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        ctx.span,
-                        format!("expected '{}', got '{}'", param_type, arg_type),
-                    )),
-                );
-            } else if let Some(param_enum) = base_enum_name(param_type, ctx.registries.enum_defs) {
-                // ENUM FAMILY (task 5465, family 4). Handled as its own branch,
-                // BEFORE the allowlist, so the D1/F-Mono erasure gap is absorbed
-                // without a `type_compatible` call that cannot express it.
-                //
-                // Under erasure (PRD §7.1: "resolved args live only in the
-                // per-site substitution map, never on the persisted `Type` or
-                // `Value`"), a constructed variant's `result_type` is the bare
-                // `Type::Enum(name)`, while a declared annotation may be the
-                // applied `Type::Applied { name, args }`. `type_compatible` has
-                // no Applied-vs-Enum rule in EITHER direction, so both spellings
-                // must be reconciled here.
-                //
-                // SYMMETRIC by construction. The first cut short-circuited on
-                // `enum_payload_compatible`, which only matches a bare
-                // `Type::Enum` on the SUPPLIED side (type_compat.rs:334-337).
-                // Combined with `Type::Enum(_)` joining the allowlist, the
-                // reverse pairing — a param declared bare `Enum("Result")`
-                // supplied an arg whose `result_type` is the applied
-                // `Applied { name: "Result", .. }` (a `ValueRef` to a cell
-                // declared `Result<Length, String>`, or a call to a fn whose
-                // return annotation is the applied form, cf.
-                // `examples/m6_result_recovery.ri:30`) — fell through to
-                // `type_compatible` and produced a SPURIOUS `ArgTypeMismatch`
-                // that was silent before the promotion. On the
-                // `check_fn_arg_conformance` path that is a hard Error, so it
-                // would have failed the compile rather than merely added noise
-                // (reviewer_comprehensive, robustness-false-positive).
-                //
-                // Mapping BOTH sides through [`base_enum_name`] — the same
-                // oracle `enum_payload_compatible` itself now uses, so the
-                // payload-field guard in `variant_construct.rs` and this arm
-                // cannot drift — makes the tolerance direction-agnostic. It also
-                // removes the double `enum_defs` scan the first cut performed
-                // per `Applied` leaf (once inside `enum_payload_compatible`,
-                // again inside `general_leaf_param_family_is_validated`);
-                // membership is now resolved exactly once per side, and not at
-                // all for the non-enum params that dominate the corpus
-                // (reviewer_comprehensive, efficiency).
-                //
-                // STILL A TARGETED TOLERANCE, NOT A FAMILY BYPASS: only the
-                // same-base-name pairing is accepted. A genuine cross-enum
-                // mismatch (`Hue` ← `Outline`) or a non-enum arg
-                // (`Result<…>` ← `String`) falls straight through to the shared
-                // `reject_if_incompatible` gate below and is rejected exactly as
-                // an allowlisted family would be. Type-ARG agreement is the
-                // inference/pin passes' job, not this walker's — see
-                // `enum_payload_compatible`'s doc.
-                if base_enum_name(arg_type, ctx.registries.enum_defs) != Some(param_enum) {
-                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
-                }
-            } else if general_leaf_param_family_is_validated(param_type) {
-                // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
-                // silent `_` fall-through for the param families that
-                // [`general_leaf_param_family_is_validated`] vets, routing them
-                // through the shared `reject_if_incompatible` → `type_compatible`
-                // gate and emitting `ArgTypeMismatch` at ctx.severity for a genuine
-                // mismatch. Every other family keeps falling through silently,
-                // exactly as before α — see that predicate's doc comment for the
-                // per-family rationale and the sound-by-construction posture.
-                reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
-            }
-        }
-    }
-}
-
-/// Whether `param_type` belongs to a param family whose args are safe to judge
-/// with raw [`type_compatible`] at the general concrete-leaf arm of
-/// [`walk_param_against_arg_type`].
-///
-/// # Why this is an allowlist and not a skip list
-///
-/// The α cut of the general-leaf arm used a NEGATIVE guard
-/// (`!matches!(param_type, Type::Geometry | Type::TypeParam(_))`), which made it
-/// unsound BY DEFAULT: every present and future [`Type`] variant was opted in to
-/// `type_compatible` unless somebody remembered to carve it out. Five families
-/// were false-rejected across 15+ shipped examples before the corpus gate in
-/// `examples_smoke.rs` caught it.
-///
-/// The inversion here makes the arm sound BY CONSTRUCTION — a newly-added `Type`
-/// variant defaults to silence, not to a false positive. Broadening the list is
-/// a deliberate act that must come with corpus evidence.
-///
-/// # Why these families
-///
-/// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
-/// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
-/// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
-/// which that presumption holds unconditionally at a struct-ctor arg position —
-/// the expression compiler infers them precisely, and `type_compat.rs` has real
-/// arms for each.
-///
-/// # Handled by dedicated shape-based arms instead (task 5465)
-///
-/// `Point`, `Field`, `Matrix` and `Tensor` are NOT excluded — they are handled
-/// by dedicated SHAPE-BASED arms in [`walk_param_against_arg_type`], exactly as
-/// `Type::Vector` is, so none ever reaches this predicate. The
-/// placeholder/erasure/missing-coercion rationale below is still why those arms
-/// are shape-based rather than `type_compatible`-based:
-///
-/// * `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
-///   fallback `Scalar[m]`, never `Type::Point`;
-/// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
-///   its declaration says;
-/// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
-///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
-///
-/// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. For the two placeholder families this is
-/// the same class the `Type::Geometry` exclusion below and
-/// [`promote_function_call_to_structure_ref`] already exist for.
-///
-/// # Deliberately excluded, with evidence
-///
-/// Contrary to what this comment claimed before task 5465, promoting those four
-/// families needed NO new `type_compat.rs` coercion RULE — the shape-based arms
-/// and the [`base_enum_name`]-keyed enum branch sit entirely inside this walker
-/// (`base_enum_name` itself is a factoring of a predicate `type_compat.rs`
-/// already had, not a new coercion). What remains excluded is excluded for its
-/// own stated reason, and each
-/// entry names an owner (INV-SF-5 `placeholders-owned-and-loud`,
-/// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
-/// names none):
-///
-/// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
-///   at a dimensioned slot is idiomatic throughout the corpus. HELD, not
-///   forgotten: whether it should be legal is a language-semantics question
-///   about the dimensionless↔dimensioned slot convention, and today's answer is
-///   position-dependent across six gates (legal at ctor field slots, literal
-///   `param`/`let` defaults and constraint-def args; illegal at user-fn param
-///   slots, fn-param defaults, ambient defaults, compound initializers and all
-///   arithmetic). Owner: task #5627 (filed from this task as ticket
-///   `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
-///   carries the four candidate resolutions and their costs.
-/// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
-///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
-///   geometry conformance is decided only through the literal walker's op-array
-///   inference.
-/// * **`TypeParam`** — an unresolved generic param, whose real conformance is
-///   decided when the type var is bound at instantiation (mirrors the arg-side
-///   `TypeParam` skip inside [`reject_if_incompatible`]).
-///
-/// The last two were the α negative guard's explicit carve-outs; they are
-/// subsumed by simple absence from the allowlist, so the redundant `matches!`
-/// is gone rather than left as dead belt-and-braces.
-///
-/// # Still unexamined
-///
-/// Every other [`Type`] variant defaults to silence and has simply not been
-/// looked at yet. Enumerated against the real `Type` enum
-/// (`crates/reify-core/src/ty.rs:120-345`) so the list cannot quietly rot:
-/// `Complex`, `Orientation`, `Frame`, `Transform`, `AffineMap`, `Range`,
-/// `Plane`, `Axis`, `Direction`, `BoundingBox`, `Feature`, `Function`, `Keyed`,
-/// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
-/// deliberate act the four families above went through: a per-family probe pair
-/// (clean fixture + value floor) plus a green corpus gate, with no new
-/// `SKIP_SET` entry.
-///
-/// # Enum families (task 5465, family 4) — handled by the caller, not here
-///
-/// `Type::Enum(_)` and enum-named `Type::Applied` are promoted, but they never
-/// reach this predicate: the general concrete-leaf arm dispatches them into its
-/// own [`base_enum_name`]-keyed branch first, which absorbs the D1/F-Mono
-/// erasure gap SYMMETRICALLY (either side may be the bare or the applied
-/// spelling) and then falls into the same shared `reject_if_incompatible` gate
-/// for a residual genuine mismatch (`Hue` ← `Outline`, `Result<…>` ← `String`).
-///
-/// The first cut of family 4 instead listed both variants here and relied on a
-/// preceding `enum_payload_compatible` short-circuit. That was one-directional
-/// (it matches only a bare `Type::Enum` on the SUPPLIED side) and it scanned
-/// `enum_defs` twice per applied leaf. Keeping the whole enum decision in one
-/// branch fixes both — see the arm comment.
-///
-/// Note that `Type::Applied` was never a candidate for a BLANKET entry here
-/// regardless: it also represents generic STRUCTURE refs (e.g. `Coupling<T>`,
-/// see `type_arg_applied_resolution_tests.rs`), and `implicitly_converts_to` has
-/// no Applied-vs-StructureRef arm, so an unconditional entry would reintroduce
-/// exactly the class of false positive this allowlist exists to prevent. An
-/// applied generic structure still falls through this predicate silently.
-fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
-    match param_type {
-        Type::Bool | Type::Int | Type::String => true,
-        Type::Scalar { dimension } => dimension.is_dimensionless(),
-        _ => false,
-    }
-}
-
-/// RAII guard that pops the top entry from an in-flight Vec when dropped.
-///
-/// Ensures the `push`–`pop` invariant around [`infer_traits_for_expr_in_env`]
-/// in [`RealizationLetEnv::lookup`] is upheld even if the inner call panics.
-/// Used only within `RealizationLetEnv::lookup`.
-struct InFlightGuard<'a> {
-    stack: &'a RefCell<Vec<ValueCellId>>,
-}
-
-impl Drop for InFlightGuard<'_> {
-    fn drop(&mut self) {
-        self.stack.borrow_mut().pop();
-    }
-}
-
-/// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
-/// their compiled op-arrays in the parent template's `realizations` list.
-///
-/// For non-geometry lets (`ValueCellKind::Let` with a `default_expr`), falls
-/// back to `infer_traits_for_expr_in_env` on the resolved `CompiledExpr`,
-/// threading `self` through so chained `ValueRef` lets are resolved recursively.
-/// For any id that doesn't match a known let or realization, returns `None`
-/// (safe-default: the caller falls back to `InferredTraits::all()`).
-///
-/// # Geometry-let lookup
-///
-/// `compile_entity` Pass 2 explicitly `continue`s past geometry-typed
-/// `MemberDecl::Let`, so geometry lets never enter `value_cells`. They are
-/// lowered in Pass 3 to `Vec<CompiledGeometryOp>` stored on
-/// `RealizationDecl.operations` with `RealizationDecl.name = Some(let_name)`.
-/// `lookup` therefore scans `realizations` first (geometry path) and falls
-/// back to `value_cells` (non-geometry path).
-///
-/// # Chained let
-///
-/// `compile_geometry_call` already handles geometry-let chaining at the AST
-/// level: for `let g = h; let h = union(box, box)`, the realization for `g`
-/// recursively compiles `h`'s init expression and emits the SAME op array
-/// under `realization.name = Some("g")`. No chained-ValueRef walk is needed
-/// here.
-///
-/// # Cycle guard
-///
-/// The value_cells fallback calls `infer_traits_for_expr_in_env(expr, self)`,
-/// which recurses back into `lookup` for any nested `ValueRef`. Malformed or
-/// forward-referencing IR can produce cycles (`let g = ValueRef(g)`).  Rather
-/// than stack-overflowing, the `in_flight` visited set detects re-entry and
-/// returns `None`; the caller's `unwrap_or(InferredTraits::all())` mechanism
-/// safe-defaults the result.  The realization arm does NOT recurse through
-/// the env (it calls `infer_traits_for_op` instead), so `in_flight` is only
-/// checked on the value_cells path.
-struct RealizationLetEnv<'a> {
-    templates: &'a HashMap<String, &'a TopologyTemplate>,
-    /// In-flight visited set used to terminate cycles in the value_cells fallback.
-    ///
-    /// `RefCell` is required because `LetBindingEnv::lookup` takes `&self`;
-    /// changing the trait to `&mut self` would cascade to all other impls.
-    /// `Vec` (not `HashSet`) because typical recursion depth is 1–4; a linear
-    /// scan is faster than hash overhead at this size, and avoids a new dep.
-    in_flight: RefCell<Vec<ValueCellId>>,
-}
-
-impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
-    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
-        let template = self.templates.get(id.entity.as_str())?;
-
-        // Geometry-let path: realization with matching name.
-        if let Some(real) = template
-            .realizations
-            .iter()
-            .find(|r| r.name.as_deref() == Some(id.member.as_str()))
-        {
-            return Some(infer_traits_for_op(&real.operations));
-        }
-
-        // Non-geometry-let fallback: value_cells Let with a resolved default_expr.
-        // Match on both entity and member for symmetry with the realization arm
-        // above (entity is already narrowed by `templates.get(id.entity.as_str())`,
-        // but the explicit check makes the intent self-documenting and adds a
-        // cheap guard against any future refactor that reuses cells across templates).
-
-        // Cycle guard: if `id` is already being resolved on the current call stack,
-        // return None.  The caller's `unwrap_or(InferredTraits::all())` in
-        // `infer_traits_for_expr_in_env` converts None into the safe default, so
-        // cycles in malformed or forward-referencing IR yield `all()` rather than
-        // a stack overflow.
-        if self.in_flight.borrow().iter().any(|p| p == id) {
-            return None;
-        }
-
-        if let Some(cell) = template.value_cells.iter().find(|vc| {
-            vc.id.entity == id.entity
-                && vc.id.member == id.member
-                && matches!(vc.kind, ValueCellKind::Let)
-                && vc.default_expr.is_some()
-        }) {
-            // Thread the env through the resolved CompiledExpr so that any
-            // ValueRef nested inside a non-geometry let (e.g. a chained let
-            // whose default_expr references a geometry binding) is resolved via
-            // the env rather than silently safe-defaulting to all(). The
-            // in-flight guard above terminates any cycle in well-formed or
-            // malformed IR before a stack overflow can occur.
-            let expr = cell.default_expr.as_ref()?;
-            self.in_flight.borrow_mut().push(id.clone());
-            let _guard = InFlightGuard {
-                stack: &self.in_flight,
-            };
-            let result = infer_traits_for_expr_in_env(expr, self);
-            return Some(result);
-        }
-
-        None
-    }
 }
 
 /// Leaf conformance check: verify that `compiled_arg` conforms to `required_trait`.
@@ -1879,10 +1423,7 @@ fn check_leaf_trait_conformance(
             _ => None,
         };
         if let Some(trait_kind) = geom_trait {
-            let env = RealizationLetEnv {
-                templates: ctx.registries.templates,
-                in_flight: RefCell::new(Vec::new()),
-            };
+            let env = RealizationLetEnv::new(ctx.registries.templates);
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
                 // CARVE-OUT (task 5302 α): these two geometry-trait emit sites
@@ -2145,439 +1686,42 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 }
 
 #[cfg(test)]
-/// # Why these tests live here (and cannot move to `tests/*.rs`)
-///
-/// All four tests in this module call `pub(crate) check_trait_conformance` via
-/// `use super::*;`.  Rust integration-test binaries in `tests/*.rs` are separate
-/// crates and can only access `pub` (not `pub(crate)`) items, so none of these
-/// tests can be moved to an integration-test file without also making
-/// `check_trait_conformance` (and `MergeContext`, `collect_all_requirements`,
-/// `check_trait_arg_conformance`) part of the public API — a non-trivial
-/// architectural change that would require its own RFC-level task.
-///
-/// **Tests 1–2** (`check_trait_conformance_resolves_enum_typed_param_and_let`,
-/// `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`) hand-build
-/// `RequirementKind::Let` fixtures.  `RequirementKind::Let` is **not
-/// parser-reachable** from reify source today (see `trait_merge_tests.rs:282`
-/// and `let_type_disambiguation_tests.rs:234`), so there is no
-/// `compile_source(...)` string that produces this variant.  An integration-level
-/// rewrite is therefore impossible, not just inconvenient.
-///
-/// **Tests 3–4** (`enum_with_type_args_emits_error_diagnostic`,
-/// `unknown_named_type_with_type_args_produces_unresolved_diagnostic`) assert an
-/// **exact count of 1** on diagnostic substrings.  Under full-pipeline
-/// compilation the same diagnostics are also emitted from `entity.rs:329` and
-/// `traits.rs:36`, so a `compile_source`-based rewrite would see 2+ emissions
-/// and break the exact-count assertions.  Relaxing to `any(...)` would lose the
-/// path-specificity that makes these tests load-bearing (they pin that the
-/// `conformance/checker.rs` emission site in `check_phase_resolve_structure_members`
-/// fires in both debug and release builds).
-///
-/// **Closest integration-level sibling** that covers the *parser-reachable*
-/// scenarios:
-/// - `reject_unresolved_type_in_trait_conformance`
-///   (`tests/boundary1_consumer.rs:280`)
-///
-/// For full rationale and alternative paths (structural extraction,
-/// test-only feature-flag API, `src/conformance_tests.rs` sibling module)
-/// see the escalate_info record for task 2033.
+/// Trait-conformance cases go through `check_trait_conformance` (inline .ri via `conform_source`); rationale: docs/prds/v0_6/compiler-declaration-passes.md §2.4 / B10.
 mod tests {
     use super::*;
+    use crate::compile_builder::ctx::CompilationCtx;
+    use crate::compile_builder::enums_phase::bind_resolution_enums;
+    use crate::compile_builder::names_phase::build_resolution_names;
+    use crate::compile_builder::pre_pass::collect_decl_refs;
+    use crate::compile_builder::traits_phase::phase_traits;
 
-    /// Run `check_trait_conformance` against the given traits and structure, returning all
-    /// diagnostics emitted.
+    /// Everything one `check_trait_conformance` call produced for its conformer.
     ///
-    /// Thin wrapper over [`run_conformance_with_assoc_fns`] that discards the
-    /// populated assoc-fn table — the two differ ONLY in whether they surface
-    /// that table, so the shared ~20-line scaffolding (scope/value_cells/
-    /// constraints init, registry construction, alias_registry, the 13-arg call
-    /// itself) lives in exactly one place and a future signature change to
-    /// `check_trait_conformance` is edited once. Each test only needs to build
-    /// its trait and structure fixtures and then assert on the returned
-    /// `Vec<Diagnostic>`.
-    fn run_conformance(
+    /// `injected_cells` and `injected_constraints` are the call's value-cell and
+    /// constraint out-params. They start empty, so they hold ONLY what conformance
+    /// injected from trait defaults — never the conformer's own members.
+    struct ConformanceRun {
+        diagnostics: Vec<Diagnostic>,
+        injected_cells: Vec<ValueCellDecl>,
+        injected_constraints: Vec<CompiledConstraint>,
+        assoc_fns: Vec<CompiledAssocFn>,
+    }
+
+    /// Run `check_trait_conformance` for `structure_def` against `traits`.
+    ///
+    /// The ONE in-test call site of `check_trait_conformance`, so the scaffolding
+    /// (scope, out-params, registries, the 16-argument call itself) is written once
+    /// and a future signature change is edited once.
+    fn conform(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
-    ) -> Vec<Diagnostic> {
-        run_conformance_with_assoc_fns(traits, structure_def, enum_defs).0
-    }
-
-    /// RED (task 3939 δ, step-3): a required associated function that the
-    /// conforming structure does not provide must surface an
-    /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
-    /// diagnostic naming the declaring trait and the missing fn.
-    ///
-    /// Lives here (not in `checker.rs`) because the `run_conformance` harness
-    /// and the `pub(crate) check_trait_conformance` entry point are in this
-    /// module — integration-test crates can only see `pub` items.
-    ///
-    /// Fails until step-4 wires the phase-5 `RequirementKind::Fn` satisfaction
-    /// check (today `collect_all_requirements` drops Fn requirements and the
-    /// phase-5 arm is a placeholder `continue`, so zero diagnostics fire).
-    #[test]
-    fn required_assoc_fn_not_provided_emits_trait_fn_not_satisfied() {
-        // Trait `Shape` requires a bodyless `fn req(self) -> Real`.
-        let shape = CompiledTrait {
-            name: "Shape".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "req".to_string(),
-                kind: RequirementKind::Fn(CompiledAssocFnSig {
-                    name: "req".to_string(),
-                    has_self: true,
-                    params: vec![],
-                    return_type: Type::dimensionless_scalar(),
-                }),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // Structure `S : Shape { }` provides NO `fn req` member.
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![reify_ast::TraitBoundRef {
-                name: "Shape".to_string(),
-                type_args: vec![],
-                span: SourceSpan::empty(0),
-            }],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
-
-        let fn_not_satisfied: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
-            .collect();
-        assert_eq!(
-            fn_not_satisfied.len(),
-            1,
-            "expected exactly one TraitFnNotSatisfied diagnostic for the missing \
-             required assoc fn 'req'; got: {:?}",
-            diagnostics
-        );
-        let msg = &fn_not_satisfied[0].message;
-        assert!(
-            msg.contains("Shape"),
-            "diagnostic should name the declaring trait 'Shape'; got: {}",
-            msg
-        );
-        assert!(
-            msg.contains("req"),
-            "diagnostic should name the missing fn 'req'; got: {}",
-            msg
-        );
-    }
-
-    // --- task 3939 δ step-5/6 fixtures: assoc-fn signature exact-match ---
-
-    /// The implicit `self` receiver: `is_self == true` with the sentinel `self`
-    /// named type (per decl.rs:818-823). Excluded from the derived signature's
-    /// `params` and recorded as `has_self`.
-    fn assoc_self_param() -> reify_ast::FnParam {
-        reify_ast::FnParam {
-            name: "self".to_string(),
-            is_self: true,
-            type_expr: reify_ast::TypeExpr {
-                kind: reify_ast::TypeExprKind::Named {
-                    name: "self".to_string(),
-                    type_args: vec![],
-                },
-                span: SourceSpan::empty(0),
-            },
-            default: None,
-            span: SourceSpan::empty(0),
-        }
-    }
-
-    /// A non-self param `name : type_name` (bare named type).
-    fn assoc_named_param(name: &str, type_name: &str) -> reify_ast::FnParam {
-        reify_ast::FnParam {
-            name: name.to_string(),
-            is_self: false,
-            type_expr: reify_ast::TypeExpr {
-                kind: reify_ast::TypeExprKind::Named {
-                    name: type_name.to_string(),
-                    type_args: vec![],
-                },
-                span: SourceSpan::empty(0),
-            },
-            default: None,
-            span: SourceSpan::empty(0),
-        }
-    }
-
-    /// A structure-body `fn <name>(<params>) -> <return_type_name> { 0.0 }` member.
-    /// The trivial body is irrelevant to signature matching — δ compares only the
-    /// receiver / param / return signature.
-    fn assoc_fn_member(
-        name: &str,
-        params: Vec<reify_ast::FnParam>,
-        return_type_name: &str,
-    ) -> reify_ast::MemberDecl {
-        reify_ast::MemberDecl::Fn(reify_ast::FnDef {
-            name: name.to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            params,
-            return_type: Some(reify_ast::TypeExpr {
-                kind: reify_ast::TypeExprKind::Named {
-                    name: return_type_name.to_string(),
-                    type_args: vec![],
-                },
-                span: SourceSpan::empty(0),
-            }),
-            body: Some(reify_ast::FnBody {
-                let_bindings: vec![],
-                result_expr: reify_ast::Expr {
-                    kind: reify_ast::ExprKind::NumberLiteral {
-                        value: 0.0,
-                        is_real: true,
-                    },
-                    span: SourceSpan::empty(0),
-                },
-            }),
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            annotations: vec![],
-        })
-    }
-
-    /// Build trait `Shape` requiring a single bodyless `fn <fn_name>(self) -> Real`.
-    fn shape_requiring_fn(fn_name: &str) -> CompiledTrait {
-        CompiledTrait {
-            name: "Shape".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: fn_name.to_string(),
-                kind: RequirementKind::Fn(CompiledAssocFnSig {
-                    name: fn_name.to_string(),
-                    has_self: true,
-                    params: vec![],
-                    return_type: Type::dimensionless_scalar(),
-                }),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        }
-    }
-
-    /// Build structure `S : Shape { <members> }`.
-    fn structure_s_conforming_shape(
-        members: Vec<reify_ast::MemberDecl>,
-    ) -> reify_ast::StructureDef {
-        reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![reify_ast::TraitBoundRef {
-                name: "Shape".to_string(),
-                type_args: vec![],
-                span: SourceSpan::empty(0),
-            }],
-            members,
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        }
-    }
-
-    /// RED (task 3939 δ, step-5): a provided assoc fn whose RETURN TYPE differs
-    /// from the trait requirement must surface `TraitFnSignatureMismatch`
-    /// (§8.8 same-name-different-type) and must NOT also surface
-    /// `TraitFnNotSatisfied` — the fn IS present, it is just mis-typed.
-    ///
-    /// Fails until step-6 adds exact-match signature comparison (today the
-    /// phase-5 Fn arm checks the fn NAME only, so a wrong-typed `area` is
-    /// silently treated as satisfying the requirement).
-    #[test]
-    fn provided_assoc_fn_with_wrong_return_type_emits_signature_mismatch() {
-        let shape = shape_requiring_fn("area");
-        // Structure provides `fn area(self) -> Length { 0.0 }` (Length != Real).
-        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
-            "area",
-            vec![assoc_self_param()],
-            "Length",
-        )]);
-
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
-
-        let mismatch: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
-            .collect();
-        assert_eq!(
-            mismatch.len(),
-            1,
-            "expected exactly one TraitFnSignatureMismatch for the wrong-return-type \
-             provided fn 'area'; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            mismatch[0].message.contains("area"),
-            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
-            mismatch[0].message
-        );
-
-        let not_satisfied: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
-            .collect();
-        assert!(
-            not_satisfied.is_empty(),
-            "the fn 'area' is present (just mis-typed) — TraitFnNotSatisfied must NOT \
-             fire; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// RED (task 3939 δ, step-5): a provided assoc fn with the wrong ARITY (an
-    /// extra non-self param) is also a signature mismatch. Same assertions as
-    /// the return-type case. Fails until step-6.
-    #[test]
-    fn provided_assoc_fn_with_wrong_arity_emits_signature_mismatch() {
-        let shape = shape_requiring_fn("area");
-        // Structure provides `fn area(self, extra: Real) -> Real { 0.0 }`
-        // (params [Real] != the required []).
-        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
-            "area",
-            vec![assoc_self_param(), assoc_named_param("extra", "Real")],
-            "Real",
-        )]);
-
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
-
-        let mismatch: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
-            .collect();
-        assert_eq!(
-            mismatch.len(),
-            1,
-            "expected exactly one TraitFnSignatureMismatch for the wrong-arity \
-             provided fn 'area'; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            mismatch[0].message.contains("area"),
-            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
-            mismatch[0].message
-        );
-
-        let not_satisfied: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
-            .collect();
-        assert!(
-            not_satisfied.is_empty(),
-            "the fn 'area' is present (just wrong arity) — TraitFnNotSatisfied must \
-             NOT fire; got: {:?}",
-            diagnostics
-        );
-    }
-
-    // --- task 3939 δ step-7/8 fixtures: assoc-fn table population ---
-
-    /// Build a body-carrying `fn <name>(<params>) -> <return_type_name> { <value> }`
-    /// `FnDef`. The distinct `value` lets the override/default tests assert that
-    /// override and default bodies compile to different content hashes.
-    fn assoc_fn_def(
-        name: &str,
-        params: Vec<reify_ast::FnParam>,
-        return_type_name: &str,
-        value: f64,
-    ) -> reify_ast::FnDef {
-        reify_ast::FnDef {
-            name: name.to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            params,
-            return_type: Some(reify_ast::TypeExpr {
-                kind: reify_ast::TypeExprKind::Named {
-                    name: return_type_name.to_string(),
-                    type_args: vec![],
-                },
-                span: SourceSpan::empty(0),
-            }),
-            body: Some(reify_ast::FnBody {
-                let_bindings: vec![],
-                result_expr: reify_ast::Expr {
-                    kind: reify_ast::ExprKind::NumberLiteral {
-                        value,
-                        is_real: true,
-                    },
-                    span: SourceSpan::empty(0),
-                },
-            }),
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            annotations: vec![],
-        }
-    }
-
-    /// Trait `Shape` with a single default-providing assoc fn
-    /// `fn <fn_name>(self) -> Real { <value> }` and NO required members.
-    fn shape_with_default_fn(fn_name: &str, value: f64) -> CompiledTrait {
-        CompiledTrait {
-            name: "Shape".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![],
-            defaults: vec![TraitDefault {
-                name: Some(fn_name.to_string()),
-                kind: DefaultKind::Fn(assoc_fn_def(
-                    fn_name,
-                    vec![assoc_self_param()],
-                    "Real",
-                    value,
-                )),
-                span: SourceSpan::empty(0),
-            }],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        }
-    }
-
-    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
-    /// table so the table-population tests can assert on its contents.
-    fn run_conformance_with_assoc_fns(
-        traits: &[CompiledTrait],
-        structure_def: &reify_ast::StructureDef,
-        enum_defs: &[reify_ir::EnumDef],
-    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
+        structure_names: &HashSet<String>,
+        trait_names: &HashSet<String>,
+    ) -> ConformanceRun {
         let entity_ref = EntityDefRef::from(structure_def);
         let trait_registry: HashMap<String, &CompiledTrait> =
             traits.iter().map(|t| (t.name.clone(), t)).collect();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let structure_names: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new(&structure_def.name);
         let mut value_cells: Vec<ValueCellDecl> = vec![];
         let mut constraints: Vec<CompiledConstraint> = vec![];
@@ -2591,8 +1735,8 @@ mod tests {
         check_trait_conformance(
             &entity_ref,
             &trait_registry,
-            &structure_names,
-            &trait_names,
+            structure_names,
+            trait_names,
             &mut scope,
             &mut value_cells,
             &mut constraints,
@@ -2600,9 +1744,8 @@ mod tests {
             enum_defs,
             functions,
             &alias_registry,
-            // task 4497: empty placeholder table — these conformance unit tests
-            // exercise trait-default behavior, not ambient injection (the real
-            // file-level table is threaded from entities_phase in step-10).
+            // task 4497: empty table — these conformance unit tests exercise
+            // trait-default behavior, not ambient injection.
             &AmbientDefaults::default(),
             // task 4639: file scope (no enclosing purpose) for unit tests.
             None,
@@ -2611,40 +1754,803 @@ mod tests {
             &mut assoc_types,
         );
 
-        (diagnostics, assoc_fns)
+        ConformanceRun {
+            diagnostics,
+            injected_cells: value_cells,
+            injected_constraints: constraints,
+            assoc_fns,
+        }
     }
 
-    /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
-    /// injected into the conformer's assoc-fn table when the structure does NOT
-    /// override it — `is_override == false`, keyed by `(trait, fn)`.
+    /// Parse `source`, run the front of a full compile through `phase_traits`, and run
+    /// `check_trait_conformance` for its one conformer.
     ///
-    /// Fails until step-8 wires `check_phase_resolve_assoc_fns` (today
-    /// `DefaultKind::Fn` defaults are dropped during the merge and no phase
-    /// populates the out-param, so the table is empty).
+    /// The phases are production's own, called in the order a full compile runs them:
+    /// `collect_decl_refs`, `build_resolution_names`, `bind_resolution_enums`,
+    /// `phase_traits`. So the fixture's enums arrive with their declared variants and type
+    /// parameters, its names resolve as they do in a real compile, and its traits compile
+    /// exactly as production compiles them. Variant payload fields stay unresolved
+    /// (`resolve_enum_variant_payloads` is not run), so keep fixtures to unit variants. The
+    /// world is otherwise one module with no prelude: only builtin types such as `Real`
+    /// and `Bool` and the fixture's own declarations resolve.
+    ///
+    /// The conformer is the single `structure def` that declares trait bounds;
+    /// `source` must contain exactly one. Diagnostics from compiling the traits come
+    /// first, then those from conformance — the same two emitters a full compile
+    /// runs, without the duplicates `entity.rs` re-emits, so exact diagnostic counts
+    /// stay meaningful.
+    ///
+    /// Fixture conventions:
+    /// - Trait bounds are `+`-separated (`structure def S : A + B {}`); the comma
+    ///   form is a parse error.
+    /// - A trait sub requirement carries parens (`sub mount = Hole()`); without them
+    ///   the member is silently dropped from the trait body.
+    fn conform_source(source: &str) -> ConformanceRun {
+        conform_source_editing_ast(source, |_| {})
+    }
+
+    /// [`conform_source`] for a fixture whose every `constraint`, in the traits and in
+    /// the conformer alike, carries `label`.
+    ///
+    /// The grammar has no constraint-label syntax yet, so the fixture is written
+    /// unlabeled and the label is set on the parsed AST before the traits compile.
+    fn conform_source_with_labeled_constraints(source: &str, label: &str) -> ConformanceRun {
+        conform_source_editing_ast(source, |parsed| {
+            for declaration in &mut parsed.declarations {
+                let members = match declaration {
+                    reify_ast::Declaration::Trait(trait_decl) => &mut trait_decl.members,
+                    reify_ast::Declaration::Structure(structure) => &mut structure.members,
+                    _ => continue,
+                };
+                for member in members {
+                    if let reify_ast::MemberDecl::Constraint(constraint) = member {
+                        constraint.label = Some(label.to_string());
+                    }
+                }
+            }
+        })
+    }
+
+    /// [`conform_source`] with `edit_ast` applied to the parsed module before its
+    /// declarations are scanned: for fixtures the grammar cannot spell.
+    fn conform_source_editing_ast(
+        source: &str,
+        edit_ast: impl FnOnce(&mut reify_ast::ParsedModule),
+    ) -> ConformanceRun {
+        let mut parsed =
+            reify_syntax::parse(source, reify_core::ModulePath::single("conformance_test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors in conformance fixture: {:?}\n{source}",
+            parsed.errors
+        );
+        edit_ast(&mut parsed);
+
+        let mut ctx = CompilationCtx::new();
+        let decl_refs = collect_decl_refs(&mut ctx, &parsed);
+        assert!(
+            ctx.diagnostics.is_empty(),
+            "declaration errors in conformance fixture: {:?}\n{source}",
+            ctx.diagnostics
+        );
+        build_resolution_names(&mut ctx, &[], &decl_refs.trait_refs, &decl_refs.fn_refs);
+        bind_resolution_enums(&mut ctx, &[]);
+        let trait_names = phase_traits(&mut ctx, &[], &decl_refs.trait_refs);
+
+        let mut conformers = parsed
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Structure(s) => Some(s),
+                _ => None,
+            })
+            .filter(|s| !s.trait_bounds.is_empty());
+        let conformer = conformers
+            .next()
+            .expect("conformance fixture must declare a structure with trait bounds");
+        assert!(
+            conformers.next().is_none(),
+            "conformance fixture must declare exactly one structure with trait bounds:\n{source}"
+        );
+
+        let mut run = conform(
+            &ctx.trait_defs,
+            conformer,
+            &ctx.resolution_enums,
+            &ctx.resolution_structure_names,
+            &trait_names,
+        );
+        run.diagnostics.splice(0..0, ctx.diagnostics);
+        run
+    }
+
+    /// The cells conformance injected for `member`, in injection order.
+    fn injected_named<'a>(run: &'a ConformanceRun, member: &str) -> Vec<&'a ValueCellDecl> {
+        run.injected_cells
+            .iter()
+            .filter(|cell| cell.id.member == member)
+            .collect()
+    }
+
+    /// The one diagnostic `run` emitted; fails if it emitted any other number.
+    fn sole_diagnostic(run: &ConformanceRun) -> &Diagnostic {
+        assert_eq!(
+            run.diagnostics.len(),
+            1,
+            "expected exactly one diagnostic; got: {:?}",
+            run.diagnostics
+        );
+        &run.diagnostics[0]
+    }
+
+    /// Assert that `run` emitted exactly one diagnostic, carrying `code`, whose message
+    /// contains every one of `fragments`.
+    fn assert_sole_diagnostic(run: &ConformanceRun, code: DiagnosticCode, fragments: &[&str]) {
+        let diagnostic = sole_diagnostic(run);
+        assert_eq!(
+            diagnostic.code,
+            Some(code),
+            "wrong diagnostic code for: {}",
+            diagnostic.message
+        );
+        for fragment in fragments {
+            assert!(
+                diagnostic.message.contains(fragment),
+                "message should contain {fragment:?}; got: {}",
+                diagnostic.message
+            );
+        }
+    }
+
+    // --- B10: how same-name trait defaults collide (PRD
+    // docs/prds/v0_6/compiler-declaration-passes.md §6) ---
+    //
+    // Characterization pins. Each fixes the two sets a restructure of the
+    // conformance phases must reproduce: the ADVERTISED set (which defaults can
+    // satisfy a `param` requirement) and the INJECTED set (the cells conformance
+    // adds to the conformer).
+    //
+    // Only Param-keyed advertisements are pinned. A Let-keyed one is read solely by a
+    // `let` requirement (a trait `let` with no value), which the parser cannot express,
+    // so it is unobservable from source and a restructure need not reproduce it.
+
+    /// Pass 1, annotated-`let` loser: `A`'s `param x` claims the scope slot first, so
+    /// `B`'s annotated `let x` is not injected, and the Param default is what satisfies
+    /// `C`'s `param x` requirement.
+    #[test]
+    fn annotated_trait_let_losing_to_same_name_param_is_not_injected() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x : Real = 2.0 }
+            trait C { param x : Real }
+            structure def S : A + B + C {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "C's `param x` must be satisfied by A's Param default; got: {:?}",
+            run.diagnostics
+        );
+        let injected = injected_named(&run, "x");
+        assert_eq!(
+            injected.len(),
+            1,
+            "exactly one cell named `x` must be injected; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected[0].kind, ValueCellKind::Param);
+        assert_eq!(injected[0].cell_type, Type::dimensionless_scalar());
+        assert!(
+            run.injected_constraints.is_empty(),
+            "no trait declares a constraint; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// Pass 1, `param` loser: `B`'s annotated `let x` is bound before `A`'s `param x`,
+    /// so the Let wins the slot. The Param is then neither injected nor advertised,
+    /// which leaves `C`'s `param x` requirement unsatisfied.
+    #[test]
+    fn param_losing_to_same_name_annotated_trait_let_is_neither_injected_nor_advertised() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x : Real = 2.0 }
+            trait C { param x : Real }
+            structure def S : B + A + C {}
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::MissingRequiredMember, &["'x'"]);
+        let injected = injected_named(&run, "x");
+        assert_eq!(
+            injected.len(),
+            1,
+            "exactly one cell named `x` must be injected; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected[0].kind, ValueCellKind::Let);
+        assert!(
+            run.injected_constraints.is_empty(),
+            "no trait declares a constraint; got: {:?}",
+            run.injected_constraints
+        );
+
+        let control = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait C { param x : Real }
+            structure def S : A + C {}
+            ",
+        );
+        assert!(
+            control.diagnostics.is_empty(),
+            "without the Let trait, A's default alone must satisfy C; got: {:?}",
+            control.diagnostics
+        );
+    }
+
+    /// Pass 2, unannotated-`let` loser whose slot was claimed in Pass 1: `A`'s
+    /// `param x` owns the scope slot, so `B`'s unannotated `let x` is dropped without
+    /// being injected, and without being reported as phase drift. Bound order must not
+    /// matter, because Pass 1 runs over every default before Pass 2 does. The Bool `let`
+    /// makes a wrongly injected Let visibly distinct from the Real `param`.
+    #[test]
+    fn unannotated_trait_let_losing_to_same_name_param_is_not_injected() {
+        let traits = r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x = true }
+        ";
+        for bounds in ["A + B", "B + A"] {
+            let run = conform_source(&format!("{traits} structure def S : {bounds} {{}}"));
+
+            assert!(
+                run.diagnostics.is_empty(),
+                "`S : {bounds}`: expected no diagnostics; got: {:?}",
+                run.diagnostics
+            );
+            let injected = injected_named(&run, "x");
+            assert_eq!(
+                injected.len(),
+                1,
+                "`S : {bounds}`: exactly one cell named `x` must be injected; got: {:?}",
+                run.injected_cells
+            );
+            assert_eq!(injected[0].kind, ValueCellKind::Param, "`S : {bounds}`");
+        }
+    }
+
+    /// Pass 2, unannotated-`let` loser whose name the conformer itself declares: `S`'s
+    /// own `param x` overrides `B`'s unannotated `let x`, so conformance injects nothing
+    /// for it. The `param` uses Bool, the let's inferred type, so the conformer-collision
+    /// rule has nothing to object to.
+    #[test]
+    fn structure_member_overriding_unannotated_trait_let_injects_nothing() {
+        let run = conform_source(
+            r"
+            trait B { let x = true }
+            structure def S : B { param x : Bool = true }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            injected_named(&run, "x").is_empty(),
+            "the conformer's own `x` must win; got injected: {:?}",
+            run.injected_cells
+        );
+    }
+
+    /// Pins a known defect, #9410: a trait default the conformer overrides is still
+    /// advertised, so `A`'s `param x` default falsely satisfies `C`'s `param x` requirement
+    /// although `S`'s own `let x` replaces it and `S` has no `param x`. The fix flips the
+    /// first assertion to the missing-member diagnostic of the control without `A`,
+    /// `let_member_does_not_satisfy_param_requirement`.
+    #[test]
+    fn overridden_trait_param_default_falsely_satisfies_param_requirement() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait C { param x : Real }
+            structure def S : A + C { let x : Real = 2.0 }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "current behaviour (#9410): A's overridden default still satisfies C's \
+             `param x`, so nothing is reported; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            injected_named(&run, "x").is_empty(),
+            "the conformer declares `x`, so nothing is injected for it; got: {:?}",
+            run.injected_cells
+        );
+    }
+
+    /// Pass 2, compile error: `let a = b` fails on the unresolved `b`. The root cause is
+    /// reported exactly once and `a` is not injected. `a` is also poisoned in scope, so
+    /// the dependent `let c = a` compiles silently against the poison instead of
+    /// cascading into a second "unresolved name" — which is how `c` still gets injected.
+    #[test]
+    fn trait_let_with_compile_error_reports_root_cause_once_and_is_not_injected() {
+        let run = conform_source(
+            r"
+            trait T {
+                let a = b
+                let c = a
+            }
+            structure def S : T {}
+            ",
+        );
+
+        let errors: Vec<_> = run
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected only the root-cause error, with no cascade for `c`; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(errors[0].code, Some(DiagnosticCode::UnresolvedName));
+        assert!(
+            errors[0].message.contains("unresolved name: b"),
+            "the root cause is the unresolved `b`; got: {}",
+            errors[0].message
+        );
+        assert!(
+            injected_named(&run, "a").is_empty(),
+            "`a` failed to compile and must not be injected; got: {:?}",
+            run.injected_cells
+        );
+        let injected_c = injected_named(&run, "c");
+        assert_eq!(
+            injected_c.len(),
+            1,
+            "`c` compiles against the poisoned `a` and is injected once; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected_c[0].kind, ValueCellKind::Let);
+    }
+
+    // --- Requirement checks and member annotations: what a conformer must provide,
+    // and how its own annotations resolve (inline `.ri` through `conform_source`;
+    // each asserts the EXACT diagnostic count, which the narrow harness keeps
+    // meaningful) ---
+
+    /// A `param` requirement that neither the structure nor any trait default provides
+    /// is reported as a missing member.
+    #[test]
+    fn param_requirement_without_member_or_default_reports_missing_member() {
+        let run = conform_source(
+            r"
+            trait T { param w : Real }
+            structure def S : T {}
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::MissingRequiredMember, &["'w'"]);
+    }
+
+    /// A `let` member is a computed slot, not a settable one, so it cannot satisfy a
+    /// `param` requirement. The diagnostic names the `param` slot the structure must
+    /// provide; the properly provided `width` produces nothing.
+    #[test]
+    fn let_member_does_not_satisfy_param_requirement() {
+        let run = conform_source(
+            r"
+            trait T {
+                param width : Real
+                param length : Real
+            }
+            structure def S : T {
+                param width : Real
+                let length : Real = 2.0
+            }
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::MissingRequiredMember,
+            &["'length'", "`param` slot"],
+        );
+    }
+
+    /// A structure member whose type does not convert to the required type is a type
+    /// mismatch, however the trait chain's defaults look.
+    #[test]
+    fn param_member_of_wrong_type_reports_type_mismatch() {
+        let run = conform_source(
+            r"
+            trait T { param w : Real }
+            structure def S : T { param w : Bool }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TypeMismatchForTraitMember, &["'w'"]);
+    }
+
+    /// With no member of its own, a `param` requirement can still be met by another
+    /// trait's default — but only when that default's type fits. A Bool default does
+    /// not satisfy a Real requirement.
+    #[test]
+    fn param_requirement_met_only_by_wrong_typed_default_reports_mismatch() {
+        let run = conform_source(
+            r"
+            trait A { param w : Real }
+            trait B { param w : Bool = true }
+            structure def S : A + B {}
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::TypeMismatchForTraitMember,
+            &["available default", "'w'"],
+        );
+    }
+
+    /// A `sub` requirement the structure does not declare is reported by name.
+    #[test]
+    fn missing_required_sub_component_is_reported() {
+        let run = conform_source(
+            r"
+            structure def Hole {}
+            trait T { sub mount = Hole() }
+            structure def S : T {}
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::MissingRequiredSubComponent,
+            &["'mount'"],
+        );
+    }
+
+    /// An enum-typed `param` requirement is satisfied by a structure `param` of the same
+    /// enum type: the member's annotation resolves through the enum table.
+    #[test]
+    fn enum_typed_param_requirement_is_satisfied_by_enum_typed_member() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T { param dir : Polarity }
+            structure def S : T { param dir : Polarity }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+    }
+
+    /// A conformer `param` that gives a non-generic enum type arguments
+    /// (`Polarity<Real>`) is a user-facing error, reported once. It is a diagnostic
+    /// rather than a `debug_assert!`, so release builds surface it too.
+    #[test]
+    fn enum_with_type_args_emits_error_diagnostic() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T {}
+            structure def S : T { param dir : Polarity<Real> }
+            ",
+        );
+
+        // No diagnostic code identifies this error, so its message does.
+        let diagnostic = sole_diagnostic(&run);
+        assert!(
+            diagnostic
+                .message
+                .contains("enum `Polarity` does not accept type arguments"),
+            "wrong diagnostic: {}",
+            diagnostic.message
+        );
+    }
+
+    /// An unknown type name given type arguments (`NotAnEnum<Real>`) is one unresolved
+    /// type, even with an enum declared. It neither resolves silently nor draws the
+    /// enum-only "does not accept type arguments" error, which needs the name to be a
+    /// declared enum.
+    #[test]
+    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T {}
+            structure def S : T { param p : NotAnEnum<Real> }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::UnresolvedType, &["NotAnEnum"]);
+    }
+
+    // --- Default injection: what conformance adds to the conformer ---
+
+    /// A trait's `param` default and its unlabeled constraint, which the conformer does
+    /// not override, are both injected: one Param cell carrying the default expression,
+    /// and one constraint compiled against that cell.
+    #[test]
+    fn non_overridden_param_default_and_constraint_are_injected() {
+        let run = conform_source(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(
+            run.injected_cells.len(),
+            1,
+            "expected exactly the `x` cell; got: {:?}",
+            run.injected_cells
+        );
+        let x = &run.injected_cells[0];
+        assert_eq!(x.id.member, "x");
+        assert_eq!(x.kind, ValueCellKind::Param);
+        assert_eq!(x.cell_type, Type::dimensionless_scalar());
+        assert!(
+            x.default_expr.is_some(),
+            "the trait's default expression must travel with the injected cell"
+        );
+        assert_eq!(
+            run.injected_constraints.len(),
+            1,
+            "the unlabeled constraint default must be injected; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// A conformer constraint with the same label as a trait's constraint default
+    /// replaces it: the trait's is not injected. The control is
+    /// [`labeled_trait_constraint_default_is_injected_when_the_conformer_lacks_that_label`].
+    #[test]
+    fn conformer_constraint_with_the_trait_constraints_label_suppresses_the_default() {
+        let run = conform_source_with_labeled_constraints(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T { constraint x > 1.0 }
+            ",
+            "pos",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.injected_constraints.is_empty(),
+            "the conformer's own `pos` constraint must stand in for the trait's; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// A trait's labeled constraint default is injected, label intact, when the
+    /// conformer declares no constraint with that label.
+    #[test]
+    fn labeled_trait_constraint_default_is_injected_when_the_conformer_lacks_that_label() {
+        let run = conform_source_with_labeled_constraints(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T {}
+            ",
+            "pos",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(
+            run.injected_constraints.len(),
+            1,
+            "the labeled constraint default must be injected; got: {:?}",
+            run.injected_constraints
+        );
+        assert_eq!(run.injected_constraints[0].label.as_deref(), Some("pos"));
+    }
+
+    /// A trait `param` whose default names an enum variant is injected as an enum-typed
+    /// Param cell: the fixture's declared variants reach the compile of the default.
+    #[test]
+    fn enum_variant_param_default_is_injected_as_enum_typed_param() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T { param dir : Polarity = Polarity.In }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        let dir = injected_named(&run, "dir");
+        assert_eq!(dir.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(dir[0].kind, ValueCellKind::Param);
+        assert_eq!(dir[0].cell_type, Type::Enum("Polarity".to_string()));
+        assert!(
+            dir[0].default_expr.is_some(),
+            "the variant default must travel with the injected cell"
+        );
+    }
+
+    /// An unannotated trait `let` is compiled against every annotated default, wherever
+    /// it is declared: `positive` reads `w` before `w` is declared, and still resolves.
+    /// Its injected cell carries the type inferred from the expression (Bool), not the
+    /// dimensionless-scalar fallback.
+    #[test]
+    fn unannotated_trait_let_sees_annotated_defaults_and_is_injected_with_inferred_type() {
+        let run = conform_source(
+            r"
+            trait T {
+                let positive = w > 0.0
+                param w : Real = 1.0
+            }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        let w = injected_named(&run, "w");
+        assert_eq!(w.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(w[0].kind, ValueCellKind::Param);
+        assert_eq!(w[0].cell_type, Type::dimensionless_scalar());
+        let positive = injected_named(&run, "positive");
+        assert_eq!(positive.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(positive[0].kind, ValueCellKind::Let);
+        assert_eq!(
+            positive[0].cell_type,
+            Type::Bool,
+            "the injected let's type is inferred from `w > 0.0`"
+        );
+    }
+
+    /// An unannotated trait `let` whose expression compiles with only a warning is
+    /// still a success: the warning is reported, the cell is injected, and its type is
+    /// the one the warning says it defaulted to. An empty list literal warns "cannot
+    /// infer element type ... defaulting to Real".
+    #[test]
+    fn unannotated_trait_let_with_warning_only_compile_is_injected() {
+        let run = conform_source(
+            r"
+            trait T { let xs = [] }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics
+                .iter()
+                .all(|d| d.severity != Severity::Error),
+            "a warning-only compile must not be treated as a failure; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Warning),
+            "the empty list literal must still warn; got: {:?}",
+            run.diagnostics
+        );
+        let xs = injected_named(&run, "xs");
+        assert_eq!(xs.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(xs[0].kind, ValueCellKind::Let);
+        assert_eq!(
+            xs[0].cell_type,
+            Type::List(Box::new(Type::dimensionless_scalar()))
+        );
+    }
+
+    // --- assoc fns (task 3939 δ): requirement matching and the dispatch table ---
+
+    /// A required associated function that the conforming structure does not
+    /// provide must surface an `E_TRAIT_FN_NOT_SATISFIED`
+    /// (`DiagnosticCode::TraitFnNotSatisfied`) diagnostic naming the declaring
+    /// trait and the missing fn.
+    #[test]
+    fn required_assoc_fn_not_provided_emits_trait_fn_not_satisfied() {
+        let run = conform_source(
+            r"
+            trait Shape { fn req(self) -> Real }
+            structure def S : Shape {}
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TraitFnNotSatisfied, &["Shape", "req"]);
+    }
+
+    /// A provided assoc fn whose RETURN TYPE differs from the trait requirement
+    /// must surface `TraitFnSignatureMismatch` (§8.8 same-name-different-type)
+    /// and must NOT also surface `TraitFnNotSatisfied` — the fn IS present, it
+    /// is just mis-typed.
+    #[test]
+    fn provided_assoc_fn_with_wrong_return_type_emits_signature_mismatch() {
+        let run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real }
+            structure def S : Shape { fn area(self) -> Length { 5mm } }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TraitFnSignatureMismatch, &["area"]);
+    }
+
+    /// A provided assoc fn with the wrong ARITY (an extra non-self param) is also
+    /// a signature mismatch. Same assertions as the return-type case.
+    #[test]
+    fn provided_assoc_fn_with_wrong_arity_emits_signature_mismatch() {
+        let run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real }
+            structure def S : Shape { fn area(self, extra : Real) -> Real { 0.0 } }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TraitFnSignatureMismatch, &["area"]);
+    }
+
+    /// A trait's default-providing assoc fn is injected into the conformer's
+    /// assoc-fn table when the structure does NOT override it —
+    /// `is_override == false`, keyed by `(trait, fn)`.
     #[test]
     fn default_assoc_fn_injected_into_table_when_not_overridden() {
-        let shape = shape_with_default_fn("area", 1.0);
-        let structure_def = structure_s_conforming_shape(vec![]); // no override
-
-        let (diagnostics, assoc_fns) =
-            run_conformance_with_assoc_fns(&[shape], &structure_def, &[]);
+        let run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real { 1.0 } }
+            structure def S : Shape {}
+            ",
+        );
 
         // A default-providing fn imposes no requirement, so conformance is clean.
         assert!(
-            !diagnostics.iter().any(|d| {
-                d.code == Some(DiagnosticCode::TraitFnNotSatisfied)
-                    || d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)
-            }),
+            run.diagnostics.is_empty(),
             "a default-providing assoc fn should conform cleanly; got: {:?}",
-            diagnostics
+            run.diagnostics
         );
         assert_eq!(
-            assoc_fns.len(),
+            run.assoc_fns.len(),
             1,
             "expected exactly one injected assoc-fn table entry; got: {:?}",
-            assoc_fns
+            run.assoc_fns
         );
-        let entry = &assoc_fns[0];
+        let entry = &run.assoc_fns[0];
         assert_eq!(
             entry.trait_name, "Shape",
             "entry should be keyed by the declaring trait"
@@ -2666,36 +2572,39 @@ mod tests {
         );
     }
 
-    /// RED (task 3939 δ, step-7b): when the structure overrides a trait's
-    /// default-providing assoc fn, the table entry is the OVERRIDE
-    /// (`is_override == true`) and its compiled `function.content_hash` differs
-    /// from the injected-default's (distinct body ⇒ distinct hash). Fails until
-    /// step-8.
+    /// When the structure overrides a trait's default-providing assoc fn, the
+    /// table entry is the OVERRIDE (`is_override == true`) and its compiled
+    /// `function.content_hash` differs from the injected-default's (distinct
+    /// body ⇒ distinct hash).
     #[test]
     fn override_assoc_fn_beats_default_in_table() {
         // Reference run: no override → the injected default body (1.0).
-        let s_default = structure_s_conforming_shape(vec![]);
-        let (_d0, assoc_default) =
-            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_default, &[]);
+        let default_run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real { 1.0 } }
+            structure def S : Shape {}
+            ",
+        );
         assert_eq!(
-            assoc_default.len(),
+            default_run.assoc_fns.len(),
             1,
             "default run should populate one entry"
         );
-        assert!(!assoc_default[0].is_override);
+        assert!(!default_run.assoc_fns[0].is_override);
 
         // Override run: structure provides `fn area(self) -> Real { 2.0 }`.
-        let s_override = structure_s_conforming_shape(vec![reify_ast::MemberDecl::Fn(
-            assoc_fn_def("area", vec![assoc_self_param()], "Real", 2.0),
-        )]);
-        let (_d1, assoc_override) =
-            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_override, &[]);
+        let override_run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real { 1.0 } }
+            structure def S : Shape { fn area(self) -> Real { 2.0 } }
+            ",
+        );
         assert_eq!(
-            assoc_override.len(),
+            override_run.assoc_fns.len(),
             1,
             "override run should populate one entry"
         );
-        let entry = &assoc_override[0];
+        let entry = &override_run.assoc_fns[0];
         assert_eq!(entry.trait_name, "Shape");
         assert_eq!(entry.fn_name, "area");
         assert!(
@@ -2706,3202 +2615,61 @@ mod tests {
 
         // override-beats-default: distinct body (2.0 vs 1.0) ⇒ distinct hash.
         assert_ne!(
-            entry.function.content_hash, assoc_default[0].function.content_hash,
+            entry.function.content_hash, default_run.assoc_fns[0].function.content_hash,
             "the override body (2.0) must compile to a different content hash than \
              the injected default body (1.0)"
         );
     }
 
-    /// Regression (task 3939 δ, reviewer amendment): overriding a trait's
-    /// default-providing assoc fn with a MISMATCHED signature must surface
-    /// `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of the
-    /// dispatch table. A default-only fn produces no `RequirementKind::Fn`, so
-    /// phase 5 never checks it — `check_phase_resolve_assoc_fns` is the sole
-    /// validation site (PRD §5.4 exact-match-for-overrides). Before the
-    /// amendment the bad override landed in the table with no diagnostic.
+    /// An override of a default-providing assoc fn with a mismatched signature
+    /// emits `TraitFnSignatureMismatch` and stays out of the dispatch table.
     #[test]
     fn override_of_default_assoc_fn_with_wrong_signature_emits_mismatch_and_skips_table() {
-        // Trait default `fn area(self) -> Real { 1.0 }`.
-        let shape = shape_with_default_fn("area", 1.0);
-        // Structure overrides with `fn area(self) -> Length { 0.0 }` (Length != Real).
-        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
-            "area",
-            vec![assoc_self_param()],
-            "Length",
-        )]);
-
-        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
-
-        let mismatch: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
-            .collect();
-        assert_eq!(
-            mismatch.len(),
-            1,
-            "a default override with a wrong return type must emit exactly one \
-             TraitFnSignatureMismatch; got: {:?}",
-            diagnostics
+        let run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real { 1.0 } }
+            structure def S : Shape { fn area(self) -> Length { 5mm } }
+            ",
         );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TraitFnSignatureMismatch, &["area"]);
         assert!(
-            mismatch[0].message.contains("area"),
-            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
-            mismatch[0].message
-        );
-        // The wrongly-typed override must NOT enter the dispatch table — task ζ
-        // would otherwise key dispatch on an entry inconsistent with the error.
-        assert!(
-            assoc_fns.is_empty(),
+            run.assoc_fns.is_empty(),
             "a signature-mismatched default override must be kept out of the \
              assoc-fn table; got: {:?}",
-            assoc_fns
+            run.assoc_fns
         );
     }
 
-    /// Regression (task 3939 δ, reviewer amendment): a required-fn override whose
-    /// return annotation is UNRESOLVABLE must yield exactly one diagnostic — the
-    /// `UnresolvedType` from `compile_assoc_function` — with NO accompanying
-    /// `TraitFnSignatureMismatch`. The structure-derived sig carries `Type::Error`,
-    /// which `assoc_fn_sig_has_error` recognises so the otherwise-spurious mismatch
-    /// is suppressed (the sig "differs" only because resolution failed). Locks in
-    /// the documented anti-cascade contract (one root cause → one diagnostic) and
-    /// confirms the errored override is also kept out of the dispatch table.
+    /// A required-fn override with an unresolvable return annotation reports only
+    /// the `UnresolvedType` root cause — no `TraitFnNotSatisfied` and no cascaded
+    /// `TraitFnSignatureMismatch` — and stays out of the dispatch table.
     #[test]
     fn required_assoc_fn_override_with_unresolved_annotation_yields_single_diagnostic() {
-        // Trait requires bodyless `fn area(self) -> Real`.
-        let shape = shape_requiring_fn("area");
-        // Structure provides `fn area(self) -> Nonexistent { 0.0 }` — the return
-        // annotation does not resolve to any built-in / alias / structure / trait.
-        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
-            "area",
-            vec![assoc_self_param()],
-            "Nonexistent",
-        )]);
+        let run = conform_source(
+            r"
+            trait Shape { fn area(self) -> Real }
+            structure def S : Shape { fn area(self) -> Nonexistent { 0.0 } }
+            ",
+        );
 
-        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
-
-        let unresolved: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
-            .collect();
-        assert_eq!(
-            unresolved.len(),
-            1,
-            "the unresolved return annotation should produce exactly one \
-             UnresolvedType diagnostic; got: {:?}",
-            diagnostics
-        );
+        assert_sole_diagnostic(&run, DiagnosticCode::UnresolvedType, &["Nonexistent"]);
         assert!(
-            !diagnostics
-                .iter()
-                .any(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)),
-            "the Type::Error sig must suppress a spurious TraitFnSignatureMismatch \
-             (anti-cascade: one root cause, one diagnostic); got: {:?}",
-            diagnostics
-        );
-        // The fn IS present (just mis-annotated), so absence is not the failure.
-        assert!(
-            !diagnostics
-                .iter()
-                .any(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied)),
-            "the fn 'area' is present — TraitFnNotSatisfied must NOT fire; got: {:?}",
-            diagnostics
-        );
-        // The errored override must not enter the dispatch table.
-        assert!(
-            assoc_fns.is_empty(),
+            run.assoc_fns.is_empty(),
             "an errored / sig-mismatched required override must be kept out of the \
              assoc-fn table; got: {:?}",
-            assoc_fns
+            run.assoc_fns
         );
     }
 
-    /// Characterization test that enum-typed `param` and `let` members resolve to
-    /// `Type::Enum` through `check_trait_conformance`.
-    ///
-    /// Serves as a tripwire for the step-4 refactor (HashSet + closure extraction):
-    /// any drift in enum resolution or diagnostic messages in the filter_map is caught
-    /// immediately.
-    ///
-    /// ## Why negative assertions?
-    ///
-    /// `structure_members` is a local binding inside `check_trait_conformance` and is not
-    /// directly observable from outside the function.  Rather than restructuring the API,
-    /// this test uses three negative-assertion sentinels as a proxy for correct
-    /// `Type::Enum("Polarity")` resolution:
-    ///
-    /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
-    ///   back to `Type::dimensionless_scalar()`)
-    /// - Absence of **"type mismatch"** → the resolved types matched the trait's
-    ///   `Type::Enum("Polarity")` requirements
-    /// - Absence of **"missing required member"** → both members appeared in `structure_members`
-    ///
-    /// Together these three imply `Type::Enum("Polarity")` was produced.  A regression that
-    /// accidentally resolves enum params to `Type::dimensionless_scalar()` would trip "type mismatch", and one
-    /// that omits a member from `structure_members` would trip "missing required member".
-    #[test]
-    fn check_trait_conformance_resolves_enum_typed_param_and_let() {
-        // Polarity enum defined in the same module
-        let enum_defs = vec![reify_ir::EnumDef {
-            name: "Polarity".to_string(),
-            variants: vec!["In".into(), "Out".into()],
-            doc: None,
-            type_params: vec![],
-        }];
-
-        // TypeExpr for `Polarity` (bare named type, no type_args)
-        let direction_type_expr = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Polarity".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        // TraitDir: requires `param dir : Polarity` and `let kind : Polarity`
-        let trait_dir = CompiledTrait {
-            name: "TraitDir".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![
-                TraitRequirement {
-                    name: "dir".to_string(),
-                    kind: RequirementKind::Param(Type::Enum("Polarity".to_string())),
-                    span: SourceSpan::empty(0),
-                },
-                TraitRequirement {
-                    name: "kind".to_string(),
-                    kind: RequirementKind::Let(Type::Enum("Polarity".to_string())),
-                    span: SourceSpan::empty(0),
-                },
-            ],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // Structure S : TraitDir { param dir : Polarity; let kind : Polarity = 0.0; }
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![reify_ast::TraitBoundRef {
-                name: "TraitDir".to_string(),
-                type_args: vec![],
-                span: SourceSpan::empty(0),
-            }],
-            members: vec![
-                reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                    name: "dir".to_string(),
-                    doc: None,
-                    is_priv: false,
-                    type_expr: Some(direction_type_expr.clone()),
-                    default: None,
-                    where_clause: None,
-                    annotations: vec![],
-                    span: SourceSpan::empty(0),
-                    content_hash: ContentHash(0),
-                }),
-                reify_ast::MemberDecl::Let(reify_ast::LetDecl {
-                    name: "kind".to_string(),
-                    doc: None,
-                    is_pub: false,
-                    is_priv: false,
-                    is_aux: false,
-                    type_expr: Some(direction_type_expr),
-                    value: reify_ast::Expr {
-                        kind: reify_ast::ExprKind::NumberLiteral {
-                            value: 0.0,
-                            is_real: false,
-                        },
-                        span: SourceSpan::empty(0),
-                    },
-                    where_clause: None,
-                    annotations: vec![],
-                    span: SourceSpan::empty(0),
-                    content_hash: ContentHash(0),
-                }),
-            ],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[trait_dir], &structure_def, &enum_defs);
-
-        // No "unresolved type" → both dir and kind resolved successfully (to Type::Enum)
-        let unresolved_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("unresolved type"))
-            .collect();
-        assert!(
-            unresolved_diags.is_empty(),
-            "Expected no 'unresolved type' diagnostics; got: {:?}",
-            diagnostics
-        );
-
-        // No "type mismatch" → both resolved to Type::Enum("Polarity"), satisfying the trait
-        let mismatch_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("type mismatch"))
-            .collect();
-        assert!(
-            mismatch_diags.is_empty(),
-            "Expected no 'type mismatch' diagnostics; got: {:?}",
-            diagnostics
-        );
-
-        // No "missing required member" → both dir and kind were found in structure_members
-        let missing_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("missing required member"))
-            .collect();
-        assert!(
-            missing_diags.is_empty(),
-            "Expected no 'missing required member' diagnostics; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Unit test for the Option B fix (task 1951).
-    ///
-    /// This test exercises a code path no `compile_source`-based integration test can
-    /// reach today: it hand-builds a `RequirementKind::Let` requirement (not parseable
-    /// from reify source — see `let_type_disambiguation_tests.rs:470-497` and
-    /// esc-1951-6) and verifies that the Option B guard in `available_defaults`
-    /// suppresses the phantom `(name, Let) -> Type::dimensionless_scalar()` entry for names recorded in
-    /// `pass2_skipped`.
-    ///
-    /// ## Scenario
-    ///
-    /// - **TraitX**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
-    ///   parser-reachable today)
-    /// - **TraitY**: provides `param x : Length` — Pass 1 claims the scope slot for "x"
-    /// - **TraitZ**: provides `let x = 5.5` (unannotated; `cell_type: None`) — Pass 2
-    ///   sees the slot already claimed and records "x" in `pass2_skipped`
-    /// - **Structure S : TraitX + TraitY + TraitZ { }** — no member override
-    ///
-    /// ## Expected behavior (post-fix)
-    ///
-    /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
-    /// `available_defaults` returns `None` before reaching the `Type::dimensionless_scalar()` fallback.
-    /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
-    /// correct "missing required member" diagnostic (not the spurious "available default
-    /// has Real" phantom type-mismatch).
-    ///
-    /// ## Pre-fix behavior (should NOT happen after fix)
-    ///
-    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::dimensionless_scalar()`.
-    /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
-    /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
-    #[test]
-    fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
-        // --- Build CompiledTrait fixtures ---
-
-        // TraitX: requires `let x : Length` (hand-built — not parser-reachable)
-        let trait_x = CompiledTrait {
-            name: "TraitX".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "x".to_string(),
-                kind: RequirementKind::Let(Type::length()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // TraitY: `param x : Length` — no default expression needed.
-        // Pass 1 registers "x" → Type::length() in the scope.
-        let trait_y = CompiledTrait {
-            name: "TraitY".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![],
-            defaults: vec![TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Param {
-                    cell_type: Type::length(),
-                    default_decl: reify_ast::ParamDecl {
-                        name: "x".to_string(),
-                        doc: None,
-                        is_priv: false,
-                        type_expr: None,
-                        default: None, // no default expression
-                        where_clause: None,
-                        annotations: vec![],
-                        span: SourceSpan::empty(0),
-                        content_hash: ContentHash(0),
-                    },
-                },
-                span: SourceSpan::empty(0),
-            }],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // TraitZ: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope,
-        // and records "x" in pass2_skipped (no inferred_let_exprs cache entry).
-        let trait_z = CompiledTrait {
-            name: "TraitZ".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![],
-            defaults: vec![TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: None,
-                    let_decl: reify_ast::LetDecl {
-                        name: "x".to_string(),
-                        doc: None,
-                        is_pub: false,
-                        is_priv: false,
-                        is_aux: false,
-                        type_expr: None,
-                        value: reify_ast::Expr {
-                            kind: reify_ast::ExprKind::NumberLiteral {
-                                value: 5.5,
-                                is_real: true,
-                            },
-                            span: SourceSpan::empty(0),
-                        },
-                        where_clause: None,
-                        annotations: vec![],
-                        span: SourceSpan::empty(0),
-                        content_hash: ContentHash(0),
-                    },
-                },
-                span: SourceSpan::empty(0),
-            }],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // Structure S : TraitX + TraitY + TraitZ { } — no member overrides
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![
-                reify_ast::TraitBoundRef {
-                    name: "TraitX".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-                reify_ast::TraitBoundRef {
-                    name: "TraitY".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-                reify_ast::TraitBoundRef {
-                    name: "TraitZ".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-            ],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[trait_x, trait_y, trait_z], &structure_def, &[]);
-
-        // --- Assertion 1: no phantom type-mismatch diagnostic ---
-        // Pre-fix: `available_defaults` had `("x", Let) -> Real`; the
-        // RequirementKind::Let lookup found it, `implicitly_converts_to(Real, Length)` was
-        // false, and a spurious "requirement expects …, available default has Real"
-        // diagnostic was emitted.
-        // Post-fix: no phantom entry → this filter collects nothing.
-        // Filter uses the quoted member name `"'x'"` — diagnostic templates surround the
-        // member name with single quotes (`'{}'`), so `"'x'"` rejects incidental `x`
-        // letters in prose like "expr", "exists", "mismatch" (same pattern as
-        // `inferred_let_expr_incompatible_with_let_requirement` at mod.rs:993).
-        let phantom_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| {
-                d.message.contains("available default")
-                    && d.message.contains("Real")
-                    && d.message.contains("'x'")
-            })
-            .collect();
-        assert!(
-            phantom_diags.is_empty(),
-            "Option B fix violated: phantom `(x, Let) -> Type::dimensionless_scalar()` advertisement caused \
-             a spurious type-mismatch diagnostic. Expected no phantom diagnostic. Got: {:?}",
-            phantom_diags
-        );
-
-        // --- Assertion 2: correct "missing required member" diagnostic IS present ---
-        // With the phantom entry absent, the None arm of the available_defaults lookup
-        // fires and emits the correct "missing required member" diagnostic.
-        // Filter uses the quoted member name `"'x'"` to avoid matching incidental `x`
-        // letters in diagnostic prose.
-        let missing_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("missing required member") && d.message.contains("'x'"))
-            .collect();
-        assert_eq!(
-            missing_diags.len(),
-            1,
-            "Expected exactly one 'missing required member' diagnostic for 'x' (Option B fix). \
-             Got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-level guard test: the narrowed `pass2_skipped` guard in
-    /// `check_phase_build_available_defaults_map` preserves an annotated-Let advertisement
-    /// when a sibling unannotated Let for the same name populated `pass2_skipped`.
-    ///
-    /// ## Why this is not reachable via `run_conformance`
-    ///
-    /// The target scenario — two `Let` defaults (annotated + unannotated) for the same name
-    /// coexisting in `ctx.defaults` with `pass2_skipped` containing the name — is not
-    /// reachable through `run_conformance` / `check_trait_conformance` end-to-end.
-    /// `collect_all_requirements` in `trait_requirements.rs` deduplicates `Let` defaults by
-    /// name via `seen_let_hashes`, so only one of the two ever survives into `ctx.defaults`.
-    /// Whichever survives, the other pathway that populates `pass2_skipped` is never taken.
-    ///
-    /// This test is therefore *defensive*: it protects against future regressions where
-    /// deduplication relaxes, a new code path writes to `pass2_skipped` while annotated Let
-    /// defaults remain in `ctx.defaults`, or a parser extension introduces a new way to
-    /// generate the combination. It drives the affected phases directly with a hand-built
-    /// `MergeContext` that bypasses `collect_all_requirements`.
-    ///
-    /// ## Scenario (hand-built `MergeContext`)
-    ///
-    /// - **Annotated Let**: `let x : Length` (`cell_type: Some(Type::length())`) — Pass 1
-    ///   claims the scope slot for "x" with `Type::length()`.
-    /// - **Unannotated Let**: `let x = 5.5` (`cell_type: None`) — Pass 2 finds "x" already
-    ///   in scope, compiles the expression successfully, but records "x" in `pass2_skipped`
-    ///   (slot already claimed by Pass 1).
-    /// - **Requirement**: `let x : Length` (`RequirementKind::Let(Type::length())`) —
-    ///   hand-built because `RequirementKind::Let` is not parser-reachable today.
-    ///
-    /// ## Expected behavior (post-guard-narrowing)
-    ///
-    /// The narrowed guard (`if cell_type.is_none() && pass2_skipped.contains(name)`) fires
-    /// only for the unannotated Let (cell_type: None). The annotated Let (cell_type: Some(_))
-    /// passes through and is advertised as `("x", Let) -> Type::length()`.
-    /// `check_phase_check_members_against_requirements` finds the advertisement and the
-    /// requirement is satisfied — no diagnostics emitted.
-    ///
-    /// ## Failure behavior under the over-broad guard (current code before step 2)
-    ///
-    /// The over-broad guard (`if pass2_skipped.contains(name)`) fires on **both** Let
-    /// entries (annotated and unannotated) because `pass2_skipped` contains "x". Both are
-    /// dropped → `available_defaults` is empty → the `None` arm fires and emits a spurious
-    /// "missing required member 'x'" diagnostic. Assertion 1 (`Some(&Type::length())`) and
-    /// assertion 2 (no missing-member) both fail.
-    ///
-    /// ## Cross-references
-    ///
-    /// - Sibling test: `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`
-    ///   covers the `pass2_skipped`-triggered-by-Param scenario.
-    /// - Guard site: `check_phase_build_available_defaults_map` in `checker.rs`, the
-    ///   `DefaultKind::Let` arm, at the `pass2_skipped` exclusion block.
-    #[test]
-    fn option_b_guard_preserves_annotated_let_advertisement_when_sibling_unannotated_let_is_pass2_skipped()
-     {
-        // --- Build LetDecl fixtures ---
-        //
-        // Annotated Let: `let x : Length = 1.0` — cell_type: Some(Type::length())
-        // Pass 1 claims "x" -> Type::length() in the scope (uses cell_type directly;
-        // the value expression is compiled later, in phase 6's inject_defaults).
-        let annotated_let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 1.0,
-                    is_real: false,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-        // Unannotated Let: `let x = 5.5` — cell_type: None
-        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope
-        // (from the annotated Let above), and records "x" in pass2_skipped.
-        let unannotated_let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None,
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 5.5,
-                    is_real: true,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![
-            // Annotated Let — Pass 1 claims "x" -> Type::length()
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: Some(Type::length()),
-                    let_decl: annotated_let_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-            // Unannotated Let — Pass 2 finds "x" already claimed -> records in pass2_skipped
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: None,
-                    let_decl: unannotated_let_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-        ];
-        // RequirementKind::Let is not parser-reachable today; hand-built here.
-        ctx.requirements = vec![TraitRequirement {
-            name: "x".to_string(),
-            kind: RequirementKind::Let(Type::length()),
-            span: SourceSpan::empty(0),
-        }];
-
-        // Minimal structure scaffolding (no members — requirement must be satisfied by default).
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let structure_all_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        // --- Phase 3: pre-register default types ---
-        let pre = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_all_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        // Sanity: pass2_skipped must contain "x" for the guard path to be exercised.
-        // If this fails, the fixture is misconfigured and would not test the guard at all.
-        assert!(
-            pre.pass2_skipped.contains("x"),
-            "Fixture sanity failed: expected 'x' in pass2_skipped after Pass 2 found its scope \
-             slot already claimed by the annotated Let; the guard path would not be exercised. \
-             Got pass2_skipped = {:?}",
-            pre.pass2_skipped
-        );
-
-        // --- Phase 4: build available defaults map ---
-        let available_defaults = check_phase_build_available_defaults_map(
-            &ctx,
-            &pre.inferred_let_exprs,
-            &pre.pass1_skipped,
-            &pre.pass1_param_skipped,
-            &pre.pass2_skipped,
-            &pre.pass2_compile_errors,
-        );
-
-        // --- Phase 5: check members against requirements (no structure members) ---
-        let empty_param_members: HashMap<String, Type> = HashMap::new();
-        let empty_let_members: HashMap<String, Type> = HashMap::new();
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &empty_param_members,
-            &empty_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        // --- Assertion 1 (positive): annotated-Let advertisement preserved ---
-        // Under the over-broad guard this returns None (both Lets dropped);
-        // under the narrowed guard it returns Some(&Type::length()).
-        assert_eq!(
-            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Let)),
-            Some(&Type::length()),
-            "narrowed guard must preserve the annotated-Let advertisement even when a sibling \
-             unannotated Let populated pass2_skipped for the same name; the over-broad guard \
-             would drop both Lets and return None here"
-        );
-
-        // --- Assertion 2 (negative): no spurious 'x' missing-member diagnostic ---
-        // Under the over-broad guard the None arm fires and emits "missing required member 'x'".
-        // Under the narrowed guard the annotated-Let advertisement satisfies the requirement.
-        let missing_x_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("missing required member") && d.message.contains("'x'"))
-            .collect();
-        assert!(
-            missing_x_diags.is_empty(),
-            "narrowed guard must not emit 'missing required member' for 'x': \
-             the annotated Let provides Type::length() which satisfies \
-             RequirementKind::Let(Length). Got: {:?}",
-            missing_x_diags
-        );
-
-        // --- Assertion 3 (negative): no type-mismatch cascade for 'x' ---
-        // Type::length() satisfies RequirementKind::Let(Length) via implicitly_converts_to,
-        // so no "available default has" cascade should fire.
-        let mismatch_x_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("available default") && d.message.contains("'x'"))
-            .collect();
-        assert!(
-            mismatch_x_diags.is_empty(),
-            "no type-mismatch cascade for 'x': Type::length() satisfies \
-             RequirementKind::Let(Length). Got: {:?}",
-            mismatch_x_diags
-        );
-    }
-
-    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
-    /// user-facing `Diagnostic::error` with the message
-    /// "enum `Polarity` does not accept type arguments".
-    ///
-    /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
-    /// so this test validates the error is always surfaced to users regardless of build profile.
-    #[test]
-    fn enum_with_type_args_emits_error_diagnostic() {
-        // Polarity<Something> — non-empty type_args that should trigger the diagnostic
-        let bogus_type_arg = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Something".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-        let direction_with_args = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Polarity".to_string(),
-                type_args: vec![bogus_type_arg],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        let enum_defs = vec![reify_ir::EnumDef {
-            name: "Polarity".to_string(),
-            variants: vec!["In".into(), "Out".into()],
-            doc: None,
-            type_params: vec![],
-        }];
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                name: "dir".to_string(),
-                doc: None,
-                is_priv: false,
-                type_expr: Some(direction_with_args),
-                default: None,
-                where_clause: None,
-                annotations: vec![],
-                span: SourceSpan::empty(0),
-                content_hash: ContentHash(0),
-            })],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
-
-        // Expect exactly one diagnostic reporting the type-args error.
-        let type_args_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("does not accept type arguments"))
-            .collect();
-        assert_eq!(
-            type_args_errors.len(),
-            1,
-            "Expected exactly one 'does not accept type arguments' diagnostic; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// A non-enum type name with non-empty type_args (e.g. `NotAnEnum<Something>`) should
-    /// produce exactly one "unresolved type" diagnostic — the same outcome as `NotAnEnum`
-    /// without type_args, because enum-resolution is gated on the name matching an enum.
-    ///
-    /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
-    /// it verifies that an unknown parameterized type name falls through to the
-    /// "unresolved type" diagnostic rather than silently resolving to `Type::dimensionless_scalar()` or
-    /// emitting a spurious "does not accept type arguments" error.
-    #[test]
-    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
-        // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
-        let bogus_type_arg = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Something".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-        let non_enum_with_args = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "NotAnEnum".to_string(),
-                type_args: vec![bogus_type_arg],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        let enum_defs = vec![reify_ir::EnumDef {
-            name: "Polarity".to_string(),
-            variants: vec!["In".into(), "Out".into()],
-            doc: None,
-            type_params: vec![],
-        }];
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                name: "p".to_string(),
-                doc: None,
-                is_priv: false,
-                type_expr: Some(non_enum_with_args),
-                default: None,
-                where_clause: None,
-                annotations: vec![],
-                span: SourceSpan::empty(0),
-                content_hash: ContentHash(0),
-            })],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        // Should NOT panic — "NotAnEnum" is not in enum_defs, so the enum-match arm
-        // (where the debug_assert lives) is never taken.
-        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
-
-        // The unknown type produces an "unresolved type" diagnostic — not a panic.
-        let unresolved: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("unresolved type"))
-            .collect();
-        assert_eq!(
-            unresolved.len(),
-            1,
-            "Expected exactly one 'unresolved type' diagnostic"
-        );
-    }
-
-    /// Pins the `inferred_let_exprs.get(name)` fallback at conformance.rs:358-363
-    /// and the `Some(default_type) if implicitly_converts_to(...)` satisfaction arm
-    /// at conformance.rs:406-410.
-    ///
-    /// `RequirementKind::Let` is not parser-reachable from reify source today
-    /// (see `let_with_type_and_no_value_parses_as_empty_trait` and
-    /// `let_type_disambiguation_tests.rs:470-497`), so only hand-built fixtures
-    /// reach this path.
-    ///
-    /// ## Scenario
-    ///
-    /// - **TraitA**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
-    ///   parser-reachable)
-    /// - **TraitB**: provides unannotated `let x = 80mm` (`DefaultKind::Let { cell_type: None,
-    ///   let_decl.value: QuantityLiteral { 80.0, "mm" } }`) — Pass 2 infers `Type::length()`
-    ///   and caches it in `inferred_let_exprs`
-    /// - **Structure S : TraitA + TraitB { }** — no member overrides
-    ///
-    /// ## Expected behavior
-    ///
-    /// The `available_defaults` builder falls back to `inferred_let_exprs.get("x")`
-    /// → `Type::length()`. The `Some(default_type) if implicitly_converts_to(...)` arm
-    /// finds the types compatible → requirement satisfied → no diagnostics.
-    #[test]
-    fn inferred_let_expr_satisfies_let_requirement() {
-        // TraitA: requires `let x : Length` (hand-built — not parser-reachable)
-        let trait_a = CompiledTrait {
-            name: "TraitA".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "x".to_string(),
-                kind: RequirementKind::Let(Type::length()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // TraitB: `let x = 80mm` (unannotated; cell_type: None).
-        // Pass 2 compiles QuantityLiteral { value: 80.0, unit: "mm" } →
-        // Type::Scalar { dimension: LENGTH } = Type::length(), finds "x" vacant in scope,
-        // caches in inferred_let_exprs.
-        let trait_b = CompiledTrait {
-            name: "TraitB".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![],
-            defaults: vec![TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: None,
-                    let_decl: reify_ast::LetDecl {
-                        name: "x".to_string(),
-                        doc: None,
-                        is_pub: false,
-                        is_priv: false,
-                        is_aux: false,
-                        type_expr: None,
-                        value: reify_ast::Expr {
-                            kind: reify_ast::ExprKind::QuantityLiteral {
-                                value: 80.0,
-                                unit: reify_ast::UnitExpr::Unit("mm".to_string()),
-                            },
-                            span: SourceSpan::empty(0),
-                        },
-                        where_clause: None,
-                        annotations: vec![],
-                        span: SourceSpan::empty(0),
-                        content_hash: ContentHash(0),
-                    },
-                },
-                span: SourceSpan::empty(0),
-            }],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // Structure S : TraitA + TraitB { } — no member overrides
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![
-                reify_ast::TraitBoundRef {
-                    name: "TraitA".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-                reify_ast::TraitBoundRef {
-                    name: "TraitB".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-            ],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[trait_a, trait_b], &structure_def, &[]);
-
-        // A clean satisfaction path produces zero diagnostics.  Using is_empty() rather than
-        // filtered substring checks means any unrelated upstream failure (e.g. a silent
-        // compile_expr error) also trips this assertion — making it load-bearing beyond just
-        // the two previously-checked categories ("type mismatch" / "missing required member").
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics: inferred Type::length() should satisfy \
-             RequirementKind::Let(Length) via the `Some(default_type) if \
-             implicitly_converts_to(...)` arm at conformance.rs:406-410; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Pins the `Some(default_type) =>` type-mismatch branch at conformance.rs:411-423
-    /// for the `RequirementKind::Let` path when the inferred-let type is incompatible.
-    ///
-    /// `implicitly_converts_to(Type::dimensionless_scalar(), Type::length())` is false — `Real` and
-    /// `Scalar { LENGTH }` are distinct types with no implicit conversion
-    /// (type_compat.rs:3-96).
-    ///
-    /// ## Scenario
-    ///
-    /// Identical to `inferred_let_expr_satisfies_let_requirement` except the let
-    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::dimensionless_scalar()`)
-    /// instead of `QuantityLiteral { 80.0, "mm" }`.
-    ///
-    /// ## Expected behavior
-    ///
-    /// `available_defaults` advertises `("x", Let) -> Type::dimensionless_scalar()` (via the
-    /// `inferred_let_exprs.get("x")` fallback). The `Some(default_type) =>` arm
-    /// fires → exactly one "type mismatch" + "available default" + "x" diagnostic.
-    /// No "missing required member" for "x" (the default IS present in
-    /// `available_defaults`, just with an incompatible type).
-    #[test]
-    fn inferred_let_expr_incompatible_with_let_requirement() {
-        // TraitA: requires `let x : Length` (hand-built — not parser-reachable)
-        let trait_a = CompiledTrait {
-            name: "TraitA".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "x".to_string(),
-                kind: RequirementKind::Let(Type::length()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // TraitB: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" vacant in scope,
-        // caches in inferred_let_exprs.
-        let trait_b = CompiledTrait {
-            name: "TraitB".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![],
-            defaults: vec![TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: None,
-                    let_decl: reify_ast::LetDecl {
-                        name: "x".to_string(),
-                        doc: None,
-                        is_pub: false,
-                        is_priv: false,
-                        is_aux: false,
-                        type_expr: None,
-                        value: reify_ast::Expr {
-                            kind: reify_ast::ExprKind::NumberLiteral {
-                                value: 5.5,
-                                is_real: true,
-                            },
-                            span: SourceSpan::empty(0),
-                        },
-                        where_clause: None,
-                        annotations: vec![],
-                        span: SourceSpan::empty(0),
-                        content_hash: ContentHash(0),
-                    },
-                },
-                span: SourceSpan::empty(0),
-            }],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // Structure S : TraitA + TraitB { } — no member overrides
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![
-                reify_ast::TraitBoundRef {
-                    name: "TraitA".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-                reify_ast::TraitBoundRef {
-                    name: "TraitB".to_string(),
-                    type_args: vec![],
-                    span: SourceSpan::empty(0),
-                },
-            ],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[trait_a, trait_b], &structure_def, &[]);
-
-        // Assertion 1: exactly one "type mismatch" + "available default" + "'x'" diagnostic.
-        // Using "'x'" (quoted member name as it appears in the diagnostic template at
-        // conformance.rs:415) rather than bare 'x' avoids false matches on words like
-        // "expects" that also contain the character.  This pins the `Some(default_type) =>`
-        // branch at conformance.rs:411-423.
-        let mismatch: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| {
-                d.message.contains("type mismatch")
-                    && d.message.contains("available default")
-                    && d.message.contains("'x'")
-            })
-            .collect();
-        assert_eq!(
-            mismatch.len(),
-            1,
-            "expected exactly one type-mismatch diagnostic from the `Some(default_type) =>` \
-             branch; got: {:?}",
-            diagnostics
-        );
-
-        // Assertion 2: no "missing required member" for "'x'" (quoted, same rationale).
-        // The inferred_let_exprs fallback advertised `("x", Let)` so the None arm was
-        // never reached — the default IS present in available_defaults, just with an
-        // incompatible type.
-        assert!(
-            !diagnostics
-                .iter()
-                .any(|d| d.message.contains("missing required member") && d.message.contains("'x'")),
-            "negative case should hit the Some(default_type) arm, not the None arm; \
-             got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-contract test for `check_phase_resolve_structure_members`.
-    ///
-    /// Verifies that the helper correctly builds both the `structure_members`
-    /// HashMap and the `structure_constraint_labels` HashSet from a minimal
-    /// StructureDef fixture. This test fails to compile until the helper exists
-    /// (TDD compile-tripwire) and pins the helper's return type signature.
-    #[test]
-    fn check_phase_resolve_structure_members_builds_member_and_constraint_maps() {
-        let real_type_expr = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Real".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-        let length_type_expr = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Length".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![
-                reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                    name: "width".to_string(),
-                    doc: None,
-                    is_priv: false,
-                    type_expr: Some(real_type_expr),
-                    default: None,
-                    where_clause: None,
-                    annotations: vec![],
-                    span: SourceSpan::empty(0),
-                    content_hash: ContentHash(0),
-                }),
-                reify_ast::MemberDecl::Let(reify_ast::LetDecl {
-                    name: "length".to_string(),
-                    doc: None,
-                    is_pub: false,
-                    is_priv: false,
-                    is_aux: false,
-                    type_expr: Some(length_type_expr),
-                    value: reify_ast::Expr {
-                        kind: reify_ast::ExprKind::NumberLiteral {
-                            value: 0.0,
-                            is_real: false,
-                        },
-                        span: SourceSpan::empty(0),
-                    },
-                    where_clause: None,
-                    annotations: vec![],
-                    span: SourceSpan::empty(0),
-                    content_hash: ContentHash(0),
-                }),
-                reify_ast::MemberDecl::Constraint(reify_ast::ConstraintDecl {
-                    label: Some("bound".to_string()),
-                    expr: reify_ast::Expr {
-                        kind: reify_ast::ExprKind::NumberLiteral {
-                            value: 1.0,
-                            is_real: false,
-                        },
-                        span: SourceSpan::empty(0),
-                    },
-                    where_clause: None,
-                    is_priv: false,
-                    span: SourceSpan::empty(0),
-                    content_hash: ContentHash(0),
-                }),
-            ],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let entity_ref = EntityDefRef::from(&structure_def);
-        let structure_names: HashSet<String> = HashSet::new();
-        let trait_names: HashSet<String> = HashSet::new();
-        let alias_registry = TypeAliasRegistry::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let empty_assoc_scope: HashMap<String, Type> = HashMap::new();
-        let empty_declared_assoc: HashSet<String> = HashSet::new();
-        let (structure_param_members, structure_let_members, structure_constraint_labels) =
-            check_phase_resolve_structure_members(
-                &entity_ref,
-                &structure_names,
-                &trait_names,
-                &[],
-                &alias_registry,
-                &empty_assoc_scope,
-                &empty_declared_assoc,
-                &mut diagnostics,
-            );
-
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            structure_param_members.contains_key("width"),
-            "Expected 'width' in structure_param_members"
-        );
-        assert!(
-            structure_let_members.contains_key("length"),
-            "Expected 'length' in structure_let_members"
-        );
-        assert!(
-            structure_constraint_labels.contains("bound"),
-            "Expected 'bound' in structure_constraint_labels"
-        );
-    }
-
-    /// Phase-contract test for `check_phase_collect_trait_bounds`.
-    ///
-    /// Verifies that the helper populates a MergeContext with the trait requirements
-    /// from the structure's trait bounds. This test fails to compile until the helper
-    /// exists (TDD compile-tripwire) and pins the helper's return type signature.
-    #[test]
-    fn check_phase_collect_trait_bounds_populates_ctx_requirements() {
-        let trait_a = CompiledTrait {
-            name: "TraitA".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "w".to_string(),
-                kind: RequirementKind::Param(Type::dimensionless_scalar()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![reify_ast::TraitBoundRef {
-                name: "TraitA".to_string(),
-                type_args: vec![],
-                span: SourceSpan::empty(0),
-            }],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let entity_ref = EntityDefRef::from(&structure_def);
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            [("TraitA".to_string(), &trait_a)].into_iter().collect();
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let ctx = check_phase_collect_trait_bounds(
-            &entity_ref,
-            &trait_registry,
-            &structure_members,
-            &mut diagnostics,
-        );
-
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics; got: {:?}",
-            diagnostics
-        );
-        assert_eq!(ctx.requirements.len(), 1, "Expected 1 requirement");
-        assert_eq!(
-            ctx.requirements[0].name, "w",
-            "Expected requirement name 'w'"
-        );
-    }
-
-    /// Phase-contract test for `check_phase_pre_register_default_types`.
-    ///
-    /// Verifies that the helper registers an annotated Param default into the scope
-    /// (Pass 1) and returns empty caches (no unannotated Let defaults to process).
-    /// This test fails to compile until the helper exists (TDD compile-tripwire) and
-    /// pins the helper's `PreRegisterOutput` return type.
-    #[test]
-    fn check_phase_pre_register_default_types_registers_annotated_param_into_scope() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Param {
-                cell_type: Type::dimensionless_scalar(),
-                default_decl: param_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            out.inferred_let_exprs.is_empty(),
-            "Expected no inferred_let_exprs for a param-only context"
-        );
-        // Negative control: a param-only fixture must never populate pass1_skipped
-        // (no annotated-Let losers can exist without an annotated Let in ctx.defaults).
-        assert!(
-            out.pass1_skipped.is_empty(),
-            "Expected pass1_skipped to be empty for a param-only context; \
-             got: {:?}",
-            out.pass1_skipped
-        );
-        // Negative control: a param-only fixture (single Param, no competing annotated Let)
-        // must never populate pass1_param_skipped (no Param can lose without a prior annotated Let).
-        assert!(
-            out.pass1_param_skipped.is_empty(),
-            "Expected pass1_param_skipped to be empty for a param-only context; \
-             got: {:?}",
-            out.pass1_param_skipped
-        );
-        assert!(
-            out.pass2_skipped.is_empty(),
-            "Expected no pass2_skipped for a param-only context"
-        );
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected no pass2_compile_errors for a param-only context"
-        );
-        // Verify "x" was registered in scope: a second register_if_absent call for "x"
-        // should find it occupied (Some(..)) — no direct lookup API needed.
-        let conflict = scope.register_if_absent("x", Type::Int);
-        assert!(
-            conflict.is_some(),
-            "Expected 'x' to be registered in scope (register_if_absent should find it occupied)"
-        );
-    }
-
-    /// Phase-contract test: Pass 2 of `check_phase_pre_register_default_types` caches an
-    /// unannotated Let's compiled expression into `inferred_let_exprs`.
-    ///
-    /// When a `DefaultKind::Let { cell_type: None }` default is present and its scope slot
-    /// is not yet claimed (no preceding annotated default for the same name), Pass 2 should
-    /// compile the expression, register the inferred type in scope, and store the compiled
-    /// expression in `inferred_let_exprs` for phase 6 to reuse without double-compilation.
-    #[test]
-    fn check_phase_pre_register_default_types_caches_unannotated_let_in_inferred_map() {
-        let let_decl = reify_ast::LetDecl {
-            name: "y".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // unannotated — must go through Pass 2 inference
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 2.5,
-                    is_real: true,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("y".to_string()),
-            kind: DefaultKind::Let {
-                cell_type: None,
-                let_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics for a simple number literal; got: {:?}",
-            diagnostics
-        );
-        // Negative control: an unannotated-Let-only fixture must never populate
-        // pass1_skipped (no annotated-Let loser can exist without a competing
-        // annotated default earlier in ctx.defaults).
-        assert!(
-            out.pass1_skipped.is_empty(),
-            "Expected pass1_skipped to be empty for a unannotated-let-only context; \
-             got: {:?}",
-            out.pass1_skipped
-        );
-        // Negative control: an unannotated-Let-only fixture (no Param, no annotated Let)
-        // must never populate pass1_param_skipped.
-        assert!(
-            out.pass1_param_skipped.is_empty(),
-            "Expected pass1_param_skipped to be empty for an unannotated-let-only context; \
-             got: {:?}",
-            out.pass1_param_skipped
-        );
-        assert!(
-            out.pass2_skipped.is_empty(),
-            "Expected no pass2_skipped when no scope collision occurred"
-        );
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected no pass2_compile_errors for a successful compilation"
-        );
-        assert!(
-            out.inferred_let_exprs
-                .contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
-            "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
-        );
-        assert_eq!(
-            out.inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::dimensionless_scalar(),
-            "Expected Type::dimensionless_scalar() for a floating-point number literal 2.5"
-        );
-    }
-
-    /// Phase-contract test: Pass 2 of `check_phase_pre_register_default_types` records
-    /// the name in `pass2_skipped` (not `inferred_let_exprs`) when the scope slot was
-    /// already claimed by a Pass 1 annotated default.
-    ///
-    /// When a `DefaultKind::Param` (or annotated `DefaultKind::Let`) for name "x" is
-    /// processed first in Pass 1, the scope slot for "x" is claimed. A subsequent
-    /// unannotated `DefaultKind::Let` for the same name in Pass 2 sees the slot occupied
-    /// and must record "x" in `pass2_skipped` (preventing duplicate cell injection in
-    /// phase 6) without inserting into `inferred_let_exprs`.
-    #[test]
-    fn check_phase_pre_register_default_types_records_collision_in_pass2_skipped() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // unannotated — will be compiled in Pass 2
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 5.5,
-                    is_real: true,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![
-            // Pass 1 claims the scope slot for "x" with Type::length()
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Param {
-                    cell_type: Type::length(),
-                    default_decl: param_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-            // Pass 2 finds "x" already claimed → should record in pass2_skipped
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: None,
-                    let_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-        ];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        // The collision must be recorded in pass2_skipped, not the expression cache.
-        assert!(
-            out.inferred_let_exprs.is_empty(),
-            "Expected inferred_let_exprs to be empty when Pass 2 finds a scope collision; \
-             got: {:?}",
-            out.inferred_let_exprs.keys().collect::<Vec<_>>()
-        );
-        assert!(
-            out.pass2_skipped.contains("x"),
-            "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
-        );
-        // Negative control: an unannotated Let losing to a Param goes into pass2_skipped,
-        // NOT pass1_skipped. The two sets are mutually exclusive by cell_type predicate.
-        assert!(
-            out.pass1_skipped.is_empty(),
-            "Expected pass1_skipped to be empty: the unannotated-Let loser is recorded in \
-             pass2_skipped, not pass1_skipped; got: {:?}",
-            out.pass1_skipped
-        );
-        // Negative control: unannotated Let losing to a Param must not populate
-        // pass1_param_skipped (only Param losers to an annotated Let go there).
-        assert!(
-            out.pass1_param_skipped.is_empty(),
-            "Expected pass1_param_skipped to be empty: the unannotated-Let loser goes into \
-             pass2_skipped, not pass1_param_skipped; got: {:?}",
-            out.pass1_param_skipped
-        );
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected no pass2_compile_errors for a successful compilation"
-        );
-    }
-
-    /// Phase-contract test: Pass 1 of `check_phase_pre_register_default_types` records
-    /// an annotated-Let loser in `pass1_skipped` (task 1952 step-2).
-    ///
-    /// ## Scenario (Pass 1 ↔ Pass 2 symmetry)
-    ///
-    /// Pass 2 has a symmetric guard: when an unannotated Let loses `register_if_absent` to a
-    /// Pass 1 annotated type, the name is recorded in `pass2_skipped` so the injection loop
-    /// skips Let-cell emission. This test pins the **annotated-Let mirror**: when a Pass 1
-    /// annotated-Let default loses `register_if_absent` to an earlier-in-ctx-defaults Param,
-    /// the name must be recorded in the NEW `pass1_skipped` set (not in `pass2_skipped`).
-    ///
-    /// ## Fixture
-    ///
-    /// `ctx.defaults = [Param "x":Length, annotated Let "x":Length]`
-    ///
-    /// Pass 1 processes both: the Param claims the scope slot first, then the annotated Let's
-    /// `register_if_absent` returns `Occupied`. The name "x" must be recorded in `pass1_skipped`.
-    ///
-    /// ## Assertions
-    ///
-    /// - `pass1_skipped.contains("x")`: the annotated-Let loser is recorded.
-    /// - `pass2_skipped.is_empty()`: no unannotated Let reached Pass 2 (nothing to skip there).
-    /// - `inferred_let_exprs.is_empty()`: no expression compiled (annotated Lets skip Pass 2).
-    /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
-    /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
-    #[test]
-    fn check_phase_pre_register_default_types_records_collision_in_pass1_skipped() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-        // Annotated Let: cell_type = Some(Type::length()) encodes the resolved type directly.
-        // Pass 1 processes this because cell_type is Some(_); Pass 2 is bypassed.
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 80.0,
-                    is_real: false,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![
-            // Pass 1 claims the scope slot for "x" with Type::length()
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Param {
-                    cell_type: Type::length(),
-                    default_decl: param_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-            // Pass 1 also processes this annotated Let — finds "x" already claimed → pass1_skipped
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: Some(Type::length()), // annotated → goes through Pass 1, not Pass 2
-                    let_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-        ];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        // The annotated-Let loser must be recorded in pass1_skipped.
-        assert!(
-            out.pass1_skipped.contains("x"),
-            "Expected 'x' in pass1_skipped after Pass 1 found the annotated Let's scope slot \
-             already claimed by the Param; got pass1_skipped = {:?}",
-            out.pass1_skipped
-        );
-        // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
-        assert!(
-            out.pass2_skipped.is_empty(),
-            "Expected pass2_skipped to be empty — no unannotated Let was processed; \
-             got: {:?}",
-            out.pass2_skipped
-        );
-        // No expression was compiled (annotated Lets skip Pass 2).
-        assert!(
-            out.inferred_let_exprs.is_empty(),
-            "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
-             Pass 2 inference; got: {:?}",
-            out.inferred_let_exprs.keys().collect::<Vec<_>>()
-        );
-        // No compile-error names (no Pass 2 compilation was attempted).
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected pass2_compile_errors to be empty; got: {:?}",
-            out.pass2_compile_errors
-        );
-        // register_if_absent conflicts are debug-log only — no diagnostic emitted.
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics — register_if_absent conflict is logged at debug \
-             level only; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-contract test: Pass 1 of `check_phase_pre_register_default_types` records
-    /// a Param loser in `pass1_param_skipped` (task 2208 step-1).
-    ///
-    /// ## Scenario (Pass 1 Param-loser symmetry)
-    ///
-    /// The reverse of `check_phase_pre_register_default_types_records_collision_in_pass1_skipped`:
-    /// when the annotated Let appears *before* the Param in `ctx.defaults`, the annotated Let
-    /// wins the scope slot and the Param loses. The Param loser must be recorded in the NEW
-    /// `pass1_param_skipped` set (not in `pass1_skipped`, which only tracks annotated-Let losers).
-    ///
-    /// ## Fixture
-    ///
-    /// `ctx.defaults = [annotated Let "x":Length = 80, Param "x":Length]`
-    ///
-    /// Pass 1 processes both: the annotated Let claims the scope slot first, then the Param's
-    /// `register_if_absent` returns `Occupied`. The name "x" must be recorded in `pass1_param_skipped`.
-    ///
-    /// ## Assertions
-    ///
-    /// - `pass1_param_skipped.contains("x")`: the Param loser is recorded.
-    /// - `pass1_skipped.is_empty()`: no annotated-Let loser this direction.
-    /// - `pass2_skipped.is_empty()`: no unannotated Let reached Pass 2.
-    /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
-    /// - `inferred_let_exprs.is_empty()`: no expression cached (annotated Lets skip Pass 2).
-    /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
-    #[test]
-    fn check_phase_pre_register_default_types_records_collision_in_pass1_param_skipped() {
-        // Annotated Let: cell_type = Some(Type::length()) — wins the scope slot first.
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 80.0,
-                    is_real: false,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-        // Param: loses the scope slot because annotated Let appeared first.
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![
-            // Pass 1 claims the scope slot for "x" with the annotated Let first
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Let {
-                    cell_type: Some(Type::length()), // annotated → processes in Pass 1, wins slot
-                    let_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-            // Pass 1 also processes this Param — finds "x" already claimed → pass1_param_skipped
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Param {
-                    cell_type: Type::length(),
-                    default_decl: param_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-        ];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        // The Param loser must be recorded in pass1_param_skipped.
-        assert!(
-            out.pass1_param_skipped.contains("x"),
-            "Expected 'x' in pass1_param_skipped after Pass 1 found the Param's scope slot \
-             already claimed by the annotated Let; got pass1_param_skipped = {:?}",
-            out.pass1_param_skipped
-        );
-        // No annotated-Let loser in this direction, so pass1_skipped must be empty.
-        assert!(
-            out.pass1_skipped.is_empty(),
-            "Expected pass1_skipped to be empty — the annotated Let won (not lost); \
-             got: {:?}",
-            out.pass1_skipped
-        );
-        // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
-        assert!(
-            out.pass2_skipped.is_empty(),
-            "Expected pass2_skipped to be empty — no unannotated Let was processed; \
-             got: {:?}",
-            out.pass2_skipped
-        );
-        // No compile-error names (no Pass 2 compilation was attempted).
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected pass2_compile_errors to be empty; got: {:?}",
-            out.pass2_compile_errors
-        );
-        // No expression was compiled (annotated Lets skip Pass 2).
-        assert!(
-            out.inferred_let_exprs.is_empty(),
-            "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
-             Pass 2 inference; got: {:?}",
-            out.inferred_let_exprs.keys().collect::<Vec<_>>()
-        );
-        // register_if_absent conflicts are debug-log only — no diagnostic emitted.
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics — register_if_absent conflict is logged at debug \
-             level only; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-contract test: Pass 2 treats a warning-only `compile_expr` result as success,
-    /// not as a compile error (task 2158 step-1, severity-safe detection).
-    ///
-    /// ## Scenario
-    ///
-    /// `let x = []` — an empty list literal — causes `compile_expr` to push a
-    /// `Severity::Warning` diagnostic ("cannot infer element type of empty list literal,
-    /// defaulting to Real") but emits **no** `Severity::Error`.  The expression compiles
-    /// successfully to `Type::List(Box::new(Type::dimensionless_scalar()))`.
-    ///
-    /// ## What this test locks in
-    ///
-    /// The len-based snapshot (`diagnostics.len() > diag_before`) used before task 2158
-    /// counted the warning as a compile failure, wrongly inserting `x` into
-    /// `pass2_compile_errors` and skipping both the `inferred_let_exprs` insert and the
-    /// scope registration.  After the severity-filter fix, only `Severity::Error` additions
-    /// are counted — the warning is tolerated and the expression is cached normally.
-    ///
-    /// Assertions:
-    ///   (a) At least 1 diagnostic emitted, and ALL diagnostics have non-Error severity.
-    ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
-    ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
-    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::dimensionless_scalar()))`.
-    ///   (e) The scope slot for "x" is occupied after Pass 2 and holds the inferred type
-    ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
-    #[test]
-    fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // unannotated — must go through Pass 2 inference
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Let {
-                cell_type: None,
-                let_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let out = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        // (a) At least one diagnostic was emitted and none are Error-severity.
-        //     The contract under test is "no Error ⇒ expression is cached", not the exact count.
-        //     Pinning to exactly 1 Warning would break if compile_expr adds a future Info/note
-        //     without any real regression.
-        assert!(
-            !diagnostics.is_empty(),
-            "Expected at least one diagnostic (the empty-list-literal warning); got none"
-        );
-        assert!(
-            diagnostics.iter().all(|d| d.severity != Severity::Error),
-            "Expected NO Error-severity diagnostic — warning-only compile_expr must be treated \
-             as success; got: {:?}",
-            diagnostics
-        );
-
-        // (b) The warning must NOT be classified as a compile failure.
-        assert!(
-            out.pass2_compile_errors.is_empty(),
-            "Expected pass2_compile_errors to be empty — a Warning-only compile_expr result \
-             must be treated as success; got: {:?}",
-            out.pass2_compile_errors
-        );
-
-        // pass2_skipped should also be empty (no scope-slot collision).
-        assert!(
-            out.pass2_skipped.is_empty(),
-            "Expected pass2_skipped to be empty; got: {:?}",
-            out.pass2_skipped
-        );
-
-        // (c) The compiled expression must be cached in inferred_let_exprs.
-        assert!(
-            out.inferred_let_exprs
-                .contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
-            "Expected composite key ('x', Let) in inferred_let_exprs — Pass 2 must cache \
-             the compiled expression even when compile_expr emitted a Warning; \
-             got keys: {:?}",
-            out.inferred_let_exprs.keys().collect::<Vec<_>>()
-        );
-
-        // (d) The cached expression has the expected inferred type for an empty list literal.
-        assert_eq!(
-            out.inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::List(Box::new(Type::dimensionless_scalar())),
-            "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
-        );
-
-        // (e) Scope slot for "x" is occupied after Pass 2 and holds the inferred type.
-        //     Use the non-mutating scope.resolve probe so the assertion cannot accidentally
-        //     insert an unrelated key if Pass 2 had failed to register silently.
-        let resolved = scope.resolve("x");
-        assert!(
-            resolved.is_some(),
-            "Expected 'x' to be registered in scope by Pass 2 (scope.resolve should return \
-             Some(..)); got None, meaning Pass 2 failed to register the inferred type"
-        );
-        assert_eq!(
-            resolved.unwrap().1,
-            &Type::List(Box::new(Type::dimensionless_scalar())),
-            "Expected scope slot for 'x' to hold the inferred Type::List(Real) after Pass 2; \
-             got: {:?}",
-            resolved.unwrap().1
-        );
-    }
-
-    /// Phase-level guard test: chained-let `Type::Error` sentinel suppresses the
-    /// requirement-check cascade (task 2158 amendment #3).
-    ///
-    /// Companion to the integration test
-    /// `chained_unannotated_lets_with_unresolved_ref_do_not_cascade`
-    /// (`tests/let_type_disambiguation_tests.rs`), which pins the
-    /// absence-of-cascade at the "unresolved name" site.  This test locks in the
-    /// *downstream* consequence: the `Type::Error` sentinel propagated through
-    /// sibling `let c = a` lands in `available_defaults` as
-    /// `("c", Let) -> Type::Error`, and `implicitly_converts_to(Error, _) -> true`
-    /// (wildcard in `type_compat.rs`) absorbs the mismatch silently at the
-    /// requirement-check site.
-    ///
-    /// ## Why this is here and not in `let_type_disambiguation_tests.rs`
-    ///
-    /// `RequirementKind::Let` is not parser-reachable from reify source today
-    /// (see mod.rs:256-260).  The test hand-builds the requirement so we can
-    /// exercise `check_phase_check_members_against_requirements`' anti-cascade
-    /// path without an RFC-level API promotion.
-    ///
-    /// ## Scenario
-    ///
-    /// - Trait T provides `let a = b` (b undefined → compile error → `a` poisoned
-    ///   with `Type::Error` in scope) and `let c = a` (a resolves to `Type::Error`
-    ///   → c compiles silently to `Type::Error`, no new error diagnostic).
-    /// - Trait T also declares `require let c : Length`
-    ///   (`RequirementKind::Let(Type::length())` — hand-built).
-    /// - Structure S : T { } — no member overrides.
-    ///
-    /// ## Expected behavior
-    ///
-    /// Pass 2 records "a" in `pass2_compile_errors` (compile failure).  "c" is NOT
-    /// in `pass2_compile_errors` — `c = a` compiles successfully to `Type::Error`
-    /// via the scope sentinel.  `available_defaults` advertises
-    /// `("c", Let) -> Type::Error`.  The requirement-check calls
-    /// `implicitly_converts_to(Type::Error, Type::length())` → `true` → no
-    /// "type mismatch for trait member 'c'" cascade.
-    ///
-    /// The only expected diagnostic is the root-cause "unresolved name: b".
-    ///
-    /// ## Failure without task 2158 step-4 (scope-poison)
-    ///
-    /// Without the scope-poison fix, "a" is absent from scope when `c = a` is
-    /// compiled, emitting "unresolved name: a" and adding "c" to
-    /// `pass2_compile_errors`.  `available_defaults` then has no entry for
-    /// `("c", Let)`, and the requirement check emits "missing required member 'c'"
-    /// — a spurious secondary cascade on top of the root-cause "unresolved b".
-    #[test]
-    fn chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade() {
-        // --- let a = b (b is undefined — will fail compile) ---
-        let let_decl_a = reify_ast::LetDecl {
-            name: "a".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // unannotated
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::Ident("b".to_string()), // b is undefined
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        // --- let c = a (a resolves to Type::Error from the scope sentinel) ---
-        let let_decl_c = reify_ast::LetDecl {
-            name: "c".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // unannotated
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        // --- Trait T: requires `let c : Length`; provides `let a = b`, `let c = a` ---
-        // `RequirementKind::Let` is hand-built because it is not parser-reachable today.
-        let trait_t = CompiledTrait {
-            name: "TraitT".to_string(),
-            is_pub: false,
-            doc: None,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "c".to_string(),
-                kind: RequirementKind::Let(Type::length()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![
-                TraitDefault {
-                    name: Some("a".to_string()),
-                    kind: DefaultKind::Let {
-                        cell_type: None,
-                        let_decl: let_decl_a,
-                    },
-                    span: SourceSpan::empty(0),
-                },
-                TraitDefault {
-                    name: Some("c".to_string()),
-                    kind: DefaultKind::Let {
-                        cell_type: None,
-                        let_decl: let_decl_c,
-                    },
-                    span: SourceSpan::empty(0),
-                },
-            ],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-
-        // --- Structure S : TraitT { } — no member overrides ---
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![reify_ast::TraitBoundRef {
-                name: "TraitT".to_string(),
-                type_args: vec![],
-                span: SourceSpan::empty(0),
-            }],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[trait_t], &structure_def, &[]);
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-
-        // (a) Root-cause "unresolved b" error must be present.
-        let has_unresolved_b = errors.iter().any(|d| {
-            d.message.contains("unresolved")
-                && (d.message.contains(": b")
-                    || d.message.contains("'b'")
-                    || d.message.contains("`b`"))
-        });
-        assert!(
-            has_unresolved_b,
-            "expected at least one diagnostic naming the unresolved identifier `b` \
-             (root cause); got: {:?}",
-            errors
-        );
-
-        // (b) No "type mismatch for trait member 'c'" cascade.
-        // After scope-poison, `c = a` compiles to Type::Error (a is in scope as
-        // the sentinel).  `implicitly_converts_to(Type::Error, Type::length())`
-        // returns true via the wildcard in `type_compat.rs`.
-        let cascade_mismatch: Vec<_> = errors
-            .iter()
-            .filter(|d| {
-                d.message.contains("type mismatch for trait member")
-                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
-            })
-            .collect();
-        assert!(
-            cascade_mismatch.is_empty(),
-            "cascade 'type mismatch for trait member c' found — \
-             `implicitly_converts_to(Type::Error, Type::length())` should return true \
-             (wildcard in type_compat.rs), absorbing the poisoned type rather than \
-             emitting a mismatch.  Cascade diagnostics: {:?}",
-            cascade_mismatch
-        );
-
-        // (c) No "missing required member 'c'" cascade.
-        // Without scope-poison, `c = a` would also fail compile (a unresolved),
-        // putting "c" in pass2_compile_errors and leaving no entry in
-        // available_defaults — causing a spurious "missing required member 'c'".
-        let missing_c: Vec<_> = errors
-            .iter()
-            .filter(|d| {
-                d.message.contains("missing required member")
-                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
-            })
-            .collect();
-        assert!(
-            missing_c.is_empty(),
-            "spurious 'missing required member c' found — without scope-poison, `c = a` \
-             would fail compile (a unresolved in scope) and c would be excluded from \
-             available_defaults entirely.  Diagnostics: {:?}",
-            missing_c
-        );
-    }
-
-    /// Phase-contract test for `check_phase_build_available_defaults_map`.
-    ///
-    /// Verifies that the helper builds a composite-keyed HashMap from ctx.defaults,
-    /// including Param defaults and excluding Constraint defaults. This test fails to
-    /// compile until the helper exists (TDD compile-tripwire) and pins the helper's
-    /// return type signature.
-    #[test]
-    fn check_phase_build_available_defaults_map_uses_composite_key() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-        let constraint_decl = reify_ast::ConstraintDecl {
-            label: Some("bound".to_string()),
-            expr: reify_ast::Expr {
-                kind: reify_ast::ExprKind::BoolLiteral(true),
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            is_priv: false,
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![
-            TraitDefault {
-                name: Some("x".to_string()),
-                kind: DefaultKind::Param {
-                    cell_type: Type::dimensionless_scalar(),
-                    default_decl: param_decl,
-                },
-                span: SourceSpan::empty(0),
-            },
-            TraitDefault {
-                name: Some("bound".to_string()),
-                kind: DefaultKind::Constraint(constraint_decl),
-                span: SourceSpan::empty(0),
-            },
-        ];
-
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        let pass1_skipped: HashSet<String> = HashSet::new();
-        let pass1_param_skipped: HashSet<String> = HashSet::new();
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-
-        let available_defaults = check_phase_build_available_defaults_map(
-            &ctx,
-            &inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-        );
-
-        assert_eq!(
-            available_defaults.len(),
-            1,
-            "Expected exactly 1 entry (Param); Constraint should be filtered. Got: {:?}",
-            available_defaults.keys().collect::<Vec<_>>()
-        );
-        assert!(
-            available_defaults.contains_key(&("x".to_string(), AvailableDefaultKind::Param)),
-            "Expected key ('x', Param) in available_defaults"
-        );
-        assert_eq!(
-            available_defaults[&("x".to_string(), AvailableDefaultKind::Param)],
-            Type::dimensionless_scalar(),
-            "Expected Type::dimensionless_scalar() for key ('x', Param)"
-        );
-    }
-
-    /// Phase-contract test: `check_phase_build_available_defaults_map` excludes an
-    /// annotated-Let advertisement when its name is in `pass1_skipped` (task 1952 step-4).
-    ///
-    /// ## Invariant: advertisement mirrors injection
-    ///
-    /// The injection loop skips annotated-Let cell emission when `pass1_skipped.contains(name)`.
-    /// For correctness, the advertisement map must also omit the corresponding `(name, Let)`
-    /// entry — otherwise a `RequirementKind::Let` lookup could match a phantom advertisement
-    /// that has no injected cell backing it, producing a spurious "requirement satisfied"
-    /// answer.
-    ///
-    /// This test pins the suppression guard: `cell_type.is_some() && pass1_skipped.contains(name)`
-    /// returns `None` (excluded). The companion positive-control assertion below confirms that
-    /// the same fixture WITHOUT `pass1_skipped` DOES produce `Some(&Type::length())`, so the
-    /// test isolates exactly the new guard's effect.
-    ///
-    /// ## Fixture
-    ///
-    /// `ctx.defaults = [annotated Let "x":Length]` — the Let that Pass 1 would have skipped.
-    /// `pass1_skipped = {"x"}` — simulates the Pass 1 race loss.
-    ///
-    /// ## Assertions
-    ///
-    /// - With `pass1_skipped = {"x"}`: `available_defaults.get(("x", Let)) == None`.
-    /// - Positive control (empty pass1_skipped): `available_defaults.get(("x", Let)) == Some(&Length)`.
-    ///
-    /// **COMPILE-TRIPWIRE**: fails to compile until step-5 adds `pass1_skipped: &HashSet<String>`
-    /// as the new third parameter of `check_phase_build_available_defaults_map`.
-    #[test]
-    fn check_phase_build_available_defaults_map_excludes_annotated_let_for_pass1_skipped_name() {
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 80.0,
-                    is_real: false,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Let {
-                cell_type: Some(Type::length()), // annotated Let — Pass 1 processes this
-                let_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        // Positive control: without pass1_skipped, the annotated Let IS advertised.
-        let empty_pass1_skipped: HashSet<String> = HashSet::new();
-        let empty_pass1_param_skipped: HashSet<String> = HashSet::new();
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-
-        // COMPILE-TRIPWIRE: `&empty_pass1_skipped` is the new 3rd parameter — fails to compile
-        // until step-5 adds `pass1_skipped: &HashSet<String>` to the function signature.
-        let positive_control = check_phase_build_available_defaults_map(
-            &ctx,
-            &inferred_let_exprs,
-            &empty_pass1_skipped,
-            &empty_pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-        );
-        assert_eq!(
-            positive_control.get(&("x".to_string(), AvailableDefaultKind::Let)),
-            Some(&Type::length()),
-            "positive control: without pass1_skipped, annotated Let 'x' must be advertised \
-             as Some(&Type::length()); the guard must not over-suppress"
-        );
-
-        // Negative test: with pass1_skipped = {"x"}, the annotated Let must be suppressed.
-        let mut pass1_skipped: HashSet<String> = HashSet::new();
-        pass1_skipped.insert("x".to_string());
-
-        let available_defaults = check_phase_build_available_defaults_map(
-            &ctx,
-            &inferred_let_exprs,
-            &pass1_skipped,
-            &empty_pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-        );
-        assert_eq!(
-            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Let)),
-            None,
-            "annotated Let 'x' must be excluded from available_defaults when its name is \
-             in pass1_skipped — advertisement mirrors injection (no phantom entry for a \
-             cell that will not be injected)"
-        );
-    }
-
-    /// Phase-contract test: `check_phase_build_available_defaults_map` excludes a Param
-    /// advertisement when its name is in `pass1_param_skipped` (task 2208 step-3).
-    ///
-    /// ## Invariant: advertisement mirrors injection
-    ///
-    /// The injection loop (step-6) will skip Param cell emission when
-    /// `pass1_param_skipped.contains(name)`. For correctness, the advertisement map must
-    /// also omit the corresponding `(name, Param)` entry — otherwise a
-    /// `RequirementKind::Param` lookup could match a phantom advertisement with no injected
-    /// cell backing it, producing a spurious "requirement satisfied" answer.
-    ///
-    /// ## Fixture
-    ///
-    /// `ctx.defaults = [Param "x":Length]` — the Param that Pass 1 would have skipped.
-    /// `pass1_param_skipped = {"x"}` — simulates the Pass 1 race loss (annotated Let won).
-    ///
-    /// ## Assertions
-    ///
-    /// - With `pass1_param_skipped = {"x"}`: `available_defaults.get(("x", Param)) == None`.
-    /// - Positive control (empty `pass1_param_skipped`): `available_defaults.get(("x", Param)) == Some(&Length)`.
-    ///
-    /// **COMPILE-TRIPWIRE**: fails to compile until step-4 adds
-    /// `pass1_param_skipped: &HashSet<String>` as a new parameter of
-    /// `check_phase_build_available_defaults_map`.
-    #[test]
-    fn check_phase_build_available_defaults_map_excludes_param_for_pass1_param_skipped_name() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Param {
-                cell_type: Type::length(),
-                default_decl: param_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        let pass1_skipped: HashSet<String> = HashSet::new();
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-
-        // Positive control: without pass1_param_skipped suppression, the Param IS advertised.
-        let empty_pass1_param_skipped: HashSet<String> = HashSet::new();
-
-        // COMPILE-TRIPWIRE: `&empty_pass1_param_skipped` is the new parameter — fails to compile
-        // until step-4 adds `pass1_param_skipped: &HashSet<String>` to the function signature.
-        let positive_control = check_phase_build_available_defaults_map(
-            &ctx,
-            &inferred_let_exprs,
-            &pass1_skipped,
-            &empty_pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-        );
-        assert_eq!(
-            positive_control.get(&("x".to_string(), AvailableDefaultKind::Param)),
-            Some(&Type::length()),
-            "positive control: without pass1_param_skipped, Param 'x' must be advertised \
-             as Some(&Type::length()); the guard must not over-suppress"
-        );
-
-        // Negative test: with pass1_param_skipped = {"x"}, the Param must be suppressed.
-        let mut pass1_param_skipped: HashSet<String> = HashSet::new();
-        pass1_param_skipped.insert("x".to_string());
-
-        let available_defaults = check_phase_build_available_defaults_map(
-            &ctx,
-            &inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-        );
-        assert_eq!(
-            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Param)),
-            None,
-            "Param 'x' must be excluded from available_defaults when its name is in \
-             pass1_param_skipped — advertisement mirrors injection (no phantom entry for \
-             a cell that will not be injected)"
-        );
-    }
-
-    /// Phase-contract test for `check_phase_check_members_against_requirements`.
-    ///
-    /// Verifies that the helper emits a "missing required member" diagnostic when a
-    /// structure satisfies neither the member directly nor a same-kind default.
-    /// This test fails to compile until the helper exists (TDD compile-tripwire) and
-    /// pins the helper's signature.
-    #[test]
-    fn check_phase_check_members_against_requirements_emits_missing_member_when_unsatisfied() {
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![], // No members — requirement "w" is unsatisfied
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.requirements = vec![TraitRequirement {
-            name: "w".to_string(),
-            kind: RequirementKind::Param(Type::dimensionless_scalar()),
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_param_members: HashMap<String, Type> = HashMap::new();
-        let structure_let_members: HashMap<String, Type> = HashMap::new();
-        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &structure_param_members,
-            &structure_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected 1 diagnostic for missing member 'w'; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0].message.contains("missing required member"),
-            "Expected 'missing required member' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("'w'"),
-            "Expected member name 'w' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Phase-contract test: a structure `param` member does NOT satisfy a `RequirementKind::Let`
-    /// requirement.
-    ///
-    /// `RequirementKind::Let` is not parser-reachable from reify source today — the parser maps
-    /// `let x = …` in a trait body to `DefaultKind::Let` (a default), not a requirement.  This
-    /// unit test hand-builds the fixture to lock down the kind-aware routing in
-    /// `check_phase_check_members_against_requirements`: when the requirement is `Let`, the
-    /// checker looks in `structure_let_members` (not `structure_param_members`), so a structure
-    /// `param x` does not satisfy it.
-    ///
-    /// This is the symmetric counterpart to the integration test
-    /// `structure_let_does_not_satisfy_param_requirement` in `trait_conformance_tests.rs`.
-    #[test]
-    fn param_member_does_not_satisfy_let_requirement() {
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        // Hand-built RequirementKind::Let — not reachable from the parser today.
-        ctx.requirements = vec![TraitRequirement {
-            name: "x".to_string(),
-            kind: RequirementKind::Let(Type::length()),
-            span: SourceSpan::empty(0),
-        }];
-
-        // Structure provides `param x : Length` (in param map), NOT in let map.
-        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
-        structure_param_members.insert("x".to_string(), Type::length());
-        let structure_let_members: HashMap<String, Type> = HashMap::new();
-        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &structure_param_members,
-            &structure_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        // A param member must NOT satisfy a let requirement — the checker looks in
-        // structure_let_members for Let requirements, so it finds nothing and emits missing-member.
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected 1 diagnostic: param 'x' must not satisfy let requirement 'x'; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0].message.contains("missing required member"),
-            "Expected 'missing required member' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("'x'"),
-            "Expected member name 'x' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("let"),
-            "Expected kind 'let' mentioned in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
-    /// "type mismatch" diagnostic when the structure provides the required member but
-    /// with the wrong type.
-    ///
-    /// Covers the `Some(actual_type)` arm where `implicitly_converts_to(actual, expected)`
-    /// is false — the mismatch path inside the kind-routed map lookup.
-    #[test]
-    fn check_phase_check_members_against_requirements_emits_type_mismatch_for_wrong_member_type() {
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.requirements = vec![TraitRequirement {
-            name: "w".to_string(),
-            kind: RequirementKind::Param(Type::length()),
-            span: SourceSpan::empty(0),
-        }];
-
-        // Structure param member "w" exists but has wrong type: Real, not Length
-        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
-        structure_param_members.insert("w".to_string(), Type::dimensionless_scalar());
-        let structure_let_members: HashMap<String, Type> = HashMap::new();
-        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &structure_param_members,
-            &structure_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected 1 type-mismatch diagnostic; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0].message.contains("type mismatch"),
-            "Expected 'type mismatch' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("'w'"),
-            "Expected member name 'w' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
-    /// "type mismatch" diagnostic when no structure member exists but there IS a same-kind
-    /// available default whose type does not satisfy the requirement.
-    ///
-    /// Covers the `Some(default_type)` (non-matching) arm of the `available_defaults.get`
-    /// match — the default exists but `implicitly_converts_to(default_type, expected)` is
-    /// false, so the "requirement expects …, available default has …" diagnostic fires.
-    #[test]
-    fn check_phase_check_members_against_requirements_emits_mismatch_for_wrong_default_type() {
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.requirements = vec![TraitRequirement {
-            name: "w".to_string(),
-            kind: RequirementKind::Param(Type::length()),
-            span: SourceSpan::empty(0),
-        }];
-
-        // No structure member "w", but there IS a same-kind (Param) default with wrong type
-        let structure_param_members: HashMap<String, Type> = HashMap::new();
-        let structure_let_members: HashMap<String, Type> = HashMap::new();
-        let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
-        available_defaults.insert(
-            ("w".to_string(), AvailableDefaultKind::Param),
-            Type::dimensionless_scalar(), // Wrong type — Length is required
-        );
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &structure_param_members,
-            &structure_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected 1 diagnostic for wrong-typed default; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0].message.contains("available default"),
-            "Expected 'available default' in diagnostic message; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("'w'"),
-            "Expected member name 'w' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
-    /// "missing required sub-component" diagnostic for a `RequirementKind::Sub` requirement
-    /// when the structure has no matching sub-component declaration.
-    ///
-    /// Covers the `RequirementKind::Sub` arm: when `structure.members` contains no
-    /// `MemberDecl::Sub` entry matching both the required name and structure type, the
-    /// "missing required sub-component" diagnostic is emitted.
-    #[test]
-    fn check_phase_check_members_against_requirements_emits_missing_sub_for_absent_sub_component() {
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![], // No sub-components declared
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.requirements = vec![TraitRequirement {
-            name: "mount".to_string(),
-            kind: RequirementKind::Sub("Hole".to_string()),
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_param_members: HashMap<String, Type> = HashMap::new();
-        let structure_let_members: HashMap<String, Type> = HashMap::new();
-        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_check_members_against_requirements(
-            &ctx,
-            &entity_ref,
-            &structure_param_members,
-            &structure_let_members,
-            &available_defaults,
-            // No structure assoc fns in this test.
-            &HashMap::<String, CompiledAssocFnSig>::new(),
-            // No structure assoc type bindings in this test.
-            &HashMap::<String, Type>::new(),
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected 1 diagnostic for missing sub-component 'mount'; got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("missing required sub-component"),
-            "Expected 'missing required sub-component' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("'mount'"),
-            "Expected sub-component name 'mount' in diagnostic; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Phase-contract test for `check_phase_inject_defaults`.
-    ///
-    /// Verifies that the helper injects a Param value cell when the structure does not
-    /// override the default. The injected cell should have kind=Param, member="x",
-    /// no constraints, and no diagnostics. This test fails to compile until the helper
-    /// exists (TDD compile-tripwire) and pins the helper's signature.
-    #[test]
-    fn check_phase_inject_defaults_injects_param_cell_for_non_overridden_default() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None, // No default expression
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Param {
-                cell_type: Type::dimensionless_scalar(),
-                default_decl: param_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let structure_constraint_labels: HashSet<String> = HashSet::new();
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index: u32 = 0;
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let pass1_skipped: HashSet<String> = HashSet::new();
-        let pass1_param_skipped: HashSet<String> = HashSet::new();
-        check_phase_inject_defaults(
-            &ctx,
-            &entity_ref,
-            &structure_members,
-            &structure_constraint_labels,
-            inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            value_cells.len(),
-            1,
-            "Expected 1 value cell for injected param 'x'; got: {:?}",
-            value_cells
-        );
-        assert_eq!(
-            value_cells[0].id.member, "x",
-            "Expected cell member='x'; got: {}",
-            value_cells[0].id.member
-        );
-        assert_eq!(
-            value_cells[0].kind,
-            ValueCellKind::Param,
-            "Expected ValueCellKind::Param"
-        );
-        assert!(
-            constraints.is_empty(),
-            "Expected no constraints; got: {:?}",
-            constraints
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-contract test: `check_phase_inject_defaults` skips annotated-Let cell injection
-    /// when the name is in `pass1_skipped` (task 1952 step-6).
-    ///
-    /// ## Invariant: annotated-Let injection is suppressed when name in pass1_skipped
-    ///
-    /// This is the mirror of the unannotated-Let / `pass2_skipped` suppression at
-    /// `checker.rs` (the `None`-cache-miss arm that calls `continue` when
-    /// `pass2_skipped.contains(name)`).  For annotated Lets, the new guard is:
-    ///
-    /// ```text
-    /// if cell_type.is_some() && pass1_skipped.contains(name) { continue; }
-    /// ```
-    ///
-    /// placed **before** `compile_expr` so the expression is never compiled for a
-    /// skipped name — no cell is pushed, no diagnostic is emitted.
-    ///
-    /// ## Fixture
-    ///
-    /// A single annotated Let default for "x" (cell_type = Some(Type::length())),
-    /// with pass1_skipped = {"x"}.  The injection loop must skip "x" entirely:
-    /// - `value_cells.is_empty()` — no Let cell emitted
-    /// - `constraints.is_empty()` — no constraint emitted
-    /// - `diagnostics.is_empty()` — no compile-error or any other diagnostic
-    ///
-    /// ## Cross-references
-    ///
-    /// - Step-7 adds `pass1_skipped: &HashSet<String>` to `check_phase_inject_defaults`
-    ///   (between `inferred_let_exprs` and `pass2_skipped`) and the guard in the
-    ///   `DefaultKind::Let { cell_type: Some(_), .. }` arm.
-    /// - Sibling test: `check_phase_inject_defaults_injects_param_cell_for_non_overridden_default`
-    ///   (the passthrough case, pass1_skipped = empty).
-    ///
-    /// **COMPILE-TRIPWIRE**: fails to compile until step-7 adds `pass1_skipped: &HashSet<String>`
-    /// as a parameter of `check_phase_inject_defaults` (between `inferred_let_exprs` and
-    /// `pass2_skipped`).
-    #[test]
-    fn check_phase_inject_defaults_skips_annotated_let_cell_for_pass1_skipped_name() {
-        // Annotated Let "x": Length = 80.0 — cell_type carried in DefaultKind, not type_expr.
-        let let_decl = reify_ast::LetDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_pub: false,
-            is_priv: false,
-            is_aux: false,
-            type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
-            value: reify_ast::Expr {
-                kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 80.0,
-                    is_real: false,
-                },
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Let {
-                cell_type: Some(Type::length()), // annotated — would be compiled if NOT in pass1_skipped
-                let_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let structure_constraint_labels: HashSet<String> = HashSet::new();
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        // COMPILE-TRIPWIRE: `&pass1_skipped` is the new parameter added by step-7 between
-        // `inferred_let_exprs` and `pass2_skipped`. Fails to compile until step-7 updates
-        // `check_phase_inject_defaults` to accept `pass1_skipped: &HashSet<String>`.
-        let mut pass1_skipped: HashSet<String> = HashSet::new();
-        pass1_skipped.insert("x".to_string());
-        let pass1_param_skipped: HashSet<String> = HashSet::new();
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index: u32 = 0;
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_inject_defaults(
-            &ctx,
-            &entity_ref,
-            &structure_members,
-            &structure_constraint_labels,
-            inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        assert!(
-            value_cells.is_empty(),
-            "Expected no value cells: annotated Let 'x' is in pass1_skipped and must be \
-             suppressed by the injection loop; got: {:?}",
-            value_cells
-        );
-        assert!(
-            constraints.is_empty(),
-            "Expected no constraints; got: {:?}",
-            constraints
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics (pass1_skipped suppression must be silent); got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Phase-contract test: `check_phase_inject_defaults` skips Param cell injection
-    /// when the name is in `pass1_param_skipped` (task 2208 step-5).
-    ///
-    /// ## Invariant: Param injection is suppressed when name in pass1_param_skipped
-    ///
-    /// This is the mirror of the annotated-Let / `pass1_skipped` suppression (step-7 of task 1952).
-    /// When a Param default lost the Pass 1 `register_if_absent` race (annotated Let won), the
-    /// Param injection arm must not emit a cell — the winning annotated Let will inject it.
-    /// The new guard (step-6):
-    ///
-    /// ```text
-    /// if pass1_param_skipped.contains(name) { continue; }
-    /// ```
-    ///
-    /// placed at the TOP of the `DefaultKind::Param` arm — before the `structure_members.contains_key`
-    /// check and any `compile_expr` call.
-    ///
-    /// ## Fixture
-    ///
-    /// A single Param default for "x" (cell_type = Type::dimensionless_scalar(), no default expression),
-    /// with `pass1_param_skipped = {"x"}`.  The injection loop must skip "x" entirely:
-    /// - `value_cells.is_empty()` — no Param cell emitted
-    /// - `constraints.is_empty()` — no constraint emitted
-    /// - `diagnostics.is_empty()` — no compile-error or any other diagnostic
-    ///
-    /// **COMPILE-TRIPWIRE**: fails to compile until step-6 adds
-    /// `pass1_param_skipped: &HashSet<String>` as a parameter of `check_phase_inject_defaults`
-    /// (between `pass1_skipped` and `pass2_skipped`).
-    #[test]
-    fn check_phase_inject_defaults_skips_param_cell_for_pass1_param_skipped_name() {
-        let param_decl = reify_ast::ParamDecl {
-            name: "x".to_string(),
-            doc: None,
-            is_priv: false,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("x".to_string()),
-            kind: DefaultKind::Param {
-                cell_type: Type::dimensionless_scalar(),
-                default_decl: param_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let structure_constraint_labels: HashSet<String> = HashSet::new();
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-            HashMap::new();
-        let pass1_skipped: HashSet<String> = HashSet::new();
-        // COMPILE-TRIPWIRE: `&pass1_param_skipped` is the new parameter added by step-6 between
-        // `pass1_skipped` and `pass2_skipped`. Fails to compile until step-6 updates
-        // `check_phase_inject_defaults` to accept `pass1_param_skipped: &HashSet<String>`.
-        let mut pass1_param_skipped: HashSet<String> = HashSet::new();
-        pass1_param_skipped.insert("x".to_string());
-        let pass2_skipped: HashSet<String> = HashSet::new();
-        let pass2_compile_errors: HashSet<String> = HashSet::new();
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index: u32 = 0;
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_phase_inject_defaults(
-            &ctx,
-            &entity_ref,
-            &structure_members,
-            &structure_constraint_labels,
-            inferred_let_exprs,
-            &pass1_skipped,
-            &pass1_param_skipped,
-            &pass2_skipped,
-            &pass2_compile_errors,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
-
-        assert!(
-            value_cells.is_empty(),
-            "Expected no value cells: Param 'x' is in pass1_param_skipped and must be \
-             suppressed by the injection loop; got: {:?}",
-            value_cells
-        );
-        assert!(
-            constraints.is_empty(),
-            "Expected no constraints; got: {:?}",
-            constraints
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics (pass1_param_skipped suppression must be silent); got: {:?}",
-            diagnostics
-        );
-    }
-
-    // ── task 1914 step-5: unit tests for resolve_let_advertised_type helper ──
-    // These tests are compile-tripwires: they fail to compile until step-6 defines
-    // `pub(super) fn resolve_let_advertised_type` in checker.rs.
+    // ── unit tests for the resolve_let_advertised_type helper (task 1914) ──
 
     /// Pins the annotation-wins branch of `resolve_let_advertised_type`.
     ///
     /// When a cell_type annotation is present, the helper must return it unchanged
     /// regardless of what the inferred expression type is. This matches the behavior
-    /// at `check_phase_build_available_defaults_map` (site 1) where annotated Let
-    /// defaults bypass the inferred cache entirely.
+    /// at the advertisement site (site 1) where annotated Let defaults bypass the
+    /// inferred cache entirely.
     #[test]
     fn resolve_let_advertised_type_prefers_annotation_over_inferred() {
         let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
@@ -5919,7 +2687,8 @@ mod tests {
     /// the helper must return the inferred expression's result_type. This is the common
     /// path for unannotated let defaults that passed Pass 2 compilation successfully.
     /// After task 1914 suggestion #1, this is the only non-defensive path for
-    /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
+    /// unannotated lets: a let recorded as `DefaultDisposition::CompileError` never reaches
+    /// this helper.
     #[test]
     fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
         let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
@@ -5935,10 +2704,10 @@ mod tests {
     ///
     /// When neither a cell_type annotation nor an inferred expression is available,
     /// the helper returns `Type::Error` (anti-cascade poison). This arm should not be
-    /// reached in practice — the `debug_assert!` at the call site in
-    /// `check_phase_build_available_defaults_map` (checker.rs:766-772) catches drift;
-    /// the `Type::Error` fallback is defense in depth for release builds where the
-    /// `debug_assert!` is a no-op (task 3749, tightening of the 3639 G-allow carve-out).
+    /// reached in practice: at the advertisement call site (site 1) it means phase drift,
+    /// which injection reports. The `Type::Error` fallback is defense in depth for release
+    /// builds, where that report's `debug_assert!` is a no-op (task 3749, tightening of the
+    /// 3639 G-allow carve-out).
     #[test]
     fn resolve_let_advertised_type_falls_back_to_error_when_neither_annotation_nor_inferred() {
         let result = resolve_let_advertised_type(&None, None);
@@ -6068,12 +2837,8 @@ mod tests {
         assert_eq!(d.labels[0].span, span);
     }
 
-    /// Build a minimal `TopologyTemplate` for cycle-guard tests.
-    ///
-    /// The template has no realizations so `RealizationLetEnv::lookup` always
-    /// falls through to the value_cells arm — the arm containing the recursive
-    /// call to `infer_traits_for_expr_in_env(expr, self)`.  All other fields are
-    /// zeroed/empty; they are irrelevant to the cycle-guard path.
+    /// Build a `TopologyTemplate` holding only `cells`; every other field is
+    /// empty.
     fn minimal_template(name: &str, cells: Vec<ValueCellDecl>) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
@@ -6102,190 +2867,6 @@ mod tests {
             assoc_fns: vec![],
             assoc_types: vec![],
         }
-    }
-
-    /// Build a `Let`-kind `ValueCellDecl` whose `default_expr` is a `ValueRef`
-    /// pointing at `ref_id`.  Used to construct cycle fixtures in the tests below.
-    fn let_cell_with_ref(id: ValueCellId, ref_id: ValueCellId) -> ValueCellDecl {
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Let,
-            visibility: Visibility::Private,
-            is_aux: false,
-            cell_type: Type::dimensionless_scalar(),
-            default_expr: Some(CompiledExpr::value_ref(
-                ref_id,
-                Type::dimensionless_scalar(),
-            )),
-            solver_hints: vec![],
-            span: SourceSpan::empty(0),
-        }
-    }
-
-    /// Cycle guard: a self-referential `let` binding (`let g : Real = ValueRef(g)`)
-    /// must not overflow the stack; the in-flight visited set terminates the cycle
-    /// and `lookup` returns the safe-default `Some(InferredTraits::all())`.
-    ///
-    /// # Why the value_cells path is exercised
-    ///
-    /// Entity "E" has no geometry realization for "g" (no realization in the
-    /// template), so the realization arm is skipped and `lookup` falls through to
-    /// the value_cells arm — the arm that contains the recursive call to
-    /// `infer_traits_for_expr_in_env(expr, self)`.
-    ///
-    /// # Why `Type::dimensionless_scalar()`
-    ///
-    /// A non-geometry type confirms the fixture bypasses the realization arm
-    /// and only exercises the value_cells fallback where the recursion lives.
-    ///
-    /// # Assertion rationale
-    ///
-    /// `Some(InferredTraits::all())` is the safe-default propagation chain:
-    /// inner `lookup` hits the in-flight guard → returns `None` →
-    /// `infer_traits_for_expr_in_env(...).unwrap_or(all())` returns `all()` →
-    /// outer `lookup` wraps in `Some`.
-    #[test]
-    fn lookup_self_referential_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
-        // let g : Real = ValueRef(g)  — direct self-reference
-        let g_id = ValueCellId::new("E", "g");
-        let template = minimal_template("E", vec![let_cell_with_ref(g_id.clone(), g_id.clone())]);
-
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::all()),
-            "self-referential let must safe-default to all() rather than stack-overflowing"
-        );
-    }
-
-    /// Cycle guard: a chained-cycle let (`let g = ValueRef(h); let h = ValueRef(g)`)
-    /// must not overflow the stack; the in-flight visited set terminates the cycle
-    /// at re-entry and `lookup` returns the safe-default `Some(InferredTraits::all())`.
-    ///
-    /// Pins that the guard handles cycles longer than direct self-reference.
-    /// The assertion shape is identical to the self-referential test; both produce
-    /// `Some(InferredTraits::all())`.
-    #[test]
-    fn lookup_chained_cycle_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
-        // let g : Real = ValueRef(h)
-        // let h : Real = ValueRef(g)
-        let g_id = ValueCellId::new("E", "g");
-        let h_id = ValueCellId::new("E", "h");
-        let template = minimal_template(
-            "E",
-            vec![
-                let_cell_with_ref(g_id.clone(), h_id.clone()),
-                let_cell_with_ref(h_id.clone(), g_id.clone()),
-            ],
-        );
-
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::all()),
-            "chained-cycle let must safe-default to all() rather than stack-overflowing"
-        );
-    }
-
-    /// Non-cyclic chain: `let g = ValueRef(h); let h = difference(box(), box())`.
-    ///
-    /// Asserts that the in-flight guard does **not** short-circuit a non-cyclic
-    /// chain.  `lookup(h)` must resolve to `bounded_only()` — the inferred traits
-    /// of `difference` applied to two bounded primitives — and `lookup(g)` must
-    /// propagate that result rather than safe-defaulting to `all()`.
-    ///
-    /// This test distinguishes a correct guard (fires only when `id` is already
-    /// in the in-flight set) from a guard that fires too eagerly — for example,
-    /// one that returns `None` whenever `in_flight` is non-empty regardless of
-    /// which id is being resolved.  Without this test, both cycle tests pass even
-    /// with such a premature-firing guard because they assert `Some(all())`.
-    ///
-    /// # Fixture rationale
-    ///
-    /// `h`'s `default_expr` is `FunctionCall("difference", [box(), box()])` with
-    /// `result_type: Type::Geometry`.  `infer_traits_for_expr_in_env` dispatches
-    /// on `expr.kind` (not `cell_type`), so the `FunctionCall` arm fires and
-    /// returns `combine_difference(all(), all()) = bounded_only()`.
-    #[test]
-    fn lookup_chained_noncyclic_let_propagates_terminal_traits() {
-        use std::cell::RefCell;
-
-        // box_expr: FunctionCall("box", [], Geometry) → InferredTraits::all()
-        let box_expr = CompiledExpr {
-            kind: CompiledExprKind::FunctionCall {
-                function: ResolvedFunction {
-                    name: "box".to_string(),
-                    qualified_name: "std::box".to_string(),
-                },
-                args: vec![],
-            },
-            result_type: Type::Geometry,
-            content_hash: ContentHash(0),
-        };
-
-        // diff_expr: FunctionCall("difference", [box, box]) → bounded_only()
-        let diff_expr = CompiledExpr {
-            kind: CompiledExprKind::FunctionCall {
-                function: ResolvedFunction {
-                    name: "difference".to_string(),
-                    qualified_name: "std::difference".to_string(),
-                },
-                args: vec![box_expr.clone(), box_expr],
-            },
-            result_type: Type::Geometry,
-            content_hash: ContentHash(0),
-        };
-
-        let g_id = ValueCellId::new("E", "g");
-        let h_id = ValueCellId::new("E", "h");
-
-        // g: Let Real = ValueRef(h)  — bridges g into the value_cells fallback
-        let g_cell = let_cell_with_ref(g_id.clone(), h_id.clone());
-        // h: Let Real = difference(box(), box())  — terminal, resolves to bounded_only()
-        let h_cell = ValueCellDecl {
-            id: h_id,
-            kind: ValueCellKind::Let,
-            visibility: Visibility::Private,
-            is_aux: false,
-            cell_type: Type::dimensionless_scalar(),
-            default_expr: Some(diff_expr),
-            solver_hints: vec![],
-            span: SourceSpan::empty(0),
-        };
-
-        let template = minimal_template("E", vec![g_cell, h_cell]);
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::bounded_only()),
-            "non-cyclic chain g→h→difference(box,box) must propagate bounded_only(), \
-             not short-circuit to all() via premature cycle-guard firing"
-        );
     }
 
     /// Regression for task-2543 / task-2458: `check_trait_arg_conformance` must
@@ -6400,11 +2981,12 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
-        // ctor-conformance entry, so its diagnostics are emitted at
-        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
-        // are unchanged; δ later flips the knob back to Error.
-        assert_eq!(d.severity, Severity::Warning);
+        // check_trait_arg_conformance is a ctor-conformance entry, so its diagnostics
+        // are emitted at CTOR_FIELD_CONFORMANCE_SEVERITY. Task 5302 α downgraded that
+        // knob to Warning (Option-A uniform downgrade); task 5306 δ flipped it back to
+        // Error. Code/count/message were unchanged by both moves. Written as a literal
+        // rather than a read of the const so a future re-flip cannot pass vacuously.
+        assert_eq!(d.severity, Severity::Error);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),
@@ -6991,6 +3573,81 @@ mod tests {
         );
     }
 
+    /// Task 7174: a port-body param default (`CompiledPort.members`) must reach
+    /// the SAME `check_param_default_conformance` walk as a top-level
+    /// `value_cells` param default.
+    ///
+    /// `template.value_cells` and `template.ports[].members` are disjoint lists
+    /// (deliberately — see `param_default_cells`'s doc comment). Before the fix,
+    /// `check_param_default_conformance` walked only `value_cells`, so pushing a
+    /// `Geometry` param cell onto `template.ports` instead of `template.value_cells`
+    /// made it invisible to the walk: RED (zero diagnostics) until
+    /// `param_default_cells` chains `template.ports[].members` in.
+    ///
+    /// Its integration twin `port_member_geometry_param_default_errors`
+    /// (`harness_structure_declarations`) proves the same diagnostic end-to-end from
+    /// real source, so this probe is not here for the diagnostic — it is here for
+    /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
+    /// the only way to distinguish "the chain reached the port list" from "the
+    /// producer merged port members into `value_cells` after all", and that second
+    /// shape is a regression of the disjointness the GUI / `set_parameter` /
+    /// `find_param_default_expr` consumers depend on, which the integration probe
+    /// would happily stay green through.
+    #[test]
+    fn port_member_param_default_reaches_conformance_walk() {
+        let region_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "mount.region"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::new(10, 20),
+        };
+        let mut template = minimal_template("Test", vec![]);
+        template.ports.push(CompiledPort {
+            name: "mount".to_string(),
+            direction: reify_core::PortDirection::Bidi,
+            type_name: "P".to_string(),
+            members: vec![region_cell],
+            constraints: vec![],
+            frame_expr: None,
+            is_priv: false,
+        });
+
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "port-member param default must reach the conformance walk and emit exactly \
+             one diagnostic, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert!(
+            diagnostics[0].message.contains("mount.region"),
+            "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
     // ── task-4622: walk_param_against_arg_type Vector leaf arm ───────────────
 
     /// (a) Bare scalar arg against `Vector3<Length>` param →
@@ -7048,39 +3705,19 @@ mod tests {
     /// after S4; what changes is the REJECTION leg in test (a).
     #[test]
     fn vector_param_accepts_dimensionless_vector_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "v"),
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
             Type::Vector {
                 n: 3,
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
-        );
-        let param_type = Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
             "axis",
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
-        assert_eq!(
-            diagnostics.len(),
-            0,
-            "dimensionless Vector3 arg must be accepted for Vector3<Length> param \
-             (loose-quantity convention), got {}: {:?}",
-            diagnostics.len(),
-            diagnostics,
+            "a dimensionless Vector3 arg must be accepted for a Vector3<Length> param — the \
+             ARG side of the rule is TOLERANT, so a dimensionless slot names no dimension \
+             (loose-quantity convention).",
         );
     }
 
@@ -7090,6 +3727,14 @@ mod tests {
     /// Locks the arity-check added in the amendment pass: shape-based conformance now
     /// also requires matching `n` for `Type::Vector` args. `vec2` is a real mismatch
     /// for a `vec3`-typed param and must be rejected at compile time.
+    ///
+    /// This probe builds its `Type::Vector { n: 2, .. }` by hand, so it reaches the
+    /// walker without depending on `math_fn_result_type`'s name-suffix `n` inference.
+    /// The `.ri` twin that DOES depend on that inference, and so is the one that would
+    /// notice it ceasing to produce a `Type::Vector { n: 2, .. }` at all, is
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`
+    /// (`struct_ctor_field_conformance_tests.rs`). Sibling of
+    /// `point_param_rejects_wrong_arity_point_arg`.
     #[test]
     fn vector_param_rejects_wrong_arity_vector_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
@@ -7146,22 +3791,127 @@ mod tests {
     /// intentional. Sibling of `vector_param_accepts_dimensionless_vector_arg`.
     #[test]
     fn point_param_accepts_dimensionless_point_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "p"),
+        assert_quantity_slot_clean(
+            Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
             Type::Point {
                 n: 3,
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
+            "origin",
+            "a dimensionless Point3 arg must be accepted for a Point3<Length> param — the \
+             ARG side of the rule is TOLERANT, so a dimensionless slot names no dimension \
+             (loose-quantity convention).",
         );
-        let param_type = Type::point3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
+    }
+
+    /// CROSS-DIMENSION leg of the `Type::Point` arm (task 5766): a `Point{n:3}`
+    /// arg whose quantity slot names a CONCRETE dimension different from the
+    /// param's is exactly one `ArgTypeMismatch`.
+    ///
+    /// Constructed as a direct `Type` so the probe reaches the walker without
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    ///
+    /// The `.ri` twin of this exact cell is
+    /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306).
+    /// Pinning BOTH seams matters because they reach this arm by different
+    /// routes — a hand-built `Type` here, versus a `FunctionCall`'s inferred
+    /// `result_type` there — so this probe holds the walker's rule whatever the
+    /// inference chain does, while only the `.ri` fixture would notice that
+    /// chain ceasing to produce a dimensioned `Type::Point` at all. This is the
+    /// same two-seams shape `vector_param_rejects_cross_dimension_vector_arg`
+    /// states one arm over.
+    ///
+    /// The value-cell route (`let p = point3(…); Anchor(origin: p)`) is a THIRD
+    /// entry point and NOTHING here stands in for it — this probe builds no
+    /// `CompiledExpr` at all. It is pinned by its own fixture,
+    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`.
+    ///
+    /// The complement of `point_param_accepts_dimensionless_point_arg` directly
+    /// above: that one pins the TOLERANT half (either side declines to name a
+    /// concrete dimension ⇒ silent), this one pins the STRICT half (both name one
+    /// and they differ ⇒ reject).
+    #[test]
+    fn point_param_rejects_cross_dimension_point_arg() {
+        assert_quantity_slot_conflict(
+            Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            },
+            "origin",
+            "Scalar[m]",
+            "Scalar[kg]",
+            "a Point3<Mass> arg at a Point3<Length> param must be REJECTED — both sides name a \
+             concrete dimension and they disagree (task 5766).",
+        );
+    }
+
+    /// CROSS-DIMENSION leg of the `Type::Vector` arm at the direct-`Type` seam
+    /// (task 5766), sibling of `point_param_rejects_cross_dimension_point_arg`.
+    ///
+    /// The `.ri` seam for the same rule is
+    /// `vec3_cross_dimension_at_dimensioned_vector_param_errors_arg_type_mismatch`
+    /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
+    /// because they reach the arm by different routes — a hand-built `Type`
+    /// here, versus a `FunctionCall`'s inferred `result_type` there — so this
+    /// probe holds the walker's rule whatever the inference chain does.
+    ///
+    /// The code assertion is the load-bearing half: a quantity conflict must
+    /// route to `ArgTypeMismatch`, NOT to this arm's bespoke
+    /// `TypeNotConformingToVector`, which keeps owning ARITY/FAMILY failures only
+    /// (`vector_param_rejects_wrong_arity_vector_arg` pins that side).
+    #[test]
+    fn vector_param_rejects_cross_dimension_vector_arg() {
+        assert_quantity_slot_conflict(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            },
+            "axis",
+            "Scalar[m]",
+            "Scalar[kg]",
+            "a Vector3<Mass> arg at a Vector3<Length> param must be REJECTED — both sides name a \
+             concrete dimension and they disagree (task 5766) — and the QUANTITY conflict must \
+             route to ArgTypeMismatch, leaving TypeNotConformingToVector owning ARITY/FAMILY only.",
+        );
+    }
+
+    /// Run `arg_ty` against `param_type` on the empty-registry
+    /// `check_fn_arg_conformance` entry point and return whatever it emitted.
+    ///
+    /// Every probe of the QUANTITY-SLOT rule (tasks 5766 / 6159) reaches the
+    /// walker through here, via [`assert_quantity_slot_clean`] or
+    /// [`assert_quantity_slot_conflict`] — accepting and rejecting legs alike —
+    /// so a future change to how they reach it is made in one place. The
+    /// hand-rolled `check_fn_arg_conformance` call sites remaining in this module
+    /// pin a DIFFERENT rule (the task 5465 family/arity checks, whose
+    /// expectations are `TypeNotConformingToVector` rather than a quantity
+    /// conflict) and are deliberately not routed here.
+    fn quantity_slot_diags(param_type: Type, arg_ty: Type, arg_name: &str) -> Vec<Diagnostic> {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "a"), arg_ty);
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &param_type,
-            "origin",
+            arg_name,
             &compiled_arg,
             SourceSpan::empty(0),
             ConformanceRegistries {
@@ -7171,28 +3921,566 @@ mod tests {
             },
             &mut diagnostics,
         );
+        diagnostics
+    }
+
+    /// Assert that `arg_ty` at `param_type` produces NO diagnostic — the
+    /// accepting half of the task 5766 boundary fences.
+    fn assert_quantity_slot_clean(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
+        let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
         assert_eq!(
             diagnostics.len(),
             0,
-            "dimensionless Point3 arg must be accepted for Point3<Length> param \
-             (loose-quantity convention), got {}: {:?}",
+            "{why}\ngot {} diagnostic(s): {:?}",
             diagnostics.len(),
             diagnostics,
+        );
+    }
+
+    /// Rejecting sibling of [`assert_quantity_slot_clean`]: assert that `arg_ty`
+    /// at `param_type` produces exactly one `ArgTypeMismatch`, at
+    /// `Severity::Error`, naming `expected_param_quantity` after
+    /// `requires quantity` and `expected_arg_quantity` after `has quantity`.
+    /// Returns the diagnostics so a probe can pin more without compiling twice.
+    ///
+    /// EVERY pair in this signature runs PARAM-then-ARG — the two `Type`s, then
+    /// the two expected quantity renderings — so a call site reads in one
+    /// direction top to bottom and the strings cannot silently run counter to the
+    /// types directly above them.
+    ///
+    /// The two renderings are the DISCRIMINATING part of the message and are
+    /// written by hand at each probe rather than derived from the `Type`s under
+    /// test: an expectation computed by the same extraction the emitter uses
+    /// could not detect a transposition. They also pin the QUANTITY phrasing that
+    /// separates this emitter from `emit_arg_type_mismatch`. The label
+    /// expectation IS derived from those same two hand-written quantities — a
+    /// fixed two-slot rendering, so a transposition still swaps both
+    /// substitutions — and the WHOLE message is pinned exactly once, by
+    /// `dimensionless_quantity_param_rejects_dimensioned_vector_arg`, whose two
+    /// quantities differ asymmetrically (`Scalar[m]` vs `Real`) so a
+    /// transposition there cannot render as a no-op.
+    ///
+    /// For a probe whose types are WRAPPERS (the `List<Vector3<…>>` recursion
+    /// probe), the quantities named are the INNER ones the rule fires on.
+    ///
+    /// This pins the fn-call entry point this scaffold drives, which sets
+    /// `Severity::Error`. The ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`]
+    /// instead (Warning at α, `Error` since δ / task #5306, so the two entries no
+    /// longer split on severity) and is pinned by the `.ri` fixtures in
+    /// `struct_ctor_field_conformance_tests.rs`.
+    fn assert_quantity_slot_conflict(
+        param_type: Type,
+        arg_ty: Type,
+        arg_name: &str,
+        expected_param_quantity: &str,
+        expected_arg_quantity: &str,
+        why: &str,
+    ) -> Vec<Diagnostic> {
+        let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "{why}\ngot {} diagnostic(s): {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "{why}\na quantity conflict must route to ArgTypeMismatch, got {:?}",
+            diagnostics[0].code,
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            Severity::Error,
+            "{why}\nthe fn-call entry point sets Severity::Error (the ctor entry sets the \
+             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Error since δ); the quantity rule inherits \
+             whichever the walk was entered with. Got {:?}",
+            diagnostics[0].severity,
+        );
+        // The message must name the QUANTITY slots, not just the whole types: at
+        // the Matrix/Tensor arm the family/arity difference the whole-type
+        // rendering leads with (`Tensor2x3` vs `Matrix3x3`) is exactly what this
+        // arm ACCEPTS, so it points the reader away from the actual cause.
+        //
+        // The two anchored fragments below are what DISCRIMINATES a correct
+        // emission from a transposed one; the surrounding prose is pinned whole
+        // exactly once, at the flagship probe named in this fn's doc.
+        let has_quantity = format!("has quantity '{expected_arg_quantity}'");
+        let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
+        assert!(
+            diagnostics[0].message.contains(&has_quantity)
+                && diagnostics[0].message.contains(&requires_quantity),
+            "{why}\nthe message must name the ARG's quantity slot after `has quantity` \
+             ({has_quantity:?}) and the PARAM's after `requires quantity` \
+             ({requires_quantity:?}) — transposed, it reads as the exact opposite of the rule \
+             that fired. Got: {:?}",
+            diagnostics[0].message,
+        );
+        assert_eq!(
+            diagnostics[0].labels.len(),
+            1,
+            "{why}\nthe quantity diagnostic carries exactly one span label, got {:?}",
+            diagnostics[0].labels,
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].message,
+            format!(
+                "quantity mismatch: expected '{expected_param_quantity}', \
+                 got '{expected_arg_quantity}'"
+            ),
+            "{why}\nthe label must name the PARAM slot as `expected` and the ARG slot as `got` — \
+             transposed, it reads as the exact opposite of the rule that fired",
+        );
+        diagnostics
+    }
+
+    /// FENCE (a-i), task 5766 unknown-ness boundary: a dimension-GENERIC param
+    /// slot accepts a concretely-dimensioned arg.
+    ///
+    /// `Vec3<Q: Dimension>` (`stdlib/trajectory.ri:103`) resolves its quantity to
+    /// `Type::ScalarParam("Q")`. A generic slot names no dimension, so there is
+    /// nothing to conflict with and the rule must stay silent — otherwise every
+    /// instantiation of a dimension-generic vector wrapper would warn.
+    #[test]
+    fn generic_quantity_param_accepts_dimensioned_vector_arg() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::ScalarParam("Q".to_string())),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "axis",
+            "a Vector3<Length> arg at a dimension-GENERIC Vector3<Scalar<Q>> param must stay \
+             CLEAN — a ScalarParam slot names no concrete dimension, so \
+             param_quantity_slot_dimension yields None and there is nothing to conflict with \
+             (task 5766; task 6159's param-side tightening covers a dimensionless Scalar only, \
+             not a ScalarParam).",
+        );
+    }
+
+    /// FENCE (a-ii), the SAME boundary in the opposite direction: a concretely
+    /// dimensioned param slot accepts a dimension-GENERIC arg.
+    ///
+    /// Pinned separately from (a-i) because a rule that compared only one side
+    /// against `None` would pass (a-i) and fail here. Together they pin that
+    /// [`crate::type_acceptance::quantity_verdict`] requires BOTH sides to name a dimension —
+    /// which is also how the `is_numeric_placeholder_leaf` unknown-ness fence
+    /// (D4-5) survives at these arms.
+    #[test]
+    fn dimensioned_quantity_param_accepts_generic_vector_arg() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::ScalarParam("Q".to_string())),
+            },
+            "axis",
+            "a dimension-GENERIC Vector3<Scalar<Q>> arg at a Vector3<Length> param must stay \
+             CLEAN — the rule requires BOTH sides to name a concrete dimension before it can \
+             fire (task 5766); widening it here would re-open the D4-5 unknown-ness hole.",
+        );
+    }
+
+    /// THE PARAM-SIDE RULING (task 6159): a DIMENSIONLESS param slot REJECTS a
+    /// concretely-dimensioned arg.
+    ///
+    /// This is where the ruling's asymmetry is pinned from the strict side.
+    /// (a-i)/(a-ii) hold the rule tolerant when either side declines to name a
+    /// dimension via `ScalarParam`, and
+    /// `vector_param_accepts_dimensionless_vector_arg` holds the ARG side
+    /// tolerant when it is a dimensionless `Scalar`. The PARAM side is not the
+    /// same kind of thing: `.ri` REQUIRES the quantity type-arg
+    /// (`type_resolution.rs`'s `Vector3`/`Matrix`/`Tensor` arities), so a param's
+    /// slot is always a WRITTEN DECLARATION and never `infer_type()` output —
+    /// there is no absent spelling that could silently default to dimensionless.
+    /// Post task 5848 (merged), `Vector3<Dimensionless>` on a direction field is
+    /// a deliberate assertion of unit-lessness rather than a grammar workaround,
+    /// so a `Vector3<Length>` arg there is a real error.
+    ///
+    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The ctor-path `.ri`
+    /// twin of this same cell is
+    /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`), at `Severity::Error` since
+    /// δ / task #5306 — so the two paths no longer split on severity.
+    #[test]
+    fn dimensionless_quantity_param_rejects_dimensioned_vector_arg() {
+        let diagnostics = assert_quantity_slot_conflict(
+            Type::vec3(Type::dimensionless_scalar()),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "direction",
+            "Real",
+            "Scalar[m]",
+            "a Vector3<Length> arg at a DIMENSIONLESS Vector3<Dimensionless> param must be \
+             REJECTED (task 6159) — a param's quantity slot is a written declaration, never an \
+             erasure, so `Dimensionless` there asserts unit-lessness. The ARG-side tolerance \
+             leg is deliberately untouched (`vector_param_accepts_dimensionless_vector_arg`).",
+        );
+        // The ONE whole-message pin for `emit_quantity_conflict`'s rendering
+        // — see `assert_quantity_slot_conflict`'s doc for why it is here and only
+        // here. This probe is chosen because its two quantities differ
+        // ASYMMETRICALLY (`Scalar[m]` arg, `Real` param), so a transposition
+        // anywhere in the rendering cannot come out as a no-op. Every other probe
+        // asserts the two discriminating fragments only, so a rewording of the
+        // surrounding prose is a ONE-site edit.
+        //
+        // Note "the compared shape … is otherwise accepted at …", not "the arg
+        // type … at param type …": on the wrapper recursion the pair named is the
+        // ELEMENT pair, which is not what the user wrote
+        // (`list_wrapped_vector_param_rejects_cross_dimension_element`).
+        assert_eq!(
+            diagnostics[0].message,
+            "argument 'direction' has quantity 'Scalar[m]' but param 'direction' requires \
+             quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at \
+             'Vector3<Real>'; only the quantity slot disagrees)",
+            "the quantity diagnostic's WHOLE rendering is pinned here (and only here): it must \
+             name the arg's quantity after `has quantity`, the param's after `requires \
+             quantity`, and claim ACCEPTANCE of the compared shape rather than shape EQUALITY \
+             — two of the three arms reach it with a genuinely different shape.",
+        );
+    }
+
+    /// THE PARAM-SIDE RULING (task 6159) at the `Matrix`/`Tensor` arm.
+    ///
+    /// [`crate::type_acceptance::quantity_verdict`] is shared by all three shape arms, but the
+    /// ruling's new cell was pinned only at the `Vector` one, and
+    /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
+    /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
+    /// rejected, where before only a dimensioned param slot could trip it. That
+    /// claim is only true if this arm actually reaches the STRICT param-side
+    /// predicate — the arm's one other quantity fixture
+    /// (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
+    /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
+    /// already green under task 5766's symmetric rule, so it cannot tell the two
+    /// predicates apart. Without this probe, routing the arm through the
+    /// TOLERANT predicate on both sides would leave every other test green.
+    #[test]
+    fn dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg() {
+        assert_quantity_slot_conflict(
+            Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+            Type::tensor(
+                2,
+                3,
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            "jacobian",
+            "Real",
+            "Scalar[m]",
+            "a Tensor2x3<Length> arg at a DIMENSIONLESS Matrix3x3<Dimensionless> param must be \
+             REJECTED (task 6159): this arm applies no arity check, so the quantity slot is the \
+             only separator — and the ty.rs ruling's Matrix/Tensor consequence is stated in terms \
+             of exactly this cell.",
+        );
+    }
+
+    /// THE PARAM-SIDE RULING (task 6159) at the `Point` arm — sibling of
+    /// `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`,
+    /// closing the third of the three arms [`crate::type_acceptance::quantity_verdict`] serves.
+    ///
+    /// Constructed as a direct `Type` so the probe reaches the walker without
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    /// Rule and the measured `.ri`-level cells: the "Point / Vector
+    /// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. The
+    /// stale sites that section used to point at were corrected by task 6436;
+    /// there are none outstanding.
+    ///
+    /// The `.ri` twin of this exact cell is
+    /// `point3_dimensioned_at_dimensionless_point_param_errors_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306), which pins the inference chain this direct-`Type`
+    /// probe deliberately
+    /// bypasses.
+    #[test]
+    fn dimensionless_quantity_point_param_rejects_dimensioned_point_arg() {
+        assert_quantity_slot_conflict(
+            Type::point3(Type::dimensionless_scalar()),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "origin",
+            "Real",
+            "Scalar[m]",
+            "a Point3<Length> arg at a DIMENSIONLESS Point3<Dimensionless> param must be \
+             REJECTED (task 6159): the arity check passes, so the STRICT param-side predicate \
+             decides — the same cell the Vector arm's probe pins, reached through a different \
+             arm.",
+        );
+    }
+
+    /// FENCE (b), task 5766: an `Int` quantity slot stays CLEAN.
+    ///
+    /// Pins the ty.rs convention's statement that `Value::Vector::infer_type()`
+    /// may yield a `Type::Int` quantity for a unit-less component vector — the
+    /// shape `vec3(0, 1, 0)` takes. `Type::Int` names no dimension, so the rule
+    /// is silent for the same structural reason as the dimensionless leg.
+    #[test]
+    fn int_quantity_vector_arg_at_dimensioned_param_stays_clean() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Int),
+            },
+            "axis",
+            "a Vector3<Int> arg at a Vector3<Length> param must stay CLEAN — the ty.rs \
+             quantity-slot convention records that Value::Vector::infer_type() may yield an \
+             Int quantity, and Int names no dimension (task 5766).",
+        );
+    }
+
+    /// FENCE (b-param), task 6159: an `Int` PARAM quantity slot stays CLEAN.
+    ///
+    /// The PARAM-side half of fence (b) directly above, which puts `Type::Int` in
+    /// the ARG slot and so constrains [`crate::type_acceptance::arg_quantity_slot_dimension`] only.
+    /// `crates/reify-core/src/ty.rs` rules that on the param side "`Type::Int`
+    /// and `Type::ScalarParam` still name nothing", and only the `ScalarParam`
+    /// half of that was pinned param-side (fence (a-i),
+    /// `dimensioned_quantity_param_accepts_generic_vector_arg`). Without this
+    /// probe, adding `Type::Int => Some(DimensionVector::DIMENSIONLESS)` to
+    /// [`crate::type_acceptance::param_quantity_slot_dimension`] leaves every other test in both files
+    /// green.
+    ///
+    /// This is a fence on the PREDICATE's shape, not on a reachable source cell:
+    /// `Vector3<Int>` is NOT writable in `.ri`. `resolve_parameterized_builtin_type`'s
+    /// `"Vector3" if type_args.len() == 1` arm routes a concrete type-arg through
+    /// `resolve_type_alias_expr_to_dimension` → `resolve_dimension_type`, which
+    /// accepts `NAMED_DIMENSIONS` plus `"Dimensionless"` / `"Real"` only — `Int`
+    /// is in neither, so `param v : Vector3<Int>` is a resolution error and never
+    /// yields a `Type::Int` param quantity. (The `resolve_type_name` `"Int"` →
+    /// `Type::Int` mapping applies to a BARE type position, `param n : Int`, not
+    /// to a dimension slot.) `Type::Int` quantity slots arise on the ARG side
+    /// only, via `math_fn_result_type`'s `vec3`/`point3` arm — which is what
+    /// fence (b) directly above covers. That survives task 5889's narrowing of
+    /// that arm because its heterogeneity check compares DIMENSIONS, not
+    /// `Type`s: `Int` and `Real` are both dimensionless, so they agree and the
+    /// `Type::Int` slot is kept rather than degraded away. Pinned by
+    /// `vec_result_type_int_and_real_elements_agree_and_keep_int_quantity`
+    /// (`math_signatures.rs`).
+    ///
+    /// Note what this does NOT say: the param-side strictness ruling is about a
+    /// dimensionless `Type::Scalar` ONLY. `Int` is a different type, not a
+    /// dimensionless spelling of `Scalar`, so it stays outside the tightening on
+    /// BOTH sides.
+    #[test]
+    fn int_quantity_vector_param_accepts_dimensioned_vector_arg() {
+        assert_quantity_slot_clean(
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Int),
+            },
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            "axis",
+            "a Vector3<Length> arg at a Vector3<Int> PARAM must stay CLEAN — a Type::Int param \
+             quantity slot names no dimension (task 6159), because the STRICT param-side \
+             predicate is strict about a dimensionless Scalar ONLY. Widening it to Int would \
+             make this cell reject.",
+        );
+    }
+
+    // FENCE (c) — the `Type::Field` HOLD — is pinned by
+    // `field_param_given_erased_analytical_field_stays_clean`
+    // (`struct_ctor_field_conformance_tests.rs`) and ruled in
+    // `crates/reify-core/src/ty.rs`; not re-fixtured here.
+
+    /// FENCE (d), task 5766: the `Vector` arm's rank-1 `Type::Tensor` arg leg
+    /// REJECTS a conflicting dimension.
+    ///
+    /// `Tensor<1,3,…>` is the one non-`Type::Vector` shape the `Vector` arm
+    /// accepts (Rules 1a/1b make the two interconvertible), so it reaches the
+    /// quantity comparison by a different route than
+    /// `vector_param_rejects_cross_dimension_vector_arg` — and nothing else
+    /// pinned it.
+    #[test]
+    fn vector_param_rejects_cross_dimension_rank1_tensor_arg() {
+        assert_quantity_slot_conflict(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::tensor(
+                1,
+                3,
+                Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+            "axis",
+            "Scalar[m]",
+            "Scalar[kg]",
+            "a Tensor1x3<Mass> arg at a Vector3<Length> param must be REJECTED: the Vector arm \
+             accepts a rank-1 Tensor as vector-shaped, so the quantity slots are then compared \
+             and both name a concrete — and different — dimension (task 5766).",
+        );
+    }
+
+    /// FENCE (e), task 5766: the `Matrix`/`Tensor` arm's `Type::Vector` arg leg
+    /// REJECTS a conflicting dimension.
+    ///
+    /// `tensor_param_given_vector_stays_clean`
+    /// (`struct_ctor_field_conformance_tests.rs`) covers only the MATCHING case
+    /// for this leg, so without this probe the `Vector`-arg reject route through
+    /// the `Matrix`/`Tensor` arm has no coverage.
+    #[test]
+    fn matrix_param_rejects_cross_dimension_vector_arg() {
+        assert_quantity_slot_conflict(
+            Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MOMENT_OF_INERTIA,
+                }),
+            },
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            "inertia",
+            "Scalar[m^2·kg]",
+            "Scalar[m]",
+            "a Vector3<Length> arg at a Matrix<3,3,MomentOfInertia> param must be REJECTED: \
+             Rules 1a/1b make Vector conforming at this arm, so the quantity slots are then \
+             compared and both name a concrete — and different — dimension (task 5766).",
+        );
+    }
+
+    /// FENCE (f), task 5766: the `Matrix`/`Tensor` arm's `Type::Matrix` arg leg
+    /// REJECTS a conflicting dimension.
+    ///
+    /// `matrix_param_accepts_matrix_arg_without_arity_check` below builds a
+    /// DIMENSIONLESS `Matrix` arg, so it exercises only
+    /// [`crate::type_acceptance::arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
+    /// tightening fixture routes through a `Type::Tensor` arg. This is the
+    /// `Type::Matrix`-arg reject leg.
+    ///
+    /// Note the deliberate arity AGREEMENT here (`Matrix<3,3>` at `Matrix<3,3>`):
+    /// the arm applies no arity check, so the quantity slot is the only thing
+    /// that can separate these two types.
+    #[test]
+    fn matrix_param_rejects_cross_dimension_matrix_arg() {
+        assert_quantity_slot_conflict(
+            Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MOMENT_OF_INERTIA,
+                }),
+            },
+            Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "inertia",
+            "Scalar[m^2·kg]",
+            "Scalar[m]",
+            "a Matrix<3,3,Length> arg at a Matrix<3,3,MomentOfInertia> param must be REJECTED: \
+             the families agree and the arm applies no arity check, so the quantity slot is the \
+             only separator and both sides name a concrete — and different — dimension \
+             (task 5766).",
+        );
+    }
+
+    /// FENCE (g), task 5766: the rule fires through the WRAPPER recursion, exactly
+    /// once.
+    ///
+    /// The quantity check lives inside `walk_param_against_arg_type`, which the
+    /// `Option`/`List`/`Set`/`Map` arms re-enter on their inner types, so a
+    /// `List<Vector3<Length>>` param reaches the `Vector` arm one level down. Every
+    /// other quantity-slot probe here enters that arm directly, so nothing pinned
+    /// the recursive route — the shape most likely to expose a DOUBLE emission
+    /// (wrapper-shape diagnostic plus quantity diagnostic) or a MISSED one if the
+    /// recursion or the hoisted anti-cascade guard is changed.
+    /// `assert_quantity_slot_conflict` asserts `len() == 1`, so both failure modes
+    /// are caught here.
+    #[test]
+    fn list_wrapped_vector_param_rejects_cross_dimension_element() {
+        assert_quantity_slot_conflict(
+            Type::List(Box::new(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))),
+            Type::List(Box::new(Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            })),
+            "axes",
+            // The INNER element quantities, PARAM then ARG as everywhere else:
+            // the rule fires one level down,
+            // after the `List`/`List` wrapper arm has recursed. That is also why
+            // the message says "the compared shape" rather than "the arg type" —
+            // the shapes it names here are `Vector3<…>`, which appear nowhere in
+            // a source that wrote `List<Vector3<…>>`.
+            "Scalar[m]",
+            "Scalar[kg]",
+            "a List<Vector3<Mass>> arg at a List<Vector3<Length>> param must be REJECTED with \
+             EXACTLY ONE diagnostic: the List/List wrapper arm recurses lockstep into the \
+             element types, so the quantity rule fires at the Vector arm one level down and \
+             the wrapper walk must not also emit a shape diagnostic on top of it (task 5766).",
         );
     }
 
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not an integration probe in
-    /// `struct_ctor_field_conformance_tests.rs` (where the other four Point
-    /// probes live).** The surface language has no `Point2` spelling —
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only
-    /// (`type_resolution.rs:3192`) — so no `.ri` source can produce a
-    /// `Type::Point { n: 2, .. }` arg and the arity rule is unreachable from
-    /// inline-source fixtures. Constructing the `Type` directly is the only way
-    /// to pin it. Sibling of `vector_param_rejects_wrong_arity_vector_arg`,
-    /// which exists for the same reason.
+    /// **The param-side asymmetry, and what does NOT follow from it.** The
+    /// surface language has no `Point2` PARAM spelling:
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only — its arms
+    /// are `"Point3" if type_args.len() == 1` (`type_resolution.rs`, two sites),
+    /// with no `"Point2"` arm anywhere. That is why this probe's param type is
+    /// `Point3<Length>` and why the `.ri` twin's param must be spelled the same
+    /// way. It does NOT follow that the arity rule is unreachable from
+    /// inline-source fixtures — a param spelling constrains PARAMS, not ARGS,
+    /// and that inference must not be re-asserted over the arg side. The `.ri`
+    /// twin named below carries the detail.
+    ///
+    /// The arity leg IS now pinned from `.ri` source, by
+    /// `point2_arg_at_point3_param_errors_arity_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
+    /// direct-`Type` seam of the same pair the cross-dimension probe above
+    /// describes: constructed directly so it reaches the walker without
+    /// depending on `math_fn_result_type`'s name-suffix `n` inference, while the
+    /// `.ri` fixture is the one that would notice that inference ceasing to
+    /// produce a `Type::Point { n: 2, .. }` at all. (Task 5889 narrowed that
+    /// arm's QUANTITY slot and deliberately left `n` alone — it still comes from
+    /// the name suffix.)
+    ///
+    /// Sibling of `vector_param_rejects_wrong_arity_vector_arg`, which is also a
+    /// direct-`Type` arity probe — note its own doc claims no erasure premise,
+    /// so nothing there needs the correction this block carries. The `Vector`
+    /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
+    /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`. The two
+    /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
+    /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
+    /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
+    /// the split cannot drift.
     #[test]
     fn point_param_rejects_wrong_arity_point_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
@@ -7425,7 +4713,7 @@ mod tests {
     /// A bare `Enum("Hue")` param supplied an applied `Result<…>` arg resolves
     /// to two DIFFERENT base names, so it must still be exactly one
     /// `ArgTypeMismatch` — the same verdict the forward-direction cross-enum
-    /// probe (`enum_param_given_wrong_enum_warns_arg_type_mismatch`) pins.
+    /// probe (`enum_param_given_wrong_enum_errors_arg_type_mismatch`) pins.
     #[test]
     fn enum_param_rejects_applied_enum_arg_of_different_base() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();

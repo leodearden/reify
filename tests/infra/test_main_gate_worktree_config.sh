@@ -186,6 +186,72 @@ assert "(f) config.worktree unchanged after second run" \
     test "$WKTREE_CFG_BEFORE" = "$WKTREE_CFG_AFTER"
 
 # ==============================================================================
+# (idem) Write-free when already configured — the steady state takes no config
+# lock. The inode is the write probe: git rewrites a config file via lock+rename
+# even for a same-value set, so an unchanged inode means nothing was written.
+# ==============================================================================
+echo ""
+echo "--- (idem) write-free when already configured ---"
+
+# Hermetic git for these cases: no ambient global/system config.
+_iso() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
+_inode() { stat -c %i "$1"; }
+
+# (idem-a) single repo
+REPO_IA="$(make_repo)"
+RC_IA1=0
+_iso "$HELPER" "$REPO_IA" >/dev/null 2>&1 || RC_IA1=$?
+assert "(idem-a) first run exits 0" test "$RC_IA1" -eq 0
+IA_CFG_INODE="$(_inode "$REPO_IA/.git/config")"
+IA_WT_INODE="$(_inode "$REPO_IA/.git/config.worktree")"
+
+RC_IA2=0
+_iso "$HELPER" "$REPO_IA" >/dev/null 2>&1 || RC_IA2=$?
+assert "(idem-a) second run exits 0" test "$RC_IA2" -eq 0
+assert "(idem-a) second run leaves .git/config's inode unchanged" \
+    test "$(_inode "$REPO_IA/.git/config")" = "$IA_CFG_INODE"
+assert "(idem-a) second run leaves .git/config.worktree's inode unchanged" \
+    test "$(_inode "$REPO_IA/.git/config.worktree")" = "$IA_WT_INODE"
+assert "(idem-a) extensions.worktreeConfig is still true" \
+    test "$(_iso git -C "$REPO_IA" config --get extensions.worktreeConfig)" = "true"
+assert "(idem-a) config.worktree core.hooksPath is still hooks" \
+    test "$(_iso git -C "$REPO_IA" config --worktree --get core.hooksPath)" = "hooks"
+
+# (idem-b) linked worktree — the shape a lane-cadence caller drives
+REPO_IB="$(make_repo)"
+make_commit "$REPO_IB" "init" >/dev/null
+LINKED_IB_PARENT="$(mktemp -d)"; _TMPDIRS+=("$LINKED_IB_PARENT")
+LINKED_IB="$LINKED_IB_PARENT/lane"
+_iso git -C "$REPO_IB" worktree add -q -b task/idem "$LINKED_IB" HEAD
+
+RC_IB1=0
+_iso "$HELPER" "$LINKED_IB" >/dev/null 2>&1 || RC_IB1=$?
+assert "(idem-b) first run on the linked worktree exits 0" test "$RC_IB1" -eq 0
+IB_WT_CFG="$(_iso git -C "$LINKED_IB" rev-parse --path-format=absolute --git-dir)/config.worktree"
+IB_SHARED_INODE="$(_inode "$REPO_IB/.git/config")"
+IB_WT_INODE="$(_inode "$IB_WT_CFG")"
+
+RC_IB2=0
+_iso "$HELPER" "$LINKED_IB" >/dev/null 2>&1 || RC_IB2=$?
+assert "(idem-b) second run on the linked worktree exits 0" test "$RC_IB2" -eq 0
+assert "(idem-b) second run leaves the SHARED .git/config's inode unchanged" \
+    test "$(_inode "$REPO_IB/.git/config")" = "$IB_SHARED_INODE"
+assert "(idem-b) second run leaves the linked worktree's config.worktree inode unchanged" \
+    test "$(_inode "$IB_WT_CFG")" = "$IB_WT_INODE"
+
+# (idem-c) negative control: a non-canonical pin IS rewritten, so the inode
+# probe is not vacuous.
+_iso git -C "$LINKED_IB" config --worktree core.hooksPath /dev/null
+IC_WT_INODE="$(_inode "$IB_WT_CFG")"
+RC_IC=0
+_iso "$HELPER" "$LINKED_IB" >/dev/null 2>&1 || RC_IC=$?
+assert "(idem-c) run over a /dev/null pin exits 0" test "$RC_IC" -eq 0
+assert "(idem-c) the /dev/null pin is overwritten with hooks" \
+    test "$(_iso git -C "$LINKED_IB" config --worktree --get core.hooksPath)" = "hooks"
+assert "(idem-c) the linked worktree's config.worktree inode CHANGES (it was written)" \
+    test "$(_inode "$IB_WT_CFG")" != "$IC_WT_INODE"
+
+# ==============================================================================
 # (g) Linked-worktree no-regression: a linked worktree still inherits shared value
 # ==============================================================================
 echo ""

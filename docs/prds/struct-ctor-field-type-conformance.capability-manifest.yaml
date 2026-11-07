@@ -59,7 +59,15 @@ tasks:
     verdict: PASS
   - name: new-codes-minted-in-own-diff
     binding: capability→producer — E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY minted in ε's
-      diff (D2 minting discipline + strum-completeness --lib tests same diff)
+      diff (D2 minting discipline + hand-written tests in the same diff; the normative
+      one is behavioural — §7 rows 11/12 assert the emitted diagnostic code plus its
+      severity at the D4 knob setting, the variant-exists round-trip being optional
+      smoke. NO completeness sweep and no declared-vs-used scan exist for
+      DiagnosticCode — it derives no strum trait, so adding a variant fails nothing
+      automatically. Any wire-form assertion must be cfg-gated on the optional,
+      non-default serde feature and run as cargo test -p reify-core --features serde
+      --lib; a bare --lib compiles it out silently. Corrected 2026-08-12 by task 6224;
+      the prose manifest row carries the full evidence)
     verdict: PASS
     delivered_check:
       kind: grep

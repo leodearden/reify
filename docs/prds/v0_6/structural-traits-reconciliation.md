@@ -4,7 +4,7 @@
 **Cluster:** gap-register `P10 structural-traits` (4 gaps, 2 high) — `docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md`
 **Source doc:** `docs/reify-stdlib-reference.md` §4 (`std.structural`)
 **Shipped source:** `crates/reify-compiler/stdlib/structural_physical.ri`
-**Supersedes:** task **#3114** (deferred — "Tighten structural_physical.ri dimensioned params"; its stale `volume`/`centroid` clause is corrected here).
+**Supersedes:** task **#3114** ("Tighten structural_physical.ri dimensioned params"; its stale `volume`/`centroid` clause is corrected here).
 
 ---
 
@@ -52,7 +52,7 @@ Named consumers:
 - **A stdlib `.ri` conformance example that runs in CI** — `examples/structural_traits_dimensioned.ri`
   (new), exercising Rigid/Flexible/ElasticallyDeformable/Plastic/Sealed/ThermallyConductive
   with dimensioned literals.
-- **The existing conformance suite** `crates/reify-compiler/tests/structural_physical_tests.rs`
+- **The existing conformance suite** `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs`
   (updated to assign dimensioned values; stays green).
 
 The doc-reconcile (β) introduces no runtime mechanism — it aligns documentation with the

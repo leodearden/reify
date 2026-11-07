@@ -1,0 +1,500 @@
+prd: docs/prds/v0_6/step-assembly-import.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 4289
+  title: 'step-assembly-import α: OCCT XDE STEP reader + product tree + units (absorbs
+    #4289)'
+  capabilities:
+  - name: xde-reader-substrate
+    binding: evidence — step-assembly-import.evidence/reader.cpp + reader_output_default_units.txt
+      (compiled and run against system OCCT 7.8).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: STEPCAFControl_Reader
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
+  - name: unit-conversion-call
+    binding: evidence — reader_output_metres.txt; the global xstep.cascade.unit static
+      converts to metres.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: xstep\.cascade\.unit
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
+  - name: link-toolkits-absent-today
+    binding: deliberate absence — build.rs lists no TKXCAF/TKLCAF today; α is the
+      producer.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"TKXCAF"'
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/build.rs
+  - name: dual-xcaf-in-process
+    binding: hazard — libgmsh links TKXCAF/TKLCAF 7.9; α's test runs in the gmsh-linked
+      workspace binary; preflight gains the toolkits.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TKXCAF
+      expect: present
+      paths:
+      - scripts/check-manifold-deps.sh
+  - name: reader-under-export-mutex
+    binding: substrate — g_step_export_mutex documents process-global XSTEP state;
+      the reader takes it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: lock discipline is reviewed in the diff; no single grep proves the reader
+        holds the mutex for the whole read.
+- label: β
+  task_id: 8055
+  title: 'step-assembly-import β: step_solid/step_body op, kernel document cache,
+    path threading, Provenance.source_hash'
+  capabilities:
+  - name: geometryop-extension-guarded
+    binding: substrate — GEOMETRY_OP_DESCRIPTORS completeness test + all_dispatch_functions_accounted_for
+      (crates/reify-compiler/src/geometry.rs) fail until fully wired.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: StepSolid
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: occt-execute-arm
+    binding: substrate — OcctKernel::execute is an exhaustive match (producer-self).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryOp::StepSolid
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+  - name: document-cache-single-parse
+    binding: producer-self — no file-scoped cache exists; B3's build-count assertion
+      observes it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a count assertion in β's own test; not expressible as a grep.
+  - name: reader-restores-unit-static
+    binding: 'producer-self — B4 asserts xstep.cascade.unit reads back as its pre-read
+      value after step_solid (test-only getter). The writer is immune (per-model SetLocalLengthUnit,
+      #6186; verified by a C++ replica in D3 round 2), so no writer canary is claimed.'
+    verdict: PASS
+  - name: source-hash-rejection
+    binding: G6 branch 4, producer-self — E_STEP_SOURCE_CHANGED delivered and observed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_STEP_SOURCE_CHANGED
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: design-relative-path-first-convention
+    binding: deliberate absence — field-import paths are verbatim; ParsedModule has
+      no filesystem path; β threads it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: convention, verified by β's fixture living in a subdirectory and resolving
+        its relative path.
+  - name: provenance-hash-field
+    binding: deliberate absence — Provenance (io.ri) has no hash field; β adds source_hash.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: source_hash
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/io.ri
+- label: γ
+  task_id: 8056
+  title: 'step-assembly-import γ: foreign-module codec, ForeignModuleProvider trait,
+    module generator'
+  capabilities:
+  - name: crates-absent-today
+    binding: deliberate absence — γ creates reify-foreign-module (kernel-free) and
+      reify-step-import (OCCT provider).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: name = "reify-foreign-module"
+      expect: present
+      paths:
+      - crates/reify-foreign-module/Cargo.toml
+  - name: orient-basis-constructor
+    binding: substrate — orient_basis in crates/reify-stdlib/src/orientation.rs with
+      orthonormality guards; the generator orthonormalises first.
+    verdict: PASS
+  - name: identity-preservation
+    binding: producer-self — golden tests over moved-within, moved-beyond (rematched),
+      removed, added occurrences.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: golden-text behaviour, asserted by γ's own tests.
+  - name: improper-placement-rejection
+    binding: G6 branch 4, producer-self — E_STEP_IMPROPER_PLACEMENT observed on a
+      det<0 placement.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_STEP_IMPROPER_PLACEMENT
+      expect: present
+      paths:
+      - crates/reify-foreign-module/src
+- label: δ
+  task_id: 8057
+  title: 'step-assembly-import δ: string-path import grammar + AST (import "x.step"
+    as alias)'
+  capabilities:
+  - name: string-import-absent-today
+    binding: grammar-fixture (deliberate failure) — `import "vendor/container.step"
+      as container` FAILS tree-sitter parse today (exit 1, 2026-09-28); δ is the grammar
+      producer.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivery IS the fixture tests/prd-gate/fixtures/step_import_stmt.ri
+        parsing with 0 ERROR nodes — a parse probe, not a grep.
+  - name: dotted-import-regression-floor
+    binding: grammar-fixture — `import vendor.container as container` parses today
+      (exit 0).
+    verdict: PASS
+  - name: lezer-mirror-and-pin
+    binding: substrate — gui/src/editor/reify.grammar legacy string-import arm; reifyGrammarCorpus
+      EXPECTED_CLEAN pin; δ updates both.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the GUI grammar corpus test is the observation.
+  - name: no-diagnostics-in-lowering
+    binding: D20 — lower_import's only channel renders as a bare Parse error; δ emits
+      no diagnostics; every import rejection is ε's.
+    verdict: PASS
+  - name: corpus-pinned-by-rust-test
+    binding: substrate — test/corpus is not CI-run; a Rust include_str! test in tree-sitter-reify/tests/
+      pins the case (derived_sub_grammar_tests.rs pattern); the EXPECTED_CLEAN pin
+      needs a _GUI_COUPLED_RI_FIXTURES row in scripts/verify.sh (PG-DRIFT-GUI).
+    verdict: PASS
+- label: θ
+  task_id: 8058
+  title: 'step-assembly-import θ: exclude <path> in specialization bodies (shared
+    disposition mechanism)'
+  capabilities:
+  - name: exclude-absent-in-spec-body-today
+    binding: 'grammar-fixture (deliberate failure) — `sub b : T { exclude x }` FAILS
+      parse (2026-09-28); exclude_disposition exists only in derived_body.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivery is the specialization-body fixture parsing; parse probe.
+  - name: disposition-semantics-source
+    binding: 'substrate — assembly-derivation-toolbox D5 semantics; θ generalises
+      the diagnostic; #6618 consumes the mechanism (PRD §7).'
+    verdict: PASS
+  - name: disposition-rejections
+    binding: G6 branch 4, producer-self — E_DISPOSITION_UNKNOWN_PATH and E_REFERENCE_TO_EXCLUDED
+      observed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_DISPOSITION_UNKNOWN_PATH
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: export-walk-site
+    binding: 'substrate — surface_export_bodies (sub-placement #3905) is the single
+      filter site.'
+    verdict: PASS
+- label: ε
+  task_id: 8059
+  title: 'step-assembly-import ε: ForeignModuleProvider wiring, design-relative resolution,
+    freshness, locked mode, CLI host'
+  capabilities:
+  - name: provider-seam-absent-today
+    binding: deliberate absence — ModuleDag::compile_module has no trait or callback;
+      ε adds the resolution steps (C3).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ForeignModuleProvider
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: multi-file-build-upstream
+    binding: 'producer-upstream — resolution-unification β #5516 + γ #5517 (hard edges);
+      reify build compiles one file today (probe 2026-09-28).'
+    verdict: PASS
+  - name: qualified-references-upstream
+    binding: 'producer-upstream — stdlib-namespace ν #5505 (hard edge); `import lib
+      as l; l.Plate()` is unknown today (probe 2026-09-28).'
+    verdict: PASS
+  - name: freshness-and-locked
+    binding: producer-self — E_STEP_MODULE_STALE / E_STEP_MODULE_MISSING / E_GENERATED_MODULE_EDITED
+      and --locked delivered and observed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_STEP_MODULE_STALE
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: regeneration-diagnostic
+    binding: producer-self — I_STEP_MODULE_REGENERATED carries the delta.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: I_STEP_MODULE_REGENERATED
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: import-rejections
+    binding: G6 branch 4, producer-self — E_STEP_IMPORT_NOT_FOUND and E_STEP_IMPORT_PATH_COLLISION
+      observed on their own fixtures.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_STEP_IMPORT_NOT_FOUND
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: format-and-alias-rejections
+    binding: G6 branch 4, producer-self — E_IMPORT_UNSUPPORTED_FORMAT and E_STEP_IMPORT_NEEDS_ALIAS
+      are coded compile diagnostics emitted in the module-loading path BEFORE path
+      resolution; observed on stderr by ε's fixtures.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_STEP_IMPORT_NEEDS_ALIAS
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+- label: ζ
+  task_id: 8060
+  title: 'step-assembly-import ζ: GUI and LSP host policy for foreign modules'
+  capabilities:
+  - name: lsp-multifile-upstream
+    binding: 'producer-upstream — resolution-unification ζ #5520 (hard edge).'
+    verdict: PASS
+  - name: gui-watcher-extension
+    binding: deliberate absence — GUI watcher is non-recursive and .ri-only (watcher_ignores_non_ri_file_changes);
+      ζ registers foreign source paths.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed through the GUI debug MCP in ζ's own signal.
+- label: η
+  task_id: 8061
+  title: 'step-assembly-import η: geometry overrides take effect + dotted override
+    paths in specialization bodies'
+  capabilities:
+  - name: dotted-name-absent-today
+    binding: grammar-fixture (deliberate failure) — a dotted param_assignment.name
+      FAILS parse (2026-09-28).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: parse probe on η's own fixture.
+  - name: override-threading-upstream
+    binding: 'producer-upstream — instantiation-value-flow #6592 (hard edge) supplies
+      the recursive overlay + re-realization trigger; it does NOT replace a Solid
+      param''s default-compiled realization ops (§3.3) — that substitution is η''s
+      own (see solid-param-op-substitution).'
+    verdict: PASS
+  - name: member-path-resolver-landed
+    binding: 'substrate — resolve_member_path (crates/reify-compiler/src/member_path.rs,
+      #5424).'
+    verdict: PASS
+  - name: override-rejections
+    binding: G6 branch 4, producer-self — unknown-hop diagnostic names the hop (`bogus`)
+      on stderr; duplicate path keeps the pinned first-wins WARNING (task 4694), no
+      new rejection claimed.
+    verdict: PASS
+  - name: solid-param-op-substitution
+    binding: 'producer-self — on main both the specialization arm and the ctor-arg
+      arm of a Solid-typed param override are silently ignored (probe 2026-09-30:
+      volume 1e-6 m^3, 0 CYLINDRICAL_SURFACE); η compiles the override expression''s
+      ops and substitutes them, both arms. B11(a) is the positive premise.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed by η's own reify eval volume assertion (≈7.854e-4 m^3) and
+        STEP CYLINDRICAL_SURFACE grep; the code change spans entity.rs lowering and
+        eval.
+  - name: scope-frame-transport-upstream
+    binding: 'producer-upstream — placement-relations-belt β #5436 (carried frames,
+      §7.1.5) for D19''s transport of a scope-frame override value into the descendant''s
+      local frame.'
+    verdict: PASS
+  - name: order-independent-unknown-override
+    binding: producer-self — today a forward-declared child's unknown override is
+      silently accepted in release / panics in debug (entity.rs Case 1); η's diagnostic
+      fires in both declaration orders. AST path type in crates/reify-ast/src/decl.rs
+      (SubParamOverride.name), never a dotted string.
+    verdict: PASS
+- label: ι
+  task_id: 8062
+  title: 'step-assembly-import ι: dotted overrides in derived bodies'
+  capabilities:
+  - name: derived-body-name-absent-today
+    binding: grammar-fixture (deliberate failure) — a dotted derived_param_assignment.name
+      FAILS parse. Copy form uses transform3_identity() (bare `identity` is a tensor
+      builtin, not a Transform<3>).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: parse probe on ι's own fixture.
+  - name: derivation-lowering-upstream
+    binding: 'producer-upstream — #6616, #6617, #6618 (hard edges).'
+    verdict: PASS
+- label: κ
+  task_id: 8063
+  title: 'step-assembly-import κ: relate accepts scope-level datum operands'
+  capabilities:
+  - name: operand-shape-today
+    binding: substrate — decode_operand accepts only <sub>.<member>; realize_operand_datums
+      builds the structure standalone; κ widens the fixed side.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behaviour observed by κ's own reify eval fixture.
+  - name: scope-posed-reads-upstream
+    binding: 'producer-upstream — placement-relations-belt β #5436 (§7.1.5: sub-member
+      geometry reads are scope-posed, so the datum needs no transport and reads no
+      .world_frame; the belt''s pose-cycle rule is untouched) and uniform-member-access
+      δ #5427 (two-hop reads) — hard edges.'
+    verdict: PASS
+  - name: pose-bound-floor
+    binding: floor — relate_solve_e2e.rs asserts 1e-6 m; B13 uses the same bound.
+    verdict: PASS
+  - name: discriminating-expected-plane
+    binding: G6 — B13 measures signed point-to-plane distance (< 1e-6 m) and normal
+      parallelism against an independently computed expected plane on a rotated nested
+      sub, reading the solved seat plane via in_frame(bracket.seat_plane, bracket.world_frame);
+      never origin coincidence (flush leaves in-plane DOF free). Selector directions
+      are real literals (integer vec3 is silently undef).
+    verdict: PASS
+- label: λ
+  task_id: 8064
+  title: 'step-assembly-import λ: cross-module LSP member completion + aliased go-to-definition'
+  capabilities:
+  - name: completion-single-file-today
+    binding: substrate — completion() builds its context from the current document
+      only (crates/reify-lsp/src/server.rs).
+    verdict: PASS
+  - name: aliased-goto-def-absent
+    binding: substrate — goto_def.rs maps ImportKind::Aliased to None; λ resolves
+      it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ImportKind::Module \| ImportKind::Aliased \{ \.\. \} => None
+      expect: absent
+      paths:
+      - crates/reify-lsp/src/goto_def.rs
+  - name: qualified-references-upstream
+    binding: 'producer-upstream — #5505 (hard edge).'
+    verdict: PASS
+- label: ν
+  task_id: 8065
+  title: 'step-assembly-import ν: container site integration gate + scale'
+  capabilities:
+  - name: report-bom-exists
+    binding: substrate — reify report --bom (cmd_report) and Engine::build_bom_report
+      emit Input provenance rows.
+    verdict: PASS
+  - name: provenance-hash-upstream
+    binding: producer-upstream — β adds Provenance.source_hash (hard edge).
+    verdict: PASS
+  - name: examples-smoke-registration
+    binding: substrate — examples_smoke.rs SKIP_SET for multi-file examples.
+    verdict: PASS
+  - name: container-fixture
+    binding: producer-self — extended evidence writer produces the container-shaped
+      and 500-occurrence fixtures.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: NEXT_ASSEMBLY_USAGE_OCCURRENCE
+      expect: present
+      paths:
+      - examples/step_import/vendor/container.step
+  - name: end-to-end-reachability
+    binding: 'G6 branch 3 — every capability B15 needs is upstream of ν (β, ε, η,
+      θ, κ, #5427, #6598, #5518).'
+    verdict: PASS
+- label: ξ
+  task_id: 8066
+  title: 'step-assembly-import ξ: docs-truth bundle'
+  capabilities:
+  - name: chunk-files-exist
+    binding: substrate — crates/reify-mcp/src/tools/chunks/{syntax,structures,geometry,connect}.md,
+      examples/best_practices/INDEX.md, .claude/skills/reify-design/SKILL.md.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: modify_assembly
+      expect: present
+      paths:
+      - examples/best_practices/INDEX.md
+  - name: stdlib-reference-drift
+    binding: 'substrate — §9 sketches a `result : Structure` param io.ri lacks; ξ
+      reconciles ONLY the STEPInput and Provenance rows (the DisplayStyle.color /
+      STEPOutput.path / PointCloudInput drift is named in ο for the docs-truth program).'
+    verdict: PASS
+  - name: signature-check-is-registry-diff
+    binding: G6 — 'every documented signature compiles' is vacuous (ctor kwargs are
+      silently dropped, §3.3); ξ diffs documented signatures against io.ri and the
+      compiler registries.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a registry diff, not a grep.
+  - name: exemplar-single-file
+    binding: substrate — examples_smoke compiles corpus files single-file and forbids
+      SKIP_SET for best_practices; the exemplar uses native-structure idioms only.
+    verdict: PASS
+  - name: relate-docs-upstream
+    binding: 'producer-upstream — placement-relations-belt ν #5446 owns the base at-auto
+      + relate chunk docs (relate has no chunk today); ξ extends them (hard edge).'
+    verdict: PASS
+  - name: corpus-gate-row
+    binding: substrate — harness_corpus_gates/best_practices_constraint_gate.rs walks
+      best_practices kernel-less; the exemplar carries its EXPECTED_INDETERMINATE
+      row (clearance_oracle.ri precedent).
+    verdict: PASS
+- label: ο
+  task_id: 8067
+  title: 'step-assembly-import ο: companion corrections in sibling PRDs'
+  capabilities:
+  - name: target-docs-exist
+    binding: substrate — the sibling PRDs exist at the cited paths, including instantiation-value-flow.md
+      (η/IVF ownership note) and the docs-truth §9 drift note.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: step-assembly-import
+      expect: present
+      paths:
+      - docs/prds/v0_6/io-export-import-completion.md
+- label: π
+  task_id: 8068
+  title: 'step-assembly-import π: PRD close (terminal stamp)'
+  capabilities:
+  - name: freeze-header-precedent
+    binding: substrate — data-carrying-enums.md and kernel-seam-contracts.md headers.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed header is the deliverable; a status-token grep would fire
+        on this manifest's own prose.

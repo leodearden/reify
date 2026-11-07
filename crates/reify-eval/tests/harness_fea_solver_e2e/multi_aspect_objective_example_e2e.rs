@@ -17,14 +17,14 @@
 //!   `MixedObjective` declares two same-sense `minimize` terms over incommensurable
 //!   dimensions (Money, Mass), producing a `DiagnosticCode::ObjectiveDimensionIncoherent`
 //!   Error naming both dimensions. This file intentionally fails `reify check` and
-//!   is listed in `crates/reify-compiler/tests/examples_smoke.rs::SKIP_SET`.
+//!   is listed in `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::SKIP_SET`.
 //!
 //! # Reuse
 //!
 //! Import set and compile→eval→assert skeleton mirror
 //! `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`. The negative
 //! assertion pattern mirrors
-//! `crates/reify-compiler/tests/objective_dimension_coherence.rs::mixed_dimension_money_mass_emits_error`.
+//! `crates/reify-compiler/tests/harness_result_annotation/objective_dimension_coherence.rs::mixed_dimension_money_mass_emits_error`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
@@ -135,7 +135,7 @@ fn multi_aspect_objective_positive_resolves_and_is_dimension_coherent() {
     );
 
     // ── eval ───────────────────────────────────────────────────────────────
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

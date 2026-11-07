@@ -1,0 +1,10 @@
+ReadFile status=1
+NbRootsForTransfer=1
+TransferRoots() returned nbTransferred=1
+NbShapes()=1
+OneShape().IsNull()=0
+OneShape().ShapeType()=0 (0=COMPOUND,1=COMPSOLID,2=SOLID,...)
+solids found (TopExp_Explorer TopAbs_SOLID) = 8
+nested compounds found = 1
+overall bbox=[(-1e-07,-1e-07,-1e-07) - (1178,962,800)]
+Product/instance names available from TopoDS_Shape alone: NO (TopoDS_Shape has no name/label attribute; XDE's TDF_Label + TDataStd_Name is the only carrier of names in this API)

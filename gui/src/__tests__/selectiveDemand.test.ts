@@ -239,4 +239,115 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
       });
     });
   });
+
+  // (d) BOOTSTRAP-ORDERING REGRESSION (task #6052, root-caused as esc-6045-1).
+  //
+  // Invariant under test: a demand-sync effect wired against an EMPTY view store
+  // still subscribes once the tree lands. Its tracked `getAllEffective` read
+  // tracks the store's own tree version (viewStateStore treeVersion, PRD
+  // gui-frontend-wire-bindings-bridge-port §4.5), so no readiness input is
+  // threaded in.
+  //
+  // Cases (b)/(c) above call `view.setTree(...)` BEFORE wiring, which is exactly
+  // why they miss this bug. App's real ordering is the opposite — meshes set
+  // first, tree fetch triggered only after — and this case mirrors it.
+  it('(d) bootstrap ordering: the FIRST visibility toggle after a tree populated AFTER wiring still reaches sync_demand', async () => {
+    // Mirrors case (b)'s createRoot + detached-async-IIFE settle pattern so a
+    // throw fails FAST instead of hanging to the timeout.
+    await new Promise<void>((resolve, reject) => {
+      createRoot((dispose) => {
+        void (async () => {
+          try {
+            const engine = createEngineStore();
+            engine.applyMeshUpdate(mesh(R0));
+            engine.applyMeshUpdate(mesh(R1));
+
+            // Deliberately NO tree yet — the store must be EMPTY when the
+            // effect first tracks, which is what App does at mount.
+            const view = createViewStateStore();
+
+            createSelectiveDemandSync(engine, view, { debounceMs: 150 });
+
+            // Flush the deferred effect's initial tracking run (same rationale as
+            // case (c)): it must complete, against the still-empty tree, before
+            // the tree is populated below.
+            await Promise.resolve();
+
+            // Now populate the tree the way App does.
+            view.regenerateAutoViews([realizationNode(R0), realizationNode(R1)]);
+            await vi.advanceTimersByTimeAsync(300);
+
+            // NON-VACUITY ANCHOR: the tree's arrival is itself a tracked change,
+            // so one all-visible sync has fired. Without it, nothing has fired
+            // at all — the effect holds no subscription on the visibility store
+            // and `defer: true` already consumed the only mesh-set run (which
+            // happened before wiring).
+            const before = mockSyncDemand.mock.calls.length;
+            expect(before).toBeGreaterThan(0);
+
+            // The first post-mount toggle must reach the backend.
+            view.setVisibility(R0, 'hidden');
+            await vi.advanceTimersByTimeAsync(300);
+
+            expect(mockSyncDemand.mock.calls.length).toBeGreaterThan(before);
+            // R0 is pruned; the sibling R1 survives — an implementation that
+            // pushed an empty demand set would satisfy the exclusion alone.
+            const payload = mockSyncDemand.mock.calls.at(-1)![0];
+            expect(new Set(payload)).toEqual(new Set([R1]));
+
+            resolve();
+          } catch (err) {
+            reject(err);
+          } finally {
+            dispose();
+          }
+        })();
+      });
+    });
+  });
+
+  // (e) B8′ IDLE REFETCH (PRD §4.5). App regenerates the auto views from a
+  // fresh tree on every evaluating -> idle transition, even when the eval only
+  // re-tessellated the same bodies in place (writes the meshes key set cannot
+  // see). That regeneration must re-push demand exactly once, because
+  // `Engine::eval` reset the backend to full scope underneath us.
+  it('(e) with a user view active, an idle-refetch regeneration fires exactly one sync_demand', async () => {
+    await new Promise<void>((resolve, reject) => {
+      createRoot((dispose) => {
+        void (async () => {
+          try {
+            const engine = createEngineStore();
+            engine.applyMeshUpdate(mesh(R0));
+            engine.applyMeshUpdate(mesh(R1));
+
+            const view = createViewStateStore();
+            view.regenerateAutoViews([realizationNode(R0), realizationNode(R1)]);
+            // COWs auto:default into a user view. The regeneration's user:*
+            // branch leaves `explicit` untouched, so only the store's tree
+            // version can re-fire the sync below.
+            view.setVisibility(R0, 'ghost');
+
+            createSelectiveDemandSync(engine, view, { debounceMs: 150 });
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(300);
+            const before = mockSyncDemand.mock.calls.length;
+
+            view.regenerateAutoViews([realizationNode(R0), realizationNode(R1)]);
+            await vi.advanceTimersByTimeAsync(300);
+
+            expect(mockSyncDemand).toHaveBeenCalledTimes(before + 1);
+            // ghost stays demanded.
+            const payload = mockSyncDemand.mock.calls.at(-1)![0];
+            expect(new Set(payload)).toEqual(new Set([R0, R1]));
+
+            resolve();
+          } catch (err) {
+            reject(err);
+          } finally {
+            dispose();
+          }
+        })();
+      });
+    });
+  });
 });

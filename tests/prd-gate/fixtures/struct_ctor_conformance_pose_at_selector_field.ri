@@ -1,0 +1,23 @@
+// PRD probe fixture — docs/prds/struct-ctor-field-type-conformance.md §7 row 1, task δ (#5306).
+//
+// A coordinate POSE passed to a selector-typed ctor field. `PressureLoad` is the real
+// stdlib structure (crates/reify-compiler/stdlib/fea_multi_case.ri:419,
+// `param face : Option<FaceSelector> = none`), so this also exercises α's Option-unwrap
+// arm rather than a locally-declared stand-in.
+//
+// PRE (knob at Severity::Warning, i.e. every commit up to δ): `reify check` exits 0 and
+// prints "All constraints satisfied." — the mismatch is a Warning and the CLI's exit code
+// reads Error severity only (crates/reify-cli/src/main.rs:794). That silence IS the PRD's
+// G6-branch-4 RED premise.
+// POST (task δ / #5306): `reify check` exits 1 with the ArgTypeMismatch message carrying the
+// fixed pose hint "a coordinate pose is not a region target; select a face/edge/vertex
+// instead" (crates/reify-compiler/src/conformance/mod.rs:1064).
+//
+// Asserted by tests/prd-gate/struct-ctor-conformance-probe-set.json, gated by
+// tests/infra/test_prd_gate_struct_ctor_conformance.sh. MUST NOT COMPILE CLEAN post-δ, which
+// is why it lives here and not under examples/.
+module struct_ctor_conformance_pose_at_selector_field
+
+structure def PoseAtSelectorField {
+    let pl = PressureLoad(face: frame3(point3(0mm, 0mm, 0mm), orient_axis_angle(vec3(0.0, 0.0, 1.0), 0rad)))
+}

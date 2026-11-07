@@ -2,7 +2,7 @@
 //!
 //! Exercises edge cases in the parse → compile → eval pipeline:
 //!   - 3-deep type alias chain (Velocity → Acceleration → Jerk)
-//!   - Trait with all member kinds (param, let, constraint, port)
+//!   - Trait with all member kinds (param, let, constraint)
 //!   - Vacuous constraint def with 0 predicates
 //!   - Empty list .count (EmptyListOps)
 //!   - Undef propagation through arithmetic, comparison, negation
@@ -20,7 +20,8 @@ use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
+use reify_ir::{ExportFormat, Satisfaction, Value};
+use reify_test_support::MockGeometryKernel;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -73,7 +74,7 @@ fn compiled() -> reify_compiler::CompiledModule {
 fn eval_ri_file() -> reify_eval::EvalResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics
@@ -95,7 +96,7 @@ fn eval_ri_file() -> reify_eval::EvalResult {
 fn eval_and_check_ri() -> reify_eval::CheckResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
     assert_no_errors(
         &result.diagnostics,
@@ -172,9 +173,6 @@ fn type_alias_three_deep_resolves() {
 /// Verify FullTraitImpl covers all trait member kinds:
 ///   - param:      `size` evaluates as a Scalar value
 ///   - let:        `doubled` evaluates as a Scalar value
-///   - port:       FullTraitImpl declares conformance to FullTrait (which owns the port);
-///     trait ports live in the trait definition, not in the implementing structure's
-///     template, so we verify the trait_bounds relationship
 ///   - constraint: inherited `size > 0mm` is Satisfied (no Violated constraints)
 ///
 /// Uses a single engine + single check() call: CheckResult.values serves param/let
@@ -184,10 +182,7 @@ fn type_alias_three_deep_resolves() {
 fn trait_all_member_kinds() {
     let compiled = compiled();
 
-    // ── port: trait_bounds relationship (compiled module, no eval needed) ──
-    // Ports declared in a trait live in the trait definition, not in the implementing
-    // structure's TopologyTemplate.ports. We verify via trait_bounds that FullTraitImpl
-    // declares conformance to FullTrait (which has `port output : out FullTrait`).
+    // ── conformance: trait_bounds relationship (compiled module, no eval needed) ──
     let template = compiled
         .templates
         .iter()
@@ -195,14 +190,14 @@ fn trait_all_member_kinds() {
         .expect("FullTraitImpl template must exist in compiled module");
     assert!(
         template.trait_bounds.iter().any(|b| b == "FullTrait"),
-        "FullTraitImpl should declare conformance to FullTrait (which has the 'output' port), \
+        "FullTraitImpl should declare conformance to FullTrait, \
          found trait_bounds: {:?}",
         template.trait_bounds
     );
 
     // ── single engine: check() gives values + constraint_results in one eval pass ──
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     // Assert no eval-severity errors from the single CheckResult.
@@ -405,6 +400,32 @@ fn recursive_depth_zero_no_child() {
         !result.values.contains(&child_depth_id),
         "RecTree.child.depth should not exist when depth=0 (guard prevented unfolding), but was found"
     );
+}
+
+/// `Engine::build` agrees with eval: the guard-declined `RecTree.child` has no
+/// instance, so the build neither materialises its cells nor trips on their absence.
+#[test]
+fn corner_rec_tree_build_skips_guard_declined_child() {
+    let compiled = compiled();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let child_cells: Vec<&ValueCellId> = result
+        .values
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| id.entity == "RecTree.child" || id.entity.starts_with("RecTree.child."))
+        .collect();
+    assert!(
+        child_cells.is_empty(),
+        "no RecTree.child.* cell may exist after build when depth=0 (guard declined the \
+         child); got {child_cells:?}"
+    );
+    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri build");
 }
 
 // ── step-13: chained 4-element comparison ────────────────────────────────────

@@ -1,5 +1,5 @@
 /// Integration tests: FEA compute trampoline registration in `reify build` and
-/// cmd_check posture lock.
+/// `reify check`.
 ///
 /// ## Why these tests exist
 ///
@@ -18,12 +18,12 @@
 ///      only by constraint outcome + geometry presence), causing `Error + exit 0`.
 ///
 /// After the fix (task 4458):
-///  - `cmd_build` wraps engine construction in `configured_eval_engine` → trampolines
-///    registered → no trampoline-error diagnostic, `result.max_von_mises` has a real
-///    value, and a violated FEA-result constraint exits non-zero.
+///  - `cmd_build` registers the compute trampolines → no trampoline-error
+///    diagnostic, `result.max_von_mises` has a real value, and a violated
+///    FEA-result constraint exits non-zero.
 ///  - `cmd_build` also gates exit on `Severity::Error` diagnostics (matching `cmd_eval`).
-///  - `cmd_check` is DELIBERATELY left as-is: lightweight, no compute trampolines,
-///    FEA-result constraints remain Indeterminate under check (posture-lock test (3)).
+///  - `cmd_check` registers the production compute bundle too, so it is an FEA
+///    exit gate like `reify build` and `reify eval` (test (3)).
 ///
 /// ## OCCT independence
 ///
@@ -40,7 +40,7 @@ use crate::common;
 /// solve.  Before the fix, `cmd_build` emits:
 ///   "no registered compute trampoline (falling back to body-inlining)"
 /// on stderr as a `Severity::Error` diagnostic.  After the fix (trampoline
-/// registered via `configured_eval_engine`), the dispatch succeeds silently.
+/// registered), the dispatch succeeds silently.
 ///
 /// Positive guard: `stdout.contains("Wrote")` confirms geometry was exported
 /// (not just that no error appeared).  The smoke fixture has no constraint
@@ -53,7 +53,7 @@ fn build_fea_cantilever_emits_no_trampoline_error() {
     assert!(
         !result.stderr.contains("no registered compute trampoline"),
         "reify build should not emit the trampoline-missing error once \
-         configured_eval_engine registers compute fns.\nstderr:\n{}",
+         the compute trampolines are registered.\nstderr:\n{}",
         result.stderr
     );
 
@@ -126,39 +126,41 @@ fn build_fea_violated_constraint_exits_nonzero() {
     );
 }
 
-/// (3) Posture-lock: `reify check fea_cantilever_violated.ri` exits 0 with
-/// INDETERMINATE — cmd_check deliberately does NOT register compute trampolines.
+/// (3) `reify check fea_cantilever_violated.ri` must exit non-zero with
+/// `VIOLATED` and `OK` in stdout, mirroring build test (2).
 ///
-/// This test is GREEN before AND after the fix.  It encodes the deliberate
-/// contrast: `reify build` gates on FEA results; `reify check` does not.
-/// The Indeterminate outcome under check is correct — `@optimized` targets
-/// body-inline to `undef`, making FEA-result constraints Indeterminate, which
-/// is not a violation and does not gate the exit code.
-///
-/// Rationale for the check posture: registering compute trampolines in `check`
-/// would run a potentially slow FEA solve inside the lightweight static-check
-/// path, violating "check attaches no kernel by design".  Use `reify build` or
-/// `reify eval` as the FEA gate.
-///
-/// Note: stderr is NOT asserted clean here — check still surfaces the
-/// engine-owned Error-severity trampoline diagnostic by design (the severity
-/// downgrade is an engine-side concern out of this CLI task's scope).
+/// `reify check` registers the production compute bundle, so it is an FEA exit
+/// gate like `reify build` and `reify eval`: `result.max_von_mises` is a real
+/// value, the `< 1 MPa` constraint is VIOLATED, and the simultaneous `OK` for
+/// `< 100 MPa` proves the FEA solve produced a number (a blanket Indeterminate
+/// path would show INDETERMINATE for both).
 #[test]
-fn check_fea_violated_constraint_is_not_gated() {
+fn check_fea_violated_constraint_exits_nonzero() {
     let path = common::fixture_path("fea_cantilever_violated.ri");
     let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
     assert!(
-        status.success(),
-        "reify check fea_cantilever_violated.ri should exit 0 — FEA-result \
-         constraints are Indeterminate (not violated) under the lightweight \
-         check posture.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        !status.success(),
+        "reify check fea_cantilever_violated.ri should exit non-zero when the \
+         FEA-result constraint is violated.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE' — both FEA constraints evaluate \
-         to Undef under check's unregistered-trampoline posture.\n\
+        stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED' — the < 1 MPa FEA constraint must \
+         evaluate against a real max_von_mises value.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        stdout.contains("  OK "),
+        "stdout should contain '  OK ' — the < 100 MPa constraint must be \
+         satisfied, proving real numeric evaluation (not blanket Indeterminate).\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        !stderr.contains("no registered compute trampoline"),
+        "check registers the compute trampolines, so the trampoline-missing \
+         diagnostic must not appear.\nstderr:\n{stderr}"
     );
 }

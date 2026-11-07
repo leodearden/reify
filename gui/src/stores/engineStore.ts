@@ -17,6 +17,7 @@ import type {
   AppearanceDirective,
   FeaDiagnosticInfo,
   FeaConvergenceInfo,
+  PublishedState,
 } from '../types';
 import {
   onMeshUpdate,
@@ -38,6 +39,7 @@ import {
   onAutoResolveIteration,
   onAutoResolveComplete,
   onSolverProgress,
+  onEvalGeneration,
   cancelSolve as bridgeCancelSolve,
   syncObservedDemand as bridgeSyncObservedDemand,
   syncDemand as bridgeSyncDemand,
@@ -59,17 +61,38 @@ export interface AutoResolveLoopState {
   /**
    * Canonical driving metric for the current loop — cached on first acceptance of
    * an iteration that declares one. Read by `applyAutoResolveIteration` in O(1)
-   * rather than scanning `iterations`. Cleared by `beginAutoResolveLoop` and
-   * `endAutoResolveLoop` so each loop starts with a fresh canonical.
+   * rather than scanning `iterations`. Cleared by the deferred loop reset (see
+   * `pendingReset`) so each loop that produces data starts with a fresh canonical.
    */
   canonicalDrivingMetric?: string;
   /**
    * Whether an empty-string `driving_metric` warning has already been emitted
    * for the current loop. Used to rate-limit the warn to once-per-loop so a
    * misconfigured producer that floods empty-string iterations does not flood
-   * the dev console. Cleared by `beginAutoResolveLoop` and `endAutoResolveLoop`.
+   * the dev console. Cleared by the deferred loop reset (see `pendingReset`).
    */
   warnedEmptyMetric?: boolean;
+  /**
+   * A new loop has started but has not yet produced an iteration, so the
+   * PREVIOUS loop's samples are still on screen and its clear is still owed.
+   *
+   * The engine re-fires the whole start/iteration/complete trio on every
+   * re-eval that has resolved parameters — there is no engine-side dedup. If
+   * `beginAutoResolveLoop` cleared eagerly, the store would walk
+   * `[iter] -> [] -> [iter]` on every commit, and the data-gated panel would
+   * unmount and remount: the side-panel grid track count changes, scroll
+   * position is lost, and a blank frame can paint. Deferring the clear to the
+   * first accepted iteration closes that window.
+   *
+   * Discharged by whichever comes first: `applyAutoResolveIteration` (the loop
+   * produced data — replace) or `endAutoResolveLoop` (the loop produced
+   * nothing — clear, so an empty loop cannot strand stale samples).
+   *
+   * Initialised to `undefined` rather than `false` deliberately: the initial
+   * -state test asserts `toEqual({ active: false, iterations: [] })`, which
+   * holds only because Vitest's `toEqual` ignores `undefined`-valued keys.
+   */
+  pendingReset?: boolean;
 }
 
 export interface EngineState {
@@ -92,13 +115,13 @@ export interface EngineState {
   /**
    * FEA diagnostic entries from the last solve (#4818, #2966).
    * Empty when no FEA diagnostics are present (non-FEA builds or successful solve).
-   * Populated only via the full-state initFromState path (file-open / initial-load).
+   * Written by whole-state snapshots and by the `fea-diagnostics-changed` event.
    */
   feaDiagnostics: FeaDiagnosticInfo[];
   /**
    * A-posteriori convergence status of the active FEA case (task 3001).
    * `null` when no FEA solve has run or the active scene has no `ElasticResult`.
-   * Populated only via the full-state initFromState path (file-open / initial-load).
+   * Written by whole-state snapshots and by the `fea-convergence-changed` event.
    */
   feaConvergence: FeaConvergenceInfo | null;
   solverProgress: SolverProgressState;
@@ -106,10 +129,17 @@ export interface EngineState {
 
 export interface EngineStoreOptions {
   onEntityRemoved?: (id: string) => void;
-  // Fires after `initFromState` writes new state. Needed because `initFromState`
-  // does not move `evalStatus.phase`, so phase-transition listeners do not
-  // observe a file load — derived data (entity tree, mechanisms) would go stale.
+  // Fires after every whole-state reload — `initFromState`, and
+  // `applyPublishedState` even when it skips a stale snapshot. Needed because a
+  // reload does not move `evalStatus.phase`, so phase-transition listeners do
+  // not observe a file load — derived data (entity tree, mechanisms) would go
+  // stale.
   onEngineReinitialized?: () => void;
+}
+
+/** The auto-resolve state of a store that has run no loop since its last reload. */
+function freshAutoResolve(): AutoResolveLoopState {
+  return { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined };
 }
 
 export function createEngineStore(options?: EngineStoreOptions) {
@@ -121,7 +151,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
-    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
+    autoResolve: freshAutoResolve(),
     tensegrityWires: [],
     tensegritySurfaces: [],
     displayPanes: [],
@@ -131,7 +161,8 @@ export function createEngineStore(options?: EngineStoreOptions) {
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
-  function initFromState(guiState: GuiState) {
+  /** The store fields a whole-state snapshot replaces. */
+  function snapshotFields(guiState: GuiState): Partial<EngineState> {
     const meshes: Record<string, MeshData> = {};
     for (const m of guiState.meshes) {
       meshes[m.entity_path] = m;
@@ -147,8 +178,56 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null });
+    return { meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null };
+  }
+
+  /**
+   * Replace the whole state with `guiState`, clearing any auto-resolve loop:
+   * a completed loop persists (the panel is data-gated, not `active`-gated), so
+   * without the clear the previous file's resolved parameters and constraint
+   * rows would stay mounted after opening a new one.
+   */
+  function initFromState(guiState: GuiState) {
+    reload({ ...snapshotFields(guiState), autoResolve: freshAutoResolve() });
+  }
+
+  /** Write one whole-state reload atomically, then report the reinitialization. */
+  function reload(fields: Partial<EngineState>) {
+    setState(fields);
     options?.onEngineReinitialized?.();
+  }
+
+  // The newest generation the backend announced or a whole-state reply was
+  // applied under (task 7853). Backend generations start at 1.
+  let newestGeneration = 0;
+
+  // The newest generation when the current auto-resolve loop began: the
+  // generation whose re-eval fired it, since every event of a generation
+  // follows its announcement.
+  let autoResolveGeneration = 0;
+
+  function noteGeneration(generation: number) {
+    newestGeneration = Math.max(newestGeneration, generation);
+  }
+
+  /**
+   * Apply a whole-state reply under its generation. Its fields are written
+   * unless a newer generation already reached the store — every event of that
+   * generation followed its announcement, so the reply is older than state
+   * events have applied since. The auto-resolve loop is cleared iff an older
+   * generation began it; a loop the reply's own or a newer generation began
+   * describes the reply's state or a newer one. The reinitialized callback
+   * fires either way.
+   */
+  function applyPublishedState(published: PublishedState) {
+    const { generation } = published;
+    const fresh = generation >= newestGeneration;
+    const fields: Partial<EngineState> = fresh ? snapshotFields(published.state) : {};
+    if (autoResolveGeneration < generation) {
+      fields.autoResolve = freshAutoResolve();
+    }
+    newestGeneration = Math.max(newestGeneration, generation);
+    reload(fields);
   }
 
   function applyMeshUpdate(mesh: MeshData) {
@@ -248,9 +327,16 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('kernelStatus', status);
   }
 
-  /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
+  /**
+   * Start a new auto-resolve loop: flip `active` true and OWE the clear.
+   *
+   * The previous loop's samples are deliberately left in place until this loop
+   * produces its first iteration (or ends without one) — see `pendingReset`.
+   * Clearing here would blink the data-gated panel on every re-eval.
+   */
   function beginAutoResolveLoop() {
-    setState('autoResolve', { active: true, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
+    autoResolveGeneration = newestGeneration;
+    setState('autoResolve', { active: true, pendingReset: true });
   }
 
   /**
@@ -267,6 +353,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * AutoResolveIteration invariant in types.ts).
    */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
+    // Discharge the clear owed by `beginAutoResolveLoop`. This MUST run before
+    // the empty-metric warn and before the canonical-mismatch check below:
+    // `canonicalDrivingMetric` and `warnedEmptyMetric` still belong to the
+    // PREVIOUS loop, so checking first would drop every iteration of a new loop
+    // whose driving metric differs, freezing the panel on the old loop forever.
+    if (state.autoResolve.pendingReset) {
+      setState('autoResolve', {
+        iterations: [],
+        canonicalDrivingMetric: undefined,
+        warnedEmptyMetric: undefined,
+        pendingReset: undefined,
+      });
+    }
     // Empty-string driving_metric is treated as "no metric declared" — same as
     // undefined — but emits a console.warn (once per loop) so the upstream
     // malformation (the wire schema permits omission, not empty-string) is
@@ -296,15 +395,32 @@ export function createEngineStore(options?: EngineStoreOptions) {
   }
 
   /**
-   * Mark the loop as finished and reset iteration history.
+   * Mark the loop as finished, PRESERVING its iteration history.
    *
-   * The panel unmounts when `active` flips to false (App.tsx uses
-   * `<Show when={autoResolve.active}>`), so any preserved iterations would be
-   * unreachable until the next `beginAutoResolveLoop` clears them anyway.
-   * Clearing eagerly avoids holding dead state between runs.
+   * A completed loop stays readable: the panel now mounts on
+   * `iterations.length > 0` rather than on `active`, so the samples of the loop
+   * the user just ran remain on screen after it lands instead of vanishing the
+   * instant the last iteration completes. `canonicalDrivingMetric` is preserved
+   * with them — it is what labels the chart's y-axis.
+   *
+   * The samples are dropped later, by whichever comes first: the next loop's
+   * first accepted iteration (the deferred reset), or a whole-state reload
+   * that clears the loop (`initFromState`, or `applyPublishedState` of a newer
+   * generation than the loop's).
    */
   function endAutoResolveLoop() {
-    setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
+    // A loop that produced no iteration never discharged its owed clear — do it
+    // here, so a start/complete pair with no data cannot strand the previous
+    // loop's samples on screen indefinitely.
+    if (state.autoResolve.pendingReset) {
+      setState('autoResolve', {
+        iterations: [],
+        canonicalDrivingMetric: undefined,
+        warnedEmptyMetric: undefined,
+        pendingReset: undefined,
+      });
+    }
+    setState('autoResolve', 'active', false);
   }
 
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
@@ -472,6 +588,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onAutoResolveIteration(applyAutoResolveIteration),
       onAutoResolveComplete(endAutoResolveLoop),
       onSolverProgress(applySolverProgress),
+      onEvalGeneration(noteGeneration),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -562,6 +679,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
   return {
     state,
     initFromState,
+    applyPublishedState,
     syncObservedDemand,
     syncDemand,
     applyMeshUpdate,
@@ -604,51 +722,41 @@ interface DemandSyncEngine {
   syncDemand: (getEffectiveVisibility: (path: string) => VisibilityState) => Promise<void> | void;
 }
 
-/** Minimal view-state-store surface the demand-sync effect reads. */
+/** Minimal view-state-store surface the demand-sync effect reads.
+ *  BOTH visibility reads live here on purpose (task #6052): the TRACKED read
+ *  (`getAllEffective`, inside the selector, which is what subscribes the effect
+ *  per live path) and the FIRE-TIME payload read (`getEffectiveVisibility`,
+ *  handed to `syncDemand` outside any tracking scope) must describe the SAME
+ *  store, or the effect wakes on one store's toggles and pushes another's
+ *  visibility. Taking both off one object makes that structural rather than a
+ *  caller convention. `getAllEffective` tracks the store's own tree version, so
+ *  a read taken before the tree loads still subscribes (PRD
+ *  gui-frontend-wire-bindings-bridge-port §4.5). */
 interface DemandSyncViewState {
   getAllEffective: () => Record<string, VisibilityState>;
   getEffectiveVisibility: (path: string) => VisibilityState;
 }
 
 /**
- * Wire the production selective-demand ENFORCEMENT sync (task 4737 α).
+ * Wire the production selective-demand ENFORCEMENT sync (task 4737 α): push the
+ * visible realization keys to the backend's PRODUCTION demand registry,
+ * DEBOUNCED so a cascading show/hide burst costs one round-trip. NOT gated
+ * behind phase==='idle' — enforcement must update the instant visibility
+ * changes (PRD §12 Q3). `defer: true` means no sync fires at mount.
  *
- * Whenever effective viewport visibility (or the realization mesh set) changes,
- * push the visible realization keys to the backend's PRODUCTION demand registry,
- * DEBOUNCED. NOT gated behind phase==='idle' — enforcement must update the
- * instant visibility changes so the next interactive `edit_param` prunes
- * correctly (PRD §12 Q3). Debouncing coalesces a rapid toggle burst (cascading
- * show/hide) into a single engine round-trip.
+ * Tracked sources, any of which re-fires the sync (`on()` filters nothing; the
+ * mesh count is only the callback's input): effective visibility per live path
+ * plus the view store's tree version, both via `getAllEffective` — the version
+ * is bumped by `regenerateAutoViews` on every idle refetch, which covers the
+ * in-place `applyMeshUpdate` writes the key set cannot see; and the
+ * `state.meshes` key set.
  *
- * `defer: true` skips the initial tracking run, so no sync fires at mount.
- * Note this does NOT mean the backend stays full-scope until a body is
- * hidden: the first mesh-set change (0 -> N on file load) is itself a
- * genuine change, so an ordinary open already pushes the all-visible set
- * and leaves demand selective (`is_full_scope() == false`) with nothing
- * pruned. A cold `eval()` resets full_scope to true (`Engine::eval`,
- * engine_eval.rs:5301). Selectivity is restored the next time this effect
- * fires — but `on()` performs no equality check, so the mesh COUNT above
- * is only the callback's `input` argument, never a change filter; the
- * effect re-runs whenever any tracked source notifies. That includes any
- * effective-visibility change (`getAllEffective` tracks `state.explicit`
- * per path), a wholesale `state.meshes` replacement (`initFromState`)
- * even at unchanged cardinality, and any add or remove of a mesh key:
- * `Object.keys()` subscribes to the meshes object's own `$SELF` node
- * (created with `equals: false`), which every add/remove pings regardless
- * of the resulting count, so even a same-size key-set swap re-fires. The
- * one write that does NOT re-fire is an in-place update of an EXISTING
- * mesh key via `applyMeshUpdate` (`setState('meshes', path, mesh)`):
- * Solid's store merges a write when both the previous and new values are
- * wrappable objects, so it lands on that mesh's own nodes and never
- * touches the container's `$SELF`. Consequently, a re-eval that only
- * re-tessellates the same body set (the streamed `onMeshUpdate` path)
- * leaves the backend full-scope until the next visibility change, mesh
- * add/remove, or full-state reload (safe: over-evaluates, never
- * mis-prunes).
+ * Never de-duplicate the push against the client's last payload: `Engine::eval`
+ * resets demand to full scope underneath us, so an UNCHANGED payload is exactly
+ * the one that must be re-pushed.
  *
- * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
- * 4532), which is left intact. Must be called within a reactive root (createRoot
- * / component scope); the effect's lifetime is tied to the enclosing owner.
+ * Must be called within a reactive root; disposing the owner cancels a pending
+ * sync (task 4856).
  */
 export function createSelectiveDemandSync(
   engineStore: DemandSyncEngine,
@@ -660,9 +768,6 @@ export function createSelectiveDemandSync(
   createEffect(
     on(
       () => {
-        // Track the reactive demand inputs synchronously: effective visibility
-        // (getAllEffective reads state.explicit for every tree path → re-fires on
-        // any setVisibility/cycleCascading toggle) and the realization mesh set.
         viewStateStore.getAllEffective();
         return Object.keys(engineStore.state.meshes).length;
       },

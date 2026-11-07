@@ -98,9 +98,10 @@ resolved via flat maps. Census (compile side):
 
 Eval-side template lookup is **first**-wins (`find_template_with_prelude`,
 reify-eval/src/engine_eval.rs:64-68) — compile and eval disagree about what `Mode` means
-*(probe)*. The `modal_analysis.ri:142-145` comment claiming "first-wins … makes this safe"
-is wrong on the compile side. resolution-unification's D-6 normalizes the **eval** side;
-its θ/ι/κ tasks do not touch these compile-side sites (scope fence recorded in its §6).
+*(probe)*. The `Mode` comment in `modal_analysis.ri` then claimed "first-wins … makes this
+safe" — wrong on the compile side; #5496 rewrote that comment to record that the claim was
+false (compile-side LAST-wins, eval-side FIRST-wins). resolution-unification's D-6
+normalizes the **eval** side; its θ/ι/κ tasks do not touch these compile-side sites (scope fence recorded in its §6).
 
 **Smell 2b — the module system half-exists in the parser only.** `ImportKind` supports
 selective (`import m.{A,B}`), aliased (`import m as x`), entity-aliased, and `pub import`
@@ -287,6 +288,7 @@ references. N3/N4 consume resolution-unification substrate (§5).
 | `conditional-compilation.md` (landed) | consumes | `#cfg` on `std.*` imports becomes meaningful under strict (gates visibility, same `import_cfg_satisfied` mechanism) | this PRD (κ) | semantics unchanged, one boundary row |
 | `module-and-visibility-hardening.md` | extends | stdlib files gain `module` headers; std-skip of `attach_module_path_diag` removed (NS-V3, ζ) | this PRD (ζ) | extension of landed mechanism |
 | tree-sitter-reify / lezer grammars | produces | qualified-ref production (μ) in tree-sitter + reify-syntax lowering + GUI lezer highlighting | this PRD (μ) | grammar-gate fixtures committed with μ |
+| `docs/prds/v0_6/enum-shadow-coherence.md` (2026-08-20) | feeds this PRD | N0-interim owner of the local-enum-vs-prelude-structure shadow instance (#5429's `LocalEnumShadowScope` + its obligation-collision Error): α absorbs `build_local_enum_shadow_set` + its shared entity-name filter helper into the NS-P1/P3 policy point; κ's D-2 stage 2 supersedes the obligation Error post-N3; ν owns the de-shadowing surface; its D7 defers the type-vs-value namespace question to α/#5920 — tracked, not dropped | α/κ/ν as listed | amendment recorded 2026-08-20 |
 
 ---
 
@@ -438,6 +440,7 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
 4. **Build-time stdlib precompilation trigger.** If startup profiling ever attributes
    user-noticeable latency to the per-process stdlib compile, revisit D-5's rejection
    (two-stage build + IR serialization). Requires a measurement first.
-5. **ε tool packaging.** xtask vs `reify` subcommand vs standalone script — λ needs it
-   user-facing (`fix --imports`), which suggests a `reify` subcommand backed by a shared
-   lib fn. Decide in ε.
+5. **ε tool packaging.** *Decided in ε (#5497):* a `reify fix --imports [--check]
+   <file>...` subcommand (`crates/reify-cli/src/cmd/fix.rs`) backed by the library module
+   `reify_compiler::import_headers`. ζ and λ consume the same functions —
+   `derive_std_imports`, `insert_imports` and `residual_diagnostics` — or run the CLI.

@@ -37,7 +37,7 @@ Leaves: ζ, η, θ.
 - **sketch-profile-op** → `producer:task-ε` (upstream). `GeometryOp::SketchProfile`
   + kernel face-with-holes are batch-delivered. PASS.
 - **exemplar-ci-gate** (substrate) — `examples/best_practices/` auto-compile gate
-  exists on main: `crates/reify-compiler/tests/examples_smoke.rs` (corpus seeded by
+  exists on main: `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (corpus seeded by
   task #5397). PASS.
 - **bbox-within-1µm** (numeric floor) — bound is driven-dimension reproduction, not
   method accuracy: dimensions are equality constraints; libslvs converges to
@@ -60,7 +60,7 @@ Leaves: ζ, η, θ.
 ## θ — docs-truth (chunk + cheatsheet + discoverability)
 
 - **chunk-smoke-gate** (substrate) — chunk-vs-compiler drift gate exists on main:
-  `crates/reify-compiler/tests/geometry_chunk_smoke.rs` (task 5364). θ adds the
+  `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs` (task 5364). θ adds the
   sketch smoke fixture(s) there; every documented signature compiles as written. PASS.
 - **documented-surface-exists** → `producer:task-ε` + `producer:task-ζ` (upstream) —
   θ documents only batch-delivered surface; ordered by real dep edges, not prose. PASS.

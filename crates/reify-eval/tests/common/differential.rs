@@ -58,8 +58,53 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 /// the `set_build_scheduler` test seam. The SINGLE engine-construction site every
 /// build helper routes through, so a future change to the standard engine wiring is
 /// made in ONE place rather than five.
+///
+/// ## Why `register_compute_fns` is NOT optional here (task 5578)
+///
+/// An `@optimized` stdlib fn whose target has no registered compute trampoline
+/// does NOT error out. `engine_eval.rs`'s dispatch takes a documented
+/// else-branch: it pushes a diagnostic coded
+/// `DiagnosticCode::NoRegisteredComputeTrampoline` ("@optimized target …: no
+/// registered compute trampoline (falling back to body-inlining)") and then
+/// body-inlines the fn. Since task 5311 that diagnostic is a `Severity::Warning`
+/// on an engine whose compute registry is entirely EMPTY — which is precisely
+/// the case this section is about, an engine that never called
+/// `register_compute_fns` — and a `Severity::Error` otherwise. Neither severity
+/// stops the body-inlining below, which is the whole hazard. For the solver fns that body is a never-run sentinel — a
+/// bare struct ctor whose params are ALL required with no defaults (e.g.
+/// `form_find_free`'s `{ FormFindResult() }`, `crates/reify-compiler/stdlib/tensegrity.ri`).
+/// The result is a NON-Undef struct whose every field is Undef, so every
+/// downstream field read silently becomes Undef while its one declared read
+/// reads as RESOLVED — invisible to any "did it diverge?" differential (both
+/// sides degrade identically) and reported by the stale-Undef checker as a
+/// scheduling bug in code that is not at fault.
+///
+/// That is exactly what happened here: this fn omitted the registration, and
+/// `golden:tensegrity_t_prism`'s `TPrism.{solved,forces}` sat in
+/// `flat_sort_kahn_core_delegation.rs`'s `PREEXISTING_STALE_UNDEF` baseline
+/// misattributed to `invariants.rs`/`engine_build.rs`. Task 4458 is the same
+/// defect one layer up — `cmd_build` skipped `configured_eval_engine`, so
+/// `max_von_mises` went Undef, FEA constraints went Indeterminate, and the CLI
+/// exited `Error + exit 0`; its guard
+/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`) asserts the ABSENCE
+/// of that same diagnostic string. Production agrees: the CLI's
+/// `configured_eval_engine` registers compute fns on BOTH its eval and build
+/// paths, as does `no_stale_undef_invariant_gate.rs`'s per-file engine wiring.
+///
+/// Registering HERE (rather than in `build_case` / `build_case_keep_engine`)
+/// keeps every build helper on identical wiring — patching only one variant
+/// would make `flat_sort_reorder_leaves_no_stale_undef` and
+/// `flat_sort_reorder_preserves_corpus_results` silently disagree about what was
+/// built. `register_compute_fns` panics on double registration, but this fn
+/// mints a brand-new [`Engine`] per call, so that contract is never at risk.
+///
+/// `register_shell_extract_compute_fns` is deliberately NOT called: it is a
+/// separate `pub fn`, no corpus case uses `shell-extract::extract`, and an
+/// unneeded registration only widens blast radius. Add it only if a corpus build
+/// actually surfaces that target's trampoline-missing diagnostic.
 fn fresh_engine(scheduler: BuildScheduler, kernel: Box<dyn GeometryKernel>) -> Engine {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     engine.set_build_scheduler(scheduler);
     engine
 }
@@ -213,18 +258,29 @@ pub fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
         .satisfaction
 }
 
-/// Assert the geometry-derived value `cell` resolved to a DEFINITE (present,
-/// non-[`Value::Undef`]) value in `result` — the LOUD-failure guard for a seeded
-/// kernel's hardcoded [`GeometryHandleId`].
+/// Assert `cell` resolved to a DEFINITE (present, non-[`Value::Undef`]) value in
+/// `result` — the LOUD-failure guard against a producer that degraded SILENTLY.
 ///
-/// The seeded kernels (`seeded_physical_kernel`, `seeded_build_volume_kernel`) key
-/// their replies on concrete handle ids on the premise that handle assignment is
-/// deterministic AND identical across both schedulers. If a future handle-numbering
-/// change made a seeded reply MISS, the geometry query would silently fall back to
-/// undecided and the equivalence comparison would degrade into "two identical
-/// FAILURE modes" — a false pass. Pinning the downstream `cell` DEFINITE turns that
-/// silent rot into a hard failure. `label` (e.g. the scheduler) is surfaced in the
-/// panic. Renders via `Display` (not `Debug`) so it leans on nothing beyond what
+/// The invariant is cause-agnostic on purpose: whenever an upstream producer can
+/// fail by going quiet rather than loudly, an equivalence comparison degrades
+/// into "two identical FAILURE modes" — a false pass — and pinning the downstream
+/// `cell` DEFINITE is what turns that silent rot into a hard failure. Two
+/// producers in this harness fail exactly that way, and the panic names both:
+///
+/// - GEOMETRY-derived cells. The seeded kernels (`seeded_physical_kernel`,
+///   `seeded_build_volume_kernel`) key their replies on concrete
+///   [`GeometryHandleId`]s, on the premise that handle assignment is
+///   deterministic AND identical across both schedulers. A handle-numbering
+///   change makes a seeded reply MISS and the query falls back to undecided.
+/// - COMPUTE-derived cells. An `@optimized` dispatch whose trampoline was never
+///   registered body-inlines a never-run, all-required-params sentinel, so every
+///   downstream field read folds to `Undef` (task 5578 — see `fresh_engine`).
+///
+/// `label` is the CALLER's slot for which of those it suspects (e.g.
+/// `"seeded_physical_kernel under LegacyMultiPass"`, `"optimized form_find_free
+/// output under UnifiedDag"`); it is surfaced first in the panic, so a failure
+/// points at the right producer instead of hard-wiring one story for both.
+/// Renders via `Display` (not `Debug`) so it leans on nothing beyond what
 /// `project_value` already requires of [`Value`].
 pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &str) {
     let rendered = match result.values.get(cell) {
@@ -233,10 +289,16 @@ pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &st
         None => "<absent>".to_string(),
     };
     panic!(
-        "{label}: geometry-derived cell `{cell}` MUST resolve to a DEFINITE value \
-         (the seeded kernel's hardcoded GeometryHandleId must reach the realized solid); \
-         got `{rendered}`. A handle-numbering change likely made the seeded reply MISS — \
-         the equivalence gate would otherwise silently compare two identical failures.",
+        "{label}: cell `{cell}` MUST resolve to a DEFINITE value; got `{rendered}`. \
+         An indefinite value here is silent rot: the equivalence gate would \
+         otherwise compare two identical FAILURE modes and pass. The `{label}` \
+         prefix carries the caller's cause hypothesis; the two producers in this \
+         harness that fail this way are (a) a seeded kernel whose hardcoded \
+         GeometryHandleId no longer reaches the realized solid after a \
+         handle-numbering change (geometry-derived cells) and (b) an @optimized \
+         compute dispatch that fell back to body-inlining its never-run sentinel \
+         because the trampoline was never registered (compute-derived cells; \
+         task 5578 — see `fresh_engine`).",
     );
 }
 
@@ -1226,6 +1288,54 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
     let b = box(p, p, p)
 }"#;
 
+/// Geometry-LIST let under selective demand (task #5385, review esc-5385-4).
+///
+/// - body_a = `let a = box(10mm, 10mm, 10mm)`: the always-visible body, so the
+///   demand set is never empty while `merged` is hidden.
+/// - `let holes = generate(3, |i| cylinder(r, h))` unrolls at compile time into
+///   three sibling realizations `holes#0..2`, regrouped at eval into ONE
+///   `List<Geometry>` value cell `holes`.
+/// - `let merged = union_all(holes)`: the consumer that pulls
+///   `NodeId::Value(SelectiveGeomList.holes)` into the demand cone, so hiding it
+///   makes `holes` leave the cone (⇒ `mark_demand_pruned_pending` marks it
+///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
+///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
+///
+/// ITS CONSUMERS, all in `harness_cache/selective_demand_redemand_staleness.rs`:
+/// - `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed` is a
+///   FULL-SCOPE build → `edit_param` → rebuild test (review esc-5385-7): it never
+///   calls `set_demand_selective`, so it pins the rebuild path, not the demand
+///   path.
+/// - `set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list`
+///   drives a FIRST tessellate under a selective cone.
+/// - The three reuse-pass tests (task #6460) drive the demand-cone transitions
+///   described above: a repeat no-op tessellate, a hide → un-hide of `merged`,
+///   and the no-op pass after an edit. Each pins that a pass which re-executes
+///   nothing serves `holes` backed exactly as the scalar let `a` is, with the
+///   identity of the pass that built it — never `List([Undef; 3])`.
+pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    let a = box(10mm, 10mm, 10mm)
+    let holes = generate(3, |i| cylinder(r, h))
+    let merged = union_all(holes)
+}"#;
+
+/// Geometry-LIST let whose elements read DIFFERENT params (task #6460).
+///
+/// `parts#0 = cylinder(r, h)` and `parts#1 = box(w, w, w)`, so editing `w`
+/// changes only `parts#1`'s inputs. Under selective demand the next
+/// `tessellate_snapshot` then re-executes `parts#1` and hash-exempts `parts#0`:
+/// a PARTLY re-executed list, which [`SELECTIVE_DEMAND_GEOM_LIST_SRC`]'s
+/// `generate(3, |i| cylinder(r, h))` cannot produce because every element reads
+/// the same params.
+pub const SELECTIVE_DEMAND_HETEROGENEOUS_GEOM_LIST_SRC: &str = r#"pub structure SelectiveHeteroGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    param w : Length = 10mm
+    let parts = [cylinder(r, h), box(w, w, w)]
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
@@ -1360,7 +1470,7 @@ pub const WARM_AUTO_CONST_LET_SRC: &str = r#"structure WarmAutoConstLet {
 /// eval_cached back-prop tests which need a solver to exercise the
 /// `SolveResult::Solved` arm but do NOT need geometry (kernel is `None`).
 pub fn fresh_engine_with_solver(scheduler: BuildScheduler) -> Engine {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
         .with_solver(Box::new(DimensionalSolver));
     engine.set_build_scheduler(scheduler);
     engine

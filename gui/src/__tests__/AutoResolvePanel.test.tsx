@@ -166,8 +166,7 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     // 'thickness' appears in both the Parameters row and the sparkline label.
     // Scope the sparkline-label check via within() so future additions of the
     // text elsewhere in the panel don't break this assertion.
-    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
-    const sparklineRow = sparklineSvg.closest('div')!;
+    const sparklineRow = screen.getByTestId('auto-resolve-sparkline-row');
     expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
     // Scope cell-id and display-value assertions to the Parameters section
     // explicitly, so a regression that drops them from the Parameters row
@@ -274,15 +273,17 @@ describe('AutoResolvePanel (c) line chart', () => {
     expect(within(svg).queryByText('max_von_mises')).toBeNull();
   });
 
-  it('(c.4) no polyline rendered when fewer than 2 iterations carry driving_metric_value', () => {
+  it('(c.4) fewer than 2 iterations carrying driving_metric_value: no chart svg and no polyline anywhere', () => {
     const iterations = [
       makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
-    render(() => <AutoResolvePanel state={state} />);
-    const svg = screen.getByTestId('auto-resolve-chart');
-    const polyline = svg.querySelector('polyline');
-    expect(polyline).toBeNull();
+    const { container } = render(() => <AutoResolvePanel state={state} />);
+    // The chart is data-gated now: below 2 plottable points there is no axis
+    // frame at all, so there is nothing for a stray polyline to hide inside.
+    // (g.2) pins what replaces it.
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    expect(container.querySelector('polyline')).toBeNull();
   });
 });
 
@@ -320,17 +321,18 @@ describe('AutoResolvePanel (d) per-parameter sparklines', () => {
     }
   });
 
-  it('(d.3) only 1 iteration: sparkline rows exist but no polyline inside', () => {
+  it('(d.3) only 1 iteration: sparkline rows exist but carry a marker instead of an svg', () => {
     const iterations = [
       makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
-    expect(sparklines.length).toBeGreaterThanOrEqual(1);
-    // No polyline when only 1 data point
-    for (const sparkline of sparklines) {
-      expect(sparkline.querySelector('polyline')).toBeNull();
+    const rows = screen.getAllByTestId('auto-resolve-sparkline-row');
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    // One data point is not a trace: no svg frame at all, a marker in its place.
+    expect(screen.queryAllByTestId('auto-resolve-sparkline')).toHaveLength(0);
+    for (const row of rows) {
+      expect(within(row).getByTestId('auto-resolve-sparkline-single-sample')).toBeTruthy();
     }
   });
 
@@ -388,37 +390,34 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     expect(xs[1]).toBeCloseTo(27.333, 1);
   });
 
-  it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
+  it('(e.2) all-null sparkline draws no svg at all, but the row still renders', () => {
     // 2 iterations, both with thickness.value = null.
-    // After null-filtering the series is empty → hasLine = false → no polyline.
-    // The SVG row itself must still render (cellId remains in the union set).
+    // After null-filtering the series is empty → nothing to plot → no svg.
+    // The row itself must still render (cellId remains in the union set).
     const iterations = [
       makeIteration(1, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
       makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
-    expect(sparklineSvg).toBeTruthy();
-    // No polyline — after filtering, 0 finite values remain
-    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-sparkline')).toBeNull();
+    const row = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(row).getByTestId('auto-resolve-sparkline-no-data')).toBeTruthy();
   });
 
-  it('(e.3) mixed [5.0, null] sparkline: no polyline, cellId label still renders', () => {
-    // 2 iterations with values [5.0, null] → after filter: [5.0] → length 1 → no polyline.
-    // The sparkline SVG row and its cellId label must still be present.
+  it('(e.3) mixed [5.0, null] sparkline: no svg, single-sample marker, cellId label still renders', () => {
+    // 2 iterations with values [5.0, null] → after filter: [5.0] → length 1 → nothing to plot.
+    // The sparkline row and its cellId label must still be present.
     const iterations = [
       makeIteration(1, { parameters: { thickness: { value: 5.0, unit: 'mm', display: '5mm' } } }),
       makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
-    // SVG exists but no polyline (only 1 finite value after filtering)
-    expect(sparklineSvg).toBeTruthy();
-    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-sparkline')).toBeNull();
+    const sparklineRow = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(sparklineRow).getByTestId('auto-resolve-sparkline-single-sample')).toBeTruthy();
     // cellId label still renders in the sparkline row
-    const sparklineRow = sparklineSvg.closest('div')!;
     expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
   });
 
@@ -537,5 +536,165 @@ describe('AutoResolvePanel (f) non-scalar error chip in Parameters section', () 
     expect(chips).toHaveLength(1);
     // That chip's text is the non-scalar display string
     expect(chips[0].textContent).toBe('<non-scalar>');
+  });
+});
+
+// ── Test group (g): chart honesty for sub-plottable sample counts ──────────
+
+describe('AutoResolvePanel (g) chart honesty for sub-plottable sample counts', () => {
+  it('(g.1) production shape (no driving metric at all): no chart svg, a no-data note instead', () => {
+    // Exactly what `emit_auto_resolve_if_any` emits today: one iteration with
+    // `driving_metric` and `driving_metric_value` both absent. `makeIteration`
+    // defaults both via `??`, so they are overridden after construction.
+    const iterations: AutoResolveIteration[] = [
+      { ...makeIteration(1), driving_metric: undefined, driving_metric_value: undefined },
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    const { container } = render(() => <AutoResolvePanel state={state} />);
+
+    // An axis frame with nothing on it is a lie about the data.
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    expect(screen.getByTestId('auto-resolve-chart-no-data')).toBeTruthy();
+    // And no orphaned polyline survives anywhere in the panel. Scope this to the
+    // whole `container`, not to the no-data note: the note is a <div> wrapping a
+    // text node, so querying it for a <polyline> could only ever return null and
+    // would pass even with a stray trace left elsewhere in the chart section.
+    // (This single iteration also leaves the lone sparkline row sub-plottable,
+    // so the panel as a whole draws no line — see (h.1).)
+    expect(container.querySelector('polyline')).toBeNull();
+  });
+
+  it('(g.2) single sample: no chart svg, a single-sample note naming the metric and its value', () => {
+    const iterations = [
+      makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    const note = screen.getByTestId('auto-resolve-chart-single-sample');
+    expect(note.textContent).toContain('180');
+    expect(note.textContent).toContain('max_von_mises');
+    expect(note.textContent).toMatch(/single sample/i);
+  });
+
+  it('(g.3) regression guard: 2+ finite samples still draw the real chart', () => {
+    const iterations = [
+      makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
+      makeIteration(2, { driving_metric: 'max_von_mises', driving_metric_value: 165 }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const svg = screen.getByTestId('auto-resolve-chart');
+    const polyline = svg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    // Neither honest-fallback marker may appear on the drawn path.
+    expect(screen.queryByTestId('auto-resolve-chart-single-sample')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-chart-no-data')).toBeNull();
+  });
+});
+
+// ── Test group (h): sparkline honesty for sub-plottable series ─────────────
+
+describe('AutoResolvePanel (h) sparkline honesty for sub-plottable series', () => {
+  it('(h.1) single iteration: no sparkline svg, but the row and its cell-id label survive', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    // An 80x24 frame with no trace in it says "we plotted this" when we did not.
+    expect(screen.queryAllByTestId('auto-resolve-sparkline')).toHaveLength(0);
+    const row = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(row).getByText('thickness')).toBeTruthy();
+    expect(within(row).getByTestId('auto-resolve-sparkline-single-sample').textContent).toMatch(/single sample/i);
+  });
+
+  it('(h.2) all-null series: no sparkline svg, and a marker distinct from the single-sample one', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    expect(screen.queryAllByTestId('auto-resolve-sparkline')).toHaveLength(0);
+    const row = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(row).getByText('thickness')).toBeTruthy();
+    // Zero plottable samples is a different statement from one.
+    expect(within(row).queryByTestId('auto-resolve-sparkline-single-sample')).toBeNull();
+    expect(within(row).getByTestId('auto-resolve-sparkline-no-data').textContent).toMatch(/no samples/i);
+  });
+
+  it('(h.3) mixed rows: the plottable parameter still draws while the sub-plottable one does not', () => {
+    // `thickness` has 3 finite values; `area` is finite only in the first
+    // iteration and null-filtered to 1 point. The decision is per-ROW, so a
+    // mixed loop must still draw the real trace it has.
+    const iterations = [
+      makeIteration(1, { parameters: {
+        thickness: { value: 4.2, unit: 'mm', display: '4.2mm' },
+        area: { value: 12, unit: 'mm2', display: '12mm2' },
+      } }),
+      makeIteration(2, { parameters: {
+        thickness: { value: 4.5, unit: 'mm', display: '4.5mm' },
+        area: { value: null, unit: '', display: '<non-scalar>' },
+      } }),
+      makeIteration(3, { parameters: {
+        thickness: { value: 4.8, unit: 'mm', display: '4.8mm' },
+        area: { value: null, unit: '', display: '<non-scalar>' },
+      } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
+    expect(sparklines).toHaveLength(1);
+    const points = (sparklines[0].querySelector('polyline')!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(3);
+
+    const markers = screen.getAllByTestId('auto-resolve-sparkline-single-sample');
+    expect(markers).toHaveLength(1);
+    // The marker belongs to `area`, not to the drawn `thickness` row.
+    const markerRow = markers[0].closest('[data-testid="auto-resolve-sparkline-row"]')!;
+    expect(within(markerRow as HTMLElement).getByText('area')).toBeTruthy();
+  });
+
+  it('(h.4) regression guard: 2 finite points still draw the real sparkline, with no marker', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 4.5, unit: 'mm', display: '4.5mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const svg = screen.getByTestId('auto-resolve-sparkline');
+    const points = (svg.querySelector('polyline')!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    expect(screen.queryByTestId('auto-resolve-sparkline-single-sample')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-sparkline-no-data')).toBeNull();
+  });
+});
+
+// ── Test group (i): loop-state indicator ───────────────────────────────────
+
+describe('AutoResolvePanel (i) loop-state indicator', () => {
+  it('(i.1) a running loop says so on the root and in a visible chip', () => {
+    const state: AutoResolveLoopState = { active: true, iterations: [makeIteration(1)] };
+    render(() => <AutoResolvePanel state={state} />);
+    expect(screen.getByTestId('auto-resolve-panel').getAttribute('data-loop-state')).toBe('running');
+    expect(screen.getByTestId('auto-resolve-loop-state').textContent).toMatch(/running/i);
+  });
+
+  it('(i.2) a completed loop says so on the root and in a visible chip', () => {
+    // Now that a completed loop persists, "Iteration 1" alone is ambiguous
+    // between still-running and finished — the panel must disambiguate.
+    const state: AutoResolveLoopState = { active: false, iterations: [makeIteration(1)] };
+    render(() => <AutoResolvePanel state={state} />);
+    expect(screen.getByTestId('auto-resolve-panel').getAttribute('data-loop-state')).toBe('complete');
+    expect(screen.getByTestId('auto-resolve-loop-state').textContent).toMatch(/complete/i);
   });
 });

@@ -11,8 +11,9 @@
 //! # Performance
 //!
 //! This is a v0.4-T1 *shippable skeleton*: per-voxel work in the inner
-//! loop performs two `gradient_at_world` calls (12 trilinear samples
-//! each) plus a bidirectional walk of up to `4 × max_thickness_voxels`
+//! loop performs two `gradient_at_world` calls (a centre sample plus a
+//! ±½-spacing probe pair per axis, each a trilinear sample) plus a
+//! bidirectional walk of up to `4 × max_thickness_voxels`
 //! trilinear samples. At PRD-realistic 256³ grids (~16 M voxels) the
 //! cost is on the order of `O(N³ · max_thickness_voxels)` trilinear
 //! interpolations. The current narrow-band-filtered slab/sphere
@@ -34,6 +35,7 @@
 use reify_ir::value::SampledField;
 
 use crate::grid_validation::{GridValidationError, validate_regular3d};
+use crate::walk_direction::medial_walk_direction;
 
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
@@ -95,10 +97,36 @@ pub struct MedialOptions {
     /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
     /// excluded from the inner loop, emulating OpenVDB's sparse
     /// active-voxel iterator on top of a dense `SampledField`.
-    /// Default `3.0` covers the smallest medial axis at the PRD's
-    /// `thickness/3` voxel-size default (smallest medial slab is 3
-    /// voxels thick → half-width 1.5; 3 leaves headroom for
-    /// gradient-stencil sampling at the boundary voxels).
+    ///
+    /// **This field sets the extractor's UPPER resolution edge.** A
+    /// wall's medial plane sits at `|φ| = half-thickness`, so the band
+    /// filter (this file, ~:617) admits it only while
+    ///
+    /// ```text
+    /// voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels
+    /// ```
+    ///
+    /// — 6 voxels per thickness at the default `3.0`. Refining past
+    /// that edge does not improve the measurement, it destroys it, and
+    /// silently: the filter runs BEFORE `medial_walk_direction`, so
+    /// #7527's ridge fallback never gets the chance to rescue a
+    /// dropped mid-plane voxel.
+    ///
+    /// The field is bounded BELOW by its producer, which this crate
+    /// cannot see: `reify-kernel-openvdb` will not build a grid coarser
+    /// than `MIN_FEATURE_VOXELS_ACROSS` voxels across the thinnest
+    /// feature, so `2 × nb` must stay ≥ that constant or no grid the
+    /// producer serves is measurable at all. **Do not lower this field
+    /// to "re-match" a voxel-size default** without re-checking that.
+    ///
+    /// Derivation, measured basis and the unclosed producer-side gap
+    /// are owned by the 2026-09-18 update in
+    /// `docs/prds/v0_4/structural-analysis-shells.md`. Pinned by
+    /// `tests/medial_resolution_window.rs` (the upper edge, which also
+    /// reproduces the measurement) and
+    /// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
+    /// (the cross-crate bracket — named in prose only, since this crate
+    /// deliberately carries no kernel/eval dependency).
     pub narrow_band_half_width_voxels: f64,
     /// Surface-patch distinctness threshold on the dot product of the
     /// SDF gradients sampled at the two surface-hit points. The
@@ -361,7 +389,7 @@ where
 ///
 /// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
 /// the resolution floor used for the `BelowResolution` branch.  The eval
-/// binding (`Engine::measure_min_wall`, task δ) derives `h` from the realized
+/// binding (`Engine::measure_thickness_pair`) derives `h` from the realized
 /// grid's own spacing, decoupling this function from any external voxelisation
 /// default.
 ///
@@ -395,14 +423,29 @@ pub fn min_wall_thickness(
     let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
 
     match medial_min_scalar(sdf, |idx| {
-        // World coordinate and normalised gradient for this medial voxel.
+        // World coordinate and walk direction for this medial voxel. The walk
+        // direction is decided here a SECOND time (this path re-walks the mask
+        // rather than caching compute_medial_mask's distances — see the
+        // Performance note above), so it MUST be decided the same way: both
+        // sites go through `medial_walk_direction`.
+        //
+        // `gradient_at_index` is the gradient source because this path has no
+        // precomputed gradient grid to draw on; `phi` likewise has no cached
+        // source here, so unlike `compute_medial_mask` this site reads it.
         let world = world_at_index(sdf, idx);
+        let phi = sample_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
-        let g = normalize3(grad_raw)?; // None → skip (degenerate gradient)
-        // Bidirectional walk: d⁺ + d⁻ for this voxel.
+        // None → skip: neither a usable gradient nor an interior ridge axis.
+        let walk = medial_walk_direction(sdf, idx, phi, grad_raw)?;
+        // Bidirectional walk: d⁺ + d⁻ for this voxel. None → skip.
         let (d_plus, d_minus, _, _) =
-            bidirectional_distances(sdf, world, g, max_steps, walk_step)?; // None → skip
-        let sum = d_plus + d_minus;
+            bidirectional_distances(sdf, world, walk.direction, max_steps, walk_step)?;
+        // Converted from a distance along the walk direction to a PERPENDICULAR
+        // thickness. The ridge fallback walks a grid axis, which crosses an
+        // oblique medial plane diagonally and would otherwise over-read the
+        // wall by up to √3× — the reverse of this measure's documented
+        // conservative-lower-bound bias.
+        let sum = (d_plus + d_minus) * walk.normal_cosine;
         sum.is_finite().then_some(sum)
     })? {
         None => Ok(MinWallThickness::NoMeasurement),
@@ -468,7 +511,7 @@ pub enum MinFeatureSize {
 ///
 /// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
 /// the resolution floor used for the `BelowResolution` branch.  The eval
-/// binding (`Engine::measure_min_feature`, task ε) derives `h` from the
+/// binding (`Engine::measure_thickness_pair`) derives `h` from the
 /// realized grid's own spacing.
 ///
 /// # Returns
@@ -533,6 +576,11 @@ fn walk_params(min_spacing: f64, options: &MedialOptions) -> (usize, f64, f64) {
 /// tag the voxel as medial iff (a) `|d⁺ − d⁻| / max(d⁺, d⁻) <
 /// distance_tolerance` AND (b) the gradients sampled at the two hit
 /// points are roughly antiparallel (`g_a · g_b < normal_antiparallel_threshold`).
+///
+/// At a voxel the medial surface passes exactly through, the central
+/// difference cancels by symmetry and carries no direction; there the walk
+/// direction comes instead from the one-sided ridge axis (see
+/// [`crate::walk_direction`]).
 pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
@@ -600,8 +648,8 @@ pub fn compute_medial_mask(
     let (max_steps, walk_step, max_walk_dist) = walk_params(min_spacing, options);
 
     // Pre-compute the per-voxel gradient once before the main loop.
-    // Avoids repeating the 6-sample central-difference stencil inside
-    // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
+    // Avoids repeating the finite-difference stencil inside the hot
+    // path; the lookup is O(1) via i*ny*nz + j*nz + k.
     let gradient_grid = precompute_gradient_grid(sdf, band_width);
 
     // Parallel outer (i-axis) loop.
@@ -655,7 +703,9 @@ pub fn compute_medial_mask(
                                 continue;
                             }
 
-                            // (b) gradient at the voxel; reject degenerate.
+                            // (b) walk direction at the voxel; reject voxels
+                            // that offer neither a usable gradient nor a
+                            // ridge axis.
                             //
                             // Invariant: `precompute_gradient_grid` only computes
                             // slots where |φ| ≤ band_width; out-of-band slots are
@@ -672,12 +722,19 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let gnorm =
-                                (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
-                            if gnorm < GRADIENT_EPSILON {
+                            // `phi` is handed on rather than re-read, so the
+                            // ridge fallback's interior test is made on the very
+                            // value the band filter and debug_assert above gate.
+                            let Some(walk) = medial_walk_direction(sdf, [i, j, k], phi, grad)
+                            else {
                                 continue;
-                            }
-                            let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+                            };
+                            // `.direction` only: the equality test below stays
+                            // in the walk-axis metric deliberately, so this
+                            // mask can only ever GROW. Correcting it would be
+                            // a no-op anyway — see `walk_direction`'s
+                            // "Walking an axis, measuring a perpendicular".
+                            let g = walk.direction;
 
                             // (c) bidirectional ray walk from the voxel's
                             // world coordinate in ±g, with sub-voxel
@@ -690,15 +747,16 @@ pub fn compute_medial_mask(
                             };
 
                             // (d) gradient at each surface hit; reject if
-                            // either is degenerate (we cannot make a
+                            // either is unknown (the hit point is off the
+                            // grid) or degenerate (we cannot make a
                             // distinctness call without two well-defined
                             // normals).
-                            let gp_raw = gradient_at_world(sdf, hit_plus);
-                            let gm_raw = gradient_at_world(sdf, hit_minus);
-                            let Some(gp) = normalize3(gp_raw) else {
+                            let Some(gp) = gradient_at_world(sdf, hit_plus).and_then(normalize3)
+                            else {
                                 continue;
                             };
-                            let Some(gm) = normalize3(gm_raw) else {
+                            let Some(gm) = gradient_at_world(sdf, hit_minus).and_then(normalize3)
+                            else {
                                 continue;
                             };
 
@@ -905,46 +963,28 @@ pub(crate) fn sample_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<f64
     Some(c0 * (1.0 - tz) + c1 * tz)
 }
 
-/// Central-difference gradient at integer voxel indices, falling
-/// back to forward/backward differences at boundaries. Returns the
-/// raw gradient (not normalized).
+/// Gradient at integer voxel indices from each axis's grid neighbours, by
+/// the boundary rule [`finite_difference`] states: central in the interior,
+/// one-sided at a grid face, flat along a single-sample axis. Returns the raw
+/// gradient (not normalized).
 pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3] {
-    let [i, j, k] = idx;
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
-    let dx = sdf.spacing[0];
-    let dy = sdf.spacing[1];
-    let dz = sdf.spacing[2];
-
-    let gx = if nx == 1 {
-        0.0
-    } else if i == 0 {
-        (sample_at_index(sdf, [1, j, k]) - sample_at_index(sdf, [0, j, k])) / dx
-    } else if i == nx - 1 {
-        (sample_at_index(sdf, [nx - 1, j, k]) - sample_at_index(sdf, [nx - 2, j, k])) / dx
-    } else {
-        (sample_at_index(sdf, [i + 1, j, k]) - sample_at_index(sdf, [i - 1, j, k])) / (2.0 * dx)
+    let centre = sample_at_index(sdf, idx);
+    let component = |axis: usize| {
+        let len = sdf.axis_grids[axis].len();
+        finite_difference(len, centre, sdf.spacing[axis], |steps| {
+            let n = idx[axis].checked_add_signed(steps).filter(|&n| n < len)?;
+            let mut at = idx;
+            at[axis] = n;
+            Some(sample_at_index(sdf, at))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "axis {axis} of length {len}: index {idx:?} has no on-grid neighbour \
+                 (an index on a multi-sample axis must have one on at least one side)"
+            )
+        })
     };
-    let gy = if ny == 1 {
-        0.0
-    } else if j == 0 {
-        (sample_at_index(sdf, [i, 1, k]) - sample_at_index(sdf, [i, 0, k])) / dy
-    } else if j == ny - 1 {
-        (sample_at_index(sdf, [i, ny - 1, k]) - sample_at_index(sdf, [i, ny - 2, k])) / dy
-    } else {
-        (sample_at_index(sdf, [i, j + 1, k]) - sample_at_index(sdf, [i, j - 1, k])) / (2.0 * dy)
-    };
-    let gz = if nz == 1 {
-        0.0
-    } else if k == 0 {
-        (sample_at_index(sdf, [i, j, 1]) - sample_at_index(sdf, [i, j, 0])) / dz
-    } else if k == nz - 1 {
-        (sample_at_index(sdf, [i, j, nz - 1]) - sample_at_index(sdf, [i, j, nz - 2])) / dz
-    } else {
-        (sample_at_index(sdf, [i, j, k + 1]) - sample_at_index(sdf, [i, j, k - 1])) / (2.0 * dz)
-    };
-    [gx, gy, gz]
+    [component(0), component(1), component(2)]
 }
 
 /// Pre-compute a dense gradient grid: one `[f64; 3]` entry per voxel,
@@ -963,8 +1003,8 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
 ///   is never read by downstream logic.
 ///
 /// **Cost rationale.** Each out-of-band voxel costs one extra
-/// `sample_at_index` call (a single array index) and skips the 6-sample
-/// central-difference stencil (`gradient_at_index`). In typical fixtures
+/// `sample_at_index` call (a single array index) and skips the
+/// finite-difference stencil (`gradient_at_index`). In typical fixtures
 /// ~95% of voxels are out-of-band, so the gate yields a substantial
 /// saving.
 ///
@@ -1034,10 +1074,10 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
                             }
                             // else: out-of-band; slot stays at the [0.0; 3]
                             // sentinel from the initial vec! allocation.
-                            // The consumer rejects out-of-band voxels at
-                            // line 470 before reading the cache (line 475),
-                            // so the sentinel is structurally unreachable
-                            // from downstream logic.
+                            // `compute_medial_mask`'s step (a) narrow-band
+                            // filter rejects out-of-band voxels before the
+                            // `gradient_grid_ref` read, so the sentinel is
+                            // structurally unreachable from downstream logic.
                         }
                     }
                 }
@@ -1054,50 +1094,56 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
     grid
 }
 
-/// Gradient at a world coordinate via central finite differences over
-/// `sample_at_world`. Returns `[0, 0, 0]` (caller treats as degenerate)
-/// if either side falls outside the grid.
+/// One gradient component along an axis of `axis_len` samples: the boundary
+/// rule both [`gradient_at_index`] and [`gradient_at_world`] follow.
+/// `neighbour(1)` and `neighbour(-1)` are the samples one `step` forward and
+/// backward of `centre` along the axis, `None` where that lands off the grid.
 ///
-/// **Per-axis stencil offsets.** Each component uses
-/// `h_axis = 0.5 · spacing[axis]` for its own central-difference
-/// stencil, rather than a single global `h = 0.5 · min(spacing)`. The
-/// per-axis form is numerically defensible on anisotropic grids: the
-/// stencil offset along each axis matches the local voxel size, so
-/// the gradient estimate reflects underlying sampled values rather
-/// than trilinear-interpolation artifacts at sub-voxel offsets along
-/// the coarse axis. (No anisotropic test fixture currently exercises
-/// this — every fixture in the in-crate test suite uses unit spacing
-/// on all three axes; full anisotropic-grid coverage is deferred to
-/// integration tests against real `.vdb` files once the OpenVDB FFI
-/// lands. The per-axis form here at least removes one numerical
-/// pitfall in advance.)
-pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> [f64; 3] {
-    let hx = 0.5 * sdf.spacing[0];
-    let hy = 0.5 * sdf.spacing[1];
-    let hz = 0.5 * sdf.spacing[2];
+/// - A single-sample axis is flat by convention: `Some(0.0)`, and no
+///   neighbour is sampled.
+/// - Where both neighbours land on the grid, the central difference.
+/// - Where only one does, the one-sided difference against `centre`.
+/// - Where neither does, `None`.
+fn finite_difference(
+    axis_len: usize,
+    centre: f64,
+    step: f64,
+    neighbour: impl Fn(isize) -> Option<f64>,
+) -> Option<f64> {
+    if axis_len == 1 {
+        return Some(0.0);
+    }
+    match (neighbour(1), neighbour(-1)) {
+        (Some(f), Some(b)) => Some((f - b) / (2.0 * step)),
+        (Some(f), None) => Some((f - centre) / step),
+        (None, Some(b)) => Some((centre - b) / step),
+        (None, None) => None,
+    }
+}
 
-    let gx = match (
-        sample_at_world(sdf, [world[0] + hx, world[1], world[2]]),
-        sample_at_world(sdf, [world[0] - hx, world[1], world[2]]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hx),
-        _ => 0.0,
+/// Gradient at a world coordinate via finite differences over
+/// `sample_at_world`, probing `±½·spacing[axis]` along each axis, by the
+/// boundary rule [`finite_difference`] states: central where both probes
+/// land on the grid, one-sided against the sample at `world` itself where
+/// only one does, flat along a single-sample axis. Returns `None` when
+/// `world` itself is off the grid.
+///
+/// **Per-axis stencil offsets.** Each component's offset is half that axis's
+/// own spacing rather than a global `0.5 · min(spacing)`, so on an
+/// anisotropic grid the estimate reflects sampled values rather than
+/// trilinear-interpolation artifacts at sub-voxel offsets along the coarse
+/// axis.
+pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<[f64; 3]> {
+    let centre = sample_at_world(sdf, world)?;
+    let component = |axis: usize| {
+        let half = 0.5 * sdf.spacing[axis];
+        finite_difference(sdf.axis_grids[axis].len(), centre, half, |steps| {
+            let mut at = world;
+            at[axis] += steps as f64 * half;
+            sample_at_world(sdf, at)
+        })
     };
-    let gy = match (
-        sample_at_world(sdf, [world[0], world[1] + hy, world[2]]),
-        sample_at_world(sdf, [world[0], world[1] - hy, world[2]]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hy),
-        _ => 0.0,
-    };
-    let gz = match (
-        sample_at_world(sdf, [world[0], world[1], world[2] + hz]),
-        sample_at_world(sdf, [world[0], world[1], world[2] - hz]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hz),
-        _ => 0.0,
-    };
-    [gx, gy, gz]
+    Some([component(0)?, component(1)?, component(2)?])
 }
 
 /// Walk the SDF along `+gradient_unit` and `-gradient_unit` from
@@ -1213,7 +1259,7 @@ pub(crate) fn surface_patches_distinct(
     dot < threshold
 }
 
-fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if n < GRADIENT_EPSILON {
         None
@@ -1257,7 +1303,9 @@ mod tests {
     /// central-difference gradient (every axis collapses to a single
     /// sample) so the lone voxel is rejected by the
     /// `GRADIENT_EPSILON` degenerate-gradient filter, NOT by the
-    /// narrow-band threshold. The test still validates that the
+    /// narrow-band threshold. The ridge-axis fallback declines it
+    /// twice over: `phi = +1.0` is exterior, and no axis has an
+    /// interior neighbour pair. The test still validates that the
     /// public surface compiles and the function returns Ok regardless
     /// of which guard fires.
     #[test]
@@ -1469,21 +1517,12 @@ mod tests {
     /// load-bearing assertion complementing
     /// [`compute_medial_mask_flags_slab_centerline_voxels`].
     ///
-    /// **Why this test, not an odd-N sphere/thick-block?** The natural
-    /// "add a positive assertion to the radial fixtures" idea fails
-    /// because point-medial geometry on this algorithm is fundamentally
-    /// un-flaggable: on even-N grids no voxel sits at the exact medial,
-    /// and on odd-N grids the exact-medial voxel has degenerate
-    /// (zero-by-symmetry) central-difference gradient and is skipped by
-    /// `GRADIENT_EPSILON`; the off-by-one voxels then fail the
-    /// equality test by construction (their `abs_diff/dmax` exceeds the
-    /// default tolerance + absolute slack). A second slab
-    /// orientation gives a clean positive assertion that exercises a
-    /// genuinely different code path: gradient indexing along the
-    /// outer-loop axis (`i`) rather than the inner-loop axis (`k`). A
-    /// regression that swapped i↔k somewhere in the inner loop, or that
-    /// only exercised gradient_at_index's z-axis branch, would fail
-    /// this test while leaving the z-slab test green.
+    /// **Why a second slab orientation?** It exercises a genuinely
+    /// different code path from the z-slab test: gradient indexing
+    /// along the outer-loop axis (`i`) rather than the inner-loop axis
+    /// (`k`). A regression that swapped i↔k somewhere in the inner
+    /// loop, or that only exercised gradient_at_index's z-axis branch,
+    /// would fail this test while leaving the z-slab test green.
     ///
     /// Asserts the same three load-bearing properties as the z-slab
     /// test, but on the i-index instead of k.
@@ -1623,10 +1662,10 @@ mod tests {
     ///
     /// - `distance_tolerance == 0.05` — the PRD's "~5%" relative-distance
     ///   equality threshold for the bidirectional ray walk.
-    /// - `narrow_band_half_width_voxels == 3.0` — covers the smallest medial
-    ///   axis at the PRD's `thickness/3` voxel-size default (smallest
-    ///   medial slab is 3 voxels thick → half-width 1.5; 3 leaves headroom
-    ///   for gradient sampling at the boundary voxels).
+    /// - `narrow_band_half_width_voxels == 3.0` — the extractor's UPPER
+    ///   resolution edge, at `2 × nb = 6` voxels across the thickness. See
+    ///   [`MedialOptions::narrow_band_half_width_voxels`] for the window
+    ///   derivation; do not restate it here.
     /// - `normal_antiparallel_threshold == -0.5` — opposing-face hits whose
     ///   gradients dot to less than this (i.e. roughly antiparallel,
     ///   ≥120° between normals) count as "distinct surface patches" per
@@ -2185,15 +2224,16 @@ mod tests {
     ///
     /// **Why both branches matter.**
     /// *In-band correctness:* the producer-side gate and the consumer-side gate
-    /// in `compute_medial_mask` (line 470) both compare
+    /// in `compute_medial_mask`'s step (a) narrow-band filter both compare
     /// `sample_at_index(sdf, [i, j, k]).abs() <= band_width`. Pinning that
     /// in-band slots equal `gradient_at_index` exactly ensures there is no
     /// FP-rounding skew: the producer never skips a voxel the consumer
     /// would have read.
-    /// *Out-of-band sentinel:* the consumer rejects out-of-band voxels at
-    /// line 470 *before* indexing into the cache (line 475), so the `[0.0; 3]`
-    /// sentinel is structurally unreachable from downstream logic.  Pinning
-    /// the sentinel confirms that skipping the 6-sample stencil for out-of-band
+    /// *Out-of-band sentinel:* `compute_medial_mask`'s step (a) narrow-band
+    /// filter rejects out-of-band voxels *before* the `gradient_grid_ref`
+    /// read, so the `[0.0; 3]` sentinel is structurally unreachable from
+    /// downstream logic.  Pinning
+    /// the sentinel confirms that skipping the stencil for out-of-band
     /// voxels is safe.
     ///
     /// The fixture uses `slab_sdf_3d(3.0, 16)` (z ∈ −7.5..7.5, φ = |z| − 3)
@@ -2254,6 +2294,105 @@ mod tests {
             "fixture must have at least one out-of-band voxel \
              (band_width={band_width})"
         );
+    }
+
+    /// Per-axis spacing of the `gradient_at_world` fixtures: no two axes
+    /// share a spacing, so a stencil that used one axis's spacing for
+    /// another's is visible. Over 5 samples per axis it spans x ∈ [0, 4],
+    /// y ∈ [0, 2] and z ∈ [0, 8].
+    const ANISOTROPIC_SPACING: [f64; 3] = [1.0, 0.5, 2.0];
+
+    /// A `Regular3D` field of 5 samples per axis from the origin, axis `a`
+    /// spaced `ANISOTROPIC_SPACING[a]` apart, holding `phi` at every node.
+    fn anisotropic_five_sample_field(name: &str, phi: impl Fn([f64; 3]) -> f64) -> SampledField {
+        let axis_grids: Vec<Vec<f64>> = ANISOTROPIC_SPACING
+            .iter()
+            .map(|&h| (0..5).map(|i| f64::from(i) * h).collect())
+            .collect();
+        let mut data = Vec::with_capacity(125);
+        for &x in &axis_grids[0] {
+            for &y in &axis_grids[1] {
+                for &z in &axis_grids[2] {
+                    data.push(phi([x, y, z]));
+                }
+            }
+        }
+        SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0; 3],
+            bounds_max: axis_grids.iter().map(|grid| grid[4]).collect(),
+            spacing: ANISOTROPIC_SPACING.to_vec(),
+            axis_grids,
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// `gradient_at_world` on an affine field `φ = 0.48x − 0.6y + 0.64z − 1`
+    /// over the anisotropic grid. Trilinear interpolation reproduces an affine
+    /// field exactly, so the true gradient is `(0.48, −0.6, 0.64)` everywhere
+    /// on the grid, including where a ½-spacing probe falls off a face (the
+    /// estimate goes one-sided there) and exactly on the bounds. A component
+    /// whose divisor disagreed with its probe offset, in a central or a
+    /// one-sided arm, would miss it. Off the grid along any axis the gradient
+    /// is unknown, not zero.
+    #[test]
+    fn gradient_at_world_differentiates_up_to_the_grid_faces_and_reports_unknown_beyond_them() {
+        const TRUE_GRADIENT: [f64; 3] = [0.48, -0.6, 0.64];
+        let sdf = anisotropic_five_sample_field("affine", |p| {
+            TRUE_GRADIENT[0] * p[0] + TRUE_GRADIENT[1] * p[1] + TRUE_GRADIENT[2] * p[2] - 1.0
+        });
+
+        for p in [
+            [2.3, 0.85, 4.2], // interior: central on every axis
+            [0.2, 1.0, 4.0],  // within ½·spacing of the min x-face
+            [3.8, 1.0, 4.0],  // within ½·spacing of the max x-face
+            [0.1, 0.05, 7.8], // corner: one-sided on every axis
+            [0.0, 2.0, 0.0],  // on the bounds
+            [4.0, 2.0, 8.0],  // on the bounds
+        ] {
+            let g = gradient_at_world(&sdf, p).unwrap_or_else(|| panic!("{p:?}: gradient unknown"));
+            let err = (0..3)
+                .map(|a| (g[a] - TRUE_GRADIENT[a]).abs())
+                .fold(0.0, f64::max);
+            assert!(err <= 1e-12, "{p:?}: gradient {g:?}, max error {err}");
+        }
+        for p in [
+            [-0.1, 1.0, 4.0],
+            [-1.0, 1.0, 4.0],
+            [2.0, 2.1, 4.0],
+            [2.0, 1.0, 8.5],
+        ] {
+            assert_eq!(gradient_at_world(&sdf, p), None, "{p:?} is off the grid");
+        }
+    }
+
+    /// From a point midway between two nodes along every axis, each
+    /// component's probes, half that axis's own spacing either side, land on
+    /// the two bracketing nodes, so the component is the secant of their
+    /// samples. `φ = x³ + y³ + z³` curves along every axis, so a probe pair
+    /// reaching past the bracketing nodes (a fine axis probed at a coarser
+    /// axis's offset) reads interpolated values from the neighbouring cells
+    /// and misses that secant.
+    #[test]
+    fn gradient_at_world_from_mid_cell_is_the_secant_of_the_bracketing_nodes_on_every_axis() {
+        let cube = |t: f64| t * t * t;
+        let sdf = anisotropic_five_sample_field("cubic", |p| p.iter().copied().map(cube).sum());
+        let mid_cell = [1.5, 0.75, 3.0];
+
+        let g = gradient_at_world(&sdf, mid_cell).expect("the mid-cell point is on the grid");
+        for a in 0..3 {
+            let half = 0.5 * ANISOTROPIC_SPACING[a];
+            let secant =
+                (cube(mid_cell[a] + half) - cube(mid_cell[a] - half)) / ANISOTROPIC_SPACING[a];
+            assert!(
+                (g[a] - secant).abs() <= 1e-12,
+                "axis {a}: component {}, bracketing-node secant {secant}",
+                g[a]
+            );
+        }
     }
 
     /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)

@@ -175,7 +175,7 @@ pub(crate) fn scan_content(content: &str) -> Vec<(usize, String)> {
 
 /// Check the scoped compiler source files for ds-sentinel reintroduction sites.
 ///
-/// Enumerates `ctx.git.ls_files()`, keeps only paths matching the hardcoded
+/// Enumerates `ctx.git().ls_files()`, keeps only paths matching the hardcoded
 /// scope, reads each file from disk, runs [`scan_content`], and maps each hit
 /// to a [`Finding`] at [`Severity::Medium`] (advisory — mirrors PTODO).
 ///
@@ -184,7 +184,7 @@ pub(crate) fn scan_content(content: &str) -> Vec<(usize, String)> {
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut paths: Vec<String> = ctx
-        .git
+        .git()
         .ls_files()
         .into_iter()
         .filter(|p| in_scope(p))
@@ -192,10 +192,8 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     paths.sort();
 
     for path in &paths {
-        let full = ctx.project_root.join(path);
-        let content = match std::fs::read_to_string(&full) {
-            Ok(c) => c,
-            Err(_) => continue, // fail-safe: skip unreadable files
+        let Some(content) = ctx.read_relative(path) else {
+            continue;
         };
         for (line_no, line_text) in scan_content(&content) {
             findings.push(Finding {

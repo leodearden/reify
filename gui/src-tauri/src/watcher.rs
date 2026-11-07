@@ -359,6 +359,51 @@ impl FileWatcher {
             .cloned()
             .collect()
     }
+
+    /// Test-only injection hook: the write half of [`pending_paths`], which
+    /// is its read half. Records `path` into the debouncer exactly as if the
+    /// notify closure in [`FileWatcher::new`] had observed a change of `kind`
+    /// for it at `at` -- same lock, same `Debouncer::record` call, same
+    /// `notify_one` afterwards -- so the worker is driven by an injected
+    /// entry precisely as it is by a real one.
+    ///
+    /// `at` IS THE LOAD-BEARING SEAM, and it is here for the same reason
+    /// [`Debouncer`] takes an explicit `now: Instant` on every method rather
+    /// than reading the clock itself: it lets a test pin behaviour against a
+    /// chosen instant instead of against the host scheduler.
+    ///
+    /// Passing an `at` in the FUTURE makes the entry structurally
+    /// un-drainable. [`Debouncer::drain_ready`] asks
+    /// `now.duration_since(last_seen) >= window`, and `Instant::duration_since`
+    /// saturates to zero when `last_seen` is later than `now`, so that test can
+    /// never hold however much real time passes; [`Debouncer::next_wait`]
+    /// saturates identically and keeps reporting a full window, so the worker
+    /// re-parks rather than spinning. That is what lets a `Drop` test assert
+    /// the discard-on-shutdown contract with NO wall-clock dependence at all,
+    /// instead of racing the ~100ms window during which a real event is
+    /// observable as pending -- a race that a loaded host wins routinely, and
+    /// which was the direct cause of four separate reported flakes in
+    /// `watcher_tests.rs`. The saturation identity itself is pinned by
+    /// `debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window`
+    /// in that file, so a future change to `drain_ready` that broke it would
+    /// go red at the identity rather than re-flaking the `Drop` tests.
+    ///
+    /// Takes `&self`, not `&mut self`: the `Mutex` provides the interior
+    /// mutability, exactly as it does for [`pending_paths`].
+    ///
+    /// `#[cfg(test)]`, so no production code path, behaviour or binary size
+    /// changes.
+    #[cfg(test)]
+    pub(crate) fn record_pending_for_test(&self, path: PathBuf, kind: ChangeKind, at: Instant) {
+        let (lock, cvar) = &*self.shared;
+        // Poison-recovering lock, same rationale as the notify closure in
+        // `FileWatcher::new`: recover the guard rather than propagating a
+        // panic that would permanently kill event delivery.
+        lock.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(path, kind, at);
+        cvar.notify_one();
+    }
 }
 
 impl Drop for FileWatcher {

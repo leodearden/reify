@@ -1,0 +1,24 @@
+module getar_decl_match_applied_param_rejected
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε2 RED
+// before-image (pre-existing defect, NOT S1-induced). MEASURED 2026-09-29,
+// both binaries: check EXIT 1, eval EXIT 1:
+//   error: match-arm discriminant 'r' has type Result<Scalar[m], String>, expected an enum
+// The decl-form match lowering in crates/reify-compiler/src/entity.rs accepts
+// only a `Type::Enum` discriminant; an annotated generic-enum param carries
+// `Type::Applied` today and is refused. The let-bound sibling
+// (getar_decl_match_let_construct_ok.ri) is accepted today because the
+// construction erases to `Type::Enum("Result")` — after δ it becomes
+// `Applied` too, so ε2 must land BEFORE δ or that sibling regresses.
+// EXPECTED after ε2: check EXIT 0, "All constraints satisfied."
+
+structure def HexHead {}
+structure def SocketHead {}
+
+structure def Bolt {
+    param r : Result<Length, String> = Ok { value: 5mm }
+    match r {
+        Ok => sub head : HexHead,
+        Err => sub head : SocketHead
+    }
+}

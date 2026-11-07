@@ -50,6 +50,27 @@
 #                                  byte-identical to today. Primarily the offline
 #                                  deep-test lane's parallelism knob (task 5264;
 #                                  docs/design/offline-deep-test-lane.md §6).
+#   --confirm-failed               Re-run ONLY the tests a previous recording run
+#                                  recorded as failing, and print the bare id of
+#                                  each one that STILL fails — one per line on
+#                                  stdout, with nothing else on either stream.
+#                                  Valid for test/all only.
+#                                  THE COMBINED stdout+stderr IS THE CONTRACT:
+#                                  dark-factory's offline lane spawns this with
+#                                  the two streams merged and reads every
+#                                  non-blank line as one confirmed-failing test
+#                                  id, so any stray diagnostic becomes a bogus
+#                                  test name it files a fix task against. This
+#                                  mode therefore bypasses the plan executor
+#                                  (which echoes each command) and sends its own
+#                                  diagnostics to a private log under target/.
+#                                  Prints NOTHING and exits 0 both when nothing
+#                                  was recorded and when nothing still fails —
+#                                  the two are deliberately indistinguishable on
+#                                  the wire. Exits 100 when it printed ids, and
+#                                  64 when the recorded set belongs to a
+#                                  different tree (task 7423; PRD
+#                                  verify-confirm-failed-self-discovery).
 #   -h|--help                      Show usage.
 #
 # Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
@@ -65,13 +86,29 @@
 #   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
+#   - REIFY_AMBIENT_LD_LIBRARY_PATH — the loader path as it stood BEFORE those OCCT
+#     prepends. /opt/reify-deps/lib is a whole conda prefix that shadows hundreds of
+#     system sonames, and LD_LIBRARY_PATH outranks DT_RUNPATH, so the export above is
+#     hostile to non-Rust subprocesses. Non-cargo "tool" plan lines are therefore
+#     emitted via add_tool(), which restores this captured value for that line only
+#     (task 5730; see the SCOPE CONTRACT comment in apply_env()).
 #
 # PSI gate (inter-dispatch throttle for multi-worktree verify bursts):
 #   REIFY_PSI_GATE_THRESHOLD        — CPU avg10 % ceiling; dispatch waits until below this
 #                                      value. Default: 50.
 #   REIFY_PSI_GATE_WINDOW           — minimum inter-dispatch spacing in seconds.  Default: 20.
-#   REIFY_PSI_GATE_MAX_WAIT         — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
-#                                      the orchestrator retries.  Default: 1800.
+#   REIFY_PSI_GATE_MAX_WAIT         — give-up timeout (seconds), OR "unlimited" (THE
+#                                      DEFAULT) for a continuous clock-stopped hold.
+#                                      NOTE: a finite value exits 75 (EX_TEMPFAIL), and
+#                                      dark-factory does NOT requeue that — verify.py
+#                                      _classify_failure falls exit-75 through to
+#                                      unknown_test_failure → debugfix loop → BLOCKED
+#                                      (docs/prds/verify-admission-wait-clock-stop.md §2
+#                                      verified this directly in DF source; the older
+#                                      "so the orchestrator retries" claim here was
+#                                      false). Default "unlimited" for parity with
+#                                      dark-factory-orchestrator.yaml's verify_env — see
+#                                      psi_gate() below and task 6393.
 #   REIFY_PSI_GATE_DISABLE          — set to 1 to bypass entirely (no wait, no dispatch touch).
 #                                      Emergency break-glass; does not affect coordination state.
 #   REIFY_PSI_GATE_POLL             — recheck interval in seconds.  Default: 5.
@@ -149,6 +186,17 @@
 #                                  merge_verify_cold_command_timeout_secs (task 5383) in
 #                                  dark-factory-orchestrator.yaml — that key's comment
 #                                  block is the single source for the relationship.
+#                                  ROLE-SCOPED (task 6485, re-justified 7552): under
+#                                  DF_VERIFY_ROLE=offline the default is 13h (46800s),
+#                                  not 90m. It exists for WHOLE-RUN headroom on that
+#                                  lane's `--run-ignored all` release pass, NOT — since
+#                                  task 7552 — to make .config/nextest.toml's heavy
+#                                  per-test ceiling reachable: the base wall two knobs
+#                                  up clears that ceiling by far more than the pass
+#                                  takes to reach a test, so it reaches it unaided.
+#                                  An explicit valid value still wins verbatim
+#                                  under either role. Rationale: PRD
+#                                  offline-deep-test-lane DA6.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
 #                                  pre-builds (`cargo build --release -p reify-audit`
 #                                  and `-p reify-cli`). Default 45m. These run ONLY on
@@ -190,6 +238,15 @@
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
+#   REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT — outer timeout for the gui-feature
+#                                  TEST-EXECUTION pass (`-p reify-gui --features gui`)
+#                                  emitted at the tail of add_test_passes(). Default 45m,
+#                                  sized from measurement on the workstation: a cold
+#                                  `--features gui` build (tauri + webkit2gtk + OCCT link)
+#                                  took 20m42s; a warm re-run took 137s total of which 59s
+#                                  was nextest execution over 906 tests. Distinct from
+#                                  REIFY_VERIFY_CLIPPY_TIMEOUT because that knob budgets a
+#                                  compile-only pass — this one budgets build + execution.
 #   REIFY_VERIFY_CHECK_TIMEOUT  — outer timeout for `cargo check --workspace --tests`.
 #                                  Default 30m.
 #   Values validated as ^[0-9]+[smhd]?$; invalid → default + stderr warning.
@@ -254,6 +311,75 @@
 #   Out of α's scope: the @@REIFY_RETRY_SCOPE=failed_only@@ honest marker is
 #   emitted by sibling task δ (tests/infra/test_verify_retry_failed_only.sh).
 #
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery).
+# The offline lane RECORDS which tests failed, then CONFIRMS which of them
+# still fail. These name the three artifacts that carry the answer between the
+# two runs; all default under target/ and exist to be redirected by hermetic
+# tests. See the block beside _CONFIRM_MANIFEST_DEBUG for why each is shaped
+# the way it is.
+#   REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG / _RELEASE
+#                                — the recorded failing bare test ids for that
+#                                  profile (defaults
+#                                  target/reify-confirm-failed-<profile>.txt).
+#                                  Written by the recording pass, read by
+#                                  --confirm-failed as the subset to re-run.
+#                                  An EMPTY file means "recorded, zero
+#                                  failures"; an ABSENT one means "never
+#                                  recorded" — the confirm run treats both as
+#                                  print-nothing-exit-0, but only the empty
+#                                  case is a positive observation.
+#   REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG / _RELEASE
+#                                — the tree OID that manifest was recorded
+#                                  against (defaults
+#                                  target/reify-confirm-failed-<profile>.json),
+#                                  in the attempt-0 stamp's {tree_oid,
+#                                  profiles, timestamp} shape so one reader
+#                                  idiom covers both.
+#   REIFY_VERIFY_CONFIRM_JUNIT   — where nextest writes its JUnit report
+#                                  (default
+#                                  target/nextest/default/reify-confirm.xml),
+#                                  per the [profile.default.junit] table
+#                                  scripts/gen-nextest-config.sh appends. NOT
+#                                  profile-qualified: the path resolves under
+#                                  the NEXTEST profile, and only `default` is
+#                                  declared, so a --profile both run's two
+#                                  passes share one report — which is why the
+#                                  manifest write is fused into each pass.
+#
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#   REIFY_BACKGROUND_SWEEP_LEDGER — where a COMPLETED DF_VERIFY_ROLE=background
+#                                  run appends its one-line JSON verdict record
+#                                  (default: <main checkout>/data/orchestrator/
+#                                  verify-background-sweeps.jsonl). The default
+#                                  is resolved through
+#                                  scripts/lib_main_checkout.sh — deliberately
+#                                  NOT relative to the running worktree, because
+#                                  dark-factory's main-tip sweep executes in an
+#                                  ephemeral _mainsweep-<hex> worktree it deletes
+#                                  in a `finally`, so a record written inside it
+#                                  dies with the completion it was meant to
+#                                  prove. Every failure mode (no main checkout,
+#                                  unwritable path, missing helper) is silent
+#                                  and leaves the run's exit code untouched: an
+#                                  observation channel must never gate the
+#                                  integrity gate it observes.
+#
+# Verify instrumentation ledger (task 7424). Schema, activation rules and
+# consumer rules: docs/notes/verify-instrumentation-ledger.md.
+#   REIFY_VERIFY_LEDGER_DIR      — where a top-level EXECUTED run appends its
+#                                  one JSON record, to verify-runs.jsonl
+#                                  (default: <main checkout>/data/verify-logs,
+#                                  resolved like REIFY_BACKGROUND_SWEEP_LEDGER;
+#                                  the default refuses a run beneath a
+#                                  tests/infra suite or run_all.sh).
+#   REIFY_VERIFY_LEDGER_LANE_DIR — the lane whose seed stamp the record reads
+#                                  (default: this checkout).
+#   REIFY_VERIFY_RUN_ID          — exported by a recording run to its whole
+#                                  process tree; a run that INHERITS it is
+#                                  nested and records nothing.
+#   REIFY_RUN_ALL_TIMING_OUT     — exported around each plan step; run_all.sh
+#                                  consumes it and writes its pool timing there.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -264,6 +390,7 @@
 
 set -euo pipefail
 
+_VL_STARTED_AT="${EPOCHREALTIME/,/.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -300,8 +427,11 @@ source "$SCRIPT_DIR/affected-crates-lib.sh"
 # Clock-stop mode (PRD verify-admission-wait-clock-stop §3, task 4837):
 #   REIFY_TEST_SEMAPHORE_WAIT=unlimited  — continuous blocking wait on the semaphore;
 #                                          never exits 75 (EX_TEMPFAIL). Activates
-#                                          clock-stop marker emission. Keep FINITE in
-#                                          dark-factory-orchestrator.yaml until task 4838 deploys DF.
+#                                          clock-stop marker emission. THE DEFAULT since
+#                                          task 6393; the "keep FINITE until task 4838
+#                                          deploys DF" gating is spent (deployed
+#                                          2026-06-27). A finite value is still honoured
+#                                          when set explicitly.
 #   REIFY_CLOCK_HEARTBEAT_SECS           — interval (s) between @@REIFY_CLOCK_HEARTBEAT@@
 #                                          emissions inside the semaphore poll loop.
 #                                          Default 30.  Reduce in tests for faster runs.
@@ -353,6 +483,23 @@ fi
 # shellcheck source=scripts/heavy-test-filter-lib.sh
 source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
 
+# Git repository-environment scrub for infra-test EXECUTION (task #7106).
+# Provides REIFY_GIT_ENV_SCRUB_VARS / reify_git_env_scrub /
+# reify_git_env_scrub_prefix; the last is interpolated into the selective-infra
+# plan leaf below. The defect, its measurement and the variable list live in ONE
+# place — scripts/lib_git_env_scrub.sh's header — and are deliberately NOT
+# restated here; only this site's own reasoning is.
+#
+# Sourced HERE, at load time, and applied only at the test-execution leaf: the
+# scope-derivation phase legitimately reads the hook environment
+# (CHANGED_FILES_RAW comes from `git diff --cached`) and must stay untouched.
+if [ ! -f "$SCRIPT_DIR/lib_git_env_scrub.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_git_env_scrub.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$SCRIPT_DIR/lib_git_env_scrub.sh"
+
 # Fail loudly at load time (not at a mid-run nextest parse error) if the
 # sourced constant is somehow empty — an empty REIFY_HEAVY_NEXTEST_FILTER
 # would make the REIFY_GATE_EXCLUDE_HEAVY=1 fragment below `-E "not ()"`,
@@ -401,12 +548,67 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
+# OFFLINE role: re-resolve the RELEASE budget with a 13h default (task 6485;
+# RE-JUSTIFIED, not removed, by task 7552).
+#
+# WHAT THIS WALL IS NOT FOR, ANY MORE. Until task 7552 the stated reason was that
+# .config/nextest.toml's heavy per-test ceiling (then 43200s) had to be REACHABLE,
+# i.e. strictly under this wall, so a hung heavy test is SIGTERM'd BY NAME rather
+# than degrading to exit 124 attributing nothing. Task 7552 re-sized that ceiling
+# to 2160s and corrected what REACHABLE means: not "under the wall" — these walls
+# wrap the combined build+execution pass while the per-test ceiling starts at
+# test-process start — but "under the wall by more than the pass takes to reach
+# the test". The BASE release wall two lines up clears 2160s by 3240s, against a
+# measured 580s for that release pass's own heavy-only build, so the base wall
+# reaches it unaided and this block is not what makes it reachable. Do not keep
+# this block on a rationale that no longer holds, and do not delete it on the
+# strength of that either: it has a second basis, below, that was never the
+# stated one.
+#
+# WHAT IT IS FOR: whole-run headroom for the offline lane's release pass, which is
+# the only pass that runs the heavy filterset with `--run-ignored all` — the two
+# convergence studies included. Recorded offline sub-runs reach 2625s against the
+# 5400s base wall, barely 2x, and heavy membership has grown from 6 atoms to 8
+# since the lane was designed. (Task 7552's own two timed runs of that pass came
+# in at 770s and 671s wall-clock, but against a PRE-BUILT target: they bound the
+# execution cost, not the cold build the lane really pays, so they are a floor
+# under the 2625s figure rather than a replacement for it —
+# docs/notes/heavy-test-per-test-duration-measurement.md.) This is a WHOLE-RUN
+# budget; it says nothing about any single test.
+#
+# Pinned by test_occt_flock_gate.sh T14-T17 (rendering; T18-BG pins that the scoping
+# still does not leak to background) and by test_nextest_slow_priority.sh
+# Assertion L, which DERIVES this wall and the role it is scoped to from the
+# block below.
+#
+# Three things here are load-bearing and will otherwise be "simplified" away:
+#   - The 90m line above is preserved VERBATIM rather than folded into one
+#     role-derived default: T10 extracts that literal and models the MERGE path
+#     against merge_verify_cold_command_timeout_secs. 90m is and must remain the
+#     release inner budget there; the offline default must never enter that sum.
+#   - The re-resolution is UNCONDITIONAL under offline, not skipped when the knob
+#     is set. Routing through the same validator twice keeps an explicit VALID
+#     value winning verbatim while making a MALFORMED one fall back to 13h rather
+#     than to the 90m the first call just produced — the "only when unset" form
+#     would leave offline silently at 90m under a 12h ceiling. Cost is a
+#     duplicated WARNING on malformed input; a loud duplicate beats a silent
+#     wrong budget. T16 pins it.
+#   - Only the RELEASE wall is scoped, because offline forces PROFILE=release; a
+#     debug pass happens only under an explicit --profile. That manual invocation
+#     used to be one of DA6's accepted residuals — its 60m debug wall sat under
+#     the old ceiling — and stopped being one when task 7552 re-sized the ceiling
+#     below that wall. There is no residual left to scope a debug wall for.
+# DF_VERIFY_ROLE is env-only (no CLI flag), so it is readable this early.
+if [ "${DF_VERIFY_ROLE:-task}" = "offline" ]; then
+    _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 13h)"
+fi
 _VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
+_VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
-    sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -422,7 +624,8 @@ usage() {
 # Environment knobs (see header comment block for full doc):
 #   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
 #   REIFY_PSI_GATE_WINDOW       — min seconds between dispatches (default 20)
-#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds (default 1800)
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds, or "unlimited"
+#                                 (the default: continuous clock-stopped hold)
 #   REIFY_PSI_GATE_POLL         — recheck interval in seconds (default 5)
 #   REIFY_PSI_GATE_PROC_PATH    — PSI source path (default /proc/pressure/cpu)
 #   REIFY_PSI_GATE_DISPATCH_FILE— coordination timestamp file
@@ -439,7 +642,7 @@ psi_gate() {
     # HEARTBEAT interval: REIFY_CLOCK_HEARTBEAT_SECS (default 30).
     local _ca_threshold="${REIFY_PSI_GATE_THRESHOLD:-50}"
     local _ca_window="${REIFY_PSI_GATE_WINDOW:-20}"
-    local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
+    local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-unlimited}"
     local _ca_poll="${REIFY_PSI_GATE_POLL:-5}"
     local _ca_proc_path="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
     local _ca_dispatch="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
@@ -550,6 +753,7 @@ SCOPE="all"
 NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
+CONFIRM_FAILED=0   # --confirm-failed: report which of a previously-recorded failed set still fails (task 7423). Its own code path; never reaches the plan executor.
 TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
 TEST_THREADS_SET=0   # 1 once --test-threads is seen; lets validation reject an explicit empty value ('--test-threads=') while an UNSET flag stays valid.
 
@@ -575,6 +779,8 @@ while [ "$#" -gt 0 ]; do
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
             PRINT_PLAN=1; shift ;;
+        --confirm-failed)
+            CONFIRM_FAILED=1; shift ;;
         --test-threads)
             TEST_THREADS="${2:?--test-threads requires an argument}"; TEST_THREADS_SET=1; shift 2 ;;
         --test-threads=*)
@@ -613,7 +819,82 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
 fi
-DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+
+# --confirm-failed (task 7423): valid only where a recorded failed TEST set can
+# exist. lint and typecheck are single, unnarrowable passes with no such set, so
+# the flag is meaningless there — rejected in the same strict style --profile and
+# --scope use for an invalid value, rather than silently ignored.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    case "$ACTION" in test|all) ;; *)
+        echo "verify.sh: ERROR — --confirm-failed is valid only for action test|all (got '$ACTION')" >&2; exit 64 ;;
+    esac
+    # PRD §11's open question, resolved: REFUSE the combination rather than
+    # invent a precedence. --confirm-failed drives the REIFY_VERIFY_RETRY_*
+    # consumption pipeline itself, from a subset IT recorded; an externally-set
+    # REIFY_VERIFY_RETRY_SCOPE means a second caller is driving that same
+    # pipeline from a different subset. Either subset silently winning would be
+    # a wrong answer reported with full confidence, and the answer here is a
+    # list of test ids dark-factory files fix tasks against.
+    if [ -n "${REIFY_VERIFY_RETRY_SCOPE:-}" ]; then
+        echo "verify.sh: ERROR — --confirm-failed conflicts with REIFY_VERIFY_RETRY_SCOPE='${REIFY_VERIFY_RETRY_SCOPE}' (both drive the retry subset pipeline; refusing rather than picking one silently)" >&2
+        exit 64
+    fi
+fi
+
+# --confirm-failed: fd 2 belongs to a private log from here on (task 7423/γ).
+#
+# Installed HERE, immediately after validation and before ANY other work,
+# because the diagnostics that would corrupt the caller are emitted well before
+# the confirm path runs: the _idle_cargo_prio ionice/nice WARNINGs, the
+# "forcing --scope all" integrity-gate notice, the MERGE_HEAD notice, and the
+# retry pipeline's four "retry refused:" lines. dark-factory reads the MERGED
+# streams and treats every non-blank line as one confirmed-failing test id, so
+# any of those becomes a fabricated test name it files a fix task against.
+#
+# Redirecting once, early, is what makes stdout purity STRUCTURAL: it does not
+# depend on having enumerated every diagnostic verify.sh can emit, now or later.
+# The real stderr is kept on fd 8 and used for exactly one thing — the single
+# `verify.sh: ERROR` refusal line, which is the one form of loud output the
+# consumer already knows how to discard safely.
+_CONFIRM_LOG=""
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    _CONFIRM_LOG="${REIFY_VERIFY_CONFIRM_LOG:-$REPO_ROOT/target/reify-confirm-failed.log}"
+    mkdir -p "$(dirname "$_CONFIRM_LOG")" 2>/dev/null || true
+    : > "$_CONFIRM_LOG" 2>/dev/null || _CONFIRM_LOG=/dev/null
+    exec 8>&2
+    exec 2>>"$_CONFIRM_LOG"
+fi
+
+# THE CLI --test-threads SEAM (task 6375).  gen-nextest-config.sh is the ONE
+# place the derived global pool exists, so it is the one place that can refuse a
+# CLI value which would silently RAISE that pool (nextest's CLI --test-threads
+# outranks --config-file); its header carries the three-way contract.
+#
+# REIFY_NEXTEST_CLI_TEST_THREADS reaches it as a PER-INVOCATION env prefix at
+# each of the two generation sites below, and is deliberately NOT exported.  An
+# export would be process-global for the whole run and inherited by every child
+# — including the infra suites verify.sh itself executes, several of which drive
+# this very generator and pin a pool of their own, and which an inherited value
+# reds (measured: `REIFY_NEXTEST_CLI_TEST_THREADS=2 bash
+# tests/infra/test_occt_gated_scope.sh` goes from 61/0 to 59 passed / 2 FAILED).
+# The prefix reaches the one consumer and nothing else.
+#
+# No TEST_THREADS_SET guard is needed at those sites: an empty value is the
+# unset-flag default and falls through the generator's '' case arm as a no-op,
+# while a set one carries the ^[1-9][0-9]*$ guarantee the validation block above
+# just established, so neither needs re-validating.  Passing it at the
+# invocation rather than here also keeps --print-plan free of any new subprocess,
+# leaving the plan the pure, hermetic oracle the infra suites drive.
+#
+# Because the generator can now legitimately REFUSE (exit 64) and verify.sh runs
+# under `set -euo pipefail`, without a message of its own the run would abort
+# with nothing but the generator's stderr line and no indication of who died.
+_die_nextest_config() {
+    echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
+    exit "$1"
+}
+_VERIFY_ROLE_RAW="${DF_VERIFY_ROLE-}"
+export DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"  # exported: gui/vitest.config.ts reads it from the child env (task 7630)
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
 # release-only tests are exercised on every merge (matching the local
@@ -721,6 +1002,40 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# Resolved effect of the two role-scoped fragments above as the nextest passes
+# receive them; the cargo-test fallback has no -E, so it runs everything. Read
+# lazily (NEXTEST is set later). Why: docs/prds/offline-deep-test-lane.md DA6.
+_heavy_partition() {
+    if [ "$NEXTEST" -ne 1 ]; then echo included
+    elif [ -n "$_GATE_HEAVY_EXCLUDE" ]; then echo excluded
+    elif [ -n "$_OFFLINE_HEAVY_SELECT" ]; then echo only
+    else echo included
+    fi
+}
+
+# Offline --no-fail-fast fragment (task 7423/α, PRD verify-confirm-failed-
+# self-discovery §4.1.3): the offline recording pass must run its WHOLE heavy
+# set even after an early failure, because the confirm-manifest it feeds is
+# only sound if it names EVERY failing test. Under nextest's default fail-fast
+# the tests scheduled after the first failure are not run and are not even
+# attributed as skipped, so the recorded failed-set silently under-captures —
+# empirically verified, not merely prudent.
+#
+# A SEPARATE fragment, deliberately NOT folded into _OFFLINE_HEAVY_SELECT
+# above: the retry path strips that fragment's filterset with
+# `${_eff_offline_select##* -E \"*\"}` (see emit_nextest_pass), which keeps
+# the trailing ` --run-ignored all` but would relocate anything appended after
+# it. Keeping the flag in its own variable makes it invariant under that strip.
+#
+# Role-scoped to offline only, so task/merge/background keep their deliberate
+# fail-fast posture (a gate SHOULD stop at the first red). Empty on every
+# other role => those plans stay byte-for-byte identical — the same
+# empty-or-leading-space idiom as the two fragments above.
+_OFFLINE_NO_FAIL_FAST=""
+if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+    _OFFLINE_NO_FAIL_FAST=" --no-fail-fast"
+fi
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -736,6 +1051,44 @@ fi
 # hermetic tests. Relative default is resolved against REPO_ROOT (verify.sh
 # cds there before build_plan/execute).
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
+
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery
+# §4.1.2/§4.2/§6.4). Three artifacts, all under target/ and all overridable
+# for hermetic tests, mirroring _ATTEMPT_SIDECAR_PATH's convention above:
+#
+#   MANIFEST — the failing bare test ids a recording run observed. Written by
+#     the recording pass, read by the confirm run as the subset to re-run.
+#   SIDECAR  — the tree OID that manifest was recorded against, in the
+#     attempt-0 stamp's {tree_oid, profiles, timestamp} shape so verify.sh's
+#     existing tolerant reader parses it unchanged.
+#   JUNIT    — where nextest writes its report, per the [profile.default.junit]
+#     table gen-nextest-config.sh appends. NOT cargo-profile-qualified: `path`
+#     resolves under target/nextest/<NEXTEST-profile>/, and this repo declares
+#     only the `default` nextest profile, so a --profile both run's debug and
+#     release passes share ONE report file. That is exactly why the manifest
+#     write is fused into each pass's own command below — each pass must
+#     extract before the next overwrites.
+#
+# DISTINCT PATHS, never target/reify-verify-attempt.json: that file is gated to
+# DF_VERIFY_ROLE=merge and is never written under the offline role, so sharing
+# it would silently pin nothing for this lane.
+#
+# Manifest and sidecar ARE profile-qualified, per PRD §11's collision note and
+# following the per-profile precedent of REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_
+# DEBUG/_RELEASE: a --profile both run records two independent failed-sets.
+_CONFIRM_MANIFEST_DEBUG="${REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG:-target/reify-confirm-failed-debug.txt}"
+_CONFIRM_MANIFEST_RELEASE="${REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE:-target/reify-confirm-failed-release.txt}"
+_CONFIRM_SIDECAR_DEBUG="${REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG:-target/reify-confirm-failed-debug.json}"
+_CONFIRM_SIDECAR_RELEASE="${REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE:-target/reify-confirm-failed-release.json}"
+_CONFIRM_JUNIT_PATH="${REIFY_VERIFY_CONFIRM_JUNIT:-target/nextest/default/reify-confirm.xml}"
+# Caller-supplied nextest config (task 7423). When set, emit_nextest_pass uses
+# it verbatim in BOTH print and execute mode, generates none, and _verify_cleanup
+# never removes it — the CALLER owns its lifetime. Exists so confirm_failed_run's
+# child emits a plan naming a REAL --config-file (print mode otherwise emits a
+# deliberate placeholder, which keeps --print-plan hermetic for everyone else)
+# with the JUnit table actually in force. Unset by default => every other
+# caller's plan is byte-identical.
+_NEXTEST_CONFIG_OVERRIDE="${REIFY_VERIFY_NEXTEST_CONFIG:-}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
 # _RETRY_SUBSET_ELIGIBLE: the caller asked for the narrowed retry scope
@@ -896,6 +1249,10 @@ _jobserver_owner_live() {
     return 0  # LIVE
 }
 
+# The loader path the PLAN-EXECUTION phase runs under: computed by apply_env(),
+# exported once at the phase boundary below (see the SCOPE CONTRACT there).
+_PLAN_LD_LIBRARY_PATH=""
+
 apply_env() {
     if [ -f "$HOME/.cargo/env" ]; then
         # shellcheck disable=SC1091
@@ -960,20 +1317,261 @@ apply_env() {
     fi
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
+    #
+    # SCOPE CONTRACT (tasks 5730/6392, esc-4581-87 / task 5321) — read before
+    # touching: /opt/reify-deps/lib is NOT an OCCT lib dir, it is a whole conda
+    # prefix. Alongside the ~153 libTK* it carries libcrypto.so.3, libcurl.so.4,
+    # libexpat.so.1, libz.so.1, libcairo.so.2, libEGL.so.1, libsqlite3.so.0 and
+    # hundreds of other system sonames (477 measured 2026-07-28 by intersecting
+    # its .so-bearing filenames with /usr/lib/x86_64-linux-gnu — a DATED
+    # measurement of unversioned host state that drifts on every environment
+    # refresh, not an invariant count). LD_LIBRARY_PATH outranks DT_RUNPATH and
+    # ld.so.cache in the loader search order, so it is HOSTILE to every non-Rust
+    # subprocess that inherits it: conda libraries silently substitute under
+    # bare CLI tools. sqlite3 is merely the one that self-checks its
+    # header/source hash and aborts loudly.
+    #
+    # Hence the value is COMPUTED here and exported only at the PHASE BOUNDARY
+    # (between build_plan and the plan-execution loop). Scope decision and plan
+    # construction — every `git diff`, gen-nextest-config.sh, the run_all.sh
+    # subset probe, and the grep/sed/cut tail — therefore fork on the clean
+    # ambient. The export itself is unchanged in reach: it is belt-and-braces
+    # for the Rust/cargo path (see the header note above: .cargo/config.toml's
+    # `runner` and the DT_RUNPATH baked into every bin/test binary are the
+    # primary mechanisms), and every plan line, cargo or tool, still runs under
+    # it. Non-cargo "tool" plan lines are additionally emitted via add_tool(),
+    # which prefixes them with a scrub restoring the value captured here.
+    # REIFY_AMBIENT_LD_LIBRARY_PATH is the SINGLE SOURCE OF TRUTH for that
+    # restore, so it must be captured HERE — before either prepend below —
+    # or every scrub built from it degrades to a no-op. Restoring the captured
+    # ambient rather than a hardcoded "" preserves any legitimate loader path
+    # the operator or orchestrator set before invoking verify.sh.
+    # Guarded by tests/infra/test_verify_ld_library_path_scope.sh.
+    export REIFY_AMBIENT_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    ENV_LINES+=("export REIFY_AMBIENT_LD_LIBRARY_PATH=${REIFY_AMBIENT_LD_LIBRARY_PATH}")
+
+    _PLAN_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     local snap_lib="/snap/freecad/current/usr/lib"
     if [ -d "$snap_lib" ]; then
-        export LD_LIBRARY_PATH="$snap_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$snap_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
     local deps_lib="/opt/reify-deps/lib"
     if [ -d "$deps_lib" ] && ls "$deps_lib"/libTKernel.so* >/dev/null 2>&1; then
-        export LD_LIBRARY_PATH="$deps_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$deps_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
-    ENV_LINES+=("export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}")
+    ENV_LINES+=("export LD_LIBRARY_PATH=${_PLAN_LD_LIBRARY_PATH:-}")
 }
 apply_env
 
 # ---------------------------------------------------------------------------
-# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE
+# --confirm-failed — the dedicated, stdout-pure confirmation path (task 7423/γ;
+# PRD docs/prds/verify-confirm-failed-self-discovery.md §4.2)
+#
+# THE QUESTION IT ANSWERS: "of the tests a previous recording run observed
+# failing on this exact tree, which ones STILL fail?" The answer is a list of
+# bare test ids on stdout — nothing else, on either stream.
+#
+# WHY IT BYPASSES THE PLAN EXECUTOR. dark-factory spawns this with the two
+# streams MERGED and reads every non-blank line as one confirmed-failing test
+# id. The executor echoes `verify.sh: + <cmd>` for every plan line, so routing
+# this mode through it would hand the consumer a dozen fabricated "test names"
+# per run. Purity here is structural, not disciplinary: everything this path
+# runs has its stdout AND stderr redirected into a private log, so a diagnostic
+# nobody anticipated still cannot reach the caller.
+#
+# WHY IT RE-INVOKES verify.sh RATHER THAN RE-RUNNING THE WHOLE GATE. The child
+# is asked for a PLAN, and only the plan's test-execution region is executed.
+# Two reasons, both measured (esc-7423-5):
+#   - A full child run costs ~205s of npm / tree-sitter / infra poles even with
+#     no compilation at all — work that confirms nothing.
+#   - The executor stops on the first failure and the node lane precedes every
+#     nextest pass, so an unrelated npm failure would mean the subset pass never
+#     runs. With no report to read, a naive implementation would print nothing
+#     — and "nothing" is the wire encoding of "confirmed clean". That is a FALSE
+#     CLEAN, which is why the report's freshness is checked rather than assumed.
+#
+# WHAT IT DOES NOT REIMPLEMENT: which tests run. The child is handed the same
+# REIFY_VERIFY_RETRY_* inputs dark-factory's merge-gate retry supplies, so the
+# exact-match `test(=<id>)` filterset, its `&`-intersection with the offline
+# heavy filter, the tree-pin guard and the subset-size ceiling all come from the
+# one existing construction site.
+
+# Exact comment lines --print-plan emits in place of the @@SEMAPHORE_*@@
+# sentinels. They bracket the plan's test-execution region, which is what makes
+# that region machine-addressable in a printed plan. Named constants, shared
+# with the emitter, so the two cannot drift apart.
+_PLAN_TEST_REGION_BEGIN='# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS (TEST-EXECUTION gated, held in verify.sh)'
+_PLAN_TEST_REGION_END='# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)'
+
+# _confirm_subset_pass <profile> <manifest> <tree-oid> <sidecar>
+# Re-runs exactly <manifest>'s tests for <profile>. Called inside a subshell by
+# confirm_failed_run, so a handler that exits (_die_nextest_config) ends the
+# attempt rather than the process. Leaves a fresh JUnit report on success.
+_confirm_subset_pass() {
+    local _profile="$1" _manifest="$2" _tree_oid="$3" _sidecar="$4"
+
+    # Delete first, so the report's ABSENCE afterwards is proof this pass never
+    # produced one, rather than an ambiguity resolved in favour of "clean".
+    rm -f "$_CONFIRM_JUNIT_PATH"
+
+    local _cfg
+    _cfg="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+        || _die_nextest_config "$?"
+
+    # The child's own fused manifest write is aimed at throwaway paths: it is
+    # about to observe the NARROWED subset, and letting it overwrite the
+    # recording would silently shrink what a later confirm re-checks.
+    local _scratch="${_CONFIRM_JUNIT_PATH%/*}/confirm-child"
+    mkdir -p "$_scratch" || true
+
+    local _tt_args=()
+    [ -n "$TEST_THREADS" ] && _tt_args=(--test-threads="$TEST_THREADS")
+
+    # The child is asked for a PLAN, not a run. Everything it needs to build the
+    # right one is handed to it through the SAME REIFY_VERIFY_RETRY_* inputs
+    # dark-factory's merge-gate retry supplies, so the exact-match `test(=<id>)`
+    # filterset, its `&`-intersection with the offline heavy filter, the tree-pin
+    # guard and the subset-size ceiling all come from the one existing
+    # construction site — this path adds no logic for WHICH tests run.
+    local _plan
+    _plan="$(
+        REIFY_VERIFY_RETRY_SCOPE=failed_only \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG="$_manifest" \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE="$_manifest" \
+        REIFY_VERIFY_RETRY_TREE_OID="$_tree_oid" \
+        REIFY_VERIFY_ATTEMPT_SIDECAR="$_sidecar" \
+        REIFY_VERIFY_NEXTEST_CONFIG="$_cfg" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG="$_scratch/manifest-debug.txt" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$_scratch/manifest-release.txt" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG="$_scratch/sidecar-debug.json" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$_scratch/sidecar-release.json" \
+        bash "$SCRIPT_DIR/verify.sh" test --profile "$_profile" \
+            "${_tt_args[@]+"${_tt_args[@]}"}" --print-plan
+    )" || { rm -f "$_cfg"; return 1; }
+
+    # Exact string equality against the two region markers — no regex, nothing
+    # to escape, and a renamed marker yields an EMPTY region (caught below by
+    # the missing report) instead of silently selecting the wrong lines.
+    local _cmds
+    _cmds="$(printf '%s\n' "$_plan" | awk -v b="$_PLAN_TEST_REGION_BEGIN" -v e="$_PLAN_TEST_REGION_END" '
+        $0 == b { _inside = 1; next }
+        $0 == e { _inside = 0; next }
+        _inside && $0 !~ /^#/ && NF { print }
+    ')"
+
+    # Each plan line in its own subshell: they are built to be run that way and
+    # may end in `exit`. stdout joins stderr in the private log — a nextest
+    # progress banner on the caller's stdout is exactly the contamination this
+    # whole path exists to prevent.
+    local _line
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        ( eval "$_line" ) >>"$_CONFIRM_LOG" 2>&1 || true
+    done <<< "$_cmds"
+
+    rm -f "$_cfg"
+    [ -f "$_CONFIRM_JUNIT_PATH" ]
+}
+
+confirm_failed_run() {
+    # The tree this confirmation is about. An empty value (a git failure) is
+    # treated exactly like a mismatch: unprovable, therefore not confirmable.
+    local _tree_oid
+    _tree_oid="$(git rev-parse HEAD: 2>/dev/null || echo '')"
+
+    local _profile _manifest _sidecar _sidecar_oid _profile_ids
+    local _confirmed="" _refusal=""
+
+    for _profile in "${PROFILES[@]}"; do
+        if [ "$_profile" = "release" ]; then
+            _manifest="$_CONFIRM_MANIFEST_RELEASE"; _sidecar="$_CONFIRM_SIDECAR_RELEASE"
+        else
+            _manifest="$_CONFIRM_MANIFEST_DEBUG";   _sidecar="$_CONFIRM_SIDECAR_DEBUG"
+        fi
+
+        # Vacuous: nothing was recorded for this profile, or the recording found
+        # zero failures. Nothing to confirm — contribute nothing, move on.
+        [ -f "$_manifest" ] && [ -r "$_manifest" ] || continue
+        grep -q . "$_manifest" 2>/dev/null || continue
+
+        # Tree pin, through the SAME tolerant extractor the retry precompute
+        # uses, against a confirm-OWNED sidecar (never the merge-gated
+        # attempt-0 file, which is not written under this lane's role at all).
+        _sidecar_oid=""
+        if [ -f "$_sidecar" ]; then
+            _sidecar_oid="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_sidecar" 2>/dev/null | head -n1)"
+        fi
+        if [ -z "$_tree_oid" ] || [ -z "$_sidecar_oid" ] || [ "$_sidecar_oid" != "$_tree_oid" ]; then
+            # REFUSE, do not skip. A skip would produce the vacuous empty
+            # output, and empty is the wire encoding of "confirmed clean" —
+            # reporting a clean tree we never actually examined.
+            #
+            # ACCEPTED LIMITATION, recorded deliberately: on the wire, "cannot
+            # confirm (tree drift)" and "genuinely confirmed clean" collapse to
+            # the same dark-factory observation ([], logged as intermittent
+            # nondeterminism), because the banner is on its reject-to-[] list.
+            # That is strictly better than the status quo, where EVERY
+            # confirmation call collapses to [] unconditionally, but it is not
+            # the three-state contract the PRD (§6.8/§11) would prefer. Making
+            # the two distinguishable needs a dark-factory-side ConfirmationRunner
+            # change; reify cannot surface it unilaterally, and it is named as
+            # follow-up rather than half-built here.
+            #
+            # Both OIDs are named because a refusal that names only one side
+            # tells an operator that something drifted but not from what.
+            _refusal="confirm refused: tree drift — the $_profile manifest was recorded against tree ${_sidecar_oid:-<absent>}, but HEAD's tree is now ${_tree_oid:-<unknown>}"
+            break
+        fi
+
+        # A SUBSHELL: the generator's failure handler exits, and that must end
+        # the attempt, not the process — an exit here would print nothing and
+        # "nothing" is the wire encoding of "confirmed clean".
+        if ! ( _confirm_subset_pass "$_profile" "$_manifest" "$_tree_oid" "$_sidecar" ); then
+            _refusal="confirm refused: no report — the $_profile subset pass produced no JUnit report at $_CONFIRM_JUNIT_PATH (see $_CONFIRM_LOG)"
+            break
+        fi
+
+        if ! _profile_ids="$("$SCRIPT_DIR/confirm-failed-manifest.sh" extract "$_CONFIRM_JUNIT_PATH")"; then
+            _refusal="confirm refused: unreadable report — could not parse $_CONFIRM_JUNIT_PATH (see $_CONFIRM_LOG)"
+            break
+        fi
+        [ -n "$_profile_ids" ] && _confirmed="${_confirmed}${_profile_ids}"$'\n'
+    done
+
+    # A refusal is the ONE thing this mode says out loud, on the caller's real
+    # stderr (fd 8), and it deliberately reuses the pre-existing
+    # `verify.sh: ERROR` banner: dark-factory's live guard already treats that
+    # exact prefix as "discard this whole output", so the case degrades into its
+    # no-confirmed-failures path with zero DF-side change. A novel sentinel
+    # would be invisible to it — the consumer never inspects the exit code.
+    if [ -n "$_refusal" ]; then
+        echo "verify.sh: ERROR — $_refusal" >&8
+        return 64
+    fi
+
+    # Nothing confirmed: print NOTHING, exit 0. Deliberately the same observable
+    # as "nothing was ever recorded" — the consumer reads only the merged text
+    # and cannot tell them apart either way, so a distinction built here would
+    # be one nobody can observe.
+    [ -n "$_confirmed" ] || return 0
+
+    printf '%s\n' "$_confirmed" | grep . | sort -u
+    return 100
+}
+
+# --confirm-failed dispatch (task 7423/γ). Placed here, immediately after
+# apply_env and before build_plan: the subset pass needs the OCCT loader path
+# apply_env exports, and nothing between this point and the executor runs
+# anything. Everything below belongs to the ordinary verify path, which this
+# mode never enters — the executor's unconditional `verify.sh: + <cmd>` echo
+# would by itself corrupt the caller's parse.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    confirm_failed_run
+    exit $?
+fi
+
+# ---------------------------------------------------------------------------
+# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE / GUI_PATH_SIGNAL
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
@@ -981,6 +1579,10 @@ RUN_GUI=0
 # Still computed (gate=1 when OCCT-touching files change) and printed in the
 # --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
+# GUI_PATH_SIGNAL: decide_scope's path-signal half, exported for the vitest gate.
+# Initialized here so no decide_scope exit — present or future — can leave it
+# unbound under `set -u`; every exit that widens sets it to 1 explicitly.
+GUI_PATH_SIGNAL=0
 CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
 # is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
@@ -993,30 +1595,173 @@ is_occt_crate() {
 # basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
 # decide_scope's no-heavy-checks carve-out for that directory:
 #   proven runtime reads (a #[test] builds the path and opens the file):
-#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
-#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     geometry_let_selector_consumer.ri (pushed into corpus_files() by
+#     harness_corpus_gates/eval_invariant_corpus_sweep.rs),
+#     geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
-#     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786)
+#     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
+#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
+#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     curvature_rad_literal.ri (read via std::fs::read_to_string by
+#     curvature_dimension_tests.rs, task 6179),
+#     jacobian_column_members.ri (read via std::fs::read_to_string by
+#     jacobian_column_member_access.rs's fixture_source(), task 6102),
+#     joint_constrained_dof_compliance.ri (same idiom, by
+#     flexure_joint_fields_e2e.rs's fixture_source(), task 7163),
+#     damped_material_mixin_conformance.ri + damped_material_preset_conformance.ri
+#     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
+#     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
+#     trait names, the preset one pins the LANDED stdlib surface)
+#     occt_internals_centroid_translated_profile.ri,
+#     occt_internals_fillet_extruded_wire.ri,
+#     occt_internals_fillet_translated_disjoint_union.ri (built via
+#     Engine::build by occt_repr_policy_fixtures_e2e.rs, task 8669)
+#     ssc_refuted_pair.ri (read via std::fs::read_to_string by
+#     harness_engine/interval_refutation_e2e.rs, task 6655)
+#     s6_joint_position_display.ri (`reify eval` by cli_eval_joint_position_enum.rs, task 8834)
+#   compile-time embeds (include_str! bakes the bytes straight into the test
+#   binary — a tighter coupling than a runtime read, since the fixture is a
+#   build input of the target, not just a file it happens to open):
+#     indexed_sub_coll_arm_baseline.ri, indexed_sub_forall_range_baseline.ri,
+#     indexed_sub_inst_arm_baseline.ri, indexed_sub_spec_arm_baseline.ri
+#     (the four sub-arm baselines held as indexed_sub_grammar_tests.rs's
+#     existing_sub_arms_regression_floor, task 5481);
+#     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
+#     qualified-reference probes held as qualified_ref_grammar_tests.rs's
+#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495);
+#     sketch_auto_seed_target.ri, sketch_aux_let_premise.ri,
+#     sketch_block_target.ri, sketch_member_extrude_premise.ri (the two α-target
+#     + two premise fixtures held as sketch_grammar_tests.rs's include_str!
+#     baselines, task 5506);
+#     adt_mirror_of_arm.ri, adt_relation_verbs.ri (the derived sub arm's
+#     signal and its relation-verb regression floor, held as
+#     derived_sub_grammar_tests.rs's derived_sub_fixture_parses_with_zero_error_nodes
+#     and relation_verbs_fixture_regression_floor, task 6615)
+#     shift_invert_modal_shifted.ri, shift_invert_modal_unshifted.ri (the
+#     committed shifted/unshifted modal pair, embedded by
+#     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
+#     the two files differ ONLY in their `sigma:` literal and header, so the
+#     mode-set difference between them IS the signal, task 7261);
+#     driver_parity_one_sided_auto.ri, driver_parity_one_sided_auto_free.ri,
+#     driver_parity_two_sided_auto.ri (the one-sided strict-auto refusal and its
+#     two negatives, embedded by one_sided_auto_tests.rs and
+#     one_sided_auto_refusal_e2e.rs and run by cli_one_sided_auto.rs, task 6692)
+#     driver_parity_auto_ctl.ri (the constant-pinned constructor auto that
+#     `reify check` and `reify build` must report Satisfied, run by
+#     cli_check_driver_parity.rs, task 6693)
+#   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
+#     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
+#     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
+#     dcr_load_ctor_dimension_silent.ri,
+#     dcr_material_dimension_silent.ri,
+#     dcr_reader_ctor_dimension_silent.ri,
+#     dcr_shaper_frequency_dimension_silent.ri,
+#     dcr_solver_load_dropped_dimensioned.ri,
+#     dcr_yield_stress_dimension_silent.ri.
+#     That target compiles the whole tracked corpus and cross-checks each entry
+#     against the warning it excuses, so an edit to one of these files makes its
+#     entry stale or its warning unexplained — two RED outcomes a docs-only
+#     commit would otherwise carry to main ungated.
+#   named by the SAME target's rejection table (task 5306): the five
+#     struct_ctor_conformance_*.ri boundary-row fixtures keyed by (file, param)
+#     in CTOR_CONFORMANCE_REJECTION_FIXTURES, whose entries that target also
+#     cross-checks against the probe-set asserting each file is rejected.
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
-#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
+#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
+#     cost_robustness_tradeoff_form.ri (task 5711: reify-constraints'
+#     cost_robustness_tradeoff_blend.rs and solver.rs cite it as the .ri form
+#     the in-Rust blend fixtures mirror — no read today)
+#   named by the tracked-.ri parse guard's MUST_ERROR_RI_FIXTURES table in
+#     crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs (task
+#     9343): arrow_type.ri, every cmc_*.ri catalog-membership surface,
+#     decl_passes_purpose_body_sub_swallowed.ri, the CST-faulty slc_*.ri
+#     evidence fixtures and step_import_surface.ri. That guard READS each
+#     declared file and asserts its declared fault class, so an edit that makes
+#     one parse cleanly, or changes its fault class, reds
+#     `cargo test -p reify-syntax`. Undeclared fixtures in this directory stay
+#     inert: the guard's UNSWEPT row for the directory skips them unread, and
+#     that row carries the reviewed `pg-drift-dir:allow` marker.
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
-# set from the real repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' over ALL
-# tracked *.rs`) and asserts each still classifies RUN_RUST=1, so adding a new
-# Rust reference without listing it here goes RED; a companion assertion there
+# set from the real repo (a full-LINE `git grep` for
+# tests/prd-gate/fixtures/<name>.ri over ALL tracked *.rs, minus the lines
+# carrying a reviewed `pg-drift:allow` marker, then projected to the matched
+# paths) and asserts each still classifies RUN_RUST=1, so adding a new Rust
+# reference without listing it here goes RED; a companion assertion there
 # also fails if any *.rs names the fixtures DIRECTORY rather than a single
 # <name>.ri leaf, which would void this arm's premise outright (see below).
+# THE OTHER HALF OF THAT RED (task 6986): when what tripped it is a PROSE
+# mention of a genuinely UNCOUPLED fixture — a doc comment naming a file no
+# compiled target reads — the fix is NOT a row here, which would be FALSE, and
+# NOT rewording the prose to avoid spelling the path (the #5540/#5371
+# workaround). Mark the MATCHED line `pg-drift:allow — <reason>`; a marker on
+# the line above suppresses nothing. Same convention as the
+# `pg-drift-dir:allow` companion just named. Grammar, gotchas and the worked
+# example live in that PG-DRIFT contract block — cross-referenced here, not
+# copied.
 # Space sentinels give whole-token matching
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri arrow_type.ri cmc_bolt_feasible.ri cmc_bolt_gap.ri cmc_bolt_two_fit.ri cmc_int_range.ri cmc_local_catalogs.ri cmc_membership_check.ri cmc_sugar_equivalence.ri cmc_unextractable.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri decl_passes_purpose_body_sub_swallowed.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri s6_joint_position_display.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri slc_annotation_arg_fault.ri slc_field_analytical_fault.ri slc_field_imported_fault.ri slc_purpose_body_error.ri slc_purpose_param_missing.ri slc_root_error.ri slc_struct_header_fault.ri slc_trait_body_port.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri step_import_surface.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+
+# GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
+# in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
+# which sets CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'] and walks
+# this directory RECURSIVELY (landed 2026-08-01, f709595212).
+#
+# WHY THIS LIST EXISTS. The ledger asserts that every pinned path still parses
+# with zero ERROR nodes. Editing a pinned fixture into an unparseable state is
+# therefore a real regression of a committed signal — but the arm below sets
+# gui=0 for a fixture that is not RUST-coupled, so under --scope staged/branch
+# the vitest suite that reads it never runs. On the ONE route that has no later
+# gate (a hook-gated docs commit on `main`, which is the sanctioned way PRD
+# fixtures land) that edit reaches main GREEN. This is the mirror image of the
+# docs/prds/**/fixtures/ hole that task 6431 closes, and it is closed here the
+# same way: name the coupled set, and let a drift guard keep the name list
+# honest rather than a human.
+#
+# Kept honest by tests/infra/test_verify_scope.sh's PG-DRIFT-GUI scenario, which
+# re-derives this set from the EXPECTED_CLEAN literal on every infra run and
+# fails on any pinned fixture missing here. Do not hand-edit without re-running
+# it; do not trust a copy of this list anywhere else.
+#
+# NOTE the two lists now NEST EXACTLY (#6605): every _RUST_COUPLED_RI_FIXTURES
+# member is also a grammar-ledger pin, and the rust arm already sets gui=1 for
+# them, so listing them again below is a short-circuit, not new coverage. They
+# stay listed here anyway so that dropping a fixture from the rust list can
+# never silently drop its gui coverage too. The list below is now exactly the
+# EXPECTED_CLEAN prd-gate pin set, with no retained non-pin members — #6605
+# pinned the four fixtures that used to be the exception
+# (jacobian_column_members.ri, damped_material_mixin_conformance.ri,
+# damped_material_preset_conformance.ri, adt_relation_verbs.ri). Do not
+# re-apply the retired "pinning adds a PG-DRIFT-GUI obligation for no signal"
+# reasoning to a future gap without re-deriving the sets first — that policy is
+# what #6605 reversed.
+# ONE EXCEPTION (task 5506): the four sketch_*.ri (sketch_auto_seed_target.ri,
+# sketch_aux_let_premise.ri, sketch_block_target.ri,
+# sketch_member_extrude_premise.ri) are RUST-coupled but NOT grammar-ledger
+# pins. The GUI Lezer mirror lags the tree-sitter grammar by design, so the two
+# α-target fixtures' `sketch { … }` and positional `auto(seed)` syntax is not
+# Lezer-parseable yet, and extending the mirror is outside constrained-2d-sketch
+# α's scope. Nothing gates RUST_COUPLED ⊆ GUI_COUPLED (the ledger reports
+# unpinnedClean without gating it), so the exception is recorded here in prose.
+# SECOND EXCEPTION (task 9343): the tracked-.ri parse guard's must-error
+# fixtures (see the _RUST_COUPLED_RI_FIXTURES block above) are RUST-coupled but
+# never grammar-ledger EXPECTED_CLEAN pins, because pinning one clean would
+# assert the opposite of its purpose. They are not listed below.
+#
+# Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
+# MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
+# rots on the next addition — this one already had, still reading 10 after the
+# list had grown past it, when task #5784 added unit_middot_mul.ri.
+_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri s6_joint_position_display.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
-        RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+        RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
         return
     fi
 
@@ -1026,9 +1771,20 @@ decide_scope() {
     #   branch: git diff "$_MERGE_BASE" (working tree vs merge-base(main,HEAD);
     #           tracked changes only — committed, staged, unstaged tracked
     #           modifications; untracked new files are not included)
-    # Map each path to its impact:
-    #   rust+gui+gate   workspace-global or OCCT-touching crate change
-    #   rust+gui        a non-OCCT Rust crate / Tauri crate change (Rust ⊇ GUI)
+    # Two INDEPENDENT accumulators plus the OCCT gate:
+    #   rust  a changed path can affect Rust compilation or test outcomes.
+    #   gui   a FRONTEND consumer READS this changed path — or we are failing
+    #         wide. Task 7427 narrowed this from "GUI checks are implied": it
+    #         no longer fires for `crates/**`, because whether a crate change
+    #         needs the frontend SUITE is a closure question, not a path one.
+    #         RUN_GUI is still rust|gui, so the cheap GUI checks (npm ci, tsc)
+    #         are unmoved on every path; `gui` alone is exported as
+    #         GUI_PATH_SIGNAL and gates only vitest.
+    #   gate  the OCCT serialization gate is required.
+    # Shapes:
+    #   rust+gate       an OCCT-touching crate change
+    #   rust            a non-OCCT Rust crate change
+    #   rust+gui        a Tauri-crate / grammar / workspace-global change
     #   gui             frontend-only TS change (Rust ⊥ GUI)
     #   ignore          docs / markdown / yaml config
     #   conservative    anything unrecognised -> treat as rust+gui+gate
@@ -1041,7 +1797,7 @@ decide_scope() {
     if [ "$SCOPE" = "branch" ]; then
         if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMRD "$_MERGE_BASE")"; then
             echo "verify.sh: WARNING — --scope branch git diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
         _files="$(grep -v '^\.task/' <<< "$_diff_out" || true)"
@@ -1066,17 +1822,17 @@ decide_scope() {
     if [ "$SCOPE" = "branch" ]; then
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=R -M "$_MERGE_BASE" | cut -f2)"; then
             echo "verify.sh: WARNING — --scope branch rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     else
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --cached --name-status --diff-filter=R -M | cut -f2)"; then
             echo "verify.sh: WARNING — --scope staged rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     fi
-    _rsrc="$(grep -E '^tests/prd-gate/fixtures/.*\.ri$' <<< "$_rsrc" || true)"
+    _rsrc="$(grep -E '^tests/prd-gate/fixtures/.*\.ri$|^docs/gui-event-channels\.md$' <<< "$_rsrc" || true)"
     # Classify over files + recovered rename sources, but leave CHANGED_FILES_RAW
     # (below) built from _files alone, so Phase-2 narrowing / infra-test
     # selection see the byte-identical list they saw before this arm existed.
@@ -1084,11 +1840,36 @@ decide_scope() {
     if [ -n "$_rsrc" ]; then
         _classify="$(printf '%s\n%s' "$_files" "$_rsrc")"
     fi
+    # A rename/move of docs/gui-event-channels.md itself (task 6281 review
+    # round 2): the recovered source above still reaches the docs/gui-event-
+    # channels.md case arm below via _classify and sets gui=1, but
+    # CHANGED_FILES_RAW is deliberately _files-only (comment above) — so
+    # select_infra_tests() never sees the old literal path and can't select
+    # tests/infra/test_check_event_inventory.sh the way it does for an
+    # in-place edit (that selection is an exact-path match against
+    # CHANGED_FILES_RAW, independent of RUN_RUST — see the case arm's
+    # comment). A rename is therefore the one shape where the arm's normal
+    # free ride on the infra-test map doesn't apply, and the ONLY reachable
+    # Rust-side coverage is the RUN_RUST-gated direct lint invocation of
+    # check_event_inventory.sh (INCLUDE_INFRA && RUN_RUST && DO_LINT, below)
+    # — which matters because that script hard-exits when
+    # docs/gui-event-channels.md is missing. Force rust=1 explicitly, scoped
+    # to exactly this rename (rust is a monotone OR accumulator, so setting it
+    # here ahead of the loop below is equivalent to setting it after).
+    if grep -qxF 'docs/gui-event-channels.md' <<< "$_rsrc"; then
+        rust=1
+    fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         case "$f" in
             crates/*)
-                rust=1; gui=1
+                # NO gui=1 (task 7427): a workspace crate is not a path the
+                # frontend reads. RUN_GUI is unchanged — it is rust|gui, and
+                # rust=1 here already — so npm ci + tsc still run. What this
+                # buys is the vitest gate: whether a crate change needs the
+                # frontend SUITE is answered by the reverse-dependency closure
+                # (closure_reaches_reify_gui), not by the path.
+                rust=1
                 crate="${f#crates/}"; crate="${crate%%/*}"
                 if is_occt_crate "$crate"; then gate=1; fi
                 ;;
@@ -1114,18 +1895,26 @@ decide_scope() {
                 # .capability-manifest.yaml + its .ri fixtures, gated by
                 # hooks/pre-commit -> `--scope staged`) stays a seconds-long
                 # hook instead of escalating to a full workspace nextest run.
-                #   • Nothing globs this directory: reify-eval's
-                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
-                #     its own tests/fixtures + examples/, then pushes ONE
-                #     explicit prd-gate path — so ADDING a fixture provably
-                #     cannot change any Rust target's inputs. EDITING one of the
-                #     five in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #   • Nothing globs this directory: reify-eval's unified corpus
+                #     sweep (harness_corpus_gates/eval_invariant_corpus_sweep.rs,
+                #     corpus_files()) walks only its own tests/fixtures +
+                #     examples/, then pushes ONE explicit prd-gate path — so
+                #     ADDING a fixture provably cannot change any Rust target's
+                #     inputs. EDITING one of the
+                #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
                 #     no later gate — a red-main class outage). That
                 #     no-directory-glob premise is not left to this comment:
                 #     PG-DRIFT fails if any *.rs names the directory itself
-                #     rather than a `<name>.ri` leaf.
+                #     rather than a `<name>.ri` leaf. That residual gate gap is not
+                #     hypothetical: an UNCOUPLED prd-gate fixture carrying a
+                #     phantom-tracking marker landed exactly this way on `main`
+                #     108d1d9226, reddening post-merge verification for every task
+                #     until 9ebebcec22 reworded it (task 6817).
+                #     select_cheap_ptodo_gate (below) now runs the PTODO ratchet on
+                #     this exact --scope staged hook path, closing that gap for
+                #     both the coupled- and uncoupled-fixture shapes.
                 #   • RENAMES reach this arm by BOTH names: --name-only shows
                 #     only a rename's destination, so the source side is
                 #     recovered up-front (see the rename-source block above) —
@@ -1134,26 +1923,106 @@ decide_scope() {
                 #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
-                #   • RESIDUAL: this affects only --scope staged/branch.
-                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
-                #     so the merge gate remains the wholesale authority — the same
-                #     accepted latency-not-coverage trade-off documented at the
-                #     task 5125 block below.
+                #   • RESIDUAL: --scope staged is now covered by
+                #     select_cheap_ptodo_gate (below), which runs the PTODO
+                #     ratchet on this exact hook path (task 6817). --scope branch
+                #     (per-task lanes) stays uncovered here: DF_VERIFY_ROLE=merge
+                #     still forces --scope all (contract C2), so the merge gate's
+                #     run_all.sh pool remains the wholesale authority there — the
+                #     same accepted latency-not-coverage trade-off documented at
+                #     the task 5125 block below.
                 #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
                 #     nested path under fixtures/ also lands in this arm; the
                 #     ${f##*/} basename test still applies and the direction of
                 #     error stays conservative.
                 case "$_RUST_COUPLED_RI_FIXTURES" in
                     *" ${f##*/} "*) rust=1; gui=1; gate=1 ;;  # runtime input to a compiled test target — keep today's conservative classification
-                    *) : ;;                                   # pure probe-data fixture — no heavy checks
+                    *)
+                        # Not read by a compiled Rust target. It may still be a
+                        # PINNED signal in the GUI grammar drift ledger, whose
+                        # suite would otherwise never run for this edit under
+                        # --scope staged/branch (task 6435).
+                        case "$_GUI_COUPLED_RI_FIXTURES" in
+                            *" ${f##*/} "*) gui=1 ;;          # pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN
+                            *) : ;;                           # pure probe-data fixture — no heavy checks
+                        esac
+                        ;;
                 esac
                 ;;
-            docs/*|*.md|*.yaml|*.yml)
-                : # no heavy checks
+            docs/gui-event-channels.md)
+                # Targeted carve-out (task 6281) ahead of the docs/*|*.md
+                # catch-all below: this one doc is policed by two automated
+                # consumers that both read it directly —
+                # scripts/check_event_inventory.sh (keys on column 1, the
+                # backticked channel name) and
+                # gui/src/__tests__/eventChannelConsumerCoverage.test.ts
+                # (RUN_GUI-gated, task 6236; guards column 4, the Consumer
+                # cell, against deleted gui/src/bridge.ts exports).
+                #
+                # Only gui=1 is set here (review round 2). The Rust-side
+                # consumer does NOT need rust=1 to run for an in-place edit:
+                # verify-pipeline-infra-tests.txt:227 maps this exact path to
+                # tests/infra/test_check_event_inventory.sh, which
+                # select_infra_tests() (above) selects whenever this file is
+                # in CHANGED_FILES_RAW — gated only on DO_TEST and a
+                # non-merge/background role (the SELECTED_INFRA_GLOBS leaf),
+                # NOT on RUN_RUST. That test's Check 1 smoke-runs
+                # check_event_inventory.sh against the real worktree (exit 0 +
+                # no orphan lines), plus a --bidirectional pass and a
+                # --print-registered diff against this doc — strictly
+                # stronger than the warning-mode, non-bidirectional lint
+                # invocation that rust=1 would additionally unlock at the
+                # INCLUDE_INFRA/RUN_RUST/DO_LINT leaf. Setting rust=1
+                # unconditionally here would instead escalate a docs-only
+                # staged commit to the full Rust gate (clippy +
+                # add_test_passes' workspace nextest — the expensive
+                # long-pole) on exactly the hook-gated docs-on-main path
+                # CLAUDE.md relies on staying seconds-long, for coverage this
+                # file already gets for free.
+                #
+                # RENAME of this file is the one shape exact-path match can't
+                # see (CHANGED_FILES_RAW stays _files-only even after rename-
+                # source recovery) — handled separately above, where rust=1 is
+                # forced only for that case.
+                #
+                # Scoped to this exact leaf, not docs/gui-event-channels/* —
+                # the per-channel spec pages under that directory are not
+                # read by either consumer, so folding them in here would
+                # widen the heavy-check surface with no matching benefit.
+                gui=1
+                ;;
+            examples/*.ri)
+                # A corpus leaf (task 7427). Same answer as the `*)` catch-all
+                # it used to reach, but each flag is now EARNED:
+                #   rust — the corpus gates are compiled Rust test targets
+                #          that open these leaves by path.
+                #   gui  — gui/src/__tests__/reifyGrammarCorpus.test.ts sets
+                #          CORPUS_ROOTS = ['examples', …] and walks the tree
+                #          recursively, so this is a genuine frontend read.
+                #   gate — reify-eval and reify-cli are both declared in
+                #          scripts/occt-touching-crates.txt.
+                # A bash `case` glob's `*` spans `/`, so nested corpus dirs
+                # (examples/auto/, …) land here too.
+                rust=1; gui=1; gate=1
                 ;;
             *)
-                # Unrecognised path: be conservative.
-                rust=1; gui=1; gate=1
+                # Inert (documentation / configuration-only) -> no heavy
+                # checks; anything else unrecognised -> be conservative.
+                # The class is defined once, by reify_is_inert_path
+                # (scripts/affected-crates-lib.sh, sourced above — see its
+                # header).
+                #
+                # Consulted HERE, inside the catch-all, and deliberately NOT
+                # hoisted ahead of the case: every arm above must keep winning
+                # over the inert rule — `gui/*` (a gui/*.md or gui/*.yaml is GUI
+                # work), `tests/prd-gate/fixtures/*.ri` (tasks 5536/6435) and
+                # the docs/gui-event-channels.md carve-out (task 6281), which
+                # sits ahead of this arm for exactly that reason.
+                if reify_is_inert_path "$f"; then
+                    : # no heavy checks
+                else
+                    rust=1; gui=1; gate=1
+                fi
                 ;;
         esac
     done <<< "$_classify"
@@ -1166,6 +2035,9 @@ decide_scope() {
     # Any Rust change implies the (fast) GUI checks too.
     RUN_GUI=$(( rust | gui ))
     RUN_OCCT_GATE=$gate
+    # The frontend-read signal on its own, WITHOUT the rust implication —
+    # the vitest half of the node lane is gated on it (task 7427).
+    GUI_PATH_SIGNAL=$gui
 }
 decide_scope
 
@@ -1186,6 +2058,61 @@ decide_scope
 # ---------------------------------------------------------------------------
 SELECTED_INFRA_GLOBS=""
 
+# add_selected_infra_glob <glob-or-path> — append into SELECTED_INFRA_GLOBS
+# with whole-token dedup via space sentinels (prevents false dedup when one
+# glob is a substring of another, e.g. a specific path vs a broader wildcard
+# pattern). Shared by every selector below (select_infra_tests,
+# select_harness_kloc_guard, select_cheap_ptodo_gate, ...) so the sentinel
+# trick is written once instead of hand-copied per selector.
+add_selected_infra_glob() {
+    case " $SELECTED_INFRA_GLOBS " in
+        *" $1 "*) : ;;
+        *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
+# selected_infra_leaf_env <glob-or-path> — print the command prefix a single
+# selective-infra leaf runs under, or nothing. Sits beside
+# add_selected_infra_glob for the same reason that helper gives: per-selector
+# knowledge is written once in a named place rather than inlined into the
+# generic emission loop.
+#
+# The output carries its OWN trailing space and is EMPTY for every glob but
+# one, so every other selective leaf stays byte-identical — that is what keeps
+# the --print-plan byte-identity oracles (test_occt_flock_gate.sh Tests 17/17b,
+# test_occt_gated_scope.sh) untouched by this helper's existence.
+#
+# The SCOPE re-check is not redundant with select_cheap_ptodo_gate's own.
+# That selector is the sole producer of this glob token today and is already
+# staged-only, but a future verify-pipeline-infra-tests.txt row mapping some
+# artifact to this same path would reach the arm under --scope branch, where a
+# rc-125-with-present-binary freshness result is still reachable (a FAILED
+# rebuild leaves the older binary executable; since #7691 a successful no-op
+# rebuild no longer lands here) and a hard refusal would red that lane. What
+# the arm produces there is an EMPTY prefix — the same un-armed, byte-identical
+# leaf every other glob gets — and that un-armed branch leaf is what
+# test_verify_scope.sh's PT-RATCHET-BRANCH pins.
+#
+# `if`, not `[ "$SCOPE" = staged ] && printf`: the sole caller assigns this
+# helper's output under `set -euo pipefail`, where a plain assignment's status
+# IS the command substitution's status. A trailing false `&&` test would make
+# the function return 1, abort the enclosing function and the whole script, and
+# emit NO plan at all — a silent rc-1 exit rather than the graceful un-armed
+# leaf this arm is written to produce. An `if` whose condition is false is 0.
+selected_infra_leaf_env() {
+    case "$1" in
+        tests/infra/test_reify_audit_ptodo.sh)
+            # The ratchet is mandatory on the hook-gated main-landing gate: a
+            # skipped ratchet there is a refusal, not a budget-safe degrade.
+            # Read by tests/infra/test_reify_audit_ptodo.sh; the name agreement
+            # between the two files is pinned by PT-RATCHET-DRIFT.
+            if [ "$SCOPE" = "staged" ]; then
+                printf 'REIFY_PTODO_RATCHET_REQUIRED=1 '
+            fi
+            ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -1200,14 +2127,8 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (whole-token
-                # dedup via space sentinels — prevents false dedup when one
-                # glob is a substring of another, e.g. a specific path vs a
-                # broader wildcard pattern).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" $_glob "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
-                esac
+                # Append glob to selection if not already present.
+                add_selected_infra_glob "$_glob"
                 break
             fi
         done <<< "$CHANGED_FILES_RAW"
@@ -1298,7 +2219,10 @@ select_harness_kloc_guard() {
         # Ordered classification — harness_*/* MUST come first: a bash `case`
         # glob's `*` matches `/`, so this one arm covers arbitrary nesting
         # depth under a harness_<subsystem>/ module dir (same gotcha
-        # documented at tests/infra/harness-layout-lib.sh:86-89). harness_*.rs
+        # documented in harness_layout_in_scope_standalone's header comment
+        # in tests/infra/harness-layout-lib.sh — cited by function name, not
+        # line range, since a line-range cite into another file re-rots on
+        # every edit to that file). harness_*.rs
         # (a root has no slash, so neither prior arm can catch it) is checked
         # after the generic */* reject. harness_*.rs and harness_*/* both
         # accept A or M (see the block header for why the nested arm's A|M is
@@ -1313,17 +2237,407 @@ select_harness_kloc_guard() {
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
-                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
-                esac
+                add_selected_infra_glob "tests/infra/test_harness_kloc_cap.sh"
                 return 0
                 ;;
         esac
     done <<< "$_changed"
 }
 select_harness_kloc_guard
+
+# ---------------------------------------------------------------------------
+# Cheap PTODO ratchet on the hook-gated --scope staged path (task 6817).
+#
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged` (grep -rn -- "--scope staged" over tracked files confirms
+# this); every per-task lane uses `--scope branch`, and merge/background force
+# `--scope all` (contract C2). A hook-gated main commit is therefore the one
+# and only landing path with NO later gate: task 5125 moved the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh, scenario (a) — live ptodo-baseline-gen
+# fingerprints must be a subset of crates/reify-audit/ptodo-baseline.txt) to the
+# MERGE-tier run_all.sh pool only, so a docs-landing commit staging an
+# uncoupled tests/prd-gate/fixtures/*.ri (task 5536's no-heavy-checks carve-out
+# above) got neither the full pool nor a selective subset. 108d1d9226's
+# phantom-tracking marker landed on `main` through exactly this gap and
+# reddened post-merge verification for every task until 9ebebcec22 reworded it
+# (task 6817). Deliberately NOT extended to `--scope branch`: that would be
+# doing 5125's explicitly deferred follow-up ("a cheap per-task-only PTODO
+# precheck ... is a possible follow-up if per-task PTODO latency proves costly
+# in practice") and would add ~3.4s to every task lane for a signal the merge
+# gate already provides there.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates (mirrors select_harness_kloc_guard's precedent paragraph just
+# above), so it inherits for free: (a) merge/background suppression — the
+# selective emission block (add_tool site below) is suppressed when
+# DF_VERIFY_ROLE=merge|background, where run_all.sh already runs this exact
+# file wholesale (exactly-once, INV-5); (b) the REIFY_INFRA_SUITE_ACTIVE
+# re-entrancy guard; (c) fail-fast ordering before the cargo poles; (d)
+# add_tool's LD_LIBRARY_PATH scrub, so no new plain-`add` call site appears
+# for tests/infra/test_verify_ld_library_path_scope.sh to police. A plain path
+# is a degenerate glob, so no emission-side change is needed at all.
+#
+# Measured cost: tests/infra/test_reify_audit_ptodo.sh is 22 assertions,
+# 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
+# ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
+#
+# Extension arm landed at reify-audit's FULL swept-extension set
+# (crates/reify-audit/src/ptodo.rs::is_swept_ext) in one piece (task 6817
+# step-4), not built up path-by-path: keying on the whole extension set
+# rather than the .ri-only tests/prd-gate/fixtures/ path closes the
+# same-class docs/**/*.ri and gui/**/*.{ts,tsx,js} holes in one rule, instead
+# of enumerating decide_scope's no-heavy case arms one at a time. Kept honest
+# by a derive-from-source drift guard, test_verify_scope.sh's PT-DRIFT
+# scenario — see the case arm below for exactly what direction that guard
+# covers.
+#
+# ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
+# path (the merge tier sets it, paired with a pre-build and a positive
+# existence assertion). If target/release/reify-audit is stale here,
+# reify_audit_guard's rebuild-budget-safe path self-heals via `cargo build
+# --release -q -p reify-audit` inside the 10m selective-infra wall — setting
+# the knob would make the guard SKIP budget-safely instead, silently
+# reopening exactly the hole this selector closes. A cold build that blows
+# the wall fails the commit loudly, which is the correct direction of error
+# for a gate protecting a main landing.
+#
+# A THIRD outcome of that rebuild is NOT accepted, and is closed here. If
+# reify_audit_guard's rebuild attempt still leaves the binary judged stale
+# (rc=125 — since #7691 that means the rebuild FAILED, or REIFY_AUDIT_BIN is
+# not cargo's own artifact; a successful no-op rebuild now returns 0) while
+# REIFY_AUDIT_BIN stays executable,
+# tests/infra/test_reify_audit_ptodo.sh still sets RATCHET_SKIP=1 and skips
+# exactly scenario (a)+(b) — the gen-driven fingerprint ratchet this selector
+# exists to run — while executing its (c)-(g) exit-code hard gate, which is
+# High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
+# catch it, and on its own that leaves this path able to exit GREEN on a main
+# landing with the ratchet never having run. The leaf this selector emits
+# therefore carries REIFY_PTODO_RATCHET_REQUIRED=1 (selected_infra_leaf_env,
+# beside add_selected_infra_glob above), under which that file refuses rather
+# than skipping — for ANY skip cause, not just this rc. The degrade itself is
+# left intact, because it is the right behaviour everywhere the knob is not
+# set; only this gate declares the ratchet mandatory.
+#
+# WHAT THAT ARMS, AND WHAT IT DOES NOT. The claim is narrower than "the
+# ratchet can no longer be skipped before a main landing", and the gap is
+# named here rather than left to be rediscovered from the plan. --scope
+# staged has exactly ONE production caller — hooks/project-checks, reached
+# from hooks/pre-commit, which returns early for every branch but `main`. The
+# armed path is therefore a hook-gated `git commit` on main whose staged set
+# includes a swept extension: precisely the 108d1d9226 shape (a docs landing
+# carrying a tests/prd-gate/fixtures/*.ri), which is the incident this
+# selector was written for.
+#
+# The merge tier is NOT armed, and it is the route by which most source
+# reaches main. hooks/pre-merge-commit and scripts/land.sh both run
+# DF_VERIFY_ROLE=merge ... --scope all, where the selective-infra emission
+# block (add_tool site below) is suppressed outright and this file instead
+# runs inside the run_all.sh pool leaf, under REIFY_AUDIT_NO_COLD_BUILD=1.
+# A stale binary there returns guard rc 75 rather than 125 — a different rc
+# reaching the same RATCHET_SKIP=1 and the same green-with-the-ratchet-unrun
+# outcome. The pre-build that feeds that tier asserts the binary EXISTS, not
+# that it is FRESH (see the ERROR(#4624) existence check below), so a cargo
+# no-op against a stamped target/ keeps that state reachable there. Whether
+# the merge tier should also require the ratchet is a decision about
+# REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
+# outer envelope — which this selector cannot answer and does not claim to; it is
+# filed separately.
+# ---------------------------------------------------------------------------
+select_cheap_ptodo_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _f
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
+        # This extension list is a DERIVED COPY of is_swept_ext in
+        # crates/reify-audit/src/ptodo.rs (cited by FUNCTION NAME, not line
+        # number — a line cite rots on the next edit to that file). Its
+        # source of truth is BEHAVIOURAL, not this comment:
+        # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
+        # set from is_swept_ext's source on every infra run and goes RED if
+        # is_swept_ext GAINS an extension this list lacks. That check is
+        # ONE-DIRECTIONAL: nothing asserts the reverse (this list still
+        # carrying an extension is_swept_ext later drops), so the direction
+        # of error on THAT side is over-selection (one extra ~3.4s leaf),
+        # never a silent coverage hole. Note `*.ts` also matches `*.tsx`
+        # under a bash glob; both are listed anyway so this reads as a
+        # faithful mirror of the Rust function rather than a minimal set.
+        case "${_f,,}" in
+            *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
+            *) continue ;;
+        esac
+        add_selected_infra_glob "tests/infra/test_reify_audit_ptodo.sh"
+        return 0
+    done <<< "$CHANGED_FILES_RAW"
+}
+select_cheap_ptodo_gate
+
+# select_branch_ratchet_leaf <input-predicate> <leaf> [git-diff-args...] — under
+# --scope branch, add <leaf> to SELECTED_INFRA_GLOBS iff the merge-base diff
+# lists a path <input-predicate> accepts. The diff always runs --name-only
+# --no-renames, so a rename is judged on both of its sides; the caller's
+# [git-diff-args...] are its diff-status policy (e.g. --diff-filter=AM).
+# Shared by the PDIAG and PDOCCOVER selectors below.
+select_branch_ratchet_leaf() {
+    local _predicate="$1" _leaf="$2" _changed _path
+    shift 2
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames "$@" "$_MERGE_BASE" 2>/dev/null)" || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        if "$_predicate" "$_path"; then
+            add_selected_infra_glob "$_leaf"
+            return 0
+        fi
+    done <<< "$_changed"
+}
+
+# ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDIAG ratchet (task #7691).
+#
+# tests/infra/test_reify_audit_pdiag.sh scenario (a) — live per-file code-less
+# Diagnostic::error/warning counts must stay within
+# crates/reify-audit/pdiag-baseline.txt (INV-SF-6,
+# docs/notes/diagnostic-severity-policy.md) — ran ONLY in the merge-tier
+# run_all.sh pool. Task 7376 added two code-less sites to
+# crates/reify-compiler/src/connect.rs, went green on its own branch, and
+# learned of the regression from two ~20-minute merge-gate cycles and a thrash
+# escalation (esc-7376-2). This selector runs the same file on the task lane
+# whenever the branch could have moved a PDIAG count.
+#
+# Trigger: the merge-base diff ADDS or MODIFIES either
+#   (i)  a path pdiag_swept_path (below) accepts — only those files are
+#        counted, so only they can raise a count or appear as a new file; or
+#   (ii) crates/reify-audit/pdiag-baseline.txt itself — the other operand of
+#        the same comparison; a hand-lowered or malformed row reds scenario
+#        (a) with no swept file touched.
+# Diff-status policy (git diff --no-renames --diff-filter=AM): A and M are
+# the only statuses whose ratchet verdict can be High (NewFile / Exceeded);
+# a DELETE can only yield a Medium OrphanRow, which never reds the gate
+# (pdiag.rs RatchetVerdict::severity), so D is deliberately excluded.
+# --no-renames is load-bearing, unlike select_harness_kloc_guard's diff: a
+# renamed swept file keeps its sites but moves them to a path with no
+# baseline row — a High NewFile — so its new side must surface as an A
+# rather than vanish into an R entry --diff-filter=AM drops. Scanner edits
+# under crates/reify-audit/src/ are NOT a trigger (that crate is outside the
+# sweep, and its own cargo tests run on such a branch); the merge gate
+# remains the wholesale authority, so that residual is latency, not a hole.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_harness_kloc_guard, so
+# it inherits the same four things select_cheap_ptodo_gate enumerates:
+# merge/background suppression (run_all.sh runs this file wholesale there —
+# exactly-once, INV-5; scope=branch is also structurally impossible under
+# those roles), the REIFY_INFRA_SUITE_ACTIVE re-entrancy guard, fail-fast
+# ordering before the cargo poles, and add_tool's LD_LIBRARY_PATH scrub.
+#
+# Measured cost (2026-09-19, whole leaf wall, warm lanes seeded from base gen
+# 439): 0.6s when reify_audit_guard finds target/release/reify-audit fresh —
+# the common case, since only a crates/reify-audit commit advances its
+# freshness epoch; 1.4s when that epoch has moved but the guard's cargo build
+# is a fingerprint no-op; 87s when that build really recompiles part of
+# reify-audit's release closure (a reify-compiler edit, which that closure
+# includes via reify-test-support) — inside the leaf's 10m wall.
+#
+# STALE-BINARY DECISION. The leaf deliberately does NOT set
+# REIFY_AUDIT_NO_COLD_BUILD (that would turn every stale verdict into a
+# budget-safe SKIP of scenario (a) — exactly the ratchet this selector exists
+# to run) and does NOT arm any ratchet-required refusal. The false-stale
+# state that used to make this leaf vacuous — guard rc 125 after a cargo
+# no-op against an mtime older than the last crates/reify-audit commit,
+# reproduced on a warm lane by a baseline-only commit — is closed at its
+# source instead: reify_audit_guard now accepts a successful cargo build as
+# proof of freshness for cargo's OWN artifact (see "CARGO IS THE AUTHORITY"
+# in scripts/reify-audit-freshness.sh). What still reaches rc 125 with a
+# present binary is a FAILED cargo build, where skipping (a) against the old
+# binary, loudly, is the right degrade on a task lane — the merge gate still
+# runs it.
+# ---------------------------------------------------------------------------
+
+# pdiag_swept_path <repo-relative-path> — succeeds iff PDIAG sweeps the path.
+# A DERIVED COPY of crates/reify-audit/src/pdiag.rs::is_swept_path and its
+# SCOPE_EXCLUDE_PREFIXES (cited by name, not line). Its source of truth is
+# behavioural: test_verify_scope.sh's PDIAG-DRIFT scenario replays every path
+# is_swept_path's own unit tests assert on, in both polarities, through this
+# selector, and re-derives SCOPE_EXCLUDE_PREFIXES from the Rust source.
+# Case-sensitive, like the Rust (`ends_with(".rs")`, no to_lowercase).
+pdiag_swept_path() {
+    local _p="$1" _file _stem
+    case "$_p" in *.rs) : ;; *) return 1 ;; esac
+    case "$_p" in crates/reify-audit/*|crates/reify-test-support/*) return 1 ;; esac
+    # Exactly the third segment must be `src` (a `*` glob would cross `/`).
+    [[ "$_p" =~ ^crates/[^/]*/src/ ]] || [[ "$_p" == gui/src-tauri/src/* ]] || return 1
+    # Test loci: a `tests` DIRECTORY segment, or a tests.rs / *_tests.rs stem.
+    [[ "$_p" =~ (^|/)tests/ ]] && return 1
+    _file="${_p##*/}"
+    _stem="${_file%.rs}"
+    [ "$_stem" != "tests" ] && [[ "$_stem" != *_tests ]]
+}
+
+# pdiag_input_path <repo-relative-path> — succeeds iff PDIAG's ratchet compares
+# the path: a swept file, or the baseline manifest it is compared against.
+pdiag_input_path() {
+    [ "$1" = "crates/reify-audit/pdiag-baseline.txt" ] || pdiag_swept_path "$1"
+}
+
+select_pdiag_ratchet() {
+    select_branch_ratchet_leaf pdiag_input_path tests/infra/test_reify_audit_pdiag.sh --diff-filter=AM
+}
+select_pdiag_ratchet
+
+# ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDOCCOVER ratchet (task #7987).
+#
+# tests/infra/test_reify_audit_pdoccover.sh otherwise runs only in the
+# merge-tier run_all.sh pool. Under --scope branch this selector runs it when
+# the merge-base diff touches a path pdoccover_input_path (below) accepts: the
+# inputs pdoccover::load_inputs, load_oracle_sources and committed_baseline
+# read. Edits to the scanner itself are not a trigger (undecided, #8180).
+#
+# Diff-status policy: --no-renames and no --diff-filter, because a deleted or
+# moved-out input changes what PDOCCOVER reads as much as an edit does
+# (test_verify_scope.sh: B-PDOCCOVER-del-*, B-PDOCCOVER-rename-out).
+#
+# Inherits select_pdiag_ratchet's SELECTED_INFRA_GLOBS properties and its
+# STALE-BINARY DECISION, as that header enumerates them.
+# ---------------------------------------------------------------------------
+
+# pdoccover_input_path <repo-relative-path> — succeeds iff PDOCCOVER reads the
+# path. Each arm is a DERIVED COPY of the Rust symbol its comment names (cited
+# by name, not line); case-sensitive like the Rust, and a case glob's `*`
+# crosses `/`, which is what starts_with means. UNITS_PATH (units.rs) needs no
+# arm of its own: it is an in_oracle_scope path. Its source of truth is
+# behavioural: test_verify_scope.sh's PDOCCOVER-DRIFT re-derives every input
+# from the Rust source on each run and probes it through this selector,
+# UNITS_PATH included.
+pdoccover_input_path() {
+    case "$1" in
+        crates/reify-mcp/src/tools/chunks/*.md) return 0 ;;      # pdoccover.rs is_chunk_path (CHUNKS_PREFIX)
+        crates/reify-compiler/src/*.rs \
+            | crates/reify-compiler/stdlib/*.ri \
+            | crates/reify-stdlib/src/*.rs) return 0 ;;          # pdoccover.rs in_oracle_scope
+        crates/reify-audit/pdoccover-baseline.txt) return 0 ;;   # pdoccover_baseline.rs BASELINE_PATH
+    esac
+    return 1
+}
+
+select_pdoccover_ratchet() {
+    select_branch_ratchet_leaf pdoccover_input_path tests/infra/test_reify_audit_pdoccover.sh
+}
+select_pdoccover_ratchet
+
+# ---------------------------------------------------------------------------
+# select_staged_whole_tree_gate <leaf> — under --scope staged, add <leaf> to
+# SELECTED_INFRA_GLOBS iff anything at all is staged. The one home of the
+# trigger shared by the landing-path-parity gates below; the ruling that every
+# in-charter whole-tree gate gets one is landing-contract §3 R3
+# (docs/legibility/landing-contract.md).
+#
+# A whole-tree gate otherwise ran ONLY in the merge-tier run_all.sh pool.
+# hooks/pre-commit -> hooks/project-checks is the sole --scope staged caller
+# and invokes it with no DF_VERIFY_ROLE set, so the role defaults to `task` and
+# that pool never fires; a docs-only stage also classifies inert (RUN_RUST=0),
+# which is the pool block's other precondition. That is a PATH ASYMMETRY, not
+# just a latency gap: a writer whose only landing path is a hook-gated
+# `git commit` on `main` can mint content that passes its OWN gate and then
+# fails the whole-tree gate for everyone else.
+#
+# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
+# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
+# someone a `case` to put inside. Why no filter over the staged set is sound
+# for a given leaf, and what that leaf costs, is that leaf's own header.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so
+# every leaf inherits the four properties that selector's header enumerates BY
+# MECHANISM rather than by restatement: (a) merge/background suppression — the
+# selective emission block is suppressed under those roles, where run_all.sh
+# runs the file wholesale, so it still runs exactly once (INV-5); (b) the
+# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
+# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
+#
+# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
+# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
+# RUN_RUST=1, so this selector returns without adding while the role is still
+# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
+# workspace but not these gates. Closing it needs a fail-wide signal
+# decide_scope does not expose today; the merge tier remains the wholesale
+# authority. Also shared: the leaves scan the working tree, not the index
+# (follow-up ticket tkt_0RW1FVPYNRMX4G7R4ZTB0AVZ0Z).
+# ---------------------------------------------------------------------------
+select_staged_whole_tree_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    add_selected_infra_glob "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7831).
+#
+# tests/infra/test_cited_test_paths_resolve.sh — prose that names a
+# `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
+# ran ONLY in the merge-tier run_all.sh pool, so it carried the path asymmetry
+# that select_staged_whole_tree_gate (above) describes. Commit f7b607527e (an
+# unattended nightly trickle) landed a stale citation at 03:20:36 having passed
+# its own hook, and every merge for the next 8 hours failed on it. This
+# selector makes that commit fail at ITS OWN commit.
+#
+# NO EXTENSION FILTER. That is the deliberate difference from
+# select_cheap_ptodo_gate (earlier in this file), which DOES filter, and it is
+# the one thing a later reader must not "helpfully" add. Three independent
+# reasons, any one of them sufficient:
+#
+#   (1) The scan is extension-agnostic BY CONSTRUCTION, and says so:
+#       cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited
+#       by function name, not line) — "NO EXTENSION FILTER. Extension-
+#       agnosticism is the ABSENCE of a filter, not an allowlist" — because the
+#       stale citations measured on the live tree span 8 extensions (.ri .md
+#       .rs .yaml .txt .sh .js .grammar) across crates/, examples/, docs/,
+#       tests/, tree-sitter-reify/, gui/ and .claude/, and a ninth would
+#       silently escape an allowlist. ptodo may mirror a list because
+#       is_swept_ext is a CLOSED set; here there is no closed set to mirror,
+#       so any list would be an invention rather than a derived copy.
+#
+#   (2) Even a perfect "does this staged file contain a citation" test would
+#       still be a hole, because the staged file need not be the file that goes
+#       stale. The finding is a whole-tree JOIN — the citation corpus against
+#       the tracked-test index — so a `git mv crates/<c>/tests/<unit>.rs ...`
+#       reds the gate through citations in files the commit never touched. The
+#       trigger is therefore not derivable from the staged set's IDENTITY at
+#       all; the only honest predicate over that set is whether it is non-empty.
+#
+#   (3) Textness is not a property of a filename, and the scan already decides
+#       it correctly (`git grep -I`). Re-deciding it here from names would be a
+#       second, weaker copy of a judgement that already has one home (SPOT).
+#
+# COST is what makes "any changed file" affordable as well as correct, measured
+# 2026-09-22 on a warm worktree: the whole-tree scan is 0.76s
+# (cited_test_path_scan, 281 rows); the whole leaf — the file also runs its
+# hermetic `git init` fixture sections A-L — is 11.1s / 17.4s / 18.0s over
+# three runs. No cargo, no npm. On a path taken only by a hook-gated commit on
+# `main`, against an 8-hour fleet-wide merge outage, a cleverer filter would be
+# trading a coverage hole for a latency saving that does not matter.
+# ---------------------------------------------------------------------------
+select_cited_test_path_gate() {
+    select_staged_whole_tree_gate tests/infra/test_cited_test_paths_resolve.sh
+}
+select_cited_test_path_gate
+
+# ---------------------------------------------------------------------------
+# Canonical-config-path gate on the hook-gated --scope staged path (task #7797):
+# landing-contract §3 R3 (docs/legibility/landing-contract.md) for
+# tests/infra/test_orchestrator_config_canonical_path.sh.
+#
+# Fires on ANY staged change. The verdict depends on the whole tracked tree and
+# on whether dark-factory-orchestrator.yaml exists and parses, so a staged
+# delete or a YAML-breaking edit of that file carries no legacy-name text: no
+# predicate over the staged set is sound. The leaf is hermetic bash, no cargo
+# and no npm, so always-on is affordable.
+# ---------------------------------------------------------------------------
+select_canonical_config_path_gate() {
+    select_staged_whole_tree_gate tests/infra/test_orchestrator_config_canonical_path.sh
+}
+select_canonical_config_path_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
@@ -1334,13 +2648,68 @@ select_harness_kloc_guard
 # --narrow is a no-op for scope=branch (already narrowing) and scope=all
 # (condition never true).
 #
+# AFFECTED_CLOSURE — the raw reverse-dependency closure, COMPUTED whenever
+# RUN_RUST=1 AND SCOPE != all, i.e. deliberately WIDER than narrowing
+# eligibility above, so a consumer can make a membership test against the
+# closure WITHOUT activating narrowing. Its one consumer, and the full rationale
+# for reading SCOPE/AFFECTED_CLOSURE instead of inferring from NARROW_ACTIVE,
+# live on the decision itself: see the "NARROWED on the same affected-crate
+# axis" bullet in add_test_passes. Not restated here.
+#
+# Splitting COMPUTATION from ACTIVATION is value-preserving: AFFECTED,
+# NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with the same values on every
+# path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
+# B9-default scenario pins is untouched.
+#
+# AFFECTED_CLOSURE_FROM_DIFF — the LICENCE to read an empty AFFECTED_CLOSURE as
+# "this diff provably touches zero crates" (task 6268). An empty closure string
+# alone cannot mean that, because it is what FOUR distinct paths leave behind:
+# the closure was not eligible (scope=all, RUN_RUST=0); CHANGED_FILES_RAW was
+# empty (decide_scope's git-failure fail-wide returns, which DO set RUN_RUST=1);
+# the file list split to zero arguments; or affected_crates() genuinely proved
+# zero crates. Only the last licenses narrowing, and only this flag tells them
+# apart — so it is set on exactly ONE branch below, adjacent to the
+# affected_crates() call it vouches for (heuristic 11), and defaults to 0, the
+# fail-wide answer.
+#
+# A REIFY_AFFECTED_CRATES_OVERRIDE deliberately never sets it. An override is a
+# SUBSTITUTE for the derivation, not a derivation, so it can make no claim about
+# what the diff touches — and letting it claim one would invert the fail-wide
+# invariant the AFFECTED_ALL_FLAGS-empty reset below exists to hold: a
+# whitespace-only override ("   ") is a non-empty STRING that word-splits to
+# zero tokens, so with the flag set it would read as "provably zero crates" and
+# silently narrow coverage away from a typo'd operator knob. Restricting the
+# flag to the affected_crates() branch makes that impossible by construction
+# rather than by a second guard.
+#
+# COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
+# here rather than adding a second call site), and RUN_RUST=0 (a docs-only
+# hook-gated commit) skips it entirely. The call shells out to
+# `cargo metadata --format-version 1 --locked --offline` in
+# affected-crates-lib.sh's _reverse_closure: ~1.2s warm, and both guards are
+# now in place — it cannot rewrite Cargo.lock (--locked, task 6277) and cannot
+# reach the network (--offline, task 6292). That matters because this runs on
+# the pre-commit-hook tier and under --print-plan, neither of which previously
+# shelled out to cargo on the staged path: a stale Cargo.lock or a cold
+# registry cache fails FAST (0.15-0.35s measured) into _reverse_closure's
+# existing `|| { echo ALL; return 0; }` rather than stalling on an unbounded
+# index fetch. The cost of that fail-wide is one full-workspace verify, which
+# is safe by construction — C5 widening can never produce a false PASS — but
+# it is NOT self-healing by elapsed time. What repopulates the registry is the
+# `cargo check` / `cargo clippy` passes this very run goes on to schedule
+# (neither passes --offline), so a RUN_RUST=1 run narrows again next time,
+# while a --print-plan probe keeps reporting ALL until a real build runs.
+#
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
-# separated crate names). When set AND narrowing is eligible, used verbatim in
+# separated crate names). When set AND the closure is eligible, used verbatim in
 # place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
 # knob idiom and allows hermetic --print-plan assertions in the workspace-less
 # fixture (where cargo metadata fails and affected_crates() always returns ALL).
 # ---------------------------------------------------------------------------
 AFFECTED=""
+AFFECTED_CLOSURE=""
+# 0 = "no licence to read an empty closure as proof" — the fail-wide default.
+AFFECTED_CLOSURE_FROM_DIFF=0
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -1351,10 +2720,17 @@ elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; th
     _narrowing_eligible=1
 fi
 
-if [ "$_narrowing_eligible" -eq 1 ]; then
+# Wider than _narrowing_eligible by design — see the AFFECTED_CLOSURE note in
+# this block's header.
+_closure_eligible=0
+if [ "$RUN_RUST" -eq 1 ] && { [ "$SCOPE" = "branch" ] || [ "$SCOPE" = "staged" ]; }; then
+    _closure_eligible=1
+fi
+
+if [ "$_closure_eligible" -eq 1 ]; then
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: use verbatim crate list.
-        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+        AFFECTED_CLOSURE="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     elif [ -n "$CHANGED_FILES_RAW" ]; then
         # Real run: compute reverse-closure from the captured changed-file list.
         _af_args=()
@@ -1362,9 +2738,17 @@ if [ "$_narrowing_eligible" -eq 1 ]; then
             [ -n "$_af_f" ] && _af_args+=("$_af_f")
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
-            AFFECTED="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE_FROM_DIFF=1
         fi
     fi
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    # Narrowing eligibility ⊂ closure eligibility, so AFFECTED_CLOSURE is already
+    # computed here — consumed, never recomputed (one affected_crates() call, one
+    # `cargo metadata`, per run).
+    AFFECTED="$AFFECTED_CLOSURE"
     # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
     if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
         NARROW_ACTIVE=1
@@ -1393,10 +2777,260 @@ if [ "$NARROW_ACTIVE" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# closure_reaches_reify_gui — returns 0 (true) iff this run must treat
+# reify-gui as affected.  The ONE implementation of that question (task 6268,
+# extracted by task 7427); two consumers read it — the gui-feature nextest
+# pass and the vitest lane gate just below.
+#
+# FOUR EXPLICIT ARMS, read off SCOPE, AFFECTED_CLOSURE and
+# AFFECTED_CLOSURE_FROM_DIFF directly.  Each arm has a NAME, and every citation
+# — here, at the call sites, and in the tests — uses the NAME.  An ordinal is a
+# fragile identifier once it is duplicated across files: this list was renumbered
+# once (task 6268 inserted COMPUTED-EMPTY ahead of the membership test) and three
+# remote citations silently became plausible-but-wrong rather than obviously stale.
+#   1. MERGE-GATE arm       SCOPE=all -> true.  The merge gate never narrows;
+#                              that is a CONTRACT, not a side effect.
+#   2. FAIL-WIDE arm        closure unavailable -> true.  "Unavailable" covers
+#                              the ALL sentinel (a C4 workspace-global file, a C5
+#                              cargo-metadata failure, an unmappable path, a seed
+#                              that resolved to no package), a malformed
+#                              REIFY_AFFECTED_CRATES_OVERRIDE, and an empty
+#                              closure this run never DERIVED — including
+#                              decide_scope's git-failure fail-wide paths, which
+#                              return RUN_RUST=1 with CHANGED_FILES_RAW="".
+#   3. COMPUTED-EMPTY arm   closure DERIVED and empty -> FALSE.  Not the same
+#                              thing as FAIL-WIDE, and the distinction is the
+#                              whole of task 6268.  The run called
+#                              affected_crates() on its own changed-file list and
+#                              it came back holding no crate at all, so reify-gui
+#                              is PROVABLY unaffected — narrow the pass away
+#                              rather than fail wide over a question that was
+#                              actually answered.  AFFECTED_CLOSURE_FROM_DIFF is
+#                              what separates the two (see its assignment site);
+#                              an override never sets it, so a malformed knob
+#                              cannot reach this arm.
+#   4. MEMBERSHIP arm       otherwise -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#
+# THE SECOND CONSUMER IS SAFE BY DERIVATION — with ONE named exception, stated
+# rather than papered over.  COMPUTED-EMPTY is reachable only when RUN_RUST=1
+# and every changed path is non-crate (docs/**, *.md, *.yaml/yml, gui/src/**,
+# tests/infra/**).  Of those classes only tests/infra/** classifies RUN_RUST=1,
+# and it does so through decide_scope's `*)` catch-all, which sets
+# `rust=1; gui=1; gate=1` TOGETHER; the docs/gui-event-channels.md rename force
+# likewise reaches its own arm and sets gui=1.  On every such shape
+# GUI_PATH_SIGNAL=1 already carries the vitest lane, so COMPUTED-EMPTY narrows
+# the gui-feature nextest pass and nothing else.
+#
+# THE EXCEPTION IS A CLASSIFIER DISAGREEMENT, and this arm is what resolves it:
+# an INERT file at depth 1 directly under `crates/` (crates/README.md,
+# crates/anything.yaml).  decide_scope's `crates/*)` glob matches it — a case
+# `*` spans `/` — and sets rust=1 WITHOUT gui=1, while affected-crates-lib's
+# _file_to_crate needs `crates/*/*` to attribute a crate and drops the same path
+# into the inert arm.  Both classifiers are right about their own question
+# ("could this affect Rust?" vs "which crates does this touch?"), and this is
+# the seam where the two verdicts meet.  Consequence: GUI_PATH_SIGNAL=0 there,
+# so COMPUTED-EMPTY narrows the vitest lane away too.  Benign, and not because
+# of this predicate: reify_is_inert_path calls that path documentation, and the
+# same file one directory up (docs/**, a root *.md) classifies RUN_RUST=0 and
+# skips vitest already.  The MERGE-GATE arm runs both regardless.  Measured: no
+# such file exists in the tree today (`find crates -maxdepth 1 -type f` is empty).
+#
+# Pinned in one place rather than argued twice: tests/infra/test_verify_scope.sh's
+# GV-7 asserts both halves — pass narrowed away, vitest lane preserved — on the
+# tests/infra shape, the one that actually occurs.
+#
+# NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-ACTIVATION flag,
+# not a scope oracle: it is also 0 for `--scope staged` without `--narrow` and
+# for the two fail-wide resets, so reading it as "scope=all, i.e. the merge
+# gate" was a false equivalence.
+#
+# WHAT ACTUALLY NARROWS is smaller than "every hook run", and the difference is
+# measured, not assumed.  TWO shapes narrow: a diff whose paths ALL map to
+# crates and whose reverse closure excludes reify-gui (MEMBERSHIP), and a diff
+# whose paths map to NO crate at all while still classifying RUN_RUST=1 — in
+# practice a tests/infra-only one, extremely common here (COMPUTED-EMPTY).  A
+# scripts-only diff does NOT: it yields the ALL sentinel (C5/unmappable) and
+# takes FAIL-WIDE.  The MERGE-GATE arm keeps the merge gate unconditional, so a
+# hook-tier miss can only ever be LATENCY, never a coverage hole.
+#
+# Membership is the REVERSE-dependency closure, not a hand-listed trigger set
+# (reify-gui/reify-eval/reify-mesh-morph), so a change to an indirect
+# dependency (reify-syntax, reify-ir, …) cannot silently fall out of it.
+# Measured on this tree: crates/reify-eval/src/lib.rs and
+# crates/reify-mesh-morph/src/lib.rs yield sets containing reify-gui;
+# crates/reify-doc/src/lib.rs does not.
+#
+# The closure is normalized ONCE into a word ARRAY so FAIL-WIDE sees every
+# malformed-knob shape as "unavailable" rather than as a crate list — a
+# malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow, the
+# same invariant as the AFFECTED_ALL_FLAGS-empty reset above.  Three shapes,
+# each measured to narrow the answer AWAY before this normalization existed:
+#   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
+#     reached the membership loop, split to NOTHING, and never ran the loop
+#     body.  Closed by the EMPTY-array test.
+#   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with pathname
+#     expansion live it expanded against the CWD into directory entries
+#     ("crates scripts") instead of collapsing; measured on a hermetic fixture,
+#     `*` on --scope staged printed `closure=*` and emitted ZERO gui-feature
+#     passes.  Closed by `set -f` ACROSS the split (the caller's -f state is
+#     saved and restored — verify.sh does not otherwise run with noglob).
+#   * any token outside cargo's package-name grammar — a surviving glob
+#     metacharacter, a path fragment, a stray flag.  A real affected_crates()
+#     closure only ever holds crate names, so a token that cannot BE one means
+#     the knob is malformed, not that the closure excludes reify-gui.  Closed
+#     by the grammar check, which routes to FAIL-WIDE rather than MEMBERSHIP.
+# None of the three can reach COMPUTED-EMPTY either, and not because of a second
+# guard: they arrive through REIFY_AFFECTED_CRATES_OVERRIDE, which never sets
+# the from-diff licence, so the whitespace-only shape — the one that DOES split
+# to an empty array — still falls to FAIL-WIDE.
+#
+# Role-specific skips belong at the CALL SITE, not here: the gui-feature pass's
+# `DF_VERIFY_ROLE != offline` guard is a property of that pass, not of the
+# closure.
+# ---------------------------------------------------------------------------
+closure_reaches_reify_gui() {
+    [ "$SCOPE" = "all" ] && return 0
+
+    local -a _words=()
+    local _w _malformed=0 _noglob_was=1
+    case "$-" in *f*) ;; *) _noglob_was=0 ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    for _w in $AFFECTED_CLOSURE; do
+        _words+=("$_w")
+        case "$_w" in
+            *[!A-Za-z0-9_.-]*) _malformed=1 ;;
+        esac
+    done
+    if [ "$_noglob_was" -eq 0 ]; then set +f; fi
+
+    # FAIL-WIDE — closure unavailable.  Ordered ahead of the empty test,
+    # which is safe as well as clearer: _malformed can only be 1 if the split
+    # loop ran a body, i.e. if _words is non-empty.
+    [ "$_malformed" -eq 1 ] && return 0
+    { [ "${#_words[@]}" -eq 1 ] && [ "${_words[0]}" = "ALL" ]; } && return 0
+
+    # FAIL-WIDE vs COMPUTED-EMPTY — an empty closure is two different facts,
+    # told apart by the from-diff licence alone: DERIVED from this run's diff
+    # means provably zero crates (narrow away); anything else means the question
+    # was never answered (fail wide).
+    if [ "${#_words[@]}" -eq 0 ]; then
+        [ "$AFFECTED_CLOSURE_FROM_DIFF" -eq 1 ] && return 1
+        return 0
+    fi
+
+    # MEMBERSHIP — a real crate list: membership decides.
+    for _w in "${_words[@]}"; do
+        [ "$_w" = "reify-gui" ] && return 0
+    done
+    return 1
+}
+
+# RUN_GUI_VITEST — does the node lane run `npm test` (vitest), or only
+# npm ci + tsc?  Task 7427.
+#
+# tsc is UNCONDITIONAL whenever the node lane runs: the frontend consumes
+# generated Rust->TS bindings, so any Rust change can break typechecking.
+# vitest is not — it exercises frontend behaviour, so it earns its ~100-120s
+# only when the frontend could actually have changed.  THREE routes, any one
+# sufficient:
+#   GUI_PATH_SIGNAL            decide_scope classified a changed path as one a
+#                              frontend consumer READS (see its accumulators).
+#   closure_reaches_reify_gui  the affected-crate closure reaches reify-gui —
+#                              see that predicate for SCOPE=all and its
+#                              fail-wide arms.
+#   REIFY_GUI_RETRY_SPECS      a caller ASKED for named vitest specs to be
+#                              re-run (dark-factory's narrowed retry).
+#                              Non-empty is the whole test: a malformed value
+#                              still runs the full suite via the loud §4.3
+#                              fallback at the forwarding site.  Why a request
+#                              counts as evidence: contract C7.
+#
+# So the ONLY shape that skips vitest is a RUN_RUST=1 branch/staged diff with a
+# real crate closure that excludes reify-gui and no spec request.  A Rust-only
+# change outside that cone which nonetheless breaks the frontend is caught at
+# the merge gate — delay ≤ 1 gate, never a coverage hole.
+RUN_GUI_VITEST=0
+if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] || closure_reaches_reify_gui; }; then
+    RUN_GUI_VITEST=1
+fi
+# A scope with no node lane at all (RUN_GUI=0) can still swallow a retry
+# request, since the route above is conjoined with RUN_GUI.  Warn rather than
+# pass in silence, and print the observed flags rather than narrating them, so
+# the line cannot outlive the gate that produced it.
+if [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] && [ "$RUN_GUI_VITEST" -eq 0 ]; then
+    echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS is set but this run emits no vitest lane (RUN_GUI=$RUN_GUI RUN_GUI_VITEST=0); the requested specs will NOT run" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Plan construction (built ONCE; print vs execute branches only at the leaves)
 # ---------------------------------------------------------------------------
 PLAN=()
 add() { PLAN+=("$1"); }
+
+# add_tool — emit a NON-CARGO plan line with the OCCT loader path scrubbed back
+# to the ambient apply_env() captured (task 5730; esc-4581-87 / task 5321).
+#
+# WHICH ONE DO I USE? If the line reaches cargo at all, use `add` — cargo needs
+# the OCCT search dir, and losing it is a hard link/load failure across the
+# whole gate. Everything else (shell scripts, npm, git, node) uses `add_tool`:
+# /opt/reify-deps/lib is a whole conda prefix that shadows hundreds of system
+# sonames and outranks DT_RUNPATH, so a tool inheriting it gets conda libraries
+# substituted underneath it (see the SCOPE CONTRACT comment in apply_env()).
+# The rule is deliberately conservative at the boundary: a MIXED shell+cargo
+# line (the gui-sidecar compile-check below) stays on `add`.
+#
+# _LD_SCRUB is SINGLE-quoted so the variable NAME, not its value, lands in the
+# plan: the restore then happens at EXECUTION time and --print-plan stays a
+# hermetic, host-independent oracle with no absolute host path baked into plan
+# text that tests and dark-factory compare.
+#
+# A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
+# `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
+# does not leak forward, because reaper_run_in_pgroup normally runs each plan
+# line in its own background subshell (`set -m; eval "$cmd" &`).
+#
+# That containment is NOT unconditional. Under the break-glass knob
+# REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
+# the MAIN shell instead, so a head-of-line export leaks forward into every
+# later line, cargo lines included. Expect degradation rather than a red gate:
+# .cargo/config.toml's `runner` re-exports the OCCT path before exec and
+# DT_RUNPATH is baked into every bin and test binary, so the Rust lines
+# re-derive it downstream. The knob is unset by default and is documented as
+# break-glass only (docs/notes/orphaned-test-binary-reaper.md); it is called
+# out here so the invariant is not read as absolute. Wrapping the scrub in a
+# subshell would close it, but the run_all.sh line's scrub must stay at the
+# LITERAL head of the line to stay outside test_run_all_ambient_isolation.sh's
+# `then`-anchored ledger window, so that trade is deliberately not taken.
+#
+# The executor also routes any plan line whose text CONTAINS the substring
+# `_VERIFY_NODE_BG_PID` to a main-shell eval. That is two lines today — the
+# backgrounded node lane and the `wait` that joins it. The node lane puts the
+# export inside its own `{ ... ; } &` braces instead of using add_tool; the
+# `wait` is a builtin needing no scrub. Never route a line matching that
+# substring through add_tool.
+#
+# Placement also matters at the head of the line specifically: see the
+# run_all.sh emission site for the ledger-guard constraint.
+#
+# Enforced by tests/infra/test_verify_ld_library_path_scope.sh, which
+# ENUMERATES every plain-`add` call site in this file and requires each to
+# carry a trailing `# ld-ok: <reason>` marker — so a NEW tool plan line added
+# with plain `add` fails the guard even though the guard has never heard of
+# its name. The marker is checked, never the payload text: an interim draft
+# inferred neutrality from the text and was defeated by, among others, a
+# pure-shell line merely NAMING cargo. (Before task 5730's
+# review pass the guard was a hardcoded needle list, and this comment
+# overclaimed: the INV-FEA-1 trampoline line added by task 5076 slipped
+# through unscrubbed precisely because no needle named it.)
+# `${VAR-}` (not a bare `$VAR`) so a plan line stays replayable OUTSIDE this
+# script. Inside verify.sh the variable is always set — apply_env() runs
+# unconditionally before any plan line executes — but --print-plan output is
+# routinely pasted into a shell by hand and consumed by dark-factory, and under
+# `set -u` a bare reference would abort with "unbound variable". The `-` form
+# degrades to an empty loader path, which is the intended scrub anyway.
+_LD_SCRUB='export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
+add_tool() { PLAN+=("${_LD_SCRUB}$1"); }
 
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
 # Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
@@ -1570,16 +3204,218 @@ wrap_subshell() {
 # hermeticity".)
 _NEXTEST_CONFIG_FILE=""
 
+# ---------------------------------------------------------------------------
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#
+# dark-factory's main-tip integrity sweep enters this script with
+# DF_VERIFY_ROLE=background, inside an ephemeral `_mainsweep-<hex>` worktree it
+# removes in a `finally`, and harness.py::_run_main_tip_sweep returns silently
+# on every non-drift path. So a PASSING sweep emits nothing anywhere and its
+# worktree then vanishes: neither "passed" nor "never ran" leaves a trace, and
+# they are indistinguishable. reify's own merge gate defers release-sensitive
+# re-execution to that sweep ("role=background NEVER skips — the sweep IS the
+# backstop"), so the gate depends on a backstop nobody can observe.
+#
+# One append-only JSON line per COMPLETED background run closes that, entirely
+# reify-side: dark-factory already stamps the role, so no cross-repo change is
+# needed. The upstream fix — a log line or a runs.db event on the PASS path —
+# remains the better long-term answer and is recorded as follow-up in
+# docs/notes/main-tip-sweep-observation.md, not silently replaced by this.
+# ---------------------------------------------------------------------------
+
+# The MAIN checkout's path, never this worktree's. Prints nothing and returns
+# non-zero when unresolvable.
+_main_checkout_dir() {
+    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
+    local _main=""
+    _main="$(reify_main_checkout 2>/dev/null)" || return 1
+    [ -n "$_main" ] || return 1
+    printf '%s' "$_main"
+}
+
+# Where the record goes. An explicit knob wins; otherwise the MAIN checkout,
+# never this worktree — see the knob's header note for why that distinction is
+# the whole design. Prints nothing and returns non-zero when unresolvable.
+_sweep_ledger_path() {
+    if [ -n "${REIFY_BACKGROUND_SWEEP_LEDGER:-}" ]; then
+        printf '%s' "$REIFY_BACKGROUND_SWEEP_LEDGER"
+        return 0
+    fi
+    local _main=""
+    _main="$(_main_checkout_dir)" || return 1
+    printf '%s' "$_main/data/orchestrator/verify-background-sweeps.jsonl"
+}
+
+# _record_background_verdict <exit-code>
+# FAILS OPEN at every step: an unresolvable checkout, an unwritable directory or
+# a missing helper all return 0 having written nothing. The caller's exit code
+# is never touched.
+_SWEEP_LEDGER_RECORDED=0
+_record_background_verdict() {
+    local _rc="$1"
+    [ "${DF_VERIFY_ROLE:-}" = "background" ] || return 0
+    # A dry run reaches no verdict: it executes nothing.
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    # Once per process. The INT/TERM/HUP traps call _verify_cleanup and then
+    # `exit`, which fires the EXIT trap in turn — without this, one killed sweep
+    # would leave two records of itself.
+    [ "$_SWEEP_LEDGER_RECORDED" -eq 0 ] || return 0
+    _SWEEP_LEDGER_RECORDED=1
+
+    local _ledger=""
+    _ledger="$(_sweep_ledger_path)" || return 0
+    [ -n "$_ledger" ] || return 0
+    mkdir -p "${_ledger%/*}" 2>/dev/null || return 0
+
+    local _verdict="fail"
+    if [ "$_rc" -eq 0 ]; then _verdict="pass"; fi
+
+    # {tree_oid, timestamp} are spelled exactly as the attempt-0 / confirm
+    # sidecar stamp spells them, so one reader idiom covers every stamp this
+    # script writes.
+    local _head="" _tree="" _ts=""
+    _head="$(git rev-parse HEAD 2>/dev/null)" || _head=""
+    _tree="$(git rev-parse HEAD: 2>/dev/null)" || _tree=""
+    _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || _ts=""
+
+    printf '{"role":"background","action":"%s","profiles":"%s","scope":"%s","verdict":"%s","exit_code":%d,"head":"%s","tree_oid":"%s","timestamp":"%s"}\n' \
+        "$ACTION" "$PROFILE" "$SCOPE" "$_verdict" "$_rc" "$_head" "$_tree" "$_ts" \
+        >> "$_ledger" 2>/dev/null || return 0
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Verify instrumentation ledger (task 7424). scripts/verify-ledger.py owns the
+# phase taxonomy, the observations and the record; this group only writes
+# numeric step events and calls it. Every _vl_* function is a no-op unless
+# _vl_init activated the run, and none can change the plan, stdout or the exit
+# code; a failed finalize reports on stderr. Schema and activation rules:
+# docs/notes/verify-instrumentation-ledger.md.
+# ---------------------------------------------------------------------------
+_VL_ACTIVE=0
+_VL_DIR=""
+_VL_LEDGER_DIR=""
+_VL_EXIT_RC=""
+declare -A _VL_SNAPSHOT=()
+
+# _vl_tool: stderr is the caller's. _vl_py: stderr goes to the run's journal.
+_vl_tool() {
+    LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}" python3 "$SCRIPT_DIR/verify-ledger.py" "$@" || true
+}
+
+_vl_py() {
+    _vl_tool "$@" 2>>"$_VL_DIR/errors.log" || true
+}
+
+# The production ledger refuses a run beneath reify's infra harness, however
+# the suite was launched. An explicit REIFY_VERIFY_LEDGER_DIR is a deliberate
+# private ledger and still records.
+_vl_ledger_dir() {
+    if [ -n "${REIFY_VERIFY_LEDGER_DIR:-}" ]; then
+        printf '%s' "$REIFY_VERIFY_LEDGER_DIR"
+        return 0
+    fi
+    local _harness="" _main=""
+    _harness="$(_vl_tool harness-ancestor --self-pid "$$" 2>/dev/null)"
+    [ -z "$_harness" ] || return 1
+    _main="$(_main_checkout_dir)" || return 1
+    printf '%s' "$_main/data/verify-logs"
+}
+
+_vl_append_event() {
+    { printf '%s\n' "$1" >>"$_VL_DIR/journal.jsonl"; } 2>/dev/null || true
+}
+
+_vl_init() {
+    [ "${#PLAN[@]}" -gt 0 ] || return 0
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    [ -z "${REIFY_VERIFY_RUN_ID:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$SCRIPT_DIR/verify-ledger.py" ] || return 0
+    _VL_LEDGER_DIR="$(_vl_ledger_dir)" || return 0
+    [ -n "$_VL_LEDGER_DIR" ] || return 0
+    _VL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-verify-journal.XXXXXX" 2>/dev/null)" || return 0
+    { printf '%s\0' "${PLAN[@]}" >"$_VL_DIR/plan.nul"; } 2>/dev/null || { rm -rf "$_VL_DIR"; return 0; }
+    export REIFY_VERIFY_RUN_ID="${EPOCHSECONDS}-$$-${RANDOM}${RANDOM}"
+    local _idx
+    while IFS= read -r _idx; do
+        [[ "$_idx" =~ ^[0-9]+$ ]] && _VL_SNAPSHOT[$_idx]=1
+    done < <(_vl_py run-begin --journal "$_VL_DIR" --run-id "$REIFY_VERIFY_RUN_ID" \
+        --role "$DF_VERIFY_ROLE" --role-raw "$_VERIFY_ROLE_RAW" --action "$ACTION" \
+        --profile "$PROFILE" --scope "$SCOPE" --repo-root "$REPO_ROOT" \
+        --lane-dir "${REIFY_VERIFY_LEDGER_LANE_DIR:-$REPO_ROOT}" \
+        --release-delta-skip "$_RELEASE_DELTA_SKIP" --started-at "$_VL_STARTED_AT")
+    _VL_ACTIVE=1
+}
+
+_vl_step_begin() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge before \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" >/dev/null
+    fi
+    _vl_append_event "{\"ev\":\"step_begin\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.}}"
+    export REIFY_RUN_ALL_TIMING_OUT="$_VL_DIR/step-$_i.run-all.jsonl"
+    return 0
+}
+
+_vl_step_end() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1" _rc="$2"
+    _vl_append_event "{\"ev\":\"step_end\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.},\"rc\":$_rc}"
+    unset REIFY_RUN_ALL_TIMING_OUT
+    _VL_EXIT_RC="$_rc"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge after \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" --junit "$_CONFIRM_JUNIT_PATH" >/dev/null
+    fi
+    return 0
+}
+
+# _vl_finalize <exit-code> [INT|TERM|HUP]. The last step's rc wins over the
+# trap's $?, which the Node-lane EXIT trap resets before calling _verify_cleanup.
+_vl_finalize() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    _VL_ACTIVE=0
+    local _rc="${_VL_EXIT_RC:-$1}" _signal="${2:-}"
+    case "$_signal" in
+        INT) _rc=130 ;;
+        TERM) _rc=143 ;;
+        HUP) _rc=129 ;;
+    esac
+    # stderr stays verify.sh's: the journal, errors.log included, is deleted next.
+    _vl_tool finalize --journal "$_VL_DIR" --ledger-dir "$_VL_LEDGER_DIR" --exit-code "$_rc" \
+        --ended-at "${EPOCHREALTIME/,/.}" --signal "$_signal" >/dev/null
+    rm -rf "$_VL_DIR" 2>/dev/null || true
+    return 0
+}
+
 _verify_cleanup() {
+    # FIRST statement: $? is still the status the shell is exiting with. Any
+    # command before this one would overwrite it.
+    local _exit_rc=$?
+    _record_background_verdict "$_exit_rc" || true
+    _vl_finalize "$_exit_rc" "${1:-}" || true
     reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
     fi
+    # Deliberately ends on a no-op rather than re-returning _exit_rc: bash
+    # preserves the pre-trap exit status across an EXIT trap that does not
+    # itself call exit (measured), while the INT/TERM/HUP traps invoke this as
+    # `_verify_cleanup; exit 143` — under set -e a non-zero return there would
+    # pre-empt the explicit signal exit code.
+    true
 }
+# ONE EXIT trap, extended in place: bash EXIT traps do NOT stack, so a second
+# `trap … EXIT` here would silently displace the reaper/config cleanup above.
 trap '_verify_cleanup' EXIT
-trap '_verify_cleanup; exit 130' INT
-trap '_verify_cleanup; exit 143' TERM
-trap '_verify_cleanup; exit 129' HUP
+trap '_verify_cleanup INT; exit 130' INT
+trap '_verify_cleanup TERM; exit 143' TERM
+trap '_verify_cleanup HUP; exit 129' HUP
 
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
@@ -1610,7 +3446,10 @@ emit_nextest_pass() {
     [ -n "$TEST_THREADS" ] && _tt_flag=" --test-threads=${TEST_THREADS}"
     if [ "$NEXTEST" -eq 1 ]; then
         local _cfg_path
-        if [ "$PRINT_PLAN" -eq 1 ]; then
+        if [ -n "$_NEXTEST_CONFIG_OVERRIDE" ]; then
+            # Caller owns this file; neither generate nor clean up.
+            _cfg_path="$_NEXTEST_CONFIG_OVERRIDE"
+        elif [ "$PRINT_PLAN" -eq 1 ]; then
             # Print mode: emit a representative placeholder so --print-plan is a
             # pure, hermetic oracle — no subprocess, no temp file created.
             # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
@@ -1624,7 +3463,10 @@ emit_nextest_pass() {
             # Produces a full copy of .config/nextest.toml with the occt cap rewritten
             # to the resolved env value; removed by _verify_cleanup on EXIT.
             if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                # Per-invocation prefix, never an export — see "THE CLI
+                # --test-threads SEAM" beside _die_nextest_config.
+                _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                    || _die_nextest_config "$?"
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
@@ -1757,7 +3599,49 @@ emit_nextest_pass() {
                 fi
             fi
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_OFFLINE_NO_FAIL_FAST}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        # Confirm-manifest write, FUSED INLINE into this pass's own command
+        # (task 7423/β, PRD §4.1.2). Two independent constraints force the
+        # fusion rather than a later `add` line:
+        #   - the write needs THIS pass's own exit code, which exists only
+        #     inside this command and is unobservable from any later line; and
+        #   - the plan executor stops on the first non-zero command, so on a
+        #     red pass — the interesting case — no later line runs at all.
+        #
+        # THE B11 WRITE-GATE IS THIS `if`, evaluated at plan-BUILD time. The
+        # manifest is only sound when nextest ran the WHOLE set, which is what
+        # --no-fail-fast buys; a fail-fast pass truncated after its first
+        # failure also exits 100 and is indistinguishable by exit code. Gating
+        # on the same variable that decides whether the flag reaches nextest
+        # makes "the flag was active" and "a manifest may be written" ONE fact
+        # rather than two that could drift. A runtime role re-check would be
+        # that second fact, and would be wrong the moment the fragment's own
+        # role scoping changes (--confirm-failed is deliberately not
+        # role-gated). When the fragment is empty this whole branch is skipped
+        # and the emitted command is byte-identical to today.
+        #
+        # The remaining half of the gate — "did nextest exit 0 or 100?" — is
+        # owned by confirm-failed-manifest.sh, so those two magic numbers live
+        # in exactly one place rather than in this emitted string.
+        if [ -n "$_OFFLINE_NO_FAIL_FAST" ]; then
+            local _confirm_profile="debug"
+            case "$rel" in *release*) _confirm_profile="release" ;; esac
+            local _confirm_manifest="$_CONFIRM_MANIFEST_DEBUG" _confirm_sidecar="$_CONFIRM_SIDECAR_DEBUG"
+            if [ "$_confirm_profile" = "release" ]; then
+                _confirm_manifest="$_CONFIRM_MANIFEST_RELEASE"
+                _confirm_sidecar="$_CONFIRM_SIDECAR_RELEASE"
+            fi
+            # A SUBSHELL, so the trailing `exit` ends this plan line and not
+            # verify.sh itself: reaper_run_in_pgroup normally evaluates a plan
+            # line in a background subshell, but under the break-glass knob
+            # REIFY_PROC_REAPER_DISABLE=1 it evaluates in the MAIN shell, where
+            # a bare `exit` would terminate the whole gate mid-plan.
+            #
+            # The recorder's own stdout is folded onto stderr: this pass's
+            # stdout is not a wire contract today, but the confirm run's is,
+            # and the two share this helper.
+            cmd="( ${cmd}; _confirm_rc=\$?; ./scripts/confirm-failed-manifest.sh record --nextest-rc \"\$_confirm_rc\" --junit \"${_CONFIRM_JUNIT_PATH}\" --manifest \"${_confirm_manifest}\" --sidecar \"${_confirm_sidecar}\" --profiles \"${_confirm_profile}\" >&2 || true; exit \$_confirm_rc )"
+        fi
     else
         # LOUD no-nextest full-fallback (never-silent invariant, PRD §4.3): the
         # cargo-test fallback plan has no `-E` filterset support, so an eligible
@@ -1789,8 +3673,12 @@ emit_nextest_pass() {
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
     # wedge the slot after the test pass exits (2026-04-20 wedge class).
     # Harmless no-op on the merge-exempt path.
-    add "$cmd 9<&-"
+    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command (plus, under the offline role, the fused confirm-manifest write); needs OCCT
 }
+
+# The plan carries add_test_passes' passes iff this holds; the `# heavy
+# partition —` header describes those passes, so it shares this gate.
+_plan_has_test_passes() { [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; }
 
 add_test_passes() {
     # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
@@ -1828,14 +3716,18 @@ add_test_passes() {
     # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
     # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
     if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
-        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+        add_tool "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
     fi
 
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
-    # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
+    # and REIFY_PSI_GATE_*. At the default REIFY_PSI_GATE_MAX_WAIT=unlimited the gate
+    # HOLDS (clock-stopped, heartbeating) and never exits 75. Under an explicitly
+    # FINITE MAX_WAIT it exits 75 and that propagates — which dark-factory does NOT
+    # requeue: verify.py _classify_failure routes exit-75 to unknown_test_failure →
+    # debugfix → BLOCKED (PRD verify-admission-wait-clock-stop §2).
     # In --print-plan mode: printed faithfully as a normal plan line.
-    add "./scripts/verify.sh psi-gate"
+    add_tool "./scripts/verify.sh psi-gate"
 
     # Compile-phase PSI admission gate (task 4853, repositioned by task 4862):
     # block-entry LOAD gate for the unified build+test block — sits after psi-gate
@@ -1848,7 +3740,7 @@ add_test_passes() {
     # Emitted ROLE-INVARIANTLY; DF_VERIFY_ROLE=merge bypasses at RUNTIME inside
     # compile_gate()->cpu_admit so the merge gate NEVER waits.  Soft stagger:
     # admit-on-timeout, NEVER exit 75.  Bare string so W7 stays green.
-    add "./scripts/verify.sh compile-gate"
+    add_tool "./scripts/verify.sh compile-gate"
 
     # Acquire the test-run semaphore slot after psi-gate and compile-gate.
     # Task 4862 revert: the slot now wraps the ENTIRE build+execution block
@@ -1860,7 +3752,7 @@ add_test_passes() {
     # that 4839 band-aided is now fixed properly by the clock-stop seam (task 4838):
     # slot-wait is a graceful continuous in-process hold, not exit-75.
     # The executor calls test_semaphore_acquire here; the printer emits a comment.
-    add "@@SEMAPHORE_ACQUIRE@@"
+    add "@@SEMAPHORE_ACQUIRE@@"  # ld-ok: sentinel — executor intercepts @@SEMAPHORE_*@@ by case, never eval'd
 
     # Emit one combined build+execution nextest pass per profile (slot held).
     # Outer timeout: PER-PROFILE budgets (task 5382 restored the pre-4520 split).
@@ -1883,6 +3775,27 @@ add_test_passes() {
     #    model, and why the inner ceilings are not summed against it. Do not restate
     #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
     #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
+    #    OFFLINE TIER (task 6485; re-justified task 7552): under DF_VERIFY_ROLE=offline
+    #    this budget is 13h (46800s) instead. Its basis is now WHOLE-RUN headroom for
+    #    that lane's `--run-ignored all` release pass, NOT per-test-ceiling
+    #    reachability — see the re-resolution block near the top of this file for
+    #    the full restatement and the figures. Offline is NOT the only role that runs
+    #    the heavy filterset: background does too, and does not get this tier. That
+    #    sentence used to name the gap this tier left open; since task 7552 re-sized
+    #    the per-test ceiling to 2160s — which background's own 60m debug wall clears
+    #    by 1440s, comfortably more than the 1078.7s that pass was measured to take
+    #    to reach a heavy test — it names why background is FINE without the tier,
+    #    and the accepted residual it used to imply is retired. That budget is a
+    #    two-sample max on a warm target, not a structural guarantee, which is why
+    #    the ceiling sits a step below the largest the bound allows rather than at
+    #    it; DA6 says what would re-open it. Which wall binds which role, and how
+    #    the ceiling is derived, are normative in
+    #    docs/prds/offline-deep-test-lane.md DA6.
+    #    T14-T17 mechanise offline's rendering and T18-BG background's;
+    #    test_nextest_slow_priority.sh Assertion L mechanises the reachability
+    #    predicate — `wall - ceiling > start-offset budget`, NOT the bare
+    #    `wall > ceiling` an earlier revision of this line claimed — for every
+    #    heavy-running role, with every operand but that budget derived from a file.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
@@ -1933,7 +3846,7 @@ add_test_passes() {
             # classification / runs.db mining / activation leaf ζ (task 5280); do NOT
             # reword it. Default-off => this branch is never taken => plan byte-identical.
             if [ "${_RELEASE_DELTA_SKIP:-0}" -eq 1 ]; then
-                add "echo 'RELEASE-PASS: skipped (delta-clean)'"
+                add "echo 'RELEASE-PASS: skipped (delta-clean)'"  # ld-ok: builtin — echo only, no external binary to shadow
                 continue
             fi
             _rel=" --release"
@@ -1979,11 +3892,125 @@ add_test_passes() {
         fi
     done
 
+    # gui-feature TEST-EXECUTION pass (task 5076; PRD docs/prds/compute-fea-hardening.md
+    # task A5).  reify-gui's #[cfg(feature = "gui")] code — gui_feature_tests in
+    # tests/engine_tests.rs, gui_tests in kernel_status_tests.rs, the gui-gated #[test]
+    # fns in event_bus_tests.rs / claude_bridge.rs, and the wholly gui-gated
+    # debug_server / event_bus modules — is reached by NO workspace pass above (all run
+    # without --features gui).  Until this pass existed it was only COMPILE-checked, by
+    # the `cargo check -p reify-gui --features gui --tests` line in build_plan, so a
+    # change that flipped engine.rs's cfg(feature="gui") arm to
+    # MorphRegistration::Unavailable compiled clean and passed every CI pass silently.
+    #
+    # PLACEMENT — inside the semaphore bracket, at the tail of the profile loop:
+    #   * Inside the slot because a --features gui build links tauri + webkit2gtk +
+    #     OCCT, i.e. exactly the RSS-heavy link wave the held slot exists to bound
+    #     (see the ACQUIRE-block comment above: memory is the binding constraint on
+    #     this host and whole-block serialization is its only implicit bound).
+    #   * OUTSIDE the profile loop so `--profile both` emits it exactly ONCE.
+    #     --features is a FEATURE axis, not a profile axis; a second release-profile
+    #     copy would cost another cold link for zero added coverage.
+    #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
+    #     partition only.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses,
+    #     by closure_reaches_reify_gui (defined above — task 6268's four arms and
+    #     their fail-wide ladder; task 7427 extracted them so the vitest lane reads
+    #     the same answer instead of a second copy).
+    #     WHAT THAT BUYS *THIS* PASS is a full tauri + webkit2gtk + OCCT
+    #     feature-unification link (20m42s cold / ~137s warm, and NOT shareable
+    #     with any other pass's artifacts).  Emitting it unconditionally made a
+    #     `-p reify-doc` branch plan pay that link for a change no reify-doc edit
+    #     can regress — while that same plan had already narrowed reify-gui's
+    #     UNGATED tests away, so running its gui-GATED ones was incoherent.  The
+    #     per-commit hook paid it too: `hooks/project-checks` execs
+    #     `verify.sh all --profile debug --scope staged --include-infra`, and a
+    #     staged crates/reify-doc/src/lib.rs emitted one such pass.
+    #
+    # NOT reusing emit_nextest_pass — nor extending it with an optional extra-flags
+    # parameter, which was considered and rejected.  Three structural mismatches, not
+    # one missing slot: (a) this pass is wrapped in an `if test -f …; then … fi` guard
+    # with a sidecar-placeholder prefix, so it needs a prefix AND a suffix hook, not a
+    # trailing-flags one; (b) emit_nextest_pass unconditionally interpolates
+    # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
+    # can emit an `-E` filterset — and an `-E` here would narrow away the very
+    # gui-gated tests this pass exists to run (asserted by (b8) in
+    # tests/infra/test_verify_gui_feature_test_pass.sh), so they would all
+    # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
+    # that single construction site.  The two arms below therefore mirror its
+    # nextest/cargo-test if/else by hand so this pass is shape-identical on a
+    # nextest-less host.  What IS shared with it is kept in lockstep deliberately and
+    # is individually asserted: the memoized _NEXTEST_CONFIG_FILE + its lazy init,
+    # the --test-threads fragment, and the trailing ` 9<&-`.
+    #
+    # Three non-obvious requirements, each pinned by a live guard:
+    #  (i)  trailing ` 9<&-` — FD 9 is the held slot; tests/infra/test_verify_semaphore_
+    #       wiring.sh (1k) fails when ANY cargo test/nextest line lacks it.  This is a
+    #       direct `add`, so the token is NOT inherited from emit_nextest_pass's single
+    #       append site and is appended explicitly (valid shell: a redirection on a
+    #       compound command, kept on the same plan line the grep inspects).
+    #  (ii) --config-file — scripts/gen-nextest-config.sh's header records that plain
+    #       `--config` is a NO-OP for nextest test-groups on 0.9.136, so --config-file is
+    #       the only mechanism that applies the occt test-group cap, the global
+    #       [profile.default] test-threads pool cap and the per-binary priority
+    #       overrides.  Without it this pass would run UNCAPPED inside the held slot.
+    #       The SAME memoized _NEXTEST_CONFIG_FILE is reused (one temp file, one
+    #       _verify_cleanup EXIT removal — generating a second would leak it), with
+    #       emit_nextest_pass's lazy-init guard repeated so the pass cannot silently
+    #       degrade to an uncapped run in a scope that emitted no workspace pass.
+    #       --print-plan keeps the hermetic placeholder for the same reason it does
+    #       there (no subprocess, no temp file).
+    #  (iii) NO `-E` filterset.  Running the whole -p reify-gui --features gui suite is
+    #       what makes ALL gui-gated code execute; an enumerated name filter would
+    #       silently drift away from that set as modules are added.
+    # Outer timeout: its own _VERIFY_GUI_FEATURE_TEST_TIMEOUT knob (45m default) —
+    # see the REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT header entry for the measurement.
+    # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
+    # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
+    # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
+    # The `!= offline` guard stays HERE, at the call site: skipping this pass
+    # for the offline role is a property of THIS pass (its plan runs the heavy
+    # #[ignore] partition only), not of the closure.
+    local _emit_gui_feature_pass=0
+    if [ "$DF_VERIFY_ROLE" != "offline" ] && closure_reaches_reify_gui; then
+        _emit_gui_feature_pass=1
+    fi
+    if [ "$_emit_gui_feature_pass" -eq 1 ]; then
+        local _gui_feat_cmd
+        # --test-threads=N (task 5264) applies here for the SAME reason it applies
+        # to every other test pass: an explicit --test-threads caps test-execution
+        # parallelism, and this pass — a tauri + webkit2gtk + OCCT link inside the
+        # held slot — is the last one that should run uncapped while the workspace
+        # passes are capped.  Empty when the flag is unset, so the emitted line is
+        # byte-for-byte unchanged by default (the same empty-or-leading-space idiom
+        # emit_nextest_pass uses for _tt_flag).  The cargo-test arm below already
+        # honoured ${TEST_THREADS:-1}; the two arms are now consistent.
+        local _gui_tt_flag=""
+        [ -n "$TEST_THREADS" ] && _gui_tt_flag=" --test-threads=${TEST_THREADS}"
+        if [ "$NEXTEST" -eq 1 ]; then
+            local _gui_cfg_path
+            if [ "$PRINT_PLAN" -eq 1 ]; then
+                _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+            else
+                if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                    # Per-invocation prefix, never an export — see "THE CLI
+                    # --test-threads SEAM" beside _die_nextest_config.
+                    _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                        || _die_nextest_config "$?"
+                fi
+                _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
+            fi
+            _gui_feat_cmd="${CARGO_PRIO}cargo nextest run -p reify-gui --features gui${_gui_tt_flag} --config-file ${_gui_cfg_path}"
+        else
+            _gui_feat_cmd="${CARGO_PRIO}cargo test -p reify-gui --features gui -- --test-threads=${TEST_THREADS:-1}"
+        fi
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_GUI_FEATURE_TEST_TIMEOUT} ${_gui_feat_cmd}; fi 9<&-"  # ld-ok: cargo — MIXED shell+cargo (gui-feature nextest pass, task 5076); needs OCCT
+    fi
+
     # Release the semaphore slot after all passes complete.
     # The executor calls test_semaphore_release; the printer emits a comment.
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
     # so the failure path needs no explicit release sentinel.
-    add "@@SEMAPHORE_RELEASE@@"
+    add "@@SEMAPHORE_RELEASE@@"  # ld-ok: sentinel — executor intercepts @@SEMAPHORE_*@@ by case, never eval'd
 }
 
 build_plan() {
@@ -1996,7 +4023,7 @@ build_plan() {
     # and always at the merge/scope=all tier, while keeping docs-only /
     # gui-src-only plans (RUN_RUST=0) at zero command leaves.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-infra-classification-manifest.sh"
+        add_tool "./scripts/check-infra-classification-manifest.sh"
     fi
 
     # harness-layout baseline-registration drift gate (task 5300): fail fast —
@@ -2012,7 +4039,7 @@ build_plan() {
     # psi-gate / run_all.sh. RUN_RUST=1 keeps docs-only / gui-src-only plans at
     # zero command leaves.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-harness-baseline-registration.sh --from-git"
+        add_tool "./scripts/check-harness-baseline-registration.sh --from-git"
     fi
 
     # manifold prebuilt guard: fail fast (with a clear "run the deps script"
@@ -2020,12 +4047,34 @@ build_plan() {
     # [target.*.manifold] override links are missing or version-drifted —
     # before any multi-minute compile turns that into a cryptic linker error.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-manifold-deps.sh"
+        add_tool "./scripts/check-manifold-deps.sh"
     fi
 
     # tree-sitter parser regeneration is a Rust-build prerequisite.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/tree-sitter-generate.sh"
+        add_tool "./scripts/tree-sitter-generate.sh"
+    fi
+
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
+    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
+    # cargo recompile it: cargo re-runs a build script only for paths declared
+    # via rerun-if-changed, and cc emits none of its own. So without this leaf
+    # the gate can link a libtree_sitter_reify.a built from different bytes than
+    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
+    # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
+    #
+    # Placement is load-bearing, both halves:
+    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
+    #     before it is fingerprinted, or the verdict describes a stale input set.
+    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
+    #     after the compile repairs nothing.
+    # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
+    # gui-src-only plans keep zero command leaves.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add_tool "./scripts/tree-sitter-freshness.sh ensure"
     fi
 
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
@@ -2051,16 +4100,16 @@ build_plan() {
     # the plan line is still emitted in merge plans so the plan shape is
     # role-invariant (mirrors the psi-gate idiom).
     if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
-        add "./scripts/verify.sh compile-gate"
+        add_tool "./scripts/verify.sh compile-gate"
     fi
 
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"  # ld-ok: cargo — needs OCCT
         else
-            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check --workspace --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check --workspace --tests"  # ld-ok: cargo — needs OCCT
         fi
     fi
 
@@ -2098,12 +4147,16 @@ build_plan() {
     local _gui_cmd="" _sidecar_cmd="" _ts_cmd="" _node_lane=""
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         # typecheck always (whenever the block runs, test OR lint); npm test only
-        # on the test side. On a merge-gate narrowed retry, dark-factory sets
+        # on the test side AND only when RUN_GUI_VITEST=1 (task 7427 — see that
+        # variable's definition for the gate; tsc is deliberately NOT gated,
+        # because the frontend consumes generated Rust->TS bindings). On a merge-gate narrowed retry, dark-factory sets
         # REIFY_GUI_RETRY_SPECS to the space-separated, gui-root-relative vitest
         # spec paths that failed (e.g. `src/__tests__/foo.test.ts`); forward them
-        # so the block runs ONLY those specs via `npm test -- <specs>` (== `vitest
-        # run <specs>`; the block cd's into gui/, so gui-relative positionals
-        # match). Unset OR empty => full `npm test`, byte-identical to the
+        # so the block runs ONLY those specs via the shared runner
+        # ../scripts/gui-vitest-run.sh (== `npm test -- <specs>` == `vitest run
+        # <specs>`, plus task 7630's bounded worker-RPC-flake retry; the block
+        # cd's into gui/, hence the ../ prefix, and gui-relative positionals
+        # match). Unset OR empty => the full suite, byte-identical to the
         # non-retry path (the §4.3 loud full-fallback for an empty gui subset).
         # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ.
         #
@@ -2124,7 +4177,7 @@ build_plan() {
         # would still pass an option-like token (e.g. `--run`) straight through
         # to vitest's argument parser.
         local gui_inner="npm ci && npm run typecheck"
-        if [ "$DO_TEST" -eq 1 ]; then
+        if [ "$DO_TEST" -eq 1 ] && [ "$RUN_GUI_VITEST" -eq 1 ]; then
             local _gui_retry_specs="${REIFY_GUI_RETRY_SPECS:-}"
             local _gui_retry_ok=0
             # -z on the allowlist-stripped residue => every char is allowed.
@@ -2144,7 +4197,7 @@ build_plan() {
                 done
             fi
             if [ "$_gui_retry_ok" -eq 1 ]; then
-                gui_inner+=" && npm test -- $_gui_retry_specs"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh $_gui_retry_specs"
                 # δ honest marker (task 5290): count the VALIDATED specs at this
                 # SINGLE narrowing site (INV-5 — reuse the allowlist result, so
                 # an ignored/invalid REIFY_GUI_RETRY_SPECS reports gui=0, matching
@@ -2155,7 +4208,7 @@ build_plan() {
                 _RETRY_GUI_SUBSET_APPLIED=${#_gui_retry_toks[@]}
             else
                 [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite" >&2
-                gui_inner+=" && npm test"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh"
             fi
         fi
         _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
@@ -2191,16 +4244,25 @@ build_plan() {
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
     # the `if`-guard achieves the same set -e safety without that token.
+    #
+    # LOADER SCRUB — the ONE add_tool() exception (task 5730). The node lane is
+    # a tool line and needs the scrub, but this plan line is the only one the
+    # executor eval's in its MAIN shell (everything else goes through
+    # reaper_run_in_pgroup's `set -m; eval "$cmd" &` subshell). A leading
+    # `export ...;` here would therefore persist into every SUBSEQUENT plan
+    # line, including the cargo ones — silently stripping the OCCT search dir
+    # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which
+    # are themselves a background subshell, so it scopes to the npm work alone.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
+        add "{ ${_LD_SCRUB}${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"  # ld-ok: self-scrubbed — carries _LD_SCRUB inside its own { ...; } & braces (main-shell eval, so a head-of-line export would leak forward)
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"  # ld-ok: cargo — needs OCCT
         else
-            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"  # ld-ok: cargo — needs OCCT
         fi
     fi
 
@@ -2220,21 +4282,27 @@ build_plan() {
     # gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk; the stub
     # satisfies the existence check without clobbering a real built sidecar.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
+
+    # The tree-sitter freshness POST-CONDITION leaf does NOT belong here, after
+    # the clippy/gui-check wave — it must follow the LAST cargo leaf that can
+    # compile the parser (add_test_passes), or it attests a fingerprint dir that
+    # no test binary links. It is emitted at the end of build_plan; see the
+    # `check` block there before moving it back up.
 
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
     # preceding the expensive pole and infra checks).
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add 'wait "$_VERIFY_NODE_BG_PID"'
+        add 'wait "$_VERIFY_NODE_BG_PID"'  # ld-ok: builtin — `wait`, and main-shell eval'd; must never take a head-of-line export
     fi
 
     # Plain path: node lane as sequential lines (no foreground rust gate, e.g. action=test).
     if [ -n "$_node_lane" ] && { [ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]; }; then
-        add "$_gui_cmd"
-        add "$_sidecar_cmd"
-        add "$_ts_cmd"
+        add_tool "$_gui_cmd"
+        add_tool "$_sidecar_cmd"
+        add_tool "$_ts_cmd"
     fi
 
     # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
@@ -2244,12 +4312,13 @@ build_plan() {
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
-            add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
+            add_tool "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
         fi
         if [ "$DO_LINT" -eq 1 ]; then
-            add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
-            add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
-            add "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
         fi
     fi
 
@@ -2258,26 +4327,38 @@ build_plan() {
     # --include-infra, while EVERY per-task lane passes --include-infra — so gating
     # run_all.sh on INCLUDE_INFRA (as before) ran the full 103-test suite on every
     # task lane and NEVER at merge, starving the shared 16-slot pool (M-way
-    # contention -> 30m timeout -> exit 124 -> BLOCKED). Gating on role instead
+    # contention -> outer-envelope timeout -> exit 124 -> BLOCKED). Gating on role instead
     # makes DF_VERIFY_ROLE=merge (stamped by both merge seams: hooks/pre-merge-commit
     # and the dark-factory merge-verify command) the single source of truth: the
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
     # subset below instead (exactly-one invariant, INV-5).
     #
-    # TRADE-OFF, accepted deliberately (task 5125 review): this also moves the
-    # reify-audit PTODO hard gate (CLAUDE.md's untracked/orphaned/bare-ignore
-    # gate) from per-task feedback to merge-time-only feedback, since that gate
-    # lives inside the run_all.sh pool (tests/infra/test_reify_audit_ptodo*.sh).
-    # A change that touches only product source (no verify-pipeline artifact
-    # from scripts/verify-pipeline-infra-tests.txt) and introduces an orphaned
-    # TODO now passes its per-task verify and is only caught at the merge gate —
-    # later feedback than before, but merge still blocks landing on main, so
-    # this is a latency trade-off, not a coverage gap. It is the direct fix for
-    # the M-way run_all pool contention above (INV-5); see this task's plan
-    # design_decisions for the full rationale. A cheap per-task-only PTODO
-    # precheck (skipping the other ~102 run_all tests) is a possible follow-up
-    # if per-task PTODO latency proves costly in practice — not implemented
-    # here to keep this task's fix scoped to the tiering mechanism itself.
+    # TRADE-OFF, accepted deliberately (task 5125 review): this also
+    # moves the PTODO fingerprint ratchet from per-task feedback to
+    # merge-time-only feedback, since it lives inside the run_all.sh pool
+    # (tests/infra/test_reify_audit_ptodo.sh scenario (a): ptodo-baseline-gen's
+    # live fingerprints vs. crates/reify-audit/ptodo-baseline.txt via
+    # comm -23). The ratchet is severity-blind — fingerprint = {path}
+    # :: {kind} :: {text} — so it reds on a new fingerprint at any
+    # severity, broader than a severity-scoped check on that axis. It
+    # is narrower in reach on another axis, though: ptodo-baseline-gen
+    # fingerprints only path-keyed source-marker findings, so the
+    # task-id-keyed inverse lane never enters the ratchet at all (§8.4).
+    # A change touching only product source (no verify-pipeline artifact
+    # from scripts/verify-pipeline-infra-tests.txt) that introduces
+    # a new PTODO fingerprint now passes per-task verify and is only
+    # caught at the merge gate — later feedback than before, but merge
+    # still blocks landing on main, so this is a latency trade-off, not
+    # a coverage gap. It is the direct fix for the M-way run_all pool
+    # contention above (INV-5); see this task's plan design_decisions for
+    # the full rationale. docs/prds/reify-audit-ptodo-detector.md §8.4
+    # (commit e5b9341413) is the canonical source for this framing;
+    # CLAUDE.md's "TODO citation convention" section holds the current
+    # summary. select_cheap_ptodo_gate (above) selects this same ratchet
+    # on the --scope staged hook path whenever a swept-extension file is
+    # staged (task 6817; see that block for the RATCHET_SKIP residual);
+    # the --scope branch per-task lanes here stay uncovered, a possible
+    # follow-up if per-task PTODO latency proves costly in practice.
     #
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     #
@@ -2288,7 +4369,7 @@ build_plan() {
     # Section B, which proves the merge-role semaphore bypass — would re-satisfy
     # this role==merge gate and re-emit run_all.sh, recursing unboundedly
     # (run_all -> semaphore-e2e -> merge-role verify -> run_all -> ...) until the
-    # 30m wall SIGKILLs it. The gate keys on the INHERITED env var
+    # outer-envelope wall SIGKILLs it. The gate keys on the INHERITED env var
     # DF_VERIFY_ROLE, so the break is also an inherited env var. It is set
     # NARROWLY, at the single recursion source (that Section-B spawn), NOT
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
@@ -2299,7 +4380,7 @@ build_plan() {
     # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
     # nested background spawn, mirroring Section B's merge spawn).
     if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
-        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh outer envelope.
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
@@ -2359,7 +4440,7 @@ build_plan() {
         # fixed 10m. These two pre-builds are the merge path's COLD release
         # native-kernel build; 10m SIGTERM'd reify-cli mid-compile with zero failing
         # assertions. See the knob-doc block in the header for the derivation.
-        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"  # ld-ok: cargo — needs OCCT
         # Positive assertion: if the Cargo.toml exists but the pre-build did not
         # produce the binary, abort loudly rather than silently degrading to SKIP.
         # Guards against the pre-step being removed or reordered without updating
@@ -2373,7 +4454,7 @@ build_plan() {
         # if-statement's stderr into the already-captured stdout stream
         # (applied to the compound command, so it also covers the internal
         # `>&2` on the echo) without touching the `false` exit code.
-        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi 2>&1"
+        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi 2>&1"  # ld-ok: builtin — test/echo/false only
         # task #5133: pre-build reify-cli and stamp target/.reify-bin-sha with
         # build-time HEAD, mirroring the reify-audit pre-build immediately
         # above. The PRD gate tests inside run_all.sh (test_prd_gate_corpus.sh,
@@ -2393,16 +4474,14 @@ build_plan() {
         # never stamps a false HEAD onto a missing binary.
         # task 5139: dropped -q and merged stderr into stdout via 2>&1 (same
         # rationale as the reify-audit pre-step above).
-        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
-        add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"  # ld-ok: cargo — needs OCCT
+        add_tool "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-        # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
-        # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
-        # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
-        # tipping a suite already near its budget over the wall (exit 124). 30m
-        # restores headroom for the full --scope all / merge gate.
+        # Envelope sized for the full infra suite; each member is bounded inside
+        # it by run_all.sh's REIFY_RUN_ALL_MEMBER_TIMEOUT (introduced by #9441;
+        # stopgap history: git log -L on this line).
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
@@ -2449,7 +4528,18 @@ build_plan() {
         # made: atomicity holds because each marker is a single write() call;
         # regression-guarded by tests/infra/test_run_all.sh Tests 7 and 8a
         # (source of truth for marker text/locations — not restated here).
-        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        #
+        # LOADER SCRUB PLACEMENT (task 5730) — add_tool()'s scrub must stay a
+        # leading statement at the HEAD of this line, ahead of the `if`, and
+        # must NEVER be rewritten into a `KEY=VALUE` prefix token beside the
+        # three REIFY_* tokens after `then`. tests/infra/test_run_all_ambient_isolation.sh
+        # derives the live injected-var set from exactly that `then`-anchored
+        # window and cross-checks SET EQUALITY against
+        # tests/infra/run-all-ambient-vars.manifest; a fourth token there would
+        # trip the ledger drift guard and drag in a per-var hostile-ambient
+        # sub-case. Both known bites of the leak (esc-4581-87, task 5321) were
+        # infra tests reached through this line.
+        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 60m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
@@ -2477,9 +4567,33 @@ build_plan() {
     # cf. test_run_all_ambient_isolation.sh, task 4961).
     if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
+        # Git repository-environment scrub (task #7106), interpolated from
+        # reify_git_env_scrub_prefix so this leaf and the runner helper can never
+        # disagree about the variable set. It sits INSIDE the leaf, between the
+        # timeout and the bash it wraps — NOT in add_tool's _LD_SCRUB, which
+        # prefixes EVERY plan line and would rewrite every plan string, breaking
+        # the --print-plan byte-identity oracles (test_occt_flock_gate.sh Tests
+        # 17/17b, test_verify_scope.sh, test_occt_gated_scope.sh).
+        local _git_scrub
+        _git_scrub="$(reify_git_env_scrub_prefix)"
+        # Per-leaf env prefix (task 7006), empty for all but one glob. Placed
+        # BEFORE `timeout`, as a plain shell assignment prefix in the emitted
+        # for-body: that is valid bash whatever $_git_scrub expands to, whereas
+        # placing it after $_git_scrub would silently depend on that prefix
+        # always being an `env ...` invocation. ONE add_tool call is kept —
+        # test_verify_ld_library_path_scope.sh asserts this file has exactly one
+        # `for _vt in` emission site calling add_tool, so a second arm reds.
+        local _leaf_env
+        # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
+        # slot_acquire deadline or nested run_all.sh never writes into this
+        # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
+        # unset extends the scrub prefix's documented `env -u ...` argv, so one
+        # env invocation builds the member environment; it is per member
+        # command, so verify.sh's own processes keep the channel.
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+            _leaf_env="$(selected_infra_leaf_env "$_glob")"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
@@ -2488,8 +4602,55 @@ build_plan() {
     # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
     # nextest run + OCCT-gated passes). All cheap gates run before this.
     # (task #4448 fail-fast reorder)
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    if _plan_has_test_passes; then
         add_test_passes
+    fi
+
+    # tree-sitter freshness POST-CONDITION (task #5629, review rounds 2-3).
+    # The `ensure` leaf near the top of the plan runs BEFORE the cargo wave and
+    # only ATTEMPTS the repair — it bumps mtimes and trusts cargo to act on them,
+    # and by design it never fails for a condition it believes it repaired. So
+    # without this line the gate carried no evidence the rebuild actually
+    # happened: if the mtime force failed to trigger one, the run went green
+    # having linked an archive it never compiled — the same false-GREEN class the
+    # task exists to close, one level up. `check` closes it by ASSERTING, after
+    # the fact, that the archives cargo built match the sources on disk.
+    #
+    # EMITTED LAST — after add_test_passes — and that position is load-bearing
+    # (review round 3). Round 2 placed it right after the clippy / `cargo check -p
+    # reify-gui` wave, which attested the WRONG archive: clippy compiles into a
+    # different fingerprint dir than the test-profile build, and under
+    # `--profile both` the debug and release nextest passes each compile the
+    # parser again, all of them AFTER that point. The assertion has to follow the
+    # last cargo leaf that can compile the parser, or it attests an archive no
+    # test binary ever linked.
+    #
+    # Guard: RUN_RUST && (lint || typecheck || test). The `test` arm was missing
+    # until the amendment pass on #5629, on the reasoning that "action=test has no
+    # compile leaf before this pole, so asserting there would hard-fail a
+    # repairable pre-build condition". That reasoning contradicted this leaf's own
+    # position: it is emitted AFTER add_test_passes, and on an action=test plan
+    # add_test_passes emits `cargo nextest run --workspace`, which COMPILES the
+    # parser. So every action=test plan forced a rebuild via `ensure` and then
+    # asserted nothing — leaving the whole test-only tier carrying exactly the
+    # one-level-up false GREEN this leaf was added to close.
+    #
+    # RUN_RUST is what keeps docs-only / gui-src-only plans at zero command leaves;
+    # with RUN_RUST=1 at least one of the three action flags is always set, so the
+    # inner disjunction is documentation of intent rather than a live filter — it
+    # keeps the leaf tied to "something compiled the parser", which is what makes
+    # the assertion meaningful.
+    #
+    # `check` hard-asserts over every fingerprint dir whose build-script run marker
+    # advanced during THIS run (the epoch `ensure` stamped), so the multi-dir
+    # debug+release case is covered rather than just the single newest dir. Dirs
+    # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
+    # them, stale forever, so a whole-tree assertion would be permanently RED.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ] \
+        && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
+        add_tool "./scripts/tree-sitter-freshness.sh check"
     fi
 
     # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only
@@ -2606,9 +4767,29 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
-    echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
-    echo "# --- environment (process-level; inherited by every command below) ---"
+    # `RUN_GUI_VITEST=` is APPENDED, never inserted — the same convention, for
+    # the same reason, as the `closure=` field on the next line: every existing
+    # assertion greps this as the unanchored substring
+    # "RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…", which survives a trailing append
+    # and does not survive a reordering.
+    echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE RUN_GUI_VITEST=$RUN_GUI_VITEST"
+    # `closure=` and `from_diff=` are APPENDED, never inserted:
+    # tests/infra/test_verify_scope.sh greps this line as the unanchored
+    # substrings "NARROW_ACTIVE=1 affected=…" / "NARROW_ACTIVE=0 affected=ALL",
+    # and plan_capture_lib.sh's plan_narrow_active matches NARROW_ACTIVE=([0-9]+);
+    # all three survive a trailing append and none survives a reordering.  A `#`
+    # comment line, so plan_count_noncomment_lines (`^[^#]`) — the oracle behind
+    # the THROUGHPUT-COUNTS sentinel — cannot see it.
+    #
+    # `from_diff=` is what makes the closure THREE-valued to a plan reader:
+    # `closure=` alone is empty both when a real diff proved zero crates and when
+    # the closure was never computed on this tier, and only the former licenses
+    # narrowing.  Without it a --print-plan assertion of "0 gui-feature passes"
+    # would be satisfiable by an implementation that simply stopped computing the
+    # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
+    if _plan_has_test_passes; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
+    echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
     if [ "${#PLAN[@]}" -eq 0 ]; then
@@ -2617,16 +4798,21 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
         case "$_cmd" in
             '@@SEMAPHORE_ACQUIRE@@')
-                printf '# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS (TEST-EXECUTION gated, held in verify.sh)\n'
+                printf '%s\n' "$_PLAN_TEST_REGION_BEGIN"
                 printf '#     A contended wait emits @@REIFY_CLOCK_STOP@@/@@REIFY_CLOCK_HEARTBEAT@@/@@REIFY_CLOCK_START@@ markers\n'
                 printf '#     to stderr (reason=test_slot_starvation). dark_factory:1916 excludes the marked wait span\n'
                 printf '#     from verify_command_timeout_secs. REIFY_TEST_SEMAPHORE_WAIT=unlimited activates\n'
                 printf '#     continuous blocking wait (clock-stop mode); task 4838 activates the DF seam.\n'
                 ;;
             '@@SEMAPHORE_RELEASE@@')
-                printf '# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)\n'
+                printf '%s\n' "$_PLAN_TEST_REGION_END"
                 ;;
-            './scripts/verify.sh psi-gate')
+            # Glob, not an exact string: task 5730 prefixes this plan line with
+            # the add_tool() loader-path scrub, so an exact match silently went
+            # dead and took both annotation lines below out of --print-plan.
+            # `psi-gate` is the last token of the command, so the trailing `*`
+            # only absorbs a future suffix and cannot also catch compile-gate.
+            *'./scripts/verify.sh psi-gate'*)
                 printf '# PSI gate: contended wait emits @@REIFY_CLOCK_STOP@@/HEARTBEAT/START@@ markers (reason=psi_pressure);\n'
                 printf '#   the clock-stop span is excluded from verify_command_timeout_secs by dark_factory:1916 (task 4838).\n'
                 printf '%s\n' "$_cmd"
@@ -2644,19 +4830,23 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     exit 0
 fi
 
-for _cmd in "${PLAN[@]}"; do
+# _run_plan_step <cmd> — dispatch ONE plan entry and return its exit code.
+# Called only in an `||` context, so errexit is suspended inside it exactly as
+# it is for the `eval … ||` / `reaper_run_in_pgroup … ||` arms themselves.
+_run_plan_step() {
+    local _cmd="$1" _rc=0
     case "$_cmd" in
         '@@SEMAPHORE_ACQUIRE@@')
             test_semaphore_acquire || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
-                exit "$_rc"
+                return "$_rc"
             }
-            continue
+            return 0
             ;;
         '@@SEMAPHORE_RELEASE@@')
             test_semaphore_release || true
-            continue
+            return 0
             ;;
     esac
     echo "verify.sh: + $_cmd" >&2
@@ -2668,7 +4858,7 @@ for _cmd in "${PLAN[@]}"; do
             eval "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
         *)
@@ -2678,9 +4868,33 @@ for _cmd in "${PLAN[@]}"; do
             reaper_run_in_pgroup "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
     esac
+    return 0
+}
+
+_vl_init
+
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
+# test_semaphore_acquire/release and reaper_teardown, which interleave with the
+# loop, also run on the OCCT path.
+export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
+
+_vl_i=0
+for _cmd in "${PLAN[@]}"; do
+    _vl_step_begin "$_vl_i"
+    _rc=0
+    _run_plan_step "$_cmd" || _rc=$?
+    _vl_step_end "$_vl_i" "$_rc"
+    [ "$_rc" -eq 0 ] || exit "$_rc"
+    _vl_i=$((_vl_i + 1))
 done
 echo "verify.sh: all checks passed (action=$ACTION profile=$PROFILE scope=$SCOPE)." >&2

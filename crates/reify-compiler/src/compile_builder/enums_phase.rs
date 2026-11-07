@@ -2,8 +2,9 @@
 //! resolution during the rest of compilation.
 //!
 //! Only module-local `enum_defs` enter the output `CompiledModule`;
-//! `resolution_enums` is the strictly larger set (prelude ++ local) used
-//! for resolving enum type references from inside the user's decls.
+//! `resolution_enums` is the strictly larger set used for resolving enum
+//! references from inside the user's decls: every name bound by
+//! [`crate::name_env`] (NS-P1), local enums first, one definition per name.
 
 use std::collections::HashSet;
 
@@ -14,7 +15,10 @@ use reify_ir::{EnumDef, EnumVariantDef, VariantPayload};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::type_resolution::{resolve_enum_type_with_args, resolve_type_expr_with_aliases};
+use crate::name_env;
+use crate::type_resolution::{
+    resolve_enum_type_with_args, resolve_type_expr_with_aliases, unresolved_alias_body_name,
+};
 
 /// Resolve each enum variant's named-field payload `TypeExpr`s into the IR's
 /// `VariantPayload::Named(Vec<(String, Type)>)` (task δ #3942).
@@ -28,7 +32,7 @@ use crate::type_resolution::{resolve_enum_type_with_args, resolve_type_expr_with
 /// This phase, called after `aliases_phase::phase_aliases` +
 /// `names_phase::build_resolution_names` (so `ctx.alias_registry`,
 /// `ctx.resolution_structure_names`, and `ctx.resolution_trait_names` are
-/// populated) and **before** [`build_resolution_enums_from_cache`] clones
+/// populated) and **before** [`bind_resolution_enums`] clones
 /// `ctx.enum_defs` into `ctx.resolution_enums` (the set threaded into
 /// `compile_expr`), rebuilds each variant's payload from the AST:
 ///   - `VariantPayload::Unit` (bare) stays `Unit`.
@@ -45,47 +49,44 @@ use crate::type_resolution::{resolve_enum_type_with_args, resolve_type_expr_with
 /// The AST enum declarations are iterated in the same order
 /// `collect_decl_refs` pushed them, so they align 1:1 with `ctx.enum_defs`.
 ///
-/// `prelude_enums` carries the prelude's `EnumDef`s (empty under `#no_prelude`)
-/// so a payload field may reference a prelude enum, exactly as a `param` type
-/// can. Together with the module-local enum names this is the same merged
-/// prelude ++ local enum set that `build_resolution_enums_from_cache` produces.
+/// `prelude` is the effective prelude (empty under `#no_prelude`) so a payload
+/// field may reference a prelude enum, exactly as a `param` type can. The enums
+/// in scope are the same NS-P1 binding `bind_resolution_enums`
+/// produces.
 pub(crate) fn resolve_enum_variant_payloads(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
-    prelude_enums: &[EnumDef],
+    prelude: &[&CompiledModule],
 ) {
     // Move enum_defs out so the per-field resolution can borrow the other
     // (disjoint) ctx fields — alias_registry, diagnostics, resolution name sets
     // — without aliasing the enum_defs we are rebuilding.
     let mut enum_defs = std::mem::take(&mut ctx.enum_defs);
 
-    // Enum names in scope for variant-payload field types: every module-local
-    // enum PLUS every prelude enum, so a payload field can reference a sibling
-    // or prelude enum (e.g. `ConvergenceStatus.NotConverged { reason:
-    // BudgetReason }`). Owned `String`s (not `&str`) so the set does not alias
-    // `enum_defs` during the mutable pass below.
-    let enum_names: HashSet<String> = enum_defs
-        .iter()
-        .map(|e| e.name.clone())
-        .chain(prelude_enums.iter().map(|e| e.name.clone()))
-        .collect();
+    // Enums in scope for variant-payload field types: every module-local enum
+    // PLUS every prelude enum that wins its name, so a payload field can
+    // reference a sibling or prelude enum (e.g. `ConvergenceStatus.NotConverged
+    // { reason: BudgetReason }`). Owned `String`s (not `&str`) so the set does
+    // not alias `enum_defs` during the mutable pass below.
+    let enums_in_scope = name_env::bind(&enum_defs, prelude.iter().copied());
+    let enum_names: HashSet<String> = enums_in_scope.winners().map(|e| e.name.clone()).collect();
 
     let enum_decls = parsed.declarations.iter().filter_map(|d| match d {
         Declaration::Enum(e) => Some(e),
         _ => None,
     });
 
-    // Merged prelude ++ module-local `EnumDef` slice used to resolve a
+    // The in-scope `EnumDef`s as one slice, used to resolve a
     // generic-enum-with-type-args payload reference (e.g. `inner: Result<T,
     // T>`) against `resolve_enum_type_with_args`, which needs each candidate
     // enum's `name` and `type_params` (both already populated by
-    // `collect_decl_refs`, before payload resolution runs) — mirrors how
-    // `enum_names` above already chains `prelude_enums` for the argless
+    // `collect_decl_refs`, before payload resolution runs) — the same
+    // `enums_in_scope` binding `enum_names` above reads for the argless
     // bare-name arm.
     //
     // Built LAZILY (amendment: reviewer_comprehensive performance finding):
-    // this is a full deep clone of every module-local AND prelude `EnumDef`
-    // (variants included), and the with-type-args arm below is the only
+    // this is a full deep clone of every in-scope `EnumDef` (variants
+    // included), and the with-type-args arm below is the only
     // consumer. Most compiles have no generic-enum-with-type-args payload
     // reference at all, so paying that clone unconditionally — this phase
     // runs on the GUI's hot recompile-on-edit path — would be wasted work.
@@ -147,10 +148,38 @@ pub(crate) fn resolve_enum_variant_payloads(
                             // trait-member (`traits.rs`) type resolution use.
                             match &type_expr.kind {
                                 reify_ast::TypeExprKind::Named { name, type_args }
-                                    if type_args.is_empty()
-                                        && enum_names.contains(name.as_str()) =>
+                                    if type_args.is_empty() =>
                                 {
-                                    Some(Type::Enum(name.clone()))
+                                    // `enum_names` is this phase's PRIVATE enum
+                                    // namespace — the ambient `RESOLUTION_ENUM_NAMES`
+                                    // set (which the deferred alias arm in
+                                    // `resolve_type_expr_with_aliases_kinded` consults)
+                                    // is NOT installed here. So `type AL = Zq` reaches
+                                    // this arm still spelled `AL`, and a raw
+                                    // `enum_names.contains("AL")` misses the enum-ness
+                                    // of its body. Hop the unresolved-alias chain to the
+                                    // name the body ultimately spells, and key BOTH the
+                                    // membership test and the resulting `Type::Enum` on
+                                    // it, so the payload type equals the direct
+                                    // spelling's (task 6259).
+                                    //
+                                    // Strictly additive: this runs only after
+                                    // `resolve_type_expr_with_aliases` above already
+                                    // returned `None`, a branch the direct spelling
+                                    // never reaches. `unresolved_alias_body_name`
+                                    // returns `None` for a non-alias (and for a
+                                    // resolved / parametric / non-bare-`Named`-bodied
+                                    // one), so the raw name is used unchanged there.
+                                    let lookup = unresolved_alias_body_name(
+                                        name,
+                                        &ctx.alias_registry,
+                                    )
+                                    .unwrap_or_else(|| name.clone());
+                                    if enum_names.contains(lookup.as_str()) {
+                                        Some(Type::Enum(lookup))
+                                    } else {
+                                        None
+                                    }
                                 }
                                 // Generic enum reference WITH type args — e.g. a
                                 // self-/sibling-referential `left: Tree<T>` inside
@@ -160,8 +189,8 @@ pub(crate) fn resolve_enum_variant_payloads(
                                 // enums, task β #4030). Reuse
                                 // `resolve_enum_type_with_args` — the SAME resolver
                                 // `entity.rs` param-type resolution falls back to —
-                                // against the MERGED prelude ++ module-local
-                                // slice lazily built into
+                                // against the in-scope enums, as one slice
+                                // lazily built into
                                 // `resolution_enum_defs_cache` (covers
                                 // self-reference, any sibling module-local
                                 // generic enum, AND a generic PRELUDE enum
@@ -176,11 +205,7 @@ pub(crate) fn resolve_enum_variant_payloads(
                                 {
                                     let resolution_enum_defs = resolution_enum_defs_cache
                                         .get_or_insert_with(|| {
-                                            enum_defs
-                                                .iter()
-                                                .cloned()
-                                                .chain(prelude_enums.iter().cloned())
-                                                .collect()
+                                            enums_in_scope.winners().cloned().collect()
                                         })
                                         .as_slice();
                                     resolve_enum_type_with_args(
@@ -261,28 +286,62 @@ pub(crate) fn resolve_enum_variant_payloads(
     ctx.enum_defs = enum_defs;
 }
 
-/// Flatten the `enum_defs` from every module in `prelude` into a single
-/// `Vec<EnumDef>`, preserving source order (m[0] first, m[1] second, …).
-///
-/// Used by [`PreludeContext::new`] to build the pre-computed enum cache once;
-/// the compiled cache is then reused by [`build_resolution_enums_from_cache`]
-/// on every subsequent compile call.
-pub(crate) fn flatten_prelude_enum_defs(prelude: &[&CompiledModule]) -> Vec<EnumDef> {
-    prelude
-        .iter()
-        .flat_map(|m| m.enum_defs.iter().cloned())
+/// The enums `prelude` binds on its own (no local tier), one per name, in
+/// NS-P1 precedence order. Cached once by [`PreludeContext::new`] for the
+/// parser's enum-name seed.
+pub(crate) fn bind_prelude_enum_defs(prelude: &[&CompiledModule]) -> Vec<EnumDef> {
+    name_env::bind::<EnumDef, _>(&[], prelude.iter().copied())
+        .winners()
+        .cloned()
         .collect()
 }
 
-/// Run phase-6 using a pre-built enum list from a [`PreludeContext`].
+/// Run phase-6: `ctx.resolution_enums` becomes every enum name bound by
+/// [`crate::name_env`] — module-local enums first, then the prelude winners —
+/// so each `.find(|e| e.name == n)` consumer binds the NS-P1 winner.
+pub(crate) fn bind_resolution_enums(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+    ctx.resolution_enums = name_env::bind(&ctx.enum_defs, prelude.iter().copied())
+        .winners()
+        .cloned()
+        .collect();
+}
+
+/// Build the MODULE-LOCAL enum shadow set installed via
+/// [`crate::type_resolution::LocalEnumShadowScope`] (task #5429; PRD
+/// `docs/prds/v0_6/uniform-member-access.md` §4 M5 / D8): every module-local
+/// `enum N` whose name is NOT also a module-local structure/occurrence name.
 ///
-/// Clones the pre-computed `prelude_resolution_enums` into `ctx.resolution_enums`
-/// and then appends the module-local enums, skipping the flat_map over prelude
-/// modules that would otherwise be repeated on every call.
-pub(crate) fn build_resolution_enums_from_cache(
-    ctx: &mut CompilationCtx,
-    prelude_resolution_enums: &[EnumDef],
-) {
-    ctx.resolution_enums = prelude_resolution_enums.to_vec();
-    ctx.resolution_enums.extend(ctx.enum_defs.iter().cloned());
+/// The two halves each carry a rule:
+/// - **`ctx.enum_defs`, not `ctx.resolution_enums`.** The former is module-local
+///   only; the latter also carries the prelude's enums. A PRELUDE enum must never shadow a
+///   LOCAL structure, or a user's own `structure def ThreadSystem` would be
+///   silently retyped to the stdlib `enum ThreadSystem`
+///   (`stdlib/ports_mechanical.ri:35`). Oracle:
+///   `enum_ctor_param_binding_tests::prelude_enum_does_not_shadow_local_structure`.
+/// - **Local structure/occurrence names subtracted.** A same-module
+///   `structure def N` still beats a same-module `enum N`, so the
+///   most-local-declaration-wins rule is applied conservatively — no behaviour
+///   change where today's answer is at least defensible. Oracle:
+///   `enum_ctor_param_binding_tests::local_structure_wins_over_same_named_local_enum`.
+///
+/// **Both inputs are final from `pre_pass::collect_decl_refs` onward**, so the
+/// caller may install the resulting scope at ANY point after that phase and get
+/// the same set: `collect_decl_refs` seeds both `ctx.enum_defs` and
+/// `ctx.seen_entity_names`, and the only later phase that touches `ctx.enum_defs`
+/// — [`resolve_enum_variant_payloads`] — rewrites PAYLOADS, never names.
+///
+/// Called once, by [`crate::compile_with_prelude_context_checked_with_config`], whose
+/// install-site comment states where the scope is installed and why it is module-wide.
+pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
+    let local_structure_names: HashSet<&str> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.as_str())
+        .collect();
+    ctx.enum_defs
+        .iter()
+        .map(|e| e.name.clone())
+        .filter(|n| !local_structure_names.contains(n.as_str()))
+        .collect()
 }

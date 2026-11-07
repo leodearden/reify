@@ -1,0 +1,9 @@
+module auto_reach_constraint_inside_child
+structure Bearing2 {
+    param bore : Length = 10mm
+    let fit = self.bore * 2.0
+    constraint self.fit == 20mm
+}
+structure Own {
+    sub b : Bearing2 { bore = auto }
+}

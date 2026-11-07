@@ -120,7 +120,7 @@ substituted at the call site).
   `pub type Rate<Q: Dimension> = Q / Time`,
   `pub type Vec3<Q: Dimension> = Vector3<Q>`, and the use site
   `param r : Rate<Force>`. Parser test already covers the shape
-  (`crates/reify-syntax/tests/type_alias_tests.rs:411` —
+  (`crates/reify-syntax/tests/harness_syntax/type_alias_tests.rs:411` —
   `type Velocity<T> = T / Time`); `grammar.js:438` pre-comments
   `type Stress<T> = Force / Area`. **No grammar work required.**
 - **`Dimension` bound exists.** `fields.ri:156` uses `Q: Dimension`; the stdlib
@@ -190,7 +190,7 @@ for all (no novel syntax).
   `crates/reify-compiler/src/compile_builder/aliases_phase.rs`,
   `crates/reify-compiler/stdlib/units.ri`,
   `crates/reify-test-support/src/builders/module.rs`,
-  `crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs`.
+  `crates/reify-compiler/tests/harness_result_annotation/cross_module_alias_propagation_tests.rs`.
 
 - **Task B — `Vec3<Q>` builtin-arg consumer + stdlib migration.** Add
   `pub type Vec3<Q: Dimension> = Vector3<Q>` in a module visible (per the topo import

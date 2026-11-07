@@ -13,7 +13,9 @@
 use reify_compiler::DefaultKind;
 use reify_core::{Diagnostic, DimensionVector, Type};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{
+    compile_source, compile_source_allow_parse_errors, errors_only, get_value_cell_in,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -166,13 +168,16 @@ trait HasBadType {
     );
 }
 
-// ── step-8 (test): conformance integration — annotated let satisfies let requirement ──
+// ── step-8 (test): conformance integration — annotated let default through a two-trait conformer ──
 
-/// Trait A provides `let x : Length = 5mm`, trait B requires `let x : Length`.
-/// Structure S : A + B should compile without errors.
+/// Trait A provides `let x : Length = 5mm`; structure `S : A + B` injects it
+/// through a two-trait conformer and must compile clean.
 ///
-/// Before the fix, available_defaults used Type::dimensionless_scalar() for all Let defaults,
-/// so the conformance check compared Real vs Scalar{LENGTH} → false type-mismatch.
+/// Trait B is empty: it cannot require `let x : Length`, because a value-less
+/// `let` is not trait syntax (see `let_with_type_and_no_value_…` below) and
+/// `RequirementKind::Let` is not parser-reachable. The requirement-matching
+/// half is pinned on a hand-built requirement in conformance/mod.rs
+/// `chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade`.
 #[test]
 fn annotated_let_default_satisfies_let_requirement() {
     let source = r#"
@@ -180,7 +185,6 @@ trait A {
     let x : Length = 5mm
 }
 trait B {
-    let x : Length
 }
 structure S : A + B {
 }
@@ -211,17 +215,8 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    // x is injected from trait HasX.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     // The cell should be a Let kind.
     assert_eq!(
@@ -381,17 +376,8 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    // x is injected from trait HasX.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -446,41 +432,45 @@ structure S : HasL {
     );
 }
 
-// ── task 1834 step-5: `let x : Length` without value is a parser-level no-op ──
+// ── task 1834 step-5 / #7809: `let x : Length` without a value is a parse error ──
 
-/// The forward-guard originally proposed for step-5 was
-/// `unannotated_let_default_satisfies_typed_let_requirement`: trait A provides
-/// `let x = 5mm`, trait B requires `let x : Length`, structure `S : A + B {}`
-/// should compile cleanly because A's inferred Length default matches B's
-/// Length requirement.  While writing the test we discovered that the reify
-/// DSL currently does not syntactically accept `let x : Length` without a
-/// value expression (see `lower_let` in ts_parser.rs:1455, which returns
-/// `None` when `value` is absent, and trait_merge_tests.rs:280).  Trait B
-/// therefore parses as empty: no members, no requirements, no defaults.  The
-/// original shape of the test was tautological — it passed equally on pre-
-/// and post-1834 code — and therefore provided no regression coverage.
+/// A value-less `let x : Length` is not trait syntax, and it is a loud,
+/// located parse error (INV-SF-7 parse-is-value-faithful, #7809): tree-sitter
+/// recovers it as an ERROR child of the trait body, `lower_trait_members`
+/// reports `syntax error in trait body` at the `let`, and the compiler forwards
+/// it with its `parse error: ` prefix.  Before #7809 that ERROR was dropped in
+/// silence.
 ///
-/// This replacement test asserts the parser behavior directly so the
-/// syntactic limitation is explicit in the test suite: `trait B { let x :
-/// Length }` must compile to a trait with zero members (no required_members
-/// that would produce a `RequirementKind::Let`, and no defaults for `x`).
-/// If `let x : Type` without a value becomes syntactically valid in the
-/// future, this test will start failing — at which point it should be
-/// replaced (or augmented) with the full A+B conformance scenario the
-/// original step-5 envisioned, exercising `available_defaults` for
-/// unannotated-let vs. typed-let-requirement matching.
-///
-/// Tracking the coverage gap: a `RequirementKind::Let`-satisfied-by-
-/// inferred-default scenario cannot be constructed from source today.  Filed
-/// as a follow-up on task 1834; no separate tracker task exists yet.
+/// The compiled trait is still empty: no `RequirementKind::Let` in
+/// `required_members` and no default for `x`.  So `RequirementKind::Let` is not
+/// reachable from source, and the scenario task 1834 step-5 envisioned (trait A
+/// provides `let x = 5mm`, trait B requires `let x : Length`, `S : A + B`
+/// compiles clean) is pinned on a hand-built requirement instead, in
+/// conformance/mod.rs `inferred_let_expr_satisfies_let_requirement`.  If a
+/// value-less trait `let` ever becomes syntax, replace this test with that
+/// source-level scenario.
 #[test]
-fn let_with_type_and_no_value_parses_as_empty_trait() {
+fn let_with_type_and_no_value_is_a_parse_error_and_lowers_an_empty_trait() {
     let source = r#"
 trait B {
     let x : Length
 }
     "#;
-    let module = compile_source(source);
+    let module = compile_source_allow_parse_errors(source);
+
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {errors:?}"
+    );
+    assert_eq!(errors[0].message, "parse error: syntax error in trait body");
+    assert_eq!(
+        errors[0].labels[0].span.start as usize,
+        source.find("let x : Length").unwrap(),
+        "the parse error must be located at the value-less let, got: {:?}",
+        errors[0]
+    );
 
     let b = module
         .trait_defs
@@ -491,7 +481,7 @@ trait B {
     assert!(
         b.required_members.is_empty(),
         "`let x : Length` without a value must not produce a RequirementKind::Let \
-         (the parser returns None when the value child is missing). \
+         (it is a parse error, not a trait member). \
          Got required_members = {:?}",
         b.required_members
     );
@@ -545,19 +535,10 @@ structure S : MixedLets {
         errors
     );
 
-    // The injected cell for `a` must have its inferred Length type, confirming
-    // Pass 2's `compile_expr` saw `b : Length` in scope and typed `b + 1mm`
-    // correctly.
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-    let a_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "a")
-        .expect("expected value_cell 'a' injected from trait MixedLets");
+    // The injected cell for `a` (from trait MixedLets) must have its inferred
+    // Length type, confirming Pass 2's `compile_expr` saw `b : Length` in
+    // scope and typed `b + 1mm` correctly.
+    let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
         Type::Scalar {
@@ -606,19 +587,11 @@ structure S : WithParam {
         errors
     );
 
-    // The injected cell for `a` must carry the inferred Length type, confirming
-    // Pass 2's `compile_expr` saw `x : Length` in scope and typed `x + 1mm`
-    // as Length (not Real, which would indicate Pass 1 missed the Param arm).
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-    let a_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "a")
-        .expect("expected value_cell 'a' injected from trait WithParam");
+    // The injected cell for `a` (from trait WithParam) must carry the inferred
+    // Length type, confirming Pass 2's `compile_expr` saw `x : Length` in
+    // scope and typed `x + 1mm` as Length (not Real, which would indicate
+    // Pass 1 missed the Param arm).
+    let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
         Type::Scalar {
@@ -672,17 +645,8 @@ structure S : T {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait T");
+    // x is injected from trait T.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -768,8 +732,8 @@ structure S : MutualLets {
 ///
 /// **Single root-cause diagnostic — no secondary phantom cascade.**  Exactly one
 /// root-cause "unresolved `b`" error must be present.  No cascade diagnostics of
-/// the form "available default has Real" (which would indicate a poisoned
-/// `inferred_let_exprs` entry was advertised as a valid default) and no
+/// the form "available default has Real" (which would indicate a let that failed
+/// to compile was advertised as a valid default) and no
 /// "type mismatch for trait member 'a'" phantom from the same root cause.
 ///
 /// The error count is pinned at `<= 1` as a prose-independent backstop (check (d)):
@@ -933,8 +897,8 @@ structure S : ReverseOrder {
 ///
 /// `trait T { let a = b + 1mm; let c = a * 2mm }` — `a` depends on `b`, which is
 /// undefined.  Without scope poisoning, Pass 2 of `check_phase_pre_register_default_types`
-/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` in
-/// `pass2_compile_errors` — but does NOT register `a` in scope.  When it then compiles
+/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` as a
+/// compile error — but does NOT register `a` in scope.  When it then compiles
 /// `c`'s expression, the scope lookup for `a` fails and emits a SECOND "unresolved name: a"
 /// cascade on top of the root-cause error.
 ///
@@ -1046,17 +1010,8 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    // x is injected from trait HasX.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -1119,17 +1074,8 @@ structure S : HasX {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    // x is injected from trait HasX.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -1182,17 +1128,8 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    // x is injected from trait HasX.
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,

@@ -55,10 +55,8 @@ _out_lacks()     { ! grep -qF -- "$2" "$1"; }   # <file> <needle>  -> 0 if ABSEN
 echo "=== run_all.sh clock-marker sanitize (task 4998) ==="
 
 if [ ! -f "$RUN_ALL" ] || [ ! -f "$LOAD_TOLERANCE_LIB" ]; then
-    # Skip cleanly if the pool substrate is unavailable: this fix scopes the
-    # sanitizer to the concurrent-pool re-emission path (the production
-    # DF-clock-stop-parsed verify stream), so a legacy-only environment has
-    # nothing to assert here.
+    # Skip cleanly if the pool substrate is unavailable: this suite pins the
+    # deferred-replay site, which only the concurrent pool drives.
     assert "run_all.sh + load_tolerance_lib.sh present (skipped - pool substrate missing)" false
     test_summary
     exit 0
@@ -98,8 +96,8 @@ RUN_ALL_CLASSIFICATION_MANIFEST="$TMPD/classification.manifest" \
 echo ""
 echo "--- Preconditions: pool path taken, both fixtures ran (non-vacuous) ---"
 
-# Guard against silently validating the legacy fallback (which this fix does not
-# sanitize): assert the pool-path-only INFO marker is present.
+# This suite pins the deferred-replay site: assert the pool-path-only INFO
+# marker is present.
 assert "pool path was taken (INFO: run_all.sh pool: N= present)" \
     _out_contains "$RA_OUT_FILE" "INFO: run_all.sh pool: N="
 

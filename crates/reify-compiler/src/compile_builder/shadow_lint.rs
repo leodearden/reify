@@ -47,14 +47,7 @@ use std::collections::HashMap;
 use reify_ast::{Expr, ExprKind, ParsedModule};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
-/// Stack-safety bound on the structural recursion in [`walk_expr_depth`].
-///
-/// Mirrors the convention in `dot_chain_lint.rs`: 256 is generous (typical
-/// hand-written code never exceeds ~20). Exceeding the bound is treated as a
-/// "should never happen" invariant violation; debug builds panic for fuzzer
-/// visibility, release builds silently truncate so end-users never see an
-/// unactionable diagnostic.
-const MAX_EXPR_DEPTH: usize = 256;
+use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
 
 /// A single lexical scope frame: names declared in this scope mapped to their
 /// declaration spans.
@@ -286,6 +279,21 @@ fn collect_body_frame_into(members: &[reify_ast::MemberDecl], frame: &mut Frame,
         match member {
             // A relate block introduces no bindable names (task δ 4384).
             MemberDecl::Relate(_) => {}
+            // A sketch block contributes NO binder to the enclosing frame
+            // (constrained-2d-sketch α, task 5506). Its body's `let`s are
+            // sketch-local — "not visible outside the block in v1" (PRD
+            // docs/prds/v0_6/constrained-2d-sketch.md §7 C1) — so they must not
+            // be folded in here, exactly as `walk_members`' non-descent in
+            // reify-ast decides.
+            //
+            // Whether the sketch's OWN name binds in the enclosing scope (the
+            // fixture's `extrude(profile, length)` reads as if it does) is a
+            // SEMANTIC question α deliberately leaves to γ: α rejects sketch
+            // blocks at compile time, so `profile` never becomes a value cell,
+            // and binding it here would let the shadow lint warn about a name
+            // that does not yet exist. Not binding it can only miss a lint;
+            // binding it can emit a wrong one.
+            MemberDecl::Sketch(_) => {}
             MemberDecl::Param(p) => {
                 frame.entry(p.name.clone()).or_insert(p.span);
             }
@@ -372,6 +380,16 @@ fn walk_members_depth(
     }
     for member in members {
         match member {
+            // Walk the sketch body so shadow lints see its `let` values and
+            // bare relation expressions (constrained-2d-sketch α, task 5506).
+            // No frame is pushed: `collect_body_frame_into` deliberately
+            // contributes no binders for a sketch, so there is no sketch-local
+            // frame to push — a lambda param inside a sketch member is still
+            // checked against the ENCLOSING scopes, which is the conservative
+            // reading until γ defines sketch-local scoping.
+            MemberDecl::Sketch(s) => {
+                walk_members_depth(&s.members, frames, diagnostics, depth + 1);
+            }
             // Walk relate-block relations so shadow lints see them (task δ 4384).
             MemberDecl::Relate(r) => {
                 for rel in &r.relations {
@@ -507,11 +525,12 @@ fn walk_members_depth(
             // consistent with the `Declaration::Function` arm). A bodyless
             // required trait fn (`body: None`) has nothing to walk.
             //
-            // NOTE: this `MemberDecl` match runs in parallel with the one in
-            // `dot_chain_lint.rs::walk_members`; a newly added expression-bearing
-            // member kind must be handled in both. Unifying the two walkers is a
-            // larger refactor (the two carry different scope-frame state) and is
-            // intentionally out of scope here.
+            // NOTE: `dot_chain_lint.rs::walk_member_own_exprs` makes the same
+            // per-member expression decisions; a newly added expression-bearing
+            // member kind must be handled in both. This match also hand-rolls
+            // the member recursion that dot_chain_lint takes from reify-ast:
+            // it pushes a scope frame per nested body, and reify-ast's member
+            // walkers are flat visitors with no enter/exit hook to do that.
             MemberDecl::Fn(f) => {
                 if let Some(body) = &f.body {
                     walk_child_scope_body(
@@ -548,14 +567,9 @@ fn walk_expr_depth(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    if depth > MAX_EXPR_DEPTH {
-        debug_assert!(
-            false,
-            "shadow_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
-             shadow lint coverage truncated at this subtree — likely upstream parser \
-             bug or fuzzer input producing pathologically deep AST",
-            MAX_EXPR_DEPTH, depth
-        );
+    // Past the shared cap the lint stops silently; for compiled expressions the
+    // compiler's guard reports E_EXPR_NESTING_TOO_DEEP.
+    if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
     let next = depth + 1;
@@ -847,4 +861,74 @@ fn push_shadow_diagnostic(
             "originally declared here",
         )),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
+    use crate::recursion_guard::test_support::{NestingArm, on_tokio_worker_stack};
+
+    /// Every recursion arm of `walk_expr_depth` forwards both `depth + 1` and the
+    /// enclosing frames, and the lint covers nesting up to the shared compile cap
+    /// and stops silently past it: a lambda shadowing an enclosing lambda's `x`,
+    /// nested so it sits AT the cap, is reported; one level deeper it is
+    /// skipped. Runs on a 2 MiB stack, the GUI's compile stack.
+    #[test]
+    fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it_for_every_arm() {
+        fn lambda_over_x(body: Expr) -> Expr {
+            let span = body.span;
+            Expr {
+                kind: ExprKind::Lambda {
+                    params: vec![reify_ast::LambdaParam {
+                        name: "x".into(),
+                        type_expr: None,
+                        span,
+                    }],
+                    body: Box::new(body),
+                },
+                span,
+            }
+        }
+
+        /// `|x| <layers of arm> (|x| x)`: the outer lambda is the root at depth 0,
+        /// so the layers start at depth 1 and the shadowing lambda sits at `depth`.
+        fn shadow_count(arm: NestingArm, depth: usize) -> usize {
+            let shadowing = lambda_over_x(Expr {
+                kind: ExprKind::Ident("x".into()),
+                span: SourceSpan::empty(0),
+            });
+            let root = lambda_over_x(arm.nest_at_depth(shadowing, depth - 1));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            walk_expr(&root, None, &mut diagnostics);
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == Some(DiagnosticCode::Shadowing)),
+                "arm {arm:?} with the shadowing lambda at depth {depth} emitted a \
+                 non-Shadowing diagnostic: {diagnostics:?}"
+            );
+            diagnostics.len()
+        }
+
+        on_tokio_worker_stack(|| {
+            for &arm in NestingArm::ALL {
+                assert_eq!(
+                    shadow_count(arm, CAP),
+                    1,
+                    "arm {arm:?}: a shadowing lambda at depth {CAP} sits at the cap and \
+                     must be linted — zero means this arm lost the enclosing frames or \
+                     over-counted depth"
+                );
+                assert_eq!(
+                    shadow_count(arm, CAP + 1),
+                    0,
+                    "arm {arm:?}: a shadowing lambda at depth {} sits past the cap and \
+                     must be skipped — a non-zero count means this arm did not forward \
+                     depth + 1",
+                    CAP + 1
+                );
+            }
+        });
+    }
 }

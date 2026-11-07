@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, Type, ValueCellId,
+};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction};
+
+use crate::annotations::{
+    extract_solver_hints, lower_annotations, validate_annotations, validate_solver_hint_collections,
+};
+use crate::expr::{compile_expr, compile_expr_guarded, extract_auto_free};
+use crate::geometry::{is_geometry_let, is_selector_expr};
+use crate::ice::{UnresolvedKind, emit_ice_unresolved};
+use crate::member_cell_decls::{
+    build_auto_let_value_cell_decl, build_param_value_cell_decl, fixup_option_none_for_let,
+    fixup_option_none_for_param, priv_flag_to_visibility, resolve_auto_let_cell_type,
+};
+use crate::scope::CompilationScope;
+use crate::type_resolution::{TypeAliasRegistry, resolve_type_expr_with_aliases};
+use crate::types::{
+    CompiledConstraint, CompiledGuardedGroup, GuardedDeclArm, ValueCellDecl, ValueCellKind,
+    Visibility,
+};
 
 pub(crate) fn collect_body_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
     let mut refs = Vec::new();
@@ -211,7 +233,25 @@ pub(crate) fn register_guarded_names<'a>(
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
-                    scope.register(&let_decl.name, Type::dimensionless_scalar());
+                    // An auto let's declared annotation is its only type, so register it
+                    // now; the member pass owns the diagnostics, hence the throwaway sink.
+                    let declared_auto_type = extract_auto_free(&let_decl.value).and_then(|_| {
+                        let mut throwaway = Vec::new();
+                        resolve_auto_let_cell_type(
+                            &let_decl.name,
+                            let_decl.type_expr.as_ref(),
+                            let_decl.span,
+                            type_param_names,
+                            alias_registry,
+                            structure_names,
+                            trait_names,
+                            &mut throwaway,
+                        )
+                    });
+                    scope.register(
+                        &let_decl.name,
+                        declared_auto_type.unwrap_or_else(Type::dimensionless_scalar),
+                    );
                     // Track selector lets so subsequent all-ident compositions
                     // are correctly classified. Mirrors entity.rs pre-pass. (task 4527)
                     if is_selector_expr(&let_decl.value, functions, known_selector_lets) {
@@ -410,6 +450,14 @@ pub(crate) fn compile_guarded_members(
                         .with_label(DiagnosticLabel::new(r.span, "not yet supported")),
                 );
             }
+            // A `sketch { … }` nested inside a `where { }` guarded block. This is
+            // a SEPARATE member loop from entity.rs, so it rejects the block
+            // itself — see `sketch_unsupported`.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(crate::compile_builder::sketch_unsupported::diagnostic(
+                    sketch.span,
+                ));
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
@@ -445,7 +493,7 @@ pub(crate) fn compile_guarded_members(
                         // Intentionally no `check_param_default_type` call in this
                         // closure: guarded params have never run that cross-check
                         // (see `build_param_value_cell_decl`'s doc comment in
-                        // entity.rs). Task #5058's dedup preserves that byte-for-byte
+                        // member_cell_decls.rs). Task #5058's dedup preserves that byte-for-byte
                         // — adding the call here would introduce a new diagnostic
                         // path for guarded params, not merely refactor an existing one.
                         param.default.as_ref().map(|expr| {
@@ -470,6 +518,34 @@ pub(crate) fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value, functions, known_geometry_lets, known_selector_lets) {
                     continue;
                 }
+
+                // An `auto` let is a solver cell typed by its annotation, as in the
+                // `Param` arm above; `compile_expr_guarded` below has no `auto` lowering.
+                if let Some(free) = extract_auto_free(&let_decl.value) {
+                    let Some(cell_type) = resolve_auto_let_cell_type(
+                        &let_decl.name,
+                        let_decl.type_expr.as_ref(),
+                        let_decl.span,
+                        type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    members.push(build_auto_let_value_cell_decl(
+                        entity_name,
+                        let_decl,
+                        free,
+                        cell_type,
+                        scope,
+                        functions,
+                        diagnostics,
+                    ));
+                    continue;
+                }
+
                 let mut compiled_expr = {
                     let mut lc = 0u32;
                     compile_expr_guarded(
@@ -933,6 +1009,9 @@ mod narrow_arms_under_guard_tests {
 #[cfg(test)]
 mod guarded_param_default_tests {
     use super::*;
+    use reify_core::Severity;
+
+    use crate::types::CompiledModule;
 
     /// Parse + compile `source` using this crate's own (in-build) `compile`,
     /// never `reify_test_support::compile_source`: that helper links against
@@ -953,7 +1032,7 @@ mod guarded_param_default_tests {
             "parse errors: {:?}",
             parsed.errors
         );
-        super::compile(&parsed)
+        crate::compile(&parsed)
     }
 
     /// A guarded-block param with a typed, dimensionally-correct default must

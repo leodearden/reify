@@ -1,5 +1,11 @@
 use super::*;
 use crate::compile_builder::hash::hash_pragma;
+use crate::compile_builder::sketch_unsupported;
+use crate::member_cell_decls::{
+    build_auto_let_value_cell_decl, build_param_value_cell_decl, fixup_option_none_for_let,
+    fixup_option_none_for_param, priv_flag_to_visibility, reject_keyed_value_position,
+    resolve_auto_let_cell_type,
+};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -64,69 +70,129 @@ impl<'a> From<&'a reify_ast::OccurrenceDef> for EntityDefRef<'a> {
 
 /// Substitute constraint parameter references in an AST expression.
 ///
-/// Recursively walks `expr` and replaces every `ExprKind::Ident(name)` where
-/// `name` is a key in `bindings` with the corresponding bound expression.
-/// Lambda and quantifier bodies respect lexical shadowing — when a binder
-/// introduces a name that overlaps a constraint param, the inner name takes
-/// precedence and substitution is suppressed for that name inside the body.
-/// Match arms recurse into the body with the full set of bindings — arm
-/// patterns are structural (enum variants, literals) and do not introduce
-/// shadowing. If pattern bindings are introduced in the future (e.g.
-/// `x @ Pattern` or destructuring), arm-level shadowing suppression must be
-/// added here. Conditional branches (`if/then/else`) are traversed
-/// transparently; substitution applies to condition, then-branch, and
-/// else-branch alike.
+/// Every FREE use of a name in `bindings` becomes a clone of the bound
+/// expression, which keeps that expression's own span. Which uses are free is
+/// [`substitute_free_idents`]' single rule set.
 pub(crate) fn substitute_expr(
     expr: &reify_ast::Expr,
     bindings: &HashMap<String, reify_ast::Expr>,
 ) -> reify_ast::Expr {
-    use reify_ast::{Expr, ExprKind, MatchArm};
-    let span = expr.span;
-    let new_kind = match &expr.kind {
-        // Leaf variants — no sub-expressions to recurse into.
-        ExprKind::NumberLiteral { value, is_real } => ExprKind::NumberLiteral {
-            value: *value,
-            is_real: *is_real,
-        },
-        ExprKind::QuantityLiteral { value, unit } => ExprKind::QuantityLiteral {
-            value: *value,
-            unit: unit.clone(),
-        },
-        ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
-        ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto { free, params } => ExprKind::Auto {
-            free: *free,
-            // `params` hold full value expressions (`seed = self.frame`,
-            // `x = 5mm`, …) that may reference bindings, so substitute into
-            // each — mirroring the MapLiteral / FunctionCall recursion above.
-            params: params
-                .iter()
-                .map(|(n, v)| (n.clone(), substitute_expr(v, bindings)))
-                .collect(),
-        },
-        ExprKind::Undef => ExprKind::Undef,
-        ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
-            type_name: type_name.clone(),
-            variant: variant.clone(),
-        },
+    substitute_free_idents(expr, &|name, _use_span| bindings.get(name).cloned())
+}
 
-        // Identifier — the substitution point.
+/// Clone `expr`, replacing every FREE use of an identifier for which
+/// `replace(name, use_span)` returns `Some`.
+///
+/// The one statement of which uses a binder captures, so every AST-level
+/// substitution shares the same scoping rules:
+///   * a `Lambda`'s params scope over its body;
+///   * a `Quantifier`'s variable scopes over its predicate ONLY — the
+///     collection is compiled in the enclosing scope;
+///   * a `Match` arm's `VariantBind` local binders scope over that arm's body
+///     ONLY — the discriminant and sibling arms sit outside it.
+///
+/// Those are the complete set of name-binding `ExprKind` forms. `Auto { params }`
+/// is not one: its `name = value` entries are call arguments evaluated in the
+/// enclosing scope. Every node other than a replaced use keeps its span.
+pub(crate) fn substitute_free_idents(
+    expr: &reify_ast::Expr,
+    replace: &dyn Fn(&str, SourceSpan) -> Option<reify_ast::Expr>,
+) -> reify_ast::Expr {
+    rewrite_free_idents(expr, replace, &[])
+}
+
+/// [`substitute_free_idents`]' recursion; `bound` holds the names the enclosing
+/// binders have captured at this point.
+fn rewrite_free_idents<'e>(
+    expr: &'e reify_ast::Expr,
+    replace: &dyn Fn(&str, SourceSpan) -> Option<reify_ast::Expr>,
+    bound: &[&'e str],
+) -> reify_ast::Expr {
+    use reify_ast::{Expr, ExprKind, MatchArm, MatchPattern, StringPart};
+
+    let sub = |e: &'e Expr| rewrite_free_idents(e, replace, bound);
+    let sub_box = |e: &'e Expr| Box::new(sub(e));
+    let sub_vec = |es: &'e [Expr]| -> Vec<Expr> { es.iter().map(sub).collect() };
+    let sub_under = |binders: &mut dyn Iterator<Item = &'e str>, e: &'e Expr| {
+        let inner: Vec<&'e str> = bound.iter().copied().chain(binders).collect();
+        rewrite_free_idents(e, replace, &inner)
+    };
+
+    let kind = match &expr.kind {
+        // ── the substitution site ────────────────────────────────────────
         ExprKind::Ident(name) => {
-            if let Some(replacement) = bindings.get(name) {
-                return replacement.clone();
+            if !bound.contains(&name.as_str())
+                && let Some(replacement) = replace(name, expr.span)
+            {
+                return replacement;
             }
             ExprKind::Ident(name.clone())
         }
 
-        // Compound variants — recurse into sub-expressions.
+        // ── binders ──────────────────────────────────────────────────────
+        ExprKind::Lambda { params, body } => ExprKind::Lambda {
+            params: params.clone(),
+            body: Box::new(sub_under(&mut params.iter().map(|p| p.name.as_str()), body)),
+        },
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            variable_span,
+            collection,
+            predicate,
+        } => ExprKind::Quantifier {
+            kind: *kind,
+            variable: variable.clone(),
+            variable_span: *variable_span,
+            collection: sub_box(collection),
+            predicate: Box::new(sub_under(
+                &mut std::iter::once(variable.as_str()),
+                predicate,
+            )),
+        },
+        ExprKind::Match { discriminant, arms } => ExprKind::Match {
+            discriminant: sub_box(discriminant),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    let mut arm_binders = arm
+                        .patterns
+                        .iter()
+                        .flat_map(|p| match p {
+                            MatchPattern::VariantBind { binders, .. } => binders.as_slice(),
+                            MatchPattern::Wildcard | MatchPattern::Variant(_) => &[],
+                        })
+                        .map(|(_, local)| local.as_str());
+                    MatchArm {
+                        patterns: arm.patterns.clone(),
+                        body: sub_under(&mut arm_binders, &arm.body),
+                        span: arm.span,
+                    }
+                })
+                .collect(),
+        },
+
+        // ── leaves ───────────────────────────────────────────────────────
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Undef => expr.kind.clone(),
+
+        // ── structural recursion ─────────────────────────────────────────
+        ExprKind::Auto { free, params } => ExprKind::Auto {
+            free: *free,
+            params: params.iter().map(|(n, v)| (n.clone(), sub(v))).collect(),
+        },
         ExprKind::BinOp { op, left, right } => ExprKind::BinOp {
             op: op.clone(),
-            left: Box::new(substitute_expr(left, bindings)),
-            right: Box::new(substitute_expr(right, bindings)),
+            left: sub_box(left),
+            right: sub_box(right),
         },
         ExprKind::UnOp { op, operand } => ExprKind::UnOp {
             op: op.clone(),
-            operand: Box::new(substitute_expr(operand, bindings)),
+            operand: sub_box(operand),
         },
         ExprKind::FunctionCall {
             name,
@@ -134,11 +200,11 @@ pub(crate) fn substitute_expr(
             arg_names,
         } => ExprKind::FunctionCall {
             name: name.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
             arg_names: arg_names.clone(),
         },
         ExprKind::MemberAccess { object, member } => ExprKind::MemberAccess {
-            object: Box::new(substitute_expr(object, bindings)),
+            object: sub_box(object),
             member: member.clone(),
         },
         ExprKind::Conditional {
@@ -146,83 +212,27 @@ pub(crate) fn substitute_expr(
             then_branch,
             else_branch,
         } => ExprKind::Conditional {
-            condition: Box::new(substitute_expr(condition, bindings)),
-            then_branch: Box::new(substitute_expr(then_branch, bindings)),
-            else_branch: Box::new(substitute_expr(else_branch, bindings)),
+            condition: sub_box(condition),
+            then_branch: sub_box(then_branch),
+            else_branch: sub_box(else_branch),
         },
-        ExprKind::ListLiteral(items) => {
-            ExprKind::ListLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
+        ExprKind::ListLiteral(items) => ExprKind::ListLiteral(sub_vec(items)),
+        ExprKind::SetLiteral(items) => ExprKind::SetLiteral(sub_vec(items)),
+        ExprKind::MapLiteral(pairs) => {
+            ExprKind::MapLiteral(pairs.iter().map(|(k, v)| (sub(k), sub(v))).collect())
         }
-        ExprKind::SetLiteral(items) => {
-            ExprKind::SetLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
-        }
-        ExprKind::MapLiteral(pairs) => ExprKind::MapLiteral(
-            pairs
-                .iter()
-                .map(|(k, v)| (substitute_expr(k, bindings), substitute_expr(v, bindings)))
-                .collect(),
-        ),
         ExprKind::IndexAccess { object, index } => ExprKind::IndexAccess {
-            object: Box::new(substitute_expr(object, bindings)),
-            index: Box::new(substitute_expr(index, bindings)),
+            object: sub_box(object),
+            index: sub_box(index),
         },
-        ExprKind::Match { discriminant, arms } => ExprKind::Match {
-            discriminant: Box::new(substitute_expr(discriminant, bindings)),
-            arms: arms
-                .iter()
-                .map(|arm| MatchArm {
-                    patterns: arm.patterns.clone(),
-                    body: substitute_expr(&arm.body, bindings),
-                    span: arm.span,
-                })
-                .collect(),
-        },
-        // Lambda — remove params that shadow constraint param names to respect scoping.
-        ExprKind::Lambda { params, body } => {
-            let shadowed: std::collections::HashSet<&str> =
-                params.iter().map(|p| p.name.as_str()).collect();
-            let inner_bindings: HashMap<String, Expr> = bindings
-                .iter()
-                .filter(|(k, _)| !shadowed.contains(k.as_str()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            ExprKind::Lambda {
-                params: params.clone(),
-                body: Box::new(substitute_expr(body, &inner_bindings)),
-            }
-        }
-        // Quantifier — the bound variable shadows constraint params in the predicate.
-        ExprKind::Quantifier {
-            kind,
-            variable,
-            variable_span,
-            collection,
-            predicate,
-        } => {
-            // The collection expression is evaluated in the outer scope.
-            let sub_collection = substitute_expr(collection, bindings);
-            // The predicate is evaluated with the variable shadowing any same-named binding.
-            let inner_bindings: HashMap<String, Expr> = bindings
-                .iter()
-                .filter(|(k, _)| k.as_str() != variable.as_str())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            ExprKind::Quantifier {
-                kind: *kind,
-                variable: variable.clone(),
-                variable_span: *variable_span,
-                collection: Box::new(sub_collection),
-                predicate: Box::new(substitute_expr(predicate, &inner_bindings)),
-            }
-        }
         ExprKind::AdHocSelector {
             base,
             selector,
             args,
         } => ExprKind::AdHocSelector {
-            base: Box::new(substitute_expr(base, bindings)),
+            base: sub_box(base),
             selector: selector.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::Range {
             lower,
@@ -230,23 +240,19 @@ pub(crate) fn substitute_expr(
             lower_inclusive,
             upper_inclusive,
         } => ExprKind::Range {
-            lower: lower
-                .as_ref()
-                .map(|e| Box::new(substitute_expr(e, bindings))),
-            upper: upper
-                .as_ref()
-                .map(|e| Box::new(substitute_expr(e, bindings))),
+            lower: lower.as_deref().map(sub_box),
+            upper: upper.as_deref().map(sub_box),
             lower_inclusive: *lower_inclusive,
             upper_inclusive: *upper_inclusive,
         },
         ExprKind::QualifiedAccess { qualifier, member } => ExprKind::QualifiedAccess {
-            qualifier: Box::new(substitute_expr(qualifier, bindings)),
+            qualifier: sub_box(qualifier),
             member: member.clone(),
         },
         ExprKind::InstanceQualifiedAccess { object, qualified } => {
             ExprKind::InstanceQualifiedAccess {
-                object: Box::new(substitute_expr(object, bindings)),
-                qualified: Box::new(substitute_expr(qualified, bindings)),
+                object: sub_box(object),
+                qualified: sub_box(qualified),
             }
         }
         ExprKind::TraitMethodCall {
@@ -255,10 +261,10 @@ pub(crate) fn substitute_expr(
             method,
             args,
         } => ExprKind::TraitMethodCall {
-            object: Box::new(substitute_expr(object, bindings)),
+            object: sub_box(object),
             trait_name: trait_name.clone(),
             method: method.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::TraitStaticCall {
             trait_name,
@@ -267,31 +273,543 @@ pub(crate) fn substitute_expr(
         } => ExprKind::TraitStaticCall {
             trait_name: trait_name.clone(),
             method: method.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::VariantConstruct { name, fields } => ExprKind::VariantConstruct {
             name: name.clone(),
-            fields: fields
-                .iter()
-                .map(|(f, v)| (f.clone(), substitute_expr(v, bindings)))
-                .collect(),
+            fields: fields.iter().map(|(f, v)| (f.clone(), sub(v))).collect(),
         },
         ExprKind::InterpolatedString(parts) => ExprKind::InterpolatedString(
             parts
                 .iter()
-                .map(|p| match p {
-                    reify_ast::StringPart::Literal(s) => reify_ast::StringPart::Literal(s.clone()),
-                    reify_ast::StringPart::Hole(e) => {
-                        reify_ast::StringPart::Hole(Box::new(substitute_expr(e, bindings)))
-                    }
+                .map(|part| match part {
+                    StringPart::Literal(text) => StringPart::Literal(text.clone()),
+                    StringPart::Hole(e) => StringPart::Hole(sub_box(e)),
                 })
                 .collect(),
         ),
     };
+
     Expr {
-        kind: new_kind,
-        span,
+        kind,
+        span: expr.span,
     }
+}
+
+// ── task 5345: inline geometry-query-argument hoist ──────────────────────────
+//
+// A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
+// whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
+// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
+// let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
+// arg. This desugar rewrites the entity member list ONCE, upstream of every
+// `structure.members` walk (pass-1 registration, realization emission,
+// value-cell compilation), lifting each such inline arg into a synthetic
+// geometry let `__geoq_<N>` so the query routes through the identical
+// let-bound path (the workaround users are told to write by hand). Eval is
+// untouched. Mirrors the nested-target hoist precedents (task 5009
+// `linear_pattern_2d(box(..))`, task 4168 `arbitrary_pattern`).
+
+/// Reserved prefix for synthetic geometry-let members minted by the inline
+/// geometry-query-argument hoist. Mirrors the `__count_` / `__auto_` /
+/// `__guard_` / `__connector_` synthetic-member naming conventions.
+const GEOMETRY_QUERY_HOIST_PREFIX: &str = "__geoq_";
+
+/// `true` iff a call `name(args…)` is a whole-handle geometry query whose
+/// arg[0] is an inline geometry-producing call and therefore should be hoisted:
+///   - `name` ∈ {volume, area, centroid, bounding_box}
+///     ([`crate::units::is_whole_handle_geometry_query`]),
+///   - exactly one argument (mirrors eval's `is_geometry_query_call`
+///     `args.len() == 1` gate), and
+///   - arg[0] is a geometry-producing `FunctionCall` — a primitive / boolean /
+///     transform ctor accepted by [`is_geometry_let`]. Empty known-let sets are
+///     passed: an arg[0] `FunctionCall`'s geometry-ness is decided by its own
+///     function name, never a sibling let. A bare `Ident` /
+///     `self.<sub>.<member>` / index-access arg is deliberately excluded — it
+///     already resolves to a handle via `named_steps`, so hoisting it would
+///     double-realize a named geometry.
+fn is_hoistable_query_call(
+    name: &str,
+    args: &[reify_ast::Expr],
+    functions: &[CompiledFunction],
+) -> bool {
+    crate::units::is_whole_handle_geometry_query(name)
+        && args.len() == 1
+        && matches!(args[0].kind, reify_ast::ExprKind::FunctionCall { .. })
+        && is_geometry_let(&args[0], functions, &HashSet::new(), &HashSet::new())
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (read-only). Structural
+/// enumeration; the mutable mirror is [`for_each_child_mut`] — keep the two arms
+/// in lockstep. Modelled on `compile_builder::dot_chain_lint::walk_expr_depth`
+/// (the authoritative current AST-child enumeration).
+fn for_each_child<'e>(expr: &'e reify_ast::Expr, f: &mut dyn FnMut(&'e reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (mutable). Structural
+/// enumeration mirror of [`for_each_child`] — keep the two arms in lockstep.
+fn for_each_child_mut(expr: &mut reify_ast::Expr, f: &mut dyn FnMut(&mut reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &mut expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&mut arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Does `expr` introduce a name binding over its own sub-expressions?
+///
+/// Exactly three `ExprKind` variants do: `Lambda` (its `LambdaParam` names bind
+/// over the body), `Quantifier` (its `variable` binds over the collection's
+/// element in the predicate), and `Match` (an arm's
+/// `MatchPattern::VariantBind { binders }` names bind over that arm's body).
+/// `Auto { params }` is named-argument syntax, not a binder.
+///
+/// This is the binder-level scope guard for the inline geometry-query hoist
+/// (task 5345). [`hoist_queries_in_expr`] lifts a matched query's arg[0]
+/// **verbatim** out to the STRUCTURE member list, where any identifier bound by
+/// an enclosing lambda param / quantifier variable / match-pattern binder would
+/// be UNBOUND — turning a cell that merely evaluated to `Value::Undef` into hard
+/// `unresolved name` Error diagnostics plus a bogus product realization injected
+/// into the template's export set.
+///
+/// Deliberately a per-VARIANT structural classification, not a free-identifier
+/// analysis: binder-FREE sub-positions of these nodes (a `Quantifier`'s
+/// `collection`, a `Match` discriminant, a binder-less arm body) are left
+/// un-hoisted too, even though they would be safe. That is conservative and
+/// correct — a query under a binder simply retains the pre-existing base
+/// behaviour (`Value::Undef`), so no regression is possible and the only thing
+/// forgone is a hoist that never worked. A free-identifier check would add a
+/// whole scope-tracking surface for an exotic payoff.
+///
+/// The `false` arm is written out EXHAUSTIVELY with no `_ =>` catch-all (the
+/// style [`for_each_child`] already uses): a future binder-introducing
+/// `ExprKind` must then fail to compile until someone classifies it here, rather
+/// than silently reopening this hole.
+fn expr_introduces_binder(expr: &reify_ast::Expr) -> bool {
+    use reify_ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::Quantifier { .. } | ExprKind::Match { .. } => true,
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Ident(_)
+        | ExprKind::BinOp { .. }
+        | ExprKind::UnOp { .. }
+        | ExprKind::FunctionCall { .. }
+        | ExprKind::MemberAccess { .. }
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Conditional { .. }
+        | ExprKind::ListLiteral(_)
+        | ExprKind::SetLiteral(_)
+        | ExprKind::MapLiteral(_)
+        | ExprKind::IndexAccess { .. }
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef
+        | ExprKind::AdHocSelector { .. }
+        | ExprKind::QualifiedAccess { .. }
+        | ExprKind::InstanceQualifiedAccess { .. }
+        | ExprKind::Range { .. }
+        | ExprKind::TraitMethodCall { .. }
+        | ExprKind::TraitStaticCall { .. }
+        | ExprKind::VariantConstruct { .. }
+        | ExprKind::InterpolatedString(_) => false,
+    }
+}
+
+/// Read-only: does any sub-expression of `expr` contain a hoistable inline
+/// geometry-query call (per [`is_hoistable_query_call`])? Drives the cheap
+/// pre-scan so the common path (no inline query) clones nothing.
+///
+/// Scoped identically to [`hoist_queries_in_expr`] — the two MUST stay in
+/// lockstep, since this pre-scan drives the member-clone decision while the
+/// rewrite drives the actual hoist, and a guard on only one would leave them
+/// disagreeing about which members carry hoistable work. In particular a
+/// binder-introducing node ([`expr_introduces_binder`]) is opaque here too.
+fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    if expr_introduces_binder(expr) {
+        return false;
+    }
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        return true;
+    }
+    let mut found = false;
+    for_each_child(expr, &mut |child| {
+        found = found || expr_has_hoistable_query(child, functions);
+    });
+    found
+}
+
+/// Post-order in-place rewrite: hoist every hoistable whole-handle geometry
+/// query in `expr` into a synthetic geometry let appended to `out` (a
+/// `__geoq_<*counter>` let carrying arg[0] verbatim), replacing arg[0] with an
+/// `Ident` to it. Children are visited first so both leaves of e.g.
+/// `volume(a) + area(b)` are hoisted. In-place mutation: an `ExprKind` not
+/// enumerated by [`for_each_child_mut`] is left untouched — a missed nested
+/// query would remain `Undef`, never silent corruption.
+///
+/// A binder-introducing node ([`expr_introduces_binder`]) is OPAQUE: neither
+/// descended nor rewritten, because arg[0] is lifted verbatim to the STRUCTURE
+/// member list where a lambda param / quantifier variable / match-pattern binder
+/// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
+/// the two in lockstep. Note this is scoped at BOTH levels: only top-level
+/// `Let`/`Param` members are descended (see
+/// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
+/// sub-expressions.
+fn hoist_queries_in_expr(
+    expr: &mut reify_ast::Expr,
+    counter: &mut usize,
+    functions: &[CompiledFunction],
+    out: &mut Vec<reify_ast::MemberDecl>,
+    minted: &mut HashSet<String>,
+) {
+    if expr_introduces_binder(expr) {
+        return;
+    }
+    for_each_child_mut(expr, &mut |child| {
+        hoist_queries_in_expr(child, counter, functions, out, minted);
+    });
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &mut expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        let syn_name = format!("{GEOMETRY_QUERY_HOIST_PREFIX}{}", *counter);
+        *counter += 1;
+        let arg0_span = args[0].span;
+        let hoisted = std::mem::replace(
+            &mut args[0],
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident(syn_name.clone()),
+                span: arg0_span,
+            },
+        );
+        minted.insert(syn_name.clone());
+        out.push(make_synthetic_geometry_let(syn_name, hoisted, arg0_span));
+    }
+}
+
+/// Mint a synthetic geometry `let __geoq_N = <value>`.
+///
+/// The AST `LetDecl` deliberately carries NO distinguishing modifier: `is_aux`
+/// stays `false` because `aux` is the wrong axis (see
+/// [`crate::RealizationDecl::is_query_only`]). The synthetic realization is
+/// instead tagged `is_query_only: true` at lowering, keyed off the exact set of
+/// names minted here — never off a name-prefix guess — so a user-authored
+/// `let __geoq_0 = box(...)` is unaffected.
+///
+/// The AST `content_hash` is not load-bearing (the template hash is rebuilt
+/// from compiled exprs), but a name-derived hash keeps it deterministic.
+fn make_synthetic_geometry_let(
+    name: String,
+    value: reify_ast::Expr,
+    span: SourceSpan,
+) -> reify_ast::MemberDecl {
+    reify_ast::MemberDecl::Let(reify_ast::LetDecl {
+        content_hash: ContentHash::of_str(&name),
+        name,
+        doc: None,
+        is_pub: false,
+        is_priv: false,
+        is_aux: false,
+        type_expr: None,
+        value,
+        where_clause: None,
+        annotations: Vec::new(),
+        span,
+    })
+}
+
+/// The value/default expression of a value-cell member (`Let` value / `Param`
+/// default), or `None` for non-value members.
+fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        _ => None,
+    }
+}
+
+/// Desugar inline geometry-query arguments into synthetic geometry lets
+/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
+/// default) whose expression contains a hoistable whole-handle query, mint the
+/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
+/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// a single structure-scoped counter in source+post-order.
+///
+/// Returns `None` — and allocates nothing — when no member carries an inline
+/// geometry-query arg (the common path). Otherwise returns
+/// `(rewritten_members, minted_names)`, where `minted_names` is the EXACT set of
+/// synthetic `__geoq_<N>` names created by this call. Realization lowering keys
+/// [`crate::RealizationDecl::is_query_only`] off that set rather than off a
+/// `__geoq_` name-prefix test, so a user-authored `let __geoq_0 = box(...)`
+/// keeps ordinary product-geometry semantics.
+///
+/// The rewritten member list becomes the single source consumed by all downstream
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
+/// members are descended (guarded-group / match-cluster members are out of
+/// scope, consistent with the whole-handle-query acceptance surface).
+///
+/// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
+/// verbatim to the STRUCTURE member list: at the member level as above, and
+/// within a member's expression at every binder-introducing node — a lambda,
+/// quantifier, or match arm ([`expr_introduces_binder`]), whose bound names would
+/// be unbound at member scope.
+fn desugar_inline_geometry_query_args(
+    members: &[reify_ast::MemberDecl],
+    functions: &[CompiledFunction],
+) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
+    let has_any = members
+        .iter()
+        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+    if !has_any {
+        return None;
+    }
+
+    let mut out: Vec<reify_ast::MemberDecl> = Vec::with_capacity(members.len());
+    let mut minted: HashSet<String> = HashSet::new();
+    let mut counter: usize = 0;
+    for member in members {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if expr_has_hoistable_query(&let_decl.value, functions) =>
+            {
+                let mut new_let = let_decl.clone();
+                hoist_queries_in_expr(
+                    &mut new_let.value,
+                    &mut counter,
+                    functions,
+                    &mut out,
+                    &mut minted,
+                );
+                out.push(reify_ast::MemberDecl::Let(new_let));
+            }
+            reify_ast::MemberDecl::Param(param)
+                if param
+                    .default
+                    .as_ref()
+                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
+            {
+                let mut new_param = param.clone();
+                if let Some(def) = new_param.default.as_mut() {
+                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
+                }
+                out.push(reify_ast::MemberDecl::Param(new_param));
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    Some((out, minted))
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -598,47 +1116,6 @@ fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
     )
 }
 
-/// Reject `Keyed<T>` in a value/param position (β escalation esc-3930-295, task 3931 γ).
-///
-/// `Keyed<T>` is a *sub-only* collection kind: it has no `Value::Keyed` form and is
-/// elaborated as one child entity per author-assigned key via a `SubComponentDecl`.
-/// Using it as the type of a `param`/`let` value cell is meaningless. If the resolved
-/// `cell_type` is `Type::Keyed(_)`, emit a clear compile-time Error at cell construction
-/// and poison the type to `Type::Error` (anti-cascade) so no Keyed value cell ever
-/// reaches the eval graph. This upgrades the eval-layer
-/// `is_representable_cell_type(Type::Keyed) == false` backstop (engine_eval.rs,
-/// `is_representable_cell_type_rejects_keyed`) to an actionable diagnostic.
-///
-/// The low-level type *resolver* stays position-blind by design — the guard is layered
-/// above it at this cell-construction site (see type_resolution.rs anchor test
-/// `resolve_parameterized_keyed_is_position_blind_value_guard_deferred`). Subs lower to
-/// `SubComponentDecl` (not value cells), so this cannot misfire on `sub x : Keyed<T>`.
-///
-/// Returns `true` and mutates `cell_type` to `Type::Error` when it fired.
-fn reject_keyed_value_position(
-    cell_type: &mut Type,
-    name: &str,
-    span: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> bool {
-    if matches!(cell_type, Type::Keyed(_)) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "`Keyed<T>` is a sub-only collection kind; it cannot be used as the type \
-                 of value `{name}` — declare it as `sub {name} : Keyed<T>` instead"
-            ))
-            .with_label(DiagnosticLabel::new(
-                span,
-                "Keyed<T> in a value/param position",
-            )),
-        );
-        *cell_type = Type::Error;
-        true
-    } else {
-        false
-    }
-}
-
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -851,22 +1328,6 @@ fn dimension_display_name(dim: DimensionVector) -> String {
     }
 }
 
-/// Maps a param's `is_priv` flag to the compiled cell's `Visibility`:
-/// `priv param` → `Visibility::Private` (hidden from external dot-access,
-/// task #3978 δ); otherwise `Visibility::Public`. Shared by every
-/// `ValueCellDecl` construction site that lowers a param's visibility —
-/// top-level structure-param, port-member, guarded-block (`guards.rs`), and
-/// the structure-def skeleton pass — so the mapping can't drift between
-/// sites. `pub(crate)` so `guards.rs` can call it unqualified via the
-/// `pub(crate) use entity::*;` re-export in `lib.rs`.
-pub(crate) fn priv_flag_to_visibility(is_priv: bool) -> Visibility {
-    if is_priv {
-        Visibility::Private
-    } else {
-        Visibility::Public
-    }
-}
-
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -905,8 +1366,47 @@ pub(crate) fn compile_entity(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables. `prelude.ctor` is
+    // Structure-filtered and drives constructor lowering; `prelude.sub_target`
+    // is unfiltered and is read ONLY via `find_template_with_prelude`, which
+    // also applies the `prelude.local_entity_names` shadowing guard. They
+    // travel bundled so the two same-typed maps cannot be transposed here; see
+    // `types::PreludeRegistries` for the full contract.
+    prelude: &PreludeRegistries<'_, '_>,
 ) -> TopologyTemplate {
+    // task 5345: desugar inline geometry-query arguments into synthetic geometry
+    // lets BEFORE any `structure.members` walk (pass-1 registration, realization
+    // emission, value-cell compilation all read the shadowed list). Needs
+    // `functions` for `is_geometry_let`'s user-defined-geometry-fn guard, so it
+    // runs here — not the borrow-only `EntityDefRef` `From` impls. The common
+    // path (no inline geometry-query arg) clones nothing: `desugar_…` returns
+    // `None`, the `map` is skipped, and `structure` is left borrowing the caller.
+    let desugared = desugar_inline_geometry_query_args(structure.members, functions);
+    // The EXACT set of synthetic `__geoq_<N>` names minted above; empty on the
+    // common (no-hoist) path. Realization lowering consults this to set
+    // `RealizationDecl::is_query_only` — see that field's docs for why a
+    // query-only realization must not displace real product geometry.
+    let query_only_names: HashSet<String> = desugared
+        .as_ref()
+        .map(|(_, minted)| minted.clone())
+        .unwrap_or_default();
+    let desugared_members = desugared.map(|(members, _)| members);
+    let desugared_entity = desugared_members.as_ref().map(|members| EntityDefRef {
+        name: structure.name,
+        doc: structure.doc.clone(),
+        is_pub: structure.is_pub,
+        type_params: structure.type_params,
+        trait_bounds: structure.trait_bounds,
+        members: members.as_slice(),
+        annotations: structure.annotations,
+        pragmas: structure.pragmas,
+        span: structure.span,
+    });
+    let structure: &EntityDefRef = match desugared_entity.as_ref() {
+        Some(e) => e,
+        None => structure,
+    };
+
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
     // expression-lowering site so `Foo()` can lower to a
@@ -915,7 +1415,8 @@ pub(crate) fn compile_entity(
     // (later entries shadow earlier — local definitions shadow prelude,
     // matching Reify scoping). Declared BEFORE `scope` so it outlives the
     // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude_template_registry
+    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .ctor
         .iter()
         .map(|(k, v)| (k.clone(), *v))
         .chain(
@@ -955,24 +1456,26 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
-        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<CompiledAssocFnSig>
+        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<AssocFnDispatchCandidate>
         // so the `obj.(Trait::fn)(…)` dispatch arm (expr.rs, ε #3943) can resolve
         // the correct overload by arg types and type the lowered call from the
-        // RESOLVED sig's return type — registration-order independent (the
+        // RESOLVED candidate — registration-order independent (the
         // per-conformer CompiledFunction is injected into ctx.functions only by
         // the post-entity pass).
         //
         // Required (bodyless) fns carry an already-resolved `CompiledAssocFnSig`
-        // (non-self params + return_type). Default-providing fns carry a raw
-        // `FnDef` whose params and return type are re-resolved here against a
-        // throwaway diagnostics sink (the trait fn was already compiled in
-        // `phase_traits`; re-reporting errors would double-diagnose).
+        // (non-self params + return_type), resolved with no type params in scope.
+        // Default-providing fns carry a raw `FnDef` whose params and return type
+        // are re-resolved here against a throwaway diagnostics sink (the trait fn
+        // was already compiled in `phase_traits`; re-reporting errors would
+        // double-diagnose); their candidate is generic iff that resolution's
+        // type-param scope is non-empty.
         //
         // Accumulates ALL overloads into per-method Vecs (replaces the old
         // name-keyed `assoc_fn_returns: HashMap<String, Type>` which was
         // last-write-wins). Required fns and defaults with the same name push
         // independently; the dispatch arm resolves by arity + param types.
-        let mut assoc_fn_overloads: HashMap<String, Vec<CompiledAssocFnSig>> = HashMap::new();
+        let mut assoc_fn_overloads: HashMap<String, Vec<AssocFnDispatchCandidate>> = HashMap::new();
         for req in &compiled_trait.required_members {
             if let RequirementKind::Fn(sig) = &req.kind
                 && sig.has_self
@@ -980,7 +1483,7 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(sig.name.clone())
                     .or_default()
-                    .push(sig.clone());
+                    .push(AssocFnDispatchCandidate::new(sig.clone(), &HashSet::new()));
             }
         }
         for default in &compiled_trait.defaults {
@@ -999,13 +1502,13 @@ pub(crate) fn compile_entity(
                 // above; the default branch is the only one that re-resolves from
                 // the raw FnDef, so the trait params must be re-supplied here
                 // (reviewer amendment, correctness).
-                let fn_type_params: HashSet<String> = fn_def
+                let sig_type_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .map(|tp| tp.name.clone())
                     .chain(compiled_trait.type_params.iter().map(|tp| tp.name.clone()))
                     .collect();
-                let fn_dim_params: HashSet<String> = fn_def
+                let sig_dim_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
@@ -1021,8 +1524,8 @@ pub(crate) fn compile_entity(
                 let return_type = match &fn_def.return_type {
                     Some(te) => resolve_type_expr_with_aliases_kinded(
                         te,
-                        &fn_type_params,
-                        &fn_dim_params,
+                        &sig_type_params,
+                        &sig_dim_params,
                         alias_registry,
                         &mut Vec::new(),
                         structure_names,
@@ -1039,8 +1542,8 @@ pub(crate) fn compile_entity(
                     .map(|p| {
                         resolve_type_expr_with_aliases_kinded(
                             &p.type_expr,
-                            &fn_type_params,
-                            &fn_dim_params,
+                            &sig_type_params,
+                            &sig_dim_params,
                             alias_registry,
                             &mut Vec::new(),
                             structure_names,
@@ -1052,12 +1555,15 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(fn_def.name.clone())
                     .or_default()
-                    .push(CompiledAssocFnSig {
-                        name: fn_def.name.clone(),
-                        has_self: true,
-                        params,
-                        return_type,
-                    });
+                    .push(AssocFnDispatchCandidate::new(
+                        CompiledAssocFnSig {
+                            name: fn_def.name.clone(),
+                            has_self: true,
+                            params,
+                            return_type,
+                        },
+                        &sig_type_params,
+                    ));
             }
         }
         if !assoc_fn_overloads.is_empty() {
@@ -1181,6 +1687,26 @@ pub(crate) fn compile_entity(
     // is_selector_expr's Ident arm. Threaded into every is_geometry_let call
     // and into register_guarded_names. (task 4527)
     let mut known_selector_lets: HashSet<&str> = HashSet::new();
+    // Parallel to `known_geometry_lets`: tracks which let names are geometry-LIST
+    // lets — `[<geom>, ...]` or `generate(<int literal>, |i| <geom>)`. Each such
+    // let lowers to N sibling `RealizationDecl`s (one per element) that eval
+    // regroups into a single `Value::List` cell. Disjoint from
+    // `known_geometry_lets` by construction: `classify_geometry_list_let` only
+    // accepts shapes that `is_geometry_let` rejects, and the Let arm tries
+    // geometry-let FIRST. (task #5385)
+    //
+    // MEMBERSHIP ONLY — deliberately not a name→count map (review esc-5385-6).
+    // The element COUNT has exactly one source of truth,
+    // `scope.geometry_list_elements[name].len()`, which is what both the
+    // `"{list}#{k}"` name minting and the realization-emission loop below read.
+    // A second count here could drift from the elements actually emitted and
+    // silently desynchronise `geometry_realization_names` from `named_steps`.
+    let mut known_geometry_list_lets: HashSet<&str> = HashSet::new();
+    // Lets that plainly intend geometry-in-a-collection but cannot be statically
+    // unrolled (non-literal `generate` count, mixed-kind list literal). The Error
+    // is emitted once, here in pass 1; the name is recorded so pass 2 and the
+    // realization-emission loop both skip it and no cascade follows. (task #5385)
+    let mut rejected_geometry_list_lets: HashSet<&str> = HashSet::new();
     // Tracks cluster logical names already registered in this pre-pass so that a
     // second MatchArmDeclGroup with the same logical name is skipped wholesale.
     // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
@@ -1300,17 +1826,14 @@ pub(crate) fn compile_entity(
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Install the module's enum names as the ambient fallback set for type
-    // resolution of this structure's members (task 2998), so an enum may appear as
-    // an inner type arg of a parameterized builtin in a `param` type — e.g.
+    // Install the module's enums as the ambient fallback for type resolution of
+    // this structure's members (task 2998), so an enum may appear as an inner
+    // type arg of a parameterized builtin in a `param` type — e.g.
     // `target_quantity_of_interest : Option<QoIDescriptor>` in std.solver.elastic.
-    // Bare enum params (e.g. `element_order : ElementOrder`) already resolve via
-    // the `resolve_enum_type` None-path fallback below; this scope additionally
-    // covers the nested-in-builtin case the generic resolver cannot otherwise see.
+    // Bare enum params (e.g. `element_order : ElementOrder`) resolve through the
+    // same scope, which also holds a bare generic enum to R2(b)/R3.
     // Dropped at end of this function.
-    let _enum_scope = crate::type_resolution::EnumNameScope::new(
-        enum_defs.iter().map(|e| e.name.clone()).collect(),
-    );
+    let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
 
     for member in structure.members {
         match member {
@@ -1479,6 +2002,69 @@ pub(crate) fn compile_entity(
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
+                } else if let Some(shape) = classify_geometry_list_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
+                    // Geometry-LIST let (task #5385). Classified AFTER the
+                    // geometry-let branch so the two stay disjoint, and
+                    // registered as `List<Geometry>` rather than the
+                    // `List<Real>` the ordinary list-helper return-type ladder
+                    // would infer from the (deliberately mis-typed) geometry
+                    // constructor call in the body.
+                    scope.has_geometry = true;
+                    scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
+                    // Unroll ONCE, here, and cache the elements on the scope.
+                    // Three consumers read them — the realization-emission
+                    // loop, `expr.rs`'s `.count` fold, and `union_all`'s list
+                    // expansion — so expanding once keeps them in lockstep AND
+                    // fires the element-cap diagnostic exactly once.
+                    //
+                    // Pass 1 is the right home because the value-cell pass that
+                    // compiles `<list>.count` runs BEFORE the emission loop.
+                    match expand_geometry_list_elements(
+                        &let_decl.value,
+                        &shape,
+                        let_decl.span,
+                        diagnostics,
+                    ) {
+                        Some(elements) => {
+                            scope
+                                .geometry_list_elements
+                                .insert(let_decl.name.clone(), std::rc::Rc::new(elements));
+                            known_geometry_list_lets.insert(let_decl.name.as_str());
+                        }
+                        None => {
+                            // Over the element cap — the Error is already
+                            // reported. Route the let out entirely so nothing
+                            // is half-lowered (a cell promising elements no
+                            // realization will ever produce).
+                            rejected_geometry_list_lets.insert(let_decl.name.as_str());
+                            scope.geometry_list_rejected.insert(let_decl.name.clone());
+                        }
+                    }
+                } else if diagnose_unsupported_geometry_list(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                    diagnostics,
+                ) {
+                    // The Error is already reported. Register the name at its
+                    // evident intended type so downstream references type-check
+                    // rather than cascade a second, unrelated diagnostic.
+                    //
+                    // The type registration alone is NOT enough for the
+                    // boolean folds: `resolve_geometry_list_arg` would find
+                    // `List<…>` with no cached elements and report "not a
+                    // geometry list", pointing at the fold instead of at the
+                    // real defect. `geometry_list_rejected` is what actually
+                    // makes the claim above true (review esc-5385-3).
+                    scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
+                    rejected_geometry_list_lets.insert(let_decl.name.as_str());
+                    scope.geometry_list_rejected.insert(let_decl.name.clone());
                 } else {
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
@@ -1599,6 +2185,7 @@ pub(crate) fn compile_entity(
                     match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
                 }
 
+                let mut arm_children = Vec::with_capacity(m.arms.len());
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_ast::MemberDecl::Sub(sub) => {
@@ -1614,9 +2201,17 @@ pub(crate) fn compile_entity(
                             // (task 2373) is now handled inside compile_match_arm_decl_group,
                             // atomically with register_match_arm_group — moved from here in task 2872
                             // to close the orphan-entry bug on any early-return rejection path.
-                            if let Some(child_tmpl) =
-                                find_template(compiled_templates, &sub.structure_name)
-                            {
+                            // task 5867: module-first, prelude-fallback — same
+                            // rule as the plain-`Sub` pre-pass below. A bare
+                            // `find_template` here is module-only, so an arm sub
+                            // targeting a prelude template (`A => sub s :
+                            // DisplayStyle`) left every map below unpopulated.
+                            let child_tmpl = find_template_with_prelude(
+                                compiled_templates,
+                                prelude,
+                                &sub.structure_name,
+                            );
+                            if let Some(child_tmpl) = child_tmpl {
                                 scope.sub_structure_traits.insert(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
@@ -1637,8 +2232,10 @@ pub(crate) fn compile_entity(
                                     realization_name_set_from_template(child_tmpl),
                                 );
                             }
+                            arm_children.push(child_tmpl);
                         }
                         other => {
+                            arm_children.push(None);
                             // suggestion 6: only 'sub' arms are supported in task 2372.
                             // Param/Let arms are explicitly rejected here so they are never
                             // inserted into scope.names — preserving the cluster-isolation
@@ -1660,6 +2257,23 @@ pub(crate) fn compile_entity(
                                 )),
                             );
                         }
+                    }
+                }
+
+                // The maps read to REJECT a dotted connect endpoint — direction
+                // (#7175) and existence (#7880) — are folded over every arm's
+                // child rather than last-write-wins like the per-arm maps above:
+                // no single arm can answer for the cluster. A `None` arm (child
+                // unresolvable, or not a `sub`) reads as "not resolvable here".
+                if let Some(logical_name) = maybe_logical_name {
+                    scope.sub_port_directions.insert(
+                        logical_name.to_string(),
+                        cluster_port_directions(&arm_children),
+                    );
+                    if let Some(names) = cluster_declared_member_names(&arm_children) {
+                        scope
+                            .sub_declared_member_names
+                            .insert(logical_name.to_string(), names);
                     }
                 }
             }
@@ -1750,10 +2364,19 @@ pub(crate) fn compile_entity(
                     .sub_component_types
                     .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
-                // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) =
-                    find_template(compiled_templates, &effective_structure_name)
-                {
+                // sub_member_types in one pass over the sub-target templates.
+                //
+                // task 5867: module-first, prelude-fallback. A bare
+                // `find_template` here is module-only, so for a prelude-typed
+                // sub (`sub tol = DimensionalTolerance(…)`) none of the maps
+                // below were populated while `sub_component_types` above always
+                // was — the "forward-declared" shape that makes a relaying
+                // `let` lower to a `RealizationDecl` instead of a value cell.
+                if let Some(child_tmpl) = find_template_with_prelude(
+                    compiled_templates,
+                    prelude,
+                    &effective_structure_name,
+                ) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
@@ -1788,6 +2411,19 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_member_types
                         .insert(sub.name.clone(), member_type_map_from_template(child_tmpl));
+                    // Populate sub_port_directions so a dotted connect endpoint
+                    // (`e1.p`) can be direction-checked against the child's own
+                    // declaration (task #7175). Keyed on the SUB name, like
+                    // sub_member_types — connect.rs resolves from the endpoint's
+                    // base segment, which is the sub name, not the structure name.
+                    scope.sub_port_directions.insert(
+                        sub.name.clone(),
+                        port_direction_map_from_template(child_tmpl),
+                    );
+                    scope.sub_declared_member_names.insert(
+                        sub.name.clone(),
+                        declared_member_names_from_template(child_tmpl),
+                    );
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -1805,17 +2441,24 @@ pub(crate) fn compile_entity(
                                 Vec::with_capacity(group.arms.len());
                             for arm in &group.arms {
                                 if let Type::StructureRef(arm_struct) = &arm.arm_type {
+                                    // task 5867: module-first, prelude-fallback,
+                                    // so an arm type defined in the prelude does
+                                    // not yield an empty member map here.
                                     let arm_members: BTreeMap<String, Type> =
-                                        find_template(compiled_templates, arm_struct)
-                                            .map(|t| {
-                                                t.value_cells
-                                                    .iter()
-                                                    .map(|vc| {
-                                                        (vc.id.member.clone(), vc.cell_type.clone())
-                                                    })
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default();
+                                        find_template_with_prelude(
+                                            compiled_templates,
+                                            prelude,
+                                            arm_struct,
+                                        )
+                                        .map(|t| {
+                                            t.value_cells
+                                                .iter()
+                                                .map(|vc| {
+                                                    (vc.id.member.clone(), vc.cell_type.clone())
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
                                     per_arm.push((arm_struct.clone(), arm_members));
                                 } else {
                                     // Non-StructureRef arm types are not produced in v0.1;
@@ -2044,6 +2687,11 @@ pub(crate) fn compile_entity(
             // `sub … at … where {}` twin runs the SAME check in the
             // `MemberDecl::Sub` arm below. ζ (task 4386) threads the compiled
             // relations onto `TopologyTemplate.relations` for the relate-solve.
+            // A member-level `sketch { … }` block: rejected loudly, once per
+            // block, until constrained-2d-sketch γ — see `sketch_unsupported`.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(sketch_unsupported::diagnostic(sketch.span));
+            }
             reify_ast::MemberDecl::Relate(relate) => {
                 relations.extend(check_relate_relations(
                     &relate.relations,
@@ -2174,6 +2822,60 @@ pub(crate) fn compile_entity(
                 // geometry lets from its own guarded-member compilation, unchanged by
                 // this task — a guarded geometry let has no backing realization to
                 // mint against).
+                // A geometry-list let that pass 1 REJECTED emits neither a
+                // value cell nor realizations: its Error is already on the
+                // diagnostics list, and lowering half of it would only add
+                // downstream noise. (task #5385)
+                if rejected_geometry_list_lets.contains(let_decl.name.as_str()) {
+                    continue;
+                }
+
+                // Geometry-LIST let (task #5385): emits a `List<Geometry>`
+                // value cell here, alongside the N sibling `RealizationDecl`s
+                // the emission loop below produces. Exactly the geometry-let
+                // pair-shape above, one level up: the cell's Value is
+                // authoritative only AFTER `post_process_geometry_handle_cells`
+                // regroups those realizations' handles back into a list.
+                //
+                // `cell_type` is set EXPLICITLY, for the same reason the
+                // geometry-let arm sets `Type::Geometry` explicitly — the
+                // general expression compiler types geometry-function calls as
+                // dimensionless scalars, so the inferred type here would be
+                // `List<Real>`. Pass 1 already registered the name as
+                // `List<Geometry>` in scope; do NOT re-register it.
+                if known_geometry_list_lets.contains(let_decl.name.as_str()) {
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    let list_geometry = Type::List(Box::new(Type::Geometry));
+                    let compiled_expr = compile_expr_with_expected(
+                        &let_decl.value,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        Some(&list_geometry),
+                    );
+
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Let,
+                        // Internal-only, matching the geometry-let arm below.
+                        visibility: Visibility::Private,
+                        is_aux: let_decl.is_aux,
+                        cell_type: list_geometry,
+                        default_expr: Some(compiled_expr),
+                        solver_hints,
+                        span: let_decl.span,
+                    });
+
+                    continue;
+                }
+
                 if is_geometry_let(
                     &let_decl.value,
                     functions,
@@ -2218,74 +2920,30 @@ pub(crate) fn compile_entity(
                 // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
                 // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
                 if let Some(free) = extract_auto_free(&let_decl.value) {
-                    let mut cell_type = match &let_decl.type_expr {
-                        None => {
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    "auto let binding requires a type annotation: \
-                                     use `let <name> : <Type> = auto`",
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    let_decl.span,
-                                    "missing type annotation for auto let",
-                                )),
-                            );
-                            continue;
-                        }
-                        Some(type_expr) => {
-                            match resolve_type_expr_with_aliases(
-                                type_expr,
-                                &type_param_names,
-                                alias_registry,
-                                diagnostics,
-                                structure_names,
-                                trait_names,
-                            ) {
-                                Some(t) => t,
-                                None => continue, // error already emitted by resolver
-                            }
-                        }
-                    };
-
-                    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
-                    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
-                    reject_keyed_value_position(
-                        &mut cell_type,
+                    let Some(cell_type) = resolve_auto_let_cell_type(
                         &let_decl.name,
+                        let_decl.type_expr.as_ref(),
                         let_decl.span,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
                         diagnostics,
-                    );
-
-                    let id = ValueCellId::new(entity_name, &let_decl.name);
-                    let visibility = if let_decl.is_pub {
-                        Visibility::Public
-                    } else {
-                        Visibility::Private
+                    ) else {
+                        continue;
                     };
-
-                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
-                    validate_annotations(&lowered_annotations, "let", diagnostics);
-                    crate::annotations::display::validate_display_dimension(
-                        &lowered_annotations,
-                        &cell_type,
+                    let decl = build_auto_let_value_cell_decl(
+                        entity_name,
+                        let_decl,
+                        free,
+                        cell_type,
+                        &scope,
+                        functions,
                         diagnostics,
                     );
-                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
-                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                     // Register in scope so subsequent constraints referencing this name type-check.
-                    scope.register(&let_decl.name, cell_type.clone());
-
-                    let decl = ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility,
-                        is_aux: let_decl.is_aux,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: let_decl.span,
-                    };
+                    scope.register(&let_decl.name, decl.cell_type.clone());
 
                     if let Some(wc) = &let_decl.where_clause {
                         compile_per_decl_guard(
@@ -2603,8 +3261,9 @@ pub(crate) fn compile_entity(
                 //
                 // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
                 // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
-                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
-                // for the timing bench (run with `-- --ignored --nocapture`).
+                // for the Rc/arena trade-off analysis, and
+                // `tests/harness_traits/trait_arg_conformance_bench.rs` for the timing bench
+                // (run with `--test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
@@ -3611,8 +4270,8 @@ pub(crate) fn compile_entity(
                     functions,
                     trait_registry,
                 };
-                // Desugar chain into pairwise Forward connections
-                for pair in chain_decl.elements.windows(2) {
+                // Desugar chain into pairwise Forward connections.
+                for (source, dest) in chain_hops(&ctx, &chain_decl.elements, diagnostics) {
                     let mut acc = ConnectAccumulator {
                         constraints: &mut constraints,
                         constraint_index: &mut constraint_index,
@@ -3625,9 +4284,9 @@ pub(crate) fn compile_entity(
                     compile_connection(
                         &ctx,
                         &ConnectInput {
-                            left_expr: &pair[0],
+                            left_expr: &source,
                             operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
+                            right_expr: &dest,
                             connector_type: None,
                             params: &[],
                             port_mappings: &[],
@@ -3699,6 +4358,7 @@ pub(crate) fn compile_entity(
                     &type_param_names,
                     &clusters_with_outside_collision,
                     compiled_templates,
+                    prelude,
                 );
             }
         }
@@ -3821,6 +4481,35 @@ pub(crate) fn compile_entity(
         }
     };
 
+    // Sibling of `geometry_realization_member_name` for geometry-LIST lets
+    // (task #5385), which lower to N realizations rather than one — hence a
+    // `Vec` rather than an `Option`. Same lockstep obligation: the emission
+    // loop below MUST mint exactly these names, or `geometry_realization_names`
+    // and eval's `named_steps` drift apart.
+    //
+    // Both sides therefore read ONE count — `scope.geometry_list_elements[name]`,
+    // the elements pass 1 unrolled — rather than a separately-stored length that
+    // could drift from them (review esc-5385-6). Computed eagerly into a Vec so
+    // the immutable borrow of `scope` ends before the insertion loop below takes
+    // it mutably.
+    //
+    // The synthetic `"{list}#{k}"` names cannot collide with a user identifier
+    // (`#` is not an identifier character) and cannot be written in source, so
+    // they never resolve a `GeomRef::Sub`. They are registered anyway so this
+    // set stays exactly the set of names with `named_steps` entries at eval.
+    let geometry_list_realization_member_names: Vec<String> = structure
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            reify_ast::MemberDecl::Let(let_decl) => scope
+                .geometry_list_elements
+                .get(let_decl.name.as_str())
+                .map(|elements| (let_decl.name.clone(), elements.len())),
+            _ => None,
+        })
+        .flat_map(|(name, len)| (0..len).map(move |k| format!("{name}#{k}")))
+        .collect();
+
     // Populate geometry_realization_names via the shared helper before the
     // emission loop so forward references (a later member's arg naming an
     // earlier sibling) are already in scope when their compilation runs.
@@ -3828,6 +4517,9 @@ pub(crate) fn compile_entity(
         if let Some(name) = geometry_realization_member_name(member) {
             scope.geometry_realization_names.insert(name);
         }
+    }
+    for name in geometry_list_realization_member_names {
+        scope.geometry_realization_names.insert(name);
     }
 
     let mut realizations = Vec::new();
@@ -3839,6 +4531,81 @@ pub(crate) fn compile_entity(
     // that will have `named_steps[name]` entries at eval time.
     for member in structure.members {
         match member {
+            // Geometry-LIST let (task #5385): statically unroll the initializer
+            // and emit ONE realization per element, named `"{list}#{k}"` and
+            // tagged with its `GeometryListBinding` so eval can regroup the
+            // handles into a single `Value::List` cell. Placed before the
+            // single-geometry arm to mirror the pass-1 classification order;
+            // the two predicates are disjoint either way.
+            reify_ast::MemberDecl::Let(let_decl)
+                if known_geometry_list_lets.contains(let_decl.name.as_str()) =>
+            {
+                // Elements were unrolled once in pass 1 and cached on the
+                // scope; cloned here only to release the `&scope` borrow that
+                // `compile_geometry_call` needs mutably-adjacent below.
+                let elements = scope
+                    .geometry_list_elements
+                    .get(let_decl.name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                for (k, element) in elements.iter().enumerate() {
+                    if let Some(ops) = compile_geometry_call(
+                        element,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        0,
+                        &geometry_lets,
+                        &mut HashSet::new(),
+                        // Task #5665's sink, threaded exactly as the two
+                        // sibling arms below thread it: this arm walks
+                        // `structure.members`, so a geometry-LIST let here is
+                        // always TOP-LEVEL and its elements' synthesized
+                        // predicates belong on the entity's flat `constraints`,
+                        // never in a `where`/`else` arm.
+                        //
+                        // The elements also re-compile inside a
+                        // `union_all(<list>)` fold (geometry_boolean.rs), which
+                        // is handed a sink over this SAME vec. That is the exact
+                        // shape `GeometryConstraintSink::push` deduplicates on —
+                        // `(arm vec, span, content_hash)` — so one source
+                        // element still synthesizes one constraint.
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
+                    ) {
+                        realizations.push(RealizationDecl {
+                            id: RealizationNodeId::new(entity_name, realization_index),
+                            name: Some(format!("{}#{}", let_decl.name, k)),
+                            is_aux: let_decl.is_aux,
+                            // Never the hoist's scaffolding, unlike the sibling
+                            // single-geometry arm below which must consult
+                            // `query_only_names`: `is_hoistable_query_call`
+                            // mints a `__geoq_<N>` let only when its argument
+                            // satisfies `is_geometry_let`, and the geometry-list
+                            // classifier is DISJOINT from that predicate
+                            // (geometry_list.rs, `bare_geometry_call_is_not_a_list_let`).
+                            is_query_only: false,
+                            list_binding: Some(GeometryListBinding {
+                                list_name: let_decl.name.clone(),
+                                index: k,
+                                // The COMPILE-TIME count, not the emitted
+                                // count: the `if let Some(ops)` above drops an
+                                // element silently, and eval's all-or-nothing
+                                // check must notice that rather than accept a
+                                // complete-looking shorter list.
+                                len: elements.len(),
+                            }),
+                            operations: ops,
+                            span: let_decl.span,
+                        });
+                        realization_index += 1;
+                    }
+                }
+            }
             reify_ast::MemberDecl::Let(let_decl)
                 if is_geometry_let(
                     &let_decl.value,
@@ -3856,11 +4623,22 @@ pub(crate) fn compile_entity(
                     0,
                     &geometry_lets,
                     &mut HashSet::new(),
+                    &mut GeometryConstraintSink::new(
+                        entity_name,
+                        &mut constraints,
+                        &mut constraint_index,
+                    ),
                 ) {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         is_aux: let_decl.is_aux,
+                        // task 5345: a hoisted `__geoq_<N>` arg is measurement
+                        // scaffolding, not a body. Keyed off the desugarer's
+                        // exact minted-name set, so a user-authored member that
+                        // happens to share the prefix stays product geometry.
+                        is_query_only: query_only_names.contains(&let_decl.name),
+                        list_binding: None,
                         operations: ops,
                         span: let_decl.span,
                     });
@@ -3882,6 +4660,11 @@ pub(crate) fn compile_entity(
                         0,
                         &geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
                     )
                 {
                     realizations.push(RealizationDecl {
@@ -3889,6 +4672,9 @@ pub(crate) fn compile_entity(
                         name: Some(param.name.clone()),
                         // Solid-typed params carry no `aux` modifier in the grammar.
                         is_aux: false,
+                        // The hoist only ever mints `Let` members, never params.
+                        is_query_only: false,
+                        list_binding: None,
                         operations: ops,
                         span: param.span,
                     });
@@ -3913,9 +4699,17 @@ pub(crate) fn compile_entity(
                     realizations: &mut realizations,
                     realization_index: &mut realization_index,
                     diagnostics,
+                    constraints: &mut constraints,
+                    next_constraint_index: &mut constraint_index,
+                    guarded_groups: &mut guarded_groups,
                 };
-                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink);
-                emit_guarded_geometry_realizations(&g.else_members, &deps, &mut sink);
+                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(
+                    &g.else_members,
+                    &deps,
+                    &mut sink,
+                    GuardArm::Else,
+                );
             }
             _ => {}
         }
@@ -4409,6 +5203,105 @@ fn realization_name_set_from_template(tmpl: &TopologyTemplate) -> BTreeSet<Strin
         .collect()
 }
 
+/// Build the `port_name → declared direction` map for a child `TopologyTemplate`.
+///
+/// Mirrors `member_type_map_from_template` / `realization_name_set_from_template`:
+/// a category-specific projection of the child template, copied into the parent's
+/// `CompilationScope` during the Sub pre-pass. This one exists so `connect.rs` can
+/// direction-check a DOTTED connect endpoint (`e1.p`), which is invisible to the
+/// own-entity port list it would otherwise consult (task #7175).
+///
+/// Only declared ports are projected. A sub member that is not a port is simply
+/// absent, which the map's absence contract reads as "not resolvable", not as a
+/// default direction — see `CompilationScope::sub_port_directions`.
+fn port_direction_map_from_template(
+    tmpl: &TopologyTemplate,
+) -> BTreeMap<String, reify_core::PortDirection> {
+    tmpl.ports
+        .iter()
+        .map(|p| (p.name.clone(), p.direction))
+        .collect()
+}
+
+/// Collect every member name a child `TopologyTemplate` declares — ports,
+/// value cells (params and lets), `where`-guarded members, named realizations,
+/// subs and match-arm clusters — for `CompilationScope::sub_declared_member_names`.
+///
+/// A sibling of `port_direction_map_from_template` /
+/// `member_type_map_from_template`, but read to REJECT a dotted connect endpoint
+/// (#7880), so it errs wide: over-inclusion only keeps a silent pass silent,
+/// while under-inclusion is a false "undefined port" error. Fns and associated
+/// types are deliberately excluded: they are not value-bearing members a connect
+/// endpoint can denote.
+fn declared_member_names_from_template(tmpl: &TopologyTemplate) -> BTreeSet<String> {
+    let guarded_cells = tmpl
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter().chain(&g.else_members));
+    tmpl.ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .chain(
+            tmpl.value_cells
+                .iter()
+                .chain(guarded_cells)
+                .map(|vc| vc.id.member.as_str()),
+        )
+        .chain(tmpl.realizations.iter().filter_map(|r| r.name.as_deref()))
+        .chain(tmpl.sub_components.iter().map(|s| s.name.as_str()))
+        .chain(tmpl.match_arm_groups.iter().map(|g| g.name.as_str()))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A match-arm cluster's `sub_port_directions` entry, given each arm's child
+/// template (`None` for an arm whose child did not resolve): only what every
+/// arm agrees on.
+///
+/// All arms of a cluster declare the same sub NAME, so they share one entry.
+/// The per-arm maps at the same site take the last arm's answer (see
+/// `CompilationScope::match_arm_group_arm_member_types` for why that is
+/// tolerable for member TYPES, which are read to RESOLVE names). A direction is
+/// read to REJECT source, so last-write-wins would turn a connect that is legal
+/// under the selected arm into a hard error whenever the arms disagree.
+///
+/// The entry is therefore the INTERSECTION over arms: a port survives only while
+/// every arm declares it with the SAME direction, and a `None` arm empties the
+/// entry outright. Anything dropped falls back to the absence contract on
+/// `sub_port_directions` — "not resolvable here", hence unchecked — never to a
+/// default direction.
+fn cluster_port_directions(
+    arm_children: &[Option<&TopologyTemplate>],
+) -> BTreeMap<String, reify_core::PortDirection> {
+    arm_children
+        .iter()
+        .map(|child| child.map_or_else(BTreeMap::new, port_direction_map_from_template))
+        .reduce(|mut agreed, arm| {
+            agreed.retain(|port, dir| arm.get(port) == Some(dir));
+            agreed
+        })
+        .unwrap_or_default()
+}
+
+/// The member names a match-arm cluster declares, given each arm's child
+/// template: the UNION over its arms, or `None` when any arm's child is
+/// unresolvable.
+///
+/// The mirror image of `cluster_port_directions`' INTERSECTION: both maps are
+/// read to REJECT source, so each fold keeps only what EVERY arm agrees is
+/// wrong — a contested direction is dropped (unchecked), and a name any arm
+/// declares is kept (not undeclared).
+fn cluster_declared_member_names(
+    arm_children: &[Option<&TopologyTemplate>],
+) -> Option<BTreeSet<String>> {
+    arm_children
+        .iter()
+        .try_fold(BTreeSet::new(), |mut names, child| {
+            names.extend(declared_member_names_from_template((*child)?));
+            Some(names)
+        })
+}
+
 /// Collect the `(declaring_trait, fn_name)` keys of a conformer template's
 /// instance associated functions — the exact set the post-entity registration
 /// pass emits a per-conformer symbol for (task 3941 ζ).
@@ -4461,51 +5354,17 @@ fn compile_match_arm_decl_group(
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
+    // task 5867: the prelude-derived lookup tables; paired with
+    // `compiled_templates` in every `find_template_with_prelude` call.
+    prelude: &PreludeRegistries<'_, '_>,
 ) {
-    // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
-    // are supported in this task; complex expressions are deferred to task 2373.
-    let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
-            Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
-            Some((_, other_ty)) => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' has type {}, expected an enum",
-                        name, other_ty
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "discriminant must be an enum-typed param or let",
-                    )),
-                );
-                return;
-            }
-            None => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' not found in scope",
-                        name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "unresolved identifier",
-                    )),
-                );
-                return;
-            }
-        },
-        _ => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "match-arm discriminant must be a simple identifier in this version",
-                )
-                .with_label(DiagnosticLabel::new(
-                    m.discriminant.span,
-                    "only identifier discriminants are supported (task 2373 extends this)",
-                )),
-            );
-            return;
-        }
+    let Some(MatchArmDiscriminant {
+        cell_id: discriminant_cell_id,
+        enum_name: enum_type_name,
+        ty: discriminant_ty,
+    }) = resolve_match_arm_discriminant(&m.discriminant, scope, enum_defs, diagnostics)
+    else {
+        return;
     };
 
     // Extract the shared logical name from the first arm's member.
@@ -4581,8 +5440,7 @@ fn compile_match_arm_decl_group(
         return;
     }
 
-    let discriminant_ref =
-        CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
+    let discriminant_ref = CompiledExpr::value_ref(discriminant_cell_id, discriminant_ty);
 
     // Validate every arm's pattern against the discriminant enum's variants
     // before compiling guards. A typo like `Hexx` would otherwise compile to a
@@ -4843,14 +5701,18 @@ fn compile_match_arm_decl_group(
             });
 
             // Collect per-arm member types for match_arm_group_arm_member_types.
-            // Always push an entry (empty BTreeMap when find_template fails) so the
+            // Always push an entry (empty BTreeMap on a lookup miss) so the
             // per-arm Vec length always equals the cluster's Sub-arm count — preserving
             // the invariant that review suggestion 1 established in the pre-pass.
             // (task 2872: moved here from the pre-pass so insertion is atomic with
             // register_match_arm_group; see the if !group_arms.is_empty() block below.)
-            let arm_member_types = find_template(compiled_templates, &sub.structure_name)
-                .map(member_type_map_from_template)
-                .unwrap_or_default();
+            //
+            // task 5867 widened the LOOKUP to module-first/prelude-fallback; the
+            // always-push discipline above is unchanged.
+            let arm_member_types =
+                find_template_with_prelude(compiled_templates, prelude, &sub.structure_name)
+                    .map(member_type_map_from_template)
+                    .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 
@@ -4894,6 +5756,82 @@ fn compile_match_arm_decl_group(
         scope
             .match_arm_group_arm_member_types
             .insert(logical_name.clone(), per_arm_member_maps);
+    }
+}
+
+/// The enum a decl-form `match` dispatches on: the discriminant cell, the base
+/// enum's name, and the cell's own declared type (a bare `Type::Enum`, or a
+/// `Type::Applied` that keeps a generic enum's type args).
+struct MatchArmDiscriminant {
+    cell_id: ValueCellId,
+    enum_name: String,
+    ty: Type,
+}
+
+/// Resolve a decl-form `match` discriminant to the enum it dispatches on, or
+/// push a diagnostic and return `None`.  Only simple `Ident` discriminants are
+/// supported in this task; complex expressions are deferred to task 2373.
+///
+/// Enum identity comes from [`base_enum_name`], the crate's single bare-vs-applied
+/// enum oracle (type_compat.rs): an annotated generic-enum param (`Type::Applied`)
+/// is accepted, a generic STRUCTURE's `Type::Applied` — spelled the same way — is
+/// not.  Task #6020 plans one discriminant-to-`EnumDef` resolver,
+/// `match_discriminant_enum` in expr.rs, shared with the expression-form match;
+/// this helper should route through it once it lands.
+fn resolve_match_arm_discriminant(
+    discriminant: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<MatchArmDiscriminant> {
+    match &discriminant.kind {
+        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
+            Some((cell_id, ty)) => match base_enum_name(ty, enum_defs) {
+                Some(enum_name) => Some(MatchArmDiscriminant {
+                    cell_id: cell_id.clone(),
+                    enum_name: enum_name.to_string(),
+                    ty: ty.clone(),
+                }),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' has type {}, expected an enum",
+                            name, ty
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            discriminant.span,
+                            "discriminant must be an enum-typed param or let",
+                        )),
+                    );
+                    None
+                }
+            },
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' not found in scope",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        discriminant.span,
+                        "unresolved identifier",
+                    )),
+                );
+                None
+            }
+        },
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "match-arm discriminant must be a simple identifier in this version",
+                )
+                .with_label(DiagnosticLabel::new(
+                    discriminant.span,
+                    "only identifier discriminants are supported (task 2373 extends this)",
+                )),
+            );
+            None
+        }
     }
 }
 
@@ -5066,7 +6004,7 @@ fn build_arm_guard_expr(
     for variant in patterns {
         let variant_literal = CompiledExpr::literal(
             Value::enum_unit(enum_type_name.to_string(), variant.clone()),
-            Type::Enum(enum_type_name.to_string()),
+            discriminant_ref.result_type.clone(),
         );
         let eq = CompiledExpr::binop(
             BinOp::Eq,
@@ -5129,8 +6067,8 @@ pub(crate) enum PendingBoundCheck {
     /// crates) or introduce a `CompilationCtx`-owned arena (see
     /// `compile_builder/ctx.rs`).  Both are out of scope for this observational
     /// task.  Timing bench:
-    ///   `crates/reify-compiler/tests/trait_arg_conformance_bench.rs`
-    ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+    ///   `crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs`
+    ///   `cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`
     TraitArgConformance {
         target_name: String,
         arg_name: String,
@@ -5302,6 +6240,32 @@ struct GeometryRealizationSink<'a> {
     realizations: &'a mut Vec<RealizationDecl>,
     realization_index: &'a mut u32,
     diagnostics: &'a mut Vec<Diagnostic>,
+    /// Compiler-synthesized constraints emitted by the geometry lowering
+    /// (see `GeometryConstraintSink`), plus the shared per-entity constraint
+    /// counter that names them. Carried here rather than as extra parameters
+    /// for the same reason as the other fields: one bundle of mutable outputs
+    /// with a lifetime independent of the read-only `GeometryRealizationDeps`.
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_constraint_index: &'a mut u32,
+    /// The entity's guarded groups, so a guarded geometry param's synthesized
+    /// constraint can be filed into its OWN arm rather than onto the flat
+    /// `constraints` list above. Borrowed mutably here and not through
+    /// `GeometryRealizationDeps`: every `guarded_groups` mutation site
+    /// precedes the third-pass loop this sink is built in, and `deps` borrows
+    /// only `scope` / `enum_defs` / `functions` / `known_geometry_lets` /
+    /// `geometry_lets`, so the two borrows are disjoint.
+    guarded_groups: &'a mut Vec<CompiledGuardedGroup>,
+}
+
+/// Which arm of a `where`/`else` group a member was declared in.
+///
+/// Only the POLARITY travels with the recursion — the guard CELL is looked up
+/// per-member via `CompilationScope::resolve_guard`, which already yields the
+/// innermost group a member belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GuardArm {
+    Where,
+    Else,
 }
 
 /// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
@@ -5314,16 +6278,84 @@ struct GeometryRealizationSink<'a> {
 /// Intentionally does NOT handle Lets — guarded geometry lets do not emit
 /// realizations (that is a separate, unimplemented feature; see the existing
 /// comment in the GuardedGroup arm of the third-pass loop).
+///
+/// # Arm-routing contract
+///
+/// A constraint the geometry lowering synthesizes for a guarded param (see
+/// `GeometryConstraintSink`) is filed into the arm that DECLARES the geometry —
+/// `constraints` for a `where` member, `else_constraints` for an `else` one —
+/// never onto the entity's flat `TopologyTemplate::constraints`. The two arms
+/// are mutually exclusive, so a flat filing would enforce a predicate over
+/// geometry that was never lowered.
+///
+/// `arm` carries only the POLARITY, and it is re-derived at each nesting level.
+/// The guard CELL comes from the per-member `CompilationScope::resolve_guard`
+/// lookup, which already yields the innermost group a member was registered
+/// under, so an inner `else` member reached from an outer `where` lands in the
+/// INNER group's `else_constraints`. When no guard cell resolves, the constraint
+/// falls back to the flat list rather than being dropped.
+///
+/// The consequence at runtime: `collect_active_constraints` (reify-eval's
+/// `engine_constraints.rs`) gates each group's two vecs on the group's
+/// `guard_value_cell`, so a guarded predicate is **never collected while its arm
+/// is inactive** — it does not merely evaluate true, it is not checked at all.
+///
+/// # Two pre-existing properties this deliberately matches
+///
+/// Both are true of EVERY guarded constraint in the language today, not
+/// introduced here, and are filed as follow-up work rather than absorbed
+/// silently:
+///
+/// 1. **A guarded constraint is not solver-bounded.**
+///    `filter_constraints_reading_autos` (reify-eval `engine_eval.rs`) is called
+///    only with `&template.constraints`, and `detect_underdetermined` reads that
+///    same flat vec. So an `auto` `corner_r` constrained ONLY inside a guard is
+///    checked but neither solver-bounded nor counted as determined — which is
+///    also why such a cell may now additionally draw `W_UNDERDETERMINED`.
+/// 2. **A nested else-arm over-approximates.** Its constraint activates whenever
+///    its `guard_value_cell` is false, and that includes "the outer guard was
+///    false, so this group was never reached" — `collect_active_constraints`
+///    keys on the cell alone. A hand-written nested `where`/`else` constraint
+///    over-approximates identically.
 fn emit_guarded_geometry_realizations(
     members: &[reify_ast::MemberDecl],
     deps: &GeometryRealizationDeps<'_>,
     sink: &mut GeometryRealizationSink<'_>,
+    arm: GuardArm,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Param(param)
                 if deps.known_geometry_lets.contains(param.name.as_str()) =>
             {
+                // Resolve the constraint vec BEFORE lowering: a synthesized
+                // predicate over guarded geometry belongs to the arm that
+                // declares it, not to the entity's unconditional list.
+                //
+                // `sink.diagnostics`, `sink.guarded_groups` and
+                // `sink.next_constraint_index` are three DISJOINT fields of
+                // `*sink`, so the borrow checker accepts all three being
+                // borrowed across the `compile_geometry_call` below;
+                // `sink.realizations.push` happens afterwards, outside it.
+                let target_constraints =
+                    match deps.scope.resolve_guard(&param.name).and_then(|cell| {
+                        let cell = cell.clone();
+                        sink.guarded_groups
+                            .iter_mut()
+                            .find(|g| g.guard_value_cell == cell)
+                    }) {
+                        Some(group) => match arm {
+                            GuardArm::Where => &mut group.constraints,
+                            GuardArm::Else => &mut group.else_constraints,
+                        },
+                        // No guard cell resolved — fall back to the entity's
+                        // flat list rather than dropping the constraint. A
+                        // silent drop is exactly the bug class #5665 exists to
+                        // remove, so an unforeseen member shape must degrade to
+                        // "checked unconditionally", never to "not checked at
+                        // all".
+                        None => &mut *sink.constraints,
+                    };
                 if let Some(default_expr) = &param.default
                     && let Some(ops) = compile_geometry_call(
                         default_expr,
@@ -5334,6 +6366,11 @@ fn emit_guarded_geometry_realizations(
                         0,
                         deps.geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            deps.entity_name,
+                            target_constraints,
+                            sink.next_constraint_index,
+                        ),
                     )
                 {
                     sink.realizations.push(RealizationDecl {
@@ -5341,6 +6378,9 @@ fn emit_guarded_geometry_realizations(
                         name: Some(param.name.clone()),
                         // Guarded Solid-typed params carry no `aux` modifier.
                         is_aux: false,
+                        // Guarded groups are outside the hoist's member scope.
+                        is_query_only: false,
+                        list_binding: None,
                         operations: ops,
                         span: param.span,
                     });
@@ -5348,8 +6388,14 @@ fn emit_guarded_geometry_realizations(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                emit_guarded_geometry_realizations(&g.members, deps, sink);
-                emit_guarded_geometry_realizations(&g.else_members, deps, sink);
+                // Re-derive the polarity at each level rather than inheriting
+                // it: an inner `else` member reached from an outer `where`
+                // belongs to the INNER group's `else_constraints`. Only the
+                // polarity needs threading — the guard CELL comes from the
+                // per-member `resolve_guard` lookup above, which already yields
+                // the innermost group a member was registered under.
+                emit_guarded_geometry_realizations(&g.members, deps, sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(&g.else_members, deps, sink, GuardArm::Else);
             }
             _ => {}
         }
@@ -5496,130 +6542,6 @@ pub(crate) fn trait_satisfies(
 }
 
 // ---------------------------------------------------------------------------
-// OptionNone fixup helpers (shared with guards.rs via `pub(crate) use entity::*`)
-// ---------------------------------------------------------------------------
-
-/// Fix up a compiled default expression for a param member.
-///
-/// When the expression is `none` and the declared param type is `Option<T>`,
-/// the parser produces a fallback `Option<Real>` type. This helper overrides
-/// that type with the correct `Option<T>` declared by the annotation.
-///
-/// Used in three places: top-level entity params (entity.rs), port member
-/// params (entity.rs), and guarded member params (guards.rs).
-pub(crate) fn fixup_option_none_for_param(compiled: &mut CompiledExpr, cell_type: &Type) {
-    if matches!(&compiled.kind, CompiledExprKind::OptionNone)
-        && matches!(cell_type, Type::Option(_))
-    {
-        *compiled = CompiledExpr::option_none(cell_type.clone());
-    }
-}
-
-/// Fix up a compiled value expression for a let member.
-///
-/// When the expression is `none` and the let has a typed annotation like
-/// `Option<T>`, the parser produces a fallback `Option<Real>` type. This
-/// helper resolves the annotation and overrides the type with the correct
-/// `Option<T>`.
-///
-/// Used in three places: top-level entity lets (entity.rs), port member
-/// lets (entity.rs), and guarded member lets (guards.rs).
-pub(crate) fn fixup_option_none_for_let(
-    compiled_expr: &mut CompiledExpr,
-    type_expr: Option<&reify_ast::TypeExpr>,
-    type_param_names: &HashSet<String>,
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
-        && let Some(te) = type_expr
-        && let Some(resolved) = resolve_type_expr_with_aliases(
-            te,
-            type_param_names,
-            alias_registry,
-            diagnostics,
-            structure_names,
-            trait_names,
-        )
-        && matches!(&resolved, Type::Option(_))
-    {
-        *compiled_expr = CompiledExpr::option_none(resolved);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Param value-cell decl construction (shared auto_free/param decl-building
-// block, task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e) / §3 decision
-// 10). Single home for the `ValueCellDecl` construction previously
-// copy-pasted at three sites: top-level structure params (entity.rs),
-// port-member params (entity.rs), and guarded-member params (guards.rs,
-// reached via `pub(crate) use entity::*`).
-// ---------------------------------------------------------------------------
-
-/// Build the `ValueCellDecl` for a `param` member, shared by all three
-/// param-decl sites (top-level structure params, port-member params, and
-/// guarded-member params).
-///
-/// Fixes the fields identical across all three sites (`is_aux: false`, the
-/// `Auto`-vs-`Param` branch shape keyed on `auto_free`) and parameterizes the
-/// three axes that differ (`visibility`, `solver_hints`, and default-value
-/// compilation via `compile_default`).
-///
-/// On the auto branch (`auto_free = Some(free)`) `compile_default` is NOT
-/// invoked — `default_expr` is unconditionally `None` — matching the
-/// original duplicated code at all three sites, none of which ever compiled
-/// a default expression for an auto param. On the non-auto branch
-/// (`auto_free = None`), `compile_default` is invoked exactly once with a
-/// `&Type` view of `cell_type` (passed by reference so the caller's
-/// compile/fixup/type-check logic can use it before `cell_type` is moved
-/// into the returned decl) and its return value becomes `default_expr`
-/// verbatim.
-///
-/// `compile_default` encapsulates each call site's own compile-expr variant
-/// (`compile_expr_with_expected` at the two entity.rs sites vs.
-/// `compile_expr_guarded` at the guards.rs site), the `fixup_option_none_for_param`
-/// call, and — at the two entity.rs sites only — the `check_param_default_type`
-/// cross-check. `guards.rs`'s guarded param never calls `check_param_default_type`
-/// today, so keeping that check inside the closure (rather than hoisting it into
-/// this helper) preserves each site's exact diagnostic surface.
-pub(crate) fn build_param_value_cell_decl(
-    id: ValueCellId,
-    auto_free: Option<bool>,
-    cell_type: Type,
-    visibility: Visibility,
-    solver_hints: Vec<SolverHint>,
-    span: SourceSpan,
-    compile_default: impl FnOnce(&Type) -> Option<CompiledExpr>,
-) -> ValueCellDecl {
-    if let Some(free) = auto_free {
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Auto { free },
-            visibility,
-            is_aux: false,
-            cell_type,
-            default_expr: None,
-            solver_hints,
-            span,
-        }
-    } else {
-        let default_expr = compile_default(&cell_type);
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Param,
-            visibility,
-            is_aux: false,
-            cell_type,
-            default_expr,
-            solver_hints,
-            span,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Constraint-instantiation expansion (shared by `MemberDecl::ConstraintInst`
 // and the `forall` `ConstraintBody::Instantiation` branch in
 // `forall_elaborate.rs`)
@@ -5763,7 +6685,7 @@ pub(crate) fn expand_constraint_inst(
     // `Conforms(actual: undefined_ref)` is silently swallowed and only surfaces
     // later as an opaque Indeterminate from the conformance pass instead of a
     // compile-time error. `substitute_expr` itself is the "is it referenced?"
-    // oracle, so the notion of reference (including lambda/quantifier shadowing)
+    // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
     {
@@ -6179,6 +7101,76 @@ structure def Manifold {
         }
     }
 
+    /// A match arm's payload binder (`Circle { radius: r }`) rebinds `r` over
+    /// THAT arm's body, so `substitute_expr` must leave the arm-bound `r` alone —
+    /// while the discriminant and a binder-free sibling arm, which sit outside
+    /// the binder, still substitute. Constraint-param substitution used to rewrite
+    /// the arm-bound name; only the generate-unroll walker had this rule.
+    #[test]
+    fn substitute_expr_respects_a_match_arm_payload_binder() {
+        let source = "structure S {\n    let x = match f(r) { Circle { radius: r } => r * 2, _ => r * 3 }\n}";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_subst"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let expr = parsed
+            .declarations
+            .iter()
+            .find_map(|decl| match decl {
+                reify_ast::Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                    reify_ast::MemberDecl::Let(l) if l.name == "x" => Some(l.value.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("`let x` must parse");
+
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
+        bindings.insert(
+            "r".to_string(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("outer".to_string()),
+                span: SourceSpan::new(0, 0),
+            },
+        );
+        let result = substitute_expr(&expr, &bindings);
+
+        let ident_of = |e: &reify_ast::Expr| match &e.kind {
+            reify_ast::ExprKind::Ident(n) => n.clone(),
+            other => panic!("expected an Ident, got {other:?}"),
+        };
+        let left_operand = |e: &reify_ast::Expr| match &e.kind {
+            reify_ast::ExprKind::BinOp { left, .. } => ident_of(left),
+            other => panic!("expected an arm body `r * k`, got {other:?}"),
+        };
+        let reify_ast::ExprKind::Match { discriminant, arms } = &result.kind else {
+            panic!("expected the Match shape to survive, got {:?}", result.kind);
+        };
+        let reify_ast::ExprKind::FunctionCall { args, .. } = &discriminant.kind else {
+            panic!(
+                "expected the `f(r)` discriminant, got {:?}",
+                discriminant.kind
+            );
+        };
+        assert_eq!(
+            ident_of(&args[0]),
+            "outer",
+            "the discriminant is outside every binder"
+        );
+        assert_eq!(
+            left_operand(&arms[0].body),
+            "r",
+            "the arm-bound `r` must survive"
+        );
+        assert_eq!(
+            left_operand(&arms[1].body),
+            "outer",
+            "a binder-free arm still substitutes"
+        );
+    }
+
     /// entity.rs Tier-2 defensive `arm_member_type` wildcard arm (site :3672):
     /// a `MemberDecl::Constraint` (not Sub/Param/Let) in a match-arm member
     /// position must return `Type::Error` (poison sentinel), NOT a silent
@@ -6218,142 +7210,6 @@ structure def Manifold {
             "expected the wildcard-arm diagnostic, got: {:?}",
             diagnostics[0].message,
         );
-    }
-
-    // ── build_param_value_cell_decl tests (task ζ #5058) ──
-    // Exercise the helper's contracts directly (see its doc comment above its
-    // definition for the full invariants). Full-pipeline diagnostic coverage
-    // (that check_param_default_type still fires at Sites 1/2 after routing
-    // through the helper) lives in param_default_type_mismatch_tests.rs.
-
-    /// Shared assertions for the fields that pass straight through
-    /// `build_param_value_cell_decl` from its inputs to the returned decl on
-    /// both branches (`id`, `span`, `visibility`, `is_aux`, `cell_type`,
-    /// `solver_hints`) — factored out so each test below only spells out the
-    /// contract unique to it (auto-vs-param `kind`/`default_expr` behavior,
-    /// `compile_default` invocation, or cell_type identity).
-    fn assert_param_decl_passthrough_fields(
-        decl: &ValueCellDecl,
-        id: &ValueCellId,
-        span: SourceSpan,
-        visibility: Visibility,
-        cell_type: &Type,
-        solver_hints: &[SolverHint],
-    ) {
-        assert_eq!(&decl.id, id);
-        assert_eq!(decl.span, span);
-        assert_eq!(decl.visibility, visibility);
-        assert!(!decl.is_aux);
-        assert_eq!(&decl.cell_type, cell_type);
-        assert_eq!(decl.solver_hints, solver_hints);
-    }
-
-    /// Auto branch (`auto_free = Some(free)`): `compile_default` must not be
-    /// invoked, and the decl must carry `Auto { free }`, `default_expr: None`,
-    /// and every other field verbatim from the inputs.
-    #[test]
-    fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
-        for free in [true, false] {
-            let id = ValueCellId::new("TestEntity", "x");
-            let cell_type = Type::dimensionless_scalar();
-            let span = SourceSpan::new(3, 7);
-            let solver_hints = vec![SolverHint {
-                kind: SolverHintKind::PreferStock,
-                collection: "stock_lengths".to_string(),
-                span,
-            }];
-            let invoked = std::cell::Cell::new(false);
-
-            let decl = build_param_value_cell_decl(
-                id.clone(),
-                Some(free),
-                cell_type.clone(),
-                Visibility::Private,
-                solver_hints.clone(),
-                span,
-                |_ct: &Type| {
-                    invoked.set(true);
-                    None
-                },
-            );
-
-            assert!(
-                !invoked.get(),
-                "compile_default must not be invoked on the auto branch (free={free})"
-            );
-            assert_eq!(decl.kind, ValueCellKind::Auto { free });
-            assert!(decl.default_expr.is_none());
-            assert_param_decl_passthrough_fields(
-                &decl,
-                &id,
-                span,
-                Visibility::Private,
-                &cell_type,
-                &solver_hints,
-            );
-        }
-    }
-
-    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked once
-    /// with `&cell_type`, and `default_expr` equals its return value;
-    /// `cell_type` and `solver_hints` flow through unchanged. `CompiledExpr`
-    /// has no `PartialEq`, so equality here is pinned via `content_hash`.
-    #[test]
-    fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
-        for yields_default in [true, false] {
-            let id = ValueCellId::new("TestEntity", "y");
-            // Non-dimensionless, so cell_type equality below isn't trivially
-            // satisfied by every dimensionless scalar comparing equal.
-            let cell_type = Type::length();
-            let span = SourceSpan::new(11, 19);
-            let solver_hints = vec![SolverHint {
-                kind: SolverHintKind::DiscreteSet,
-                collection: "y_values".to_string(),
-                span,
-            }];
-            let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
-            let expected_hash = synthetic.content_hash;
-
-            let decl = build_param_value_cell_decl(
-                id.clone(),
-                None,
-                cell_type.clone(),
-                Visibility::Public,
-                solver_hints.clone(),
-                span,
-                |ct: &Type| {
-                    assert_eq!(
-                        ct, &cell_type,
-                        "compile_default must receive cell_type by reference"
-                    );
-                    if yields_default {
-                        Some(synthetic)
-                    } else {
-                        None
-                    }
-                },
-            );
-
-            assert_eq!(decl.kind, ValueCellKind::Param);
-            assert_eq!(
-                &decl.cell_type, &cell_type,
-                "cell_type must flow through the helper unchanged"
-            );
-            assert_eq!(
-                decl.solver_hints, solver_hints,
-                "solver_hints must flow through the helper unchanged on the non-auto branch \
-                 (not otherwise pinned end-to-end — every @solver_hint fixture decorates auto)"
-            );
-            assert_eq!(
-                decl.default_expr.map(|e| e.content_hash),
-                if yields_default {
-                    Some(expected_hash)
-                } else {
-                    None
-                },
-                "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
-            );
-        }
     }
 }
 

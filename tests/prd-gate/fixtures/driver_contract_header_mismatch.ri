@@ -1,0 +1,15 @@
+// driver-contract PRD, baseline B5: the module-header rule (spec §7.1/§7.2) is
+// enforced by every CLI subcommand and by nothing else.
+//
+// Measured at main 9a992fc2f2 (2026-08-26), target/debug/reify — check, eval,
+// build, test, report, explain and doc ALL exit 1 with
+//   error: E_MODULE_PATH_MISMATCH: declared module path 'totally_wrong_name' does
+//   not match expected path 'driver_contract_header_mismatch' (derived from file
+//   location)
+// The GUI never applies the rule to the file the user is editing, and the LSP never
+// applies it at all (code-read: neither calls check_module_path_decl).
+//
+// Post-fix (leaves ν, ξ): the same file squiggles in the GUI editor and in the LSP,
+// with a DiagnosticCode and a real span.
+module totally_wrong_name
+pub structure Widget { param w : Length = 3mm }

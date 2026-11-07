@@ -78,15 +78,15 @@ fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Surface>
 ```reify
 // Mass properties on a steel block.
 fn block_inertia() -> Tensor<2, 3, MomentOfInertia> {
-    let b = box(50mm, 30mm, 10mm)
-    let steel_density = 7850 kg/m^3
+    let b = box(50mm, 30mm, 10mm);
+    let steel_density = 7850 kg/m^3;
     moment_of_inertia(b, steel_density)
 }
 
 // Topological neighbourhood: fillet only edges adjacent to the top face.
 fn fillet_top_edges(b : Solid) -> Solid {
-    let top = single(faces_by_normal(b, [0, 0, 1], 1deg))
-    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+    let top = single(faces_by_normal(b, [0, 0, 1], 1deg));
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f));
     fillet(b, top_edges, 1mm)
 }
 

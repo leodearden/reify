@@ -1,0 +1,2 @@
+param purpose field purpose occurrence enum : derived <
+structure S { param a : Real = 1 }

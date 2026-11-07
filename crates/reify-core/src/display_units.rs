@@ -368,14 +368,63 @@ fn is_decimal_sibling(si_scale: f64, default_si_scale: f64) -> bool {
     log.is_finite() && (log - log.round()).abs() < 1e-9
 }
 
+/// ASCII-normalize a unit label's Unicode superscript exponents to the caret
+/// spelling [`unit_ladders`] adopted in task λ (#5788): `mm²` -> `mm^2`,
+/// `kg/m³` -> `kg/m^3`. Returns `None` for a label carrying neither glyph.
+///
+/// This is the CANONICAL Rust statement of contract C2's migration mapping,
+/// and it deliberately lives beside the tables it describes: the rule is only
+/// meaningful relative to which glyphs the curated ladders below actually
+/// used, so a future move of that alphabet (task κ's `·` separator half is
+/// still open) has one Rust site to edit rather than one per consumer crate.
+/// `curated_labels_are_already_ascii_normalized` in this module's tests keeps
+/// the two coupled.
+///
+/// Only U+00B2/U+00B3 are mapped, because those are the only superscripts the
+/// curated ladders ever used — this is a migration aid for one specific
+/// relabel, not a general Unicode-exponent parser. In particular it is NOT the
+/// inverse of `reify-ir`'s engineering-notation `×10ⁿ` exponent formatter,
+/// which spells the full superscript digit alphabet and is explicitly out of
+/// contract C2's scope (PRD `angle-units-surface-convergence.md` §10).
+///
+/// NEVER widens an accept-set on its own. Callers validating a label must
+/// still match rungs by exact equality and use this only to phrase a "did you
+/// mean" migration hint — see `validate_display_dimension` in
+/// `reify-compiler/src/annotations/display.rs`, the one in-tree consumer. The
+/// GUI restates the same mapping in TypeScript (`normalizeUnitLabel`,
+/// `gui/src/stores/unitLadder.ts`, task #6028) because it cannot call across
+/// the language boundary; that copy cites this function as its source of
+/// truth.
+pub fn ascii_label_spelling(label: &str) -> Option<String> {
+    if !label.contains(['\u{00B2}', '\u{00B3}']) {
+        return None;
+    }
+    Some(label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3"))
+}
+
 /// Return the full set of per-dimension unit ladders.
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
 /// `DimensionVector::to_display_units` already chooses for that dimension
-/// (Length→mm, Area→mm², Volume→mm³, Angle→deg; Mass/Pressure/Density and the
-/// single-rung Force/Energy/Power ladders fall through `to_display_units`'s
-/// unscaled fallback branch, so their defaults are the coherent-SI base unit
-/// — kg, Pa, kg/m³, N, J, W — at `si_scale: 1.0`).
+/// (Length→mm, Area→mm^2, Volume→mm^3, Angle→deg; Mass/Pressure/Density and
+/// the single-rung Force/Energy/Power/Frequency/Stiffness ladders fall through
+/// `to_display_units`'s unscaled fallback branch, so their defaults are the
+/// coherent-SI base unit — kg, Pa, kg/m^3, N, J, W, Hz, N/m — at
+/// `si_scale: 1.0`).
+///
+/// Stiffness's "N/m" is a compound unit EXPRESSION, not a bare symbol
+/// (`unit_symbol_to_si("N/m")` is `None`), exactly like the Density rung
+/// "kg/m^3".
+///
+/// SEEDING A LADDER IS NOT DISPLAY-ONLY. The GUI parameter editor derives its
+/// bare-number gate from this same table: `dimension_requires_unit`
+/// (`gui/src-tauri/src/engine.rs`) returns `Some` for exactly the dimensions
+/// that carry a ladder here, and `parse_value_string_for_cell` then REFUSES a
+/// bare number typed into a cell of that dimension, demanding an explicit unit.
+/// Adding a ladder therefore also narrows what a user may type for that
+/// dimension — safe only because every rung label parses back, which
+/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses`
+/// asserts for every ladder, compound "N/m" included.
 pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
@@ -411,7 +460,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Area".to_string(),
-            derived_unit_name: "mm\u{00B2}".to_string(),
+            derived_unit_name: "mm^2".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: true,
                 band_lo: 1.0,
@@ -419,17 +468,17 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "mm\u{00B2}".to_string(),
+                    label: "mm^2".to_string(),
                     si_scale: 1e-6,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "cm\u{00B2}".to_string(),
+                    label: "cm^2".to_string(),
                     si_scale: 1e-4,
                     is_default: false,
                 },
                 UnitOption {
-                    label: "m\u{00B2}".to_string(),
+                    label: "m^2".to_string(),
                     si_scale: 1.0,
                     is_default: false,
                 },
@@ -437,7 +486,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Volume".to_string(),
-            derived_unit_name: "mm\u{00B3}".to_string(),
+            derived_unit_name: "mm^3".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: true,
                 band_lo: 1.0,
@@ -445,12 +494,12 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "mm\u{00B3}".to_string(),
+                    label: "mm^3".to_string(),
                     si_scale: 1e-9,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "cm\u{00B3}".to_string(),
+                    label: "cm^3".to_string(),
                     si_scale: 1e-6,
                     is_default: false,
                 },
@@ -460,7 +509,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
                     is_default: false,
                 },
                 UnitOption {
-                    label: "m\u{00B3}".to_string(),
+                    label: "m^3".to_string(),
                     si_scale: 1.0,
                     is_default: false,
                 },
@@ -537,7 +586,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Density".to_string(),
-            derived_unit_name: "kg/m\u{00B3}".to_string(),
+            derived_unit_name: "kg/m^3".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: false,
                 band_lo: 1.0,
@@ -545,12 +594,12 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "kg/m\u{00B3}".to_string(),
+                    label: "kg/m^3".to_string(),
                     si_scale: 1.0,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "g/cm\u{00B3}".to_string(),
+                    label: "g/cm^3".to_string(),
                     si_scale: 1000.0,
                     is_default: false,
                 },
@@ -558,9 +607,13 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         // Single-rung coherent-SI ladders (PRD display-unit-preference §4):
         // seed the curated derived-unit name over the existing
-        // DimensionVector::FORCE/ENERGY/POWER consts. One is_default rung
-        // satisfies the every_ladder_has_exactly_one_default guard; §5
-        // assigns them no auto-scale posture (auto_scale = None).
+        // DimensionVector::FORCE/ENERGY/POWER/FREQUENCY/STIFFNESS consts. One
+        // is_default rung satisfies the every_ladder_has_exactly_one_default
+        // guard; §5 assigns them no auto-scale posture (auto_scale = None).
+        // §4's final bullet names Frequency and Stiffness explicitly and
+        // blesses growing the curated set to them; Stiffness is keyed on
+        // "Stiffness" (canonical_name's first-match answer for kg·s⁻²), never
+        // the "TranslationalStiffness" alias, which would be unreachable.
         DimensionLadder {
             dimension: "Force".to_string(),
             derived_unit_name: "N".to_string(),
@@ -587,6 +640,26 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             auto_scale: None,
             units: vec![UnitOption {
                 label: "W".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Frequency".to_string(),
+            derived_unit_name: "Hz".to_string(),
+            auto_scale: None,
+            units: vec![UnitOption {
+                label: "Hz".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Stiffness".to_string(),
+            derived_unit_name: "N/m".to_string(),
+            auto_scale: None,
+            units: vec![UnitOption {
+                label: "N/m".to_string(),
                 si_scale: 1.0,
                 is_default: true,
             }],
@@ -668,16 +741,35 @@ mod tests {
         }
     }
 
-    /// PRD display-unit-preference §4: Force/Energy/Power are seeded as
-    /// single-rung ladders (coherent-SI N/J/W @ `si_scale: 1.0`,
-    /// `is_default: true`) supplying the curated derived-unit name. A single
-    /// `is_default` rung satisfies `every_ladder_has_exactly_one_default`,
-    /// and the names round-trip through `canonical_name` (they are
-    /// `NAMED_DIMENSIONS` keys — see the round-trip guard below).
+    /// PRD display-unit-preference §4: the coherent-SI dimensions are seeded as
+    /// single-rung ladders (N/J/W, and — §4's final bullet, which names them
+    /// explicitly — Hz and N/m) @ `si_scale: 1.0`, `is_default: true`, each
+    /// supplying the curated derived-unit name. A single `is_default` rung
+    /// satisfies `every_ladder_has_exactly_one_default`, and the names
+    /// round-trip through `canonical_name` (they are `NAMED_DIMENSIONS` keys
+    /// — see the round-trip guard below). Stiffness is keyed on "Stiffness",
+    /// `canonical_name`'s first-match answer for kg·s⁻², never the
+    /// "TranslationalStiffness" alias, which would be unreachable; its "N/m" is
+    /// a compound unit EXPRESSION rather than a bare symbol, the same shape the
+    /// Density rung "kg/m^3" already uses.
+    ///
+    /// What this table holds that its neighbours do not is the SHAPE — one rung,
+    /// and a `derived_unit_name` equal to it. The §5 auto-scale exclusion of all
+    /// five is pinned once, counted and named, by
+    /// `auto_scale_metadata_matches_prd_section5`, and each default rung's
+    /// `si_scale` is locked against its real source (`to_display_units`) by
+    /// `default_si_scale_matches_to_display_units_numeric_value`; neither is
+    /// restated here.
     #[test]
-    fn force_energy_power_ladders_seeded() {
+    fn single_rung_coherent_si_ladders_seeded() {
         let ladders = unit_ladders();
-        for (dimension, label) in [("Force", "N"), ("Energy", "J"), ("Power", "W")] {
+        for (dimension, label) in [
+            ("Force", "N"),
+            ("Energy", "J"),
+            ("Power", "W"),
+            ("Frequency", "Hz"),
+            ("Stiffness", "N/m"),
+        ] {
             let l = ladder(&ladders, dimension);
             assert_eq!(
                 l.units.len(),
@@ -706,9 +798,9 @@ mod tests {
     /// `default_si_scale_matches_to_display_units_numeric_value` below
     /// already locks against its true source (`to_display_units`). That
     /// test only exercises each ladder's DEFAULT rung though, so this table
-    /// keeps ONLY the non-default-rung coverage (cm/m/in, L, g, g/cm³, …)
+    /// keeps ONLY the non-default-rung coverage (cm/m/in, L, g, g/cm^3, …)
     /// the five tests used to provide — the default rungs themselves
-    /// (Volume mm³, Length mm, Mass kg, Pressure Pa, Density kg/m³) are
+    /// (Volume mm^3, Length mm, Mass kg, Pressure Pa, Density kg/m^3) are
     /// deliberately omitted here since pinning them would just re-assert
     /// the constructor's own constants back at itself; their correctness is
     /// covered, against the real source, by the anchored test below (task
@@ -724,7 +816,7 @@ mod tests {
             ("Length", "m", 1.0, false),
             ("Length", "in", 0.0254, false),
             ("Mass", "g", 1e-3, false),
-            ("Density", "g/cm\u{00B3}", 1000.0, false),
+            ("Density", "g/cm^3", 1000.0, false),
         ];
         for &(dimension, label, si_scale, is_default) in expected {
             let u = unit(ladder(&ladders, dimension), label);
@@ -827,16 +919,16 @@ mod tests {
             );
         }
 
-        // Structural include/exclude partition: exactly these four dimensions
+        // Structural include/exclude partition: exactly these six dimensions
         // are excluded from auto-scaling (auto_scale == None). Pinning the
         // count alongside the named set closes both directions without
         // coupling to constructor order.
         let excluded_count = ladders.iter().filter(|l| l.auto_scale.is_none()).count();
         assert_eq!(
-            excluded_count, 4,
-            "exactly four ladders should be excluded from auto-scaling (auto_scale == None)"
+            excluded_count, 6,
+            "exactly six ladders should be excluded from auto-scaling (auto_scale == None)"
         );
-        for dimension in ["Angle", "Force", "Energy", "Power"] {
+        for dimension in ["Angle", "Force", "Energy", "Power", "Frequency", "Stiffness"] {
             assert_eq!(
                 ladder(&ladders, dimension).auto_scale,
                 None,
@@ -870,7 +962,7 @@ mod tests {
     ///
     /// Only the numeric value is compared, not the unit label:
     /// Mass/Pressure/Density intentionally use a more specific default label
-    /// (`"kg"`, `"Pa"`, `"kg/m³"`) than `to_display_units`'s generic `"SI"`
+    /// (`"kg"`, `"Pa"`, `"kg/m^3"`) than `to_display_units`'s generic `"SI"`
     /// fallback label (see module doc above) — that label divergence is
     /// deliberate, not drift.
     #[test]
@@ -889,6 +981,8 @@ mod tests {
             (crate::DimensionVector::FORCE, 250.0),
             (crate::DimensionVector::ENERGY, 1500.0),
             (crate::DimensionVector::POWER, 750.0),
+            (crate::DimensionVector::FREQUENCY, 50.0),
+            (crate::DimensionVector::STIFFNESS, 1000.0),
         ];
 
         for &(dim, si_value) in cases {
@@ -964,7 +1058,15 @@ mod tests {
     fn auto_scaled_posture_gate_keeps_excluded_and_default_off_dims_static() {
         let ladders = unit_ladders();
         for dimension in [
-            "Angle", "Force", "Energy", "Power", "Mass", "Pressure", "Density",
+            "Angle",
+            "Force",
+            "Energy",
+            "Power",
+            "Frequency",
+            "Stiffness",
+            "Mass",
+            "Pressure",
+            "Density",
         ] {
             let l = ladder(&ladders, dimension);
             for si_value in magnitude_sweep(-12, 12) {
@@ -1022,7 +1124,7 @@ mod tests {
         let area = ladder(&ladders, "Area");
         assert_eq!(
             area.auto_scaled(0.0045),
-            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            AutoScaleChoice::Rung(unit(area, "cm^2")),
             "0.0045 m² is 4500 mm² (out of band) but 45 cm²"
         );
 
@@ -1166,7 +1268,7 @@ mod tests {
         let area = ladder(&ladders, "Area");
         assert_eq!(
             area.auto_scaled(-0.0045),
-            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            AutoScaleChoice::Rung(unit(area, "cm^2")),
             "the band is on |mantissa|, so -0.0045 m² picks the same rung as +0.0045"
         );
 
@@ -1218,7 +1320,7 @@ mod tests {
         assert_eq!(
             area.auto_scaled(0.5),
             AutoScaleChoice::Engineering {
-                rung: unit(area, "mm\u{00B2}"),
+                rung: unit(area, "mm^2"),
                 mantissa: 500.0,
                 exponent: 3,
             },
@@ -1347,7 +1449,7 @@ mod tests {
         assert_eq!(
             area.auto_scaled(-0.5),
             AutoScaleChoice::Engineering {
-                rung: unit(area, "mm\u{00B2}"),
+                rung: unit(area, "mm^2"),
                 mantissa: -500.0,
                 exponent: 3,
             }
@@ -1382,19 +1484,19 @@ mod tests {
         );
         assert_eq!(
             volume.auto_scaled(1e-6),
-            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            AutoScaleChoice::Rung(unit(volume, "cm^3")),
             "1e-6 m³ renders as 1000 mm³, so mm³ is out of band and cm³ wins"
         );
         assert_eq!(
             volume.auto_scaled(-1e-6),
-            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            AutoScaleChoice::Rung(unit(volume, "cm^3")),
             "the band is on |mantissa|, so the sign must not change the rung"
         );
 
         assert_eq!(
             volume.auto_scaled(1000.0),
             AutoScaleChoice::Engineering {
-                rung: unit(volume, "mm\u{00B3}"),
+                rung: unit(volume, "mm^3"),
                 mantissa: 1.0,
                 exponent: 12,
             },
@@ -1403,11 +1505,125 @@ mod tests {
         assert_eq!(
             volume.auto_scaled(-1000.0),
             AutoScaleChoice::Engineering {
-                rung: unit(volume, "mm\u{00B3}"),
+                rung: unit(volume, "mm^3"),
                 mantissa: -1.0,
                 exponent: 12,
             },
             "the lower-edge snap must preserve the mantissa's sign"
+        );
+    }
+
+    /// Every curated ladder label is spelled in the ASCII `^`-exponent
+    /// alphabet, never with the U+00B2/U+00B3 superscript glyphs (task λ,
+    /// #5788; PRD contract C2 — "accept what we cannot enumerate, normalize
+    /// what we curate").
+    ///
+    /// WHY this is a test rather than a convention: these labels are compared
+    /// by raw string equality by three separate consumers — `@display`'s
+    /// validator (reify-compiler/src/annotations/display.rs), the GUI's unit
+    /// picker, and the ladder lookups in this very module. The ASCII spelling
+    /// is also the only one the .ri grammar can parse, so a superscript label
+    /// advertises a unit no user can type.
+    ///
+    /// The negative sweep alone would be satisfied by the tables becoming empty
+    /// or renamed to something else entirely, so the eight relabelled spellings
+    /// are ALSO pinned positively. `L` is included because it is the one Volume
+    /// rung that was already ASCII, and #5788 declares the stdlib unit that
+    /// finally makes it resolvable.
+    #[test]
+    fn curated_labels_use_ascii_exponent_alphabet() {
+        let ladders = unit_ladders();
+
+        // Negative sweep: no superscript exponent glyph anywhere in the tables.
+        for l in &ladders {
+            for bad in ['\u{00B2}', '\u{00B3}'] {
+                assert!(
+                    !l.derived_unit_name.contains(bad),
+                    "ladder {:?} derived_unit_name {:?} must not contain {bad:?}",
+                    l.dimension,
+                    l.derived_unit_name
+                );
+                for u in &l.units {
+                    assert!(
+                        !u.label.contains(bad),
+                        "ladder {:?} rung label {:?} must not contain {bad:?}",
+                        l.dimension,
+                        u.label
+                    );
+                }
+            }
+        }
+
+        // Positive pins: the exact ASCII spellings, on their own ladders.
+        let area = ladder(&ladders, "Area");
+        for label in ["mm^2", "cm^2", "m^2"] {
+            unit(area, label);
+        }
+        assert_eq!(area.derived_unit_name, "mm^2");
+
+        let volume = ladder(&ladders, "Volume");
+        for label in ["mm^3", "cm^3", "L", "m^3"] {
+            unit(volume, label);
+        }
+        assert_eq!(volume.derived_unit_name, "mm^3");
+
+        let density = ladder(&ladders, "Density");
+        for label in ["kg/m^3", "g/cm^3"] {
+            unit(density, label);
+        }
+        assert_eq!(density.derived_unit_name, "kg/m^3");
+    }
+
+    /// [`ascii_label_spelling`] and the tables it normalizes stay coupled.
+    ///
+    /// The normalizer is the rule; `unit_ladders()` is the data the rule was
+    /// written against. Keeping them in one module is only worth anything if
+    /// something fails when they drift, so this asserts both directions over
+    /// the LIVE tables rather than a hand-copied label list:
+    ///   * every curated label is already a fixed point (normalizing it yields
+    ///     `None`) — this is the same statement as the negative sweep above,
+    ///     but phrased through the normalizer, so re-introducing a superscript
+    ///     rung fails here too;
+    ///   * every relabelled rung is REACHED from its pre-λ superscript
+    ///     spelling — synthesized by inverting the mapping on the live label,
+    ///     so a rung renamed away from the caret spelling stops round-tripping
+    ///     instead of silently leaving the hint path pointing at nothing.
+    #[test]
+    fn curated_labels_are_already_ascii_normalized() {
+        let ladders = unit_ladders();
+        let mut round_tripped = 0usize;
+
+        for l in &ladders {
+            for label in
+                std::iter::once(&l.derived_unit_name).chain(l.units.iter().map(|u| &u.label))
+            {
+                assert_eq!(
+                    ascii_label_spelling(label),
+                    None,
+                    "ladder {:?} label {label:?} is not already ASCII-normalized",
+                    l.dimension
+                );
+
+                // Invert the mapping to reconstruct the pre-λ spelling; only
+                // labels that actually carry a caret exponent have one.
+                let superscript = label.replace("^2", "\u{00B2}").replace("^3", "\u{00B3}");
+                if superscript == *label {
+                    continue;
+                }
+                assert_eq!(
+                    ascii_label_spelling(&superscript).as_deref(),
+                    Some(label.as_str()),
+                    "ladder {:?}: {superscript:?} must normalize back to {label:?}",
+                    l.dimension
+                );
+                round_tripped += 1;
+            }
+        }
+
+        // Anti-vacuity: the loop above is trivially satisfied by empty tables.
+        assert!(
+            round_tripped > 0,
+            "no curated label carries a caret exponent — the round-trip half asserted nothing"
         );
     }
 }

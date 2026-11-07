@@ -1,0 +1,181 @@
+; NOTE: This corpus documents the CST shape of the DERIVED sub arm — the fourth
+; `sub_declaration` arm, `sub b = mirror of a across <plane> { … }` and
+; `sub b = image of a under <transform> { … }` (leaf A-alpha, task #6615,
+; docs/prds/v0_6/assembly-derivation-toolbox.md).
+;
+; LOAD-BEARING: the expected S-expressions below ARE validated on every merge —
+; not by `tree-sitter test` (which dark-factory-orchestrator.yaml does not run),
+; but by `corpus_cases_match_the_live_parser` in
+; tree-sitter-reify/tests/derived_sub_grammar_tests.rs, which include_str!s THIS
+; file, reparses each case with the live grammar and compares `to_sexp()` output.
+; So a grammar change that alters the derived-sub CST fails there until these
+; expectations are updated too — this file cannot silently drift. That Rust file
+; remains the canonical CST contract; this one is documentation OF the grammar,
+; never a second source of truth. It also pins the case count (4), so dropping a
+; case below is itself a failure.
+;
+; SCOPE: this file pins the CST SHAPE ONLY — a green case means "the grammar
+; shape is right", never "this source compiles". Every compile-scope rejection
+; for these sources (unknown / non-sibling / cyclic prototype, disposition-path
+; resolution, let-override rules, `E_DERIVED_SUB_EXPLICIT_AT`) belongs to A-beta
+; (#6616) and is not exercised here.
+;
+; Sources are kept MINIMAL on purpose: because the guard compares whole-root
+; S-expressions, any node shape a case drags in becomes pinned here too, and an
+; unrelated grammar change to (say) `transform3(…)` or named arguments would
+; then fail a derived-sub test. So the plane/transform slots are bare
+; identifiers and no case carries a pose. That the arm coexists with compound
+; planes, `auto` values, `where` guards and an `at` pose is pinned instead by
+; the hand-written field assertions in the Rust file, which are indifferent to
+; those nodes' internal shape.
+;
+; WHY THESE FOUR CASES — the INV-SF-7 rationale
+;
+; INV-SF-7 requires that a syntactic ambiguity resolve as a LOUD parse error at
+; the ambiguity site, never as a quiet pick. The derived arm introduces exactly
+; two seams where a quiet pick was possible, and these rows are the positive
+; half of the evidence that neither one bites (the negative half — sources that
+; MUST fail — lives in the Rust file as hand-rolled assertions, deliberately not
+; as corpus rows, because `tree-sitter test` has no way to express "this must
+; not parse"):
+;
+;   Seam 1 — quantity-literal juxtaposition into a newline-separated body item.
+;     A derivation clause ends in an expression (`across P`), and body items are
+;     separated by nothing but a newline. Were the body optional, or were
+;     `disposition_path` expression-valued, a trailing expression could absorb
+;     the next line (`across P` + newline + `55mm`). Cases 1 and 4 pin that
+;     every body item is its OWN sibling node, and case 2 pins that a member
+;     FOLLOWING the derived sub stays outside its body.
+;
+;   Seam 2 — the `variant_construction` brace fork. `Identifier "{" …` is also
+;     a variant construction, so `across P {` could have reduced the plane
+;     identifier and the brace into one. Case 3 pins that the derived body wins
+;     that fork. (The losing direction — `across P { x: 1mm }`, where the
+;     variant construction eats the brace and the required body is then missing
+;     — is the matching negative control in the Rust file.)
+
+================================================================================
+derived sub — mirror arm, four newline-separated body items
+================================================================================
+
+structure S {
+  sub b = mirror of a across P {
+    z = 55mm
+    keep drum
+    exclude web
+    w = 2mm
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      derivation: (sub_derivation
+        prototype: (identifier)
+        plane: (identifier))
+      body: (derived_body
+        (derived_param_assignment
+          name: (identifier)
+          value: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))
+        (keep_disposition
+          path: (disposition_path
+            (identifier)))
+        (exclude_disposition
+          path: (disposition_path
+            (identifier)))
+        (derived_param_assignment
+          name: (identifier)
+          value: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))))))
+
+================================================================================
+derived sub — image arm, empty body, followed by a sibling member
+================================================================================
+
+structure S {
+  sub b = image of a under T {
+  }
+  let after = 3mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      derivation: (sub_derivation
+        prototype: (identifier)
+        transform: (identifier))
+      body: (derived_body))
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+derived sub — the variant_construction brace fork loses to the derived body
+================================================================================
+
+structure S {
+  sub b = mirror of a across P { x = 1mm }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      derivation: (sub_derivation
+        prototype: (identifier)
+        plane: (identifier))
+      body: (derived_body
+        (derived_param_assignment
+          name: (identifier)
+          value: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))))))
+
+================================================================================
+derived sub — `mirror` still lexes as an identifier inside the body
+================================================================================
+
+structure S {
+  sub b = mirror of a across P {
+    let g = mirror(s, p)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      derivation: (sub_derivation
+        prototype: (identifier)
+        plane: (identifier))
+      body: (derived_body
+        (let_declaration
+          name: (identifier)
+          value: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier)
+              (identifier))))))))

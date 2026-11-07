@@ -1,0 +1,7 @@
+// PREMISE fixture for constrained-2d-sketch.md §5 D11: a member reference in
+// PROFILE_SLOT position parses today (sketch member binds region Geometry).
+structure def T {
+    param w : Length = 6.2mm
+    let profile = rectangle(w, 10mm)
+    let body = extrude(profile, 100mm)
+}

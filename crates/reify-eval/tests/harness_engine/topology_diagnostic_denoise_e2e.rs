@@ -58,7 +58,7 @@
 //!   task #4545) rather than real OCCT. This is a deliberate, empirically-
 //!   justified choice: real, well-formed OCCT geometry cannot reliably
 //!   trigger either diagnostic on demand, BY DESIGN —
-//!   `reify-kernel-occt/tests/boolean_op_history_integration.rs` asserts
+//!   `reify-kernel-occt/tests/harness_occt/boolean_op_history_integration.rs` asserts
 //!   `silent_drop_count == 0` for its real fixture, and
 //!   `SweepOpHistoryRecords`'s field docs (`crates/reify-ir/src/geometry.rs`)
 //!   state its counters are "always 0 for well-formed profiles" / "for
@@ -126,7 +126,7 @@ fn compile_no_errors_for_engine(source: &str) -> reify_compiler::CompiledModule 
 
 fn engine_with_occt_handle() -> Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 /// True iff `diagnostics` contains a `Severity::Warning` entry carrying
@@ -321,7 +321,7 @@ impl GeometryKernel for DropInjectingKernel {
 /// post-L3 and cannot fail. Both zero-counts below are EMPIRICALLY observed,
 /// not assumed: this build emits an entirely empty diagnostics list under
 /// real OCCT. The `TopologyCorrespondenceDropped` zero-count is additionally
-/// backed by contract — `reify-kernel-occt/tests/boolean_op_history_integration.rs`
+/// backed by contract — `reify-kernel-occt/tests/harness_occt/boolean_op_history_integration.rs`
 /// pins `silent_drop_count == 0` for well-formed OCCT boolean fixtures, so a
 /// drop line here would signal genuine kernel-correspondence degradation on
 /// healthy geometry, which is exactly what this case exists to catch.
@@ -429,7 +429,7 @@ fn build_with_drop_injecting_kernel(source: &str) -> reify_eval::BuildResult {
             ..Default::default()
         },
     );
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
     engine.build(&compiled, ExportFormat::Step)
 }
 

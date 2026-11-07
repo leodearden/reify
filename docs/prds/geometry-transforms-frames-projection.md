@@ -1,6 +1,6 @@
 # PRD: Geometry transforms, frames & projection — wire the advertised-but-unwired transform surface
 
-**Status:** active — version-agnostic geometry foundation. Authored 2026-06-01.
+**Status: SHIPPED.** All nine decomposition leaves have landed — α #4164, β #4165, γ #4166, δ #4167, ε #4168, ζ #4169, η #4170, θ #4171, ι #4172 — plus the follow-up #4879. Version-agnostic geometry foundation. Authored 2026-06-01; shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its "today" gap descriptions, error messages, measurements and anchors are dated 2026-06-01 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — no production code defers to this document (code comments cite its leaf labels as provenance only); the shipped transform / frame / projection surface is stated by `docs/reify-stdlib-reference.md`, reconciled by ι #4172.
 **Slug:** `geometry-transforms-frames-projection`
 **Approach:** **B** for the independent stdlib-surface slices (each a vertical slice through an
 existing seam); **B+H** for the **value-decode seam** (the shared `Value::Transform` /
@@ -295,11 +295,18 @@ no artificial dep edges needed. ι depends on all of them.
   the legacy `arbitrary_pattern(w, 10,0,0, 0,20,0)` triple form in `examples/pattern_composition.ri`
   still produces 2 translated instances. *Reconciles:* task 323.
 - **ζ — `orient_look_at` + `EulerConvention` enum-value path.** Modules: `reify-stdlib/src/
-  orientation.rs`, a geometry stdlib `.ri` (enum decl). *Signal:* `orient_look_at(vec3(0.0,0.0,1.0),
-  vec3(0.0,1.0,0.0))` → a non-`Undef` Orientation (matches the known Gram-Schmidt quaternion);
-  `orient_euler(EulerConvention.XYZ, 10deg, 20deg, 30deg)` evals equal to `orient_euler("xyz", 10deg,
-  20deg, 30deg)` (both non-`Undef`); `orient_to_euler(EulerConvention.ZYX, q)` returns a 3-element angle
-  list. Consumes landed enum-value lowering (2525/2558/4108).
+  orientation.rs`, a geometry stdlib `.ri` (enum decl, all twelve variants: the six Tait-Bryan
+  XYZ/XZY/YXZ/YZX/ZXY/ZYX plus the six proper/classic XYX/XZX/YXY/YZY/ZXZ/ZYZ). *Signal:*
+  `orient_look_at(vec3(0.0,0.0,1.0), vec3(0.0,1.0,0.0))` → a non-`Undef` Orientation (matches the known
+  Gram-Schmidt quaternion); `orient_euler(EulerConvention.XYZ, 10deg, 20deg, 30deg)` evals non-`Undef`,
+  while `orient_euler("xyz", 10deg, 20deg, 30deg)` (the raw lowercase-String convention form) is
+  rejected — a compile-time `DiagnosticCode::ArgTypeMismatch`, not an equal-valued alternative;
+  `orient_to_euler(q, EulerConvention.ZYX)` (subject-first, matching sibling decomposers
+  `orient_log(q)`/`orient_to_axis_angle(q)`/`orient_inverse(q)`/`transform_log(t)`) returns a 3-element
+  angle list; the convention-first `orient_to_euler(EulerConvention.ZYX, q)` is rejected — a
+  compile-time `DiagnosticCode::ArgTypeMismatch` on the `convention` slot (arg 1 is `q`, a concrete
+  Orientation, not the expected enum), not an equal-valued alternative; its eval arm only reaches
+  `Undef` if diagnostics are ignored. Consumes landed enum-value lowering (2525/2558/4108).
 - **η — Plane/Axis value consumers (`mirror(g, Plane)` + `circular_pattern(g, Axis)`) + the shared
   decode helper.** Modules: `reify-compiler/src/geometry.rs`, `reify-eval/src/geometry_ops.rs`
   (+ `decode_plane`/`decode_axis`). *Signal:* `mirror(box(10mm,10mm,10mm), plane_xy(0mm))` and

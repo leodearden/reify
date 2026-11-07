@@ -46,7 +46,7 @@
 //   - crates/reify-cli/tests/cli_affine_tapered_spacer.rs (`reify eval`
 //     determinant cells, `reify build` STEP solid count)
 //   - gui/src-tauri/src/tests/engine_tests.rs (GUI viewport mesh backstop)
-//   - crates/reify-compiler/tests/examples_smoke.rs (zero-Error bulk gate)
+//   - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (zero-Error bulk gate)
 
 structure TaperedSpacer {
     param height_scale : Real = 1.5

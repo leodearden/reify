@@ -1,0 +1,17 @@
+// Lead-screw follower on a corner-pivoted lift (task 7187).
+//
+// A coupling re-drives its parent joint, mount included: the follower nut of a
+// lift pivoted at the (100 mm, 50 mm) corner travels at that corner, not at the
+// world origin.  20π m of lift input is ten 5 mm leads, i.e. 50 mm of nut travel,
+// so the nut sits at (100 mm, 50 mm, 50 mm) — both in transform_at and in the
+// snapshot FK world transform of a body bound only through the lift.
+//
+// Acceptance criterion mirror:
+//   crates/reify-eval/tests/joint_origin_offset_e2e.rs::screw_follower_inherits_parent_pivot_e2e
+structure def ScrewFollowerPivot {
+    let j_drive = prismatic(vec3(0, 0, 1), 0m .. 100m, point3(100mm, 50mm, 0mm))
+    let j_nut = screw(j_drive, 5mm)
+    let t_nut = transform_at(j_nut, 62.83185307179586m)
+    let mech = body(mechanism(), "follower", j_nut)
+    let snap = snapshot(mech, [bind(j_drive, 62.83185307179586m)])
+}

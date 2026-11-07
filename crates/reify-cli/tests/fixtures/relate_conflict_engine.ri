@@ -1,0 +1,26 @@
+module relate_conflict_engine
+
+// Engine-phase relate conflict: one pin cannot be concentric with two bores
+// 30mm apart; the solve reports a code-less conflict Error.
+
+structure Pin {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+}
+
+structure TwoBores {
+    let near = cylinder(3.2mm, 10mm)
+    let near_axis : Axis = near.axis
+    let far = translate(cylinder(3.2mm, 10mm), 30mm, 0mm, 0mm)
+    let far_axis : Axis = far.axis
+}
+
+structure PinInTwoBores {
+    sub pin : Pin at auto
+    sub block : TwoBores
+
+    relate {
+        concentric(pin.shank_axis, block.near_axis)
+        concentric(pin.shank_axis, block.far_axis)
+    }
+}

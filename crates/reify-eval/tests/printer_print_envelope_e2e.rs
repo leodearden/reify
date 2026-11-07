@@ -5,7 +5,7 @@
 //!   kinematics (λ) → RBD (ο) → modal (π) → trajectory (ρ).
 //!
 //! Drives `examples/trajectory/printer_print_envelope.ri` through the full
-//! parse → `parse_and_compile_with_stdlib` → `make_simple_engine` +
+//! parse → `compile_source_with_stdlib` → `make_simple_engine` +
 //! `register_compute_fns` → `Engine::eval` pipeline and asserts:
 //!
 //!   1. No Error-severity diagnostics after eval.
@@ -45,10 +45,13 @@
 //! The fixture file ships alongside this test under
 //! `examples/trajectory/test_data/printer_print_envelope.gcode`.
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::ctor_conformance_debt::{
+    PRINTER_PRINT_ENVELOPE_REL_KEY, is_migration_debt_diagnostic,
+};
+use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -197,17 +200,32 @@ fn printer_print_envelope_eval_e2e() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/trajectory/printer_print_envelope.ri should exist (authored by step-2)");
 
-    let compiled = parse_and_compile_with_stdlib(&source);
+    // `compile_source_with_stdlib`, NOT `parse_and_compile_with_stdlib`: the latter
+    // itself panics on any Error-severity diagnostic (helpers.rs), so it would fire
+    // before the waiver-aware check below could run. δ (#5306) flipped
+    // CTOR_FIELD_CONFORMANCE_SEVERITY to Error and this file carries two un-migrated
+    // ctor sites.
+    let compiled = compile_source_with_stdlib(&source);
 
     // ── (1) Compile-clean pre-condition ──────────────────────────────────────
+    //
+    // "Clean" means zero UNWAIVED Errors. The two `#5847`-owned sites
+    // (`velocity_limit`, `acceleration_limit`) stay waived rather than fixed:
+    // esc-5305-3 (Leo) ruled against both migrating them here and taking a
+    // dependency edge on #5847, which owns dimensioning them — they cannot be
+    // dimensioned in isolation without collapsing the TOTS solve. Section (6) below
+    // still pins their VALUES, which is what keeps the waiver honest: eval stays
+    // permissive under D7, so the bare literals must still flow through.
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| !is_migration_debt_diagnostic(PRINTER_PRINT_ENVELOPE_REL_KEY, d))
         .collect();
     assert!(
         compile_errors.is_empty(),
-        "printer_print_envelope.ri should compile with no Error diagnostics; got:\n{:#?}",
+        "printer_print_envelope.ri should compile with no unwaived Error diagnostics; \
+         got:\n{:#?}",
         compile_errors
     );
 
@@ -388,6 +406,124 @@ fn printer_print_envelope_eval_e2e() {
             .map(|(_, d)| d.target.as_str())
             .collect::<Vec<_>>()
     );
+
+    // ── (6) tots_shaper ctor args — BOTH halves of the 5758 split state ───────
+    //
+    // Task 5758 (PRD docs/prds/v0_6/dimensioned-construction-strictness.md §11 β)
+    // migrates this file's bare ctor args at dimensioned param slots to unit
+    // literals — but only ONE of the three, by Leo's esc-5758-4 option-D1
+    // amendment. This section pins both halves so the split cannot drift in
+    // either direction.
+    //
+    // NOTE: deliberately NOT routed through `num()` (line 70). That helper folds
+    // `Value::Real` and `Value::Scalar` into one f64, which would make (a) pass
+    // while the arg is still bare AND make (b) pass after a stray migration —
+    // blind to exactly what this section exists to catch.
+    let tots_shaper_cell = ValueCellId::new("PrinterPrintEnvelope", "tots_shaper");
+    let tots_shaper_val = eval_result
+        .values
+        .get(&tots_shaper_cell)
+        .unwrap_or_else(|| {
+            panic!(
+                "PrinterPrintEnvelope.tots_shaper cell missing from eval result \
+                 (all diagnostics: {:#?})",
+                eval_result.diagnostics
+            )
+        });
+    let Value::StructureInstance(tots_shaper) = tots_shaper_val else {
+        panic!(
+            "PrinterPrintEnvelope.tots_shaper must be a TOTSShaper StructureInstance; \
+             got {tots_shaper_val:?}"
+        )
+    };
+
+    // (a) MIGRATED — actuator_limits[0].max_force is a dimensioned Scalar<Force>.
+    //
+    // `1000N` is 1000 N in SI, exactly what the previous bare `1000.0` was
+    // already being read as, so this migration is magnitude-preserving: all four
+    // of budget / peak_impulse / peak_tots / peak_unshaped are unchanged by it.
+    let Some(Value::List(actuator_limits)) = tots_shaper.fields.get(&"actuator_limits".to_string())
+    else {
+        panic!(
+            "PrinterPrintEnvelope.tots_shaper.actuator_limits must be a Value::List; got {:?}",
+            tots_shaper.fields.get(&"actuator_limits".to_string())
+        )
+    };
+    assert_eq!(
+        actuator_limits.len(),
+        1,
+        "PrinterPrintEnvelope.tots_shaper.actuator_limits should hold exactly one \
+         JointLimit, got {}",
+        actuator_limits.len()
+    );
+    let Value::StructureInstance(joint_limit) = &actuator_limits[0] else {
+        panic!(
+            "PrinterPrintEnvelope.tots_shaper.actuator_limits[0] must be a JointLimit \
+             StructureInstance; got {:?}",
+            actuator_limits[0]
+        )
+    };
+    match joint_limit.fields.get(&"max_force".to_string()) {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::FORCE,
+                "tots_shaper.actuator_limits[0].max_force has the wrong dimension: \
+                 expected FORCE (kg·m·s⁻²), got {dimension:?}"
+            );
+            assert_eq!(
+                *si_value, 1000.0,
+                "tots_shaper.actuator_limits[0].max_force must be 1000 N in SI \
+                 (the `1000N` literal is magnitude-preserving vs the old bare `1000.0`); \
+                 got {si_value}"
+            );
+        }
+        other => panic!(
+            "tots_shaper.actuator_limits[0].max_force must be a dimensioned \
+             Value::Scalar {{ si_value: 1000.0, dimension: FORCE }}, got {other:?}. \
+             If this is a bare Value::Real(1000.0), printer_print_envelope.ri:153 has not \
+             been migrated to the `1000N` unit literal (task 5758 / PRD §11 β)."
+        ),
+    }
+
+    // (b) DEFERRED — velocity_limit / acceleration_limit are STILL bare Reals.
+    //
+    // This is a deliberate tripwire, not a bug. Both assertions are GREEN today
+    // and must STAY green through task 5758.
+    for (field_name, expected) in [
+        ("velocity_limit", 300.0_f64),
+        ("acceleration_limit", 5000.0),
+    ] {
+        match tots_shaper.fields.get(&field_name.to_string()) {
+            Some(Value::Real(r)) => assert_eq!(
+                *r, expected,
+                "PrinterPrintEnvelope.tots_shaper.{field_name} must still be the bare \
+                 Value::Real({expected}); got Value::Real({r})"
+            ),
+            other => panic!(
+                "PrinterPrintEnvelope.tots_shaper.{field_name} must STILL be a bare \
+                 Value::Real({expected}), got {other:?}.\n\
+                 \n\
+                 These two ctor args (printer_print_envelope.ri:154/:155) are OUT OF SCOPE \
+                 for task 5758, per Leo's esc-5758-4 option-D1 amendment. Dimensioning them \
+                 to `300mm/s` / `5000mm/s^2` makes the TOTS solve ConstraintInfeasible: \
+                 input_shape returns Undef, track_tots is empty, and peak_tots becomes \
+                 exactly 0 — with exit 0 and ZERO diagnostics, which is how this defect \
+                 class hides.\n\
+                 \n\
+                 The cause is that this file's `Waypoint.values` are dimensionless \
+                 (`JointValue = Real`, stdlib/trajectory.ri:77, kinematic.ri:306) and demand \
+                 ~200 units/s across printer_print_envelope.ri:115-118. The limits and the \
+                 waypoints must be corrected TOGETHER.\n\
+                 \n\
+                 Task #5847 (dependency-gated on #5412) owns that migration and must update \
+                 this assertion in the same change. Do not simply delete it."
+            ),
+        }
+    }
 }
 
 // ── Fixture sub-test ─────────────────────────────────────────────────────────

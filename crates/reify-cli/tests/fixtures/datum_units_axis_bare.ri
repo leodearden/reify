@@ -1,0 +1,27 @@
+// datum_units_axis_bare.ri — CLI eval fixture: a BARE axis origin is rejected.
+//
+// units-length ε (task 5746, R11). `axis_x(point3(0.0, 0.0, 0.0))` passes a
+// dimensionless Point3 where a LENGTH triple is required, so `make_axis` returns
+// `Value::Undef` and the post-Undef `geometry_diagnose` hook must emit on
+// stderr:
+//   error: axis_x: ox/oy/oz argument expects Length, got Real; pass a
+//   dimensioned length such as `5mm`
+// ONE message naming all three coordinates, not one per coordinate: the decoder
+// both the gate and the classifier read has ALREADY required the three
+// components to share one dimension, so when this fires all three positions
+// offend identically and naming them together is COMPLETE information. A bare
+// triple is also written as ONE authoring gesture, so one edit-build cycle
+// fixes one line.
+//
+// `reify eval` exits NONZERO: the diagnostic is Severity::Error (C1(iv)).
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails.
+//
+// Declares its module explicitly, for the same anchor-strength reason as
+// datum_units_plane_bare.ri.
+
+module datum_units_axis_bare
+
+structure def DatumUnitsAxisBare {
+    let a = axis_x(point3(0.0, 0.0, 0.0))
+}

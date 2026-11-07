@@ -54,7 +54,7 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let output = result
@@ -86,7 +86,7 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
 ///   - The retained half is bounded → must produce a valid STEP solid.
 ///
 /// Exact volume check (½·(20mm)³) is done by the kernel-direct integration
-/// test in `crates/reify-kernel-occt/tests/half_space_integration.rs`; here
+/// test in `crates/reify-kernel-occt/tests/harness_occt/half_space_integration.rs`; here
 /// we verify the full source→STEP pipeline succeeds.
 ///
 /// RED: panics at `todo!()` in geometry_ops.rs until step-8.
@@ -146,7 +146,7 @@ structure S {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     // Must not panic — an unbounded geometry handle IS constructible.
     let result = engine.build(&compiled, ExportFormat::Step);
     // No build-level errors.

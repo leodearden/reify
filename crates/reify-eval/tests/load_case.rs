@@ -7,11 +7,11 @@
 //!
 //! These tests are the SIR-β-mlcfea closure document. Before this file existed
 //! the LoadCase ctor contract was exercised only at the compile-time param-shape
-//! level in `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`; no
+//! level in `crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`; no
 //! dedicated eval-layer file pinned the ctor→StructureInstance path.
 //!
 //! Cross-reference:
-//!   - `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs` — SIR-α tripwire
+//!   - `crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs` — SIR-α tripwire
 //!     for `MultiCaseResult(cases: map{})` ctor (broader accessor smoke coverage).
 //!   - `crates/reify-eval/tests/structure_instance_e2e.rs` — wave-1 PointLoad /
 //!     Steel contract pins.

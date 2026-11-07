@@ -1,0 +1,284 @@
+"""
+_pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
+partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
+hyphenated checker by path as `pcc` (the filename is not importable by name),
+and holds what more than one partition needs: the repo paths and value-cell
+constants, the ProbeContext builders and the recording fake runner, the
+grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
+wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
+cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
+fixture only one partition uses lives in that partition.  It imports no test
+file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
+one partition at a time with `python3 scripts/test_pcc_<area>.py`.
+"""
+
+import functools
+import importlib.util
+import os
+import shlex
+import sys
+import textwrap
+
+from _pdv_test_support import require_reify_binary
+
+
+# ---------------------------------------------------------------------------
+# Module loader — load scripts/prd-capability-check.py into `pcc`
+# ---------------------------------------------------------------------------
+
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_HARNESS_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
+
+_spec = importlib.util.spec_from_file_location("prd_capability_check", _HARNESS_PATH)
+pcc = importlib.util.module_from_spec(_spec)
+# Register in sys.modules before exec_module so @dataclass and typing annotations
+# resolve correctly (they look up cls.__module__ in sys.modules at decoration time).
+sys.modules["prd_capability_check"] = pcc
+_spec.loader.exec_module(pcc)
+
+
+# ---------------------------------------------------------------------------
+# Locate the repo root for resolving committed probe-set paths
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+_EXAMPLE_PROBE_SET = os.path.join(_REPO_ROOT, "tests", "prd-gate", "example-probe-set.json")
+_VALUE_CELLS_FIXTURE = os.path.join(
+    "tests", "prd-gate", "fixtures", "value_clean_eval_cells.ri"
+)
+
+# The three-line shape `reify eval` really prints for that fixture.  Named once
+# here: renaming the fixture or rewording a printed cell is then one edit, not five.
+_VALUE_CELLS_STDOUT = (
+    "ValueCleanEvalCells.damping_ratio = 0.018\n"
+    "ValueCleanEvalCells.degenerate_ratio = 0\n"
+    "ValueCleanEvalCells.undef_ratio = undef\n"
+)
+
+
+# ---------------------------------------------------------------------------
+# ProbeContext builders — what a test hands α instead of an environment
+# ---------------------------------------------------------------------------
+
+def probe_context(**fields):
+    """A hermetic pcc.ProbeContext: this repo's root and bare PATH binary names.
+
+    Reads no environment variable, so a test's context never depends on what
+    the lane exported; **fields override any default, and every field not
+    named here keeps the class default.
+    """
+    defaults = {
+        "repo_root": _REPO_ROOT,
+        "reify_bin": "reify",
+        "tree_sitter_bin": "tree-sitter",
+    }
+    return pcc.ProbeContext(**{**defaults, **fields})
+
+
+def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
+    """Lay a fixture repo root out in `tmpdir` and return `tmpdir`.
+
+    Creates <tmpdir>/tree-sitter-reify/src/, plus an empty parser.c in it when
+    `parser_c`.  A test hands the result to ProbeContext as repo_root, since
+    α's own root discovery walks up from its file and no environment variable
+    redirects it.
+    """
+    src = os.path.join(tmpdir, "tree-sitter-reify", "src")
+    os.makedirs(src, exist_ok=True)
+    if parser_c:
+        open(os.path.join(src, "parser.c"), "w").close()
+    return tmpdir
+
+
+def recording_runner(run=None):
+    """A fake ProbeRunner answering every probe with `run`, and its call list.
+
+    `run` defaults to a clean ProbeRun(0, "", "").  Each call appends
+    (probe, ctx, timeout), so a test can assert what was asked for, under
+    which context and bound, as well as how often.
+    """
+    answer = pcc.ProbeRun(0, "", "") if run is None else run
+    calls = []
+
+    def runner(probe, ctx, timeout=None):
+        calls.append((probe, ctx, timeout))
+        return answer
+    return runner, calls
+
+
+# ---------------------------------------------------------------------------
+# Grammar-e2e skip-guard — can a grammar probe run in this lane?
+# ---------------------------------------------------------------------------
+
+# The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
+# isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
+# generated but tree-sitter cannot write ~/.cache/tree-sitter/lock/, so the probe
+# fails to load the language, observe() classifies it HARNESS_ERROR, and the
+# suite reported a spurious FAIL (exit 70) instead of a clean skip.
+#
+# Order matters.  grammar_generated() runs first and short-circuits, so a lane
+# that never generated the grammar pays no subprocess; only when parser.c exists
+# do we spend one probe asking whether it can be loaded.
+def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
+    """Return (available, reason) for the grammar e2e under ctx.  Never raises.
+
+    ctx defaults to pcc.ProbeContext.from_environment() and runner to
+    pcc.run_probe; a test hands in a fixture-repo ctx and a fake runner.
+
+    The bare `except Exception` is deliberate: the only sane failure mode here is
+    "cannot confirm the substrate → skip the one test that needs it".  The
+    alternative, measured on this branch, is losing every test in the module.
+    It is defence-in-depth, not the fix — the trigger is fixed at source in
+    run_probe(), which represents an unlaunchable binary rather than raising.
+    """
+    try:
+        if ctx is None:
+            ctx = pcc.ProbeContext.from_environment()
+        generated, parser_c = pcc.grammar_generated(ctx)
+        if not generated:
+            return (False, f"{parser_c} not found — grammar never generated")
+        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner or pcc.run_probe)
+    except Exception as exc:
+        return (False, f"the grammar substrate could not be interrogated ({exc!r})")
+    return (bool(usable), reason)
+
+
+@functools.lru_cache(maxsize=1)
+def _grammar_e2e_status() -> tuple:
+    """Memoized _compute_grammar_e2e_status(), evaluated on FIRST USE.
+
+    Deliberately not a module-level constant: the behavioural half spawns a real
+    tree-sitter (on a cold cache, a cc compile of the grammar first), so as an
+    import-time constant every importer paid it — including the ~140 hermetic
+    tests that need none of it.
+    """
+    return _compute_grammar_e2e_status()
+
+
+def _require_grammar_substrate(test) -> None:
+    """skipTest unless a grammar probe can run here.  Call from a test body.
+
+    Carries the MEASURED reason into the skip message: an unusable verdict caused
+    by tree-sitter exceeding the substrate bound on a loaded machine is a
+    coverage hole, not a real gap, and must be tellable from a genuine denial.
+    """
+    available, reason = _grammar_e2e_status()
+    if not available:
+        test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
+
+
+def _require_reify_binary(test):
+    """skipTest unless α would run a reify binary here; return the ctx it would use.
+
+    The policy lives once, in _pdv_test_support.require_reify_binary; this asks
+    it about the α instance these partitions load.
+    """
+    return require_reify_binary(test, pcc=pcc)
+
+
+# ---------------------------------------------------------------------------
+# Measured tree-sitter cache-denial signature
+# ---------------------------------------------------------------------------
+
+# The exact stderr tree-sitter 0.26.8 emits when the grammar loads but its
+# on-disk lock/cache directory is not writable.  Measured in a sandboxed agent
+# role (`touch ~/.cache/tree-sitter/lock/_probe` → EACCES while the directory is
+# drwxrwxr-x owned by the invoking user — the denial is a landlock LSM hook, not
+# a mode bit, which is precisely why an os.access(..., W_OK) probe cannot see it).
+_CACHE_DENIED_STDERR = (
+    'Error: Failed to load language for path "/home/leo/src/reify/tests/prd-gate/'
+    'fixtures/arrow_type.ri"\n'
+    "Caused by: Failed to load language in current directory:\n"
+    "Permission denied (os error 13) "
+    "(/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock)\n"
+)
+
+
+# ---------------------------------------------------------------------------
+# TREE_SITTER_BIN stub factories used by more than one partition, so they all
+# share one definition of "what a denied / clean / wedged / unlaunchable
+# tree-sitter looks like".
+# ---------------------------------------------------------------------------
+
+def _write_ts_stub(tmpdir: str, name: str, body: str) -> str:
+    """Write an executable /bin/sh stub at <tmpdir>/<name> and return its path."""
+    path = os.path.join(tmpdir, name)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\n" + textwrap.dedent(body))
+    os.chmod(path, 0o755)
+    return path
+
+
+def _ts_stub_cache_denied(tmpdir: str, name: str = "ts_stub_denied") -> str:
+    """Stub reproducing the measured cache-denial: stderr signature, exit 1.
+
+    The stderr text is written to a sibling file and cat'd rather than embedded
+    in a heredoc: the measured signature is unindented, so textwrap.dedent would
+    find no common prefix, silently leave the stub body indented, and the heredoc
+    terminator would never match.
+    """
+    stderr_file = os.path.join(tmpdir, name + "_stderr.txt")
+    with open(stderr_file, "w") as f:
+        f.write(_CACHE_DENIED_STDERR)
+    return _write_ts_stub(tmpdir, name, f"""\
+        cat {shlex.quote(stderr_file)} >&2
+        exit 1
+    """)
+
+
+def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
+    """Stub reproducing a clean parse: exit 0, no output."""
+    return _write_ts_stub(tmpdir, name, "exit 0\n")
+
+
+# Sentinel the echo-cache stub prints when XDG_CACHE_HOME is absent from its
+# environment.  A distinct marker rather than "" so a test can tell "the child
+# saw no cache override" apart from "the child saw an empty one".
+_UNSET_CACHE_MARKER = "<unset>"
+
+
+def _ts_stub_echo_cache(tmpdir: str, name: str = "ts_stub_echo_cache") -> str:
+    """Stub that reports the XDG_CACHE_HOME its own process was handed, exit 0.
+
+    The whole point of the grammar-cache isolation contract is what the CHILD
+    sees, which no in-process assertion on os.environ can observe — the parent's
+    environment is exactly what is NOT supposed to reach the child.  Echoing it
+    back through stdout is the only way to measure it.
+    """
+    return _write_ts_stub(tmpdir, name, f"""\
+        echo "XDG_CACHE_HOME=${{XDG_CACHE_HOME:-{_UNSET_CACHE_MARKER}}}"
+        exit 0
+    """)
+
+
+
+def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -> str:
+    """Stub that never answers within the test's patched timeout.
+
+    Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock.
+    Tests pair it with a sub-second ProbeContext.substrate_timeout_s, so the sleep
+    only has to outlast that bound.
+    """
+    return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
+
+
+def _argv_echo_stub(tmpdir: str, name: str = "argv_echo") -> str:
+    """Stub that prints the argv it was launched with, one element per line, $0 first.
+
+    Stands in for either binary.  What the child prints is the only outside
+    measurement of the command that really ran, so a test can compare it with
+    the command a ProbeRun or a --json record says ran.
+    """
+    return _write_ts_stub(tmpdir, name, """printf '%s\\n' "$0" "$@"\n""")
+
+
+def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
+    """Stub that EXISTS on disk but carries no execute bit.
+
+    Deliberately NOT the missing-CLI case: every isfile()/exists() guard upstream
+    passes and only the exec fails (EACCES).  Callers assert os.path.isfile() on
+    the returned path so it cannot silently degenerate into that case.
+    """
+    path = _write_ts_stub(tmpdir, name, "exit 0\n")
+    os.chmod(path, 0o644)
+    return path
