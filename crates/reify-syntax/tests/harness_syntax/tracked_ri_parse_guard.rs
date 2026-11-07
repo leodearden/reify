@@ -756,7 +756,7 @@ const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
         reason: "synthetic",
     },
     MustErrorFixture {
-        path: "inert/a.ri",
+        path: "docs/zz_section/zz_synthetic.ri",
         kind: MustErrorKind::CstFault,
         reason: "synthetic",
     },
@@ -764,42 +764,31 @@ const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
 
 const SYNTHETIC_UNSWEPT: &[UnsweptTree] = &[
     UnsweptTree {
-        prefix: "inert/",
-        reason: "synthetic",
-        basis: UnsweptBasis::InertToVerify,
-    },
-    UnsweptTree {
         prefix: "chartered/",
         reason: "synthetic",
-        basis: UnsweptBasis::Charter,
+    },
+    UnsweptTree {
+        prefix: "empty/",
+        reason: "synthetic",
     },
 ];
 
 #[test]
 fn declared_entries_in_inert_trees_names_each_offender() {
     assert_eq!(
-        declared_entries_in_inert_trees(SYNTHETIC_DECLARED, SYNTHETIC_UNSWEPT),
-        ["inert/a.ri"],
-        "a declared entry in a Charter tree is checked on purpose; only one in an \
-         InertToVerify tree is an offender"
+        declared_entries_in_inert_trees(SYNTHETIC_DECLARED),
+        ["docs/zz_section/zz_synthetic.ri"],
+        "a declared entry in an unswept tree is checked on purpose; only one in a \
+         verify-inert tree is an offender"
     );
 }
 
 #[test]
-fn dead_unswept_rows_spares_an_inert_to_verify_row() {
-    assert_eq!(
-        dead_unswept_rows(SYNTHETIC_UNSWEPT, &[]),
-        ["chartered/"],
-        "a Charter row covering no tracked .ri is dead; an InertToVerify row is a routing \
-         fact and stands while its tree is empty"
-    );
-}
-
-#[test]
-fn dead_unswept_rows_keeps_a_charter_row_that_covers_a_tracked_ri() {
+fn dead_unswept_rows_names_each_row_that_covers_no_tracked_ri() {
     assert_eq!(
         dead_unswept_rows(SYNTHETIC_UNSWEPT, &listing(&["chartered/zz_synthetic.ri"])),
-        Vec::<&str>::new()
+        ["empty/"],
+        "a row covering a swept .ri stands; one covering none is stale"
     );
 }
 
