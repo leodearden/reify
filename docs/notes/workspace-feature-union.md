@@ -286,11 +286,12 @@ only for tree-sitter-reify itself, and the reach shows in the next invocation.
 Hypothesis, not isolated by these probes: once tree-sitter regeneration is
 excluded (next subsection), the workspace units that remain are the union of
 what two contributors rebuild, each with the downstream rebuild it triggers: the
-seed's `env!()`/build-dir invalidation, and workspace-member feature splits
-(#9825, see Limits). A unit either one dirties is built once, so the counts do
-not add, and the tree-sitter share measured in the next subsection holds only
-with the other contributors present. A measurement of #9825's contributor probes
-without the tree-sitter regeneration (Probe procedure, arm B).
+seed's `env!()`/build-dir invalidation, and workspace-member feature splits.
+A unit either one dirties is built once, so the counts do not add, and the
+tree-sitter share measured in the next subsection holds only with the other
+contributors present. Member features (#9825) measures the split share with
+the generated sources both absent and present, and finds a further
+contributor, build-script reruns (#9884).
 
 ### Tree-sitter share (#9862)
 
@@ -368,7 +369,9 @@ four arm-B probes (reify-ast, reify-compiler, reify-expr, reify-ir,
 reify-stdlib, reify-syntax and reify-test-support), and 25 distinct units appear
 across them. These are what the seed's `env!()`/build-dir invalidation and
 #9825's workspace-member feature splits must explain; this measurement does not
-attribute them between the two.
+attribute them between the two. Member features (#9825) attributes the
+`-p reify-eval` 22: 9 to the splits its probe C closes, and 13 to
+reify-git-env's split and, as a hypothesis, #9884's build-script reruns.
 
 The walls compare nothing across arms. The plain clippy pair builds the same 30
 units in both arms, in 1:04.43 and 6:19.62, and the load average at the start of
@@ -412,14 +415,198 @@ serde_derive (a proc-macro, usable only once fully built), serde, num-complex
 and simba. The host was loaded, so walls and offsets are indicative only:
 serde_derive started 63 s after its last dependency finished.
 
+## Member features (#9825)
+
+The union pins external packages only. A workspace member's own features can
+also resolve wider under `--workspace` than under `-p`, from two sources:
+
+- every member's dev-dependencies, which `--workspace` activates for all
+  members at once, the self-dev-dep pattern included;
+- normal dependencies of members outside the selection's closure: reify-lsp
+  enabled reify-ast's and reify-ir's `serde` before #9825 deleted both features.
+
+A `-p` build then compiles that member as a variant the base never built, and
+rebuilds every member that reaches it. The union cannot pin a member, because
+the union depending on a member would be a dependency cycle. Instead, `check`
+prints one advisory line per such variant, naming every selection that
+resolves it:
+
+    MEMBER-SPLIT reify-stdlib v0.1.0 (target): -p resolves {} under reify-cli, ...; --workspace resolves {test-support}
+
+The lines never fail the check, and `generate` ignores them.
+
+### Census
+
+Resolve-only, on `8c9f190b81`; no manifest changed between it and
+`42f524d798`. Each selection was resolved with
+`cargo tree --frozen -e normal,build,dev -f '{p}|{f}' --target x86_64-unknown-linux-gnu --charset ascii`
+and parsed with the script's side-aware parser, member packages kept. It
+reproduces the nine `-p reify-eval` rows of #9825's task text exactly:
+
+| Member | `-p reify-eval` | `--workspace` |
+|---|---|---|
+| reify-ast | none | serde |
+| reify-ir | none | serde |
+| reify-compiler | none | test-support |
+| reify-stdlib | none | test-support |
+| reify-git-env | none | test-utils |
+| reify-kernel-gmsh | mesh-morph | mesh-morph, stub_register |
+| reify-kernel-occt | none | mesh-morph, test-fixtures |
+| reify-kernel-openvdb | test-fixtures | stub_register, test-fixtures |
+| reify-solver-elastic | none | linear-solve-fault-injection |
+
+Over the 37 covered `-p` selections:
+
+- 31 selections split, with 211 (selection, member) split pairs over 16
+  distinct members;
+- 341 members are affected, summed over the selections: split, or reaching a
+  split member by normal or build lib edges;
+- under `-p reify-eval`, 21 of the 30 members in its closure are affected.
+
+`python3 scripts/workspace-feature-union.py check` reproduces the pairs from
+its MEMBER-SPLIT lines: before the serde change below, 19 lines naming 211
+pairs, 31 selections and 16 members.
+
+### Probes
+
+Each probe is a first build of `cargo test -p reify-eval --no-run` in lane
+`_lane-24`, from a `target/` seeded from base `target.gen.625` (basecommit
+`35a914623f`), under the verify env (`RUSTC_WRAPPER=sccache`,
+`CARGO_INCREMENTAL=0`, `CARGO_HOME=/tmp/reify-agent-cargo-home`, `RUSTFLAGS`
+unset), following Probe procedure. A and B ran at `8c9f190b81` with the two
+crate-source files that differ from the basecommit set back to its content at
+the seed's 2020-01-01 mtime. B and C close every split that `--features` can
+name:
+
+    --features reify-ast/serde,reify-ir/serde,reify-compiler/test-support,reify-stdlib/test-support,reify-kernel-gmsh/stub_register,reify-kernel-occt/mesh-morph,reify-kernel-occt/test-fixtures,reify-kernel-openvdb/stub_register,reify-solver-elastic/linear-solve-fault-injection
+
+`reify-git-env/test-utils` cannot be named, because reify-git-env is not a
+direct dependency of reify-eval, so it stays split in B and C.
+
+| Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
+|---|---|---|---|---|---|
+| A: generated sources absent, no `--features` (2026-11-06) | `8c9f190b81` | gen.625 | **0** + 23 | 5:47.30 | 78/112/138 → 154/133/137 |
+| B: generated sources absent, `--features` (2026-11-06) | `8c9f190b81` | gen.625 | **0** + 15 | 5:35.96 | 92/118/130 → 290/178/147 |
+| C: generated sources present, `--features` (2026-11-07) | `35a914623f` | gen.625 | **0** + 13 | 5:47.89 | 491.99/294.48/211.81 → 297.40/298.14/239.20 |
+
+A and B match a fresh lane today, which has no tree-sitter generated sources.
+C used the arm B branch of Probe procedure. After `git checkout --detach
+35a914623f`, the 60 existing delta files were re-stamped to 2020-01-01, the 6
+that match the seed's `env!()` relink rule were left at now, and the 13
+HEAD-only files were gone. `git diff --name-only 35a914623f` then printed
+nothing, and the 233 files newer than 2020-01-02 were all under `tests/` or
+`benches/`, except `.mcp.json`. The generated sources came from
+`scripts/tree-sitter-generate.sh` at the basecommit, back-dated, and all four
+seeded `tree_sitter_inputs.stamp` files matched
+`tree-sitter-freshness.sh --print-fingerprint`.
+
+With #9862's arm B (Tree-sitter share: generated sources present, no
+`--features`, same base and command), the four probes form a 2x2 of workspace
+units:
+
+| | splits present | splits closed |
+|---|---|---|
+| generated sources absent | 23 (A) | 15 (B) |
+| generated sources present | 22 (#9862 arm B) | 13 (C) |
+
+The split-only units:
+
+- With the sources absent, A − B = 8: reify-ast, reify-constraints,
+  reify-expr, reify-geometry, reify-ir, reify-kernel-manifold,
+  reify-shell-extract and reify-stdlib.
+- With the sources present, 22 − 13 = 9: those 8 plus reify-syntax.
+  Hypothesis on the set: #9862 does not list its full arm B set, but its
+  count is A's 23 minus tree-sitter-reify, which #9862 measured as the whole
+  arm A − arm B difference.
+- B − C is tree-sitter-reify and reify-syntax.
+
+C's 13 are reify-compiler, reify-compute-contract, reify-config,
+reify-doc-build, reify-eval, reify-git-env, reify-kernel-gmsh,
+reify-kernel-occt, reify-kernel-openvdb, reify-mesh-morph, reify-runtime,
+reify-solver-elastic and reify-test-support. Hypothesis: apart from
+reify-git-env, which is still split, they rebuild through #9884's four
+build-script reruns (reify-kernel-gmsh, -occt, -openvdb and
+reify-solver-elastic) and the normal edges that reach them. reify-config
+normal-depends on the three kernels, reify-compiler on reify-config,
+reify-test-support, reify-doc-build, reify-runtime and reify-mesh-morph on
+reify-compiler, reify-compute-contract on reify-solver-elastic, and reify-eval
+on them. The seed's `env!()` touches land only on `tests/` and `benches/`
+sources (the relink rule in `scripts/seed-warm-lane.sh`), so they dirty test
+targets, not lib units.
+
+reify-eval rebuilds in every probe. Closing every split saves CPU, not the
+long pole, until #9884 lands. The walls (5:36 to 5:48 under very different
+load) are indicative only.
+
+### Decision
+
+| Class | Features | Decision |
+|---|---|---|
+| (a) serde vocabulary | reify-core, reify-ast and reify-ir `serde` | **Closed** |
+| (b) test-only API | `test-support`, `test-utils`, `test-fixtures`, `testing`, `containment-doubles`, `eval-helpers`, reify-kernel-gmsh/-occt `mesh-morph` | Accepted |
+| (c) semantic | `stub_register`, `linear-solve-fault-injection`, `test-instrumentation` | Accepted |
+
+- **(a) Closed.** reify-core's `serde` is default-on, and reify-ast's and
+  reify-ir's pass-through `serde` features are deleted, with reify-ast's
+  optional serde dependency. Every shipped binary already enabled all three,
+  as `cargo tree -e normal` shows for reify-cli, reify-gui and
+  `reify-gui --features gui`; the ast and ir features gated no code. reify-core
+  keeps an opt-out feature instead of unconditional derives, because those
+  would rewrite 149 `cfg(feature = "serde")` sites, 145 of them in
+  `crates/reify-core/src/diagnostics.rs`, a file many tasks append to. No
+  member sets `default-features = false` on reify-core.
+  Effect, from the trial on `8c9f190b81`: 211 → 146 split pairs, 341 → 212
+  summed affected members, and `-p reify-eval` affected 21 → 15. It saves 5
+  of the 8 split-only units with the sources absent (reify-ast, reify-ir,
+  reify-geometry, reify-kernel-manifold and reify-shell-extract), and 6 of the
+  9 with them present. The sixth is reify-syntax, whose normal dependencies
+  are only reify-core, reify-ast, tree-sitter and tree-sitter-reify; that is
+  derived from manifest edges, not probed. On this branch `check` reports 146
+  pairs over 26 selections and 13 members.
+  Side effect: `cargo test -p reify-core` now runs its serde wire-form tests,
+  which ran only under the workspace gate before.
+- **(b) Accepted.** Enabling these uniformly would compile into production
+  the test API the manifests hide on purpose, and the `dep:` features grow
+  dependency graphs.
+- **(c) Accepted.** They change behaviour (kernel routing, fault injection,
+  instrumentation) and are never enabled in production.
+- **Generated dev-dependency pins in each dependent: rejected.** After the
+  serde change they would take 146 pins across about 31 manifests, and each
+  pin activates a feature the pinning crate does not use, which #7124's
+  `feature_activation_liveness` gate refuses for its registered pairs. The
+  `dep:` features (reify-test-support `containment-doubles`/`eval-helpers`,
+  reify-kernel-occt `mesh-morph`) would put reify-expr, reify-eval and
+  reify-mesh-morph into low crates' test graphs, so an edit to reify-eval
+  would rebuild `cargo test -p reify-syntax`. The payoff is at most 9 of 22
+  units in CPU (probe C against #9862's arm B), with no long-pole gain while
+  #9884 remains.
+- **Advisory MEMBER-SPLIT reporting: adopted.** Failing on the accepted
+  splits would red the gate permanently.
+- **Next candidate** once #9884 and #9896 land: reify-stdlib `test-support`,
+  behind the remaining 3 split-only units (reify-stdlib, reify-expr and
+  reify-constraints).
+
+Landing cost: the reify-core, reify-ast and reify-ir member variants change,
+so the base rehashes every workspace unit once. External units are unchanged:
+`check` stays OK with the same `--workspace` external variant set, so the
+union and `crates/reify-eval/engine_hash_closure.txt` need no regeneration.
+
+The gate `real_workspace_resolves_the_serde_vocabulary_crates_like_the_workspace`
+reds when a MEMBER-SPLIT line names reify-core, reify-ast or reify-ir, for
+example after an opt-out or a re-added non-default pass-through. Remedy: a
+feature every shipped binary enables is default-on, or is not a feature.
+
+MEMBER-SPLIT uses `parse_tree`'s side attribution, so the two Limits bullets
+owned by #9873 (host roots, and a host-side member's dev-dependencies) apply to
+it as well.
+
 ## Limits
 
-- **Workspace-member features.** Members' own features (reify-ast `serde`,
-  reify-compiler/reify-stdlib `test-support`, kernel `test-fixtures`, ...)
-  still differ between `-p` and `--workspace`, so a lane still rebuilds
-  workspace units. That is #9825, whose measurement probes without the
-  tree-sitter regeneration (Probe procedure, arm B), because the causes overlap
-  and a unit count cannot be reduced by the tree-sitter share.
+- **Workspace-member features.** Test-only and semantic member features
+  still differ between `-p` and `--workspace`, so a lane still rebuilds the
+  members that carry them and their dependents. They are accepted, and `check`
+  reports each as an advisory MEMBER-SPLIT line. Measurements and decision:
+  Member features (#9825).
 - **Tree-sitter regeneration.** The generated sources are gitignored, so
   the acquire deletes them, and `build.rs` watches them, so a fresh lane's first
   build reruns the build script. Measured on `-p reify-eval` (Tree-sitter
