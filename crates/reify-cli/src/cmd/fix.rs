@@ -114,7 +114,8 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
 }
 
 /// Writes a sibling temp file and renames it over `path`'s target, so a failure leaves the
-/// original intact.
+/// original intact. Refuses a target that could not be written in place, or that has other hard
+/// links, which the rename would leave holding the old text.
 fn replace_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     let target = std::fs::canonicalize(path)?;
     let dir = target.parent().ok_or_else(|| {
@@ -123,15 +124,40 @@ fn replace_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
             format!("{} has no parent directory", target.display()),
         )
     })?;
-    let permissions = std::fs::metadata(&target)?.permissions();
+    let metadata = metadata_if_writable_in_place(&target)?;
+    #[cfg(unix)]
+    refuse_other_hard_links(&target, &metadata)?;
     let mut temp = tempfile::Builder::new()
         .prefix(".reify-fix.")
         .tempfile_in(dir)?;
     temp.write_all(contents.as_bytes())?;
-    temp.as_file().set_permissions(permissions)?;
+    temp.as_file().set_permissions(metadata.permissions())?;
     temp.as_file().sync_all()?;
     temp.persist(&target).map_err(|e| e.error)?;
     Ok(())
+}
+
+/// Opens `target` for writing without truncating it: the rename needs only the directory to be
+/// writable, so this keeps the file's own write protection binding.
+fn metadata_if_writable_in_place(target: &Path) -> std::io::Result<std::fs::Metadata> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(target)?
+        .metadata()
+}
+
+#[cfg(unix)]
+fn refuse_other_hard_links(target: &Path, metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let links = metadata.nlink();
+    if links <= 1 {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "{} has {links} hard links, and replacing it would leave the others unfixed",
+        target.display()
+    )))
 }
 
 /// `std.x.y (A, B)`: the module and the names that need it.

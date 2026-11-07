@@ -293,6 +293,85 @@ fn fix_keeps_the_file_mode() {
 
 #[cfg(unix)]
 #[test]
+fn fix_leaves_a_read_only_file_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).expect("chmod fixture");
+    if fs::OpenOptions::new().write(true).open(&file).is_ok() {
+        eprintln!("skipped: file permissions do not bind for this user");
+        return;
+    }
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("Error writing {file}: ")),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_refuses_a_file_with_other_hard_links() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let other = dir.path().join("other.ri");
+    fs::hard_link(&file, &other).expect("hard-link fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("Error writing {file}: ")) && stderr.contains("hard links"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(
+        fs::metadata(&file).expect("stat fixture").ino(),
+        fs::metadata(&other).expect("stat other link").ino()
+    );
+    assert_eq!(entry_names(dir.path()), ["other.ri", "plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_replacement_that_cannot_be_made_leaves_the_file_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let set_dir_mode = |mode| {
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(mode)).expect("chmod dir")
+    };
+    set_dir_mode(0o555);
+    if fs::write(dir.path().join("probe"), "").is_ok() {
+        set_dir_mode(0o700);
+        eprintln!("skipped: directory permissions do not bind for this user");
+        return;
+    }
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    set_dir_mode(0o700);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("Error writing {file}: ")),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
 fn fix_through_a_symlink_rewrites_the_target_and_keeps_the_link() {
     let dir = tempdir().expect("tempdir");
     let real_dir = dir.path().join("real");
