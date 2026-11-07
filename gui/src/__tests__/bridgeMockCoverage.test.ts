@@ -141,7 +141,8 @@ const BRIDGE_INTERNAL_OMISSIONS: Record<string, string> = {
  * mocks ../bridge", is the test for adding a row here.
  *
  * Deliberately an explicit table rather than a glob for `vi.mock('../bridge'`.
- * Four other test files (engineStore.test.ts, observedDemand.test.ts,
+ * Other test files (the engineStore.*.test.ts files via
+ * engineStoreBridgeMockFactory.ts, observedDemand.test.ts,
  * selectiveDemand.test.ts, sidecarPersistence.test.ts) carry deliberately narrow,
  * subject-scoped bridge factories — correct for a focused unit test — and
  * viewport/Viewport.test.tsx uses a different specifier ('../../bridge').
