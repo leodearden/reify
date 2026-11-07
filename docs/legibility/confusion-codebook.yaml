@@ -2462,6 +2462,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The only change across the CEILING retries was the last one, which lowered --timeout to 2400 and described it as a 'Final bounded wait'. That is a cosmetic variation, not a change of strategy. The digest shows no user interrupt, so this is a weaker match than the first.
+  - date: '2026-11-06'
+    project: reify
+    session: 3d992a4b-7db1-4cda-8c03-5cc87b213db0
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'Partial match: the CEILING timeout was retried with cosmetic-only changes across several attempts, but no user interrupt occurred (interrupt count 0).'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -2764,6 +2770,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh hit its bounded CEILING (exit 124) three times. Around those waits the agent re-polled get_pending_escalations x4 and recomputed remaining seconds with a separate `date` Bash x4. Only the last re-arm was adapted to the remaining time. The 124 outcomes were declared designed outcomes, so the match is moderate.
+  - date: '2026-11-06'
+    project: reify
+    session: 3d992a4b-7db1-4cda-8c03-5cc87b213db0
+    origin_phase: ops
+    manifested_phase: ops
+    note: After each CEILING outcome the session fell back to manual polling (mcp__escalation__get_pending_escalations x3, date -u +%s x4) instead of a different wait strategy.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -3798,6 +3810,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The final foreground bounded wait (--timeout 3470) was killed with exit 137. The agent kept re-arming in the foreground instead of switching to a background or Monitor wait.
+  - date: '2026-11-06'
+    project: reify
+    session: 92cfcc2a-63e3-49d5-9f68-8a701da1afa3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The foreground watcher re-arm died at exit 137 and the agent retried the same foreground call instead of switching to background.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -4243,6 +4261,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Bounded-wait watcher timeout (exit 124 / WATCHER_REARM_OUTCOME CEILING) recurred across four Bash calls in the session.
+  - date: '2026-11-06'
+    project: reify
+    session: 92cfcc2a-63e3-49d5-9f68-8a701da1afa3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'The bounded-wait watcher timeout (exit 124, WATCHER_REARM_OUTCOME: CEILING) recurred across repeated Bash calls and was surfaced as tool error.'
+  - date: '2026-11-06'
+    project: reify
+    session: 3d992a4b-7db1-4cda-8c03-5cc87b213db0
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'Partial match: the bounded-wait timeout (exit 124) recurred, but it was recorded as a designed outcome, not a tool_error.'
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4809,6 +4839,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'watcher-rearm.sh was run four times in a row with --level 1 against the same queue dir. Each run ended in WATCHER_REARM_OUTCOME: CEILING exit=124. The first three used --timeout 3600 with identical arguments, so the ceiling was re-issued without changing the approach.'
+  - date: '2026-11-06'
+    project: reify
+    session: 92cfcc2a-63e3-49d5-9f68-8a701da1afa3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The bounded rearm wait was re-issued identically (same command and timeout) after hitting its own CEILING, at turns 148 and 138.
+  - date: '2026-11-06'
+    project: reify
+    session: 3d992a4b-7db1-4cda-8c03-5cc87b213db0
+    origin_phase: ops
+    manifested_phase: ops
+    note: Bash watcher-rearm.sh --level 1 hit CEILING (exit 124) at turns 138, 150, and 215 and was re-issued with the same command, changing only --timeout (3600 then 1740).
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -10152,6 +10194,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: mcp__fused-memory__submit_task timed out at turn 220 and was re-issued at turn 225 with the same leading description. The tool is a write, so an identical retry after a timeout risks a duplicate task submission. This is the same pattern as the add_memory timeout retried with an identical payload.
+  - date: '2026-11-06'
+    project: reify
+    session: ca732ac8-cb01-4718-abba-53bcf06d7d38
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Partial match by mechanism only. Two fused-memory submit_task calls timed out, and the second repeated the first with an identical description payload. The codebook entry covers add_memory rather than submit_task, but it describes the same identical-retry-after-MCP-timeout pattern with a duplicate-write risk. Phase cannot be determined from the digest.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -11845,6 +11893,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: At turn 694 the chained grep/tail/pgrep diagnostic returned exit 1 because its last command, `pgrep -c rustc`, found 0 matches. The earlier commands had already printed the needed results, so the tool_error flag reflects only the final subcommand.
+  - date: '2026-11-06'
+    project: reify
+    session: b8a2c7ef-7d31-4c17-9e1a-1d17a3573d2a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A chained Bash command (git grep; echo rc=$?; ls ...) reported exit 2 because its final ls subcommand failed on guessed nonexistent files, even though the earlier git grep had succeeded (rc=0) and found the needed data.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -32571,6 +32625,19 @@ candidates:
   - h12
   - kind:confusion
   promoted_to: entry-cand-20261021-5
+- id: cand-20261106-1
+  title: Ratchet failure points to a --help diagnostic the agent cannot run under don't-ask permission mode
+  cause: The module-SCC ratchet assertion message directs the reader to run `scripts/assert-module-scc.py --help` for GREW/STALE explanations and baseline-lowering instructions, but Bash calls to that script were denied in don't-ask mode, leaving the agent without the documented fix path.
+  area: tooling
+  first_seen: '2026-11-06'
+  disposition: pending
+  sightings:
+  - date: '2026-11-06'
+    project: reify
+    session: ea25fbe6-e9b9-41a4-953f-a1ef88263967
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: the workspace module-SCC ratchet (INV-ARCH-1) is red. `python3 scripts/assert-module-scc.py --help` explains GREW and STALE and how to lower a baseline row.
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
