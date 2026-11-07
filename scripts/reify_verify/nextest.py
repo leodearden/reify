@@ -33,7 +33,12 @@ from reify_verify.plan import (
     StepKind,
     unquotable_knob,
 )
-from reify_verify.policy import PROFILE_TABLE, HeavyPartition, Profile
+from reify_verify.policy import (
+    PROFILE_TABLE,
+    HeavyPartition,
+    Profile,
+    refuse_fail_fast_recording,
+)
 
 GEN_NEXTEST_CONFIG = ScriptCall("scripts/gen-nextest-config.sh")
 CLI_TEST_THREADS = "REIFY_NEXTEST_CLI_TEST_THREADS"
@@ -203,8 +208,7 @@ class TestRunner:
     confirm: ConfirmRecording | None
 
     def __post_init__(self):
-        if self.confirm is not None and not self.no_fail_fast:
-            raise ValueError("TestRunner: a run that records a confirm manifest runs --no-fail-fast")
+        refuse_fail_fast_recording("TestRunner", self.confirm is not None, not self.no_fail_fast)
         if not self.nextest and self.config is not None:
             raise ValueError(
                 f"TestRunner: the cargo-test fallback names no nextest config (config={self.config!r})"
