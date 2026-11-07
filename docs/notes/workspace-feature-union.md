@@ -631,13 +631,14 @@ it as well.
   compiled units. Resolution reproduced the task's observed syn fingerprint
   exactly, and the probes above are the compile-level evidence.
 - **Cold and release builds.** Every Measurements row outside the Cold build
-  subsection is a warm-lane build, where the externals are already compiled. A
-  cold target must compile the union's whole dependency set: tokio, the url/icu
-  stack, nalgebra, regex, futures and serde_json. Every covered member depends
-  on the union, including the DAG root reify-core and, by their manifests, the
-  otherwise dependency-free reify-gcode and reify-spec-conformance, so none of
-  them can start before the union's metadata exists. The Cold build subsection
-  of Measurements gives the cost for reify-core.
+  subsection is a warm-lane build, whose base has already compiled the
+  `--workspace` external variants the union pins. A cold target must compile the
+  union's whole dependency set: tokio, the url/icu stack, nalgebra, regex,
+  futures and serde_json. Every covered member depends on the union, including
+  the DAG root reify-core and, by their manifests, the otherwise dependency-free
+  reify-gcode and reify-spec-conformance, so none of them can start before the
+  union's metadata exists. The Cold build subsection of Measurements gives the
+  cost for reify-core.
 
   Dev-only features come along. The union pins tokio with `test-util`, so
   every build of a covered member, production `-p` and release builds
