@@ -6,10 +6,10 @@ use std::path::Path;
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
 use reify_compiler::program;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::SourceSpan;
+use reify_core::{ContentHash, SourceSpan};
 use tower_lsp::lsp_types::{Range, Url};
 
 use crate::convert;
@@ -17,6 +17,7 @@ use crate::convert;
 /// A compiled document, immutable once built.
 pub(super) struct CompiledDocument {
     module: CompiledModule,
+    eval_cache_key: ContentHash,
     /// How many of `module.templates`, from the front, the document declares;
     /// the rest are imported, and their spans index another file.
     declared_templates: usize,
@@ -25,6 +26,7 @@ pub(super) struct CompiledDocument {
 impl CompiledDocument {
     pub(super) fn single_file(module: CompiledModule) -> Self {
         Self {
+            eval_cache_key: module.content_hash,
             declared_templates: module.templates.len(),
             module,
         }
@@ -32,6 +34,12 @@ impl CompiledDocument {
 
     pub(super) fn module(&self) -> &CompiledModule {
         &self.module
+    }
+
+    /// Equal for two compiles exactly when a warm re-evaluation of the
+    /// earlier one is sound for the later one.
+    pub(super) fn eval_cache_key(&self) -> ContentHash {
+        self.eval_cache_key
     }
 
     /// The range of `span`, a span of `module().templates[template_index]`, in
@@ -68,6 +76,10 @@ pub(super) fn compile_document(
                 &SimpleConstraintChecker,
             );
             CompiledDocument {
+                eval_cache_key: program_eval_cache_key(
+                    compiled.entry.content_hash,
+                    &compiled.sources,
+                ),
                 declared_templates: compiled.entry_declared_templates().len(),
                 module: compiled.entry,
             }
@@ -77,6 +89,20 @@ pub(super) fn compile_document(
             &SimpleConstraintChecker,
         )),
     }
+}
+
+/// The entry's content hash covers its own text and its import paths only, so
+/// the key also covers the source of every imported module (`sources` lists
+/// them before the entry, which is last).
+fn program_eval_cache_key(entry_hash: ContentHash, sources: &[ModuleSource]) -> ContentHash {
+    let imported = sources
+        .split_last()
+        .map_or(&[][..], |(_entry, imported)| imported);
+    ContentHash::combine_all(
+        std::iter::once(entry_hash).chain(imported.iter().map(|module| {
+            ContentHash::of_str(&module.module_key).combine(ContentHash::of_str(&module.source))
+        })),
+    )
 }
 
 /// User imports resolve from the entry file's directory, as `reify check` and

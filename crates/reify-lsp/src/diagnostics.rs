@@ -28,6 +28,7 @@ pub(crate) mod eval_guard;
 pub struct EvalState {
     engine: reify_eval::Engine,
     version_counter: u64,
+    /// The last evaluated document's eval-cache key.
     last_content_hash: Option<ContentHash>,
 }
 
@@ -54,7 +55,9 @@ impl EvalState {
         }
     }
 
-    /// Returns the content hash of the last successfully compiled module, if any.
+    /// The last evaluated document's eval-cache key, if any: its module's
+    /// content hash, combined with every imported module's source for a
+    /// document compiled as a program.
     pub fn last_content_hash(&self) -> Option<ContentHash> {
         self.last_content_hash
     }
@@ -301,7 +304,7 @@ pub fn compute_diagnostics_with_state(
     // uninitialized engine through it would silently drop eval-time errors.
     let content_unchanged = state
         .last_content_hash
-        .map(|h| h == compiled.content_hash)
+        .map(|h| h == document.eval_cache_key())
         .unwrap_or(false)
         && state.is_engine_initialized();
 
@@ -332,7 +335,8 @@ pub fn compute_diagnostics_with_state(
         // poison recovery, and the right response is to handle it correctly
         // (which we do below) and warn.
         #[cfg(debug_assertions)]
-        if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
+        if state.last_content_hash == Some(document.eval_cache_key())
+            && !state.is_engine_initialized()
         {
             log_messages.push(LogLine {
                 typ: lsp_types::MessageType::WARNING,
@@ -483,8 +487,8 @@ pub fn compute_diagnostics_with_state(
     ));
     diagnostics.extend(freshness_diagnostics(&state.engine, &document, source));
 
-    // Record the content hash so the next call can choose incremental vs cold-start.
-    state.last_content_hash = Some(compiled.content_hash);
+    // Record the eval-cache key so the next call can choose incremental vs cold-start.
+    state.last_content_hash = Some(document.eval_cache_key());
 
     DiagnosticsResult {
         diagnostics,
