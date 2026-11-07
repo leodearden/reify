@@ -4,7 +4,7 @@ PRD: `docs/prds/v0_6/dependency-invalidation-stratum.md`. Machine-readable twin:
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Cite-by-symbol; re-locate lines at implementation time.
 
-Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. FAIL→corrected = the authoring binding was false and a ruling corrected it (one row, ζ runtime-policy-has-own-consumer, retro-critic R13 M7, 2026-10-20). The two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
+Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. One row, ζ runtime-policy-has-own-consumer, is OPEN: retro-critic R13 M7 (2026-10-20) measured its authoring PASS false and the corrected decision is ζ's own work product. It read `FAIL→corrected` until 2026-11-07 (task 9891), a token outside the twin's closed PASS/FAIL/OPEN vocabulary. The two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
 
 | Leaf | Capability | Evidence (authoring) | Verdict | delivered_check |
 |---|---|---|---|---|
@@ -27,7 +27,7 @@ Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's o
 | ε | old-bodies-gone | post-delivery | PASS | grep `fn compute_dirty_cone(_with_realizations)?\b` absent |
 | ζ | walk-has-no-production-caller | callers are tests only; completion site carries `TODO(#5023)` | PASS | grep `propagate_freshness_only\|mod freshness_walk\|mod gating` absent |
 | ζ | no-async-completion-path-exists | #5023 / #4958 records: executor deleted by #5065 | PASS | — |
-| ζ | runtime-policy-has-own-consumer | reify-runtime `commitment.rs` consumes `OnlyRunOnFinalInputs` itself. Corrected by retro-critic R13 M7: declared but not consumed (three G-allows "pending #5023"; reify.toml `[[node_overrides]]` has no effect); owned placeholder under #5023, ζ re-justifies the G-allow reasons | FAIL→corrected | — |
+| ζ | runtime-policy-has-own-consumer | reify-runtime `commitment.rs` consumes `OnlyRunOnFinalInputs` itself. Corrected by retro-critic R13 M7: declared but not consumed (three G-allows "pending #5023"; reify.toml `[[node_overrides]]` has no effect); owned placeholder under #5023, ζ re-justifies the G-allow reasons | OPEN | — |
 | ζ | inv-eval-6-row-repointed | INV-EVAL-6 enforcement reads "completion transaction + panic boundary" | PASS | grep `INV-EVAL-6.*dirty_cone` present in `docs/invariants.md` |
 | η | inline-hash-sites | graph 6, engine_edit 2, + one doc restatement | PASS (corrected 2026-10-20, retro-critic R13: paths narrowed) | grep `id_hash\.combine\(expr_hash\)` absent in `engine_eval.rs`, `engine_edit.rs`, `engine_purposes.rs`, `engine_build.rs` (graph.rs excluded: `ValueCellNode::new` keeps the canonical spelling) |
 | η | constructor-present | post-delivery | PASS (corrected 2026-10-20, retro-critic R13: line-anchored pattern) | grep `pub fn new\(` present in `graph.rs` (git grep is line-based; a wrapped signature cannot match a multi-line pattern) |
