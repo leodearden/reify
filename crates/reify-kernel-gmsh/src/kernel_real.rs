@@ -464,6 +464,17 @@ impl GeometryKernel for GmshKernel {
     /// merges bit-identical OCCT corners and drops slivers; mesh size
     /// auto-derives; the through-thickness post-stage is disabled. Element-order
     /// threading is the call edge's concern (α hardcodes P1).
+    ///
+    /// # Why `deterministic: true`
+    ///
+    /// Pins one gmsh thread, like the attributed sibling
+    /// `mesh_surface_to_volume_attributed`:
+    /// Leo's ruling D-J (`docs/prds/v0_6/meshing-service.md`) fixes gmsh
+    /// meshing at `NumThreads = 1` for reproducibility, and multi-threaded HXT
+    /// is both slower at every measured scale and amplified without bound by
+    /// host load. Numbers: `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+    /// Guarded by `tests/mesh_to_volume_tests.rs`'s
+    /// `trait_mesh_surface_to_volume_output_is_reproducible_across_repeated_calls`.
     fn mesh_surface_to_volume(
         &self,
         surface: &Mesh,
@@ -471,7 +482,7 @@ impl GeometryKernel for GmshKernel {
     ) -> Result<VolumeMesh, GeometryError> {
         let report = crate::mesh_surface_to_volume_with_diagnostics(
             surface,
-            &crate::MeshingOptions::default(),
+            &crate::MeshingOptions { deterministic: true, ..Default::default() },
             element_order,
             Some(crate::repair::RepairConfig::default()),
             None,
