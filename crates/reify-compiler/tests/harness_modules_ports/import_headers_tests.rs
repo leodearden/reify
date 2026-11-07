@@ -69,7 +69,6 @@ fn names_needing(plan: &ImportPlan, module: &str) -> Vec<NameUse> {
         .find(|required| required.module.to_dotted() == module)
         .unwrap_or_else(|| panic!("plan has no entry for {module}: {:?}", dotted_modules(plan)))
         .names
-        .clone()
 }
 
 fn name_use(name: &str, role: NameRole) -> NameUse {
@@ -553,11 +552,7 @@ const BRACKET_AND_GIZMO: &str = "structure def S {\n\
 
 fn missing_for(header: &str, body: &str, universe: &[CompiledModule]) -> Vec<RequiredImport> {
     let parsed = parse_clean(&format!("{header}{body}"), SUBJECT_PATH);
-    derive_parsed(&parsed, universe)
-        .missing_from(&parsed)
-        .into_iter()
-        .cloned()
-        .collect()
+    derive_parsed(&parsed, universe).missing_from(&parsed)
 }
 
 fn required(module: &str, names: Vec<NameUse>) -> RequiredImport {

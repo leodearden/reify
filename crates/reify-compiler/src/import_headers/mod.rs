@@ -5,13 +5,15 @@
 //! A purely syntactic walk ([`name_uses`]) finds every name the module writes
 //! and the position it writes it in; [`attribution`] ranks the definitions of
 //! each name through `name_env`, so only names whose winning definition lives
-//! in a std module need an import.
+//! in a std module need an import. [`coverage`] decides which of those names
+//! a module's own `import` declarations already make visible.
 
 mod attribution;
+mod coverage;
 mod header_edit;
 mod name_uses;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticIdentity, ModulePath, Severity};
@@ -42,12 +44,24 @@ impl ImportPlan {
             .collect()
     }
 
-    /// The required modules `parsed` does not already import, in any form.
-    pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<&RequiredImport> {
-        let declared: HashSet<&str> = header_edit::declared_import_paths(parsed).collect();
+    /// The required imports `parsed` does not yet satisfy, each narrowed to
+    /// the names its declared imports leave uncovered.
+    pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<RequiredImport> {
+        let coverage = coverage::ImportCoverage::of(parsed);
         self.required
             .iter()
-            .filter(|required| !declared.contains(required.module.to_dotted().as_str()))
+            .filter_map(|required| {
+                let names: Vec<NameUse> = required
+                    .names
+                    .iter()
+                    .filter(|name_use| !coverage.covers(&required.module, &name_use.name))
+                    .cloned()
+                    .collect();
+                (!names.is_empty()).then(|| RequiredImport {
+                    module: required.module.clone(),
+                    names,
+                })
+            })
             .collect()
     }
 }
@@ -84,8 +98,8 @@ pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -
 
 /// The module path of every `import` `parsed` declares, in any form.
 pub fn declared_imports(parsed: &ParsedModule) -> Vec<ModulePath> {
-    header_edit::declared_import_paths(parsed)
-        .filter_map(|dotted| ModulePath::from_dotted(dotted).ok())
+    coverage::imports(parsed)
+        .map(|(module, _)| module)
         .collect()
 }
 
