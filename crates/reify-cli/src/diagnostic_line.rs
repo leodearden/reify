@@ -1,5 +1,24 @@
 //! Renders a compiler Diagnostic as one `path:line:col: severity: message` line, positioned by its first label.
 
+use reify_core::{Diagnostic, byte_offset_to_line_col};
+
+/// `path:line:col: severity: message`, or `path: severity: message` when the diagnostic has no
+/// label that starts inside `source`.
+pub(crate) fn render_diagnostic_line(path: &str, source: &str, diagnostic: &Diagnostic) -> String {
+    let (severity, message) = (diagnostic.severity, &diagnostic.message);
+    match primary_position(source, diagnostic) {
+        Some((line, col)) => format!("{path}:{line}:{col}: {severity}: {message}"),
+        None => format!("{path}: {severity}: {message}"),
+    }
+}
+
+/// The 1-based (line, codepoint column) where the first label starts. `None` without a label or
+/// when that start does not index `source`, which also rules out the prelude sentinel.
+fn primary_position(source: &str, diagnostic: &Diagnostic) -> Option<(usize, usize)> {
+    let start = diagnostic.labels.first()?.span.start as usize;
+    (start <= source.len()).then(|| byte_offset_to_line_col(source, start))
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
