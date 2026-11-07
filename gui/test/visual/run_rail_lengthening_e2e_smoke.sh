@@ -24,8 +24,8 @@
 # backgrounded launcher, the readiness+liveness poll loop, the post-driver
 # post-mortem and the SIGTERM teardown — lives in gui/test/visual/lib_e2e_smoke.sh,
 # shared with the six sibling e2e smoke runners. Read that file for the lifecycle
-# contract, including why the bash-side readiness gate and the driver's own
-# waitForServer(60_000) are both intentional.
+# contract, including why the bash-side readiness gate and the driver's shared
+# waitForServer (debugServerEndpoint.mjs, 60 s default) are both intentional.
 #
 # LIVE-ONLY — not CI/verify-gated. The deterministic gates that DO run in CI are
 # gui/test/visual/railLengtheningGate.test.ts (this driver's whole decision

@@ -42,9 +42,10 @@
 #      with a kill -0 liveness check on each iteration — abort early if the
 #      launcher dies rather than waiting the full budget.
 #   7. Run `node <driver>`.
-#      Note: each driver contains its own waitForServer(60_000) readiness loop —
-#      that loop passes instantly because step 6 already confirmed the server is
-#      ready.  Both readiness gates are intentional and serve distinct purposes:
+#      Note: each driver runs the shared waitForServer from
+#      debugServerEndpoint.mjs (60 s default) — that poll passes instantly
+#      because step 6 already confirmed the server is ready.  Both readiness
+#      gates are intentional and serve distinct purposes:
 #      step 6 polls with a kill -0 liveness check (bash-side, driver-agnostic);
 #      the driver's waitForServer is part of its own unchanged contract.
 #      Do NOT remove one believing the other is dead code.
@@ -287,7 +288,7 @@ e2e_smoke_run() {
 
     # -----------------------------------------------------------------------
     # 7. Run the smoke driver.
-    #    The driver's own waitForServer passes instantly (server already ready).
+    #    The driver's shared waitForServer passes instantly (server already ready).
     # -----------------------------------------------------------------------
     echo "${name}: running smoke driver…"
     local DRIVER_RC=0
