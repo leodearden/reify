@@ -14,7 +14,7 @@ mod clamp_probe;
 
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
-use reify_test_support::mesh_fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::{tessellated_cylinder_mesh, unit_cube_mesh};
 use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
@@ -188,6 +188,81 @@ fn trait_mesh_surface_to_volume_then_store_round_trips_through_dyn_kernel() {
         read_back.vertices, produced_clone.vertices,
         "vertices must round-trip equal through trait store→volume_mesh",
     );
+}
+
+/// The PLAIN trait producer must return a bit-identical mesh for repeated
+/// calls on the same surface: the reproducibility contract of Leo's ruling
+/// D-J (`docs/prds/v0_6/meshing-service.md`), the same one
+/// `mesh_surface_to_volume_attributed.rs`'s
+/// `attributed_producer_output_is_reproducible_across_repeated_calls` holds
+/// the attributed sibling to.
+///
+/// The surface stands in for the realized `cylinder(50mm, 200mm)` of
+/// `reify-eval`'s `solve_elastic_static_body_e2e`. Multi-threaded HXT drifts
+/// on it run to run; the numbers are in
+/// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+///
+/// Takes no `MeshingOptions`, like the trait method itself, so it exercises
+/// the production frame exactly as `reify-eval`'s realization edge does.
+#[test]
+fn trait_mesh_surface_to_volume_output_is_reproducible_across_repeated_calls() {
+    let kernel = GmshKernel::new();
+    let kernel_ref: &dyn GeometryKernel = &kernel;
+    const RIM_SEGMENTS: usize = 32;
+    let surface = tessellated_cylinder_mesh(0.05, 0.2, RIM_SEGMENTS);
+
+    const REPS: usize = 3;
+    let reps: Vec<(Vec<f32>, Vec<u32>)> = (0..REPS)
+        .map(|rep| {
+            let vm = kernel_ref
+                .mesh_surface_to_volume(&surface, ElementOrderTag::P1)
+                .unwrap_or_else(|e| {
+                    panic!("plain producer must succeed on the closed cylinder (rep {rep}): {e:?}")
+                });
+            assert_eq!(
+                vm.element_order(),
+                Some(ElementOrderTag::P1),
+                "rep {rep} must be P1"
+            );
+            let tets = vm
+                .tet_indices()
+                .expect("P1 tet mesh must have tet_indices")
+                .to_vec();
+            (vm.vertices, tets)
+        })
+        .collect();
+
+    let (first_vertices, first_tets) = &reps[0];
+    assert!(
+        !first_tets.is_empty(),
+        "premise: rep 0 must produce tets, else the comparisons below are vacuous"
+    );
+    for (rep, (vertices, tets)) in reps.iter().enumerate().skip(1) {
+        assert_eq!(
+            tets.len() / 4,
+            first_tets.len() / 4,
+            "tet COUNT differs between rep 0 ({} tets) and rep {rep} ({} tets): the plain \
+             producer is expected to run gmsh single-threaded (D-J, \
+             docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md)",
+            first_tets.len() / 4,
+            tets.len() / 4
+        );
+        assert_eq!(
+            tets,
+            first_tets,
+            "tet_indices differ between rep 0 and rep {rep} at equal tet count ({} tets): the \
+             plain producer is expected to run gmsh single-threaded (D-J)",
+            first_tets.len() / 4
+        );
+        assert_eq!(
+            vertices,
+            first_vertices,
+            "vertices differ between rep 0 and rep {rep} ({} vs {} verts): the plain producer \
+             is expected to run gmsh single-threaded (D-J)",
+            first_vertices.len() / 3,
+            vertices.len() / 3
+        );
+    }
 }
 
 /// A handle that was never stored → `Err(QueryError::InvalidHandle(_))`.
