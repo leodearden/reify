@@ -154,6 +154,11 @@ impl Member {
         self
     }
 
+    fn dev_dep(mut self, name: &'static str) -> Member {
+        self.deps.push((name, Some("dev")));
+        self
+    }
+
     fn proc_macro(mut self) -> Member {
         self.lib_kind = "proc-macro";
         self
@@ -682,6 +687,251 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
         ]],
         "one finding for pm, though the union sits below pm under a and as pm's own root",
     );
+}
+
+/// Real cargo 1.96's `--workspace` tree for core -> union, u -> core and
+/// zz -> union with `[build-dependencies] u`. A member reached on the host
+/// side gets a second root, textually identical to its target root, and the
+/// `(*)` dedupe spans roots, so neither u root nor zz's build edge to u
+/// shows the union below it.
+const WS_ZZ_BUILDS_WITH_U: &str = "\
+core v0.1.0 (/fixture/crates/core)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+core v0.1.0 (/fixture/crates/core)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+u v0.1.0 (/fixture/crates/u)|
+`-- core v0.1.0 (/fixture/crates/core)| (*)
+
+u v0.1.0 (/fixture/crates/u)|
+`-- core v0.1.0 (/fixture/crates/core)| (*)
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_CORE: &str = "\
+core v0.1.0 (/fixture/crates/core)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
+const TREE_ZZ_BUILDS_WITH_U: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- core v0.1.0 (/fixture/crates/core)|
+        `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
+#[test]
+fn check_and_generate_red_on_a_host_union_hidden_behind_a_host_root_printed_first() {
+    let members = vec![
+        member("core", &[UNION]),
+        member("u", &["core"]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    let original =
+        empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
+    let fixture = Fixture::new(&members, WS_ZZ_BUILDS_WITH_U)
+        .tree("core", TREE_CORE)
+        .tree("zz", TREE_ZZ_BUILDS_WITH_U)
+        .with_union_manifest(&original);
+    let manifest = fixture.manifest("u");
+    let expected: &[&[&str]] = &[&[
+        "HOST-UNION u",
+        "zz -[build]-> u -> core -> workspace-feature-union",
+        "remove u's dependency on core",
+        &manifest,
+    ]];
+
+    assert_findings(
+        &fixture.check(),
+        expected,
+        "u reaches the union through core, though cargo tree prints u's host root \
+         before zz's build edge to it",
+    );
+    assert_findings(
+        &fixture.generate(),
+        expected,
+        "generate refuses on the same finding check reports",
+    );
+    assert_eq!(
+        fixture.union_manifest(),
+        original,
+        "generate must not touch the union manifest while a HOST-UNION finding stands"
+    );
+}
+
+#[test]
+fn check_reds_when_a_covered_member_build_depends_on_the_union() {
+    let tree_zz = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+    let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
+    let fixture = Fixture::new(&members, &workspace_of(&[TREE_UNION, TREE_UNION, tree_zz]))
+        .tree("zz", tree_zz);
+    let manifest = fixture.manifest("zz");
+    assert_findings(
+        &fixture.check(),
+        &[&[
+            "HOST-UNION zz",
+            "zz -[build]-> workspace-feature-union",
+            "remove zz's build-dependency on workspace-feature-union",
+            &manifest,
+        ]],
+        "zz's build script would compile the union for the host",
+    );
+}
+
+#[test]
+fn check_is_green_when_a_build_dependency_member_only_dev_depends_on_a_covered_member() {
+    // Real cargo 1.96 lists u's dev-dependencies even below a's build edge
+    // to u, though building a never compiles them.
+    let workspace = "\
+a v0.1.0 (/fixture/crates/a)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    [dev-dependencies]
+    `-- core v0.1.0 (/fixture/crates/core)|
+        `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+core v0.1.0 (/fixture/crates/core)| (*)
+
+core v0.1.0 (/fixture/crates/core)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+u v0.1.0 (/fixture/crates/u)| (*)
+
+u v0.1.0 (/fixture/crates/u)|
+[dev-dependencies]
+`-- core v0.1.0 (/fixture/crates/core)| (*)
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+    let tree_a = "\
+a v0.1.0 (/fixture/crates/a)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+";
+    let members = vec![
+        member("a", &[UNION]).build_dep("u"),
+        member("u", &[]).dev_dep("core"),
+        member("core", &[UNION]),
+        member(UNION, &[]),
+    ];
+    assert_green(
+        &Fixture::new(&members, workspace)
+            .tree("a", tree_a)
+            .tree("core", TREE_CORE)
+            .check(),
+        "a dev-dependency is not part of u's host build",
+    );
+}
+
+// --- real cargo --------------------------------------------------------------
+
+fn write_file(path: &Path, contents: &str) {
+    let parent = path.parent().expect("a written file has a parent");
+    fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
+    fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+fn path_dep(name: &str) -> String {
+    format!("{name} = {{ path = \"../{name}\" }}\n")
+}
+
+/// A real member crate with an empty lib.rs and `dependency_tables` appended
+/// to its manifest.
+fn write_real_member(root: &Path, name: &str, dependency_tables: &str) {
+    let dir = root.join("crates").join(name);
+    write_file(&dir.join("src/lib.rs"), "");
+    write_file(
+        &dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             publish = false\n\n{dependency_tables}"
+        ),
+    );
+}
+
+/// A real path-only workspace: core -> union, u -> core, and `dependent` ->
+/// union with `[build-dependencies] u`, locked offline.
+fn real_host_union_workspace(dependent: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create a real-cargo workspace dir");
+    let root = dir.path();
+    write_file(
+        &root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\n",
+    );
+    write_real_member(root, UNION, "");
+    write_real_member(
+        root,
+        "core",
+        &format!("[dependencies]\n{}", path_dep(UNION)),
+    );
+    write_real_member(root, "u", &format!("[dependencies]\n{}", path_dep("core")));
+    write_real_member(
+        root,
+        dependent,
+        &format!(
+            "[dependencies]\n{}\n[build-dependencies]\n{}",
+            path_dep(UNION),
+            path_dep("u")
+        ),
+    );
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let lock = Command::new(&cargo)
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {cargo}: {e}"));
+    assert!(
+        lock.status.success(),
+        "cargo generate-lockfile --offline in {}\n{}",
+        root.display(),
+        describe(&lock)
+    );
+    dir
+}
+
+/// Real cargo prints the roots of `--workspace` in member-name order, so the
+/// finding must not depend on whether the build-dependent sorts before or
+/// after the members it builds with.
+#[test]
+fn check_reds_on_a_host_union_in_a_real_cargo_workspace_whichever_member_sorts_first() {
+    for dependent in ["a", "zz"] {
+        let workspace = real_host_union_workspace(dependent);
+        let out = Command::new("python3")
+            .arg("-I")
+            .arg(script())
+            .arg("check")
+            .arg("--root")
+            .arg(workspace.path())
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()));
+        let path = format!("{dependent} -[build]-> u -> core -> workspace-feature-union");
+        assert_findings(
+            &out,
+            &[&["HOST-UNION u", &path, "remove u's dependency on core"]],
+            &format!("build-dependent {dependent}"),
+        );
+    }
 }
 
 #[test]
