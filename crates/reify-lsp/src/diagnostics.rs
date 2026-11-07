@@ -884,6 +884,9 @@ fn constraint_depends_on_unregistered_optimized_compute(
 pub(crate) mod auto_type_param_fixtures;
 
 #[cfg(test)]
+mod multi_file_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::decl_oracle::test_fixtures::test_uri;
