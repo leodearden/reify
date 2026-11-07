@@ -630,17 +630,19 @@ it as well.
 - **What the gate proves.** The gate checks `cargo tree` resolution, not
   compiled units. Resolution reproduced the task's observed syn fingerprint
   exactly, and the probes above are the compile-level evidence.
-- **Cold and release builds.** The Measurements rows are warm-lane builds,
-  where the externals are already compiled. A cold target must compile the
+- **Cold and release builds.** Every Measurements row outside the Cold build
+  subsection is a warm-lane build, whose base has already compiled the
+  `--workspace` external variants the union pins. A cold target must compile the
   union's whole dependency set: tokio, the url/icu stack, nalgebra, regex,
   futures and serde_json. Every covered member depends on the union, including
-  the DAG root reify-core and, by their manifests, the otherwise
-  dependency-free reify-gcode and reify-spec-conformance, so none of them can
-  start before the union's metadata exists. The Cold build subsection of
-  Measurements gives the cost for reify-core.
+  the DAG root reify-core and, by their manifests, the otherwise dependency-free
+  reify-gcode and reify-spec-conformance, so none of them can start before the
+  union's metadata exists. The Cold build subsection of Measurements gives the
+  cost for reify-core.
 
-  Dev-only features come along. The union pins tokio with `test-util`, so cold
-  and release builds compile it in too. This is deliberate; the reason is the
+  Dev-only features come along. The union pins tokio with `test-util`, so
+  every build of a covered member, production `-p` and release builds
+  included, compiles it in. This is deliberate; the reason is the
   **Normal, not dev, pins** bullet in Mechanism.
 - **A lower bound only.** `--workspace` includes the union's own pins, so the
   gate cannot see over-pinning. Two pins pass it:
