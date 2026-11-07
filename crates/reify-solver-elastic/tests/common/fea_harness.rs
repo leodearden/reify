@@ -304,7 +304,7 @@ pub fn eliminate_and_solve(
 /// # Panics
 ///
 /// As [`eliminate_and_solve`]; for P1, `K`'s dimension is `3 * nodes.len()`.
-pub fn assemble_eliminate_and_solve(
+pub fn assemble_p1_eliminate_and_solve(
     nodes: &[[f64; 3]],
     conns: &[[usize; 4]],
     mat: &IsotropicElastic,
