@@ -42,10 +42,6 @@ impl ImportPlan {
             .collect()
     }
 
-    pub fn required(&self) -> &[RequiredImport] {
-        &self.required
-    }
-
     /// The required modules `parsed` does not already import, in any form.
     pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<&RequiredImport> {
         let declared: HashSet<&str> = header_edit::declared_import_paths(parsed).collect();
