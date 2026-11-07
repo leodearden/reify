@@ -73,7 +73,9 @@ tasks:
   - name: gui-failed-spec-forwarding
     binding: 'capability→producer (this leaf) — seam verified on main: gui-test.sh
       forwards args after -- to vitest run (:8,42,90); verify.sh gui block runs npm
-      test (:1346); subset={failed spec files} complete by construction'
+      test (:1346); subset={failed spec files} complete by construction;
+      since #7630 (post-decompose) gui-test.sh and the verify.sh gui block both
+      route via scripts/gui-vitest-run.sh run_vitest() (npm test --)'
     verdict: PASS
     delivered_check:
       kind: grep
