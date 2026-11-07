@@ -526,17 +526,20 @@ fn solve_frame_seed_biases_residual_dof() {
 
 /// `angle(a, b, θ)` must normalize its direction operands before comparing the dot
 /// product against `cos θ` — a NON-unit operand otherwise reads the residual zero at
-/// the wrong angle. Moving operand: a magnitude-2 `+x` direction; anchor: a unit 45°
-/// direction. The true angle is 45°, so an `angle(.., 45°)` relation is satisfied
-/// (residual ≈ 0) ONLY if the magnitude-2 operand is normalized first — a raw
-/// `dot(da, db) − cos 45°` would leave a spurious `2·cos45° − cos45° = cos45° ≈ 0.707`.
+/// the wrong angle. Moving operand: a magnitude-2 `+x` raw `Value::Vector`; anchor: a
+/// unit 45° direction. A non-unit `Direction` is unrepresentable (its only
+/// constructor normalises), but `dir_of` still admits a raw Vector, so the angle
+/// residual's own normalisation stays under test here. The true angle is 45°, so an
+/// `angle(.., 45°)` relation is satisfied (residual ≈ 0) ONLY if the magnitude-2
+/// operand is normalized first — a raw `dot(da, db) − cos 45°` would leave a spurious
+/// `2·cos45° − cos45° = cos45° ≈ 0.707`.
 #[test]
 fn angle_residual_normalizes_non_unit_direction_operands() {
     let s = 1.0 / 2.0_f64.sqrt();
     let rel = RelationInstance {
         name: "angle".to_string(),
         operands: vec![
-            datum("m", dir(2.0, 0.0, 0.0)),
+            datum("m", vec3(2.0, 0.0, 0.0)),
             datum("anchor", dir(s, s, 0.0)),
             Operand {
                 sub: None,

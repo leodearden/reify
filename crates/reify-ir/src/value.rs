@@ -9961,32 +9961,30 @@ mod tests {
         assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
-    // ── Value::Direction tests (step-3) ───────────────────────────────────────
+    // ── Value::Direction tests ─────────────────────────────────────────────────
     //
-    // Value::Direction { x, y, z } is a dimensionless 3D unit vector (inline
-    // floats, mirroring Value::Orientation's layout). These tests pin the
-    // construction/round-trip, type inference, dimensionlessness, Display, and —
-    // critically — the same-type `eq` and `cmp` arms. The `eq` impl ends in
+    // Value::Direction(UnitVec3) is a dimensionless unit vector whose unit
+    // length is enforced by UnitVec3's only constructor (direction-typing C2).
+    // These tests pin Value's own arms for it: construction, type inference,
+    // dimensionlessness, the `dir(x, y, z)` round-trip Display, and the
+    // same-type `eq` / `cmp` / `content_hash` arms. The `eq` impl ends in
     // `_ => false` and the same-type `cmp` match ends in
     // `_ => unreachable!("same type tag but different variants")`, so a missing
-    // Direction arm would silently break equality / PANIC on ordering. (e)/(f)
-    // therefore fail at runtime until step-4 adds those explicit arms (and the
-    // whole block fails to compile until the variant exists).
+    // Direction arm would silently break equality / PANIC on ordering.
 
     fn make_direction(x: f64, y: f64, z: f64) -> Value {
-        Value::Direction { x, y, z }
+        Value::Direction(
+            crate::direction::UnitVec3::from_vector([x, y, z])
+                .expect("test direction is non-degenerate"),
+        )
     }
 
     #[test]
     fn value_direction_construction() {
-        // (a) construction + field round-trip
-        let d = make_direction(1.0, 0.0, 0.0);
-        match d {
-            Value::Direction { x, y, z } => {
-                assert_eq!(x, 1.0);
-                assert_eq!(y, 0.0);
-                assert_eq!(z, 0.0);
-            }
+        // (a) construction + component round-trip
+        let u = crate::direction::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap();
+        match Value::Direction(u) {
+            Value::Direction(held) => assert_eq!(held.components(), u.components()),
             other => panic!("expected Value::Direction, got {:?}", other),
         }
     }
@@ -10012,6 +10010,52 @@ mod tests {
         let d = make_direction(1.0, 0.0, 0.0);
         assert_eq!(format!("{d}"), "dir(1, 0, 0)");
         assert_eq!(d.format_display(), "dir(1, 0, 0)");
+    }
+
+    #[test]
+    fn value_direction_display_round_trips_bits() {
+        // C2: the printed text parses back to the identical Direction — the
+        // contract the `dir(..)` literal serialiser relies on.
+        for v in [
+            [1.0, 1.0, 0.0],
+            [0.6, 0.8, 0.0],
+            [1.0, 2.0, 3.0],
+            [-0.3, 0.4, -0.866],
+        ] {
+            let d = make_direction(v[0], v[1], v[2]);
+            let text = format!("{d}");
+            let inner = text
+                .strip_prefix("dir(")
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("not a dir(..) rendering: {text}"));
+            let parts: Vec<f64> = inner
+                .split(", ")
+                .map(|p| p.parse::<f64>().unwrap_or_else(|e| panic!("{p:?} in {text}: {e}")))
+                .collect();
+            let parsed: [f64; 3] = parts
+                .try_into()
+                .unwrap_or_else(|p| panic!("expected 3 components in {text}, got {p:?}"));
+            let back = Value::Direction(
+                crate::direction::UnitVec3::from_vector(parsed).expect("parsed direction"),
+            );
+            assert_eq!(back, d, "{text}");
+            assert_eq!(back.content_hash(), d.content_hash(), "{text}");
+        }
+    }
+
+    #[test]
+    fn value_direction_negation_matches_literal() {
+        // Negating +z yields exactly the `dir(0, 0, -1)` literal: no `-0` slot in
+        // the rendering, `==`, and an equal content hash.
+        let negated = Value::Direction(
+            crate::direction::UnitVec3::from_vector([0.0, 0.0, 1.0])
+                .unwrap()
+                .negated(),
+        );
+        assert_eq!(format!("{negated}"), "dir(0, 0, -1)");
+        let literal = make_direction(0.0, 0.0, -1.0);
+        assert_eq!(negated, literal);
+        assert_eq!(negated.content_hash(), literal.content_hash());
     }
 
     #[test]
@@ -10041,8 +10085,8 @@ mod tests {
         // panic. PINS the same-type `cmp` arm: the same-type match ends in
         // `_ => unreachable!("same type tag but different variants")`, so a missing
         // Direction arm would PANIC on any two distinct Directions. Lexicographic
-        // x→y→z: (0,0,0) < (1,0,0) because x differs first.
-        let a = make_direction(0.0, 0.0, 0.0);
+        // x→y→z: (-1,0,0) < (1,0,0) because x differs first.
+        let a = make_direction(-1.0, 0.0, 0.0);
         let b = make_direction(1.0, 0.0, 0.0);
         assert!(a < b);
         // Sorting must not panic and must be deterministic.
@@ -10063,6 +10107,18 @@ mod tests {
         assert!(dir > plane);
         assert!(dir > axis);
         assert!(dir > orientation);
+    }
+
+    #[test]
+    fn value_direction_content_hash_separates_distinct_directions() {
+        assert_eq!(
+            make_direction(1.0, 0.0, 0.0).content_hash(),
+            make_direction(1.0, 0.0, 0.0).content_hash()
+        );
+        assert_ne!(
+            make_direction(1.0, 0.0, 0.0).content_hash(),
+            make_direction(0.0, 1.0, 0.0).content_hash()
+        );
     }
 
     // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
@@ -10568,7 +10624,7 @@ mod tests {
             Value::Transform { .. } => "Transform",
             Value::Plane { .. } => "Plane",
             Value::Axis { .. } => "Axis",
-            Value::Direction { .. } => "Direction",
+            Value::Direction(_) => "Direction",
             Value::BoundingBox { .. } => "BoundingBox",
             Value::Range { .. } => "Range",
             Value::Matrix(_) => "Matrix",
@@ -10657,11 +10713,7 @@ mod tests {
                 origin: Box::new(Value::Point(vec![])),
                 direction: Box::new(Value::Vector(vec![])),
             },
-            Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            make_direction(0.0, 0.0, 1.0),
             Value::BoundingBox {
                 min: Box::new(Value::Point(vec![])),
                 max: Box::new(Value::Point(vec![])),
