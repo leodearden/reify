@@ -936,3 +936,39 @@ fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
         program.entry.diagnostics
     );
 }
+
+// ─── task 5520: the routing predicate a driver asks before a program compile ─
+
+/// `entry_follows_imports` answers through the one import gate: only a
+/// cfg-satisfied, non-`std` import counts, whether or not it resolves.
+#[test]
+fn entry_follows_imports_only_for_a_followed_user_import() {
+    let cfg = CfgSet {
+        target: Some("linux".to_string()),
+        ..Default::default()
+    };
+    let body = "structure def Rod {\n    param r : Length = 2mm\n}\n";
+    let cases = [
+        ("import-free", format!("module main\n{body}"), false),
+        ("std-only", format!("module main\nimport std.units\n{body}"), false),
+        (
+            "cfg-gated-out user import",
+            format!("module main\n#cfg(target = \"wasm\")\nimport ghost\n{body}"),
+            false,
+        ),
+        ("user import", format!("module main\nimport parts\n{body}"), true),
+        (
+            "std plus user import",
+            format!("module main\nimport std.units\nimport parts\n{body}"),
+            true,
+        ),
+    ];
+    for (label, source, expected) in cases {
+        let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("main"));
+        assert_eq!(
+            reify_compiler::program::entry_follows_imports(&parsed, &cfg),
+            expected,
+            "{label}"
+        );
+    }
+}
