@@ -2706,7 +2706,7 @@ impl Value {
                 )
             }
             Value::Direction { x, y, z } => {
-                format!("direction({}, {}, {})", x, y, z)
+                format!("dir({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 format!("bbox({}, {})", min.format_display(), max.format_display())
@@ -4204,15 +4204,10 @@ impl std::fmt::Display for Value {
                 write!(f, "axis({}, {})", origin, direction)
             }
             Value::Direction { x, y, z } => {
-                // Same whole-number convention as Real/Orientation (no trailing ".0").
-                let fmt_f64 = |v: f64| -> String {
-                    if v == v.trunc() && v.is_finite() {
-                        format!("{:.0}", v)
-                    } else {
-                        format!("{}", v)
-                    }
-                };
-                write!(f, "direction({}, {}, {})", fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+                // The round-trip spelling (direction-typing C2): raw f64 `{}` is the
+                // shortest repr that parses back to the same bits, and already
+                // prints whole numbers without a trailing ".0".
+                write!(f, "dir({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 write!(f, "bbox({}, {})", min, max)
