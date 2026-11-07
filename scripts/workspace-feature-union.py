@@ -27,7 +27,7 @@ proc-macro. The rule, checked without compiling anything:
   - for every covered member M, each external (name, version, side, features)
     variant of `cargo tree -p M` also occurs in `cargo tree --workspace`.
 
-Reading a failure:
+Reading the output:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
                                 under [dependencies] in the named manifest.
     HOST-UNION <m>: <path> ...  a normal or build dependency of <m> brings
@@ -41,6 +41,15 @@ Reading a failure:
                                 `python3 scripts/workspace-feature-union.py generate`,
                                 then regenerate crates/reify-eval/engine_hash_closure.txt
                                 with the command in its header.
+    MEMBER-SPLIT <name> v<ver> (<side>): -p resolves {..} under <m>, ...; --workspace resolves {..}
+                                advisory, never a finding and never fails:
+                                `-p <m>` builds workspace member <name> with
+                                features the base's `--workspace` build does
+                                not, so <name> and its dependents rebuild in a
+                                fresh lane. The union cannot pin a member.
+                                Decision, classes and limits:
+                                docs/notes/workspace-feature-union.md,
+                                "Member features".
 
 `check` is a lower bound: the union's own pins are part of `--workspace`, so a
 pin no member needs any more passes it. `generate` starts from an empty
@@ -70,7 +79,7 @@ import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -116,6 +125,9 @@ class VariantKey:
 class Variant:
     key: VariantKey
     features: frozenset[str]
+
+    def sort_key(self) -> tuple[tuple[str, str, str], list[str]]:
+        return (self.key.sort_key(), sorted(self.features))
 
 
 def variant(name: str, version: str, side: Side, features: frozenset[str]) -> Variant:
@@ -185,6 +197,15 @@ class TreePackage:
     features: frozenset[str]
 
 
+@dataclass(frozen=True)
+class Tree:
+    """One `cargo tree` output's variants: the registry packages the union
+    can pin, and the workspace members other than the union, which it cannot
+    (a member pin would be a dependency cycle)."""
+    variants: frozenset[Variant]
+    members: frozenset[Variant]
+
+
 def split_prefix(line: str) -> tuple[int, str]:
     depth = 0
     while line.startswith(PREFIX_TOKENS, depth * TOKEN_WIDTH):
@@ -209,10 +230,11 @@ def parse_package(body: str, where: str) -> TreePackage:
                        features=frozenset(f for f in features.split(",") if f))
 
 
-def parse_tree(text: str, source: str) -> frozenset[Variant]:
-    """Every registry package variant in `cargo tree -f '{p}|{f}' --charset
-    ascii` output, attributed to the side its ancestry puts it on."""
+def parse_tree(text: str, source: str) -> Tree:
+    """Every package variant in `cargo tree -f '{p}|{f}' --charset ascii`
+    output, attributed to the side its ancestry puts it on."""
     variants: set[Variant] = set()
+    members: set[Variant] = set()
     stack: list[TreeNode] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -235,14 +257,16 @@ def parse_tree(text: str, source: str) -> frozenset[Variant]:
         host = package.proc_macro or (depth > 0 and stack[depth - 1].child_is_host())
         del stack[depth:]
         stack.append(TreeNode(host=host))
+        side = Side.HOST if host else Side.TARGET
+        found = variant(package.name, package.version, side, package.features)
         if not package.path_source:
-            side = Side.HOST if host else Side.TARGET
-            variants.add(variant(package.name, package.version, side, package.features))
-    return frozenset(variants)
+            variants.add(found)
+        elif package.name != UNION_CRATE:
+            members.add(found)
+    return Tree(variants=frozenset(variants), members=frozenset(members))
 
 
-def resolve(root: Path, mode: LockMode, host: str,
-            selection: Sequence[str]) -> frozenset[Variant]:
+def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> Tree:
     args = ["tree", mode.value, *selection, "-e", "normal,build,dev", "-f", "{p}|{f}",
             "--charset", "ascii", "--target", host]
     return parse_tree(cargo(root, args), f"`cargo tree {' '.join(selection)}`")
@@ -400,6 +424,12 @@ def host_union_findings(ws: Workspace) -> list[str]:
     return found
 
 
+def resolved_by_workspace(side: Side, workspace_features: tuple[frozenset[str], ...]) -> str:
+    if workspace_features:
+        return " and ".join(braces(f) for f in workspace_features)
+    return f"no {side.value} variant"
+
+
 @dataclass(frozen=True)
 class Split:
     member: str
@@ -408,12 +438,25 @@ class Split:
 
     def __str__(self) -> str:
         key = self.variant.key
-        if self.workspace_features:
-            there = " and ".join(braces(f) for f in self.workspace_features)
-        else:
-            there = f"no {key.side.value} variant"
+        there = resolved_by_workspace(key.side, self.workspace_features)
         return (f"SPLIT {self.member} {key.name} v{key.version} ({key.side.value}): "
                 f"-p resolves {braces(self.variant.features)}; --workspace resolves {there}")
+
+
+@dataclass(frozen=True)
+class MemberSplit:
+    """Advisory, never a finding: a workspace-member variant that the `-p`
+    builds of `selections` resolve and `--workspace` never builds."""
+    variant: Variant
+    selections: tuple[str, ...]
+    workspace_features: tuple[frozenset[str], ...]
+
+    def __str__(self) -> str:
+        key = self.variant.key
+        there = resolved_by_workspace(key.side, self.workspace_features)
+        return (f"MEMBER-SPLIT {key.name} v{key.version} ({key.side.value}): -p resolves "
+                f"{braces(self.variant.features)} under {', '.join(self.selections)}; "
+                f"--workspace resolves {there}")
 
 
 def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[frozenset[str], ...]]:
@@ -423,22 +466,38 @@ def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[froz
     return {key: tuple(sorted(sets, key=sorted)) for key, sets in grouped.items()}
 
 
+def member_splits(workspace: frozenset[Variant],
+                  selected: Mapping[str, frozenset[Variant]]) -> tuple[MemberSplit, ...]:
+    """One advisory per member variant that some selection resolves and the
+    workspace never builds, naming every selection that resolves it."""
+    in_workspace = features_by_key(workspace)
+    resolving: dict[Variant, list[str]] = {}
+    for selection, members in selected.items():
+        for v in members - workspace:
+            resolving.setdefault(v, []).append(selection)
+    return tuple(MemberSplit(v, tuple(sorted(resolving[v])), in_workspace.get(v.key, ()))
+                 for v in sorted(resolving, key=Variant.sort_key))
+
+
 @dataclass(frozen=True)
 class Resolution:
     workspace: frozenset[Variant]
     splits: tuple[Split, ...]
+    member_splits: tuple[MemberSplit, ...]
 
 
 def resolve_splits(root: Path, mode: LockMode, host: str, ws: Workspace) -> Resolution:
     workspace = resolve(root, mode, host, ["--workspace"])
-    in_workspace = features_by_key(workspace)
+    in_workspace = features_by_key(workspace.variants)
     found = []
+    selected_members: dict[str, frozenset[Variant]] = {}
     for member in ws.covered:
         selected = resolve(root, mode, host, ["-p", member.name])
-        for v in sorted(selected - workspace,
-                        key=lambda v: (v.key.sort_key(), sorted(v.features))):
+        selected_members[member.name] = selected.members
+        for v in sorted(selected.variants - workspace.variants, key=Variant.sort_key):
             found.append(Split(member.name, v, in_workspace.get(v.key, ())))
-    return Resolution(workspace=workspace, splits=tuple(found))
+    return Resolution(workspace=workspace.variants, splits=tuple(found),
+                      member_splits=member_splits(workspace.members, selected_members))
 
 
 # --- the union manifest -----------------------------------------------------
@@ -552,12 +611,16 @@ def fail(lines: Sequence[str], *trailer: str) -> Verdict:
 def run_check(root: Path) -> Verdict:
     ws = read_workspace(root, LockMode.FROZEN)
     resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
+    advisories = resolution.member_splits
+    for advisory in advisories:
+        print(advisory)
     found = resolution.splits
     lines = [*coverage_findings(ws), *host_union_findings(ws), *map(str, found)]
     if lines:
         return fail(lines, *([GENERATE_REMEDY] if found else []))
+    advised = f"; {len(advisories)} advisory MEMBER-SPLIT lines above" if advisories else ""
     print(f"workspace-feature-union: OK ({len(ws.covered)} members resolve every external "
-          f"package like --workspace)")
+          f"package like --workspace{advised})")
     return Verdict.OK
 
 
