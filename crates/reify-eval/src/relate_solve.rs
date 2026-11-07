@@ -3285,6 +3285,8 @@ structure PairSearchScope {
             value: f64::NAN,
         });
         let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            // Only `driving` and `redundant` are coherent here: `spent`, `free` and
+            // `per_relation` still describe production's three-relation driving set.
             let skipping = RelationPartition {
                 driving: vec![0, 2],
                 redundant: vec![1],
