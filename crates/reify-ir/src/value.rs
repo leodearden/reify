@@ -10012,19 +10012,11 @@ mod tests {
 
     #[test]
     fn value_direction_display() {
-        // (d) Display is stable and contains the components
+        // (d) Display is the round-trip spelling `dir(x, y, z)` (direction-typing
+        // C2), through BOTH renderers.
         let d = make_direction(1.0, 0.0, 0.0);
-        let s = format!("{}", d);
-        assert!(
-            s.starts_with("direction("),
-            "display should start with 'direction(', got: {}",
-            s
-        );
-        assert!(
-            s.contains('1'),
-            "display should contain the x component, got: {}",
-            s
-        );
+        assert_eq!(format!("{d}"), "dir(1, 0, 0)");
+        assert_eq!(d.format_display(), "dir(1, 0, 0)");
     }
 
     #[test]
