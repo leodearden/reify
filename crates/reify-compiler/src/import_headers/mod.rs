@@ -158,9 +158,10 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 }
 
 /// `source` with an `import` line added for every module of `modules` it
-/// does not already import, in the order given: after the last import, else
-/// after the `module` declaration, else after the leading module pragmas,
-/// else after the leading comment block's last blank line.
+/// does not already import whole, through a namespace import (an entity
+/// import of the module does not count), in the order given: after the last
+/// import, else after the `module` declaration, else after the leading module
+/// pragmas, else after the leading comment block's last blank line.
 pub fn insert_imports(source: &str, parsed: &ParsedModule, modules: &[ModulePath]) -> String {
     header_edit::insert_imports(source, parsed, modules)
 }

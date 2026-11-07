@@ -87,4 +87,8 @@ impl<'p> ImportCoverage<'p> {
             None => false,
         }
     }
+
+    pub(crate) fn covers_whole_surface(&self, module: &ModulePath) -> bool {
+        matches!(self.by_module.get(module), Some(Coverage::WholeSurface))
+    }
 }
