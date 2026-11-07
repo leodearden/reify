@@ -217,6 +217,13 @@ pub fn compile_program_with_parsed_entry(
     }
 }
 
+/// True iff compiling `parsed` as a program entry under `cfg` follows at least
+/// one import. An entry that follows none compiles as the single-file stdlib
+/// compile does, plus the module-header check (I1).
+pub fn entry_follows_imports(parsed: &reify_ast::ParsedModule, cfg: &CfgSet) -> bool {
+    !followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone())).is_empty()
+}
+
 /// Append each of `diags` that `reported` does not already hold.
 ///
 /// A DAG does not remember a module that failed (a retry re-reads it), so a
