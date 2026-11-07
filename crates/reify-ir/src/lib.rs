@@ -29,6 +29,7 @@ pub mod completeness;
 pub mod constraint;
 pub mod dense_sdf;
 pub mod direction;
+pub mod direction_decode;
 pub mod expr;
 pub mod geometry;
 mod geometry_id;
