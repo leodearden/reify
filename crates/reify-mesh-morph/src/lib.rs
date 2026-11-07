@@ -223,7 +223,7 @@ pub fn compose_morph(
         Ok(Ok(mesh)) => mesh,
         Ok(Err(payload)) => return Err(solver_failure(payload)),
         Err(panic) => {
-            let detail = panic_detail(panic.as_ref());
+            let detail = reify_core::panic_payload_to_string(panic.as_ref());
             record_panicked(&detail);
             return Err(MorphFailure::SolverError(SolverErrorPayload::new(format!(
                 "morph solver panicked: {detail}"
@@ -311,17 +311,6 @@ fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
 fn solver_failure(payload: SolverErrorPayload) -> MorphFailure {
     record_solver_error(payload.message());
     MorphFailure::SolverError(payload)
-}
-
-/// Best-effort extraction of a panic message from a caught panic payload.
-fn panic_detail(panic: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = panic.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
 }
 
 // ── register_morph_producer: install the engine seam (task 4744 β) ─────────────
