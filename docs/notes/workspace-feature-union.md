@@ -159,22 +159,29 @@ check; echo "snapshot-matches rc=$?"   # must be 0 before the first probe
 find target -mindepth 1 -maxdepth 1 ! -name .pristine -exec rm -rf {} +
 cp -a --reflink=always "$S"/. target/
 check; echo "restored-matches rc=$?"   # must be 0 before probing
-rm -rf tree-sitter-reify/src/{parser.c,grammar.json,node-types.json,tree_sitter,.grammar_hash.stamp,.generated_outputs.stamp}
+git clean -Xfd -- tree-sitter-reify/src
 ```
 
-The last line deletes the eight gitignored generated sources that a fresh seed
-lacks and the first probe recreates (see the tree-sitter paragraph under
-Measurements). They live outside `target/`, so restoring `target/` does not
-restore their absence. Remove `target/.pristine` after the last probe.
+The last line deletes the gitignored generated sources under
+`tree-sitter-reify/src`, which a fresh seed lacks and the first probe recreates
+(see the tree-sitter paragraph under Measurements). It names no files. `-X`
+removes only ignored files, so the set is whatever the root `.gitignore`'s
+"Tree-sitter generated" block lists, and the acquire's
+`git clean -xfd -e target` deletes those same files. A new output of
+`tree-sitter generate` is covered as soon as that block lists it. The files
+live outside `target/`, so restoring `target/` does not restore their absence,
+and the listing check does not see them either. Remove `target/.pristine` after
+the last probe.
 
 To exclude the tree-sitter share, probe in arm B of the Tree-sitter share
-subsection: the eight sources present and back-dated to 2020-01-01, so the
-build script stays Fresh. Make the copy once, before the first probe:
+subsection: the generated sources present and back-dated to 2020-01-01, so the
+build script stays Fresh. Make the copy once, before the first probe. It holds
+the same files the reset line removes, listed from `.gitignore`:
 
 ```bash
 bash scripts/tree-sitter-generate.sh   # about 5 s: tree-sitter generate only, no cargo
 mkdir /tmp/<id>-tsgen
-(cd tree-sitter-reify/src && cp -a parser.c grammar.json node-types.json tree_sitter .grammar_hash.stamp .generated_outputs.stamp /tmp/<id>-tsgen/)
+(cd tree-sitter-reify/src && git ls-files -z -oi --exclude-standard --directory . | xargs -0 cp -a -t /tmp/<id>-tsgen/)
 find /tmp/<id>-tsgen -mindepth 1 -exec touch -h -d 2020-01-01T00:00:00 {} +
 bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
 for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
@@ -189,7 +196,7 @@ base commit cures the first two: remove `/tmp/<id>-tsgen` and repeat this block
 after the checkout. A DIFF that survives that points to the CLI, and then the
 copy cannot be proven identical to the base's inputs, so arm B is not valid in
 this lane. Before every probe, the first included, put the copy in place of the
-`rm -rf` line above: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+`git clean` line above: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
 
 ## Measurements
 
@@ -402,7 +409,7 @@ serde_derive started 63 s after its last dependency finished.
   workspace units. That is #9825, whose measurement probes without the
   tree-sitter regeneration (Probe procedure, arm B), because the causes overlap
   and a unit count cannot be reduced by the tree-sitter share.
-- **Tree-sitter regeneration.** The eight generated sources are gitignored, so
+- **Tree-sitter regeneration.** The generated sources are gitignored, so
   the acquire deletes them, and `build.rs` watches them, so a fresh lane's first
   build reruns the build script. Measured on `-p reify-eval` (Tree-sitter
   share), with the other contributors present: the first build gains one unit,
