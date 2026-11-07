@@ -3,20 +3,11 @@
 //! starts it at most once, and no mode stops it.
 
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
+use super::debug_server_slot_fixtures::recording_slot;
 use crate::debug_server::BoundDebugListener;
-use crate::debug_server_slot::DebugServerSlot;
 use crate::launch_mode::{Mode, ModeState, set_mode_impl};
-
-/// A slot whose serve closure keeps each listener it is handed (so the port
-/// stays bound) instead of starting a real server; the Vec is what it served.
-fn recording_slot() -> (DebugServerSlot, Arc<Mutex<Vec<BoundDebugListener>>>) {
-    let served = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&served);
-    let slot = DebugServerSlot::new(move |listener| sink.lock().unwrap().push(listener));
-    (slot, served)
-}
 
 fn serve_count(served: &Mutex<Vec<BoundDebugListener>>) -> usize {
     served.lock().unwrap().len()

@@ -4,19 +4,10 @@
 //! process actually holds the listener (task 7816's "live == bound").
 
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
+use super::debug_server_slot_fixtures::recording_slot;
 use crate::debug_server::{BoundDebugListener, debug_endpoint_url};
-use crate::debug_server_slot::DebugServerSlot;
-
-/// A slot whose serve closure keeps every listener it is handed (so its port
-/// stays bound) instead of starting a real server; the Vec is what it served.
-fn recording_slot() -> (DebugServerSlot, Arc<Mutex<Vec<BoundDebugListener>>>) {
-    let served = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&served);
-    let slot = DebugServerSlot::new(move |listener| sink.lock().unwrap().push(listener));
-    (slot, served)
-}
 
 fn served_ports(served: &Mutex<Vec<BoundDebugListener>>) -> Vec<u16> {
     served
