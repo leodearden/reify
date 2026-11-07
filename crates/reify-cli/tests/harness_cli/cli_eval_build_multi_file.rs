@@ -6,7 +6,7 @@
 
 use crate::common;
 
-const SINGLE_FILE_WARNING: &str = "not resolved by this entry point";
+const UNRESOLVED_IMPORT_WARNING: &str = "not resolved by this entry point";
 
 #[test]
 fn eval_prints_an_imported_structure_instance() {
@@ -23,7 +23,7 @@ fn eval_prints_an_imported_structure_instance() {
         );
     }
     assert!(
-        !stderr.contains(SINGLE_FILE_WARNING),
+        !stderr.contains(UNRESOLVED_IMPORT_WARNING),
         "import left unresolved.\nstderr: {stderr}"
     );
 }
@@ -43,7 +43,7 @@ fn build_writes_geometry_for_an_importing_entry() {
         out.stderr
     );
     assert!(
-        !out.stderr.contains(SINGLE_FILE_WARNING),
+        !out.stderr.contains(UNRESOLVED_IMPORT_WARNING),
         "import left unresolved.\nstderr: {}",
         out.stderr
     );
