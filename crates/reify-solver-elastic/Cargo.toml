@@ -21,6 +21,7 @@ tracing.workspace = true
 linear-solve-fault-injection = []
 
 [dev-dependencies]
+reify-core.workspace = true
 reify-ir.workspace = true
 reify-test-support.workspace = true
 # Test targets enable the inert linear_solve fault hook this way; release builds never do.
