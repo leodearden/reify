@@ -227,3 +227,91 @@ fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
     );
     assert_eq!(fs::read_to_string(&broken).expect("read fixture"), BROKEN);
 }
+
+#[cfg(unix)]
+fn entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("list dir")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_replaces_the_file_so_a_reader_that_opened_it_first_still_reads_the_original() {
+    use std::io::Read;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let mut early_reader = fs::File::open(&file).expect("open fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let mut seen_by_early_reader = String::new();
+    early_reader
+        .read_to_string(&mut seen_by_early_reader)
+        .expect("read through the early handle");
+    assert_eq!(seen_by_early_reader, PLATE, "{}", describe(&output));
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixed file"),
+        format!("{HEADER}{PLATE}")
+    );
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_keeps_the_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).expect("chmod fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let mode = fs::metadata(&file)
+        .expect("stat fixed file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o640, "mode {mode:o}");
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_through_a_symlink_rewrites_the_target_and_keeps_the_link() {
+    let dir = tempdir().expect("tempdir");
+    let real_dir = dir.path().join("real");
+    let link_dir = dir.path().join("link");
+    fs::create_dir(&real_dir).expect("mkdir real");
+    fs::create_dir(&link_dir).expect("mkdir link");
+    let target = write_ri(&real_dir, "plate.ri", PLATE);
+    let link = link_dir.join("plate.ri");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink fixture");
+    let link = link.to_str().expect("utf-8 temp path").to_string();
+
+    let output = run_reify(&["fix", "--imports", &link]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("lstat link")
+            .file_type()
+            .is_symlink(),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(&target).expect("read fixed target"),
+        format!("{HEADER}{PLATE}")
+    );
+    assert_eq!(entry_names(&real_dir), ["plate.ri"]);
+    assert_eq!(entry_names(&link_dir), ["plate.ri"]);
+}
