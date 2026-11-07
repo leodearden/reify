@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolvePerRunPort } from './endpoint.js';
+import { resolvePerRunPort } from './perRunPort.js';
 
 describe.each(['REIFY_DEBUG_PORT', 'REIFY_VITE_PORT'] as const)('resolvePerRunPort(%s)', (name) => {
   const ALLOCATED = 40123;
