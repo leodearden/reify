@@ -9,7 +9,8 @@ use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
 
 use crate::diagnostics::{DiagnosticsResult, EvalState, compute_diagnostics_with_state};
 
-const PULLEY_10MM: &str = "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n";
+const PULLEY_10MM: &str =
+    "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n";
 
 fn entry_uri(dir: &Path) -> Url {
     Url::from_file_path(dir.join("main.ri")).expect("absolute path")
@@ -20,7 +21,11 @@ fn diagnose(dir: &Path, entry_source: &str) -> DiagnosticsResult {
 }
 
 fn messages(result: &DiagnosticsResult) -> Vec<&str> {
-    result.diagnostics.iter().map(|d| d.message.as_str()).collect()
+    result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect()
 }
 
 #[test]

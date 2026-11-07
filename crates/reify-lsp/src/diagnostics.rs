@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{
     ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, SourceSpan, ValueCellId,
@@ -10,6 +11,8 @@ use tower_lsp::lsp_types::{self, Url};
 
 use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
+
+mod document_compile;
 
 /// The eval/check-pass containment guard shared by both LSP production
 /// entry points — see [`eval_guard`] for the hazard it contains and why it is
@@ -32,8 +35,8 @@ impl EvalState {
     ///
     /// This is the **EVAL-time** checker fed to `reify_eval::Engine::new` —
     /// a separate instance from the **COMPILE-time** checker that
-    /// [`compute_diagnostics_with_state`] now injects into
-    /// `compile_with_stdlib_checked` (task #6798, PRD leaf pi). The two are
+    /// [`compute_diagnostics_with_state`] now injects into its document
+    /// compile (task #6798, PRD leaf pi). The two are
     /// deliberately independent values of the same zero-sized
     /// `SimpleConstraintChecker` type: one feeds constraint-satisfaction
     /// evaluation after eval, the other feeds `auto:` candidate feasibility
@@ -122,10 +125,12 @@ pub struct DiagnosticsResult {
 ///
 /// ## Compile-time checker: real `SimpleConstraintChecker`, not a stub (task #6798)
 ///
-/// The compile stage below calls
-/// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
-/// matching `reify check`'s compile path (`parse_and_compile` /
-/// `program::compile_program_with_parsed_entry` in
+/// The compile stage below compiles via `document_compile::compile_document`:
+/// a program compile (`program::compile_program_with_parsed_entry`) for a
+/// file-backed entry that follows an import, the single-file
+/// `reify_compiler::compile_with_stdlib_checked` otherwise, with the same real
+/// `SimpleConstraintChecker` either way. That matches `reify check`'s compile
+/// path (`parse_and_compile` / `program::compile_program_with_parsed_entry` in
 /// `crates/reify-cli/src/main.rs`) and the GUI
 /// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
 /// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
@@ -244,7 +249,9 @@ pub fn compute_diagnostics_with_state(
 
     // Compile. Real checker (task #6798, PRD leaf pi) — see this function's
     // "## Compile-time checker" doc section above for the full rationale.
-    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let document =
+        document_compile::compile_document(&parsed, source, uri, &CfgSet::host_default());
+    let compiled = document.module();
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
@@ -266,7 +273,7 @@ pub fn compute_diagnostics_with_state(
     // would create precisely the stale-cache bug the comment below warns about:
     // `eval_cached` returns empty diagnostics by construction, so a module that
     // was never evaluated would silently report none.
-    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
+    if let Some(skipped) = eval_guard::skip_reason(compiled) {
         // Observability: skipping eval silently costs the whole document its
         // eval-time diagnostics and constraint results, so say so in the
         // editor as well as the server log. `skip_reason` has already written
@@ -310,7 +317,7 @@ pub fn compute_diagnostics_with_state(
     let mut eval_diagnostics: Vec<Diagnostic> = if content_unchanged {
         state
             .engine
-            .eval_cached(&compiled, VersionId(state.version_counter))
+            .eval_cached(compiled, VersionId(state.version_counter))
             .eval_result
             .diagnostics
     } else {
@@ -335,11 +342,11 @@ pub fn compute_diagnostics_with_state(
         }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-        state.engine.eval(&compiled).diagnostics
+        state.engine.eval(compiled).diagnostics
     };
 
     // Check constraints from snapshot, falling back to full check() if snapshot is absent
-    let check_result = match state.engine.check_snapshot(&compiled) {
+    let check_result = match state.engine.check_snapshot(compiled) {
         Some(result) => result,
         None => {
             log_messages.push(LogLine {
@@ -352,7 +359,7 @@ pub fn compute_diagnostics_with_state(
             // CheckResult.diagnostics; drop our independently captured copy to
             // avoid double-emission.
             eval_diagnostics = Vec::new();
-            state.engine.check(&compiled)
+            state.engine.check(compiled)
         }
     };
 
@@ -463,11 +470,11 @@ pub fn compute_diagnostics_with_state(
 
     diagnostics.extend(fea_not_evaluated_hints(
         &state.engine,
-        &compiled,
+        compiled,
         &check_result,
         source,
     ));
-    diagnostics.extend(freshness_diagnostics(&state.engine, &compiled, source));
+    diagnostics.extend(freshness_diagnostics(&state.engine, compiled, source));
 
     // Record the content hash so the next call can choose incremental vs cold-start.
     state.last_content_hash = Some(compiled.content_hash);
@@ -914,10 +921,11 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Compile `parsed` exactly the way the LSP's two production compile
-    /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
+    /// Compile `parsed` exactly the way the LSP's SINGLE-FILE route compiles
+    /// it — `reify_compiler::compile_with_stdlib_checked(parsed,
     /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
-    /// the compile-time `CompileTimeIndeterminateChecker` stub.
+    /// the compile-time `CompileTimeIndeterminateChecker` stub: the route of
+    /// every document that follows no import.
     ///
     /// Any test below that independently reproduces what
     /// `compute_diagnostics_with_state` computes internally (e.g. a
