@@ -7046,7 +7046,10 @@ fn later_declared_structure_error(
              move `structure def {name}` above it"
         ))
         .with_code(DiagnosticCode::StructureDeclaredAfterFunction)
-        .with_label(DiagnosticLabel::new(span, "structure declared later in the file"))
+        .with_label(DiagnosticLabel::new(
+            span,
+            "structure declared later in the file",
+        ))
     })
 }
 
