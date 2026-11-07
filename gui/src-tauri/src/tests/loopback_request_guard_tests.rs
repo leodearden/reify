@@ -90,10 +90,7 @@ fn refuses_a_foreign_origin_even_with_a_loopback_host() {
     ];
     for value in foreign_origins {
         assert_eq!(
-            check_loopback_request(
-                &headers(&[host("127.0.0.1:3939"), origin(value)]),
-                bound()
-            ),
+            check_loopback_request(&headers(&[host("127.0.0.1:3939"), origin(value)]), bound()),
             Err(Refusal::ForeignOrigin(value.to_string())),
             "Origin {value:?} is not the listener's own origin and must be refused"
         );
