@@ -808,10 +808,7 @@ mod tests {
             Err(payload) => payload,
             Ok(()) => panic!("expected the wrapped call to panic, but it returned normally"),
         };
-        let message = payload
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
+        let message = reify_core::panic_payload_str(payload.as_ref())
             .unwrap_or_else(|| panic!("panic payload was neither a &str nor a String"));
         assert!(
             message.contains(fragment),

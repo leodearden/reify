@@ -41,13 +41,7 @@ fn panic_message(f: impl FnOnce()) -> Option<String> {
     std::panic::set_hook(previous);
     match outcome {
         Ok(()) => None,
-        Err(payload) => Some(
-            payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-                .unwrap_or_else(|| "<non-string panic payload>".to_string()),
-        ),
+        Err(payload) => Some(reify_core::panic_payload_to_string(payload.as_ref())),
     }
 }
 

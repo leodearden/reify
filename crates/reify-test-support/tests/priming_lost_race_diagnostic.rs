@@ -63,15 +63,8 @@ fn lost_priming_race_is_reported_in_the_assertion_panic() {
     .expect_err("assert_warn_count must panic when the counter is 0 but 1 is expected");
     std::panic::set_hook(previous_hook);
 
-    let message = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| {
-            payload
-                .downcast_ref::<&'static str>()
-                .map(|s| (*s).to_owned())
-        })
-        .expect("panic payload must be a string");
+    let message =
+        reify_core::panic_payload_str(payload.as_ref()).expect("panic payload must be a string");
 
     assert!(
         message.contains("provoked failure"),
