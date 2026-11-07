@@ -432,7 +432,8 @@ class TestPlanInputsTestRegion(unittest.TestCase):
 
     def region(self) -> testregion.TestRegion:
         runner = nextest.TestRunner(
-            prio="", test_threads=None, config=None, heavy_filter="H", no_fail_fast=False, confirm=None
+            prio="", test_threads=None, nextest=False, config=None, heavy_filter="H",
+            no_fail_fast=False, confirm=None,
         )
         return testregion.TestRegion(
             attempt_stamp=None, passes=(), gui_feature=None, runner=runner,
@@ -518,8 +519,8 @@ def nextest_run(**overrides) -> NextestRun:
 
 def recording_runner(**overrides) -> TestRunner:
     fields = dict(
-        prio="", test_threads=None, config=OVERRIDE_CONFIG, heavy_filter="H", no_fail_fast=True,
-        confirm=RECORDING,
+        prio="", test_threads=None, nextest=True, config=OVERRIDE_CONFIG, heavy_filter="H",
+        no_fail_fast=True, confirm=RECORDING,
     )
     fields.update(overrides)
     return TestRunner(**fields)
@@ -617,7 +618,7 @@ class TestPassInvariants(unittest.TestCase):
         gui = PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m")
         cases = (
             (gui, runner, Phase.GUI_FEATURE_NEXTEST),
-            (gui, dataclasses.replace(runner, config=None), Phase.GUI_FEATURE_CARGO_TEST),
+            (gui, dataclasses.replace(runner, nextest=False, config=None), Phase.GUI_FEATURE_CARGO_TEST),
             (PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", features=("x",)), runner, Phase.DEBUG_NEXTEST),
             (PassSpec(PassKind.PROFILE, Profile.RELEASE, Workspace(), "90m"), runner, Phase.RELEASE_NEXTEST),
         )
@@ -634,6 +635,58 @@ class TestPassInvariants(unittest.TestCase):
                 self.assertEqual(len(gui), int(policy.ROLE_TABLE[role].gui_feature_test_pass))
                 for step in gui:
                     self.assertNotIn(CONFIRM_RECORDER, render.render_step(step))
+
+
+class TestRunnerArm(unittest.TestCase):
+    """The runner states whether nextest or the cargo-test fallback runs its passes; config None
+    only means no pass names a config."""
+
+    def test_a_nextest_runner_without_a_config_refuses_to_emit_a_pass(self):
+        runner = recording_runner(config=None, confirm=None, no_fail_fast=False)
+        with self.assertRaises(ValueError) as raised:
+            nextest.emit_pass(PassSpec(PassKind.PROFILE, Profile.RELEASE, Workspace(), "90m"), runner)
+        message = str(raised.exception)
+        self.assertIn("emit_pass", message)
+        self.assertIn("config", message)
+
+    def test_the_cargo_test_fallback_names_no_config(self):
+        with self.assertRaises(ValueError) as raised:
+            recording_runner(nextest=False, confirm=None, no_fail_fast=False)
+        message = str(raised.exception)
+        self.assertIn("TestRunner", message)
+        self.assertIn("config", message)
+
+    def test_the_cargo_test_fallback_records_nothing(self):
+        with self.assertRaises(ValueError) as raised:
+            recording_runner(nextest=False, config=None)
+        message = str(raised.exception)
+        self.assertIn("TestRunner", message)
+        self.assertIn("confirm", message)
+
+    def test_the_fallback_runs_cargo_test(self):
+        runner = recording_runner(nextest=False, config=None, confirm=None, no_fail_fast=False)
+        step = nextest.emit_pass(PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m"), runner)
+        self.assertIsInstance(step.command, SlotFdClosed)
+        self.assertIsInstance(step.command.body, CargoTestRun)
+        self.assertEqual(step.phase, Phase.DEBUG_CARGO_TEST)
+
+    def test_a_region_with_no_pass_naming_a_config_keeps_its_arm(self):
+        for has_nextest in (True, False):
+            with self.subTest(nextest=has_nextest):
+                region = testregion.resolve(
+                    region_inputs(
+                        Role.MERGE, profiles=(Profile.RELEASE,), release_delta_skips=True,
+                        reaches_gui=False, nextest=has_nextest,
+                    )
+                )
+                self.assertIsInstance(region, testregion.TestRegion)
+                self.assertFalse(
+                    any(isinstance(spec, PassSpec) for spec in region.passes),
+                    "premise: the release-delta decision skipped the only pass",
+                )
+                self.assertIsNone(region.gui_feature, "premise: no gui-feature pass")
+                self.assertIsNone(region.runner.config)
+                self.assertIs(region.runner.nextest, has_nextest)
 
 
 class TestQuotedPathKnobs(unittest.TestCase):
