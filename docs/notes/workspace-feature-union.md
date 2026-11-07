@@ -450,7 +450,27 @@ serde_derive started 63 s after its last dependency finished.
 - **HOST-UNION over-approximates.** Optional and platform-specific path
   dependencies count even when inactive, so the rule fails loud, never silent.
 - **Host roots in the SPLIT comparison.** `parse_tree` still attributes every
-  depth-0 `--workspace` root to TARGET, so a host root's external variants are
-  filed under TARGET. That usually shows up as a spurious
-  `SPLIT ... no host variant`, and it could rarely mask a target split. Owned
-  by #9873.
+  non-proc-macro depth-0 `--workspace` root to TARGET, so a host root's
+  external variants are filed under TARGET. That usually shows up as a
+  spurious `SPLIT ... no host variant`, and it could rarely mask a target
+  split. Owned by #9873.
+- **A host-side member's dev-dependencies in the SPLIT comparison.**
+  `cargo tree` lists a member's `[dev-dependencies]` wherever the member
+  appears, including below another member's build edge to it, and
+  `parse_tree` files everything under a host node as HOST. Measured on the real
+  `--workspace` tree on 2026-11-07: reify-build-utils' dev-dependencies
+  (proc-macro2, syn, tempfile) are listed below its `[build-dependencies]`
+  edges. That puts HOST variants of tempfile 3.27.0, rustix 1.1.4, getrandom
+  0.4.2, linux-raw-sys 0.12.1 and once_cell 1.21.4 into the `--workspace` set,
+  though no build compiles them for the host: none of them is a HOST variant
+  of `cargo tree --workspace -e normal,build`. Such a variant can mask a real
+  host split of the same package, or let `generate` pin a host unit nobody
+  builds. None is pinned today.
+
+  Skipping a dev section below a non-root node does not fix it, because the
+  `(*)` dedupe can make that section the only expanded copy of a subtree. On
+  the real tree, reify-build-utils and its toml 0.8.2 are expanded only below
+  reify-audit -> reify-syntax's `[dev-dependencies]`. A probe that skipped such
+  sections lost real variants, the HOST toml 0.8.2 among them. A fix needs a
+  resolution without the dedupe, or a walk over the deduped graph. Owned by
+  #9873.
