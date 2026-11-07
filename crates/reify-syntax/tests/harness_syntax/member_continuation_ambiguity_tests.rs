@@ -14,6 +14,8 @@
 
 use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
 use reify_core::ModulePath;
+use reify_test_support::{TempDir, prefixed_tempdir};
+use std::path::Path;
 // The "is this a member-continuation diagnostic?" question is answered by the
 // rule's own exported discriminator, never by a substring predicate restated
 // here: the recogniser lives next to the message it recognises, so a reword
@@ -329,34 +331,109 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
 #[test]
 fn no_tracked_ri_source_trips_the_member_continuation_check() {
     let root = workspace_root();
-    let files = tracked_ri_paths(&root);
+    let sweep = member_continuation_sweep(&root);
     assert!(
-        files.len() > 100,
+        sweep.swept > 100,
         "sweep found only {} tracked .ri files under {} — the listing is broken, \
          not the repo",
-        files.len(),
+        sweep.swept,
         root.display()
     );
 
-    let mut hits: Vec<String> = Vec::new();
-    for rel in &files {
-        let Ok(source) = std::fs::read_to_string(root.join(rel)) else {
-            continue;
-        };
-        for (start, _end, message) in member_continuation_errors(&source) {
-            let (line, col) = line_col(&source, start);
-            hits.push(format!("{rel}:{line}:{col}: {message}"));
-        }
-    }
-
     assert!(
-        hits.is_empty(),
+        sweep.hits.is_empty(),
         "{} tracked .ri source location(s) trip the member-continuation check \
          (swept {} tracked files):\n{}",
-        hits.len(),
-        files.len(),
-        hits.join("\n")
+        sweep.hits.len(),
+        sweep.swept,
+        sweep.hits.join("\n")
     );
+}
+
+/// What one member-continuation sweep read, and what it found there.
+struct ContinuationSweep {
+    swept: usize,
+    hits: Vec<String>,
+}
+
+/// Sweep the tracked `.ri` corpus under `root`, collecting every
+/// member-continuation hit as `rel:line:col: message`.
+///
+/// It takes only `root` and picks its listing itself, so a test over a fixture
+/// repository pins WHICH listing the standing guard reads.
+fn member_continuation_sweep(root: &Path) -> ContinuationSweep {
+    let mut sweep = ContinuationSweep {
+        swept: 0,
+        hits: Vec::new(),
+    };
+    for rel in tracked_ri_paths(root) {
+        let Ok(source) = std::fs::read_to_string(root.join(&rel)) else {
+            continue;
+        };
+        sweep.swept += 1;
+        for (start, _end, message) in member_continuation_errors(&source) {
+            let (line, col) = line_col(&source, start);
+            sweep.hits.push(format!("{rel}:{line}:{col}: {message}"));
+        }
+    }
+    sweep
+}
+
+/// A throwaway git repository whose index tracks each `(repo-relative path,
+/// source)` pair. No commit is made: `git ls-files` reads the index.
+fn tracked_fixture_repo(files: &[(&str, &str)]) -> TempDir {
+    let dir = prefixed_tempdir("reify-member-continuation-sweep-");
+    for (rel, source) in files {
+        let path = dir.path().join(rel);
+        let parent = path.parent().expect("a repo-relative path has a parent");
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| panic!("cannot create {}: {e}", parent.display()));
+        std::fs::write(&path, source)
+            .unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
+    }
+    for args in [&["init", "-q"][..], &["add", "--", "."][..]] {
+        let output = reify_git_env::command(dir.path())
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run `git {}`: {e}", args.join(" ")));
+        assert!(
+            output.status.success(),
+            "`git {}` failed in {} ({}): {}",
+            args.join(" "),
+            dir.path().display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    dir
+}
+
+/// The sweep never reads a `.ri` under a tree verify routes to no heavy
+/// checks: a hook-gated docs commit could otherwise land such a file green and
+/// red every later merge gate. `docsx/` shares the name's prefix but is not the
+/// tree, so it is still swept.
+#[test]
+fn member_continuation_sweep_skips_verify_inert_trees() {
+    let dir = tracked_fixture_repo(&[
+        ("docs/zz_section/zz_synthetic.ri", REPRO_ONE),
+        ("docsx/zz_sibling.ri", REPRO_ONE),
+        ("examples/zz_kept.ri", REPRO_ONE),
+    ]);
+
+    let sweep = member_continuation_sweep(dir.path());
+
+    let hit_paths: Vec<&str> = sweep
+        .hits
+        .iter()
+        .map(|hit| hit.split(':').next().unwrap_or(hit))
+        .collect();
+    assert_eq!(
+        hit_paths,
+        ["docsx/zz_sibling.ri", "examples/zz_kept.ri"],
+        "hits: {:#?}",
+        sweep.hits
+    );
+    assert_eq!(sweep.swept, 2, "hits: {:#?}", sweep.hits);
 }
 
 // ── (f) the other member-list bodies ─────────────────────────────────────────
