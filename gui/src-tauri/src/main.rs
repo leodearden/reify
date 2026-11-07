@@ -494,15 +494,20 @@ fn list_recent(app: tauri::AppHandle) -> Vec<RecentEntry> {
     }
 }
 
-#[tauri::command]
-fn record_recent(app: tauri::AppHandle, path: String) -> Result<Vec<RecentEntry>, String> {
-    let store = recent_files_store(&app)?;
+/// Put `path` at the front of the Recent list, opened now.
+fn record_recent_now(app: &tauri::AppHandle, path: &str) -> Result<Vec<RecentEntry>, String> {
+    let store = recent_files_store(app)?;
     let opened_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         });
-    reify_gui::recent_files::record_recent(&store, &path, opened_at)
+    reify_gui::recent_files::record_recent(&store, path, opened_at)
+}
+
+#[tauri::command]
+fn record_recent(app: tauri::AppHandle, path: String) -> Result<Vec<RecentEntry>, String> {
+    record_recent_now(&app, &path)
 }
 
 #[tauri::command]
@@ -1074,6 +1079,11 @@ fn main() {
                         Ok(_) => {
                             let state: tauri::State<'_, AppState> = handle.state();
                             watch_file(&handle, &state, &file);
+                            // A launch argument (a double-clicked .ri included)
+                            // is an open like any other, so it joins Recent.
+                            if let Err(e) = record_recent_now(&handle, &file.to_string_lossy()) {
+                                warn!("{e}; the launch file is not in the Recent list");
+                            }
                             if let Ok(mut initial_file) = state.initial_file.lock() {
                                 *initial_file = Some(file);
                             }
