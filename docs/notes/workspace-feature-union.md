@@ -81,10 +81,16 @@ If generate fails part-way, for example because `cargo tree` errors, it
 restores the union manifest and `Cargo.lock` as it found them.
 
 An UNCOVERED line names the manifest that needs
-`workspace-feature-union.workspace = true`. A HOST-UNION line quotes a
-`--workspace` path that reaches the union on the host side. It also names
-the dependency edge to remove and the manifest that holds it. `--help`
-explains every finding.
+`workspace-feature-union.workspace = true`. HOST-UNION is read from
+`cargo metadata` workspace edges. It fires on a normal or build edge from a
+host-side member to the union or to a covered member, and on any member's
+build edge to the union. It is not read from `cargo tree`:
+`cargo tree --workspace` prints each member reached on the host side as a
+second depth-0 root, textually identical to its target root, and dedupes
+`(*)` across roots, so a check derived from the tree depended on the sort
+order of member names. Task #9834 reproduced this with real cargo 1.96. A
+HOST-UNION line also names the dependency edge to remove and the manifest
+that holds it. `--help` explains every finding.
 
 ## Probe procedure
 
@@ -441,3 +447,10 @@ serde_derive started 63 s after its last dependency finished.
   Only `generate` sheds them, because it starts from an empty region. After
   removing a dependency or a feature, run `generate` and review the diff of
   the union manifest.
+- **HOST-UNION over-approximates.** Optional and platform-specific path
+  dependencies count even when inactive, so the rule fails loud, never silent.
+- **Host roots in the SPLIT comparison.** `parse_tree` still attributes every
+  depth-0 `--workspace` root to TARGET, so a host root's external variants are
+  filed under TARGET. That usually shows up as a spurious
+  `SPLIT ... no host variant`, and it could rarely mask a target split. Owned
+  by #9873.
