@@ -189,6 +189,18 @@ class Promotion(BuiltTreeHarness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.basecommit_of(self.live_gen()), c)
 
+    def test_a_target_with_no_sidecar_advances_with_a_warning(self):
+        b = self.commit_units("v2")
+
+        result = self.run_refresh(b)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.basecommit_of(self.live_gen()), b)
+        self.assertEqual(result.stdout, "")
+        warnings = [line for line in result.stderr.splitlines()
+                    if "[warn]" in line and SIDECAR in line]
+        self.assertNotEqual(warnings, [], result.stderr)
+
 
 class UnusableClaim(BuiltTreeHarness):
     def test_a_sidecar_naming_no_usable_tree_is_refused(self):
