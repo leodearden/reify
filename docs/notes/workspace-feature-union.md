@@ -2,7 +2,7 @@
 
 **Task #9761 | 2026-11-05.** Crate: `crates/workspace-feature-union`.
 Tool: `scripts/workspace-feature-union.py` (`check` / `generate`). Gate:
-`crates/reify-build-utils/tests/workspace_feature_union.rs`.
+`crates/reify-build-utils/tests/workspace_feature_union/`.
 
 ## Problem
 

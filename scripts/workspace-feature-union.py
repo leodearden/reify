@@ -66,7 +66,7 @@ crates/workspace-feature-union/Cargo.toml to a fixpoint and resolves with
 `--offline`, so the rewrite may update Cargo.lock; if an input fails part-way
 it puts both files back as it found them.
 
-The gate runs from crates/reify-build-utils/tests/workspace_feature_union.rs
+The gate runs from crates/reify-build-utils/tests/workspace_feature_union/
 (`cargo test -p reify-build-utils --test workspace_feature_union`). Design,
 limits and the probe procedure: docs/notes/workspace-feature-union.md.
 
