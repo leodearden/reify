@@ -145,6 +145,41 @@ fn fix_refuses_to_write_when_the_derived_imports_leave_a_diagnostic() {
 }
 
 #[test]
+fn fix_refusal_locates_the_residual_in_the_file() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", TYPE_PARAM_HIDES_COLOR);
+    let offset = TYPE_PARAM_HIDES_COLOR
+        .find("tint : Color")
+        .expect("fixture declares tint")
+        + "tint : ".len();
+    let before = &TYPE_PARAM_HIDES_COLOR[..offset];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let col = before[line_start..].chars().count() + 1;
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let located = format!("{file}:{line}:{col}: error: ");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let residuals: Vec<&str> = stderr
+        .lines()
+        .filter(|line| !line.contains("not writing"))
+        .collect();
+    let [residual] = residuals.as_slice() else {
+        panic!("expected exactly one residual line\n{}", describe(&output));
+    };
+    assert!(
+        residual.starts_with(&located) && residual.contains("Color"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixture"),
+        TYPE_PARAM_HIDES_COLOR
+    );
+}
+
+#[test]
 fn a_parse_error_fails_the_file_and_leaves_it_alone() {
     let dir = tempdir().expect("tempdir");
     let file = write_ri(dir.path(), "broken.ri", BROKEN);
@@ -243,4 +278,171 @@ fn an_entity_import_covers_only_the_name_it_imports() {
 
     let output = run_reify(&["check", &file]);
     assert!(output.status.success(), "{}", describe(&output));
+}
+
+#[cfg(unix)]
+fn entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("list dir")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_replaces_the_file_so_a_reader_that_opened_it_first_still_reads_the_original() {
+    use std::io::Read;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let mut early_reader = fs::File::open(&file).expect("open fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let mut seen_by_early_reader = String::new();
+    early_reader
+        .read_to_string(&mut seen_by_early_reader)
+        .expect("read through the early handle");
+    assert_eq!(seen_by_early_reader, PLATE, "{}", describe(&output));
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixed file"),
+        format!("{HEADER}{PLATE}")
+    );
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_keeps_the_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).expect("chmod fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let mode = fs::metadata(&file)
+        .expect("stat fixed file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o640, "mode {mode:o}");
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_leaves_a_read_only_file_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).expect("chmod fixture");
+    if fs::OpenOptions::new().write(true).open(&file).is_ok() {
+        eprintln!("skipped: file permissions do not bind for this user");
+        return;
+    }
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("Error writing {file}: ")),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_refuses_a_file_with_other_hard_links() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let other = dir.path().join("other.ri");
+    fs::hard_link(&file, &other).expect("hard-link fixture");
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("Error writing {file}: ")) && stderr.contains("hard links"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(
+        fs::metadata(&file).expect("stat fixture").ino(),
+        fs::metadata(&other).expect("stat other link").ino()
+    );
+    assert_eq!(entry_names(dir.path()), ["other.ri", "plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_replacement_that_cannot_be_made_leaves_the_file_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+    let set_dir_mode = |mode| {
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(mode)).expect("chmod dir")
+    };
+    set_dir_mode(0o555);
+    if fs::write(dir.path().join("probe"), "").is_ok() {
+        set_dir_mode(0o700);
+        eprintln!("skipped: directory permissions do not bind for this user");
+        return;
+    }
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    set_dir_mode(0o700);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("Error writing {file}: ")),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
+    assert_eq!(entry_names(dir.path()), ["plate.ri"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fix_through_a_symlink_rewrites_the_target_and_keeps_the_link() {
+    let dir = tempdir().expect("tempdir");
+    let real_dir = dir.path().join("real");
+    let link_dir = dir.path().join("link");
+    fs::create_dir(&real_dir).expect("mkdir real");
+    fs::create_dir(&link_dir).expect("mkdir link");
+    let target = write_ri(&real_dir, "plate.ri", PLATE);
+    let link = link_dir.join("plate.ri");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink fixture");
+    let link = link.to_str().expect("utf-8 temp path").to_string();
+
+    let output = run_reify(&["fix", "--imports", &link]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("lstat link")
+            .file_type()
+            .is_symlink(),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(&target).expect("read fixed target"),
+        format!("{HEADER}{PLATE}")
+    );
+    assert_eq!(entry_names(&real_dir), ["plate.ri"]);
+    assert_eq!(entry_names(&link_dir), ["plate.ri"]);
 }

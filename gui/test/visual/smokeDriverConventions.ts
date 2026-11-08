@@ -289,6 +289,7 @@ export const SMOKE_DRIVERS = [
   "smoke_diagnostics_e2e.mjs",
   "smoke_edges_toggle_e2e.mjs",
   "smoke_find_uses.mjs",
+  "smoke_launcher_e2e.mjs",
   "smoke_mesh_count_parity_e2e.mjs",
   "smoke_multi_pane_e2e.mjs",
   "smoke_rail_lengthening_e2e.mjs",

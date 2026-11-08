@@ -11,14 +11,13 @@ pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] 
 
 pub(crate) const TEST_USAGE: &str = "Usage: reify test <file>";
 
-pub(crate) const BUILD_USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
+pub(crate) const BUILD_USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose] [--cfg <key=value|flag>]...\n  \
     With -o:    write a single file in that format (imperative).\n  \
     Without -o: every `: Output` occurrence in the design drives its own file\n              \
     (declarative); each relative path resolves against the .ri file's\n              \
     directory, or against --out-dir when given.";
 
-pub(crate) const EVAL_USAGE: &str =
-    "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>";
+pub(crate) const EVAL_USAGE: &str = "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] [--cfg <key=value|flag>]... <file>";
 
 pub(crate) const REPORT_USAGE: &str = "Usage: reify report --bom <file>";
 
@@ -104,7 +103,9 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         summary: "Resolve `auto` parameters, build geometry and export it",
         details: Details::Text(
             "Flags:\n  \
-            --verbose  Print per-realization kernel provenance",
+            --verbose               Print per-realization kernel provenance\n  \
+            --cfg <key=value|flag>  Set a cfg key or flag (`target=<v>` overrides\n                          \
+            the host target); repeatable",
         ),
     },
     SubcommandHelp {
@@ -123,9 +124,11 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         summary: "Evaluate and print every top-level value cell",
         details: Details::Text(
             "Flags:\n  \
-            --explain-undef     Explain every undef cell, not only the printed ones\n  \
-            --verbose           Print a persistent-cache hit/miss summary\n  \
-            --cache-dir <path>  Use <path> as the persistent cache directory",
+            --explain-undef         Explain every undef cell, not only the printed ones\n  \
+            --verbose               Print a persistent-cache hit/miss summary\n  \
+            --cache-dir <path>      Use <path> as the persistent cache directory\n  \
+            --cfg <key=value|flag>  Set a cfg key or flag (`target=<v>` overrides\n                          \
+            the host target); repeatable",
         ),
     },
     SubcommandHelp {

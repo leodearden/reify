@@ -120,7 +120,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, `claude`, `viewports` per-viewport `meshCount`, `viewport.edges` the edges-in-black toggle) |
+| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, `claude`, `viewports` per-viewport `meshCount`, `viewport.edges` the edges-in-black toggle, `document` `{loaded, error, recent}` — `loaded` is true once the editor has an open file, `error` the Start view's `{code, message}` — and `mode` `{selected, debugPort, error}` the launch mode). `wait_for`'s store predicate addresses the same `document` and `mode` roots |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
 | `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
@@ -205,7 +205,7 @@ when omitted, the first populated viewport is targeted.
 | `load_fixture` | `{name}` | `{ok}` — loads a named fixture from debug_server.rs catalogue |
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
-| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection, resets the camera view, injected diagnostics and layout pane dimensions, and turns the edges-in-black toggle off (persisted) |
+| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection, resets the camera view, injected diagnostics and layout pane dimensions, turns the edges-in-black toggle off (persisted), and clears the Start view's document and mode errors (the Recent list and the mode stay) |
 | `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 

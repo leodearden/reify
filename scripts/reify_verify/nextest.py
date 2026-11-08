@@ -186,14 +186,17 @@ class ConfirmRecording:
 
 @dataclass(frozen=True)
 class TestRunner:
-    """What the role sets for every pass alike; config None means no nextest, so cargo test runs.
+    """What the role sets for every pass alike.
 
-    A recording run keeps going past a failure, so the manifest it records
+    nextest says whether cargo-nextest or the cargo-test fallback runs the
+    passes; config is the file every nextest pass names, None when no pass
+    will name one. A recording run keeps going past a failure, so the manifest it records
     lists every failing test, not only the first (bash's write gate).
     """
 
     prio: str
     test_threads: int | None
+    nextest: bool
     config: NextestConfig | None
     heavy_filter: str
     no_fail_fast: bool
@@ -202,20 +205,34 @@ class TestRunner:
     def __post_init__(self):
         if self.confirm is not None and not self.no_fail_fast:
             raise ValueError("TestRunner: a run that records a confirm manifest runs --no-fail-fast")
+        if not self.nextest and self.config is not None:
+            raise ValueError(
+                f"TestRunner: the cargo-test fallback names no nextest config (config={self.config!r})"
+            )
+        if not self.nextest and self.confirm is not None:
+            raise ValueError(
+                f"TestRunner: the cargo-test fallback records no confirm manifest (confirm={self.confirm!r})"
+            )
 
 
 def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
     """The one test pass `spec` describes, run as `runner` runs every pass.
 
-    A recording runner wraps a nextest pass of a recording kind in the confirm
-    recorder; the cargo-test fallback records nothing. The pass runs without
-    the semaphore slot's descriptor.
+    A nextest pass names the runner's config, so a nextest runner holding none
+    is refused. A recording runner wraps a nextest pass of a recording kind in
+    the confirm recorder; the cargo-test fallback records nothing. The pass
+    runs without the semaphore slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
-    if runner.config is None:
+    if not runner.nextest:
         run = CargoTestRun(
             spec.selector, release, spec.features, spec.wall, runner.prio, runner.test_threads or 1
+        )
+    elif runner.config is None:
+        raise ValueError(
+            "emit_pass: a nextest runner names its --config-file, and this one holds none "
+            f"(spec kind={spec.kind.value}, profile={spec.profile.value})"
         )
     else:
         flags = NextestFlags(
@@ -232,7 +249,7 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
     if spec.guard is not None:
         run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
-    phase = _phase(spec, nextest=runner.config is not None)
+    phase = _phase(spec, nextest=runner.nextest)
     return Step(StepKind.CARGO, phase, SlotFdClosed(run), gate_path, guard_file)
 
 

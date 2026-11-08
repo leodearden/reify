@@ -771,6 +771,38 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
+/// Create a new design at `path` (with `.ri` appended when its extension is not
+/// `ri`), holding [`crate::new_file_template::new_file_template`] for its stem,
+/// and read it back exactly as [`open_file_impl`] does, so the reply carries the
+/// canonical document key.
+///
+/// An existing file is refused, never overwritten: the native save dialog's
+/// overwrite prompt is the user's only other guard on an existing design.
+pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
+    use std::io::Write;
+
+    let target = if Path::new(path).extension().is_some_and(|ext| ext == "ri") {
+        path.to_string()
+    } else {
+        format!("{path}.ri")
+    };
+    let stem = Path::new(&target)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| format!("Error creating {target}: {e}"))?;
+    if let Err(e) = file.write_all(crate::new_file_template::new_file_template(&stem).as_bytes()) {
+        // The file is ours (create_new): remove the partial write so a retry is not refused.
+        let _ = std::fs::remove_file(&target);
+        return Err(format!("Error creating {target}: {e}"));
+    }
+    open_file_impl(&target)
+}
+
 /// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
 /// entries are still stem-only module keys rather than canonical absolute
 /// paths. The only way to get a plain [`GuiState`] back out is

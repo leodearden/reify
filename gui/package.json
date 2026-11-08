@@ -25,7 +25,9 @@
     "test:smoke:mesh-count-parity": "bash test/visual/run_mesh_count_parity_e2e_smoke.sh",
     "test:smoke:rail-lengthening": "bash test/visual/run_rail_lengthening_e2e_smoke.sh",
     "test:smoke:slider-write-back": "bash test/visual/run_slider_write_back_e2e_smoke.sh",
-    "test:smoke:edges-toggle": "bash test/visual/run_edges_toggle_e2e_smoke.sh"
+    "test:smoke:edges-toggle": "bash test/visual/run_edges_toggle_e2e_smoke.sh",
+    "test:smoke:launcher": "bash test/visual/run_launcher_e2e_smoke.sh",
+    "test:smoke:launcher-new-file": "bash test/visual/run_launcher_new_file_e2e_smoke.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",

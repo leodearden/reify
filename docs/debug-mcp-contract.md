@@ -176,18 +176,21 @@ Five tools carry the **reify-mcp tool identities**
 Claude sidecar reaches the reify-debug HTTP MCP server, not the reify-mcp
 registry.
 
-**The sidecar reaches this surface only in `REIFY_DEBUG=1` launches** (ruling
-esc-7049-7). `gui/src-tauri/src/main.rs` binds the reify-debug listener only
-under `REIFY_DEBUG=1` (`debug_server::bind_debug_listener`), and the host sets
-`REIFY_DEBUG_MCP_URL` for the sidecar only when that bind succeeded, removing
-any inherited value otherwise (`claude_bridge::compute_sidecar_env`). Only
+**The sidecar reaches this surface only when the host's own reify-debug server
+is live** (ruling esc-7049-7). The process has one debug server
+(`debug_server_slot::DebugServerSlot`), started at most once: by `REIFY_DEBUG=1`
+at launch, or by selecting Debug mode in the Start view (`set_mode("debug")`,
+task 9730). The host sets `REIFY_DEBUG_MCP_URL` for the sidecar only when that
+server is live at the sidecar's first spawn, removing any inherited value
+otherwise (`claude_bridge::compute_sidecar_env`); a sidecar spawned before Debug
+was selected keeps the environment it got. Only
 then does the sidecar register the `reify-debug` MCP entry, grant
 `mcp__reify-debug__*` and render the system prompt's reify-debug tool section
 (`gui/sidecar/src/tool-surface.ts`, `buildSystemPrompt`). It always passes `--strict-mcp-config`, so neither
 `~/.claude.json` nor a project `.mcp.json` can supply a reify-debug server of
-its own. A release launch (`scripts/run-gui.sh`, `reify gui`) neither
-advertises nor registers the surface, and neither does a `REIFY_DEBUG=1` launch
-whose bind failed, for instance because another GUI holds the port.
+its own. A release launch (`scripts/run-gui.sh`, `reify gui`) in which Debug
+mode is never selected neither advertises nor registers the surface, and neither
+does a launch whose bind failed, for instance because another GUI holds the port.
 
 | Tool | Writes disk? | Routes to |
 |------|--------------|-----------|

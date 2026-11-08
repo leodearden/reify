@@ -27,6 +27,7 @@ import { installConsoleErrorCapture, clearConsoleErrors } from '../debug/console
 import type { DebugStores } from '../debug/types';
 import { makeLayoutStore } from './debugBridgeTestHelpers';
 import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -80,6 +81,7 @@ function makeStores(): DebugStores {
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
     layout: makeLayoutStore(),
     viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 

@@ -4251,7 +4251,6 @@ name = "reify-ast"
 version = "0.1.0"
 dependencies = [
  "reify-core",
- "serde",
  "serde_json",
  "workspace-feature-union",
 ]

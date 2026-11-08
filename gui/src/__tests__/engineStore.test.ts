@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot, createComputed } from 'solid-js';
 import type {
-  GuiState,
   MeshData,
   ValueData,
   ConstraintData,
   EvaluationStatus,
   DisplayDirective,
   AppearanceDirective,
+  GuiState,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -24,7 +24,7 @@ import {
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleMesh, sampleValue, sampleConstraint } from './engineStoreFixtures';
+import { sampleMesh, sampleValue, sampleConstraint, makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -44,24 +44,16 @@ describe('engineStore', () => {
   it('initFromState populates meshes/values/constraints from GuiState', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [sampleMesh],
-        values: [sampleValue],
-        constraints: [sampleConstraint],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({
+        meshes: [sampleMesh()],
+        values: [sampleValue()],
+        constraints: [sampleConstraint()],
+      });
       initFromState(guiState);
 
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
-      expect(state.values['cell_001']).toEqual(sampleValue);
-      expect(state.constraints['constraint_001']).toEqual(sampleConstraint);
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
+      expect(state.values['cell_001']).toEqual(sampleValue());
+      expect(state.constraints['constraint_001']).toEqual(sampleConstraint());
       dispose();
     });
   });
@@ -74,19 +66,7 @@ describe('engineStore', () => {
 
       // (b) After initFromState with a non-empty display_panes, state.displayPanes matches
       const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [directive],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ display_panes: [directive] });
       initFromState(guiState);
       expect(state.displayPanes).toEqual([{ subject: 'S#realization[0]', pane: 1 }]);
       dispose();
@@ -105,37 +85,13 @@ describe('engineStore', () => {
         subject: 'S#realization[0]',
         style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [styleDirective],
-        fea_diagnostics: [],
-      };
+      const guiState = makeGuiState({ display_appearance: [styleDirective] });
       initFromState(guiState);
       expect((state as any).displayAppearance).toEqual([styleDirective]);
 
-      // (c) GuiState with display_appearance omitted yields []
-      const guiStateNoAppearance: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
-      initFromState(guiStateNoAppearance);
+      // (c) GuiState with display_appearance omitted (an older wire snapshot) yields []
+      const { display_appearance: _absent, ...olderSnapshot } = makeGuiState();
+      initFromState(olderSnapshot as GuiState);
       expect((state as any).displayAppearance).toEqual([]);
 
       dispose();
@@ -145,11 +101,11 @@ describe('engineStore', () => {
   it('applyMeshUpdate upserts a mesh by entity_path', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
+      applyMeshUpdate(sampleMesh());
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
 
       // Update existing
-      const updated = { ...sampleMesh, vertices: new Float32Array([9, 8, 7]) };
+      const updated = { ...sampleMesh(), vertices: new Float32Array([9, 8, 7]) };
       applyMeshUpdate(updated);
       expect(state.meshes['Bracket.body'].vertices).toEqual(new Float32Array([9, 8, 7]));
       dispose();
@@ -223,8 +179,8 @@ describe('engineStore', () => {
         kind: 'Param',
         freshness: 'final',
       };
-      applyValueUpdates([sampleValue, value2]);
-      expect(state.values['cell_001']).toEqual(sampleValue);
+      applyValueUpdates([sampleValue(), value2]);
+      expect(state.values['cell_001']).toEqual(sampleValue());
       expect(state.values['cell_002']).toEqual(value2);
       dispose();
     });
@@ -240,8 +196,8 @@ describe('engineStore', () => {
         label: 'too large',
         parameter_ids: ['cell_002'],
       };
-      applyConstraintUpdates([sampleConstraint, c2]);
-      expect(state.constraints['constraint_001']).toEqual(sampleConstraint);
+      applyConstraintUpdates([sampleConstraint(), c2]);
+      expect(state.constraints['constraint_001']).toEqual(sampleConstraint());
       expect(state.constraints['constraint_002']).toEqual(c2);
       dispose();
     });
@@ -360,7 +316,7 @@ describe('engineStore', () => {
   it('removeMesh deletes a mesh entry from state.meshes by entity_path', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       expect(state.meshes['Bracket.body']).toBeDefined();
 
       removeMesh('Bracket.body');
@@ -372,7 +328,7 @@ describe('engineStore', () => {
   it('removeValue deletes a value entry from state.values by cell_id', () => {
     createRoot((dispose) => {
       const { state, applyValueUpdates, removeValue } = createEngineStore();
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       expect(state.values['cell_001']).toBeDefined();
 
       removeValue('cell_001');
@@ -384,7 +340,7 @@ describe('engineStore', () => {
   it('removeConstraint deletes a constraint entry from state.constraints by node_id', () => {
     createRoot((dispose) => {
       const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       expect(state.constraints['constraint_001']).toBeDefined();
 
       removeConstraint('constraint_001');
@@ -474,7 +430,7 @@ describe('engineStore', () => {
   it('removeMesh leaves no phantom key in Object.keys(state.meshes)', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
 
       expect(Object.keys(state.meshes)).not.toContain('Bracket.body');
@@ -486,7 +442,7 @@ describe('engineStore', () => {
   it('removeValue leaves no phantom key in Object.keys(state.values)', () => {
     createRoot((dispose) => {
       const { state, applyValueUpdates, removeValue } = createEngineStore();
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       removeValue('cell_001');
 
       expect(Object.keys(state.values)).not.toContain('cell_001');
@@ -498,7 +454,7 @@ describe('engineStore', () => {
   it('removeConstraint leaves no phantom key in Object.keys(state.constraints)', () => {
     createRoot((dispose) => {
       const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       removeConstraint('constraint_001');
 
       expect(Object.keys(state.constraints)).not.toContain('constraint_001');
@@ -510,7 +466,7 @@ describe('engineStore', () => {
   it('Object.values after removeMesh contains no undefined entries', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
 
       const values = Object.values(state.meshes);
@@ -529,7 +485,7 @@ describe('engineStore', () => {
         indices: new Uint32Array([0, 1, 2]),
         normals: null,
       };
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       applyMeshUpdate(mesh2);
 
       removeMesh('Bracket.body');
@@ -550,7 +506,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyMeshUpdate, removeMesh } = createEngineStore({ onEntityRemoved: spy });
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
       expect(spy).toHaveBeenCalledWith('Bracket.body');
       dispose();
@@ -561,7 +517,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyValueUpdates, removeValue } = createEngineStore({ onEntityRemoved: spy });
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       removeValue('cell_001');
       expect(spy).toHaveBeenCalledWith('cell_001');
       dispose();
@@ -572,7 +528,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyConstraintUpdates, removeConstraint } = createEngineStore({ onEntityRemoved: spy });
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       removeConstraint('constraint_001');
       expect(spy).toHaveBeenCalledWith('constraint_001');
       dispose();
@@ -586,19 +542,11 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [sampleMesh],
-        values: [sampleValue],
-        constraints: [sampleConstraint],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({
+        meshes: [sampleMesh()],
+        values: [sampleValue()],
+        constraints: [sampleConstraint()],
+      });
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
       dispose();
@@ -609,19 +557,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState();
       initFromState(guiState);
       initFromState(guiState);
       initFromState(guiState);
@@ -633,22 +569,10 @@ describe('engineStore', () => {
   it('createEngineStore works without onEngineReinitialized (option is optional)', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [sampleMesh],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ meshes: [sampleMesh()] });
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
       dispose();
     });
   });
@@ -657,10 +581,6 @@ describe('engineStore', () => {
     await createRoot(async (dispose) => {
       const spy = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
       // Capture the removal callbacks when subscribeToEvents registers them
       let meshRemovedCb: ((entityPath: string) => void) | undefined;
       let valueRemovedCb: ((cellId: string) => void) | undefined;
@@ -702,19 +622,7 @@ describe('engineStore freshness pass-through', () => {
         kind: 'Let',
         freshness: 'failed',
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [failedValue],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ values: [failedValue] });
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
       dispose();

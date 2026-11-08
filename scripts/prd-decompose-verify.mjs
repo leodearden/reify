@@ -242,35 +242,39 @@ const VERDICT_SCHEMA = {
 // ---------------------------------------------------------------------------
 
 function normalizeLeaves(rawArgs, warn) {
-    return leavesFrom(rawArgs, destringifyArgs(rawArgs), warn);
+    return leavesFrom(destringifyArgs(rawArgs), warn);
 }
 
-// The one place a stringified args is parsed.  A string becomes its JSON value;
-// a non-JSON string stays itself, with parseError set; anything else passes
-// through.
-function destringifyArgs(rawArgs) {
-    if (typeof rawArgs !== "string") return { value: rawArgs, parseError: null };
-    try {
-        return { value: JSON.parse(rawArgs), parseError: null };
-    } catch (e) {
-        return { value: rawArgs, parseError: e };
+// The one place a stringified args is parsed, and the one place its record is
+// built: raw is the args as given; value is its JSON value (a non-JSON string
+// stays itself, with parseError set; a non-string passes through).
+function destringifyArgs(raw) {
+    let value = raw;
+    let parseError = null;
+    if (typeof raw === "string") {
+        try {
+            value = JSON.parse(raw);
+        } catch (e) {
+            parseError = e;
+        }
     }
+    return Object.freeze({ raw, value, parseError });
 }
 
-// rawArgs and its destringifyArgs result -> the leaf array.  A stringified leaf
-// array fans out; any other string is ONE mega-leaf, and says so.
-function leavesFrom(rawArgs, { value, parseError }, warn) {
+// A destringifyArgs record -> the leaf array.  A stringified leaf array fans
+// out; any other string is ONE mega-leaf, and says so.
+function leavesFrom({ raw, value, parseError }, warn) {
     if (Array.isArray(value)) return value;
     if (parseError !== null) {
         warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
             + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
             + "JSON.parse error: " + parseError.message);
-    } else if (typeof rawArgs === "string") {
+    } else if (typeof raw === "string") {
         warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
             + "non-array value; treating the whole string as ONE mega-leaf — "
             + "per-leaf fan-out is DEGRADED.");
     }
-    return rawArgs ? [rawArgs] : [];
+    return raw ? [raw] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +332,7 @@ function batchArgs(rawArgs, warn) {
     const destringified = destringifyArgs(rawArgs);
     const envelope = batchEnvelope(destringified.value);
     if (envelope === null) {
-        return { leaves: leavesFrom(rawArgs, destringified, warn), reifyBin: null };
+        return { leaves: leavesFrom(destringified, warn), reifyBin: null };
     }
     const refusal = envelopeRefusal(envelope);
     if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);

@@ -7,6 +7,8 @@ export { StatusBar } from './StatusBar';
 export { Toast } from './Toast';
 export { FileBrowser } from './FileBrowser';
 export { ExportDialog } from './ExportDialog';
+export { StartView } from './StartView';
+export type { StartViewProps } from './StartView';
 export { ReloadPrompt } from './ReloadPrompt';
 export { ChatPanel } from './ChatPanel';
 export { MenuBar } from './MenuBar';

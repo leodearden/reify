@@ -1,0 +1,6 @@
+module platform_linux
+
+pub structure def Housing {
+    param size : Length = 10mm
+    let body = box(size, size, size)
+}

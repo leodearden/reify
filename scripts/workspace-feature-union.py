@@ -25,22 +25,36 @@ proc-macro. The rule, checked without compiling anything:
     platform-specific path dependencies count even when inactive, so the
     rule errs loud;
   - for every covered member M, each external (name, version, side, features)
-    variant of `cargo tree -p M` also occurs in `cargo tree --workspace`.
+    variant that `-p M` compiles, read from `cargo tree -p M`, also occurs
+    among those `--workspace` compiles. A dependency listed under a
+    non-selected package's [dev-dependencies] is not compiled, and a member
+    printed twice as a root is placed by cargo tree's printing rules.
 
-Reading a failure:
+Reading the output:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
                                 under [dependencies] in the named manifest.
     HOST-UNION <m>: <path> ...  a normal or build dependency of <m> brings
                                 workspace-feature-union, or a covered member
                                 that must depend on it, onto the host side,
                                 as <path> shows; remove the dependency the
-                                line names from the named manifest.
+                                line names from the named manifest. While
+                                such a finding stands, check reports it
+                                without resolving cargo tree.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
                                 `python3 scripts/workspace-feature-union.py generate`,
                                 then regenerate crates/reify-eval/engine_hash_closure.txt
                                 with the command in its header.
+    MEMBER-SPLIT <name> v<ver> (<side>): -p resolves {..} under <m>, ...; --workspace resolves {..}
+                                advisory, never a finding and never fails:
+                                `-p <m>` builds workspace member <name> with
+                                features the base's `--workspace` build does
+                                not, so <name> and its dependents rebuild in a
+                                fresh lane. The union cannot pin a member.
+                                Decision, classes and limits:
+                                docs/notes/workspace-feature-union.md,
+                                "Member features".
 
 `check` is a lower bound: the union's own pins are part of `--workspace`, so a
 pin no member needs any more passes it. `generate` starts from an empty
@@ -58,7 +72,7 @@ limits and the probe procedure: docs/notes/workspace-feature-union.md.
 
 Exit codes: 0 every member resolves like the workspace; 1 a finding above;
 2 an input (cargo metadata, cargo tree, the union manifest) could not be
-trusted.
+trusted, including a cargo tree output whose sides cannot be read.
 """
 
 from __future__ import annotations
@@ -70,8 +84,8 @@ import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from pathlib import Path
 
@@ -79,6 +93,8 @@ UNION_CRATE = "workspace-feature-union"
 GENERATE_REMEDY = ("remedy: run `python3 scripts/workspace-feature-union.py generate`, "
                    "then regenerate crates/reify-eval/engine_hash_closure.txt with the "
                    "command in its header")
+HOST_UNION_TRAILER = ("note: SPLIT and MEMBER-SPLIT are not compared while a HOST-UNION "
+                      "finding stands: remove it, then run check again")
 
 
 class Verdict(IntEnum):
@@ -116,6 +132,9 @@ class VariantKey:
 class Variant:
     key: VariantKey
     features: frozenset[str]
+
+    def sort_key(self) -> tuple[tuple[str, str, str], list[str]]:
+        return (self.key.sort_key(), sorted(self.features))
 
 
 def variant(name: str, version: str, side: Side, features: frozenset[str]) -> Variant:
@@ -166,23 +185,70 @@ PACKAGE_HEAD = re.compile(
 
 
 @dataclass(frozen=True)
-class TreeNode:
-    """A package on the current ancestry path, with the section its children
-    are listed under."""
-    host: bool
-    section: Section = Section.NORMAL
-
-    def child_is_host(self) -> bool:
-        return self.host or self.section is Section.BUILD
-
-
-@dataclass(frozen=True)
 class TreePackage:
     name: str
     version: str
     proc_macro: bool
     path_source: bool
     features: frozenset[str]
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+@dataclass(frozen=True)
+class Tree:
+    """The variants a build of one `cargo tree` output's member roots
+    compiles: the registry packages the union can pin, and the workspace
+    members other than the union, which it cannot (a member pin would be a
+    dependency cycle)."""
+    variants: frozenset[Variant]
+    members: frozenset[Variant]
+
+
+@dataclass(frozen=True)
+class TreeLine:
+    """One package line. `node` is its `{p}|{f}` text without the `(*)`
+    suffix; with the line's side it names one node of cargo's graph, because
+    the tree is resolved for `--target <host>`. `section` is the section of
+    its parent it is listed under, NORMAL for a root."""
+    package: TreePackage
+    node: str
+    deduped: bool
+    parent: int | None
+    section: Section
+    where: str
+
+
+@dataclass(frozen=True)
+class Root:
+    """A depth-0 line and its block: its own line and every line below it,
+    with `text` the block character for character."""
+    index: int
+    end: int
+    text: str
+
+    @property
+    def lines(self) -> range:
+        return range(self.index, self.end)
+
+
+@dataclass(frozen=True)
+class Forest:
+    """A `cargo tree` output's package lines in print order, each linked to
+    its parent; `children[i]` lists line i's children in print order."""
+    lines: tuple[TreeLine, ...]
+    children: tuple[tuple[int, ...], ...]
+    roots: tuple[Root, ...]
+    source: str
+
+    def package(self, root: Root) -> TreePackage:
+        return self.lines[root.index].package
+
+
+RootSides = dict[int, Side]
+Node = tuple[str, Side]
 
 
 def split_prefix(line: str) -> tuple[int, str]:
@@ -209,40 +275,269 @@ def parse_package(body: str, where: str) -> TreePackage:
                        features=frozenset(f for f in features.split(",") if f))
 
 
-def parse_tree(text: str, source: str) -> frozenset[Variant]:
-    """Every registry package variant in `cargo tree -f '{p}|{f}' --charset
-    ascii` output, attributed to the side its ancestry puts it on."""
-    variants: set[Variant] = set()
-    stack: list[TreeNode] = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            stack = []
+def parse_forest(text: str, source: str) -> Forest:
+    """`cargo tree -f '{p}|{f}' --charset ascii` output as linked lines."""
+    lines: list[TreeLine] = []
+    children: list[list[int]] = []
+    blocks: list[tuple[int, list[str]]] = []
+    path: list[tuple[int, Section]] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            path = []
             continue
-        where = f"{source} line {number}: {line!r}"
-        depth, body = split_prefix(line)
+        where = f"{source} line {number}: {raw!r}"
+        depth, body = split_prefix(raw)
         if body.startswith("["):
             section = SECTION_HEADERS.get(body)
             if section is None:
                 raise InputError(f"{where}: unknown section header")
-            if depth >= len(stack):
+            if depth >= len(path):
                 raise InputError(f"{where}: section header with no package at its depth")
-            del stack[depth + 1:]
-            stack[depth] = replace(stack[depth], section=section)
+            del path[depth + 1:]
+            path[depth] = (path[depth][0], section)
+            blocks[-1][1].append(raw)
             continue
-        if depth > len(stack):
+        if depth > len(path):
             raise InputError(f"{where}: deeper than its parent")
         package = parse_package(body, where)
-        host = package.proc_macro or (depth > 0 and stack[depth - 1].child_is_host())
-        del stack[depth:]
-        stack.append(TreeNode(host=host))
+        del path[depth:]
+        parent, section = path[-1] if path else (None, Section.NORMAL)
+        index = len(lines)
+        lines.append(TreeLine(package=package, node=body.removesuffix(DEDUPED_SUFFIX),
+                              deduped=body.endswith(DEDUPED_SUFFIX), parent=parent,
+                              section=section, where=where))
+        children.append([])
+        if parent is None:
+            blocks.append((index, []))
+        else:
+            children[parent].append(index)
+        blocks[-1][1].append(raw)
+        path.append((index, Section.NORMAL))
+    ends = [start for start, _ in blocks[1:]] + [len(lines)]
+    roots = tuple(Root(index=start, end=end, text="\n".join(block))
+                  for (start, block), end in zip(blocks, ends))
+    return Forest(lines=tuple(lines), children=tuple(tuple(c) for c in children),
+                  roots=roots, source=source)
+
+
+def block_sides(forest: Forest, root: Root, side: Side) -> dict[int, Side]:
+    """The side of each line of `root`'s block, in print order, with the root
+    on `side`: a proc-macro is HOST, and so is everything listed under a
+    `[build-dependencies]` header or below a HOST line."""
+    sides: dict[int, Side] = {}
+    for index in root.lines:
+        line = forest.lines[index]
+        if line.package.proc_macro or line.section is Section.BUILD:
+            sides[index] = Side.HOST
+        elif line.parent is None:
+            sides[index] = side
+        else:
+            sides[index] = sides[line.parent]
+    return sides
+
+
+def sides_under(forest: Forest, root_sides: RootSides) -> tuple[Side, ...]:
+    sides: dict[int, Side] = {}
+    for root in forest.roots:
+        sides.update(block_sides(forest, root, root_sides[root.index]))
+    return tuple(sides[index] for index in range(len(forest.lines)))
+
+
+@dataclass
+class PrintState:
+    """What the lines admitted so far fix under one side assignment, checked
+    against two properties of cargo tree's printer and resolver 2. R1: a
+    node's first line lists its dependencies, and every later line is `(*)`
+    and lists none, except that a node without dependencies never gets
+    `(*)`. R2: one feature set per package and side."""
+    listed: dict[Node, bool] = field(default_factory=dict)
+    features: dict[VariantKey, frozenset[str]] = field(default_factory=dict)
+
+    def copy(self) -> PrintState:
+        return PrintState(listed=dict(self.listed), features=dict(self.features))
+
+    def admit(self, line: TreeLine, side: Side, lists_dependencies: bool) -> str | None:
+        """Records `line` on `side`, or names the rule it breaks."""
+        node = (line.node, side)
+        if node not in self.listed:
+            if line.deduped:
+                return f"`{DEDUPED_SUFFIX}` before any line lists this package's dependencies"
+            self.listed[node] = lists_dependencies
+        elif lists_dependencies:
+            return "a later line of this package lists dependencies; only its first line does"
+        elif line.deduped != self.listed[node]:
+            return (f"`{DEDUPED_SUFFIX}` on a package whose first line lists no dependencies"
+                    if line.deduped else
+                    f"no `{DEDUPED_SUFFIX}` on a later line of a package whose first line "
+                    f"lists its dependencies")
+        key = VariantKey(line.package.name, line.package.version, side)
+        known = self.features.setdefault(key, line.package.features)
+        if known != line.package.features:
+            return (f"{line.package.label} already has features {braces(known)} on the "
+                    f"{side.value} side")
+        return None
+
+
+def admit_block(forest: Forest, root: Root, side: Side, state: PrintState) -> str | None:
+    """Admits `root`'s block with the root on `side`, or says where and why it
+    breaks a printing rule."""
+    for index, line_side in block_sides(forest, root, side).items():
+        line = forest.lines[index]
+        reason = state.admit(line, line_side, bool(forest.children[index]))
+        if reason is not None:
+            return f"{line.where}: {reason}"
+    return None
+
+
+def root_copies(forest: Forest) -> dict[str, tuple[Root, ...]]:
+    """Each package printed as a root, with its roots in print order: one, or
+    for a member reached on the host side, its target and its host copy."""
+    grouped: dict[str, list[Root]] = {}
+    for root in forest.roots:
+        grouped.setdefault(forest.package(root).label, []).append(root)
+    for label, roots in grouped.items():
+        if forest.package(roots[0]).proc_macro and len(roots) > 1:
+            raise InputError(f"{forest.source}: prints {len(roots)} roots of proc-macro "
+                             f"{label}; cargo prints one, its host copy")
+        if len(roots) > 2:
+            raise InputError(f"{forest.source}: prints {len(roots)} roots of {label}; cargo "
+                             f"prints at most two, its target and its host copy")
+    return {label: tuple(roots) for label, roots in grouped.items()}
+
+
+OPPOSITE = {Side.TARGET: Side.HOST, Side.HOST: Side.TARGET}
+
+
+def sides_to_try(forest: Forest, root: Root, copies: tuple[Root, ...],
+                 root_sides: RootSides) -> tuple[Side, ...]:
+    """A root printed once is TARGET, or HOST for a proc-macro. A pair's first
+    root is tried on both sides, and its second root takes the other side."""
+    if len(copies) == 1:
+        return (Side.HOST,) if forest.package(root).proc_macro else (Side.TARGET,)
+    first, second = copies
+    if root == second:
+        return (OPPOSITE[root_sides[first.index]],)
+    return (Side.TARGET, Side.HOST)
+
+
+def collapse_identical_swaps(root: Root, copies: tuple[Root, ...],
+                             surviving: list[tuple[RootSides, PrintState]]
+                             ) -> list[tuple[RootSides, PrintState]]:
+    """Keeps the first of the assignments that differ only in which copy of a
+    character-identical pair is the host one: once the pair's second root is
+    admitted, they have admitted the same (line text, side) pairs, so they
+    hold the same PrintState and compile the same Tree."""
+    if len(copies) != 2 or root != copies[1] or copies[0].text != copies[1].text:
+        return surviving
+    pair = {copy.index for copy in copies}
+    kept: dict[frozenset[tuple[int, Side]], tuple[RootSides, PrintState]] = {}
+    for assignment in surviving:
+        root_sides, _ = assignment
+        kept.setdefault(frozenset((index, side) for index, side in root_sides.items()
+                                  if index not in pair), assignment)
+    return list(kept.values())
+
+
+MAX_OPEN_ASSIGNMENTS = 2 ** 6
+
+
+def undecided_pairs(forest: Forest, open_assignments: Sequence[RootSides]) -> list[str]:
+    """The packages printed twice whose first root has more than one side
+    across `open_assignments`."""
+    return list(dict.fromkeys(
+        forest.lines[index].package.label for index in open_assignments[0]
+        if len({sides[index] for sides in open_assignments}) > 1))
+
+
+def side_assignments(forest: Forest) -> list[RootSides]:
+    """Every side assignment of the roots, up to swapping a character-identical
+    pair, under which each line, in print order, obeys cargo tree's printing
+    rules (PrintState). Each pair that no line has decided yet doubles the
+    open assignments, so more than MAX_OPEN_ASSIGNMENTS is an input error."""
+    copies = root_copies(forest)
+    open_assignments: list[tuple[RootSides, PrintState]] = [({}, PrintState())]
+    last_break = ""
+    for root in forest.roots:
+        surviving = []
+        for root_sides, state in open_assignments:
+            sides = sides_to_try(forest, root, copies[forest.package(root).label], root_sides)
+            for side in sides:
+                branch = state.copy() if len(sides) > 1 else state
+                broken = admit_block(forest, root, side, branch)
+                if broken is None:
+                    surviving.append(({**root_sides, root.index: side}, branch))
+                else:
+                    last_break = broken
+        if not surviving:
+            pairs = [label for label, roots in copies.items() if len(roots) == 2]
+            if not pairs:
+                raise InputError(last_break)
+            raise InputError(f"{forest.source}: no side assignment of the roots printed twice "
+                             f"({', '.join(pairs)}) obeys cargo tree's printing rules; the "
+                             f"last one tried breaks at {last_break}")
+        open_assignments = collapse_identical_swaps(root, copies[forest.package(root).label],
+                                                    surviving)
+        if len(open_assignments) > MAX_OPEN_ASSIGNMENTS:
+            undecided = undecided_pairs(forest, [sides for sides, _ in open_assignments])
+            raise InputError(
+                f"{forest.lines[root.index].where}: {len(open_assignments)} side assignments "
+                f"of the roots printed twice obey cargo tree's printing rules up to this "
+                f"root, more than the {MAX_OPEN_ASSIGNMENTS} the check tries, because no "
+                f"line so far decides which root of {', '.join(undecided)} is its host copy")
+    return [root_sides for root_sides, _ in open_assignments]
+
+
+def compiled(forest: Forest, sides: Sequence[Side]) -> Tree:
+    """The variants a build of the forest's member roots compiles: every
+    root but the host copy of a member printed twice, so each TARGET root and
+    a proc-macro's one root, which is HOST. That is each such root's own
+    dev-dependencies, plus everything normal and build edges reach. A node's
+    dependencies are the children of its first line, which a `(*)` line
+    stands for; a dev section below any other node lists dependencies the
+    build never compiles."""
+    first: dict[Node, int] = {}
+    for index, line in enumerate(forest.lines):
+        first.setdefault((line.node, sides[index]), index)
+    starts = {(forest.lines[root.index].node, sides[root.index]) for root in forest.roots
+              if sides[root.index] is Side.TARGET or forest.package(root).proc_macro}
+    reached = set(starts)
+    pending = list(starts)
+    variants: set[Variant] = set()
+    members: set[Variant] = set()
+    while pending:
+        node = pending.pop()
+        index = first[node]
+        package = forest.lines[index].package
+        found = variant(package.name, package.version, node[1], package.features)
         if not package.path_source:
-            side = Side.HOST if host else Side.TARGET
-            variants.add(variant(package.name, package.version, side, package.features))
-    return frozenset(variants)
+            variants.add(found)
+        elif package.name != UNION_CRATE:
+            members.add(found)
+        for child in forest.children[index]:
+            if forest.lines[child].section is Section.DEV and node not in starts:
+                continue
+            dependency = (forest.lines[child].node, sides[child])
+            if dependency not in reached:
+                reached.add(dependency)
+                pending.append(dependency)
+    return Tree(variants=frozenset(variants), members=frozenset(members))
 
 
-def resolve(root: Path, mode: LockMode, host: str,
-            selection: Sequence[str]) -> frozenset[Variant]:
+def parse_tree(text: str, source: str) -> Tree:
+    """What a build of `cargo tree -f '{p}|{f}' --charset ascii` output's
+    member roots compiles, each variant on the side cargo resolves it for."""
+    forest = parse_forest(text, source)
+    assignments = side_assignments(forest)
+    trees = {compiled(forest, sides_under(forest, a)) for a in assignments}
+    if len(trees) == 1:
+        return trees.pop()
+    undecided = undecided_pairs(forest, assignments)
+    raise InputError(f"{source}: cannot tell which root of {', '.join(undecided)} is its host "
+                     f"copy: {len(assignments)} side assignments obey cargo tree's printing "
+                     f"rules and resolve different packages")
+
+
+def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> Tree:
     args = ["tree", mode.value, *selection, "-e", "normal,build,dev", "-f", "{p}|{f}",
             "--charset", "ascii", "--target", host]
     return parse_tree(cargo(root, args), f"`cargo tree {' '.join(selection)}`")
@@ -400,6 +695,12 @@ def host_union_findings(ws: Workspace) -> list[str]:
     return found
 
 
+def resolved_by_workspace(side: Side, workspace_features: tuple[frozenset[str], ...]) -> str:
+    if workspace_features:
+        return " and ".join(braces(f) for f in workspace_features)
+    return f"no {side.value} variant"
+
+
 @dataclass(frozen=True)
 class Split:
     member: str
@@ -408,12 +709,25 @@ class Split:
 
     def __str__(self) -> str:
         key = self.variant.key
-        if self.workspace_features:
-            there = " and ".join(braces(f) for f in self.workspace_features)
-        else:
-            there = f"no {key.side.value} variant"
+        there = resolved_by_workspace(key.side, self.workspace_features)
         return (f"SPLIT {self.member} {key.name} v{key.version} ({key.side.value}): "
                 f"-p resolves {braces(self.variant.features)}; --workspace resolves {there}")
+
+
+@dataclass(frozen=True)
+class MemberSplit:
+    """Advisory, never a finding: a workspace-member variant that the `-p`
+    builds of `selections` resolve and `--workspace` never builds."""
+    variant: Variant
+    selections: tuple[str, ...]
+    workspace_features: tuple[frozenset[str], ...]
+
+    def __str__(self) -> str:
+        key = self.variant.key
+        there = resolved_by_workspace(key.side, self.workspace_features)
+        return (f"MEMBER-SPLIT {key.name} v{key.version} ({key.side.value}): -p resolves "
+                f"{braces(self.variant.features)} under {', '.join(self.selections)}; "
+                f"--workspace resolves {there}")
 
 
 def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[frozenset[str], ...]]:
@@ -423,22 +737,38 @@ def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[froz
     return {key: tuple(sorted(sets, key=sorted)) for key, sets in grouped.items()}
 
 
+def member_splits(workspace: frozenset[Variant],
+                  selected: Mapping[str, frozenset[Variant]]) -> tuple[MemberSplit, ...]:
+    """One advisory per member variant that some selection resolves and the
+    workspace never builds, naming every selection that resolves it."""
+    in_workspace = features_by_key(workspace)
+    resolving: dict[Variant, list[str]] = {}
+    for selection, members in selected.items():
+        for v in members - workspace:
+            resolving.setdefault(v, []).append(selection)
+    return tuple(MemberSplit(v, tuple(sorted(resolving[v])), in_workspace.get(v.key, ()))
+                 for v in sorted(resolving, key=Variant.sort_key))
+
+
 @dataclass(frozen=True)
 class Resolution:
     workspace: frozenset[Variant]
     splits: tuple[Split, ...]
+    member_splits: tuple[MemberSplit, ...]
 
 
 def resolve_splits(root: Path, mode: LockMode, host: str, ws: Workspace) -> Resolution:
     workspace = resolve(root, mode, host, ["--workspace"])
-    in_workspace = features_by_key(workspace)
+    in_workspace = features_by_key(workspace.variants)
     found = []
+    selected_members: dict[str, frozenset[Variant]] = {}
     for member in ws.covered:
         selected = resolve(root, mode, host, ["-p", member.name])
-        for v in sorted(selected - workspace,
-                        key=lambda v: (v.key.sort_key(), sorted(v.features))):
+        selected_members[member.name] = selected.members
+        for v in sorted(selected.variants - workspace.variants, key=Variant.sort_key):
             found.append(Split(member.name, v, in_workspace.get(v.key, ())))
-    return Resolution(workspace=workspace, splits=tuple(found))
+    return Resolution(workspace=workspace.variants, splits=tuple(found),
+                      member_splits=member_splits(workspace.members, selected_members))
 
 
 # --- the union manifest -----------------------------------------------------
@@ -551,13 +881,21 @@ def fail(lines: Sequence[str], *trailer: str) -> Verdict:
 
 def run_check(root: Path) -> Verdict:
     ws = read_workspace(root, LockMode.FROZEN)
+    coverage = coverage_findings(ws)
+    host_union = host_union_findings(ws)
+    if host_union:
+        return fail([*coverage, *host_union], HOST_UNION_TRAILER)
     resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
+    advisories = resolution.member_splits
+    for advisory in advisories:
+        print(advisory)
     found = resolution.splits
-    lines = [*coverage_findings(ws), *host_union_findings(ws), *map(str, found)]
+    lines = [*coverage, *map(str, found)]
     if lines:
         return fail(lines, *([GENERATE_REMEDY] if found else []))
+    advised = f"; {len(advisories)} advisory MEMBER-SPLIT lines above" if advisories else ""
     print(f"workspace-feature-union: OK ({len(ws.covered)} members resolve every external "
-          f"package like --workspace)")
+          f"package like --workspace{advised})")
     return Verdict.OK
 
 
