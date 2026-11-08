@@ -46,6 +46,11 @@ impl ImportPlan {
 
     /// The required imports `parsed` does not yet satisfy, each narrowed to
     /// the names its declared imports leave uncovered.
+    ///
+    /// # Panics
+    ///
+    /// If `parsed` declares an import whose path is not a module path, which
+    /// only a module with parse errors can.
     pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<RequiredImport> {
         let coverage = coverage::ImportCoverage::of(parsed);
         self.required
@@ -97,6 +102,11 @@ pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -
 }
 
 /// The module path of every `import` `parsed` declares, in any form.
+///
+/// # Panics
+///
+/// If `parsed` declares an import whose path is not a module path, which
+/// only a module with parse errors can.
 pub fn declared_imports(parsed: &ParsedModule) -> Vec<ModulePath> {
     coverage::imports(parsed)
         .map(|(module, _)| module)
@@ -162,6 +172,11 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// import of the module does not count), in the order given: after the last
 /// import, else after the `module` declaration, else after the leading module
 /// pragmas, else after the leading comment block's last blank line.
+///
+/// # Panics
+///
+/// If `parsed` declares an import whose path is not a module path, which
+/// only a module with parse errors can.
 pub fn insert_imports(source: &str, parsed: &ParsedModule, modules: &[ModulePath]) -> String {
     header_edit::insert_imports(source, parsed, modules)
 }

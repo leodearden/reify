@@ -38,6 +38,8 @@ enum Binding<'p> {
     Names(Vec<&'p str>),
 }
 
+/// The same namespace/entity split as reify-syntax's
+/// `collect_import_bindings` (`ts_parser.rs`); change the two together.
 fn binding(kind: &ImportKind) -> Binding<'_> {
     match kind {
         ImportKind::Module | ImportKind::Aliased { .. } => Binding::WholeSurface,

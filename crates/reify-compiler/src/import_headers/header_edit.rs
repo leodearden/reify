@@ -13,10 +13,8 @@ use super::coverage::ImportCoverage;
 /// part of a module's leading pragma header.
 const CFG_PRAGMA: &str = "cfg";
 
-/// `source` with an `import` line for every module of `modules` it does not
-/// already import whole, through a namespace import, in the order given; an
-/// entity import of the module does not count. See [`header_anchor`] for
-/// where they go.
+/// [`super::insert_imports`], which states the contract; [`header_anchor`]
+/// decides where the new lines go.
 pub(crate) fn insert_imports(
     source: &str,
     parsed: &ParsedModule,
