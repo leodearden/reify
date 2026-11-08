@@ -121,6 +121,9 @@ export const StartView: Component<StartViewProps> = (props) => {
           <p class={styles.note} data-testid="start-assistant-note">
             The assistant needs a Claude Code login on this machine.
           </p>
+          <p class={styles.note} data-testid="start-debug-note">
+            Debug opens a local control port (127.0.0.1) that tools on this machine can drive.
+          </p>
           <Show when={state().mode.debugPort}>
             {(port) => (
               <p class={styles.note} data-testid="start-debug-port">
