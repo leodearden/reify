@@ -28,8 +28,7 @@
 //! - Row 1's `DiagnosticCode` clause —
 //!   `harness_geometry/primitive_profile_length_units_e2e.rs::bare_box_dimensions_drop_the_op_with_a_coded_error`,
 //!   because the code is not observable here: `reify eval` has no structured-diagnostics
-//!   flag (`Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>`)
-//!   and its renderer prints no code prefix for these errors.
+//!   flag (see `reify eval --help`) and its renderer prints no code prefix for these errors.
 
 use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;
