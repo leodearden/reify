@@ -1,40 +1,14 @@
-//! Invariant: every unit `-p <covered member>` compiles under a key that
-//! `--workspace` also compiles carries one of that key's `--workspace` profiles.
+//! The PROFILE-SPLIT fixtures: `check` reports every unit `-p <covered member>`
+//! compiles under a key `--workspace` also compiles, at a profile `--workspace`
+//! never compiles that key to. The real workspace is held by
+//! `real_workspace_resolves_every_member_like_the_workspace` in main.rs.
 
 use std::path::Path;
 
 use crate::harness::{
     Fixture, TREE_A, TREE_UNION, assert_findings, assert_green, assert_input_error, covered_a,
-    describe, finding_lines, real_check, stdout_of, workspace_of,
+    describe, stdout_of, workspace_of,
 };
-
-#[test]
-fn real_workspace_compiles_every_unit_to_the_workspace_profile() {
-    let out = real_check();
-    let stdout = stdout_of(out);
-    assert!(
-        matches!(out.status.code(), Some(0 | 1))
-            && !finding_lines(&stdout)
-                .iter()
-                .any(|line| line.starts_with("HOST-UNION ")),
-        "check must compare the unit graphs for a missing PROFILE-SPLIT line to mean \
-         anything, and a HOST-UNION finding stops it before it compares\n{}",
-        describe(out)
-    );
-    let offending: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("PROFILE-SPLIT "))
-        .collect();
-    assert!(
-        offending.is_empty(),
-        "a -p selection compiles a unit to a profile --workspace never compiles it to, so it \
-         rebuilds in a fresh lane; set the profile field explicitly, as \
-         `[profile.dev.build-override]` in the workspace Cargo.toml does — see \
-         docs/notes/workspace-feature-union.md, \"Host profiles\"\n{}\n{}",
-        offending.join("\n"),
-        describe(out)
-    );
-}
 
 const B_PKG_ID: &str = "path+file:///fixture/crates/b#0.1.0";
 
@@ -74,7 +48,12 @@ fn check_reds_on_a_profile_split_naming_the_unit_and_both_profiles() {
         .check();
     assert_findings(
         &out,
-        &[&["PROFILE-SPLIT a", B_PKG_ID, "debuginfo", "0", "2"]],
+        &[&[
+            "PROFILE-SPLIT a",
+            B_PKG_ID,
+            "-p compiles {debuginfo: 0}",
+            "--workspace compiles {debuginfo: 2}",
+        ]],
         "-p a compiles b at debuginfo 0, --workspace at 2",
     );
     assert!(
@@ -94,6 +73,47 @@ fn check_reports_an_unreadable_unit_graph_as_an_input_error() {
         &["--unit-graph", "version"],
         "a unit graph of an unknown format version",
     );
+}
+
+#[test]
+fn check_reports_a_malformed_unit_graph_as_an_input_error_naming_the_fault() {
+    let unit =
+        format!(r#""pkg_id": "{B_PKG_ID}", "platform": null, "mode": "build", "features": []"#);
+    let target = r#""target": {"kind": ["lib"], "name": "b"}"#;
+    let profile = r#""profile": {"debuginfo": 0}"#;
+    let cases = [
+        (
+            "output that is not JSON",
+            "error: unknown flag --unit-graph".to_string(),
+            "is not JSON",
+        ),
+        (
+            "units that are not a list",
+            r#"{"version": 1, "units": {}, "roots": []}"#.to_string(),
+            "`units` is not a list",
+        ),
+        (
+            "a unit without a profile",
+            graph_of(&[format!("{{{unit}, {target}}}")]),
+            "unit 0 has no field 'profile'",
+        ),
+        (
+            "a profile that is not an object",
+            graph_of(&[format!(r#"{{{unit}, {target}, "profile": "dev"}}"#)]),
+            "unit 0: profile is not an object",
+        ),
+        (
+            "a target.kind that is a string",
+            graph_of(&[format!(
+                r#"{{{unit}, "target": {{"kind": "lib", "name": "b"}}, {profile}}}"#
+            )]),
+            "unit 0: target.kind is not a list of strings",
+        ),
+    ];
+    for (context, graph, needle) in cases {
+        let out = feature_clean_fixture().unit_graph("a", &graph).check();
+        assert_input_error(&out, &["--unit-graph -p a", needle], context);
+    }
 }
 
 #[test]

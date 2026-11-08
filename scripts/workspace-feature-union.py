@@ -701,7 +701,8 @@ class Profile:
                                for name in sorted(names)) + "}"
 
 
-UnitGraph = Mapping[UnitKey, frozenset[Profile]]
+UnitProfiles = Mapping[UnitKey, frozenset[Profile]]
+"""The profiles a unit graph compiles each unit key to; its edges are dropped."""
 
 
 def strings(value: object, what: str) -> tuple[str, ...]:
@@ -716,23 +717,28 @@ def string(value: object, what: str) -> str:
     return value
 
 
+def json_object(value: object, what: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{what} is not an object")
+    return value
+
+
 def unit_of(unit: object) -> tuple[UnitKey, Profile]:
-    if not isinstance(unit, dict) or not isinstance(unit.get("target"), dict) \
-            or not isinstance(unit.get("profile"), dict):
-        raise TypeError("a unit, its target and its profile must be objects")
-    platform = unit["platform"]
+    fields = json_object(unit, "the unit")
+    target = json_object(fields["target"], "target")
+    platform = fields["platform"]
     if platform is not None:
         platform = string(platform, "platform")
-    key = UnitKey(pkg_id=string(unit["pkg_id"], "pkg_id"),
-                  target=string(unit["target"]["name"], "target.name"),
-                  kinds=strings(unit["target"]["kind"], "target.kind"),
-                  mode=string(unit["mode"], "mode"),
-                  features=frozenset(strings(unit["features"], "features")),
+    key = UnitKey(pkg_id=string(fields["pkg_id"], "pkg_id"),
+                  target=string(target["name"], "target.name"),
+                  kinds=strings(target["kind"], "target.kind"),
+                  mode=string(fields["mode"], "mode"),
+                  features=frozenset(strings(fields["features"], "features")),
                   platform=platform)
-    return key, Profile.of(unit["profile"])
+    return key, Profile.of(json_object(fields["profile"], "profile"))
 
 
-def parse_unit_graph(text: str, source: str) -> UnitGraph:
+def parse_unit_profiles(text: str, source: str) -> UnitProfiles:
     try:
         graph = json.loads(text)
     except json.JSONDecodeError as error:
@@ -756,16 +762,16 @@ def parse_unit_graph(text: str, source: str) -> UnitGraph:
     return {key: frozenset(found) for key, found in profiles.items()}
 
 
-def unit_graph(root: Path, selection: Sequence[str], scratch: Path) -> UnitGraph:
-    """The units `cargo test <selection>` would compile, resolved without
-    compiling: RUSTC_BOOTSTRAP unlocks `--unit-graph` for this one
-    subprocess, and the scratch target dir keeps it off the checkout's
-    target/ and its build lock. No `--target`, like verify's builds, so host
+def unit_profiles(root: Path, selection: Sequence[str], scratch: Path) -> UnitProfiles:
+    """The profiles of the units `cargo test <selection>` would compile, read
+    from its unit graph without compiling: RUSTC_BOOTSTRAP unlocks
+    `--unit-graph` for this one subprocess, and the scratch target dir keeps
+    it off the checkout's target/ and its build lock. No `--target`, like verify's builds, so host
     and runtime units are shared exactly as they are there."""
     args = ["test", LockMode.FROZEN.value, *selection, "--no-run", "--unit-graph",
             "-Z", "unstable-options"]
     env = {"RUSTC_BOOTSTRAP": "1", "CARGO_TARGET_DIR": str(scratch)}
-    return parse_unit_graph(cargo(root, args, env),
+    return parse_unit_profiles(cargo(root, args, env),
                             f"`cargo test --unit-graph {' '.join(selection)}`")
 
 
@@ -932,9 +938,9 @@ def profile_splits(root: Path, ws: Workspace) -> tuple[ProfileSplit, ...]:
     differs in features, which SPLIT and MEMBER-SPLIT cover, so it is skipped."""
     found = []
     with tempfile.TemporaryDirectory(prefix="workspace-feature-union-") as scratch:
-        workspace = unit_graph(root, ["--workspace"], Path(scratch))
+        workspace = unit_profiles(root, ["--workspace"], Path(scratch))
         for member in ws.covered:
-            selected = unit_graph(root, ["-p", member.name], Path(scratch))
+            selected = unit_profiles(root, ["-p", member.name], Path(scratch))
             for key in sorted(selected.keys() & workspace.keys(), key=UnitKey.sort_key):
                 there = tuple(sorted(workspace[key]))
                 found.extend(ProfileSplit(member.name, key, profile, there)

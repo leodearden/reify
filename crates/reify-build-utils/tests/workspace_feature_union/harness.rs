@@ -135,9 +135,10 @@ pub(crate) fn assert_input_error(out: &Output, needles: &[&str], context: &str) 
 }
 
 /// One `check` of the real workspace (about 38 `cargo tree` runs and as many
-/// `cargo test --unit-graph` resolutions), shared by every real-workspace
-/// test and resolved with the inherited environment so the verify env's
-/// CARGO and CARGO_HOME reach cargo.
+/// `cargo test --unit-graph` resolutions), resolved with the inherited
+/// environment so the verify env's CARGO and CARGO_HOME reach cargo. It is
+/// shared only within one test process: cargo-nextest runs each test in a
+/// process of its own, so there every real-workspace test runs its own check.
 pub(crate) fn real_check() -> &'static Output {
     static CHECK: OnceLock<Output> = OnceLock::new();
     CHECK.get_or_init(|| run_script("check", None, None, &[]))

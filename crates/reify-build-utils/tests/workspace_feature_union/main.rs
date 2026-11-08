@@ -3,7 +3,8 @@
 //! depends on the `workspace-feature-union` crate. Gate and remedy:
 //! `scripts/workspace-feature-union.py`; design: docs/notes/workspace-feature-union.md.
 //! Layout: harness.rs holds the shared stub cargo, fixtures and assertions;
-//! generate.rs holds the `generate` fixtures.
+//! generate.rs holds the `generate` fixtures; profile_split.rs holds the
+//! PROFILE-SPLIT fixtures.
 
 use std::path::Path;
 use std::process::Command;
