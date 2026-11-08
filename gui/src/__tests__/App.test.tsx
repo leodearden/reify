@@ -703,9 +703,10 @@ describe('App dynamic window title', () => {
 
     render(() => <App />);
 
-    // Wait for initial state to load
+    // Wait for initial state to load and the status subscription to be installed
     await waitFor(() => {
       expect(document.title).toBe('bracket.ri - Reify');
+      expect(evalStatusCallback).toBeDefined();
     });
 
     // Simulate evaluation status change

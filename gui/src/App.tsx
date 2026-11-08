@@ -43,7 +43,7 @@ import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportDisplayStore } from './stores/viewportDisplayStore';
-import { createLauncherStore, isDocumentLoaded } from './stores/launcherStore';
+import { createLauncherStore, initialFileLoadFailureInfo, isDocumentLoaded } from './stores/launcherStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
@@ -66,6 +66,7 @@ import {
   createNewFile as bridgeCreateNewFile,
   listRecent as bridgeListRecent,
   recordRecent as bridgeRecordRecent,
+  takeInitialFileLoadFailure as bridgeTakeInitialFileLoadFailure,
   setMode as bridgeSetMode,
   onFileChanged,
   onFileRemoved,
@@ -1560,6 +1561,24 @@ const App: Component = () => {
     notify: (message) => showToast(message, 'info'),
   });
 
+  /**
+   * Show why the launch file failed to load. The backend records it before
+   * getInitialState replies, so it is read after that, and hands it out once.
+   * A failure that still opened a document (a compile error opens the failing
+   * buffer with its diagnostics) is already presented by the editor.
+   */
+  async function presentInitialFileLoadFailure(): Promise<void> {
+    try {
+      const failure = await bridgeTakeInitialFileLoadFailure();
+      if (failure && alive && !isDocumentLoaded(editorStore.state)) {
+        launcherStore.failDocument(initialFileLoadFailureInfo(failure));
+      }
+    } catch (err) {
+      console.error('[launcher] launch file status unavailable:', err);
+      showToast(`Launch file status unavailable: ${errorMessage(err)}`, 'error');
+    }
+  }
+
   async function initApp() {
     subscriptions.disposeAll();
 
@@ -1578,6 +1597,9 @@ const App: Component = () => {
       return;
     }
 
+    if (!alive) return;
+
+    await presentInitialFileLoadFailure();
     if (!alive) return;
 
     // Fetch the per-dimension display-unit ladders (task #5199) in the
