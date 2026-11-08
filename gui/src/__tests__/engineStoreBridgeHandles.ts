@@ -29,7 +29,7 @@ import {
 const INSTALL_SHARED_BRIDGE_MOCK =
   "vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());";
 
-const handledBridgeExports = {
+const subscriptionExports = {
   onMeshUpdate,
   onValueUpdate,
   onConstraintUpdate,
@@ -39,21 +39,20 @@ const handledBridgeExports = {
   onConstraintRemoved,
   onTessellationDiagnostics,
   onCompileDiagnostics,
-  onAutoResolveStart,
-  onAutoResolveIteration,
-  onAutoResolveComplete,
-  onSolverProgress,
-  cancelSolve,
   onFeaDiagnosticsChanged,
   onFeaConvergenceChanged,
   onTensegrityWiresUpdate,
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
   onDisplayAppearanceUpdate,
+  onAutoResolveStart,
+  onAutoResolveIteration,
+  onAutoResolveComplete,
+  onSolverProgress,
   onEvalGeneration,
 };
 
-for (const [name, exported] of Object.entries(handledBridgeExports)) {
+for (const [name, exported] of Object.entries({ ...subscriptionExports, cancelSolve })) {
   if (!vi.isMockFunction(exported)) {
     throw new Error(
       `engineStoreBridgeHandles: '../bridge' export '${name}' is not a vi mock, ` +
@@ -85,36 +84,16 @@ export const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
 export const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
 export const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
 
-const subscriptionHandles = [
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
-  mockOnTessellationDiagnostics,
-  mockOnCompileDiagnostics,
-  mockOnFeaDiagnosticsChanged,
-  mockOnFeaConvergenceChanged,
-  mockOnTensegrityWiresUpdate,
-  mockOnTensegritySurfacesUpdate,
-  mockOnDisplayPanesUpdate,
-  mockOnDisplayAppearanceUpdate,
-  mockOnAutoResolveStart,
-  mockOnAutoResolveIteration,
-  mockOnAutoResolveComplete,
-  mockOnSolverProgress,
-  mockOnEvalGeneration,
-] as const;
+const subscriptionHandles = Object.values(subscriptionExports).map((subscribe) => vi.mocked(subscribe));
 
 /**
- * Clears every mock's call history and resolves every channel subscribeToEvents
- * subscribes to with a fresh no-op unlisten (cancelSolve with undefined), so no
- * test inherits an earlier test's stub.
+ * Clears every mock's call history, then resets every channel subscribeToEvents
+ * subscribes to (and cancelSolve) to a fresh default: a no-op unlisten
+ * (cancelSolve: undefined). The reset drops queued *Once stubs as well as
+ * persistent ones, so no test inherits an earlier test's stub.
  */
 export function primeEngineStoreBridgeMocks(): void {
   vi.clearAllMocks();
-  for (const subscribe of subscriptionHandles) subscribe.mockResolvedValue(vi.fn());
-  mockCancelSolve.mockResolvedValue(undefined);
+  for (const subscribe of subscriptionHandles) subscribe.mockReset().mockResolvedValue(vi.fn());
+  mockCancelSolve.mockReset().mockResolvedValue(undefined);
 }

@@ -29,6 +29,7 @@ describe('engineStoreBridgeHandles', () => {
     for (const handle of Object.values(handles)) {
       if (vi.isMockFunction(handle)) {
         handle.mockRejectedValue(new Error('left installed by an earlier test'));
+        handle.mockRejectedValueOnce(new Error('queued by an earlier test'));
       }
     }
 
