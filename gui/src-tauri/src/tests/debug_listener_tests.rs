@@ -4,19 +4,9 @@
 //! process actually holds the listener (task 7816's "live == bound").
 
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
 
-use super::debug_server_slot_fixtures::recording_slot;
-use crate::debug_server::{BoundDebugListener, debug_endpoint_url};
-
-fn served_ports(served: &Mutex<Vec<BoundDebugListener>>) -> Vec<u16> {
-    served
-        .lock()
-        .unwrap()
-        .iter()
-        .map(BoundDebugListener::port)
-        .collect()
-}
+use super::debug_server_slot_fixtures::{recording_slot, served_ports};
+use crate::debug_server::debug_endpoint_url;
 
 #[test]
 fn a_fresh_slot_is_not_live() {

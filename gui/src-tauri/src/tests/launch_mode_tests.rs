@@ -3,15 +3,9 @@
 //! starts it at most once, and no mode stops it.
 
 use std::net::TcpListener;
-use std::sync::Mutex;
 
-use super::debug_server_slot_fixtures::recording_slot;
-use crate::debug_server::BoundDebugListener;
+use super::debug_server_slot_fixtures::{recording_slot, served_ports};
 use crate::launch_mode::{Mode, ModeState, set_mode_impl};
-
-fn serve_count(served: &Mutex<Vec<BoundDebugListener>>) -> usize {
-    served.lock().unwrap().len()
-}
 
 #[test]
 fn mode_names_are_the_lowercase_wire_strings() {
@@ -68,7 +62,7 @@ fn design_and_assistant_never_start_the_debug_server() {
         );
     }
 
-    assert_eq!(serve_count(&served), 0);
+    assert!(served_ports(&served).is_empty());
 }
 
 #[test]
@@ -86,8 +80,8 @@ fn debug_starts_the_server_once_and_reports_its_port() {
     assert_eq!(first, expected);
     assert_eq!(second, expected);
     assert_eq!(
-        serve_count(&served),
-        1,
+        served_ports(&served),
+        vec![port],
         "a second Debug starts no second server"
     );
 }
@@ -106,7 +100,7 @@ fn no_mode_stops_a_live_debug_server() {
         })
     );
     assert_eq!(slot.live_port(), Some(port));
-    assert_eq!(serve_count(&served), 1);
+    assert_eq!(served_ports(&served), vec![port]);
 }
 
 #[test]
@@ -121,5 +115,5 @@ fn debug_on_an_occupied_port_fails_naming_it() {
         err.contains(&held.to_string()),
         "the error must name port {held}, got: {err}"
     );
-    assert_eq!(serve_count(&served), 0);
+    assert!(served_ports(&served).is_empty());
 }
