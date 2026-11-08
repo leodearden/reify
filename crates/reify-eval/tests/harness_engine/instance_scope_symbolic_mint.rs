@@ -664,7 +664,10 @@ fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_
     for consumer in ["v", "t"] {
         let cold_value = cell(&cold, "ConsOuter", consumer);
         assert!(
-            matches!(cold_value, Value::GeometryHandle { .. } | Value::Selector(_)),
+            matches!(
+                cold_value,
+                Value::GeometryHandle { .. } | Value::Selector(_)
+            ),
             "premise: a cold eval carries the instance mint into ConsOuter.{consumer}, \
              got {cold_value:?}"
         );

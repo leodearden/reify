@@ -1149,8 +1149,7 @@ impl EditSourceWalkCtx<'_> {
             cache,
             journal,
         } = legs;
-        let mut settling: HashSet<ValueCellId> =
-            instance_mint_path_cells.iter().cloned().collect();
+        let mut settling: HashSet<ValueCellId> = instance_mint_path_cells.iter().cloned().collect();
         let mut recommitted: Vec<NodeId> = Vec::new();
         if settling.is_empty() {
             return recommitted;
