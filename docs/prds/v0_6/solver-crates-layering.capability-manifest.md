@@ -70,8 +70,7 @@ gmsh-free build), so its checks were dead and left the twins under retro-critic 
 
 The ε OPEN row (no external readers; R2 M4) differs from the other two: its authoring PASS was
 measured false, and the leaf's scope was widened to migrate the one external reader, so the row
-stays OPEN until ε lands. It read **FAIL→corrected** until 2026-11-07 (task 9891), a token outside
-the YAML twin's closed PASS/FAIL/OPEN vocabulary.
+stays OPEN until ε lands.
 
 The adopted task #8528 (ShellStress, fk-824124d1e74e) is not a batch block: it was filed by the
 run and carries no manifest block of its own.

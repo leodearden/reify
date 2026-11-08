@@ -159,8 +159,7 @@ tasks:
       only the `k_e.data` spelling and missed one external reader, crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs
       (`ke.data` / `ke.n_dofs`, :330 and :347). ε migrates it to get()/n_dofs() in the same diff; the
       file is in ε''s files. Re-run the reader grep as `\.data\[|\.n_dofs\b` over crates/*/{src,tests}
-      outside reify-solver-elastic before closing. Verdict OPEN since 2026-11-07 (task 9891), replacing
-      FAIL→corrected, a token outside the closed PASS/FAIL/OPEN vocabulary. The authoring PASS was
+      outside reify-solver-elastic before closing. The authoring PASS was
       measured false by retro-critic R2 M4 (2026-10-19), and migrating the one external reader is ε''s
       own work product, so the row turns PASS when ε lands.'
     verdict: OPEN
