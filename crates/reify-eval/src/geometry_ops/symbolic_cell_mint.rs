@@ -6,15 +6,17 @@
 //! scope (`unfold.rs` at `eval()`, `engine_edit.rs`'s edit path, task #8102),
 //! so the scopes mint identical values for identical inputs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
 use reify_core::{Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, Value, ValueMap};
 
-use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
+use crate::cache::NodeId;
+use crate::deps::{DependencyTrace, extract_dependency_trace, extract_realization_dependencies};
+use crate::dirty::topological_sort;
 use super::is_symbolic_eval_wired_selector_ctor;
-use crate::graph::{EvaluationGraph, RealizationNodeData};
+use crate::graph::{CollectionSubInfo, EvaluationGraph, RealizationNodeData};
 
 /// Which mint a cell tries first; the first `Some` wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +177,8 @@ fn mint_symbolic(
 /// The graph-backed scope the edit path mints a sub-instance cell in, since
 /// none of its sites has a template: the `edit_param` walk, `edit_param`'s
 /// collection resize and grown-instance reseed, and `edit_source`'s
-/// collection resize.
+/// collection resize. A caller creating an instance's cells one at a time
+/// commits them in [`slot_commit_order`].
 pub(crate) struct InstanceMintScope<'a> {
     pub(crate) graph: &'a EvaluationGraph,
     pub(crate) values: &'a ValueMap,
@@ -204,14 +207,12 @@ impl InstanceMintScope<'_> {
     ) -> Option<Value> {
         let template = self.graph.sub_instance_template(&instance_cell.entity)?;
         let template_cell = ValueCellId::new(template, &instance_cell.member);
-        let realization = self.geometry_cell_realization(&template_cell);
-        if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
+        if geometry_cell_realization(self.graph, &template_cell).is_none()
+            && !is_symbolic_eval_wired_selector_ctor(expr)
+        {
             return Some(Value::Undef);
         }
-        let mut reads = extract_dependency_trace(expr).reads;
-        if let Some(realization) = realization {
-            reads.extend(extract_realization_dependencies(&realization.operations).reads);
-        }
+        let reads = instance_mint_reads(self.graph, &template_cell, expr);
         let instance_values =
             project_instance_reads(self.values, &instance_cell.entity, template, &reads);
         Some(mint_template_keyed_instance_cell(
@@ -245,28 +246,86 @@ impl InstanceMintScope<'_> {
             evaluated => evaluated,
         }
     }
+}
 
-    /// The realization a scalar geometry cell's handle names, found as
-    /// [`crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph`]
-    /// finds it. `None` for any other cell, which only the selector mint can
-    /// resolve.
-    fn geometry_cell_realization(
-        &self,
-        template_cell: &ValueCellId,
-    ) -> Option<&RealizationNodeData> {
-        let is_geometry = self
-            .graph
-            .value_cells
-            .get(template_cell)
-            .is_some_and(|cell| cell.cell_type == Type::Geometry);
-        if !is_geometry {
-            return None;
-        }
-        self.graph
-            .realizations
-            .values()
-            .find(|realization| realization.geometry_cell.as_ref() == Some(template_cell))
+/// The template-scoped cells an instance mint of `template_cell` reads: the
+/// expression's reads, plus, for a geometry cell, the reads of its
+/// realization's operations, which the handle's hash folds.
+fn instance_mint_reads(
+    graph: &EvaluationGraph,
+    template_cell: &ValueCellId,
+    expr: &CompiledExpr,
+) -> Vec<ValueCellId> {
+    let mut reads = extract_dependency_trace(expr).reads;
+    if let Some(realization) = geometry_cell_realization(graph, template_cell) {
+        reads.extend(extract_realization_dependencies(&realization.operations).reads);
     }
+    reads
+}
+
+/// The realization a scalar geometry cell's handle names, found as
+/// [`crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph`] finds
+/// it. `None` for any other cell, which only the selector mint can resolve.
+fn geometry_cell_realization<'g>(
+    graph: &'g EvaluationGraph,
+    template_cell: &ValueCellId,
+) -> Option<&'g RealizationNodeData> {
+    let is_geometry = graph
+        .value_cells
+        .get(template_cell)
+        .is_some_and(|cell| cell.cell_type == Type::Geometry);
+    if !is_geometry {
+        return None;
+    }
+    graph
+        .realizations
+        .values()
+        .find(|realization| realization.geometry_cell.as_ref() == Some(template_cell))
+}
+
+/// The order each slot of `col_sub` must commit its cells in, so no instance
+/// mint folds its hash over a sibling the slot has not yet evaluated. Cells in
+/// a dependency cycle come last, in declaration order.
+pub(crate) fn slot_commit_order<'c>(
+    graph: &EvaluationGraph,
+    col_sub: &'c CollectionSubInfo,
+) -> Vec<&'c (String, ValueCellKind, Type, Option<CompiledExpr>)> {
+    let traces: HashMap<NodeId, DependencyTrace> = col_sub
+        .child_value_cells
+        .iter()
+        .map(|(member, _, _, default_expr)| {
+            let template_cell = ValueCellId::new(&col_sub.structure_name, member);
+            let reads = default_expr
+                .as_ref()
+                .map(|expr| instance_mint_reads(graph, &template_cell, expr))
+                .unwrap_or_default();
+            let trace = DependencyTrace {
+                reads,
+                ..Default::default()
+            };
+            (NodeId::Value(template_cell), trace)
+        })
+        .collect();
+    let nodes: HashSet<NodeId> = traces.keys().cloned().collect();
+    let mut uncommitted: HashMap<&str, _> = col_sub
+        .child_value_cells
+        .iter()
+        .map(|cell| (cell.0.as_str(), cell))
+        .collect();
+    let mut order: Vec<_> = topological_sort(&nodes, &traces)
+        .into_iter()
+        .filter_map(|node| match node {
+            NodeId::Value(cell) => uncommitted.remove(cell.member.as_str()),
+            _ => None,
+        })
+        .collect();
+    order.extend(
+        col_sub
+            .child_value_cells
+            .iter()
+            .filter(|cell| uncommitted.contains_key(cell.0.as_str())),
+    );
+    order
 }
 
 /// The `values` entries a template-scoped expression of `template` `reads`,

@@ -164,7 +164,7 @@ use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
     stale_realizations,
 };
-use crate::geometry_ops::symbolic_cell_mint::InstanceMintScope;
+use crate::geometry_ops::symbolic_cell_mint::{InstanceMintScope, slot_commit_order};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -2369,10 +2369,11 @@ impl Engine {
                 if old_count != new_count {
                     structural_mutation = true;
                 }
+                let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                    for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = default_expr
@@ -2390,8 +2391,7 @@ impl Engine {
                             .graph
                             .insert_sub_instance_cell(&col_sub.structure_name, node);
 
-                        // Evaluate the cell, minting it in its instance's scope
-                        // when that returns Undef (#8102).
+                        // Cells commit in dependency order so each mint sees the siblings it reads (#8102).
                         let val = if let Some(expr) = default_expr {
                             let evaluated = reify_expr::eval_expr(
                                 expr,
@@ -4469,10 +4469,11 @@ impl Engine {
                 if let Some(w) = new_warn {
                     diagnostics.push(w);
                 }
+                let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                    for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = default_expr
@@ -4490,8 +4491,7 @@ impl Engine {
                             .graph
                             .insert_sub_instance_cell(&col_sub.structure_name, node);
 
-                        // Minted in its instance's scope when the plain
-                        // evaluation returns Undef (#8102).
+                        // Cells commit in dependency order so each mint sees the siblings it reads (#8102).
                         let val = if let Some(expr) = default_expr {
                             let evaluated = reify_expr::eval_expr(
                                 expr,
