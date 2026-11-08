@@ -11,13 +11,6 @@ import type {
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnTensegrityWiresUpdate,
   mockOnTensegritySurfacesUpdate,
   mockOnDisplayPanesUpdate,
@@ -224,14 +217,6 @@ describe('engineStore subscribeToEvents wiring for 4 live-sync fields (#5031 ste
   it('subscribeToEvents wires the 4 new listeners, routes payloads to state, and cleanup unsubscribes them', async () => {
     // RED: subscribeToEvents does not yet import or call the 4 new bridge listeners.
     await createRoot(async (dispose) => {
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
-
       const unlistenWires = vi.fn();
       const unlistenSurfaces = vi.fn();
       const unlistenPanes = vi.fn();

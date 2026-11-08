@@ -657,10 +657,6 @@ describe('engineStore', () => {
     await createRoot(async (dispose) => {
       const spy = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
       // Capture the removal callbacks when subscribeToEvents registers them
       let meshRemovedCb: ((entityPath: string) => void) | undefined;
       let valueRemovedCb: ((cellId: string) => void) | undefined;

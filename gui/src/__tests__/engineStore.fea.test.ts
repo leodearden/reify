@@ -5,13 +5,6 @@ import type { GuiState, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnFeaDiagnosticsChanged,
   mockOnFeaConvergenceChanged,
   primeEngineStoreBridgeMocks,
@@ -138,13 +131,6 @@ describe('engineStore setFeaDiagnostics and subscribeToEvents wiring (step s8)',
       let feaCb: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
       const spyUnlisten = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnFeaDiagnosticsChanged.mockImplementation(async (cb) => {
         feaCb = cb as (diags: FeaDiagnosticInfo[]) => void;
         return spyUnlisten;
@@ -305,13 +291,6 @@ describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', 
       let feaConvergenceCb: ((conv: FeaConvergenceInfo | null) => void) | undefined;
       const spyUnlisten = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnFeaConvergenceChanged.mockImplementation(async (cb) => {
         feaConvergenceCb = cb as (conv: FeaConvergenceInfo | null) => void;
         return spyUnlisten;

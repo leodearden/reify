@@ -5,13 +5,6 @@ import type { GuiState, DiagnosticInfo } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnTessellationDiagnostics,
   mockOnCompileDiagnostics,
   primeEngineStoreBridgeMocks,
@@ -65,13 +58,6 @@ describe('engineStore tessellationDiagnostics', () => {
     await createRoot(async (dispose) => {
       let tessCb: ((diags: DiagnosticInfo[]) => void) | undefined;
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnTessellationDiagnostics.mockImplementation(async (cb) => {
         tessCb = cb as (diags: DiagnosticInfo[]) => void;
         return vi.fn();
@@ -145,14 +131,6 @@ describe('engineStore compileDiagnostics', () => {
     await createRoot(async (dispose) => {
       let compileCb: ((diags: DiagnosticInfo[]) => void) | undefined;
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
-      mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
       mockOnCompileDiagnostics.mockImplementation(async (cb) => {
         compileCb = cb as (diags: DiagnosticInfo[]) => void;
         return vi.fn();

@@ -5,13 +5,6 @@ import type { GuiState } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnAutoResolveStart,
   mockOnAutoResolveIteration,
   mockOnAutoResolveComplete,
@@ -230,14 +223,6 @@ describe('engineStore autoResolve initFromState reset', () => {
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
   it('(a) subscribeToEvents calls onAutoResolveStart, onAutoResolveIteration, onAutoResolveComplete', async () => {
     await createRoot(async (dispose) => {
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
-
       const store = createEngineStore();
       await store.subscribeToEvents();
 
@@ -251,13 +236,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
   it('(b) auto-resolve-start callback flips active=true and defers the clear', async () => {
     await createRoot(async (dispose) => {
       let startCb: (() => void) | undefined;
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnAutoResolveStart.mockImplementation(async (cb) => { startCb = cb; return vi.fn(); });
 
       const store = createEngineStore();
@@ -275,13 +253,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
   it('(c) auto-resolve-iteration callback appends to iterations', async () => {
     await createRoot(async (dispose) => {
       let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnAutoResolveIteration.mockImplementation(async (cb) => { iterCb = cb as typeof iterCb; return vi.fn(); });
 
       const store = createEngineStore();
@@ -299,13 +270,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
       let startCb: (() => void) | undefined;
       let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
       let completeCb: (() => void) | undefined;
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnAutoResolveStart.mockImplementation(async (cb) => { startCb = cb; return vi.fn(); });
       mockOnAutoResolveIteration.mockImplementation(async (cb) => { iterCb = cb as typeof iterCb; return vi.fn(); });
       mockOnAutoResolveComplete.mockImplementation(async (cb) => { completeCb = cb; return vi.fn(); });
@@ -329,13 +293,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
       const unlistenStart = vi.fn();
       const unlistenIteration = vi.fn();
       const unlistenComplete = vi.fn();
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnAutoResolveStart.mockResolvedValue(unlistenStart);
       mockOnAutoResolveIteration.mockResolvedValue(unlistenIteration);
       mockOnAutoResolveComplete.mockResolvedValue(unlistenComplete);

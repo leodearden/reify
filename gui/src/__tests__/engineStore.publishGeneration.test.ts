@@ -5,13 +5,7 @@ import type { GuiState, ValueData, FeaDiagnosticInfo } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
   mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnFeaDiagnosticsChanged,
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
@@ -48,12 +42,6 @@ describe('engineStore publish-generation guard', () => {
     let announce: ((generation: number) => void) | undefined;
     let valueUpdate: ((value: ValueData) => void) | undefined;
     let feaDiagnosticsChanged: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
-    mockOnMeshUpdate.mockResolvedValue(vi.fn());
-    mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-    mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-    mockOnMeshRemoved.mockResolvedValue(vi.fn());
-    mockOnValueRemoved.mockResolvedValue(vi.fn());
-    mockOnConstraintRemoved.mockResolvedValue(vi.fn());
     mockOnEvalGeneration.mockImplementation(async (cb) => {
       announce = cb;
       return vi.fn();
