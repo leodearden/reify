@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createLauncherStore,
+  initialFileLoadFailureInfo,
   isDocumentLoaded,
   LAUNCH_ERROR_CODES,
 } from '../stores/launcherStore';
@@ -94,5 +95,26 @@ describe('isDocumentLoaded', () => {
 
   it('is true when the editor has an open file', () => {
     expect(isDocumentLoaded({ openFiles: [{ path: '/designs/bracket.ri' }] })).toBe(true);
+  });
+});
+
+describe('initialFileLoadFailureInfo', () => {
+  it('presents a launch-file failure as E_GUI_OPEN_FAILED naming the file and the error', () => {
+    const info = initialFileLoadFailureInfo({
+      path: '/designs/broken.ri',
+      error: 'Error reading /designs/broken.ri: No such file',
+    });
+
+    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+    expect(info.message).toContain('/designs/broken.ri');
+    expect(info.message).toContain('No such file');
+  });
+
+  it('names the file even when the error does not', () => {
+    const info = initialFileLoadFailureInfo({ path: '/designs/broken.ri', error: 'Parse errors: x' });
+
+    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+    expect(info.message).toContain('/designs/broken.ri');
+    expect(info.message).toContain('Parse errors: x');
   });
 });
