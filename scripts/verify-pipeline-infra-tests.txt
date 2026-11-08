@@ -118,6 +118,12 @@ tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted
 # ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
 # 3b to that sibling (no second inline copy, no silent skip when it is missing).
 scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9765: the built-tree arm of refresh-warm-base.sh's inv.9 guard, pinned by a .py suite.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_built_tree.sh
+tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_base_built_tree.sh
+# Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
+# or reshaping that sidecar reds here instead of disabling the guard fail-open.
+scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
