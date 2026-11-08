@@ -4,19 +4,9 @@
 //! process actually holds the listener (task 7816's "live == bound").
 
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
 
 use super::debug_server_slot_fixtures::recording_slot;
-use crate::debug_server::{BoundDebugListener, debug_endpoint_url};
-
-fn served_ports(served: &Mutex<Vec<BoundDebugListener>>) -> Vec<u16> {
-    served
-        .lock()
-        .unwrap()
-        .iter()
-        .map(BoundDebugListener::port)
-        .collect()
-}
+use crate::debug_server::debug_endpoint_url;
 
 #[test]
 fn a_fresh_slot_is_not_live() {
@@ -24,7 +14,7 @@ fn a_fresh_slot_is_not_live() {
 
     assert_eq!(slot.live_port(), None);
     assert_eq!(slot.endpoint_url(), None);
-    assert!(served_ports(&served).is_empty());
+    assert!(served.ports().is_empty());
 }
 
 #[test]
@@ -37,7 +27,7 @@ fn ensure_live_binds_serves_once_and_reports_its_real_port_and_url() {
         port, 0,
         "ensure_live(0) must report the real ephemeral port"
     );
-    assert_eq!(served_ports(&served), vec![port]);
+    assert_eq!(served.ports(), vec![port]);
     assert_eq!(slot.live_port(), Some(port));
     assert_eq!(slot.endpoint_url(), Some(debug_endpoint_url(port)));
     TcpStream::connect(("127.0.0.1", port))
@@ -57,7 +47,7 @@ fn a_live_slot_never_starts_a_second_server() {
     assert_eq!(slot.ensure_live(0), Ok(port));
     assert_eq!(slot.ensure_live(other), Ok(port));
 
-    assert_eq!(served_ports(&served), vec![port], "serve runs at most once");
+    assert_eq!(served.ports(), vec![port], "serve runs at most once");
 }
 
 #[test]
@@ -74,15 +64,12 @@ fn an_occupied_port_is_not_live_and_does_not_wedge_the_slot() {
         err.contains(&held.to_string()),
         "the error must name port {held}, got: {err}"
     );
-    assert!(
-        served_ports(&served).is_empty(),
-        "a failed bind serves nothing"
-    );
+    assert!(served.ports().is_empty(), "a failed bind serves nothing");
     assert_eq!(slot.live_port(), None);
     assert_eq!(slot.endpoint_url(), None);
 
     let port = slot
         .ensure_live(0)
         .expect("a later attempt still starts the server");
-    assert_eq!(served_ports(&served), vec![port]);
+    assert_eq!(served.ports(), vec![port]);
 }
