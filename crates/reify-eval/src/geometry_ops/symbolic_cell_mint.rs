@@ -382,7 +382,8 @@ mod tests {
             id("Tx", "k"),
         ];
 
-        let projected = project_instance_reads(&values, "Asm.s", "T", &reads);
+        let projected = project_instance_reads(&values, "Asm.s", "T", &reads)
+            .expect("every in-scope read the template holds has an instance entry");
 
         assert_eq!(
             projected.get(&id("T", "len")),
@@ -400,6 +401,24 @@ mod tests {
             "a read with no instance entry (T.absent), one outside the template \
              (Other.k), and one whose entity merely starts with the template's \
              name (Tx.k, not T or T.*) must all be left out"
+        );
+    }
+
+    #[test]
+    fn project_instance_reads_reports_a_read_the_template_holds_but_the_instance_has_not_evaluated() {
+        let mut values = ValueMap::new();
+        values.insert(id("T", "len"), Value::Int(3));
+        values.insert(id("T", "w"), Value::Int(4));
+        values.insert(id("Asm.s", "w"), Value::Int(5));
+
+        let projected =
+            project_instance_reads(&values, "Asm.s", "T", &[id("T", "w"), id("T", "len")]);
+
+        assert_eq!(
+            projected.err(),
+            Some(id("Asm.s", "len")),
+            "a read the template holds (T.len) but the instance has not evaluated \
+             (no Asm.s.len) must be reported, not folded as Undef"
         );
     }
 
