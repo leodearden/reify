@@ -10,7 +10,7 @@ import {
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleMesh, sampleValue, sampleIteration } from './engineStoreFixtures';
+import { sampleMesh, sampleValue, sampleIteration, makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -21,20 +21,11 @@ describe('engineStore publish-generation guard', () => {
   const width = (value: string): ValueData => ({ ...sampleValue, value });
 
   function snapshot(value: string, feaDiagnostics: FeaDiagnosticInfo[] = []): GuiState {
-    return {
-      fea_convergence: null,
+    return makeGuiState({
       meshes: [sampleMesh],
       values: [width(value)],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
       fea_diagnostics: feaDiagnostics,
-    };
+    });
   }
 
   /** A store subscribed to its events, and the callbacks it handed the bridge. */

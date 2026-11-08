@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import type { GuiState, DiagnosticInfo } from '../types';
+import type { DiagnosticInfo } from '../types';
 
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
@@ -9,6 +9,7 @@ import {
   mockOnCompileDiagnostics,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
+import { makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -35,19 +36,7 @@ describe('engineStore tessellationDiagnostics', () => {
         message: 'geometry error: kernel failure',
         code: null,
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [diag],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ tessellation_diagnostics: [diag] });
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
       dispose();
@@ -108,19 +97,7 @@ describe('engineStore compileDiagnostics', () => {
         message: "unknown port type 'Foo'",
         code: null,
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [diag],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ compile_diagnostics: [diag] });
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
       dispose();

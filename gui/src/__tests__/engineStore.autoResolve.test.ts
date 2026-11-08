@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import type { GuiState } from '../types';
 
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
@@ -10,7 +9,7 @@ import {
   mockOnAutoResolveComplete,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleIteration } from './engineStoreFixtures';
+import { sampleIteration, makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -195,20 +194,7 @@ describe('engineStore autoResolve initFromState reset', () => {
 
       // Opening file B must not leave file A's resolved parameters and
       // constraint rows mounted — that is actively misleading.
-      const guiState: GuiState = {
-        fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-      };
+      const guiState = makeGuiState();
       initFromState(guiState);
 
       expect(state.autoResolve.active).toBe(false);

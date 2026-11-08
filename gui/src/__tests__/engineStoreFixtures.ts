@@ -1,5 +1,5 @@
 // Pure-data sample payloads shared by the engineStore test files.
-import type { MeshData, ValueData, ConstraintData } from '../types';
+import type { GuiState, MeshData, ValueData, ConstraintData } from '../types';
 
 export const sampleMesh: MeshData = {
   entity_path: 'Bracket.body',
@@ -54,3 +54,22 @@ export const sampleIteration = {
   driving_metric: 'max_von_mises',
   driving_metric_value: 180,
 };
+
+/** An empty GuiState snapshot, with `overrides` replacing whole fields. */
+export function makeGuiState(overrides: Partial<GuiState> = {}): GuiState {
+  return {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+    tensegrity_wires: [],
+    tensegrity_surfaces: [],
+    display_panes: [],
+    display_appearance: [],
+    fea_diagnostics: [],
+    fea_convergence: null,
+    ...overrides,
+  };
+}

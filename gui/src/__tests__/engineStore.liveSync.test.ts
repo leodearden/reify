@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type {
-  GuiState,
   TensegrityWireData,
   TensegritySurfaceData,
   DisplayDirective,
@@ -17,6 +16,7 @@ import {
   mockOnDisplayAppearanceUpdate,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
+import { makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -28,22 +28,12 @@ describe('engineStore tensegrity initFromState fan-out', () => {
     // RED until EngineState.tensegrityWires is added and initFromState sets it.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
+      const guiState = makeGuiState({
         tensegrity_wires: [
           { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
           { entity_path: 'TPrism', kind: 'cable', x1: 1.0, y1: 0.0, z1: 1.0, x2: -0.5, y2: 0.866, z2: 1.0 },
         ],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      });
       initFromState(guiState);
       expect((state as any).tensegrityWires).toHaveLength(2);
       expect((state as any).tensegrityWires[0].kind).toBe('strut');
@@ -60,19 +50,7 @@ describe('engineStore tensegrity initFromState fan-out', () => {
       // Initial state should be []
       expect((state as any).tensegrityWires).toEqual([]);
 
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ tensegrity_wires: [] });
       initFromState(guiState);
       expect((state as any).tensegrityWires).toEqual([]);
       dispose();
@@ -85,14 +63,7 @@ describe('engineStore tensegrity initFromState fan-out', () => {
     // RED until EngineState.tensegritySurfaces is added and initFromState sets it.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
+      const guiState = makeGuiState({
         tensegrity_surfaces: [
           {
             entity_path: 'Patch',
@@ -111,10 +82,7 @@ describe('engineStore tensegrity initFromState fan-out', () => {
             x2: 0.5, y2: 0.866, z2: 0.0,
           },
         ],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      });
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toHaveLength(2);
       expect((state as any).tensegritySurfaces[0].kind).toBe('membrane');
@@ -133,19 +101,7 @@ describe('engineStore tensegrity initFromState fan-out', () => {
       // Initial state should be []
       expect((state as any).tensegritySurfaces).toEqual([]);
 
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ tensegrity_surfaces: [] });
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toEqual([]);
       dispose();

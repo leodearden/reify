@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot, createComputed } from 'solid-js';
 import type {
-  GuiState,
   MeshData,
   ValueData,
   ConstraintData,
@@ -24,7 +23,7 @@ import {
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleMesh, sampleValue, sampleConstraint } from './engineStoreFixtures';
+import { sampleMesh, sampleValue, sampleConstraint, makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -44,19 +43,11 @@ describe('engineStore', () => {
   it('initFromState populates meshes/values/constraints from GuiState', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
+      const guiState = makeGuiState({
         meshes: [sampleMesh],
         values: [sampleValue],
         constraints: [sampleConstraint],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      });
       initFromState(guiState);
 
       expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
@@ -74,19 +65,7 @@ describe('engineStore', () => {
 
       // (b) After initFromState with a non-empty display_panes, state.displayPanes matches
       const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [directive],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ display_panes: [directive] });
       initFromState(guiState);
       expect(state.displayPanes).toEqual([{ subject: 'S#realization[0]', pane: 1 }]);
       dispose();
@@ -105,36 +84,12 @@ describe('engineStore', () => {
         subject: 'S#realization[0]',
         style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [styleDirective],
-        fea_diagnostics: [],
-      };
+      const guiState = makeGuiState({ display_appearance: [styleDirective] });
       initFromState(guiState);
       expect((state as any).displayAppearance).toEqual([styleDirective]);
 
       // (c) GuiState with display_appearance omitted yields []
-      const guiStateNoAppearance: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiStateNoAppearance = makeGuiState({ display_appearance: [] });
       initFromState(guiStateNoAppearance);
       expect((state as any).displayAppearance).toEqual([]);
 
@@ -586,19 +541,11 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = { fea_convergence: null,
+      const guiState = makeGuiState({
         meshes: [sampleMesh],
         values: [sampleValue],
         constraints: [sampleConstraint],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      });
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
       dispose();
@@ -609,19 +556,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState();
       initFromState(guiState);
       initFromState(guiState);
       initFromState(guiState);
@@ -633,19 +568,7 @@ describe('engineStore', () => {
   it('createEngineStore works without onEngineReinitialized (option is optional)', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [sampleMesh],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ meshes: [sampleMesh] });
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
       expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
@@ -698,19 +621,7 @@ describe('engineStore freshness pass-through', () => {
         kind: 'Let',
         freshness: 'failed',
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [failedValue],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      };
+      const guiState = makeGuiState({ values: [failedValue] });
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
       dispose();
