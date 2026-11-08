@@ -2293,6 +2293,17 @@ fn compile_expr_guarded_with_expected_inner(
             )
         }
         reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
+            // ── task 5494: same-module structure declared BELOW this fn ─────
+            //
+            // Checked before ANY `scope.template_registry` read: a structure
+            // declared below is absent from the registry, so a later read would
+            // misclassify the ctor (the `auto`-arg gate below), or fall through
+            // to the zero-arg return-type fallback, which merely WARNS and
+            // lowers a generic `FunctionCall` returning `Real` instead of `Foo`.
+            if let Some(diagnostic) = later_declared_structure_error(scope, name, expr.span) {
+                return make_poison_literal(diagnostics, diagnostic);
+            }
+
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -2820,16 +2831,6 @@ fn compile_expr_guarded_with_expected_inner(
                 .iter()
                 .map(|a| a.result_type.clone())
                 .collect();
-
-            // ── task 5494: same-module structure declared BELOW this fn ─────
-            //
-            // Without this check the call falls through the ordinary
-            // function-call ladder to the zero-arg return-type fallback, which
-            // merely WARNS and lowers a generic `FunctionCall`: the function
-            // would silently return a `Real` instead of a `Foo`.
-            if let Some(diagnostic) = later_declared_structure_error(scope, name, expr.span) {
-                return make_poison_literal(diagnostics, diagnostic);
-            }
 
             // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
             // When the callee name resolves to a `structure def`
@@ -7061,9 +7062,11 @@ fn later_declared_structure_error(
 }
 
 /// `FnDefaultNotYetAvailable` for a call to `name` that would pad (by the
-/// shared [`crate::type_compat::provided_prefix_admits_padding`]) but whose
-/// trailing defaults are not compiled yet, because `name` is one of the scope's
-/// [`CompilationScope::fns_with_pending_defaults`]; `None` otherwise.
+/// shared [`crate::type_compat::provided_prefix_admits_padding`]) if only its
+/// pending defaults ([`CompilationScope::fns_with_pending_defaults`]) were
+/// compiled: every omitted param has a compiled default or a pending one, and
+/// at least one is pending. `None` otherwise — in particular when an omitted
+/// param declares no default at all, so `NoMatchingOverload` stands.
 fn pending_default_error(
     scope: &CompilationScope,
     name: &str,
@@ -7071,22 +7074,24 @@ fn pending_default_error(
     arg_types: &[Type],
     span: reify_core::SourceSpan,
 ) -> Option<Diagnostic> {
-    if !scope
-        .fns_with_pending_defaults
-        .is_some_and(|names| names.contains(name))
-    {
-        return None;
-    }
+    let pending_params = scope.fns_with_pending_defaults?.get(name)?;
     let provided = arg_types.len();
     let param = named_candidates
         .iter()
+        .filter(|cand| cand.params.len() == cand.param_defaults.len())
         .filter(|cand| crate::type_compat::provided_prefix_admits_padding(cand, arg_types))
         .find_map(|cand| {
-            cand.params[provided..]
+            let omitted: Vec<&String> = cand.params[provided..]
                 .iter()
                 .zip(&cand.param_defaults[provided..])
-                .find(|(_, default)| default.is_none())
+                .filter(|(_, default)| default.is_none())
                 .map(|((param, _), _)| param)
+                .collect();
+            omitted
+                .iter()
+                .all(|param| pending_params.contains(*param))
+                .then(|| omitted.first().copied())
+                .flatten()
         })?;
     Some(
         Diagnostic::error(format!(

@@ -18,7 +18,7 @@ use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
-use crate::functions::{FnParamDefaults, FnSignature};
+use crate::functions::{FnParamDefaults, FnSignature, PendingDefaults};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -58,10 +58,10 @@ pub(crate) struct CompilationCtx {
     /// Each fn's param-default outcome, parallel to `fn_signatures` — the
     /// output of `functions_phase::phase_fn_param_defaults`.
     pub(crate) fn_param_defaults: Vec<FnParamDefaults>,
-    /// Names of the fns whose outcome is `FnParamDefaults::NeedLocalTemplates`.
-    /// Written once, by `phase_fn_param_defaults`; see
+    /// The fns whose outcome is `FnParamDefaults::NeedLocalTemplates`, with
+    /// their defaulted params. Written once, by `phase_fn_param_defaults`; see
     /// [`crate::scope::CompilationScope::fns_with_pending_defaults`].
-    pub(crate) fns_with_pending_defaults: HashSet<String>,
+    pub(crate) fns_with_pending_defaults: PendingDefaults,
     /// Trait-static fns compiled by `phase_traits`, buffered here instead of
     /// being pushed straight into `functions`.
     ///
@@ -168,7 +168,7 @@ impl CompilationCtx {
             functions: Vec::new(),
             fn_signatures: Vec::new(),
             fn_param_defaults: Vec::new(),
-            fns_with_pending_defaults: HashSet::new(),
+            fns_with_pending_defaults: PendingDefaults::new(),
             trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),

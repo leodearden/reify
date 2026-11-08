@@ -299,7 +299,7 @@ pub(crate) struct CompilationScope<'u> {
     /// fn's signature stub, cannot pad. `expr.rs`'s `pending_default_error`
     /// reports it as `FnDefaultNotYetAvailable` rather than a bare
     /// `NoMatchingOverload`. `None` where the table never holds such a stub.
-    pub(crate) fns_with_pending_defaults: Option<&'u HashSet<String>>,
+    pub(crate) fns_with_pending_defaults: Option<&'u crate::functions::PendingDefaults>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -494,7 +494,10 @@ impl<'u> CompilationScope<'u> {
     }
 
     /// Set [`Self::fns_with_pending_defaults`].
-    pub(crate) fn set_fns_with_pending_defaults(&mut self, names: &'u HashSet<String>) {
+    pub(crate) fn set_fns_with_pending_defaults(
+        &mut self,
+        names: &'u crate::functions::PendingDefaults,
+    ) {
         self.fns_with_pending_defaults = Some(names);
     }
 

@@ -697,3 +697,46 @@ fn field_lambda_wrong_arg_type_to_pending_fn_stays_no_matching_overload() {
         diag_lines(&module)
     );
 }
+
+fn assert_no_matching_overload_only(module: &reify_compiler::CompiledModule, what: &str) {
+    let codes: Vec<_> = module.diagnostics.iter().map(|d| d.code).collect();
+    assert!(
+        codes.contains(&Some(DiagnosticCode::NoMatchingOverload))
+            && !codes.contains(&Some(DiagnosticCode::FnDefaultNotYetAvailable)),
+        "{what}: omitting a param with NO default must stay NoMatchingOverload; got: {:#?}",
+        diag_lines(module)
+    );
+}
+
+/// (f) Control: omitting `x`, which declares no default, from a structure
+/// BELOW `fn solve` is an arity error, not a pending default.
+#[test]
+fn structure_below_fn_omitting_required_param_stays_no_matching_overload() {
+    let source = format!("{OPTS}{SOLVE_FN}structure S {{ let v = solve() }}\n");
+    let module = compile_src(&source, "test_consume_pending_f");
+    assert_no_matching_overload_only(&module, "structure below fn");
+}
+
+/// (g) Control: the same arity error from a field lambda, which compiles while
+/// `solve`'s defaults are still pending.
+#[test]
+fn field_lambda_omitting_required_param_stays_no_matching_overload() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve() }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_g");
+    assert_no_matching_overload_only(&module, "field lambda");
+}
+
+/// (h) A default constructing a structure declared ABOVE the fn with a named
+/// `auto` arg compiles clean and pads a caller below — the ordering check runs
+/// before the ctor-only `auto` exemption reads the template registry.
+#[test]
+fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
+    let source = "structure def Opts { param t : Real = 1.0 }\n\
+         fn solve(x : Real, o : Opts = Opts(t: auto)) -> Real { x * o.t }\n\
+         structure S { let v = solve(2.0) }\n";
+    let module = compile_src(source, "test_consume_pad_h");
+    assert_no_errors(&module, "auto-arg ctor default");
+    assert_padded_call(let_expr(&module, "S", "v"), "solve", 2, "S.v");
+}

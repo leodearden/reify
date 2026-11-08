@@ -27,7 +27,7 @@ use reify_ir::{CompiledFunction, EnumDef};
 use crate::CompiledModule;
 use crate::compile_builder::ctx::{CompilationCtx, signature_stub};
 use crate::functions::{
-    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body,
+    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, PendingDefaults, compile_fn_body,
     compile_fn_param_defaults, resolve_fn_signature,
 };
 use crate::name_env::{self, Origin};
@@ -87,7 +87,7 @@ pub(crate) fn phase_fn_param_defaults(
         &ctx.resolution_structure_names,
     );
     let mut stubs: Vec<CompiledFunction> = Vec::with_capacity(fn_refs.len());
-    let mut pending: HashSet<String> = HashSet::new();
+    let mut pending = PendingDefaults::new();
     for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
         let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
             FnParamDefaults::Compiled(CompiledFunction::no_defaults_for(&sig.params))
@@ -119,7 +119,13 @@ pub(crate) fn phase_fn_param_defaults(
             }
         };
         if matches!(outcome, FnParamDefaults::NeedLocalTemplates) {
-            pending.insert(sig.name.clone());
+            pending.entry(sig.name.clone()).or_default().extend(
+                fn_def
+                    .params
+                    .iter()
+                    .filter(|p| p.default.is_some())
+                    .map(|p| p.name.clone()),
+            );
         }
         stubs.push(signature_stub(sig, Some(&outcome)));
         ctx.fn_param_defaults.push(outcome);

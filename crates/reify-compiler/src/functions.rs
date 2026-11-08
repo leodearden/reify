@@ -298,6 +298,12 @@ pub(crate) fn resolve_fn_signature(
     }
 }
 
+/// Same-module fns whose param defaults wait for a same-module template
+/// (`FnParamDefaults::NeedLocalTemplates`), each mapped to the names of its
+/// params that DECLARE a default: exactly the slots its signature stub leaves
+/// `None` that the real fn will fill. Same-name overloads share one entry.
+pub(crate) type PendingDefaults = HashMap<String, HashSet<String>>;
+
 /// A call-resolution table plus which of its same-module stubs cannot pad
 /// yet ([`CompilationScope::fns_with_pending_defaults`]). The two travel
 /// together, so every scope that resolves calls against a table holding such a
@@ -305,7 +311,7 @@ pub(crate) fn resolve_fn_signature(
 #[derive(Clone, Copy)]
 pub(crate) struct CallTable<'a> {
     pub(crate) functions: &'a [CompiledFunction],
-    pub(crate) fns_with_pending_defaults: Option<&'a HashSet<String>>,
+    pub(crate) fns_with_pending_defaults: Option<&'a PendingDefaults>,
 }
 
 impl<'a> CallTable<'a> {
@@ -320,7 +326,7 @@ impl<'a> CallTable<'a> {
     /// A table that may hold the stubs of `pending` fns.
     pub(crate) fn with_pending(
         functions: &'a [CompiledFunction],
-        pending: &'a HashSet<String>,
+        pending: &'a PendingDefaults,
     ) -> Self {
         CallTable {
             functions,
