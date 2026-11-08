@@ -231,8 +231,8 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
         )
     elif runner.config is None:
         raise ValueError(
-            "emit_pass: a nextest runner names its --config-file, and this one holds none; "
-            "the region resolves the config only when a pass will name it"
+            "emit_pass: a nextest runner names its --config-file, and this one holds none "
+            f"(spec kind={spec.kind.value}, profile={spec.profile.value})"
         )
     else:
         flags = NextestFlags(

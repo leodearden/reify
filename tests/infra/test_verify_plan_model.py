@@ -13,8 +13,9 @@ here:
   declare every gate path its steps name, PlanInputs holds a test region
   exactly when the plan has one, a record rendered inside quotes refuses
   that quote, the slot-closed wrapper holds one test pass, a recording runner
-  runs --no-fail-fast, and the gui-feature pass is never filtered nor
-  recorded;
+  runs --no-fail-fast, the gui-feature pass is never filtered nor recorded,
+  and a runner states its nextest/cargo-test arm, the fallback holding no
+  config nor confirm and a config-less nextest runner refusing to emit;
 - the region's refusal of a quote-bearing path knob for every path it
   renders, of which B1 asserts one (the attempt sidecar), and the retry
   subset's own lines;
@@ -648,6 +649,8 @@ class TestRunnerArm(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("emit_pass", message)
         self.assertIn("config", message)
+        self.assertIn("kind=profile", message)
+        self.assertIn("profile=release", message)
 
     def test_the_cargo_test_fallback_names_no_config(self):
         with self.assertRaises(ValueError) as raised:
