@@ -565,7 +565,12 @@ fn required(module: &str, names: Vec<NameUse>) -> RequiredImport {
 #[test]
 fn a_namespace_import_covers_every_name_of_its_module() {
     let universe = compile_universe(&[SHAPES]);
-    for header in ["import std.fake.shapes\n", "import std.fake.shapes as sh\n"] {
+    for header in [
+        "import std.fake.shapes\n",
+        "import std.fake.shapes as sh\n",
+        "import std.fake.shapes\nimport std.fake.shapes.Bracket\n",
+        "import std.fake.shapes.Bracket\nimport std.fake.shapes\n",
+    ] {
         assert_eq!(
             missing_for(header, BRACKET_AND_GIZMO, &universe),
             vec![],
@@ -726,6 +731,14 @@ fn inserting_is_idempotent() {
         "import std.fake.c\nimport std.fake.d\n\nstructure def S {}\n"
     );
     assert_eq!(insert(&once, &["std.fake.c", "std.fake.d"]), once);
+}
+
+#[test]
+fn a_module_repeated_in_modules_is_imported_once() {
+    assert_eq!(
+        insert("structure def S {}\n", &["std.fake.c", "std.fake.c"]),
+        "import std.fake.c\n\nstructure def S {}\n"
+    );
 }
 
 #[test]
