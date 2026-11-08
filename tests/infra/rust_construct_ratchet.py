@@ -33,11 +33,22 @@ function replay_to_line_start(   k) {
     _lexer_reset()
     for (k = 1; k <= n_since_balanced; k++) _strip_line(since_balanced[k])
 }
-# The lexer is balanced just before a byte that starts code, and lexing the
+# The lexer is balanced just before a token that starts code, and lexing the
 # line split there reads exactly as lexing it whole. A split inside a token
-# hides the lexer's look-ahead (a char literal's closing quote), so it reads
-# differently.
+# reads differently: it hides a char literal's closing-quote look-ahead, or
+# cuts a prefixed literal's opener (r#", br") from its letters, so its quote
+# lexes as an ordinary string. A probe on an opener's hashes or quote
+# therefore splits where the identifier characters and hashes attached to it
+# start, which holds for any prefix and so copies none of the lexer's grammar.
+# Hashes with no identifier before them belong to no opener (they may close an
+# earlier raw literal), so the split stays put.
+function opener_token_start(col) {
+    if (substr($0, col) ~ /^#*"/ && match(substr($0, 1, col - 1), /[A-Za-z0-9_]+#*$/))
+        return RSTART
+    return col
+}
 function starts_code_at(col,   split_code, split_state) {
+    col = opener_token_start(col)
     replay_to_line_start()
     split_code = _strip_line(substr($0, 1, col - 1))
     if (_lexer_open_state() != "" || comment_tail != "") return 0
