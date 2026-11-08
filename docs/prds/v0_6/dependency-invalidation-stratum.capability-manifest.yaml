@@ -116,7 +116,7 @@ tasks:
   title: 'dependency-invalidation-stratum δ: one dependency walk (DependencyGraph)'
   capabilities:
   - name: three-walks-and-paired-sites
-    binding: 'deps.rs ReverseDependencyIndex::build_from_graph_and_fields, build_trace_map_and_fields, DependencyMap::from_graph; paired production sites engine_eval 1, engine_edit 2, engine_purposes 2, plus the reverse-only rebuild in invalidate_realization_dirty_cone (git grep at 8e6ffcac9d). Retro-critic R13 (2026-10-20): the absent check also covers fn build_from_graph / fn build_trace_map, which D3 deletes and reify-runtime lib.rs, realization_staleness.rs and selective_eviction_staleness_differential.rs still read. Verdict qualifier, moved here from the verdict field on 2026-11-07 (task 9891) — corrected 2026-10-20, retro-critic R13: absent pattern widened.'
+    binding: 'deps.rs ReverseDependencyIndex::build_from_graph_and_fields, build_trace_map_and_fields, DependencyMap::from_graph; paired production sites engine_eval 1, engine_edit 2, engine_purposes 2, plus the reverse-only rebuild in invalidate_realization_dirty_cone (git grep at 8e6ffcac9d). Retro-critic R13 (2026-10-20): the absent check also covers fn build_from_graph / fn build_trace_map, which D3 deletes and reify-runtime lib.rs, realization_staleness.rs and selective_eviction_staleness_differential.rs still read. Corrected 2026-10-20, retro-critic R13: absent pattern widened.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -185,7 +185,7 @@ tasks:
       contract and wires nothing.'
     verdict: PASS
   - name: runtime-policy-has-own-consumer
-    binding: 'reify-runtime commitment.rs consumes NodeCommitmentOverride::OnlyRunOnFinalInputs with its own has_intermediate_inputs check; no gating:: call outside reify-eval tests (git grep at 8e6ffcac9d). Corrected by retro-critic R13 M7 (2026-10-20): the policy is declared but not consumed — check_commitment, CommitmentTracker and from_config_overrides each carry a G-allow "no production caller pending #5023", and reify.toml [[node_overrides]] has no effect; it stays an owned placeholder under #5023 and ζ re-justifies the three G-allow reasons in its diff. The authoring PASS was measured false by retro-critic R13 M7 (2026-10-20). ζ only re-justifies the three G-allow reasons; the capability itself, a production consumer of OnlyRunOnFinalInputs, is owned by #5023 (D6, M7). The row must NOT turn PASS when ζ lands: it stays OPEN until #5023 gives the policy a consumer or the PRD-close leaf μ records the placeholder disposition.'
+    binding: 'reify-runtime commitment.rs consumes NodeCommitmentOverride::OnlyRunOnFinalInputs with its own has_intermediate_inputs check; no gating:: call outside reify-eval tests (git grep at 8e6ffcac9d). Corrected by retro-critic R13 M7 (2026-10-20): the policy is declared but not consumed — check_commitment, CommitmentTracker and from_config_overrides each carry a G-allow "no production caller pending #5023", and reify.toml [[node_overrides]] has no effect; it stays an owned placeholder under #5023 and ζ re-justifies the three G-allow reasons in its diff. The row must NOT turn PASS when ζ lands: it stays OPEN until #5023 gives OnlyRunOnFinalInputs a production consumer.'
     verdict: OPEN
   - name: inv-eval-6-row-repointed
     binding: 'docs/invariants.md INV-EVAL-6 reads "type+test (completion transaction + panic boundary)", status proposed, owner async-recalc Phase A (bookmark).'
@@ -204,8 +204,7 @@ tasks:
     binding: 'git grep ''id_hash.combine(expr_hash)'' at 8e6ffcac9d: graph.rs 6, engine_edit.rs 2, plus a
       structural_classifier doc restatement; ValueCellNode has only pub fields and no constructor.
       Retro-critic R13 (2026-10-20): paths narrowed to the engine files, because ValueCellNode::new keeps
-      the canonical spelling in graph.rs. Verdict qualifier, moved here from the verdict field on
-      2026-11-07 (task 9891) — corrected 2026-10-20, retro-critic R13: paths narrowed.'
+      the canonical spelling in graph.rs. Corrected 2026-10-20, retro-critic R13: paths narrowed.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -217,7 +216,7 @@ tasks:
       - crates/reify-eval/src/engine_build.rs
       expect: absent
   - name: constructor-present
-    binding: 'post-delivery check. Retro-critic R13 (2026-10-20): anchored on one line, since git grep is line-based and a wrapped signature would leave a multi-line pattern red. Verdict qualifier, moved here from the verdict field on 2026-11-07 (task 9891) — corrected 2026-10-20, retro-critic R13: line-anchored pattern.'
+    binding: 'post-delivery check. Retro-critic R13 (2026-10-20): anchored on one line, since git grep is line-based and a wrapped signature would leave a multi-line pattern red. Corrected 2026-10-20, retro-critic R13: line-anchored pattern.'
     verdict: PASS
     delivered_check:
       kind: grep

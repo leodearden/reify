@@ -404,9 +404,8 @@ tasks:
       two backings tensor_backing admits, and a call stamped with the very type it is judged against.
       The delivered_check greps probe_legs, the codomain-sample mechanism the closure rests on; the
       'What this harness cannot see' heading it grepped until task 7563's amendment pass showed only that
-      the ceiling was recorded, not that the residue was closed. Verdict qualifier, moved here from
-      the verdict field on 2026-11-07 (task 9891) — residue CLOSED for the four rows by task 7563
-      (Callable and Grid Field probes, call and codomain-sample legs).
+      the ceiling was recorded, not that the residue was closed. Residue CLOSED for the four rows by
+      task 7563 (Callable and Grid Field probes, call and codomain-sample legs).
     verdict: PASS
     delivered_check:
       kind: grep
@@ -424,8 +423,7 @@ tasks:
       grounds (the sibling registry_drift_tests precedent, no new production dependency edge,
       no new gate artifact) are in the module header. Recorded here so the next tau author does
       not re-litigate it; docs/prds/v0_6/builtin-signature-registry.md is deliberately NOT edited,
-      because every sibling tau leaf shares that file. Verdict qualifier, moved here from the verdict
-      field on 2026-11-07 (task 9891) — Q5 answered.'
+      because every sibling tau leaf shares that file. Q5 answered.'
     verdict: PASS
     delivered_check:
       kind: manual

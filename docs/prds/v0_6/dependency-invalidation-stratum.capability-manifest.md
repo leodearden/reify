@@ -4,7 +4,7 @@ PRD: `docs/prds/v0_6/dependency-invalidation-stratum.md`. Machine-readable twin:
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Cite-by-symbol; re-locate lines at implementation time.
 
-Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. One row, ζ runtime-policy-has-own-consumer, is OPEN on a different footing: retro-critic R13 M7 (2026-10-20) measured its authoring PASS false, and the missing production consumer of `OnlyRunOnFinalInputs` is owned by #5023, not by ζ (D6, M7). ζ only re-justifies the three G-allow reasons, so the row must not turn PASS when ζ lands; it stays OPEN until #5023 gives the policy a consumer or the PRD-close leaf μ records the placeholder disposition. The two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
+Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. One row, ζ runtime-policy-has-own-consumer, is OPEN on a different footing: retro-critic R13 M7 (2026-10-20) measured its authoring PASS false, and the missing production consumer of `OnlyRunOnFinalInputs` is owned by #5023, not by ζ (D6, M7). ζ only re-justifies the three G-allow reasons, so the row must not turn PASS when ζ lands; it stays OPEN until #5023 gives the policy a consumer. The two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
 
 | Leaf | Capability | Evidence (authoring) | Verdict | delivered_check |
 |---|---|---|---|---|
