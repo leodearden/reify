@@ -608,3 +608,88 @@ fn transitive_template_dependent_default_pads_below_fns() {
     let module = compile_src(&source, "test_consume_pad_g");
     assert_no_errors(&module, "transitive template-dependent default");
 }
+
+// ─── the residual is loud and named at every consumer ─────────────────────────
+//
+// A default that constructs a same-module structure only compiles in its fn's
+// source-order slot. A consumer that compiles earlier and omits it must get the
+// named `FnDefaultNotYetAvailable` error, never a bare NoMatchingOverload.
+
+const OPTS: &str = "structure def Opts { param t : Real = 1.0 }\n";
+const SOLVE_FN: &str = "fn solve(x : Real, o : Opts = Opts()) -> Real { x * o.t }\n";
+
+fn assert_one_pending_default_error(module: &reify_compiler::CompiledModule, what: &str) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let no_match = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .count();
+    assert!(
+        errors.len() == 1
+            && errors[0].code == Some(DiagnosticCode::FnDefaultNotYetAvailable)
+            && no_match == 0,
+        "{what}: expected exactly one FnDefaultNotYetAvailable Error and no \
+         NoMatchingOverload; got: {:#?}",
+        diag_lines(module)
+    );
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("'solve'") && msg.contains("'o'"),
+        "{what}: the error must name the fn `solve` and its param `o`; got: {msg}"
+    );
+}
+
+/// (a) a field lambda omitting `solve`'s structure-constructing default.
+#[test]
+fn field_lambda_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve(x) }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_a");
+    assert_one_pending_default_error(&module, "field lambda");
+}
+
+/// (b) a trait-static body omitting it.
+#[test]
+fn trait_static_body_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}{SOLVE_FN}trait Sc {{ fn make() -> Real {{ solve(2.0) }} }}\n");
+    let module = compile_src(&source, "test_consume_pending_b");
+    assert_one_pending_default_error(&module, "trait-static body");
+}
+
+/// (c) a structure declared between `Opts` and `fn solve` omitting it.
+#[test]
+fn structure_above_fn_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}structure S {{ let v = solve(2.0) }}\n{SOLVE_FN}");
+    let module = compile_src(&source, "test_consume_pending_c");
+    assert_one_pending_default_error(&module, "structure above fn");
+}
+
+/// (d) an ambient default omitting it.
+#[test]
+fn ambient_default_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}{SOLVE_FN}default Real = solve(2.0)\n");
+    let module = compile_src(&source, "test_consume_pending_d");
+    assert_one_pending_default_error(&module, "ambient default");
+}
+
+/// (e) Control: a call no padding could fix keeps NoMatchingOverload.
+#[test]
+fn field_lambda_wrong_arg_type_to_pending_fn_stays_no_matching_overload() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve(\"s\") }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_e");
+    let codes: Vec<_> = module.diagnostics.iter().map(|d| d.code).collect();
+    assert!(
+        codes.contains(&Some(DiagnosticCode::NoMatchingOverload))
+            && !codes.contains(&Some(DiagnosticCode::FnDefaultNotYetAvailable)),
+        "a wrong-typed call must stay NoMatchingOverload; got: {:#?}",
+        diag_lines(&module)
+    );
+}
