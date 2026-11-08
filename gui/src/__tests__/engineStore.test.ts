@@ -7,6 +7,7 @@ import type {
   EvaluationStatus,
   DisplayDirective,
   AppearanceDirective,
+  GuiState,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -88,9 +89,9 @@ describe('engineStore', () => {
       initFromState(guiState);
       expect((state as any).displayAppearance).toEqual([styleDirective]);
 
-      // (c) GuiState with display_appearance omitted yields []
-      const guiStateNoAppearance = makeGuiState({ display_appearance: [] });
-      initFromState(guiStateNoAppearance);
+      // (c) GuiState with display_appearance omitted (an older wire snapshot) yields []
+      const { display_appearance: _absent, ...olderSnapshot } = makeGuiState();
+      initFromState(olderSnapshot as GuiState);
       expect((state as any).displayAppearance).toEqual([]);
 
       dispose();
