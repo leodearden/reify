@@ -14,8 +14,8 @@ Bindings use these evidence forms:
 - `producer:` — a task or leaf that delivers the capability;
 - `G6` — a numeric premise.
 
-Two verdicts are **OPEN**. In each case the binding is the leaf's own work product, so neither
-blocks queueing.
+Three verdicts are **OPEN**: ε no external readers, ζ empty-patch equivalence and ι conflicting-BC
+fixtures. In each case the binding is the leaf's own work product, so none blocks queueing.
 
 | leaf | capability | evidence | verdict | delivered check |
 |---|---|---|---|---|
@@ -68,10 +68,10 @@ blocks queueing.
 κ #8632 has no rows: it was cancelled on 2026-10-14 and subsumed by S10 β₁ #8935 (S10 R5 removes the
 gmsh-free build), so its checks were dead and left the twins under retro-critic ruling R2.
 
-One verdict is **OPEN** (ε, no external readers; R2 M4): the authoring PASS was measured false and
-the leaf's scope was widened to migrate the one external reader, so the row stays OPEN until ε
-lands. It read **FAIL→corrected** until 2026-11-07 (task 9891), a token outside the YAML twin's
-closed PASS/FAIL/OPEN vocabulary.
+The ε OPEN row (no external readers; R2 M4) differs from the other two: its authoring PASS was
+measured false, and the leaf's scope was widened to migrate the one external reader, so the row
+stays OPEN until ε lands. It read **FAIL→corrected** until 2026-11-07 (task 9891), a token outside
+the YAML twin's closed PASS/FAIL/OPEN vocabulary.
 
 The adopted task #8528 (ShellStress, fk-824124d1e74e) is not a batch block: it was filed by the
 run and carries no manifest block of its own.
