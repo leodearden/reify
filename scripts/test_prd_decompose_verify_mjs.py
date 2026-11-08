@@ -519,6 +519,19 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
             f"expected a mega-leaf/fan-out degradation warning in captured log; got {logs!r}",
         )
 
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_stringified_non_array_is_one_whole_string_leaf(self):
+        """A JSON string that parses to neither a leaf array nor an envelope is
+        ONE mega-leaf: the whole string, as the logged warning says. It holds as
+        the args themselves and as an envelope's `leaves` (task #9845).
+        """
+        solo = json.dumps({"signal": "solo"}, separators=(",", ":"))
+        for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
+            with self.subTest(args=args_js):
+                verdict, logs = self._run_fanout(args_js)
+                self.assertEqual([v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
+                self.assertIn("mega-leaf", " ".join(logs))
+
 
 # ---------------------------------------------------------------------------
 # _HeadSliceHelperMixin — shared node harness for a single pure helper sliced
