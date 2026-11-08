@@ -913,6 +913,18 @@ fn annular_polar_mesh_is_valid() {
     }
 }
 
+/// A wrong inner radius `a` selects no ring node. That is a fixture error the
+/// helper must report, not mask as a `0.0` maximum.
+#[test]
+#[should_panic(
+    expected = "max_inner_ring_von_mises: no node within tol_geom=0.000000001 of r=0.5 (n_nodes=8)"
+)]
+fn max_inner_ring_von_mises_panics_when_no_node_lies_on_the_ring() {
+    let (nodes, _, _) = annular_p1_mesh(1.0, 2.0, 1.0, 1, 1, 1);
+    let sigma = vec![[[0.0_f64; 3]; 3]; nodes.len()];
+    max_inner_ring_von_mises(&nodes, &sigma, 0.5, 1e-9);
+}
+
 // ─── slender cantilever P2 tip-deflection ≤1% validation ────────────────────
 
 /// Slender-cantilever P2 tip-deflection validation against Timoshenko (≤1%).
