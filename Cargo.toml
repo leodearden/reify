@@ -220,3 +220,9 @@ overflow-checks = false
 [profile.dev.package.reify-solver-elastic]
 opt-level = 2
 overflow-checks = false
+
+# Host units (build scripts, proc-macros and their dependencies) get an explicit debuginfo
+# level, so their profile, and with it every build script's metadata hash, cannot depend on
+# the cargo selection. Why: docs/notes/workspace-feature-union.md, "Host profiles".
+[profile.dev.build-override]
+debug = false
