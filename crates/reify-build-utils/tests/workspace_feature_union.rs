@@ -640,6 +640,37 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
 }
 
 #[test]
+fn check_reports_a_host_union_without_resolving_cargo_tree() {
+    let members = vec![
+        member("a", &[UNION]).build_dep("u"),
+        member("u", &[UNION]),
+        member(UNION, &[]),
+    ];
+    let fixture = Fixture::new(
+        &members,
+        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
+    )
+    .tree("a", TREE_A_UNION_MEMCHR);
+    let out = fixture.check();
+    assert_findings(
+        &out,
+        &[&["HOST-UNION u"]],
+        "u is a build-dependency of a and depends on the union",
+    );
+    assert!(
+        stdout_of(&out).contains("not compared while a HOST-UNION finding stands"),
+        "check must say that it compared nothing\n{}",
+        describe(&out)
+    );
+    let log = fixture.cargo_argv_log();
+    assert!(
+        !log.lines().any(|line| line.starts_with("tree")),
+        "a HOST-UNION finding changes the host graph, so check must not resolve cargo tree \
+         while one stands\n{log}"
+    );
+}
+
+#[test]
 fn check_reds_when_a_build_dependency_member_reaches_the_union_through_a_covered_member() {
     let members = vec![
         member("a", &[UNION]).build_dep("u"),
@@ -1336,8 +1367,9 @@ fn check_reports_a_member_feature_split_as_advisory_naming_the_selections_that_r
     );
 }
 
-/// The serde gate accepts a failing check, so it holds only while a failing
-/// check still prints every advisory line.
+/// The serde gate accepts a failing check, so it holds only while a check
+/// that fails on coverage still prints every advisory line. A HOST-UNION
+/// failure compares nothing (check_reports_a_host_union_without_resolving_cargo_tree).
 #[test]
 fn check_reports_a_member_feature_split_on_a_failing_check_without_counting_it_as_a_finding() {
     let fixture = member_split_fixture(&["e"]);
