@@ -158,13 +158,13 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
+use crate::geometry_ops::symbolic_cell_mint::{InstanceMintScope, slot_commit_order};
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
     stale_realizations,
 };
-use crate::geometry_ops::symbolic_cell_mint::{InstanceMintScope, slot_commit_order};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,

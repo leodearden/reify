@@ -580,8 +580,11 @@ fn assert_body_and_selector_minted_at_eval(before: &EvalResult, instance: &str) 
 /// the surviving slots as well as the grown one.
 #[test]
 fn edit_param_growing_a_collection_mints_cells_declared_before_their_reads_like_a_cold_eval() {
-    let (before, after_edit, cold) =
-        warm_edit_and_cold_eval(DECL_ORDER_RACK, &ValueCellId::new("DRack", "n"), Value::Int(3));
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        DECL_ORDER_RACK,
+        &ValueCellId::new("DRack", "n"),
+        Value::Int(3),
+    );
 
     for slot in ["DRack.bolts[0]", "DRack.bolts[1]"] {
         assert_body_and_selector_minted_at_eval(&before, slot);

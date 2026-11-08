@@ -12,10 +12,10 @@ use reify_compiler::{TopologyTemplate, ValueCellKind};
 use reify_core::{Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, Value, ValueMap};
 
+use super::is_symbolic_eval_wired_selector_ctor;
 use crate::cache::NodeId;
 use crate::deps::{DependencyTrace, extract_dependency_trace, extract_realization_dependencies};
 use crate::dirty::topological_sort;
-use super::is_symbolic_eval_wired_selector_ctor;
 use crate::graph::{CollectionSubInfo, EvaluationGraph, RealizationNodeData};
 
 /// Which mint a cell tries first; the first `Some` wins.
@@ -161,11 +161,7 @@ fn mint_symbolic(
     };
     let mut selector = || {
         default_expr.and_then(|expr| {
-            super::try_eval_symbolic_topology_selector(
-                expr,
-                scope.values,
-                diagnostics,
-            )
+            super::try_eval_symbolic_topology_selector(expr, scope.values, diagnostics)
         })
     };
     match order {
@@ -414,7 +410,8 @@ mod tests {
     }
 
     #[test]
-    fn project_instance_reads_reports_a_read_the_template_holds_but_the_instance_has_not_evaluated() {
+    fn project_instance_reads_reports_a_read_the_template_holds_but_the_instance_has_not_evaluated()
+    {
         let mut values = ValueMap::new();
         values.insert(id("T", "len"), Value::Int(3));
         values.insert(id("T", "w"), Value::Int(4));
