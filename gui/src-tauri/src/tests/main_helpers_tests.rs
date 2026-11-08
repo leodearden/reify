@@ -121,6 +121,10 @@ fn fresh_engine() -> std::sync::Arc<std::sync::Mutex<crate::engine::EngineSessio
     )))
 }
 
+fn no_failure_slot() -> std::sync::Arc<crate::commands::InitialFileLoadFailureSlot> {
+    std::sync::Arc::default()
+}
+
 #[test]
 fn begin_initial_file_load_submits_nothing_for_an_argv_that_is_not_a_ri_file() {
     use crate::commands::begin_initial_file_load;
@@ -130,7 +134,7 @@ fn begin_initial_file_load_submits_nothing_for_an_argv_that_is_not_a_ri_file() {
 
     for argv in ["", "model.step"] {
         assert!(
-            begin_initial_file_load(&rig.queue, fresh_engine(), argv).is_none(),
+            begin_initial_file_load(&rig.queue, fresh_engine(), no_failure_slot(), argv).is_none(),
             "argv {argv:?} must not start a load"
         );
     }
@@ -155,6 +159,7 @@ fn begin_initial_file_load_is_served_before_a_later_initial_state_request() {
     let (canonical, load) = begin_initial_file_load(
         &rig.queue,
         std::sync::Arc::clone(&engine),
+        no_failure_slot(),
         file.to_str().unwrap(),
     )
     .expect("a .ri argv must start a load");
@@ -192,7 +197,7 @@ fn begin_initial_file_load_of_a_missing_file_fails_its_ticket_and_leaves_the_que
     let missing = missing.to_str().unwrap();
     let rig = ManualQueue::new();
 
-    let (_, load) = begin_initial_file_load(&rig.queue, fresh_engine(), missing)
+    let (_, load) = begin_initial_file_load(&rig.queue, fresh_engine(), no_failure_slot(), missing)
         .expect("a missing .ri argv must still start a load, to report why it failed");
     rig.executor.run_pending();
 
@@ -202,4 +207,39 @@ fn begin_initial_file_load_of_a_missing_file_fails_its_ticket_and_leaves_the_que
         "the error must name the file, got: {error}"
     );
     assert_eq!(rig.observer.activities().last(), Some(&EvalActivity::Idle));
+}
+
+/// The frontend reads the failure after its first `get_initial_state`, which
+/// is queued behind the argv load, so the load's own job must record it.
+#[test]
+fn begin_initial_file_load_failure_is_recorded_before_the_next_queued_request_runs() {
+    use std::sync::Arc;
+
+    use crate::commands::{InitialFileLoadFailureSlot, begin_initial_file_load};
+    use crate::eval_queue::EvalRequest;
+    use crate::tests::test_helpers::{ManualQueue, settled};
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.ri");
+    let failure = Arc::new(InitialFileLoadFailureSlot::default());
+    let rig = ManualQueue::new();
+
+    let (canonical, load) = begin_initial_file_load(
+        &rig.queue,
+        fresh_engine(),
+        Arc::clone(&failure),
+        missing.to_str().unwrap(),
+    )
+    .expect("a missing .ri argv must still start a load");
+    let observed = rig.queue.submit(EvalRequest::engine_call({
+        let failure = Arc::clone(&failure);
+        move || Ok(failure.take())
+    }));
+    rig.executor.run_pending();
+
+    settled(load).expect_err("loading a missing file must fail");
+    let recorded = settled(observed)
+        .expect("the observer reads the slot")
+        .expect("the failure must be recorded before the next queued request runs");
+    assert_eq!(recorded.path, canonical.to_string_lossy());
 }

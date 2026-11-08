@@ -4020,9 +4020,9 @@ mod queued_requests {
 
     use super::{make_test_engine_for_commands, make_test_engine_on_disk};
     use crate::commands::{
-        active_fea_case_evaluation, commit_parameter_edit, disk_reload_edit, editor_source_edit,
-        initial_file_evaluation, initial_state_evaluation, open_file_evaluation,
-        preview_parameter_edit,
+        InitialFileLoadFailure, InitialFileLoadFailureSlot, active_fea_case_evaluation,
+        commit_parameter_edit, disk_reload_edit, editor_source_edit, initial_file_evaluation,
+        initial_state_evaluation, open_file_evaluation, preview_parameter_edit,
     };
     use crate::engine::EngineSession;
     use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
@@ -4307,11 +4307,14 @@ mod queued_requests {
     fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
+        let failure = Arc::new(InitialFileLoadFailureSlot::default());
         let rig = ManualQueue::new();
 
-        let ticket = rig
-            .queue
-            .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
+        let ticket = rig.queue.submit(initial_file_evaluation(
+            fresh_engine(),
+            canonical.clone(),
+            Arc::clone(&failure),
+        ));
         rig.executor.run_pending();
 
         let published = settled(ticket).expect("the load should succeed");
@@ -4321,6 +4324,49 @@ mod queued_requests {
             assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
         }
         assert_eq!(published_width(&rig.observer), mm("80"));
+        assert_eq!(failure.take(), None, "a successful load records no failure");
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_that_fails_records_why_for_the_frontend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("missing.ri");
+        let failure = Arc::new(InitialFileLoadFailureSlot::default());
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(initial_file_evaluation(
+            fresh_engine(),
+            path.clone(),
+            Arc::clone(&failure),
+        ));
+        rig.executor.run_pending();
+
+        let error = settled(ticket).expect_err("loading a missing file must fail");
+        assert_eq!(
+            failure.take(),
+            Some(InitialFileLoadFailure {
+                path: path.to_string_lossy().into_owned(),
+                error: error.clone(),
+            }),
+            "the slot must carry the file and the same error the ticket replied"
+        );
+        assert_eq!(failure.take(), None, "the failure is handed out once");
+    }
+
+    #[test]
+    fn an_initial_file_load_failure_serializes_as_path_and_error() {
+        let failure = InitialFileLoadFailure {
+            path: "/d/broken.ri".into(),
+            error: "Error reading /d/broken.ri: denied".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&failure).expect("serialize"),
+            serde_json::json!({
+                "path": "/d/broken.ri",
+                "error": "Error reading /d/broken.ri: denied",
+            })
+        );
     }
 
     #[test]
