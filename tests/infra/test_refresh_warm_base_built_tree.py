@@ -15,6 +15,8 @@ is the thin wrapper tests/infra/test_refresh_warm_base_built_tree.sh.
 HERMETIC: the refresh script runs from a temp scripts/ dir beside a no-op
 prune-unconsulted-target.sh, `cp` is a PATH stub that drops --reflink=always,
 and the lane is a temp git repository on main with an untracked target/.
+WriterParity also reads verify.sh's merge-role --print-plan (a dry run that
+executes no plan line) and replays only its attempt-0 stamp line in the lane.
 """
 
 import os
@@ -26,6 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
+VERIFY = REPO_ROOT / "scripts" / "verify.sh"
 SIDECAR = "reify-verify-attempt.json"
 ABSENT_OID = "0123456789abcdef0123456789abcdef01234567"
 
@@ -39,8 +42,16 @@ def env_without(*prefixes):
     return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
 
 
+def merge_attempt0_plan():
+    env = env_without("GIT_", "DF_", "REIFY_VERIFY_")
+    env["DF_VERIFY_ROLE"] = "merge"
+    return subprocess.run(["bash", str(VERIFY), "test", "--profile", "debug", "--scope", "all",
+                           "--print-plan"],
+                          cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
+
+
 def sidecar_body(tree_oid):
-    """verify.sh's attempt-0 stamp, byte for byte (its add_test_passes writer)."""
+    """The shape of verify.sh's attempt-0 stamp; WriterParity runs the writer itself."""
     return (f'{{"tree_oid":"{tree_oid}","profiles":"debug release",'
             f'"timestamp":"2026-11-01T06:20:01Z"}}\n')
 
@@ -92,6 +103,13 @@ exec {shutil.which("cp")} "${{args[@]}}"
         (self.lane / "units.md").write_text(f"{text}\n")
         self.git("add", "--", "units.md", "unchanged.txt")
         return self.commit("-m", f"fixture: units {text}")
+
+    def commit_paths(self, names):
+        for name in names:
+            (self.lane / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.lane / name).write_text(f"{name}\n")
+        self.git("add", "--", *names)
+        return self.commit("-m", f"fixture: {len(names)} new paths")
 
     def commit_same_tree(self):
         return self.commit("--allow-empty", "-m", "fixture: same tree, new commit")
@@ -147,6 +165,20 @@ class Refusal(BuiltTreeHarness):
         self.assertNotIn("unchanged.txt", result.stderr)
 
 
+class LongPathListing(BuiltTreeHarness):
+    def test_the_listing_stops_at_twenty_paths_and_counts_the_rest(self):
+        names = [f"many/path-{index:02d}.txt" for index in range(23)]
+        landed = self.commit_paths(names)
+        self.write_sidecar(self.tree_of(self.a))
+
+        result = self.run_refresh(landed)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        listed = [line for line in result.stderr.splitlines() if "many/path-" in line]
+        self.assertEqual(len(listed), 20, result.stderr)
+        self.assertRegex(result.stderr, r"(?m)\.\.\. and 3 more$")
+
+
 class IncidentSequence(BuiltTreeHarness):
     def test_a_refusal_leaves_the_current_gen_and_its_stamp_untouched(self):
         self.write_sidecar(self.tree_of(self.a))
@@ -200,6 +232,45 @@ class Promotion(BuiltTreeHarness):
         warnings = [line for line in result.stderr.splitlines()
                     if "[warn]" in line and SIDECAR in line]
         self.assertNotEqual(warnings, [], result.stderr)
+
+
+class WriterParity(BuiltTreeHarness):
+    """The sidecar verify.sh's merge-role attempt-0 writes, at the path and in the
+    bytes it really writes, is the one the guard reads."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plan = merge_attempt0_plan()
+
+    def stamp_like_verify_sh(self):
+        stamps = [line for line in self.plan.stdout.splitlines()
+                  if "tree_oid" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(stamps), 1,
+                         f"rc={self.plan.returncode}\n{self.plan.stdout}\n{self.plan.stderr}")
+        subprocess.run(["bash", "-c", stamps[0]], cwd=self.lane, env=env_without("GIT_"),
+                       check=True, capture_output=True, text=True)
+        self.assertTrue((self.target / SIDECAR).is_file(),
+                        f"verify.sh's attempt-0 stamp did not write target/{SIDECAR}: {stamps[0]}")
+
+    def test_the_writers_stamp_of_the_landed_tree_advances_the_base(self):
+        landed = self.commit_units("v2")
+        self.stamp_like_verify_sh()
+
+        result = self.run_refresh(landed)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.basecommit_of(self.live_gen()), landed)
+        self.assertNotIn("[warn]", result.stderr)
+
+    def test_the_writers_stamp_of_another_tree_is_refused(self):
+        self.stamp_like_verify_sh()
+        landed = self.commit_units("v2")
+
+        result = self.run_refresh(landed)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced over a foreign build")
+        self.assertIn(self.tree_of(self.a), result.stderr)
 
 
 class UnusableClaim(BuiltTreeHarness):
