@@ -129,6 +129,7 @@ vi.mock('../bridge', () => ({
   createNewFile: vi.fn().mockResolvedValue({ path: '/new/untitled.ri', content: '' }),
   listRecent: vi.fn().mockResolvedValue([]),
   recordRecent: vi.fn().mockResolvedValue([]),
+  takeInitialFileLoadFailure: vi.fn().mockResolvedValue(null),
   openFileEngine: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
@@ -277,6 +278,7 @@ beforeEach(() => {
   vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/new/untitled.ri', content: '' });
   vi.mocked(bridge.listRecent).mockResolvedValue([]);
   vi.mocked(bridge.recordRecent).mockResolvedValue([]);
+  vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue(null);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
   // Below: names some test overrides persistently but nothing used to restore,
   // so the override leaked into every later test (truth table row 3). Added
@@ -701,9 +703,10 @@ describe('App dynamic window title', () => {
 
     render(() => <App />);
 
-    // Wait for initial state to load
+    // Wait for initial state to load and the status subscription to be installed
     await waitFor(() => {
       expect(document.title).toBe('bracket.ri - Reify');
+      expect(evalStatusCallback).toBeDefined();
     });
 
     // Simulate evaluation status change
@@ -3507,6 +3510,62 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await renderAndWaitForReady();
 
     expect(screen.queryByTestId('start-view')).toBeNull();
+  });
+
+  it('a launch file that failed to load shows the start view with E_GUI_OPEN_FAILED naming the file', async () => {
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
+      path: '/designs/missing.ri',
+      error: 'permission denied',
+    });
+
+    await renderAndWaitForReady();
+
+    const error = screen.getByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(error.textContent).toContain('/designs/missing.ri');
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(bridge.takeInitialFileLoadFailure).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(bridge.getInitialState).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(bridge.takeInitialFileLoadFailure).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('a launch whose failing buffer still opened leaves no start-view error behind', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(
+      published({ ...emptyState, files: [{ path: 'broken.ri', content: 'structure {' }] }),
+    );
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
+      path: '/designs/broken.ri',
+      error: 'Parse errors: x',
+    });
+
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('start-view')).toBeNull();
+
+    capturedEditorStore.closeFile('broken.ri');
+
+    await waitFor(() => expect(screen.getByTestId('start-view')).toBeTruthy());
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+  });
+
+  it('a launch with no failure shows no start-view error', async () => {
+    await renderAndWaitForReady();
+
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+    expect(bridge.takeInitialFileLoadFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unreadable launch-file failure still reaches ready, toasts, and leaves no start-view error', async () => {
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockRejectedValue('ipc down');
+
+    await renderAndWaitForReady();
+
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryAllByTestId('toast').some((t) => t.textContent?.includes('ipc down'))).toBe(true),
+    );
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
   });
 
   it('opening a typed path loads it, records it as recent and dismisses the start view', async () => {

@@ -1149,6 +1149,24 @@ describe('bridge launcher commands', () => {
     expect(result).toEqual(recent);
   });
 
+  it('takeInitialFileLoadFailure invokes take_initial_file_load_failure and resolves the failure', async () => {
+    const failure = { path: '/t/broken.ri', error: 'Error reading /t/broken.ri: denied' };
+    mockInvoke.mockResolvedValue(failure);
+
+    const result = await bridgeAll.takeInitialFileLoadFailure();
+
+    expect(mockInvoke).toHaveBeenCalledWith('take_initial_file_load_failure');
+    expect(result).toEqual(failure);
+  });
+
+  it('takeInitialFileLoadFailure resolves null when the launch file loaded', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await bridgeAll.takeInitialFileLoadFailure();
+
+    expect(result).toBeNull();
+  });
+
   it('setMode invokes set_mode with { mode } and resolves the ModeState', async () => {
     const state = { mode: 'debug', debug_port: 3939 };
     mockInvoke.mockResolvedValue(state);
@@ -1163,6 +1181,7 @@ describe('bridge launcher commands', () => {
     ['createNewFile', () => bridgeAll.createNewFile('/t/x.ri')],
     ['listRecent', () => bridgeAll.listRecent()],
     ['recordRecent', () => bridgeAll.recordRecent('/t/x.ri')],
+    ['takeInitialFileLoadFailure', () => bridgeAll.takeInitialFileLoadFailure()],
     ['setMode', () => bridgeAll.setMode('debug')],
   ])('%s propagates a rejected invoke', async (_name, call) => {
     mockInvoke.mockRejectedValue(new Error('backend said no'));

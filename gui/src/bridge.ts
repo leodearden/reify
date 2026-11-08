@@ -40,6 +40,7 @@ import type {
   RecentEntry,
   LaunchMode,
   ModeState,
+  InitialFileLoadFailure,
 } from './types';
 import { convertRawMesh, convertRawConstraint, convertRawGuiState, convertRawPublishedState } from './types';
 import type {
@@ -196,6 +197,11 @@ export async function listRecent(): Promise<RecentEntry[]> {
 /** Put `path` at the front of the Recent list; resolves the list as stored. */
 export async function recordRecent(path: string): Promise<RecentEntry[]> {
   return invoke<RecentEntry[]>('record_recent', { path });
+}
+
+/** Why the argv launch file failed to load: recorded before getInitialState replies, handed out once. */
+export async function takeInitialFileLoadFailure(): Promise<InitialFileLoadFailure | null> {
+  return invoke<InitialFileLoadFailure | null>('take_initial_file_load_failure');
 }
 
 /** Export geometry to a file in the specified format. */
