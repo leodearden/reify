@@ -37,7 +37,9 @@ Reading the output:
                                 workspace-feature-union, or a covered member
                                 that must depend on it, onto the host side,
                                 as <path> shows; remove the dependency the
-                                line names from the named manifest.
+                                line names from the named manifest. While
+                                such a finding stands, check reports it
+                                without resolving cargo tree.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -91,6 +93,8 @@ UNION_CRATE = "workspace-feature-union"
 GENERATE_REMEDY = ("remedy: run `python3 scripts/workspace-feature-union.py generate`, "
                    "then regenerate crates/reify-eval/engine_hash_closure.txt with the "
                    "command in its header")
+HOST_UNION_TRAILER = ("note: SPLIT and MEMBER-SPLIT are not compared while a HOST-UNION "
+                      "finding stands: remove it, then run check again")
 
 
 class Verdict(IntEnum):
@@ -841,12 +845,16 @@ def fail(lines: Sequence[str], *trailer: str) -> Verdict:
 
 def run_check(root: Path) -> Verdict:
     ws = read_workspace(root, LockMode.FROZEN)
+    coverage = coverage_findings(ws)
+    host_union = host_union_findings(ws)
+    if host_union:
+        return fail([*coverage, *host_union], HOST_UNION_TRAILER)
     resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
     advisories = resolution.member_splits
     for advisory in advisories:
         print(advisory)
     found = resolution.splits
-    lines = [*coverage_findings(ws), *host_union_findings(ws), *map(str, found)]
+    lines = [*coverage, *map(str, found)]
     if lines:
         return fail(lines, *([GENERATE_REMEDY] if found else []))
     advised = f"; {len(advisories)} advisory MEMBER-SPLIT lines above" if advisories else ""
