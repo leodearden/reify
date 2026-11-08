@@ -3128,6 +3128,7 @@ mod tests_driving_set_failure {
     //! map are crate-private. The datums are hand-built via `super::test_datums`,
     //! so no geometry kernel is involved.
 
+    use reify_constraints::relate_solve::FrameSolveOutcome;
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
         NonFiniteEntry, NonFiniteEvaluation, ResidualSource, SolveFailureCause, SolveStall,
@@ -3137,9 +3138,9 @@ mod tests_driving_set_failure {
     use super::test_datums::{axis_v, plane_v, realized};
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
-        RelationPartition, SolveBudget, build_relation_instances, collect_relate_scope,
-        failure_diagnostic, minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
-        solve_relate_scope_within, solve_scaling,
+        RelationInstance, RelationPartition, SolveBudget, build_relation_instances,
+        collect_relate_scope, failure_diagnostic, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3175,6 +3176,9 @@ structure PairSearchScope {
 
     /// The anchor offset, in metres.
     const C: f64 = 0.002;
+
+    /// The budget the pair search runs under, which allows no trial step.
+    const STARVED_BUDGET: SolveBudget = SolveBudget { max_iterations: 0 };
 
     /// The `PairSearchScope` datums.
     ///
@@ -3244,6 +3248,71 @@ structure PairSearchScope {
             budget,
         };
         f(&context)
+    }
+
+    /// Solve `relations` for the context's Frame unknown from its seed, under its
+    /// scaling and `budget`: the solve production runs over the driving set and,
+    /// per candidate pair, in the conflict search.
+    fn solve_in_context(
+        context: &FailureContext,
+        relations: &[RelationInstance],
+        budget: SolveBudget,
+    ) -> FrameSolveOutcome {
+        solve_frame_outcome(
+            relations,
+            context.unknown,
+            context.seed,
+            context.scaling,
+            budget,
+        )
+    }
+
+    /// `with_failure_context` hands its callers the context
+    /// `solve_relate_scope_within` builds: production's driving-set solve fails
+    /// with the same cause, and production renders it to the same single message.
+    ///
+    /// Production runs under `STARVED_BUDGET` itself, not `context.budget`, so the
+    /// budget on its side of the comparison is not read back from the context
+    /// being checked.
+    #[test]
+    fn the_hand_built_failure_context_is_the_one_production_builds() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            let driving: Vec<RelationInstance> = context
+                .partition
+                .driving
+                .iter()
+                .map(|&i| context.built.instances[i].clone())
+                .collect();
+            let outcome = solve_in_context(context, &driving, context.budget);
+            let Err(cause @ SolveFailureCause::Infeasible(_)) = &outcome.result else {
+                panic!(
+                    "a certified failure is required: only it is rendered through the \
+                     conflict search, which reads every context field: {outcome:?}"
+                );
+            };
+
+            let production = solve_relate_scope_within(
+                context.built.scope,
+                &pair_search_datums(),
+                STARVED_BUDGET,
+            );
+            assert_eq!(
+                production.failure.as_ref(),
+                Some(cause),
+                "production's own driving-set solve fails the same way: {production:?}"
+            );
+            let rendered = failure_diagnostic(cause, context);
+            let messages: Vec<&str> = production
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(
+                messages,
+                [rendered.message.as_str()],
+                "production renders its failure from this same context"
+            );
+        });
     }
 
     /// A stall is rendered with the cause's own figures and coded by the cause,
@@ -3324,7 +3393,7 @@ structure PairSearchScope {
     /// stalls reliably, and a pair's outcome cannot be injected into the search.
     #[test]
     fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
-        with_failure_context(SolveBudget { max_iterations: 0 }, |context| {
+        with_failure_context(STARVED_BUDGET, |context| {
             assert_eq!(
                 context.partition.driving,
                 vec![0, 1, 2],
@@ -3333,60 +3402,20 @@ structure PairSearchScope {
             );
 
             let instances = &context.built.instances;
-            let full = solve_frame_outcome(
-                instances,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
-            let Err(cause @ SolveFailureCause::Infeasible(_)) = &full.result else {
-                panic!(
-                    "the full driving set is certified under this budget, so production \
-                     reaches the conflict search: {full:?}"
-                );
-            };
-            let production = solve_relate_scope_within(
-                &pair_search_scope(),
-                &pair_search_datums(),
-                context.budget,
-            );
-            assert_eq!(
-                production.failure.as_ref(),
-                Some(cause),
-                "production's own driving-set solve fails the same way: {production:?}"
-            );
-            let rendered = failure_diagnostic(cause, context);
-            let messages: Vec<&str> = production
-                .diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect();
-            assert_eq!(
-                messages,
-                [rendered.message.as_str()],
-                "production renders its failure from this same context"
+            let full = solve_in_context(context, instances, context.budget);
+            assert!(
+                matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
+                "the full driving set is certified under this budget, so production \
+                 reaches the conflict search: {full:?}"
             );
 
             let pair = [instances[0].clone(), instances[1].clone()];
-            let starved = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
+            let starved = solve_in_context(context, &pair, context.budget);
             assert!(
                 matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
                 "the first pair is out of budget, not infeasible: {starved:?}"
             );
-            let funded = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                SolveBudget::default(),
-            );
+            let funded = solve_in_context(context, &pair, SolveBudget::default());
             assert!(
                 funded.result.is_ok(),
                 "the first pair has a root: {funded:?}"
