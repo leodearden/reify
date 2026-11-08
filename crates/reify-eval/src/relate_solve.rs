@@ -3128,6 +3128,7 @@ mod tests_driving_set_failure {
     //! map are crate-private. The datums are hand-built via `super::test_datums`,
     //! so no geometry kernel is involved.
 
+    use reify_constraints::relate_solve::FrameSolveOutcome;
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
         NonFiniteEntry, NonFiniteEvaluation, ResidualSource, SolveFailureCause, SolveStall,
@@ -3249,9 +3250,30 @@ structure PairSearchScope {
         f(&context)
     }
 
+    /// Solve `relations` for the context's Frame unknown from its seed, under its
+    /// scaling and `budget`: the solve production runs over the driving set and,
+    /// per candidate pair, in the conflict search.
+    fn solve_in_context(
+        context: &FailureContext,
+        relations: &[RelationInstance],
+        budget: SolveBudget,
+    ) -> FrameSolveOutcome {
+        solve_frame_outcome(
+            relations,
+            context.unknown,
+            context.seed,
+            context.scaling,
+            budget,
+        )
+    }
+
     /// `with_failure_context` hands its callers the context
     /// `solve_relate_scope_within` builds: production's driving-set solve fails
     /// with the same cause, and production renders it to the same single message.
+    ///
+    /// Production runs under `STARVED_BUDGET` itself, not `context.budget`, so the
+    /// budget on its side of the comparison is not read back from the context
+    /// being checked.
     #[test]
     fn the_hand_built_failure_context_is_the_one_production_builds() {
         with_failure_context(STARVED_BUDGET, |context| {
@@ -3261,13 +3283,7 @@ structure PairSearchScope {
                 .iter()
                 .map(|&i| context.built.instances[i].clone())
                 .collect();
-            let outcome = solve_frame_outcome(
-                &driving,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
+            let outcome = solve_in_context(context, &driving, context.budget);
             let Err(cause @ SolveFailureCause::Infeasible(_)) = &outcome.result else {
                 panic!(
                     "a certified failure is required: only it is rendered through the \
@@ -3278,7 +3294,7 @@ structure PairSearchScope {
             let production = solve_relate_scope_within(
                 context.built.scope,
                 &pair_search_datums(),
-                context.budget,
+                STARVED_BUDGET,
             );
             assert_eq!(
                 production.failure.as_ref(),
@@ -3378,10 +3394,6 @@ structure PairSearchScope {
     #[test]
     fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
         with_failure_context(STARVED_BUDGET, |context| {
-            let solve = |rels: &[RelationInstance], budget| {
-                solve_frame_outcome(rels, context.unknown, context.seed, context.scaling, budget)
-            };
-
             assert_eq!(
                 context.partition.driving,
                 vec![0, 1, 2],
@@ -3390,7 +3402,7 @@ structure PairSearchScope {
             );
 
             let instances = &context.built.instances;
-            let full = solve(instances, context.budget);
+            let full = solve_in_context(context, instances, context.budget);
             assert!(
                 matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
                 "the full driving set is certified under this budget, so production \
@@ -3398,12 +3410,12 @@ structure PairSearchScope {
             );
 
             let pair = [instances[0].clone(), instances[1].clone()];
-            let starved = solve(&pair, context.budget);
+            let starved = solve_in_context(context, &pair, context.budget);
             assert!(
                 matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
                 "the first pair is out of budget, not infeasible: {starved:?}"
             );
-            let funded = solve(&pair, SolveBudget::default());
+            let funded = solve_in_context(context, &pair, SolveBudget::default());
             assert!(
                 funded.result.is_ok(),
                 "the first pair has a root: {funded:?}"
