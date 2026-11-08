@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-workspace-feature-union.py — keep `cargo <cmd> -p <member>` resolving every
-external package to the feature set the base's `--workspace` build compiles.
+workspace-feature-union.py — keep `cargo <cmd> -p <member>` compiling what the
+base's `--workspace` build compiles: every external package resolves to the
+features the union crate pins, and every unit to a profile Cargo.toml pins.
 
 Under resolver 2 cargo unifies features over the packages a command SELECTS,
 so `-p <member>` can resolve an external package (serde, syn, tokio, ...) to a
@@ -28,7 +29,12 @@ proc-macro. The rule, checked without compiling anything:
     variant that `-p M` compiles, read from `cargo tree -p M`, also occurs
     among those `--workspace` compiles. A dependency listed under a
     non-selected package's [dev-dependencies] is not compiled, and a member
-    printed twice as a root is placed by cargo tree's printing rules.
+    printed twice as a root is placed by cargo tree's printing rules;
+  - for every covered member M, each unit `cargo test -p M` compiles under a
+    key (package, target, mode, features, platform) that `--workspace` also
+    compiles carries one of the profiles `--workspace` compiles that key to.
+    A key `--workspace` never compiles differs in features, which SPLIT and
+    MEMBER-SPLIT report, so it is not compared again.
 
 Reading the output:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
@@ -39,7 +45,7 @@ Reading the output:
                                 as <path> shows; remove the dependency the
                                 line names from the named manifest. While
                                 such a finding stands, check reports it
-                                without resolving cargo tree.
+                                without resolving cargo tree or a unit graph.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -55,13 +61,27 @@ Reading the output:
                                 Decision, classes and limits:
                                 docs/notes/workspace-feature-union.md,
                                 "Member features".
+    PROFILE-SPLIT <m> <pkg_id> <target> (<mode>): -p compiles {..}; --workspace compiles {..}
+                                `-p <m>` compiles a unit the base compiles,
+                                but to another profile, so it gets a new
+                                metadata hash and rebuilds; each {..} lists
+                                the profile fields that differ. Set the
+                                field explicitly in the workspace Cargo.toml,
+                                as `[profile.dev.build-override]` does:
+                                docs/notes/workspace-feature-union.md,
+                                "Host profiles".
 
 `check` is a lower bound: the union's own pins are part of `--workspace`, so a
 pin no member needs any more passes it. `generate` starts from an empty
 region, so it is what sheds a stale pin.
 
 `check` resolves with `--frozen`: it never writes Cargo.lock and never touches
-the network. `generate` rewrites the marked region of
+the network. Profiles come from `cargo test --unit-graph`, a cargo-unstable
+JSON format: check sets RUSTC_BOOTSTRAP=1 on that compile-free subprocess
+only, points it at a scratch CARGO_TARGET_DIR so it never touches the
+checkout's target/ or its build lock, and passes no `--target`, as verify's
+builds pass none; a format version other than 1 is exit 2. `generate`
+pins features only, never profiles. It rewrites the marked region of
 crates/workspace-feature-union/Cargo.toml to a fixpoint and resolves with
 `--offline`, so the rewrite may update Cargo.lock; if an input fails part-way
 it puts both files back as it found them.
@@ -71,8 +91,9 @@ The gate runs from crates/reify-build-utils/tests/workspace_feature_union/
 limits and the probe procedure: docs/notes/workspace-feature-union.md.
 
 Exit codes: 0 every member resolves like the workspace; 1 a finding above;
-2 an input (cargo metadata, cargo tree, the union manifest) could not be
-trusted, including a cargo tree output whose sides cannot be read.
+2 an input (cargo metadata, cargo tree, cargo test --unit-graph, the union
+manifest) could not be trusted, including a cargo tree output whose sides
+cannot be read.
 """
 
 from __future__ import annotations
@@ -84,6 +105,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
@@ -93,8 +115,12 @@ UNION_CRATE = "workspace-feature-union"
 GENERATE_REMEDY = ("remedy: run `python3 scripts/workspace-feature-union.py generate`, "
                    "then regenerate crates/reify-eval/engine_hash_closure.txt with the "
                    "command in its header")
-HOST_UNION_TRAILER = ("note: SPLIT and MEMBER-SPLIT are not compared while a HOST-UNION "
-                      "finding stands: remove it, then run check again")
+HOST_UNION_TRAILER = ("note: SPLIT, MEMBER-SPLIT and PROFILE-SPLIT are not compared while a "
+                      "HOST-UNION finding stands: remove it, then run check again")
+PROFILE_REMEDY = ("remedy: cargo picks a build dependency's unset profile settings by whether "
+                  "the same selection also compiles it as a runtime unit; set the setting "
+                  "explicitly, as `[profile.dev.build-override]` in the workspace Cargo.toml "
+                  "does — docs/notes/workspace-feature-union.md, \"Host profiles\"")
 
 
 class Verdict(IntEnum):
@@ -147,11 +173,15 @@ def braces(features: frozenset[str]) -> str:
 
 # --- cargo ------------------------------------------------------------------
 
-def cargo(root: Path, args: Sequence[str]) -> str:
+def cargo(root: Path, args: Sequence[str], env: Mapping[str, str] | None = None) -> str:
+    """Runs cargo in `root`; `env` is merged over this process's environment
+    for that one subprocess."""
     command = [os.environ.get("CARGO", "cargo"), *args]
-    shown = shlex.join(command)
+    assignments = [f"{name}={value}" for name, value in (env or {}).items()]
+    shown = shlex.join([*assignments, *command])
+    merged = {**os.environ, **env} if env else None
     try:
-        result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True, env=merged)
     except OSError as error:
         raise InputError(f"`{shown}` could not start: {error}") from None
     if result.returncode != 0:
@@ -630,6 +660,115 @@ def read_workspace(root: Path, mode: LockMode) -> Workspace:
     return workspace_of(metadata)
 
 
+# --- cargo test --unit-graph -----------------------------------------------
+
+UNIT_GRAPH_VERSION = 1
+
+
+@dataclass(frozen=True)
+class UnitKey:
+    """A compiled unit apart from its profile. Without `--target` every
+    platform is null, so a host copy and a runtime copy share a key."""
+    pkg_id: str
+    target: str
+    kinds: tuple[str, ...]
+    mode: str
+    features: frozenset[str]
+    platform: str | None
+
+    def sort_key(self) -> tuple[str, str, tuple[str, ...], str, list[str], str]:
+        return (self.pkg_id, self.target, self.kinds, self.mode, sorted(self.features),
+                self.platform or "")
+
+
+@dataclass(frozen=True, order=True)
+class Profile:
+    """A unit's profile object as (field, JSON value) pairs sorted by field."""
+    fields: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def of(cls, profile: Mapping[str, object]) -> Profile:
+        return cls(tuple(sorted((name, json.dumps(value, sort_keys=True))
+                                for name, value in profile.items())))
+
+    def differs_from(self, other: Profile) -> frozenset[str]:
+        """The fields whose value, or presence, differs in `other`."""
+        return frozenset(name for name, _ in set(self.fields) ^ set(other.fields))
+
+    def render(self, names: frozenset[str]) -> str:
+        values = dict(self.fields)
+        return "{" + ", ".join(f"{name}: {values.get(name, 'unset')}"
+                               for name in sorted(names)) + "}"
+
+
+UnitGraph = Mapping[UnitKey, frozenset[Profile]]
+
+
+def strings(value: object, what: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{what} is not a list of strings")
+    return tuple(value)
+
+
+def string(value: object, what: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{what} is not a string")
+    return value
+
+
+def unit_of(unit: object) -> tuple[UnitKey, Profile]:
+    if not isinstance(unit, dict) or not isinstance(unit.get("target"), dict) \
+            or not isinstance(unit.get("profile"), dict):
+        raise TypeError("a unit, its target and its profile must be objects")
+    platform = unit["platform"]
+    if platform is not None:
+        platform = string(platform, "platform")
+    key = UnitKey(pkg_id=string(unit["pkg_id"], "pkg_id"),
+                  target=string(unit["target"]["name"], "target.name"),
+                  kinds=strings(unit["target"]["kind"], "target.kind"),
+                  mode=string(unit["mode"], "mode"),
+                  features=frozenset(strings(unit["features"], "features")),
+                  platform=platform)
+    return key, Profile.of(unit["profile"])
+
+
+def parse_unit_graph(text: str, source: str) -> UnitGraph:
+    try:
+        graph = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise InputError(f"{source} is not JSON: {error}") from None
+    version = graph.get("version") if isinstance(graph, dict) else None
+    if version != UNIT_GRAPH_VERSION:
+        raise InputError(f"{source}: unit graph version {version!r}, expected "
+                         f"{UNIT_GRAPH_VERSION}; cargo changed the unstable format")
+    units = graph.get("units")
+    if not isinstance(units, list):
+        raise InputError(f"{source}: `units` is not a list")
+    profiles: dict[UnitKey, set[Profile]] = {}
+    for index, unit in enumerate(units):
+        try:
+            key, profile = unit_of(unit)
+        except KeyError as error:
+            raise InputError(f"{source}: unit {index} has no field {error}") from None
+        except TypeError as error:
+            raise InputError(f"{source}: unit {index}: {error}") from None
+        profiles.setdefault(key, set()).add(profile)
+    return {key: frozenset(found) for key, found in profiles.items()}
+
+
+def unit_graph(root: Path, selection: Sequence[str], scratch: Path) -> UnitGraph:
+    """The units `cargo test <selection>` would compile, resolved without
+    compiling: RUSTC_BOOTSTRAP unlocks `--unit-graph` for this one
+    subprocess, and the scratch target dir keeps it off the checkout's
+    target/ and its build lock. No `--target`, like verify's builds, so host
+    and runtime units are shared exactly as they are there."""
+    args = ["test", LockMode.FROZEN.value, *selection, "--no-run", "--unit-graph",
+            "-Z", "unstable-options"]
+    env = {"RUSTC_BOOTSTRAP": "1", "CARGO_TARGET_DIR": str(scratch)}
+    return parse_unit_graph(cargo(root, args, env),
+                            f"`cargo test --unit-graph {' '.join(selection)}`")
+
+
 # --- findings ---------------------------------------------------------------
 
 def coverage_findings(ws: Workspace) -> list[str]:
@@ -771,6 +910,38 @@ def resolve_splits(root: Path, mode: LockMode, host: str, ws: Workspace) -> Reso
                       member_splits=member_splits(workspace.members, selected_members))
 
 
+@dataclass(frozen=True)
+class ProfileSplit:
+    """A unit `-p <member>` compiles under a key --workspace also compiles,
+    to a profile --workspace never compiles that key to."""
+    member: str
+    key: UnitKey
+    selected: Profile
+    workspace: tuple[Profile, ...]
+
+    def __str__(self) -> str:
+        names = frozenset().union(*(self.selected.differs_from(w) for w in self.workspace))
+        there = " and ".join(w.render(names) for w in self.workspace)
+        return (f"PROFILE-SPLIT {self.member} {self.key.pkg_id} {self.key.target} "
+                f"({self.key.mode}): -p compiles {self.selected.render(names)}; "
+                f"--workspace compiles {there}")
+
+
+def profile_splits(root: Path, ws: Workspace) -> tuple[ProfileSplit, ...]:
+    """Every covered member's profile splits. A key --workspace never compiles
+    differs in features, which SPLIT and MEMBER-SPLIT cover, so it is skipped."""
+    found = []
+    with tempfile.TemporaryDirectory(prefix="workspace-feature-union-") as scratch:
+        workspace = unit_graph(root, ["--workspace"], Path(scratch))
+        for member in ws.covered:
+            selected = unit_graph(root, ["-p", member.name], Path(scratch))
+            for key in sorted(selected.keys() & workspace.keys(), key=UnitKey.sort_key):
+                there = tuple(sorted(workspace[key]))
+                found.extend(ProfileSplit(member.name, key, profile, there)
+                             for profile in sorted(selected[key] - workspace[key]))
+    return tuple(found)
+
+
 # --- the union manifest -----------------------------------------------------
 
 BEGIN_MARKER = ("# BEGIN generated by scripts/workspace-feature-union.py generate "
@@ -890,12 +1061,15 @@ def run_check(root: Path) -> Verdict:
     for advisory in advisories:
         print(advisory)
     found = resolution.splits
-    lines = [*coverage, *map(str, found)]
+    profiles = profile_splits(root, ws)
+    lines = [*coverage, *map(str, found), *map(str, profiles)]
     if lines:
-        return fail(lines, *([GENERATE_REMEDY] if found else []))
+        return fail(lines, *([GENERATE_REMEDY] if found else []),
+                    *([PROFILE_REMEDY] if profiles else []))
     advised = f"; {len(advisories)} advisory MEMBER-SPLIT lines above" if advisories else ""
     print(f"workspace-feature-union: OK ({len(ws.covered)} members resolve every external "
-          f"package like --workspace{advised})")
+          f"package like --workspace and compile each unit to a --workspace "
+          f"profile{advised})")
     return Verdict.OK
 
 
