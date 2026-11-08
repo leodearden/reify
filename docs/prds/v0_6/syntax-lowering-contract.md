@@ -596,7 +596,7 @@ adoption-ratchet ts-parser-child-* | shipped` to `docs/legibility/design-invaria
 
 | scenario | preconditions | postconditions |
 |---|---|---|
-| Tracked corpus guard (α) | every tracked `.ri`, except UNDECLARED members of `tests/prd-gate/fixtures/` and `crates/reify-spec-conformance/fixtures/` (two reasoned `UNSWEPT_RI_TREES` rows: chartered probe / must-reject inputs that need not parse; amended 2026-10-21, Leo, ratifying #9343's plan) | not in `MUST_ERROR_RI_FIXTURES` ⇒ Rust CST clean ∧ `errors` empty; in it ⇒ CST faulty (reason stated) |
+| Tracked corpus guard (α) | every tracked `.ri` outside `docs/`, except UNDECLARED members of `tests/prd-gate/fixtures/` and `crates/reify-spec-conformance/fixtures/` (the two reasoned `UNSWEPT_RI_TREES` rows: chartered probe / must-reject inputs that need not parse; amended 2026-10-21, Leo, ratifying #9343's plan). `docs/` is dropped from the shared tracked listing itself (`crates/reify-syntax/tests/common/tracked_corpus.rs` `VERIFY_INERT_RI_TREES` / `swept_ri_paths`, task #9868), so neither repo-wide sweep in `harness_syntax` reads it, declared or not: not this guard, and not #7094's member-continuation sweep. The reason: verify's scope classifier routes `docs/` to no heavy checks, and docs land on main by a hook-gated commit. A differential test holds `VERIFY_INERT_RI_TREES` equal to the classifier's `inert` fact (`scripts/reify_path_attribution.py`) over every tracked `.ri`. All 54 tracked `docs/prds/v0_6/fixtures/*.ri` (53 clean, plus the formerly declared `indexed_sub_instantiation_surface.ri`) leave both sweeps, the same end state #6431's Leo-ruled move to `tests/prd-gate/fixtures/` reaches. A `docs/` file can still be read by name: `indexed_sub_instantiation_parser_tests.rs` `include_str!`s `docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri`, one of the pre-existing couplings #6431/#6077 own | not in `MUST_ERROR_RI_FIXTURES` ⇒ Rust CST clean ∧ `errors` empty; in it ⇒ CST faulty (reason stated); no `MUST_ERROR_RI_FIXTURES` entry lies under a verify-inert tree |
 | Corpus must-error (β) | the 8 corpus fault entries | Rust tree `has_error`; `parse(input).errors` non-empty; the debug assert does not fire |
 | Probe table (β) | §6.1 rows | at least one error intersects each fault offset |
 | Root ERROR (β, #7810) | `slc_root_error.ri`; #7810's fixture | no `unexpected '…' in source file`; at least one located error |
@@ -679,9 +679,13 @@ checked against the live #8612 closure.
   `decl_passes_purpose_body_sub_swallowed.ri` and this PRD's eight CST-faulty `slc_*` fixtures, each a
   `CstFault` entry with a reason. `slc_where_pragma_dropped.ri` and `slc_spec_body_pragma_dropped.ri` have clean
   CSTs. They join the list as `ErrorsOnly` entries only once δ makes them error, in δ's diff.
-- `docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri` is an `ErrorsOnly` entry from the start. It
-  carries a clean CST and the #5482 interim rejection. It lives in the deprecated `docs/prds/**/fixtures/`
-  tier, so PG-DRIFT does not apply; if #6431 moves it, the list follows in #6431's diff.
+- `docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri` was declared at α as an `ErrorsOnly` entry (a
+  clean CST and the #5482 interim rejection) and is dropped by #9868. A declared entry was then read wherever it
+  lived, so it kept the guard reading a `docs/` file that verify never tests, and a hook-gated docs commit could
+  red a merge gate through it; since #9868 the guard reads no `docs/` path and refuses a declaration there. Its
+  interim rejection stays pinned on the same file by
+  `indexed_sub_instantiation_parser_tests.rs` (`surface_fixture_no_longer_emits_invalid_sub_parse_error`).
+  #6431 therefore owes the guard no edit when it moves the file.
 - Register every `tests/prd-gate/fixtures/*.ri` the list names in `scripts/verify.sh`'s
   `_RUST_COUPLED_RI_FIXTURES` in the same diff (D12, PG-DRIFT). δ does the same for its two entries.
 - Depends on #7809, which removes the two examples' faulty `port` lines.
