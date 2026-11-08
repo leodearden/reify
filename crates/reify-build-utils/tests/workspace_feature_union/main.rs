@@ -10,6 +10,7 @@ use std::process::Command;
 
 mod generate;
 mod harness;
+mod profile_split;
 
 use harness::{
     END_MARKER, Fixture, Member, TREE_A, TREE_UNION, UNION, UNION_NODE, assert_exit,
@@ -253,6 +254,11 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
         !log.lines().any(|line| line.starts_with("tree")),
         "a HOST-UNION finding changes the host graph, so check must not resolve cargo tree \
          while one stands\n{log}"
+    );
+    assert!(
+        !log.lines().any(|line| line.starts_with("test")),
+        "a HOST-UNION finding changes the host graph, so check must not compare unit-graph \
+         profiles while one stands\n{log}"
     );
 }
 

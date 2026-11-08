@@ -68,7 +68,7 @@ fn line_has_all(line: &str, needles: &[&str]) -> bool {
     needles.iter().all(|needle| line.contains(needle))
 }
 
-const FINDING_KINDS: [&str; 3] = ["SPLIT ", "UNCOVERED ", "HOST-UNION "];
+const FINDING_KINDS: [&str; 4] = ["SPLIT ", "UNCOVERED ", "HOST-UNION ", "PROFILE-SPLIT "];
 
 pub(crate) fn finding_lines(stdout: &str) -> Vec<&str> {
     stdout
@@ -231,6 +231,10 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// (`grep -f`), and serves tree-NAME.txt when stage 1's pattern does not
 /// match. Like real cargo, an `--offline` tree may rewrite Cargo.lock: the
 /// stub appends its argv to the fixture's Cargo.lock when one exists.
+/// `test --workspace` serves unit-graph-workspace.json and `test -p NAME`
+/// serves unit-graph-NAME.json, or the empty version-1 unit graph when that
+/// file is absent; every `test` call appends its RUSTC_BOOTSTRAP and
+/// CARGO_TARGET_DIR to cargo-env.log.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -270,6 +274,26 @@ case "${1:-}" in
       fi
       prev="$arg"
     done ;;
+  test)
+    printf 'RUSTC_BOOTSTRAP=%s CARGO_TARGET_DIR=%s\n' "${RUSTC_BOOTSTRAP:-}" "${CARGO_TARGET_DIR:-}" \
+      >> "$here/cargo-env.log"
+    prev=""
+    for arg in "$@"; do
+      graph=""
+      if [ "$arg" = "--workspace" ]; then
+        graph="$here/unit-graph-workspace.json"
+      elif [ "$prev" = "-p" ]; then
+        graph="$here/unit-graph-$arg.json"
+      fi
+      if [ -n "$graph" ]; then
+        if [ -e "$graph" ]; then
+          exec cat "$graph"
+        fi
+        printf '%s\n' '{"version":1,"units":[],"roots":[]}'
+        exit 0
+      fi
+      prev="$arg"
+    done ;;
 esac
 echo "stub cargo: unexpected argv: $*" >&2
 exit 3
@@ -296,6 +320,13 @@ impl Fixture {
     /// Serves `text` for `cargo tree -p <name>`.
     pub(crate) fn tree(self, name: &str, text: &str) -> Fixture {
         self.write(&format!("tree-{name}.txt"), text);
+        self
+    }
+
+    /// Serves `json` for `cargo test --unit-graph` of `selection`: a member
+    /// name for `-p <name>`, or "workspace" for `--workspace`.
+    pub(crate) fn unit_graph(self, selection: &str, json: &str) -> Fixture {
+        self.write(&format!("unit-graph-{selection}.json"), json);
         self
     }
 
@@ -363,6 +394,12 @@ impl Fixture {
     /// Every argv the stub cargo was invoked with, one per line.
     pub(crate) fn cargo_argv_log(&self) -> String {
         fs::read_to_string(self.path("cargo-argv.log")).unwrap_or_default()
+    }
+
+    /// The RUSTC_BOOTSTRAP and CARGO_TARGET_DIR of every stub `cargo test`
+    /// call, one call per line.
+    pub(crate) fn cargo_env_log(&self) -> String {
+        fs::read_to_string(self.path("cargo-env.log")).unwrap_or_default()
     }
 }
 
