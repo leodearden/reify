@@ -61,13 +61,18 @@ to the features `--workspace` resolves, and every member depends on it, so any
 
 ## The invariant and its gate
 
-Every covered member's `cargo tree -p <m>` external (name, version, side,
-features) variants all occur in `cargo tree --workspace`. The gate
+For every covered member, every external (name, version, side, features)
+variant that `-p <m>` compiles, as read from `cargo tree -p <m>`, is one that
+`--workspace` compiles. The gate
 `real_workspace_resolves_every_member_like_the_workspace` runs
 `python3 scripts/workspace-feature-union.py check` (resolve-only,
-`--frozen`, about 20 s). It runs on every `crates/*/Cargo.toml` edit, because
-it lives in reify-build-utils, the crate `scripts/reify_path_attribution.py`
-routes manifest edits to.
+`--frozen`; about 20 s, though 74–81 s on a heavily loaded host on 2026-11-07,
+of which parsing was 0.02 s). It runs on every
+`crates/*/Cargo.toml` edit, because it lives in reify-build-utils, the crate
+`scripts/reify_path_attribution.py` routes manifest edits to. Sides come from a
+walk over cargo's deduped tree, and a member printed twice as a root is placed
+by cargo's printing rules (Limits, "Side attribution"). While a HOST-UNION
+finding stands, check reports it and compares nothing.
 
 When it reds after a dependency or feature edit:
 
@@ -596,9 +601,7 @@ reds when a MEMBER-SPLIT line names reify-core, reify-ast or reify-ir, for
 example after an opt-out or a re-added non-default pass-through. Remedy: a
 feature every shipped binary enables is default-on, or is not a feature.
 
-MEMBER-SPLIT uses `parse_tree`'s side attribution, so the two Limits bullets
-owned by #9873 (host roots, and a host-side member's dev-dependencies) apply to
-it as well.
+MEMBER-SPLIT reads the same side-aware walk as SPLIT (#9873).
 
 ## Limits
 
@@ -656,28 +659,64 @@ it as well.
   the union manifest.
 - **HOST-UNION over-approximates.** Optional and platform-specific path
   dependencies count even when inactive, so the rule fails loud, never silent.
-- **Host roots in the SPLIT comparison.** `parse_tree` still attributes every
-  non-proc-macro depth-0 `--workspace` root to TARGET, so a host root's
-  external variants are filed under TARGET. That usually shows up as a
-  spurious `SPLIT ... no host variant`, and it could rarely mask a target
-  split. Owned by #9873.
-- **A host-side member's dev-dependencies in the SPLIT comparison.**
-  `cargo tree` lists a member's `[dev-dependencies]` wherever the member
-  appears, including below another member's build edge to it, and
-  `parse_tree` files everything under a host node as HOST. Measured on the real
-  `--workspace` tree on 2026-11-07: reify-build-utils' dev-dependencies
-  (proc-macro2, syn, tempfile) are listed below its `[build-dependencies]`
-  edges. That puts HOST variants of tempfile 3.27.0, rustix 1.1.4, getrandom
-  0.4.2, linux-raw-sys 0.12.1 and once_cell 1.21.4 into the `--workspace` set,
-  though no build compiles them for the host: none of them is a HOST variant
-  of `cargo tree --workspace -e normal,build`. Such a variant can mask a real
-  host split of the same package, or let `generate` pin a host unit nobody
-  builds. None is pinned today.
+- **Side attribution (#9873).** `cargo tree`'s text has no host/target
+  marker. `--workspace` prints a member reached on the host side as two depth-0
+  roots, which can be textually identical, and its `(*)` dedupe spans roots.
+  `--workspace` also lists every member's `[dev-dependencies]` wherever the
+  member appears, including below another member's build edge to it, while `-p`
+  lists only the selected member's: the `-p` trees of reify-eval, reify-audit,
+  reify-config and reify-syntax hold 0 nested dev sections, against 27 in
+  `--workspace`.
 
-  Skipping a dev section below a non-root node does not fix it, because the
-  `(*)` dedupe can make that section the only expanded copy of a subtree. On
-  the real tree, reify-build-utils and its toml 0.8.2 are expanded only below
-  reify-audit -> reify-syntax's `[dev-dependencies]`. A probe that skipped such
-  sections lost real variants, the HOST toml 0.8.2 among them. A fix needs a
-  resolution without the dedupe, or a walk over the deduped graph. Owned by
-  #9873.
+  Decision. `--no-dedupe` is infeasible: on the real workspace it was stopped
+  after 600 s at 4.28 GB / 36.2M lines, against 1,660 lines in 0.68 s deduped.
+  So `check` walks the deduped graph, where a `(*)` line resolves to the first
+  line of the same (node, side). It takes the closure from every target root,
+  following dev-dependencies only at those roots. It places a member's two roots
+  by cargo's printing rules: a node's first line lists its dependencies and every
+  later line is `(*)`, which a node without dependencies never gets, and there
+  is one feature set per package and side.
+
+  Effect on the real workspace. One member, reify-build-utils, is printed as
+  two roots, and exactly one side assignment survives. The `--workspace`
+  external set drops the 5 phantom HOST variants that reify-build-utils'
+  dev-dependencies, listed below its build edges, used to put there (tempfile
+  3.27.0, rustix 1.1.4, getrandom 0.4.2, linux-raw-sys 0.12.1, once_cell 1.21.4;
+  450 → 445 variants), and adds none. The SPLIT verdict, the 37 `-p` sets and
+  the 146 MEMBER-SPLIT (variant, selection) pairs are unchanged. `generate` on
+  the real workspace leaves the union manifest and `Cargo.lock` byte-identical,
+  so neither the union nor `crates/reify-eval/engine_hash_closure.txt` needs
+  regenerating.
+
+  Scratch reproductions, fixed and pinned by the gate's fixtures. These are
+  real cargo 1.96 workspaces of path members plus offline-cached memchr 2.8.1 /
+  log 0.4.30. A host-side member whose host root is printed before the build
+  edge to it used to give a spurious `SPLIT ... no host variant`, and in the same
+  shape it masked a real target split, even one whose differing dependency is a
+  leaf. Fixtures:
+  `check_and_generate_are_green_when_a_host_side_members_host_root_is_printed_before_its_build_edge`,
+  `check_reds_and_generate_pins_a_target_split_that_a_host_root_used_to_mask` and
+  `check_reds_on_a_leaf_target_split_that_a_host_root_used_to_mask`. A fourth,
+  `check_finds_a_host_variant_whose_only_expanded_line_sits_below_a_dev_section`,
+  pins that a subtree whose only expanded copy sits inside another member's dev
+  section is still read. Skipping such sections, the refuted fix, lost real
+  variants: on the real tree reify-build-utils and its HOST toml 0.8.2 are
+  expanded only below reify-audit -> reify-syntax's `[dev-dependencies]`.
+
+  Refuted risk. A phantom variant can neither mask a host split nor be pinned.
+  One feature set per side makes a phantom line the same node as any real line
+  of its key, and `-p` trees list no nested dev sections, so no `-p` set holds
+  a phantom.
+
+  Remaining limit. `check` exits 2, naming the member, when two side
+  assignments obey the rules and resolve different packages
+  (`check_exits_2_when_the_tree_cannot_say_which_root_of_a_member_is_its_host_copy`).
+  The shape: both of a member's roots are first expanded at the roots, its own
+  features are identical on both sides, and a dependency is reached only through
+  those two roots, with side-dependent features. No such shape exists on the
+  real workspace today.
+
+  Context: the `--no-dedupe`, nested-dev-section and scratch-workspace numbers
+  were measured in #9873's architect session (HEAD a9a17b3254, cargo 1.96.0);
+  the real-workspace effect was re-measured at implementation on the same base
+  and cargo, 2026-11-07.
