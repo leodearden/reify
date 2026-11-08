@@ -198,7 +198,8 @@ impl InstanceMintScope<'_> {
     /// reads: the expression's reads, plus, for a geometry cell, the reads of
     /// its realization's operations, which the handle's hash folds. The two
     /// sets differ when the compiler inlines a guarded geometry let into the
-    /// operations. `Undef` when nothing mints.
+    /// operations. `Undef` when nothing mints, and when the template holds a
+    /// read the instance has not committed yet, which declines the mint.
     pub(crate) fn mint_undef_instance_cell(
         &self,
         instance_cell: &ValueCellId,
@@ -213,8 +214,11 @@ impl InstanceMintScope<'_> {
             return Some(Value::Undef);
         }
         let reads = instance_mint_reads(self.graph, &template_cell, expr);
-        let instance_values =
-            project_instance_reads(self.values, &instance_cell.entity, template, &reads);
+        let Ok(instance_values) =
+            project_instance_reads(self.values, &instance_cell.entity, template, &reads)
+        else {
+            return Some(Value::Undef);
+        };
         Some(mint_template_keyed_instance_cell(
             Value::Undef,
             kind,
@@ -332,12 +336,15 @@ pub(crate) fn slot_commit_order<'c>(
 /// taken from sub instance `instance`: `T.m` from `I.m`, and a nested sub's
 /// `T.x.m` from `I.x.m`, as `unfold`'s phase-2 projection keys them. A read
 /// outside `template`'s scope is left out, since an instance scope holds none.
+/// `Err(I.m)` when `values` holds the template's `T.m` but not the instance's
+/// `I.m`; a read absent at both scopes is left out, as template scope folds it
+/// as `Undef` too.
 fn project_instance_reads(
     values: &ValueMap,
     instance: &str,
     template: &str,
     reads: &[ValueCellId],
-) -> ValueMap {
+) -> Result<ValueMap, ValueCellId> {
     let mut scope = ValueMap::new();
     for read in reads {
         let Some(suffix) = read.entity.strip_prefix(template) else {
@@ -349,9 +356,11 @@ fn project_instance_reads(
         let instance_cell = ValueCellId::new(format!("{instance}{suffix}"), &read.member);
         if let Some(value) = values.get(&instance_cell) {
             scope.insert(read.clone(), value.clone());
+        } else if values.get(read).is_some() {
+            return Err(instance_cell);
         }
     }
-    scope
+    Ok(scope)
 }
 
 #[cfg(test)]
