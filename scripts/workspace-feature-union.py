@@ -411,21 +411,37 @@ OPPOSITE = {Side.TARGET: Side.HOST, Side.HOST: Side.TARGET}
 def sides_to_try(forest: Forest, root: Root, copies: tuple[Root, ...],
                  root_sides: RootSides) -> tuple[Side, ...]:
     """A root printed once is TARGET, or HOST for a proc-macro. A pair's first
-    root is tried on both sides, unless the two blocks are character-identical
-    and swapping them changes nothing; its second root takes the other side."""
+    root is tried on both sides, and its second root takes the other side."""
     if len(copies) == 1:
         return (Side.HOST,) if forest.package(root).proc_macro else (Side.TARGET,)
     first, second = copies
     if root == second:
         return (OPPOSITE[root_sides[first.index]],)
-    if first.text == second.text:
-        return (Side.TARGET,)
     return (Side.TARGET, Side.HOST)
 
 
+def collapse_identical_swaps(root: Root, copies: tuple[Root, ...],
+                             surviving: list[tuple[RootSides, PrintState]]
+                             ) -> list[tuple[RootSides, PrintState]]:
+    """Keeps the first of the assignments that differ only in which copy of a
+    character-identical pair is the host one: once the pair's second root is
+    admitted, they have admitted the same (line text, side) pairs, so they
+    hold the same PrintState and compile the same Tree."""
+    if len(copies) != 2 or root != copies[1] or copies[0].text != copies[1].text:
+        return surviving
+    pair = {copy.index for copy in copies}
+    kept: dict[frozenset[tuple[int, Side]], tuple[RootSides, PrintState]] = {}
+    for assignment in surviving:
+        root_sides, _ = assignment
+        kept.setdefault(frozenset((index, side) for index, side in root_sides.items()
+                                  if index not in pair), assignment)
+    return list(kept.values())
+
+
 def side_assignments(forest: Forest) -> list[RootSides]:
-    """Every side assignment of the roots under which each line, in print
-    order, obeys cargo tree's printing rules (PrintState)."""
+    """Every side assignment of the roots, up to swapping a character-identical
+    pair, under which each line, in print order, obeys cargo tree's printing
+    rules (PrintState)."""
     copies = root_copies(forest)
     open_assignments: list[tuple[RootSides, PrintState]] = [({}, PrintState())]
     last_break = ""
@@ -447,7 +463,8 @@ def side_assignments(forest: Forest) -> list[RootSides]:
             raise InputError(f"{forest.source}: no side assignment of the roots printed twice "
                              f"({', '.join(pairs)}) obeys cargo tree's printing rules; the "
                              f"last one tried breaks at {last_break}")
-        open_assignments = surviving
+        open_assignments = collapse_identical_swaps(root, copies[forest.package(root).label],
+                                                    surviving)
     return [root_sides for root_sides, _ in open_assignments]
 
 
