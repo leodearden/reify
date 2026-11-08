@@ -24,6 +24,9 @@ export interface StartViewProps {
 const ASSISTANT_NOTE_ID = 'start-assistant-note-text';
 const DEBUG_NOTE_ID = 'start-debug-note-text';
 
+/** The address the debug server binds, owned by `BoundDebugListener::bind` in gui/src-tauri/src/debug_server.rs. */
+const DEBUG_LISTENER_HOST = '127.0.0.1';
+
 const MODES: readonly { mode: LaunchMode; label: string; noteId?: string }[] = [
   { mode: 'design', label: 'Design' },
   { mode: 'assistant', label: 'Assistant', noteId: ASSISTANT_NOTE_ID },
@@ -126,12 +129,12 @@ export const StartView: Component<StartViewProps> = (props) => {
             The assistant needs a Claude Code login on this machine.
           </p>
           <p class={styles.note} id={DEBUG_NOTE_ID} data-testid="start-debug-note">
-            Debug opens a local control port (127.0.0.1) that tools on this machine can drive.
+            Debug opens a local control port ({DEBUG_LISTENER_HOST}) that tools on this machine can drive.
           </p>
           <Show when={state().mode.debugPort}>
             {(port) => (
               <p class={styles.note} data-testid="start-debug-port">
-                Debug server listening on 127.0.0.1:{port()}
+                Debug server listening on {DEBUG_LISTENER_HOST}:{port()}
               </p>
             )}
           </Show>

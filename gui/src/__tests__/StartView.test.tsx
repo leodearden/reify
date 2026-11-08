@@ -112,7 +112,7 @@ describe('StartView layout', () => {
 
     store.applyModeState({ mode: 'debug', debug_port: 3939 });
 
-    expect(screen.getByTestId('start-debug-port').textContent).toContain('3939');
+    expect(screen.getByTestId('start-debug-port').textContent).toContain('127.0.0.1:3939');
   });
 
   it('lists the recent entries in order, by path', () => {
