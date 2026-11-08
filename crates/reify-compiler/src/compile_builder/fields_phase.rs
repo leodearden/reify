@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use reify_ast::FieldDef;
 
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::functions::compile_field;
+use crate::functions::{CallTable, compile_field};
 
 /// Run phase-9 (fields). Compiles each `field_def` into a `CompiledField`
 /// pushed onto `ctx.fields`.
@@ -27,7 +27,7 @@ pub(crate) fn phase_fields(
         let compiled = compile_field(
             field_def,
             &ctx.resolution_enums,
-            &ctx.resolution_functions,
+            CallTable::with_pending(&ctx.resolution_functions, &ctx.fns_with_pending_defaults),
             &ctx.alias_registry,
             &ctx.resolution_structure_names,
             trait_names,

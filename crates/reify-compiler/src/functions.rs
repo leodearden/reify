@@ -298,22 +298,57 @@ pub(crate) fn resolve_fn_signature(
     }
 }
 
+/// A call-resolution table plus which of its same-module stubs cannot pad
+/// yet ([`CompilationScope::fns_with_pending_defaults`]). The two travel
+/// together, so every scope that resolves calls against a table holding such a
+/// stub is told which ones (task #5494, PRD stdlib-namespace D-8).
+#[derive(Clone, Copy)]
+pub(crate) struct CallTable<'a> {
+    pub(crate) functions: &'a [CompiledFunction],
+    pub(crate) fns_with_pending_defaults: Option<&'a HashSet<String>>,
+}
+
+impl<'a> CallTable<'a> {
+    /// A table whose stubs, if any, carry every default they will ever have.
+    pub(crate) fn complete(functions: &'a [CompiledFunction]) -> Self {
+        CallTable {
+            functions,
+            fns_with_pending_defaults: None,
+        }
+    }
+
+    /// A table that may hold the stubs of `pending` fns.
+    pub(crate) fn with_pending(
+        functions: &'a [CompiledFunction],
+        pending: &'a HashSet<String>,
+    ) -> Self {
+        CallTable {
+            functions,
+            fns_with_pending_defaults: Some(pending),
+        }
+    }
+
+    /// Tell `scope` which of this table's stubs cannot pad.
+    pub(crate) fn mark_pending_on(&self, scope: &mut CompilationScope<'a>) {
+        if let Some(names) = self.fns_with_pending_defaults {
+            scope.set_fns_with_pending_defaults(names);
+        }
+    }
+}
+
 /// What a free fn's param defaults and body compile against.
 ///
 /// One bundle, so the default scope and the body scope are configured from the
 /// same fields and cannot drift (task 5494).
 pub(crate) struct FnCompileEnv<'a> {
     pub(crate) enum_defs: &'a [reify_ir::EnumDef],
-    /// The call-resolution table.
-    pub(crate) functions: &'a [CompiledFunction],
+    pub(crate) calls: CallTable<'a>,
     /// The ctor view, so a structure-def constructor call — e.g. `Widget()` —
     /// lowers to `CompiledExprKind::StructureInstanceCtor` rather than a
     /// generic `FunctionCall` (esc-3851-32).
     pub(crate) template_registry: Option<&'a HashMap<String, &'a TopologyTemplate>>,
     /// See [`CompilationScope::later_declared_structure_names`].
     pub(crate) later_declared_structure_names: Option<&'a HashSet<String>>,
-    /// See [`CompilationScope::fns_with_pending_defaults`].
-    pub(crate) fns_with_pending_defaults: Option<&'a HashSet<String>>,
     /// The module's order-independent callable vocabulary (task #5371).
     pub(crate) declared_callable_names: &'a HashSet<String>,
 }
@@ -328,9 +363,7 @@ impl<'a> FnCompileEnv<'a> {
         if let Some(names) = self.later_declared_structure_names {
             scope.set_later_declared_structure_names(names);
         }
-        if let Some(names) = self.fns_with_pending_defaults {
-            scope.set_fns_with_pending_defaults(names);
-        }
+        self.calls.mark_pending_on(&mut scope);
         scope.declared_callable_names = Some(self.declared_callable_names);
         scope
     }
@@ -360,7 +393,7 @@ pub(crate) fn compile_fn_param_defaults(
         .map(|p| {
             p.default
                 .as_ref()
-                .map(|d| compile_expr(d, &neutral_scope, env.enum_defs, env.functions, diagnostics))
+                .map(|d| compile_expr(d, &neutral_scope, env.enum_defs, env.calls.functions, diagnostics))
         })
         .collect();
 
@@ -430,7 +463,7 @@ pub(crate) fn compile_fn_body(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let enum_defs = env.enum_defs;
-    let functions = env.functions;
+    let functions = env.calls.functions;
     let mut scope = env.scope(&fn_def.name);
     for (name, ty) in &sig.params {
         scope.register(name, ty.clone());
@@ -536,7 +569,7 @@ pub(crate) fn compile_fn_body(
 pub(crate) fn compile_function(
     fn_def: &reify_ast::FnDef,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -554,12 +587,11 @@ pub(crate) fn compile_function(
     );
     let env = FnCompileEnv {
         enum_defs,
-        functions,
+        calls,
         template_registry: prelude_template_registry,
         // Trait-static fns are not in the source-order pass, so the
         // declaration-order rule does not apply to them (#5371's ruling).
         later_declared_structure_names: None,
-        fns_with_pending_defaults: None,
         declared_callable_names,
     };
     let param_defaults = compile_fn_param_defaults(fn_def, &sig, &env, diagnostics);
@@ -1014,7 +1046,7 @@ fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
 pub(crate) fn compile_field(
     field_def: &reify_ast::FieldDef,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -1202,7 +1234,9 @@ pub(crate) fn compile_field(
     };
 
     // Create a scope for compiling field source expressions
-    let scope = CompilationScope::new(&field_def.name);
+    let functions = calls.functions;
+    let mut scope = CompilationScope::new(&field_def.name);
+    calls.mark_pending_on(&mut scope);
 
     let source = match &field_def.source {
         reify_ast::FieldSource::Analytical { expr } => {
@@ -2007,7 +2041,7 @@ mod tests {
             let compiled = compile_field(
                 &field,
                 &[],
-                &[],
+                CallTable::complete(&[]),
                 &TypeAliasRegistry::new(),
                 &HashSet::new(),
                 &HashSet::new(),
@@ -2050,7 +2084,7 @@ mod tests {
             let compiled = compile_field(
                 &field,
                 &[],
-                &[],
+                CallTable::complete(&[]),
                 &TypeAliasRegistry::new(),
                 &HashSet::new(),
                 &HashSet::new(),
@@ -2098,7 +2132,7 @@ mod tests {
         let compiled = compile_field(
             &field,
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -2116,7 +2150,7 @@ mod tests {
         let compiled = compile_field(
             &field,
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),

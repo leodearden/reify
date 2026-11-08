@@ -44,6 +44,7 @@ use crate::entity::{
     check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
+use crate::functions::CallTable;
 use crate::name_env;
 use crate::scope::CompilationScope;
 use crate::type_compat::{
@@ -176,7 +177,7 @@ pub(crate) fn phase_entities(
         &structure_names,
         trait_names,
         &ctx.resolution_enums,
-        &ctx.resolution_functions,
+        CallTable::with_pending(&ctx.resolution_functions, &ctx.fns_with_pending_defaults),
         &ctx.unit_registry,
         &ctx.alias_registry,
         &mut ctx.diagnostics,
@@ -223,7 +224,10 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(structure),
                         EntityKind::Structure,
                         &ctx.resolution_enums,
-                        &resolution_functions,
+                        CallTable::with_pending(
+                            &resolution_functions,
+                            &ctx.fns_with_pending_defaults,
+                        ),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -323,7 +327,10 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(occurrence),
                         EntityKind::Occurrence,
                         &ctx.resolution_enums,
-                        &resolution_functions,
+                        CallTable::with_pending(
+                            &resolution_functions,
+                            &ctx.fns_with_pending_defaults,
+                        ),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -368,7 +375,10 @@ pub(crate) fn phase_entities(
                             EntityDefRef::from(s),
                             EntityKind::Structure,
                             &ctx.resolution_enums,
-                            &resolution_functions,
+                            CallTable::with_pending(
+                                &resolution_functions,
+                                &ctx.fns_with_pending_defaults,
+                            ),
                             &trait_registry,
                             &structure_names,
                             trait_names,
@@ -420,7 +430,7 @@ pub(crate) fn phase_entities(
                     trait_names,
                     &ctx.alias_registry,
                     &ctx.resolution_enums,
-                    &resolution_functions,
+                    CallTable::with_pending(&resolution_functions, &ctx.fns_with_pending_defaults),
                     &mut ctx.diagnostics,
                 );
             }
@@ -471,11 +481,12 @@ fn collect_ambient_defaults(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AmbientDefaults {
+    let functions = calls.functions;
     // A non-entity file scope carrying the unit registry (so `5mm` / `200GPa`
     // unit literals resolve) and the prelude template registry (so a
     // `Material(...)` constructor lowers to a `StructureInstanceCtor` with a
@@ -484,6 +495,7 @@ fn collect_ambient_defaults(
     let mut scope = CompilationScope::new("<file>");
     scope.set_unit_registry(unit_registry);
     scope.set_template_registry(prelude_template_registry);
+    calls.mark_pending_on(&mut scope);
 
     let mut table = AmbientDefaults::default();
     // First-seen declaration span per type name within FILE scope, for same-scope
@@ -692,9 +704,10 @@ fn compile_joint_self_check(
     trait_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let functions = calls.functions;
     // Type-param names in scope (e.g. `joint j<T>(...)`); empty for the common
     // monomorphic joint. Threaded into the resolver so a datum/DOF type that
     // names a joint type-param resolves rather than erroring.
@@ -703,6 +716,7 @@ fn compile_joint_self_check(
 
     // (1) Build the datum-param scope.
     let mut scope = CompilationScope::new(&joint.name);
+    calls.mark_pending_on(&mut scope);
     for param in &joint.params {
         let ty = resolve_type_expr_with_aliases(
             &param.type_expr,
@@ -817,7 +831,7 @@ fn compile_entity_decl(
     entity_ref: EntityDefRef<'_>,
     kind: EntityKind,
     resolution_enums: &[EnumDef],
-    resolution_functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -849,7 +863,7 @@ fn compile_entity_decl(
         &entity_ref,
         kind,
         resolution_enums,
-        resolution_functions,
+        calls,
         trait_registry,
         structure_names,
         trait_names,

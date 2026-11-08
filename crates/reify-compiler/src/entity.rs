@@ -1343,7 +1343,7 @@ pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
     entity_kind: EntityKind,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: crate::functions::CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -1372,6 +1372,7 @@ pub(crate) fn compile_entity(
     // `types::PreludeRegistries` for the full contract.
     prelude: &PreludeRegistries<'_, '_>,
 ) -> TopologyTemplate {
+    let functions = calls.functions;
     // task 5345: desugar inline geometry-query arguments into synthetic geometry
     // lets BEFORE any `structure.members` walk (pass-1 registration, realization
     // emission, value-cell compilation all read the shadowed list). Needs
@@ -1428,6 +1429,7 @@ pub(crate) fn compile_entity(
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
+    calls.mark_pending_on(&mut scope);
 
     // Collect the set of trait names actually referenced by this structure's
     // type-param bounds.  Only these traits need a (member_name → Type) map;

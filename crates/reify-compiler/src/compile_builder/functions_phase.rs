@@ -26,7 +26,7 @@ use reify_ir::{CompiledFunction, EnumDef};
 use crate::CompiledModule;
 use crate::compile_builder::ctx::{CompilationCtx, signature_stub};
 use crate::functions::{
-    FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body, compile_fn_param_defaults,
+    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body, compile_fn_param_defaults,
     resolve_fn_signature,
 };
 use crate::name_env::{self, Origin};
@@ -93,10 +93,9 @@ pub(crate) fn phase_fn_param_defaults(
             let functions = build_resolution_functions(&stubs, prelude);
             let env = FnCompileEnv {
                 enum_defs: &ctx.resolution_enums,
-                functions: &functions,
+                calls: CallTable::with_pending(&functions, &pending),
                 template_registry: Some(&prelude_ctor_view),
                 later_declared_structure_names: Some(&local_ctor_names),
-                fns_with_pending_defaults: Some(&pending),
                 declared_callable_names: &declared_callables,
             };
             let mut scratch = Vec::new();
@@ -177,12 +176,11 @@ pub(crate) fn compile_function_decl(
         name_env::ctor_template_registry(templates_so_far, prelude);
     let env = FnCompileEnv {
         enum_defs,
-        functions: &functions,
-        template_registry: Some(&template_registry),
-        later_declared_structure_names: Some(&later_declared_structure_names),
         // Never holds a pending stub: fns above are real, fns below are #5371's
         // forward references.
-        fns_with_pending_defaults: None,
+        calls: CallTable::complete(&functions),
+        template_registry: Some(&template_registry),
+        later_declared_structure_names: Some(&later_declared_structure_names),
         declared_callable_names: declared_callables,
     };
     let param_defaults = match defaults {

@@ -18,7 +18,7 @@ use crate::annotations::{deprecation_message, emit_deprecation_warning};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::functions_phase::build_resolution_functions;
 use crate::expr::trait_static_fn_symbol;
-use crate::functions::compile_function;
+use crate::functions::{CallTable, compile_function};
 use crate::name_env;
 use crate::traits::compile_trait;
 use crate::types::{CompiledTrait, DefaultKind};
@@ -191,7 +191,7 @@ pub(crate) fn phase_traits(
                 let compiled_fn = compile_function(
                     &namespaced_fn,
                     &ctx.resolution_enums,
-                    &body_table,
+                    CallTable::with_pending(&body_table, &ctx.fns_with_pending_defaults),
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &trait_names,
