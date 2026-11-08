@@ -85,28 +85,36 @@ export const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
 export const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
 export const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
 
+const subscriptionHandles = [
+  mockOnMeshUpdate,
+  mockOnValueUpdate,
+  mockOnConstraintUpdate,
+  mockOnEvaluationStatus,
+  mockOnMeshRemoved,
+  mockOnValueRemoved,
+  mockOnConstraintRemoved,
+  mockOnTessellationDiagnostics,
+  mockOnCompileDiagnostics,
+  mockOnFeaDiagnosticsChanged,
+  mockOnFeaConvergenceChanged,
+  mockOnTensegrityWiresUpdate,
+  mockOnTensegritySurfacesUpdate,
+  mockOnDisplayPanesUpdate,
+  mockOnDisplayAppearanceUpdate,
+  mockOnAutoResolveStart,
+  mockOnAutoResolveIteration,
+  mockOnAutoResolveComplete,
+  mockOnSolverProgress,
+  mockOnEvalGeneration,
+] as const;
+
 /**
- * Clears every mock's call history and installs the default no-op unlisten
- * resolution on the channels listed below. It does NOT undo a test's
- * mockImplementation on a channel without a default here (the seven core
- * channels and onFeaConvergenceChanged), so a test that subscribes stubs
- * those itself.
+ * Clears every mock's call history and resolves every channel subscribeToEvents
+ * subscribes to with a fresh no-op unlisten (cancelSolve with undefined), so no
+ * test inherits an earlier test's stub.
  */
 export function primeEngineStoreBridgeMocks(): void {
   vi.clearAllMocks();
-  // Default: all subscriptions succeed with a no-op unlisten function.
-  // Tests that need specific behaviour can override individual mocks.
-  mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
-  mockOnCompileDiagnostics.mockResolvedValue(vi.fn());
-  mockOnFeaDiagnosticsChanged.mockResolvedValue(vi.fn());
-  mockOnAutoResolveStart.mockResolvedValue(vi.fn());
-  mockOnAutoResolveIteration.mockResolvedValue(vi.fn());
-  mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
-  mockOnSolverProgress.mockResolvedValue(vi.fn());
+  for (const subscribe of subscriptionHandles) subscribe.mockResolvedValue(vi.fn());
   mockCancelSolve.mockResolvedValue(undefined);
-  mockOnTensegrityWiresUpdate.mockResolvedValue(vi.fn());
-  mockOnTensegritySurfacesUpdate.mockResolvedValue(vi.fn());
-  mockOnDisplayPanesUpdate.mockResolvedValue(vi.fn());
-  mockOnDisplayAppearanceUpdate.mockResolvedValue(vi.fn());
-  mockOnEvalGeneration.mockResolvedValue(vi.fn());
 }
