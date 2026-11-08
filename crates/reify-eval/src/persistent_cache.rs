@@ -3061,7 +3061,8 @@ version = "9.9.9"
         // An intentional on-disk-layout bump must touch this assertion — that
         // is the point: it forces a deliberate acknowledgement that cached bytes
         // from the previous version are now incompatible. Mirrors the
-        // `elastic_result_format_version_is_one` pattern for body-format
+        // `elastic_result_format_version_pinned` pattern
+        // (reify-compute-contract's `elastic_result.rs` tests) for body-format
         // versioning; these two consts are intentionally distinct namespaces
         // (entry-header layout vs. body encoding).
         //
