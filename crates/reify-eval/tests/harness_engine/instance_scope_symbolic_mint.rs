@@ -531,6 +531,93 @@ fn edit_source_growing_a_collection_mints_every_slot_like_a_cold_eval() {
     }
 }
 
+/// A rack whose element declares each cell BEFORE the sibling it reads.
+const DECL_ORDER_RACK: &str = r#"
+    structure DBolt {
+        let s = face(body, "x_max")
+        let body = box(len, 10mm, 10mm)
+        param len : Length = 10mm
+    }
+
+    structure DRack {
+        param n : Int = 2
+        sub bolts : List<DBolt>
+        constraint bolts.count == n
+    }
+"#;
+
+/// `instance.s` after an edit must be the selector a cold eval commits.
+fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
+    let edited_selector = cell(after_edit, instance, "s");
+    assert!(
+        matches!(edited_selector, Value::Selector(_)),
+        "{instance}.s must be a minted Selector after the edit: Undef means the \
+         resize minted `s` before the slot's `body` was committed, got \
+         {edited_selector:?}"
+    );
+    assert_eq!(
+        edited_selector,
+        cell(cold, instance, "s"),
+        "{instance}.s after the edit must equal a cold eval's: an unequal \
+         selector means the resize minted `s` before the slot's `body` was \
+         committed"
+    );
+}
+
+/// The premise both declaration-order pins start from: `eval()` minted the
+/// slot's `body` and `s`.
+fn assert_body_and_selector_minted_at_eval(before: &EvalResult, instance: &str) {
+    assert_minted_at_eval(before, instance);
+    let selector_at_eval = cell(before, instance, "s");
+    assert!(
+        matches!(selector_at_eval, Value::Selector(_)),
+        "premise: eval() mints {instance}.s, got {selector_at_eval:?}"
+    );
+}
+
+/// A resize re-creates EVERY slot's cells, so a cell declared before the
+/// sibling it reads must still mint over that sibling's committed value, in
+/// the surviving slots as well as the grown one.
+#[test]
+fn edit_param_growing_a_collection_mints_cells_declared_before_their_reads_like_a_cold_eval() {
+    let (before, after_edit, cold) =
+        warm_edit_and_cold_eval(DECL_ORDER_RACK, &ValueCellId::new("DRack", "n"), Value::Int(3));
+
+    for slot in ["DRack.bolts[0]", "DRack.bolts[1]"] {
+        assert_body_and_selector_minted_at_eval(&before, slot);
+    }
+    for slot in ["DRack.bolts[0]", "DRack.bolts[1]", "DRack.bolts[2]"] {
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+        assert_edited_selector_like_cold(&after_edit, &cold, slot);
+    }
+}
+
+/// `edit_source`'s resize must commit a slot's cells in the same order as
+/// `edit_param`'s, so a grown count leaves every slot minted like a cold eval.
+#[test]
+fn edit_source_growing_a_collection_mints_cells_declared_before_their_reads_like_a_cold_eval() {
+    let grown_source = DECL_ORDER_RACK.replace("param n : Int = 2", "param n : Int = 3");
+    assert_ne!(
+        grown_source, DECL_ORDER_RACK,
+        "premise: the source edit must change the count default"
+    );
+    let grown = parse_and_compile_with_stdlib(&grown_source);
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(DECL_ORDER_RACK));
+    let after_edit = warm
+        .edit_source(&grown)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = make_simple_engine().eval(&grown);
+
+    for slot in ["DRack.bolts[0]", "DRack.bolts[1]"] {
+        assert_body_and_selector_minted_at_eval(&before, slot);
+    }
+    for slot in ["DRack.bolts[0]", "DRack.bolts[1]", "DRack.bolts[2]"] {
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+        assert_edited_selector_like_cold(&after_edit, &cold, slot);
+    }
+}
+
 /// A rack whose element's `body` consumes a GUARDED geometry let. The compiler
 /// inlines `core`'s box into `body`'s realization, so `body`'s handle hash
 /// folds `len`, which `body`'s own expression never reads.
