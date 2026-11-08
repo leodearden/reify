@@ -573,6 +573,64 @@ fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_
 /// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
 /// `self.same.*`, which names the instance cells; a bare `same.*` reads the
 /// sub's `__self` alias instead, which `edit_source` does not rebuild.
+/// `edit_source` ADDING a geometry let and a selector over it to an
+/// override-free sub's template. The names put the selector (`a_sel`) ahead of
+/// the geometry (`z_body`), so the walk can reach the instance selector before
+/// the instance geometry exists: the mint declines it as `Undef`, and only the
+/// post-walk settle pass, seeded with every mint-path cell, can resolve it.
+#[test]
+fn edit_source_adding_a_selector_over_a_new_geometry_let_settles_the_instance_like_a_cold_eval() {
+    let source = r#"
+        structure AddInner {
+            param len : Length = 10mm
+        }
+
+        structure AddOuter {
+            sub same = AddInner()
+        }
+    "#;
+    let edited_source = source.replace(
+        "param len : Length = 10mm\n",
+        "param len : Length = 10mm\n            \
+         let a_sel = face(z_body, \"x_max\")\n            \
+         let z_body = box(len, 10mm, 10mm)\n",
+    );
+    assert_ne!(
+        edited_source, source,
+        "premise: the source edit must add the geometry and selector lets"
+    );
+    let edited = parse_and_compile_with_stdlib(&edited_source);
+    let mut warm = make_simple_engine();
+    warm.eval(&parse_and_compile_with_stdlib(source));
+    let after_edit = warm
+        .edit_source(&edited)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = make_simple_engine().eval(&edited);
+
+    let instance = "AddOuter.same";
+    let cold_body = cell(&cold, instance, "z_body");
+    assert!(
+        matches!(cold_body, Value::GeometryHandle { .. }),
+        "premise: a cold eval mints {instance}.z_body, got {cold_body:?}"
+    );
+    assert_eq!(
+        cell(&after_edit, instance, "z_body"),
+        cold_body,
+        "{instance}.z_body after the edit must equal a cold eval's"
+    );
+    let edited_selector = cell(&after_edit, instance, "a_sel");
+    assert!(
+        matches!(edited_selector, Value::Selector(_)),
+        "{instance}.a_sel must be a minted Selector after the edit: Undef means \
+         the walk's decline was never settled, got {edited_selector:?}"
+    );
+    assert_eq!(
+        edited_selector,
+        cell(&cold, instance, "a_sel"),
+        "{instance}.a_sel after the edit must equal a cold eval's"
+    );
+}
+
 #[test]
 fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_consumers() {
     let source = r#"

@@ -1057,11 +1057,15 @@ fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
     out
 }
 
-/// A value `edit_source`'s main walk commits for a cell, and whether the
-/// instance-scope mint (#8102) produced it.
+/// A value `edit_source`'s main walk commits for a cell, and whether it took
+/// the instance-scope mint path (#8102): a sub-instance cell whose plain
+/// evaluation was `Undef`. That holds whatever the mint returned, `Undef`
+/// included (a cell neither geometry nor selector, or a decline over a read
+/// the instance has not committed yet), so it is NOT "a mint replaced the
+/// value".
 struct WalkCellValue {
     value: Value,
-    instance_minted: bool,
+    took_instance_mint_path: bool,
 }
 
 /// The read-only scope `edit_source`'s main walk evaluates a cell in.
@@ -1093,7 +1097,7 @@ impl EditSourceWalkCtx<'_> {
         if !matches!(evaluated, Value::Undef) {
             return WalkCellValue {
                 value: evaluated,
-                instance_minted: false,
+                took_instance_mint_path: false,
             };
         }
         let instance_scope = InstanceMintScope {
@@ -1105,28 +1109,35 @@ impl EditSourceWalkCtx<'_> {
         match instance_scope.mint_undef_instance_cell(vcid, kind, expr) {
             Some(minted) => WalkCellValue {
                 value: minted,
-                instance_minted: true,
+                took_instance_mint_path: true,
             },
             None => WalkCellValue {
                 value: Value::Undef,
-                instance_minted: false,
+                took_instance_mint_path: false,
             },
         }
     }
 
-    /// Re-evaluates, over the values the walk committed, each cell the walk
-    /// instance-minted and each cell downstream of one this pass changes, and
-    /// returns the cells it re-committed.
+    /// Re-evaluates, over the values the walk committed, every cell that took
+    /// the instance-mint path in the walk ([`WalkCellValue`]) and every
+    /// template-scoped dependent (per `reverse_index`) of a cell this pass
+    /// changes, and returns the cells it re-committed.
     ///
     /// The walk is ordered by template-scoped traces (`I.body` reads `T.len`,
     /// not `I.len`), so it can mint an instance cell over a sibling it has not
-    /// re-committed yet, then cut that cell's consumers off as unchanged. Each
+    /// re-committed yet, or decline it as `Undef` over one it has not
+    /// committed at all, then cut that cell's consumers off as unchanged.
+    ///
+    /// The seed must hold EVERY mint-path cell, the `Undef` and declined ones
+    /// too: an instance cell reads its instance siblings only through the
+    /// mint's projection, and those reads are absent from the template-scoped
+    /// `reverse_index`, so a sibling re-minted here never pulls them in. Each
     /// round visits `walk_order` and commits only a changed value; a round
     /// that changes nothing ends the pass. A changing round settles at least
     /// one more link of an acyclic read chain, which bounds the rounds.
     fn settle_instance_mints(
         &self,
-        minted_in_walk: &[ValueCellId],
+        instance_mint_path_cells: &[ValueCellId],
         walk_order: &[NodeId],
         reverse_index: &ReverseDependencyIndex,
         legs: CommitLegs<'_>,
@@ -1138,7 +1149,8 @@ impl EditSourceWalkCtx<'_> {
             cache,
             journal,
         } = legs;
-        let mut settling: HashSet<ValueCellId> = minted_in_walk.iter().cloned().collect();
+        let mut settling: HashSet<ValueCellId> =
+            instance_mint_path_cells.iter().cloned().collect();
         let mut recommitted: Vec<NodeId> = Vec::new();
         if settling.is_empty() {
             return recommitted;
@@ -3841,7 +3853,7 @@ impl Engine {
 
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
-        let mut instance_cells_minted_in_walk: Vec<ValueCellId> = Vec::new();
+        let mut instance_mint_path_cells: Vec<ValueCellId> = Vec::new();
         let walk_ctx = EditSourceWalkCtx {
             graph: &new_snapshot.graph,
             functions: &functions,
@@ -3868,10 +3880,10 @@ impl Engine {
 
                 let WalkCellValue {
                     value: val,
-                    instance_minted,
+                    took_instance_mint_path,
                 } = walk_ctx.eval_cell(&values, &new_snapshot.values, vcid, node.kind, expr);
-                if instance_minted {
-                    instance_cells_minted_in_walk.push(vcid.clone());
+                if took_instance_mint_path {
+                    instance_mint_path_cells.push(vcid.clone());
                 }
 
                 // Commit via the cell-commit primitive (task #6998): atomically
@@ -3935,7 +3947,7 @@ impl Engine {
         }
 
         let settled = walk_ctx.settle_instance_mints(
-            &instance_cells_minted_in_walk,
+            &instance_mint_path_cells,
             &eval_set,
             &new_reverse_index,
             CommitLegs {
