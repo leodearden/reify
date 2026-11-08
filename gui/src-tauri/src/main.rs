@@ -510,6 +510,14 @@ fn record_recent(app: tauri::AppHandle, path: String) -> Result<Vec<RecentEntry>
     record_recent_now(&app, &path)
 }
 
+/// Why the argv launch file failed to load, handed out once.
+#[tauri::command]
+fn take_initial_file_load_failure(
+    slot: tauri::State<'_, Arc<reify_gui::commands::InitialFileLoadFailureSlot>>,
+) -> Option<reify_gui::commands::InitialFileLoadFailure> {
+    slot.take()
+}
+
 #[tauri::command]
 async fn open_file_engine(
     app: tauri::AppHandle,
@@ -1066,13 +1074,20 @@ fn main() {
                 }),
             );
             app.manage(Arc::clone(&evals));
+            // Managed with or without an argv, so its command always resolves.
+            let initial_file_load_failure =
+                Arc::new(reify_gui::commands::InitialFileLoadFailureSlot::default());
+            app.manage(Arc::clone(&initial_file_load_failure));
 
             // The main loop dispatches no invoke until setup() returns, so the
             // frontend's first get_initial_state queues behind this load, and
             // the window paints while it runs.
-            if let Some((file, load)) =
-                reify_gui::commands::begin_initial_file_load(&evals, Arc::clone(&engine_arc), &argv)
-            {
+            if let Some((file, load)) = reify_gui::commands::begin_initial_file_load(
+                &evals,
+                Arc::clone(&engine_arc),
+                initial_file_load_failure,
+                &argv,
+            ) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match load.await {
@@ -1156,6 +1171,7 @@ fn main() {
             create_new_file,
             list_recent,
             record_recent,
+            take_initial_file_load_failure,
             open_file_engine,
             export,
             get_source_location,
