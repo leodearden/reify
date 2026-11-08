@@ -21,10 +21,13 @@ export interface StartViewProps {
   actions: LauncherActions;
 }
 
-const MODES: readonly { mode: LaunchMode; label: string }[] = [
+const ASSISTANT_NOTE_ID = 'start-assistant-note-text';
+const DEBUG_NOTE_ID = 'start-debug-note-text';
+
+const MODES: readonly { mode: LaunchMode; label: string; noteId?: string }[] = [
   { mode: 'design', label: 'Design' },
-  { mode: 'assistant', label: 'Assistant' },
-  { mode: 'debug', label: 'Debug' },
+  { mode: 'assistant', label: 'Assistant', noteId: ASSISTANT_NOTE_ID },
+  { mode: 'debug', label: 'Debug', noteId: DEBUG_NOTE_ID },
 ];
 
 const ErrorLine: Component<{ testId: string; error: LaunchErrorInfo }> = (props) => (
@@ -105,12 +108,13 @@ export const StartView: Component<StartViewProps> = (props) => {
           <h2 class={styles.heading}>Mode</h2>
           <div class={styles.modes}>
             <For each={MODES}>
-              {({ mode, label }) => (
+              {({ mode, label, noteId }) => (
                 <button
                   type="button"
                   class={styles.modeButton}
                   data-testid={`start-mode-${mode}`}
                   aria-pressed={state().mode.selected === mode}
+                  aria-describedby={noteId}
                   onClick={() => void attemptMode(mode)}
                 >
                   {label}
@@ -118,10 +122,10 @@ export const StartView: Component<StartViewProps> = (props) => {
               )}
             </For>
           </div>
-          <p class={styles.note} data-testid="start-assistant-note">
+          <p class={styles.note} id={ASSISTANT_NOTE_ID} data-testid="start-assistant-note">
             The assistant needs a Claude Code login on this machine.
           </p>
-          <p class={styles.note} data-testid="start-debug-note">
+          <p class={styles.note} id={DEBUG_NOTE_ID} data-testid="start-debug-note">
             Debug opens a local control port (127.0.0.1) that tools on this machine can drive.
           </p>
           <Show when={state().mode.debugPort}>

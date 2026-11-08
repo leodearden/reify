@@ -38,6 +38,12 @@ function typePath(path: string) {
   fireEvent.input(screen.getByTestId('start-path-input'), { target: { value: path } });
 }
 
+/** The element a control names as its description through `aria-describedby`, if any. */
+function descriptionOf(control: HTMLElement): HTMLElement | null {
+  const id = control.getAttribute('aria-describedby');
+  return id === null ? null : document.getElementById(id);
+}
+
 beforeEach(() => {
   store = createLauncherStore();
   actions = makeActions();
@@ -90,6 +96,14 @@ describe('StartView layout', () => {
     store.applyModeState({ mode: 'debug', debug_port: 3939 });
 
     expect(screen.getByTestId('start-debug-note')).toBeTruthy();
+  });
+
+  it('describes the Assistant and Debug buttons by their notes, so a screen reader announces them', () => {
+    renderStartView();
+
+    expect(descriptionOf(screen.getByTestId('start-mode-assistant'))).toBe(screen.getByTestId('start-assistant-note'));
+    expect(descriptionOf(screen.getByTestId('start-mode-debug'))).toBe(screen.getByTestId('start-debug-note'));
+    expect(screen.getByTestId('start-mode-design').hasAttribute('aria-describedby')).toBe(false);
   });
 
   it('shows the debug port only once the debug server is live', () => {
