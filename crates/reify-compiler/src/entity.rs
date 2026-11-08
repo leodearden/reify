@@ -2566,7 +2566,7 @@ pub(crate) fn compile_entity(
             &mut constraints,
             &mut constraint_index,
             enum_defs,
-            functions,
+            calls,
             alias_registry,
             // task 4497: the real file-level ambient-default table threaded from
             // entities_phase. Top-level structures resolve at file scope (DD6 →

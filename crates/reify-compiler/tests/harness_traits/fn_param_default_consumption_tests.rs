@@ -740,3 +740,27 @@ fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
     assert_no_errors(&module, "auto-arg ctor default");
     assert_padded_call(let_expr(&module, "S", "v"), "solve", 2, "S.v");
 }
+
+/// (i) an assoc-fn override in a structure declared above `fn solve` omitting
+/// its structure-constructing default.
+#[test]
+fn assoc_fn_override_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}trait T {{ fn m(self) -> Real }}\n\
+         structure S : T {{ fn m(self) -> Real {{ solve(2.0) }} }}\n{SOLVE_FN}"
+    );
+    let module = compile_src(&source, "test_consume_pending_i");
+    assert_one_pending_default_error(&module, "assoc-fn override");
+}
+
+/// (j) an injected trait default method on a conformer declared above
+/// `fn solve` omitting it.
+#[test]
+fn injected_trait_default_method_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}trait T {{ fn m(self) -> Real {{ solve(2.0) }} }}\n\
+         structure S : T {{}}\n{SOLVE_FN}"
+    );
+    let module = compile_src(&source, "test_consume_pending_j");
+    assert_one_pending_default_error(&module, "injected trait default method");
+}

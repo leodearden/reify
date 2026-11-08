@@ -1,6 +1,10 @@
-//! Phase-11 entities: compile every `structure` / `occurrence` declaration
-//! and forward `import` declarations into `ctx.imports`; other decl arms are
-//! passthroughs (already compiled in earlier phases).
+//! Phase-11, the unified source-order pass (PRD `stdlib-namespace.md` D-8):
+//! compiles `structure` / `occurrence` templates AND free-fn bodies (plus any
+//! param defaults `phase_fn_param_defaults` left pending) interleaved in
+//! declaration order, so each sees the authoritative output of everything
+//! declared above it. Also forwards `import` declarations into `ctx.imports`
+//! and runs the joint self-check; the remaining decl arms are passthroughs
+//! (already compiled in earlier phases).
 //!
 //! ## Import warning policy (task 2226)
 //!
@@ -63,15 +67,18 @@ use crate::types::{
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
 
-/// Run phase-11 (entity compile) over `parsed.declarations`.
+/// Run phase-11, the unified source-order pass, over `parsed.declarations`.
 ///
 /// Constructs phase-local registries (`trait_registry`, `field_registry`,
-/// `constraint_def_registry`) and dispatches each declaration to its
-/// handler. Structure / Occurrence arms call `compile_entity` and push
-/// onto `ctx.templates`. Import arm appends to `ctx.imports` unconditionally;
-/// a "not resolved" warning is emitted only when the import path is absent from
-/// `prelude` (see import warning policy in the module-level doc). Other arms
-/// are passthroughs — they were already handled in earlier phases.
+/// `constraint_def_registry`) and dispatches each declaration, in source order,
+/// to its handler. Structure / Occurrence arms call `compile_entity` and push
+/// onto `ctx.templates`. The Function arm is the ONLY site that compiles a free
+/// fn's body (and its pending defaults), against the templates built so far,
+/// then swaps the real fn into the call table for later declarations. Import
+/// arm appends to `ctx.imports` unconditionally; a "not resolved" warning is
+/// emitted only when the import path is absent from `prelude` (see import
+/// warning policy in the module-level doc). Joint arm runs the DOF self-check.
+/// The remaining arms are passthroughs — handled in earlier phases.
 pub(crate) fn phase_entities(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,

@@ -805,12 +805,13 @@ pub(crate) fn compile_assoc_function(
     conformer_name: &str,
     conformer_members: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
+    let functions = calls.functions;
     // Mirror of compile_function: build the type-param name set for signature resolution.
     // No-op for today's non-generic assoc fns (empty fn_def.type_params → empty set).
     let type_param_names: HashSet<String> = fn_def
@@ -878,6 +879,7 @@ pub(crate) fn compile_assoc_function(
     // matching `compile_function`). The `self` receiver never carries a default.
     let mut neutral_scope = CompilationScope::new(&fn_def.name);
     neutral_scope.declared_callable_names = declared_callables;
+    calls.mark_pending_on(&mut neutral_scope);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -919,6 +921,7 @@ pub(crate) fn compile_assoc_function(
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
     scope.declared_callable_names = declared_callables;
+    calls.mark_pending_on(&mut scope);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -2018,7 +2021,7 @@ mod tests {
             "Conformer",
             &HashSet::new(),
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),
