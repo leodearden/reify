@@ -96,6 +96,7 @@ fn outcome_of(
     solve_frame_outcome(relations, unknown, seed, &scaling, budget)
 }
 
+#[track_caller]
 fn failure_of(outcome: &FrameSolveOutcome) -> &SolveFailureCause {
     match &outcome.result {
         Err(cause) => cause,
@@ -105,6 +106,7 @@ fn failure_of(outcome: &FrameSolveOutcome) -> &SolveFailureCause {
 
 /// The adapter reports a non-Infeasible failure as `NoProgress`, rendering the
 /// cause and naming the unknown's sub; returns the reason.
+#[track_caller]
 fn assert_reports_no_progress(outcome: FrameSolveOutcome, unknown: &FrameUnknown) -> String {
     let cause = failure_of(&outcome).to_string();
     match outcome.into_solve_result(unknown) {
