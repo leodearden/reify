@@ -71,8 +71,10 @@ of which parsing was 0.02 s). It runs on every
 `crates/*/Cargo.toml` edit, because it lives in reify-build-utils, the crate
 `scripts/reify_path_attribution.py` routes manifest edits to. Sides come from a
 walk over cargo's deduped tree, and a member printed twice as a root is placed
-by cargo's printing rules (Limits, "Side attribution"). While a HOST-UNION
-finding stands, check reports it and compares nothing.
+by cargo's printing rules (Limits, "Side attribution"). `check` also compares
+every `-p <m>` unit's profile with `--workspace`'s from build-free unit graphs,
+which adds 45-62 s under load (Host profiles). While a HOST-UNION finding
+stands, check reports it and compares nothing.
 
 When it reds after a dependency or feature edit:
 
@@ -296,7 +298,8 @@ A unit either one dirties is built once, so the counts do not add, and the
 tree-sitter share measured in the next subsection holds only with the other
 contributors present. Member features (#9825) measures the split share with
 the generated sources both absent and present, and finds a further
-contributor, build-script reruns (#9884).
+contributor: build scripts that `-p` compiles as new unit variants, whose
+cause Host profiles measures (fixed by #9884).
 
 ### Tree-sitter share (#9862)
 
@@ -376,7 +379,8 @@ across them. These are what the seed's `env!()`/build-dir invalidation and
 #9825's workspace-member feature splits must explain; this measurement does not
 attribute them between the two. Member features (#9825) attributes the
 `-p reify-eval` 22: 9 to the splits its probe C closes, and 13 to
-reify-git-env's split and, as a hypothesis, #9884's build-script reruns.
+reify-git-env's split and to the build-script variants of Host profiles (fixed
+by #9884), with the dependents they reach by normal edges.
 
 The walls compare nothing across arms. The plain clippy pair builds the same 30
 units in both arms, in 1:04.43 and 6:19.62, and the load average at the start of
@@ -528,10 +532,12 @@ The split-only units:
 C's 13 are reify-compiler, reify-compute-contract, reify-config,
 reify-doc-build, reify-eval, reify-git-env, reify-kernel-gmsh,
 reify-kernel-occt, reify-kernel-openvdb, reify-mesh-morph, reify-runtime,
-reify-solver-elastic and reify-test-support. Hypothesis: apart from
-reify-git-env, which is still split, they rebuild through #9884's four
-build-script reruns (reify-kernel-gmsh, -occt, -openvdb and
-reify-solver-elastic) and the normal edges that reach them. reify-config
+reify-solver-elastic and reify-test-support. Apart from reify-git-env, which
+is still split, they rebuild through four build scripts (reify-kernel-gmsh,
+-occt, -openvdb and reify-solver-elastic) that `-p` compiled as new unit
+variants, because their host reify-build-utils dependency got another
+debuginfo level (Host profiles, fixed by #9884), and through the normal edges
+that reach them. The edges come from the manifests: reify-config
 normal-depends on the three kernels, reify-compiler on reify-config,
 reify-test-support, reify-doc-build, reify-runtime and reify-mesh-morph on
 reify-compiler, reify-compute-contract on reify-solver-elastic, and reify-eval
@@ -539,9 +545,12 @@ on them. The seed's `env!()` touches land only on `tests/` and `benches/`
 sources (the relink rule in `scripts/seed-warm-lane.sh`), so they dirty test
 targets, not lib units.
 
-reify-eval rebuilds in every probe. Closing every split saves CPU, not the
-long pole, until #9884 lands. The walls (5:36 to 5:48 under very different
-load) are indicative only.
+reify-eval rebuilds in every probe. In these probes closing every split saved
+CPU, not the long pole, because the build-script variants still rebuilt
+reify-eval. #9884 removed their profile cause (Host profiles); the kernels'
+accepted member-feature splits still make a plain `-p reify-eval` build them
+as feature variants. The walls (5:36 to 5:48 under very different load) are
+indicative only.
 
 ### Decision
 
@@ -583,13 +592,14 @@ load) are indicative only.
   reify-kernel-occt `mesh-morph`) would put reify-expr, reify-eval and
   reify-mesh-morph into low crates' test graphs, so an edit to reify-eval
   would rebuild `cargo test -p reify-syntax`. The payoff is at most 9 of 22
-  units in CPU (probe C against #9862's arm B), with no long-pole gain while
-  #9884 remains.
+  units in CPU (probe C against #9862's arm B), with no long-pole gain at the
+  time, when the build-script variants of Host profiles (fixed since by
+  #9884) still rebuilt reify-eval.
 - **Advisory MEMBER-SPLIT reporting: adopted.** Failing on the accepted
   splits would red the gate permanently.
-- **Next candidate** once #9884 and #9896 land: reify-stdlib `test-support`,
-  behind the remaining 3 split-only units (reify-stdlib, reify-expr and
-  reify-constraints).
+- **Next candidate** once #9896 lands (the build-script variants were fixed
+  by #9884): reify-stdlib `test-support`, behind the remaining 3 split-only
+  units (reify-stdlib, reify-expr and reify-constraints).
 
 Landing cost: the reify-core, reify-ast and reify-ir member variants change,
 so the base rehashes every workspace unit once. External units are unchanged:
@@ -602,6 +612,101 @@ example after an opt-out or a re-added non-default pass-through. Remedy: a
 feature every shipped binary enables is default-on, or is not a feature.
 
 MEMBER-SPLIT reads the same side-aware walk as SPLIT (#9873).
+
+## Host profiles (#9884)
+
+The union pins features; it cannot pin a profile. When the profile leaves a
+host unit's debuginfo unset (a build script, a proc-macro, or a dependency of
+either), cargo defers it: the unit keeps the profile's level only if the same
+graph also holds a runtime unit of that package with identical features, and
+is weakened to 0 otherwise. A host unit's profile, and with it the metadata
+hash of every unit that depends on it, therefore depends on the selection.
+`cargo test --workspace` builds reify-build-utils' own tests, so its host lib
+keeps debuginfo 2 there, while `-p reify-eval` builds it at 0. Every build
+script that links reify-build-utils (reify-kernel-gmsh, -occt and -openvdb,
+reify-solver-elastic, reify-config, reify-eval, reify-mesh-morph, ...) then
+gets a new metadata hash under `-p`, and a fresh lane compiles it as a new
+unit variant. These are not reruns of the seeded units; the seed is not
+involved.
+
+Evidence:
+
+- First session: lane `_lane-33`, a pristine seed of base `target.gen.625`
+  (basecommit `35a914623f`), HEAD `0e6e461088`, verify env
+  (`RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`,
+  `CARGO_HOME=/tmp/reify-agent-cargo-home`, `RUSTFLAGS` unset).
+  `CARGO_LOG=cargo::core::compiler::fingerprint=info cargo test -p reify-eval --no-run --features <probe B list>`
+  logged `failed to read .../.fingerprint/<crate>-<hash>/...` for every
+  build-script compile and run unit of gmsh, occt, openvdb and solver-elastic:
+  a hash the base never had, not a dirty reason. In the seeded fingerprint
+  JSON the new gmsh build-script unit matches the base's `--workspace`
+  variant in features and profile; its one dependency, the host
+  reify-build-utils lib, does not: same features, another debuginfo level.
+- Re-measurement: HEAD `e821a27dda`, cargo 1.96.0, a scratch
+  `CARGO_TARGET_DIR`, build-free unit graphs. 25 of the 37 covered members
+  split. 22 split only through the host reify_build_utils lib (debuginfo 0
+  against 2, features identical); `-p reify-compute-contract` adds the toml
+  chain (toml 0.8.2, toml_edit, toml_datetime, serde_spanned, winnow),
+  `-p reify-config` adds rustc-hash, and `-p reify-gui` adds byteorder and
+  fnv. With the stanza below: 0 of 37.
+- The gate at implementation: lane `_lane-33`, task branch HEAD `b8eba47c74`,
+  verify env. `check` printed 33 PROFILE-SPLIT lines without the stanza, the
+  25 reify_build_utils lines and 8 for the external units above, and none
+  with it.
+
+The probe compares unit identity across selections without building, in about
+a second per selection, and writes only `.rustc_info.json` into the scratch
+dir:
+
+    RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=<scratch> cargo test <selection> --no-run --frozen --unit-graph -Z unstable-options
+
+Without `--target` every unit's platform is null, so a package's host copy
+and its runtime copy share one key and differ only in profile: compare each
+key's set of profiles, not one profile per key.
+
+Decision: `[profile.dev.build-override] debug = false` in the workspace
+`Cargo.toml`. An explicit setting replaces the deferral, so every host unit
+gets the same level under every selection, and `false` is what cargo already
+picks for every host unit no runtime unit shares. `profile.test` inherits it,
+`[profile.dev.package."*"]` sets no `debug`, and release builds are
+unaffected. Not taken:
+
+- a per-package `debug` pin for reify-build-utils: it covers one instance and
+  needs a hand-kept list that every new build-dependency escapes, and the
+  toml chain, rustc-hash, byteorder and fnv are already others;
+- `debug = 2`: it re-hashes as well, and makes every build script and
+  proc-macro heavier for good.
+
+Landing cost, from `--workspace` unit graphs taken before and after the stanza
+at implementation: 1,326 → 1,368 units, so every cold `--workspace` graph
+holds 42 more host-only units, and 1,283 of the 1,368 change recursive
+signature, so they re-hash once. The first build after landing, the merge
+verify included, is effectively cold; the base then refreshes. #9825 landed a
+whole-workspace re-hash on the same terms.
+
+The gate: `check` prints `PROFILE-SPLIT <m> <pkg_id> <target> (<mode>)` for
+every unit `-p <covered member>` compiles under a key (package, target, mode,
+features, platform) that `--workspace` also compiles, at a profile
+`--workspace` never compiles that key to, and lists only the fields that
+differ. A key `--workspace` never compiles is a feature split, already
+reported as SPLIT or MEMBER-SPLIT, so it is not compared again.
+`-p reify-build-utils`, the host-side member, stays exempt, as it is for
+features: with the stanza in place it still compiles 3 units whose key
+`--workspace` compiles to another profile, quote's lib and build-script run
+and hashbrown 0.17.1 (re-measured at implementation). The 38 unit graphs took
+45-62 s sequentially under load average 95-130.
+`real_workspace_compiles_every_unit_to_the_workspace_profile` holds the
+invariant.
+
+No compile-level re-probe here. Base gen.625 predates the stanza, so a first
+build in a lane seeded from it re-hashes the host graph and measures nothing
+about the fix. The unit graph is the proof: a unit's metadata hash is a
+function of what the graph shows (package, target, mode, features, profile
+and its dependencies' identities) plus rustc and the target, which are equal
+across selections. The compile-level re-probe on the first base gen built
+with the stanza is #9927. The fix pays off where features already match: the
+kernels' accepted member-feature splits (Member features) still make a plain
+`-p reify-eval` build those packages as feature variants.
 
 ## Limits
 
@@ -630,9 +735,12 @@ MEMBER-SPLIT reads the same side-aware walk as SPLIT (#9873).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.
-- **What the gate proves.** The gate checks `cargo tree` resolution, not
-  compiled units. Resolution reproduced the task's observed syn fingerprint
-  exactly, and the probes above are the compile-level evidence.
+- **What the gate proves.** The gate checks `cargo tree` resolution and
+  `cargo test --unit-graph` profiles, not compiled units: profiles are
+  compared per unit key, and nothing is built. Resolution reproduced the
+  task's observed syn fingerprint exactly, and the probes above are the
+  compile-level evidence for features. The compile-level re-probe for host
+  profiles, on the first base gen built with the stanza, is #9927.
 - **Cold and release builds.** Every Measurements row outside the Cold build
   subsection is a warm-lane build, whose base has already compiled the
   `--workspace` external variants the union pins. A cold target must compile the
