@@ -1124,6 +1124,57 @@ features = ["alloc", "logging", "std"]"#,
     assert_green(&fixture.check(), "check after the pin");
 }
 
+/// Real cargo 1.96 output from a scratch workspace: u names memchr[logging] in
+/// both [dependencies] and [build-dependencies], so its two roots are
+/// character-identical and only the first can be its host copy.
+const WS_U_IDENTICAL_ROOTS_HOST_COPY_FIRST: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.3|alloc,default,logging,std
+    `-- log v0.4.34|
+[build-dependencies]
+`-- memchr v2.8.3|alloc,default,logging,std (*)
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.3|alloc,default,logging,std
+    `-- log v0.4.34|
+[build-dependencies]
+`-- memchr v2.8.3|alloc,default,logging,std (*)
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_ZZ_BUILDS_WITH_U_MEMCHR_IN_BOTH_SECTIONS: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.3|alloc,default,logging,std
+        `-- log v0.4.34|
+    [build-dependencies]
+    `-- memchr v2.8.3|alloc,default,logging,std (*)
+";
+
+#[test]
+fn check_is_green_when_the_first_of_two_identical_roots_is_the_host_copy() {
+    let members = vec![
+        member("u", &[]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    let fixture = Fixture::new(&members, WS_U_IDENTICAL_ROOTS_HOST_COPY_FIRST)
+        .tree("zz", TREE_ZZ_BUILDS_WITH_U_MEMCHR_IN_BOTH_SECTIONS);
+    assert_green(
+        &fixture.check(),
+        "with u's first root on TARGET, its [build-dependencies] memchr `(*)` precedes every \
+         HOST line of memchr, so only the first root can be the host copy",
+    );
+}
+
 /// Real cargo 1.96 output from a scratch workspace: u -> log, yy ->
 /// log[max_level_debug] and zz -> log with `[build-dependencies] u`. log is a
 /// leaf, so only one feature set per side tells u's two roots apart.
