@@ -991,15 +991,15 @@ impl InitialFileLoadFailureSlot {
 }
 
 /// [`load_initial_file_impl`] as a queued snapshot of the argv file, recording
-/// a failure in `failure` before it replies.
+/// a failure in `failure_slot` before it replies.
 pub fn initial_file_evaluation(
     engine: Arc<Mutex<EngineSession>>,
     canonical: PathBuf,
-    failure: Arc<InitialFileLoadFailureSlot>,
+    failure_slot: Arc<InitialFileLoadFailureSlot>,
 ) -> EvalRequest<PublishedState> {
     EvalRequest::snapshot(move || {
         load_initial_file_impl(&engine, &canonical).inspect_err(|error| {
-            failure.record(InitialFileLoadFailure {
+            failure_slot.record(InitialFileLoadFailure {
                 path: canonical.to_string_lossy().into_owned(),
                 error: error.clone(),
             })
@@ -1039,15 +1039,19 @@ pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
 
 /// Queue the load of the argv file: its canonical path and the ticket the
 /// load's reply arrives on, or `None` when `argv_path` names no `.ri` file.
-/// A failed load is also recorded in `failure`.
+/// A failed load is also recorded in `failure_slot`.
 pub fn begin_initial_file_load(
     queue: &Arc<EvalQueue>,
     engine: Arc<Mutex<EngineSession>>,
-    failure: Arc<InitialFileLoadFailureSlot>,
+    failure_slot: Arc<InitialFileLoadFailureSlot>,
     argv_path: &str,
 ) -> Option<(PathBuf, EvalTicket<PublishedState>)> {
     let canonical = resolve_initial_file_path(argv_path)?;
-    let load = queue.submit(initial_file_evaluation(engine, canonical.clone(), failure));
+    let load = queue.submit(initial_file_evaluation(
+        engine,
+        canonical.clone(),
+        failure_slot,
+    ));
     Some((canonical, load))
 }
 

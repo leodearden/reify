@@ -1075,9 +1075,9 @@ fn main() {
             );
             app.manage(Arc::clone(&evals));
             // Managed with or without an argv, so its command always resolves.
-            let initial_file_load_failure =
+            let initial_file_load_failure_slot =
                 Arc::new(reify_gui::commands::InitialFileLoadFailureSlot::default());
-            app.manage(Arc::clone(&initial_file_load_failure));
+            app.manage(Arc::clone(&initial_file_load_failure_slot));
 
             // The main loop dispatches no invoke until setup() returns, so the
             // frontend's first get_initial_state queues behind this load, and
@@ -1085,7 +1085,7 @@ fn main() {
             if let Some((file, load)) = reify_gui::commands::begin_initial_file_load(
                 &evals,
                 Arc::clone(&engine_arc),
-                initial_file_load_failure,
+                initial_file_load_failure_slot,
                 &argv,
             ) {
                 let handle = app.handle().clone();

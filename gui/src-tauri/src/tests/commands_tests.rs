@@ -4307,13 +4307,13 @@ mod queued_requests {
     fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
-        let failure = Arc::new(InitialFileLoadFailureSlot::default());
+        let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
         let rig = ManualQueue::new();
 
         let ticket = rig.queue.submit(initial_file_evaluation(
             fresh_engine(),
             canonical.clone(),
-            Arc::clone(&failure),
+            Arc::clone(&failure_slot),
         ));
         rig.executor.run_pending();
 
@@ -4324,33 +4324,37 @@ mod queued_requests {
             assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
         }
         assert_eq!(published_width(&rig.observer), mm("80"));
-        assert_eq!(failure.take(), None, "a successful load records no failure");
+        assert_eq!(
+            failure_slot.take(),
+            None,
+            "a successful load records no failure"
+        );
     }
 
     #[test]
     fn a_queued_initial_file_load_that_fails_records_why_for_the_frontend() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("missing.ri");
-        let failure = Arc::new(InitialFileLoadFailureSlot::default());
+        let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
         let rig = ManualQueue::new();
 
         let ticket = rig.queue.submit(initial_file_evaluation(
             fresh_engine(),
             path.clone(),
-            Arc::clone(&failure),
+            Arc::clone(&failure_slot),
         ));
         rig.executor.run_pending();
 
         let error = settled(ticket).expect_err("loading a missing file must fail");
         assert_eq!(
-            failure.take(),
+            failure_slot.take(),
             Some(InitialFileLoadFailure {
                 path: path.to_string_lossy().into_owned(),
                 error: error.clone(),
             }),
             "the slot must carry the file and the same error the ticket replied"
         );
-        assert_eq!(failure.take(), None, "the failure is handed out once");
+        assert_eq!(failure_slot.take(), None, "the failure is handed out once");
     }
 
     #[test]

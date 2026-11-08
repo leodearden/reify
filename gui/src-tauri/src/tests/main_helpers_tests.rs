@@ -121,7 +121,7 @@ fn fresh_engine() -> std::sync::Arc<std::sync::Mutex<crate::engine::EngineSessio
     )))
 }
 
-fn no_failure_slot() -> std::sync::Arc<crate::commands::InitialFileLoadFailureSlot> {
+fn fresh_failure_slot() -> std::sync::Arc<crate::commands::InitialFileLoadFailureSlot> {
     std::sync::Arc::default()
 }
 
@@ -134,7 +134,8 @@ fn begin_initial_file_load_submits_nothing_for_an_argv_that_is_not_a_ri_file() {
 
     for argv in ["", "model.step"] {
         assert!(
-            begin_initial_file_load(&rig.queue, fresh_engine(), no_failure_slot(), argv).is_none(),
+            begin_initial_file_load(&rig.queue, fresh_engine(), fresh_failure_slot(), argv)
+                .is_none(),
             "argv {argv:?} must not start a load"
         );
     }
@@ -159,7 +160,7 @@ fn begin_initial_file_load_is_served_before_a_later_initial_state_request() {
     let (canonical, load) = begin_initial_file_load(
         &rig.queue,
         std::sync::Arc::clone(&engine),
-        no_failure_slot(),
+        fresh_failure_slot(),
         file.to_str().unwrap(),
     )
     .expect("a .ri argv must start a load");
@@ -197,8 +198,9 @@ fn begin_initial_file_load_of_a_missing_file_fails_its_ticket_and_leaves_the_que
     let missing = missing.to_str().unwrap();
     let rig = ManualQueue::new();
 
-    let (_, load) = begin_initial_file_load(&rig.queue, fresh_engine(), no_failure_slot(), missing)
-        .expect("a missing .ri argv must still start a load, to report why it failed");
+    let (_, load) =
+        begin_initial_file_load(&rig.queue, fresh_engine(), fresh_failure_slot(), missing)
+            .expect("a missing .ri argv must still start a load, to report why it failed");
     rig.executor.run_pending();
 
     let error = settled(load).expect_err("loading a missing file must fail");
@@ -221,19 +223,19 @@ fn begin_initial_file_load_failure_is_recorded_before_the_next_queued_request_ru
 
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.ri");
-    let failure = Arc::new(InitialFileLoadFailureSlot::default());
+    let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
     let rig = ManualQueue::new();
 
     let (canonical, load) = begin_initial_file_load(
         &rig.queue,
         fresh_engine(),
-        Arc::clone(&failure),
+        Arc::clone(&failure_slot),
         missing.to_str().unwrap(),
     )
     .expect("a missing .ri argv must still start a load");
     let observed = rig.queue.submit(EvalRequest::engine_call({
-        let failure = Arc::clone(&failure);
-        move || Ok(failure.take())
+        let failure_slot = Arc::clone(&failure_slot);
+        move || Ok(failure_slot.take())
     }));
     rig.executor.run_pending();
 
