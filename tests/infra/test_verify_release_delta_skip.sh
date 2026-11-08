@@ -20,6 +20,7 @@
 #   The sensitive crate name is read from release_declared_set (the single source
 #   of truth), never hard-coded, so this test cannot drift from
 #   scripts/release-sensitive-crates.txt.
+#   SIGPIPE regression sub-block (task 9911): 1 MiB payloads pin both here-string arms.
 #
 # SCENARIO block (step-3): five hermetic `verify.sh --print-plan` scenarios that
 # assert the plan marker `RELEASE-PASS: skipped (delta-clean)` and the presence /
@@ -119,6 +120,36 @@ assert "whitespace-only override => SKIPPABLE (rc1, word-splits to nothing)" \
 
 assert "mixed set with one sensitive crate ($_NONSENSITIVE_CRATE $_SENSITIVE_CRATE) => REQUIRED (rc0)" \
     _predicate_requires "$_NONSENSITIVE_CRATE $_SENSITIVE_CRATE"
+
+echo ""
+echo "--- UNIT: SIGPIPE regression (task 9911) ---"
+
+# Each regression payload is over 1 MiB with its trigger on line 1, far past the 64 KiB pipe
+# capacity plus grep's first read. A `producer | grep -q` condition under pipefail would always
+# lose that race: grep quits, the producer takes SIGPIPE (141), and the condition reads as a
+# non-match. The here-string forms answer from a captured string. Both regression asserts expect
+# REQUIRED, which every fail-wide path also returns, so each is paired with a same-payload control
+# that must answer SKIPPABLE: only that proves the payload was evaluated.
+printf -v _SIGPIPE_WORD '%0*d' 65536 0
+# 16 words of 64 KiB, never one 1 MiB word: a single exec argument over 128 KiB fails with E2BIG.
+_SIGPIPE_FILLERS=""
+for _i in $(seq 1 16); do _SIGPIPE_FILLERS+=" $_SIGPIPE_WORD"; done
+_SIGPIPE_PROBE_CRATE="reify-sigpipe-probe"
+_SIGPIPE_DECLARED_FILE="$(mktemp "${TMPDIR:-/tmp}/reify-sigpipe-declared.XXXXXX")"
+_TMPDIRS+=("$_SIGPIPE_DECLARED_FILE")
+{ echo "$_SIGPIPE_PROBE_CRATE"; seq -f 'filler-%.0f' 1 100000; } > "$_SIGPIPE_DECLARED_FILE"
+
+assert "SIGPIPE ALL arm: ALL sentinel followed by 1 MiB of fillers => REQUIRED (rc0)" \
+    _predicate_requires "ALL$_SIGPIPE_FILLERS"
+
+assert "SIGPIPE ALL arm control: the same 1 MiB without ALL => SKIPPABLE (rc1)" \
+    _predicate_skips "$_SIGPIPE_FILLERS"
+
+assert "SIGPIPE intersect arm: $_SIGPIPE_PROBE_CRATE on line 1 of a 1 MiB declared set => REQUIRED (rc0)" \
+    _predicate_requires "$_SIGPIPE_PROBE_CRATE" "$_SIGPIPE_DECLARED_FILE"
+
+assert "SIGPIPE intersect arm control: a crate absent from the 1 MiB declared set => SKIPPABLE (rc1)" \
+    _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
 
 # ===========================================================================
 # SCENARIO block: five hermetic verify.sh --print-plan scenarios (§5.2).
