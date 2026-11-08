@@ -79,6 +79,19 @@ describe('StartView layout', () => {
     expect(screen.getByTestId('start-assistant-note').textContent).toContain('Claude Code');
   });
 
+  it('notes beside the Debug option that it opens a local control port, before debug is selected', () => {
+    renderStartView();
+
+    const note = screen.getByTestId('start-debug-note');
+    expect(note.textContent).toContain('127.0.0.1');
+    expect(note.textContent).toContain('control port');
+    expect(screen.getByTestId('start-mode-debug').closest('section')?.contains(note)).toBe(true);
+
+    store.applyModeState({ mode: 'debug', debug_port: 3939 });
+
+    expect(screen.getByTestId('start-debug-note')).toBeTruthy();
+  });
+
   it('shows the debug port only once the debug server is live', () => {
     renderStartView();
     expect(screen.queryByTestId('start-debug-port')).toBeNull();
