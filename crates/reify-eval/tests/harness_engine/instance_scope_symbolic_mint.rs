@@ -567,6 +567,62 @@ fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_
     assert_edited_selector_like_cold(&after_edit, &cold, "EditOuter.same");
 }
 
+/// An outer cell reading an override-free sub's minted cells must follow
+/// them through `edit_source`, as a cold eval's does. The walk can commit the
+/// instance cell unchanged before its re-mint, so a consumer it cut off early
+/// keeps the pre-edit handle unless the re-mint reaches it.
+#[test]
+fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_consumers() {
+    let source = r#"
+        structure ConsInner {
+            let s = face(body, "x_max")
+            let body = box(len, 10mm, 10mm)
+            param len : Length = 10mm
+        }
+
+        structure ConsOuter {
+            let v = same.body
+            let t = same.s
+            sub same = ConsInner()
+        }
+    "#;
+    let edited_source = source.replace("= 10mm\n", "= 30mm\n");
+    assert_ne!(
+        edited_source, source,
+        "premise: the source edit must change the len default"
+    );
+    let edited = parse_and_compile_with_stdlib(&edited_source);
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(source));
+    let after_edit = warm
+        .edit_source(&edited)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = make_simple_engine().eval(&edited);
+
+    assert_edited_body_like_cold(&after_edit, &cold, "ConsOuter.same");
+    assert_edited_selector_like_cold(&after_edit, &cold, "ConsOuter.same");
+    for consumer in ["v", "t"] {
+        let cold_value = cell(&cold, "ConsOuter", consumer);
+        assert!(
+            matches!(cold_value, Value::GeometryHandle { .. } | Value::Selector(_)),
+            "premise: a cold eval carries the instance mint into ConsOuter.{consumer}, \
+             got {cold_value:?}"
+        );
+        assert_ne!(
+            cell(&before, "ConsOuter", consumer),
+            cold_value,
+            "premise: the edit must change what ConsOuter.{consumer} reads"
+        );
+        assert_eq!(
+            cell(&after_edit, "ConsOuter", consumer),
+            cold_value,
+            "ConsOuter.{consumer} after edit_source must equal a cold eval's: a \
+             pre-edit value means the re-minted instance cell never reached \
+             its consumer"
+        );
+    }
+}
+
 /// A rack whose element declares each cell BEFORE the sibling it reads.
 const DECL_ORDER_RACK: &str = r#"
     structure DBolt {
