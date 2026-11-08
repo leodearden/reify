@@ -13,7 +13,7 @@
 //! this file can be read in isolation. The file stem MUST match the source's `module`
 //! declaration: on a mismatch the CLI reports `E_MODULE_PATH_MISMATCH` and the test
 //! measures that instead of the units gate (the trap documented at
-//! `harness_cli/cli_check.rs:796-797`).
+//! `harness_cli/cli_check.rs::check_exits_nonzero_on_cross_file_private_structure_reference`).
 //!
 //! ROWS §6 NAMES THAT THIS FILE DELIBERATELY DOES NOT RE-ASSERT. Each already has a
 //! shipped, non-vacuous, gate-resident test; a second copy here would be duplication, not
