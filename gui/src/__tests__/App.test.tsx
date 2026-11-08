@@ -3515,7 +3515,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
   it('a launch file that failed to load shows the start view with E_GUI_OPEN_FAILED naming the file', async () => {
     vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
       path: '/designs/missing.ri',
-      error: 'Error reading /designs/missing.ri: No such file or directory',
+      error: 'permission denied',
     });
 
     await renderAndWaitForReady();

@@ -99,22 +99,21 @@ describe('isDocumentLoaded', () => {
 });
 
 describe('initialFileLoadFailureInfo', () => {
-  it('presents a launch-file failure as E_GUI_OPEN_FAILED naming the file and the error', () => {
+  it('presents a read failure as E_GUI_OPEN_FAILED with its own error, which already names the file', () => {
     const info = initialFileLoadFailureInfo({
       path: '/designs/broken.ri',
       error: 'Error reading /designs/broken.ri: No such file',
     });
 
     expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
-    expect(info.message).toContain('/designs/broken.ri');
-    expect(info.message).toContain('No such file');
+    expect(info.message).toBe('Error reading /designs/broken.ri: No such file');
   });
 
   it('names the file even when the error does not', () => {
-    const info = initialFileLoadFailureInfo({ path: '/designs/broken.ri', error: 'Parse errors: x' });
+    const info = initialFileLoadFailureInfo({ path: '/designs/broken.ri', error: 'panic in engine: boom' });
 
     expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
     expect(info.message).toContain('/designs/broken.ri');
-    expect(info.message).toContain('Parse errors: x');
+    expect(info.message).toContain('panic in engine: boom');
   });
 });

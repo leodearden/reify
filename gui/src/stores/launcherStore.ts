@@ -28,11 +28,16 @@ export function isDocumentLoaded(editor: { openFiles: readonly unknown[] }): boo
   return editor.openFiles.length > 0;
 }
 
-/** The launch file's failure as a Start-view error; it names the path, which a parse error does not. */
+/**
+ * The launch file's failure as a Start-view error naming the file. A read
+ * failure's error already names it; a panic during the load, which leaves no
+ * buffer open, does not.
+ */
 export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): LaunchErrorInfo {
+  const namesFile = failure.error.includes(failure.path);
   return {
     code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
-    message: `Could not open ${failure.path}: ${failure.error}`,
+    message: namesFile ? failure.error : `Could not open ${failure.path}: ${failure.error}`,
   };
 }
 
