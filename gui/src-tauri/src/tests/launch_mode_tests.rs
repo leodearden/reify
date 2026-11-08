@@ -4,7 +4,7 @@
 
 use std::net::TcpListener;
 
-use super::debug_server_slot_fixtures::{recording_slot, served_ports};
+use super::debug_server_slot_fixtures::recording_slot;
 use crate::launch_mode::{Mode, ModeState, set_mode_impl};
 
 #[test]
@@ -62,7 +62,7 @@ fn design_and_assistant_never_start_the_debug_server() {
         );
     }
 
-    assert!(served_ports(&served).is_empty());
+    assert!(served.ports().is_empty());
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn debug_starts_the_server_once_and_reports_its_port() {
     assert_eq!(first, expected);
     assert_eq!(second, expected);
     assert_eq!(
-        served_ports(&served),
+        served.ports(),
         vec![port],
         "a second Debug starts no second server"
     );
@@ -100,7 +100,7 @@ fn no_mode_stops_a_live_debug_server() {
         })
     );
     assert_eq!(slot.live_port(), Some(port));
-    assert_eq!(served_ports(&served), vec![port]);
+    assert_eq!(served.ports(), vec![port]);
 }
 
 #[test]
@@ -115,5 +115,5 @@ fn debug_on_an_occupied_port_fails_naming_it() {
         err.contains(&held.to_string()),
         "the error must name port {held}, got: {err}"
     );
-    assert!(served_ports(&served).is_empty());
+    assert!(served.ports().is_empty());
 }
