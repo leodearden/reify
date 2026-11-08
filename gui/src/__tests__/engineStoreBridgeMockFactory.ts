@@ -28,5 +28,7 @@ export function engineStoreBridgeMock() {
     onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
     onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
     onEvalGeneration: vi.fn(() => Promise.resolve(() => {})),
+    syncObservedDemand: vi.fn(() => Promise.resolve()),
+    syncDemand: vi.fn(() => Promise.resolve()),
   } satisfies Partial<Record<keyof typeof Bridge, unknown>>;
 }

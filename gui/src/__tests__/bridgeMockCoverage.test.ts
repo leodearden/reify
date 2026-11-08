@@ -143,11 +143,11 @@ const BRIDGE_INTERNAL_OMISSIONS: Record<string, string> = {
  * Deliberately an explicit table rather than a glob for `vi.mock('../bridge'`.
  * Other test files carry bridge factories scoped to their subject rather than
  * to the whole App tree — correct for a focused unit test: the engineStore
- * harness consumers (engineStore.*.test.ts, constraintVerdictParity.test.ts and
- * engineStoreBridgeHandles.test.ts) share the one engineStore-scoped factory in
- * engineStoreBridgeMockFactory.ts, and observedDemand.test.ts,
- * selectiveDemand.test.ts and sidecarPersistence.test.ts carry deliberately
- * narrow ones. viewport/Viewport.test.tsx uses a different specifier
+ * harness consumers (engineStore.*.test.ts, constraintVerdictParity.test.ts,
+ * engineStoreBridgeHandles.test.ts, observedDemand.test.ts and
+ * selectiveDemand.test.ts) share the one engineStore-scoped factory in
+ * engineStoreBridgeMockFactory.ts, and sidecarPersistence.test.ts carries a
+ * deliberately narrow one. viewport/Viewport.test.tsx uses a different specifier
  * ('../../bridge'). Globbing would force them to full coverage or bloat the allowlist with 30+
  * meaningless entries, destroying its signal.
  *
