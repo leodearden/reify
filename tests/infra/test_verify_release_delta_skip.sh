@@ -54,6 +54,11 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 # shellcheck source=tests/infra/copy_list_preflight_lib.sh
 source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 
+# Temp dirs and files that any block registers in _TMPDIRS are removed on exit.
+_TMPDIRS=()
+_cleanup_fixtures() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap _cleanup_fixtures EXIT
+
 echo "=== Delta-conditional release-pass skip tests (task 5279) ==="
 
 # ---------------------------------------------------------------------------
@@ -80,15 +85,18 @@ if printf '%s\n' "$_DECLARED_SET" | grep -qxF "$_NONSENSITIVE_CRATE"; then
     exit 1
 fi
 
-# Helpers: run the predicate with the affected crate set injected verbatim via
-# REIFY_AFFECTED_CRATES_OVERRIDE. The subshell scopes the env assignment so it
-# never leaks between asserts; no git / no cargo is reached.
-_predicate_requires() {  # asserts rc0 — release pass REQUIRED
-    ( REIFY_AFFECTED_CRATES_OVERRIDE="$1" release_delta_requires_pass )
+# Runs the predicate in a subshell with <override> as the affected set (no git, no cargo).
+# A plain assignment, never a `VAR=x fn` prefix: that exports VAR, and a value over 128 KiB then fails every exec (E2BIG).
+_run_predicate() {  # <override> [declared_file]
+    (
+        unset REIFY_AFFECTED_CRATES_OVERRIDE
+        REIFY_AFFECTED_CRATES_OVERRIDE="$1"
+        RELEASE_SENSITIVE_CRATES_FILE="${2:-$RELEASE_SENSITIVE_CRATES_FILE}"
+        release_delta_requires_pass
+    )
 }
-_predicate_skips() {     # asserts rc1 — SKIPPABLE (negated for assert)
-    ! ( REIFY_AFFECTED_CRATES_OVERRIDE="$1" release_delta_requires_pass )
-}
+_predicate_requires() { _run_predicate "$@"; }    # asserts rc0 — release pass REQUIRED
+_predicate_skips()    { ! _run_predicate "$@"; }  # asserts rc1 — SKIPPABLE (negated for assert)
 
 # Clean RED signal in step-1: the predicate does not exist until step-2.
 assert "release_delta_requires_pass is defined" \
@@ -137,10 +145,6 @@ assert "mixed set with one sensitive crate ($_NONSENSITIVE_CRATE $_SENSITIVE_CRA
 # ===========================================================================
 echo ""
 echo "--- SCENARIO: hermetic verify.sh --print-plan (knob/role/override matrix) ---"
-
-_TMPDIRS=()
-_cleanup_fixtures() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
-trap _cleanup_fixtures EXIT
 
 # make_fixture VARNAME — isolated git repo with verify.sh + its transitive source
 # closure and NO commits (unborn HEAD). Models test_verify_scope.sh:make_fixture;
