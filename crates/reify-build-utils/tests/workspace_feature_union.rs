@@ -166,12 +166,16 @@ const SERDE_VOCABULARY_CRATES: [&str; 3] = ["reify-core", "reify-ast", "reify-ir
 #[test]
 fn real_workspace_resolves_the_serde_vocabulary_crates_like_the_workspace() {
     let out = real_check();
+    let stdout = stdout_of(out);
     assert!(
-        matches!(out.status.code(), Some(0 | 1)),
-        "check must reach a verdict for its MEMBER-SPLIT lines to mean anything\n{}",
+        matches!(out.status.code(), Some(0 | 1))
+            && !finding_lines(&stdout)
+                .iter()
+                .any(|line| line.starts_with("HOST-UNION ")),
+        "check must compare the -p selections for its MEMBER-SPLIT lines to mean anything, \
+         and a HOST-UNION finding stops it before it compares\n{}",
         describe(out)
     );
-    let stdout = stdout_of(out);
     let offending: Vec<&str> = stdout
         .lines()
         .filter(|line| {
@@ -627,34 +631,15 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
     )
     .tree("a", TREE_A_UNION_MEMCHR);
     let manifest = fixture.manifest("u");
+    let out = fixture.check();
     assert_findings(
-        &fixture.check(),
+        &out,
         &[&[
             "HOST-UNION u",
             "a -[build]-> u -> workspace-feature-union",
             "remove u's dependency on workspace-feature-union",
             &manifest,
         ]],
-        "u is a build-dependency of a and depends on the union",
-    );
-}
-
-#[test]
-fn check_reports_a_host_union_without_resolving_cargo_tree() {
-    let members = vec![
-        member("a", &[UNION]).build_dep("u"),
-        member("u", &[UNION]),
-        member(UNION, &[]),
-    ];
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
-    )
-    .tree("a", TREE_A_UNION_MEMCHR);
-    let out = fixture.check();
-    assert_findings(
-        &out,
-        &[&["HOST-UNION u"]],
         "u is a build-dependency of a and depends on the union",
     );
     assert!(
@@ -755,21 +740,27 @@ fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
     );
 }
 
+const PM_NODE: &str = "pm v0.1.0 (proc-macro) (/fixture/crates/pm)|";
+
 /// `--workspace` with `a` depending on the proc-macro member `pm`, whose
-/// subtree is `pm_children`; pm is also a root of its own.
+/// subtree is `pm_children`; pm is also a root of its own, which is `(*)`
+/// when it has children, because a's line lists them.
 fn workspace_using_proc_macro_pm(pm_children: &[&str]) -> String {
     let below_pm: String = pm_children
         .iter()
         .map(|line| format!("    {line}\n"))
         .collect();
-    let root_pm: String = pm_children.iter().map(|line| format!("{line}\n")).collect();
     let tree_a = format!(
         "a v0.1.0 (/fixture/crates/a)|\n\
          |-- {UNION_NODE}\n\
-         `-- pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n\
+         `-- {PM_NODE}\n\
          {below_pm}"
     );
-    let tree_pm = format!("pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n{root_pm}");
+    let tree_pm = if pm_children.is_empty() {
+        format!("{PM_NODE}\n")
+    } else {
+        format!("{PM_NODE} (*)\n")
+    };
     workspace_of(&[&tree_a, &tree_pm, TREE_UNION])
 }
 
@@ -816,7 +807,7 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
             "remove pm's dependency on workspace-feature-union",
             &manifest,
         ]],
-        "one finding for pm, though the union sits below pm under a and as pm's own root",
+        "one finding for pm, though pm is printed under a and as a root of its own",
     );
 }
 
@@ -1420,7 +1411,8 @@ fn check_reports_a_member_feature_split_as_advisory_naming_the_selections_that_r
 
 /// The serde gate accepts a failing check, so it holds only while a check
 /// that fails on coverage still prints every advisory line. A HOST-UNION
-/// failure compares nothing (check_reports_a_host_union_without_resolving_cargo_tree).
+/// failure compares nothing
+/// (check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side).
 #[test]
 fn check_reports_a_member_feature_split_on_a_failing_check_without_counting_it_as_a_finding() {
     let fixture = member_split_fixture(&["e"]);
@@ -1526,6 +1518,13 @@ fn check_exits_2_when_cargo_tree_fails_naming_the_command_and_its_stderr() {
 
 #[test]
 fn check_exits_2_on_a_tree_line_it_cannot_read_quoting_the_line() {
+    let seven_undecided_pairs: String = (1..=7)
+        .map(|k| {
+            format!(
+                "\np{k} v0.1.0 (/fixture/crates/p{k})|a\n\np{k} v0.1.0 (/fixture/crates/p{k})|b"
+            )
+        })
+        .collect();
     let cases = [
         (
             "a package line with no `|`",
@@ -1561,6 +1560,24 @@ fn check_exits_2_on_a_tree_line_it_cannot_read_quoting_the_line() {
             "a package printed as a root three times",
             "\na v0.1.0 (/fixture/crates/a)|\n\na v0.1.0 (/fixture/crates/a)|",
             "3 roots of a v0.1.0",
+        ),
+        (
+            "a proc-macro printed as two roots",
+            "\npm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n\n\
+             pm v0.1.0 (proc-macro) (/fixture/crates/pm)|",
+            "2 roots of proc-macro pm v0.1.0",
+        ),
+        (
+            "a pair of roots that breaks a printing rule on either side",
+            "\nu v0.1.0 (/fixture/crates/u)|\n`-- memchr v2.0.0|std (*)\n\n\
+             u v0.1.0 (/fixture/crates/u)|\n`-- memchr v2.0.0|std (*)",
+            "roots printed twice (u v0.1.0) obeys cargo tree's printing rules; the last one \
+             tried breaks at `cargo tree -p a` line 4",
+        ),
+        (
+            "more pairs than the check tries side assignments for",
+            seven_undecided_pairs.as_str(),
+            "128 side assignments of the roots printed twice",
         ),
     ];
     for (label, line, needle) in cases {

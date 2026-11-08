@@ -671,11 +671,16 @@ MEMBER-SPLIT reads the same side-aware walk as SPLIT (#9873).
   Decision. `--no-dedupe` is infeasible: on the real workspace it was stopped
   after 600 s at 4.28 GB / 36.2M lines, against 1,660 lines in 0.68 s deduped.
   So `check` walks the deduped graph, where a `(*)` line resolves to the first
-  line of the same (node, side). It takes the closure from every target root,
-  following dev-dependencies only at those roots. It places a member's two roots
-  by cargo's printing rules: a node's first line lists its dependencies and every
+  line of the same (node, side). It takes the closure from every member root,
+  that is every root but the host copy of a member printed twice, so each target
+  root and a proc-macro's one root, which is on the host side. It follows
+  dev-dependencies only at those roots. It places a member's two roots by
+  cargo's printing rules: a node's first line lists its dependencies and every
   later line is `(*)`, which a node without dependencies never gets, and there
-  is one feature set per package and side.
+  is one feature set per package and side. Each pair that no line printed so far
+  decides doubles the side assignments still open, so `check` exits 2, naming
+  the undecided pairs, once more than 64 are open; the real workspace has one
+  pair.
 
   Effect on the real workspace. One member, reify-build-utils, is printed as
   two roots, and exactly one side assignment survives. The `--workspace`

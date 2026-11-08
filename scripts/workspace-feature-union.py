@@ -199,7 +199,7 @@ class TreePackage:
 
 @dataclass(frozen=True)
 class Tree:
-    """The variants a build of one `cargo tree` output's target roots
+    """The variants a build of one `cargo tree` output's member roots
     compiles: the registry packages the union can pin, and the workspace
     members other than the union, which it cannot (a member pin would be a
     dependency cycle)."""
@@ -438,10 +438,22 @@ def collapse_identical_swaps(root: Root, copies: tuple[Root, ...],
     return list(kept.values())
 
 
+MAX_OPEN_ASSIGNMENTS = 2 ** 6
+
+
+def undecided_pairs(forest: Forest, open_assignments: Sequence[RootSides]) -> list[str]:
+    """The packages printed twice whose first root has more than one side
+    across `open_assignments`."""
+    return list(dict.fromkeys(
+        forest.lines[index].package.label for index in open_assignments[0]
+        if len({sides[index] for sides in open_assignments}) > 1))
+
+
 def side_assignments(forest: Forest) -> list[RootSides]:
     """Every side assignment of the roots, up to swapping a character-identical
     pair, under which each line, in print order, obeys cargo tree's printing
-    rules (PrintState)."""
+    rules (PrintState). Each pair that no line has decided yet doubles the
+    open assignments, so more than MAX_OPEN_ASSIGNMENTS is an input error."""
     copies = root_copies(forest)
     open_assignments: list[tuple[RootSides, PrintState]] = [({}, PrintState())]
     last_break = ""
@@ -465,20 +477,29 @@ def side_assignments(forest: Forest) -> list[RootSides]:
                              f"last one tried breaks at {last_break}")
         open_assignments = collapse_identical_swaps(root, copies[forest.package(root).label],
                                                     surviving)
+        if len(open_assignments) > MAX_OPEN_ASSIGNMENTS:
+            undecided = undecided_pairs(forest, [sides for sides, _ in open_assignments])
+            raise InputError(
+                f"{forest.lines[root.index].where}: {len(open_assignments)} side assignments "
+                f"of the roots printed twice obey cargo tree's printing rules up to this "
+                f"root, more than the {MAX_OPEN_ASSIGNMENTS} the check tries, because no "
+                f"line so far decides which root of {', '.join(undecided)} is its host copy")
     return [root_sides for root_sides, _ in open_assignments]
 
 
 def compiled(forest: Forest, sides: Sequence[Side]) -> Tree:
-    """The variants a build of the forest's target roots compiles: each
-    root's own dev-dependencies, plus everything normal and build edges
-    reach. A node's dependencies are the children of its first line, which a
-    `(*)` line stands for; a dev section below any other node lists
-    dependencies the build never compiles."""
+    """The variants a build of the forest's member roots compiles: every
+    root but the host copy of a member printed twice, so each TARGET root and
+    a proc-macro's one root, which is HOST. That is each such root's own
+    dev-dependencies, plus everything normal and build edges reach. A node's
+    dependencies are the children of its first line, which a `(*)` line
+    stands for; a dev section below any other node lists dependencies the
+    build never compiles."""
     first: dict[Node, int] = {}
     for index, line in enumerate(forest.lines):
         first.setdefault((line.node, sides[index]), index)
     starts = {(forest.lines[root.index].node, sides[root.index]) for root in forest.roots
-              if sides[root.index] is Side.TARGET}
+              if sides[root.index] is Side.TARGET or forest.package(root).proc_macro}
     reached = set(starts)
     pending = list(starts)
     variants: set[Variant] = set()
@@ -504,15 +525,13 @@ def compiled(forest: Forest, sides: Sequence[Side]) -> Tree:
 
 def parse_tree(text: str, source: str) -> Tree:
     """What a build of `cargo tree -f '{p}|{f}' --charset ascii` output's
-    target roots compiles, each variant on the side cargo resolves it for."""
+    member roots compiles, each variant on the side cargo resolves it for."""
     forest = parse_forest(text, source)
     assignments = side_assignments(forest)
     trees = {compiled(forest, sides_under(forest, a)) for a in assignments}
     if len(trees) == 1:
         return trees.pop()
-    undecided = dict.fromkeys(
-        forest.lines[index].package.label for index in assignments[0]
-        if len({a[index] for a in assignments}) > 1)
+    undecided = undecided_pairs(forest, assignments)
     raise InputError(f"{source}: cannot tell which root of {', '.join(undecided)} is its host "
                      f"copy: {len(assignments)} side assignments obey cargo tree's printing "
                      f"rules and resolve different packages")
