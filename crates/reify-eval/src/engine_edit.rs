@@ -3699,6 +3699,7 @@ impl Engine {
 
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
+        let mut instance_cells_minted_in_walk: Vec<ValueCellId> = Vec::new();
 
         // Walk the unified driver's Kahn schedule (θ2 #4713) — since ν (#5045) that
         // IS `eval_set`'s own order, because `compute_eval_set` delegates to the one
@@ -3723,6 +3724,29 @@ impl Engine {
                         .with_determinacy(&new_snapshot.values)
                         .with_runtime_diagnostics(&runtime_sink),
                 );
+                // A sub-instance cell mints in its instance's scope (#8102),
+                // as the edit_param walk's does. The walk is ordered by
+                // template-scoped traces, so this mint can fold a sibling the
+                // walk has not re-committed yet; the cell is recorded and
+                // re-minted once the walk is done.
+                let val = match val {
+                    Value::Undef => {
+                        let instance_scope = InstanceMintScope {
+                            graph: &new_snapshot.graph,
+                            values: &values,
+                            functions: &functions,
+                            meta_map: &self.meta_map,
+                        };
+                        match instance_scope.mint_undef_instance_cell(vcid, node.kind, expr) {
+                            Some(minted) => {
+                                instance_cells_minted_in_walk.push(vcid.clone());
+                                minted
+                            }
+                            None => Value::Undef,
+                        }
+                    }
+                    val => val,
+                };
 
                 // Commit via the cell-commit primitive (task #6998): atomically
                 // writes values/snapshot/cache/journal (INV-EVAL-1), recording
@@ -3782,6 +3806,55 @@ impl Engine {
             // Constraint / Realization nodes: tracked in eval_set but not
             // evaluated here (deferred to check() / build()), same as in
             // edit_param.
+        }
+
+        // Re-mint the walk's sub-instance cells over the instance values the
+        // walk has now committed, so none keeps a hash folded over a stale
+        // sibling. A cell reading another re-minted cell (a selector over a
+        // geometry let) settles in a later round; each round that changes
+        // something settles at least one more cell, so the rounds are bounded.
+        for _ in 0..=instance_cells_minted_in_walk.len() {
+            let mut recommitted = false;
+            for vcid in &instance_cells_minted_in_walk {
+                let Some(node) = new_snapshot.graph.value_cells.get(vcid) else {
+                    continue;
+                };
+                let Some(expr) = node.default_expr.as_ref() else {
+                    continue;
+                };
+                let Some(minted) = (InstanceMintScope {
+                    graph: &new_snapshot.graph,
+                    values: &values,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                })
+                .mint_undef_instance_cell(vcid, node.kind, expr) else {
+                    continue;
+                };
+                if values.get(vcid) == Some(&minted) {
+                    continue;
+                }
+                commit_cell_result_at(
+                    Instant::now(),
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut new_snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    vcid.clone(),
+                    minted,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    extract_dependency_trace(expr),
+                    VersionId(version_id),
+                    CacheLeg::Record,
+                );
+                recommitted = true;
+            }
+            if !recommitted {
+                break;
+            }
         }
 
         // (13) Restore Final freshness for nodes the early-cutoff path

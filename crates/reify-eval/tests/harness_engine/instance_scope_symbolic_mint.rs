@@ -531,6 +531,42 @@ fn edit_source_growing_a_collection_mints_every_slot_like_a_cold_eval() {
     }
 }
 
+/// `edit_source` changing a TEMPLATE default re-evaluates an override-free
+/// sub's cells in its main walk, which must mint them as `eval()` does. The
+/// element declares each cell before the sibling it reads, so a mint that
+/// folds a sibling the walk has not yet re-committed shows up as a hash
+/// unequal to a cold eval's.
+#[test]
+fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_a_cold_eval() {
+    let source = r#"
+        structure EditInner {
+            let s = face(body, "x_max")
+            let body = box(len, 10mm, 10mm)
+            param len : Length = 10mm
+        }
+
+        structure EditOuter {
+            sub same = EditInner()
+        }
+    "#;
+    let edited_source = source.replace("= 10mm\n", "= 30mm\n");
+    assert_ne!(
+        edited_source, source,
+        "premise: the source edit must change the len default"
+    );
+    let edited = parse_and_compile_with_stdlib(&edited_source);
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(source));
+    let after_edit = warm
+        .edit_source(&edited)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = make_simple_engine().eval(&edited);
+
+    assert_minted_at_eval(&before, "EditOuter.same");
+    assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.same");
+    assert_edited_selector_like_cold(&after_edit, &cold, "EditOuter.same");
+}
+
 /// A rack whose element declares each cell BEFORE the sibling it reads.
 const DECL_ORDER_RACK: &str = r#"
     structure DBolt {

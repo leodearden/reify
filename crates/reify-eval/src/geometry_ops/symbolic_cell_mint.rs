@@ -172,8 +172,8 @@ fn mint_symbolic(
 
 /// The graph-backed scope the edit path mints a sub-instance cell in, since
 /// none of its sites has a template: the `edit_param` walk, `edit_param`'s
-/// collection resize and grown-instance reseed, and `edit_source`'s
-/// collection resize. A caller creating an instance's cells one at a time
+/// collection resize and grown-instance reseed, and `edit_source`'s main walk
+/// and collection resize. A caller creating an instance's cells one at a time
 /// commits them in [`slot_commit_order`].
 pub(crate) struct InstanceMintScope<'a> {
     pub(crate) graph: &'a EvaluationGraph,
