@@ -449,7 +449,11 @@ const SCALE_FN: &str = "fn scale(x : Real, k : Real = 3.0) -> Real { x * k }\n";
 
 fn compile_src(source: &str, module: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single(module));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 

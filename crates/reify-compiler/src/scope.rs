@@ -165,9 +165,10 @@ pub(crate) struct CompilationScope<'u> {
     /// source order, so a call to a
     /// later-declared sibling — or either half of a mutually-referential pair,
     /// which no reordering can fix — reaches the fallback with a name the module
-    /// plainly declares. Entity bodies do not have that problem: they compile
-    /// after `ctx.resolution_functions` is merged. Constructors are the mirror
-    /// case — wherever no template registry is set (`phase_traits`'s static fn
+    /// plainly declares. Entity bodies do not have that problem: their table
+    /// holds every module fn from the start, as a signature stub until the
+    /// unified pass reaches the fn (PRD stdlib-namespace D-8). Constructors are
+    /// the mirror case — wherever no template registry is set (`phase_traits`'s static fn
     /// bodies, `compile_assoc_function`'s bodies), `Widget(w: 2mm)` is never
     /// claimed as a `StructureInstanceCtor` and falls through carrying a
     /// declared name (esc-5371-12).

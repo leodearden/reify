@@ -7,7 +7,8 @@
 //!   that need no same-module template.  It seeds `ctx.resolution_functions`
 //!   with signature stubs carrying those defaults, so the phases between it and
 //!   the unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`)
-//!   can resolve — and pad — calls to same-module fns.
+//!   can resolve — and pad — calls to same-module fns.  Omitting a default that
+//!   constructs a same-module structure draws `FnDefaultNotYetAvailable` there.
 //! * [`compile_function_decl`] compiles one fn's body, plus any defaults the
 //!   early pass left pending.  It is driven by the unified source-order pass in
 //!   `entities_phase::phase_entities`, which interleaves fn bodies with entity
@@ -26,8 +27,8 @@ use reify_ir::{CompiledFunction, EnumDef};
 use crate::CompiledModule;
 use crate::compile_builder::ctx::{CompilationCtx, signature_stub};
 use crate::functions::{
-    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body, compile_fn_param_defaults,
-    resolve_fn_signature,
+    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body,
+    compile_fn_param_defaults, resolve_fn_signature,
 };
 use crate::name_env::{self, Origin};
 use crate::types::TopologyTemplate;
@@ -37,9 +38,10 @@ use crate::types::TopologyTemplate;
 /// The first half of the two-sub-pass split (task 5494 / PRD
 /// `stdlib-namespace.md` D-8).  Signature resolution compiles no expression, so
 /// it needs no template registry — which is what lets it run before any
-/// structure template exists.  Param defaults compile next, in
-/// [`phase_fn_param_defaults`]; bodies compile in the unified source-order pass
-/// in `phase_entities`, against the authoritative registry.
+/// structure template exists.  Template-free param defaults compile next, in
+/// [`phase_fn_param_defaults`]; bodies, and defaults that construct a
+/// same-module structure, compile in the unified source-order pass in
+/// `phase_entities`, against the authoritative registry.
 pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) {
     for fn_def in fn_refs {
         let sig = resolve_fn_signature(

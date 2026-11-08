@@ -1020,8 +1020,7 @@ structure App { let t = mk() }
 /// the fn has no template to priv-gate against, exactly like the top-level case
 /// in `fn_body_member_access_on_later_declared_structure_reports_ordering_error`.
 #[test]
-fn fn_body_priv_member_access_on_later_declared_purpose_nested_structure_reports_ordering_error()
-{
+fn fn_body_priv_member_access_on_later_declared_purpose_nested_structure_reports_ordering_error() {
     let src = r#"
 module test.fwd_purpose_guard
 pub fn leak(m : InP) -> Length { m.g }
@@ -1093,7 +1092,11 @@ structure App { let t = mk() }
         Value::StructureInstance(data) => data,
         other => panic!("App.t should be Value::StructureInstance; got: {other:?}"),
     };
-    assert_eq!(data.type_name, "InP", "App.t type_name; got: {}", data.type_name);
+    assert_eq!(
+        data.type_name, "InP",
+        "App.t type_name; got: {}",
+        data.type_name
+    );
     assert_eq!(
         data.fields.get(&"a".to_string()),
         Some(&Value::Real(1.0)),

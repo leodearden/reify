@@ -188,9 +188,11 @@ pub(crate) fn phase_entities(
     // This pass is the UNIFIED source-order pass: it compiles fn param defaults
     // and bodies interleaved with entity templates, in declaration order, so each
     // side sees the authoritative output of everything declared above it.  That
-    // requires mutating the function table mid-loop (a structure declared after
+    // requires mutating the function table mid-loop: a structure declared after
     // `fn run(...)` must pad an omitted defaulted arg from `run`'s REAL
-    // `param_defaults`, not from its signature stub — `try_default_padding`).
+    // `param_defaults`, which its signature stub lacks when a default constructs
+    // a same-module structure (`FnParamDefaults::NeedLocalTemplates`, PRD
+    // stdlib-namespace D-8).
     //
     // The table is pass-LOCAL rather than a `ctx` field because `compile_entity_decl`
     // already takes 20 split `ctx` borrows (rationale at the bottom of this file); a

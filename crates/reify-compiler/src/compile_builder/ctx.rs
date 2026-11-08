@@ -205,7 +205,8 @@ impl CompilationCtx {
     /// `try_default_padding` pads against a stub exactly as against the real
     /// fn.  A fn whose defaults wait for a same-module template
     /// (`NeedLocalTemplates`, or not yet decided) gets
-    /// `CompiledFunction::no_defaults_for` — PRD stdlib-namespace D-8.
+    /// `CompiledFunction::no_defaults_for`, and a call omitting one of those
+    /// defaults draws `FnDefaultNotYetAvailable` — PRD stdlib-namespace D-8.
     ///
     /// Same synthetic-stub idiom as `geometry.rs`'s and `annotations.rs`'s
     /// `CompiledFunction` literals.

@@ -152,10 +152,10 @@ pub(crate) fn phase_traits(
     // task 5494: this phase now runs BEFORE user fn bodies are compiled, so
     // `ctx.functions` is empty here.  The visible-function table a static fn body
     // resolves against is therefore the signature-only stub table plus the
-    // trait-static fns compiled so far, composed with the prelude.  Residual
-    // (documented on `fn_signature_stubs`): a static fn body calling a same-module
-    // fn with an OMITTED defaulted arg loses `try_default_padding` and draws a
-    // LOUD arity diagnostic, never a silent wrong value.
+    // trait-static fns compiled so far, composed with the prelude.  The stubs
+    // carry every template-free default, so omitted args pad; omitting a default
+    // that constructs a same-module structure draws `FnDefaultNotYetAvailable`
+    // (PRD stdlib-namespace D-8).
     let mut visible_fns = ctx.fn_signature_stubs();
     // The module's declared callable vocabulary, merged ONCE for the phase and
     // borrowed by every static-fn body scope below (task #5371). Rationale:

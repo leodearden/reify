@@ -391,9 +391,15 @@ pub(crate) fn compile_fn_param_defaults(
         .params
         .iter()
         .map(|p| {
-            p.default
-                .as_ref()
-                .map(|d| compile_expr(d, &neutral_scope, env.enum_defs, env.calls.functions, diagnostics))
+            p.default.as_ref().map(|d| {
+                compile_expr(
+                    d,
+                    &neutral_scope,
+                    env.enum_defs,
+                    env.calls.functions,
+                    diagnostics,
+                )
+            })
         })
         .collect();
 
