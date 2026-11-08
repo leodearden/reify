@@ -1,9 +1,9 @@
-//! The analytical references and P1-tet reference fixtures shared by this
-//! crate's analytical-validation binaries: the Timoshenko cantilever tip
-//! deflection and its face-mean measurement, P1 nodal stress recovery, and the
-//! Lamé thick-walled-cylinder reference with its quarter-annulus P1 mesh,
-//! symmetry / plane-strain BCs, inner-pressure loads and solve-and-recover
-//! driver.
+//! The analytical references and reference fixtures shared by this crate's
+//! analytical-validation binaries: the Timoshenko cantilever tip deflection
+//! and its face-mean measurement, P1 nodal stress recovery, and the Lamé
+//! thick-walled-cylinder reference with its quarter-annulus P1 mesh,
+//! symmetry / plane-strain BCs, inner-pressure loads, solve-and-recover
+//! driver and its inner-ring max-von-Mises measurement.
 //!
 //! Not a test binary. It builds on `fea_harness`, so a consumer declares both
 //! `#[path = "common/fea_harness.rs"] mod fea_harness;` and
