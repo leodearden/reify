@@ -107,6 +107,7 @@ class Views(TempRoot):
             '    /* r#"needle_g "q"# */',
             '    foo(); // r#"needle_f "q"#',
             '    let h = r#"needle_e"#; let i = r#"needle_d "q" "#;',
+            '    let j = r##"x r#"needle_c"##;',
         ))
         expected_hits = {
             '"needle_': ("src/a.rs:2", "src/a.rs:3", "src/a.rs:4", "src/a.rs:5", "src/a.rs:6",
