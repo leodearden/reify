@@ -129,6 +129,7 @@ vi.mock('../bridge', () => ({
   createNewFile: vi.fn().mockResolvedValue({ path: '/new/untitled.ri', content: '' }),
   listRecent: vi.fn().mockResolvedValue([]),
   recordRecent: vi.fn().mockResolvedValue([]),
+  takeInitialFileLoadFailure: vi.fn().mockResolvedValue(null),
   openFileEngine: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
@@ -277,6 +278,7 @@ beforeEach(() => {
   vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/new/untitled.ri', content: '' });
   vi.mocked(bridge.listRecent).mockResolvedValue([]);
   vi.mocked(bridge.recordRecent).mockResolvedValue([]);
+  vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue(null);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
   // Below: names some test overrides persistently but nothing used to restore,
   // so the override leaked into every later test (truth table row 3). Added

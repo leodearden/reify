@@ -462,6 +462,12 @@ export interface ModeState {
   debug_port: number | null;
 }
 
+/** take_initial_file_load_failure's reply: the argv launch file that failed to load, and why. */
+export interface InitialFileLoadFailure {
+  path: string;
+  error: string;
+}
+
 /**
  * A single tensegrity wire endpoint pair with member-type tag, as emitted by
  * the backend `build_tensegrity_wires` extractor (T0b). Mirrors the Rust

@@ -3,7 +3,7 @@
  * list, and the selected launch mode with the debug server's live port.
  */
 import { createStore } from 'solid-js/store';
-import type { LaunchMode, ModeState, RecentEntry } from '../types';
+import type { InitialFileLoadFailure, LaunchMode, ModeState, RecentEntry } from '../types';
 
 export const LAUNCH_ERROR_CODES = Object.freeze({
   E_GUI_OPEN_FAILED: 'E_GUI_OPEN_FAILED',
@@ -26,6 +26,14 @@ export interface LauncherState {
 /** The one definition of "a document is loaded": the editor has an open file. */
 export function isDocumentLoaded(editor: { openFiles: readonly unknown[] }): boolean {
   return editor.openFiles.length > 0;
+}
+
+/** The launch file's failure as a Start-view error; it names the path, which a parse error does not. */
+export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): LaunchErrorInfo {
+  return {
+    code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+    message: `Could not open ${failure.path}: ${failure.error}`,
+  };
 }
 
 export function createLauncherStore() {
