@@ -121,6 +121,21 @@ class Views(TempRoot):
                     demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
                 self.assertEqual(result.hits, hits)
 
+    def test_starts_in_code_view_counts_an_opener_that_abuts_a_raw_literals_closing_hashes(self):
+        self.write("src/a.rs", rust_fn(
+            '    f(r#"a"#"needle_b");',
+            '    f(r#"a"##"needle_a");',
+        ))
+        expected_hits = {
+            '"needle_': ("src/a.rs:2", "src/a.rs:3"),
+            '#"needle_': ("src/a.rs:3",),
+        }
+        for construct, hits in expected_hits.items():
+            with self.subTest(construct):
+                result = self.evaluate_one(
+                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+                self.assertEqual(result.hits, hits)
+
     def test_starts_in_code_view_counts_each_opener_on_a_line(self):
         self.write("src/a.rs", rust_fn('    f("needle_a", "needle_b"); // "needle_c"'))
         result = self.evaluate_one(

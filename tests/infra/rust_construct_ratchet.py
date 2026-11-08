@@ -38,10 +38,12 @@ function replay_to_line_start(   k) {
 # reads differently: it hides a char literal's closing-quote look-ahead, or
 # cuts a prefixed literal's opener (r#", br") from its letters, so its quote
 # lexes as an ordinary string. A probe on an opener's hashes or quote
-# therefore splits at its first prefix letter, found with the prefix
-# alternation of _strip_line's token match.
+# therefore splits where the identifier characters and hashes attached to it
+# start, which holds for any prefix and so copies none of the lexer's grammar.
+# Hashes with no identifier before them belong to no opener (they may close an
+# earlier raw literal), so the split stays put.
 function opener_token_start(col) {
-    if (substr($0, col) ~ /^#*"/ && match(substr($0, 1, col - 1), /(r|b|c|br|cr)#*$/))
+    if (substr($0, col) ~ /^#*"/ && match(substr($0, 1, col - 1), /[A-Za-z0-9_]+#*$/))
         return RSTART
     return col
 }
