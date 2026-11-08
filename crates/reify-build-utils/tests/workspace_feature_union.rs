@@ -166,12 +166,16 @@ const SERDE_VOCABULARY_CRATES: [&str; 3] = ["reify-core", "reify-ast", "reify-ir
 #[test]
 fn real_workspace_resolves_the_serde_vocabulary_crates_like_the_workspace() {
     let out = real_check();
+    let stdout = stdout_of(out);
     assert!(
-        matches!(out.status.code(), Some(0 | 1)),
-        "check must reach a verdict for its MEMBER-SPLIT lines to mean anything\n{}",
+        matches!(out.status.code(), Some(0 | 1))
+            && !finding_lines(&stdout)
+                .iter()
+                .any(|line| line.starts_with("HOST-UNION ")),
+        "check must compare the -p selections for its MEMBER-SPLIT lines to mean anything, \
+         and a HOST-UNION finding stops it before it compares\n{}",
         describe(out)
     );
-    let stdout = stdout_of(out);
     let offending: Vec<&str> = stdout
         .lines()
         .filter(|line| {
@@ -570,8 +574,13 @@ fn check_reds_on_a_member_without_the_union_dependency_naming_its_manifest() {
 b v0.1.0 (/fixture/crates/b)|
 `-- memchr v2.0.0|std
 ";
+    // --workspace lists memchr's dependencies under a, so b's line is `(*)`.
+    let ws_b = "\
+b v0.1.0 (/fixture/crates/b)|
+`-- memchr v2.0.0|std (*)
+";
     let members = vec![member("a", &[UNION]), member("b", &[]), member(UNION, &[])];
-    let fixture = Fixture::new(&members, &workspace_of(&[TREE_A, tree_b, TREE_UNION]))
+    let fixture = Fixture::new(&members, &workspace_of(&[TREE_A, ws_b, TREE_UNION]))
         .tree("a", TREE_A)
         .tree("b", tree_b);
     let manifest = fixture.manifest("b");
@@ -622,8 +631,9 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
     )
     .tree("a", TREE_A_UNION_MEMCHR);
     let manifest = fixture.manifest("u");
+    let out = fixture.check();
     assert_findings(
-        &fixture.check(),
+        &out,
         &[&[
             "HOST-UNION u",
             "a -[build]-> u -> workspace-feature-union",
@@ -631,6 +641,17 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
             &manifest,
         ]],
         "u is a build-dependency of a and depends on the union",
+    );
+    assert!(
+        stdout_of(&out).contains("not compared while a HOST-UNION finding stands"),
+        "check must say that it compared nothing\n{}",
+        describe(&out)
+    );
+    let log = fixture.cargo_argv_log();
+    assert!(
+        !log.lines().any(|line| line.starts_with("tree")),
+        "a HOST-UNION finding changes the host graph, so check must not resolve cargo tree \
+         while one stands\n{log}"
     );
 }
 
@@ -719,21 +740,27 @@ fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
     );
 }
 
+const PM_NODE: &str = "pm v0.1.0 (proc-macro) (/fixture/crates/pm)|";
+
 /// `--workspace` with `a` depending on the proc-macro member `pm`, whose
-/// subtree is `pm_children`; pm is also a root of its own.
+/// subtree is `pm_children`; pm is also a root of its own, which is `(*)`
+/// when it has children, because a's line lists them.
 fn workspace_using_proc_macro_pm(pm_children: &[&str]) -> String {
     let below_pm: String = pm_children
         .iter()
         .map(|line| format!("    {line}\n"))
         .collect();
-    let root_pm: String = pm_children.iter().map(|line| format!("{line}\n")).collect();
     let tree_a = format!(
         "a v0.1.0 (/fixture/crates/a)|\n\
          |-- {UNION_NODE}\n\
-         `-- pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n\
+         `-- {PM_NODE}\n\
          {below_pm}"
     );
-    let tree_pm = format!("pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n{root_pm}");
+    let tree_pm = if pm_children.is_empty() {
+        format!("{PM_NODE}\n")
+    } else {
+        format!("{PM_NODE} (*)\n")
+    };
     workspace_of(&[&tree_a, &tree_pm, TREE_UNION])
 }
 
@@ -780,7 +807,7 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
             "remove pm's dependency on workspace-feature-union",
             &manifest,
         ]],
-        "one finding for pm, though the union sits below pm under a and as pm's own root",
+        "one finding for pm, though pm is printed under a and as a root of its own",
     );
 }
 
@@ -939,6 +966,384 @@ a v0.1.0 (/fixture/crates/a)|
     );
 }
 
+// --- side attribution --------------------------------------------------------
+
+/// Real cargo 1.96 output from a scratch workspace: u -> memchr, zz -> union
+/// with `[build-dependencies] u`. u's two roots are character-identical.
+const WS_ZZ_BUILDS_WITH_U_MEMCHR: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc,default,std
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc,default,std
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_ZZ_BUILDS_WITH_U_MEMCHR: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.1|alloc,default,std
+";
+
+#[test]
+fn check_and_generate_are_green_when_a_host_side_members_host_root_is_printed_before_its_build_edge()
+ {
+    let members = vec![
+        member("u", &[]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    let fixture = Fixture::new(&members, WS_ZZ_BUILDS_WITH_U_MEMCHR)
+        .tree("zz", TREE_ZZ_BUILDS_WITH_U_MEMCHR)
+        .with_union_manifest(&empty_union_manifest());
+    assert_green(
+        &fixture.check(),
+        "zz's `(*)` build edge to u resolves to u's host root, so --workspace builds a host memchr",
+    );
+    let out = fixture.generate();
+    assert_exit(&out, 0, "generate finds no split to pin");
+    assert!(
+        parse_toml(&fixture.union_manifest(), "the rewritten union manifest")
+            .get("target")
+            .is_none(),
+        "no split, so no pin\n{}",
+        describe(&out)
+    );
+}
+
+/// Real cargo 1.96 output from a scratch workspace: the shape of
+/// [`WS_ZZ_BUILDS_WITH_U_MEMCHR`] plus yy -> log, memchr[logging] and
+/// zz -> memchr, so u's target root carries logging and its host root does not.
+const WS_U_ROOTS_DIFFER_IN_MEMCHR_LOGGING: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc,default,std
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc,default,logging,std
+    `-- log v0.4.30|
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+yy v0.1.0 (/fixture/crates/yy)|
+|-- log v0.4.30|
+|-- memchr v2.8.1|alloc,default,logging,std (*)
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+|-- memchr v2.8.1|alloc,default,logging,std (*)
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_YY_MEMCHR_LOGGING: &str = "\
+yy v0.1.0 (/fixture/crates/yy)|
+|-- log v0.4.30|
+|-- memchr v2.8.1|alloc,default,logging,std
+|   `-- log v0.4.30|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
+const TREE_ZZ_MEMCHR_WITHOUT_LOGGING: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+|-- memchr v2.8.1|alloc,default,std
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.1|alloc,default,std
+";
+
+const TREE_ZZ_MEMCHR_PINNED_WITH_LOGGING: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+|-- memchr v2.8.1|alloc,default,logging,std
+|   `-- log v0.4.30|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+    `-- memchr v2.8.1|alloc,default,logging,std (*)
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.1|alloc,default,std
+";
+
+fn yy_and_zz_build_with_u() -> Vec<Member> {
+    vec![
+        member("u", &[]),
+        member("yy", &[UNION]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ]
+}
+
+#[test]
+fn check_reds_and_generate_pins_a_target_split_that_a_host_root_used_to_mask() {
+    let fixture = Fixture::new(
+        &yy_and_zz_build_with_u(),
+        WS_U_ROOTS_DIFFER_IN_MEMCHR_LOGGING,
+    )
+    .tree("yy", TREE_YY_MEMCHR_LOGGING)
+    .tree("zz", TREE_ZZ_MEMCHR_WITHOUT_LOGGING)
+    .tree_after("zz", "^memchr ", TREE_ZZ_MEMCHR_PINNED_WITH_LOGGING)
+    .with_union_manifest(&empty_union_manifest());
+
+    assert_findings(
+        &fixture.check(),
+        &[&[
+            "SPLIT zz ",
+            "memchr v2.8.1",
+            "(target)",
+            "{alloc,default,std}",
+            "{alloc,default,logging,std}",
+        ]],
+        "--workspace builds target memchr with logging only; the root without it is u's host copy",
+    );
+    let out = fixture.generate();
+    assert_exit(&out, 0, "generate pins target memchr with logging");
+    assert_pin(
+        &parse_toml(&fixture.union_manifest(), "the rewritten union manifest"),
+        "dependencies",
+        "memchr",
+        r#"version = "2"
+features = ["alloc", "logging", "std"]"#,
+    );
+    assert_green(&fixture.check(), "check after the pin");
+}
+
+/// Real cargo 1.96 output from a scratch workspace: u names memchr[logging] in
+/// both [dependencies] and [build-dependencies], so its two roots are
+/// character-identical and only the first can be its host copy.
+const WS_U_IDENTICAL_ROOTS_HOST_COPY_FIRST: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.3|alloc,default,logging,std
+    `-- log v0.4.34|
+[build-dependencies]
+`-- memchr v2.8.3|alloc,default,logging,std (*)
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.3|alloc,default,logging,std
+    `-- log v0.4.34|
+[build-dependencies]
+`-- memchr v2.8.3|alloc,default,logging,std (*)
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_ZZ_BUILDS_WITH_U_MEMCHR_IN_BOTH_SECTIONS: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.3|alloc,default,logging,std
+        `-- log v0.4.34|
+    [build-dependencies]
+    `-- memchr v2.8.3|alloc,default,logging,std (*)
+";
+
+#[test]
+fn check_is_green_when_the_first_of_two_identical_roots_is_the_host_copy() {
+    let members = vec![
+        member("u", &[]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    let fixture = Fixture::new(&members, WS_U_IDENTICAL_ROOTS_HOST_COPY_FIRST)
+        .tree("zz", TREE_ZZ_BUILDS_WITH_U_MEMCHR_IN_BOTH_SECTIONS);
+    assert_green(
+        &fixture.check(),
+        "with u's first root on TARGET, its [build-dependencies] memchr `(*)` precedes every \
+         HOST line of memchr, so only the first root can be the host copy",
+    );
+}
+
+/// Real cargo 1.96 output from a scratch workspace: u -> log, yy ->
+/// log[max_level_debug] and zz -> log with `[build-dependencies] u`. log is a
+/// leaf, so only one feature set per side tells u's two roots apart.
+const WS_U_ROOTS_DIFFER_IN_LEAF_LOG: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- log v0.4.30|
+
+u v0.1.0 (/fixture/crates/u)|
+`-- log v0.4.30|max_level_debug
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+yy v0.1.0 (/fixture/crates/yy)|
+|-- log v0.4.30|max_level_debug
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+|-- log v0.4.30|max_level_debug
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_YY_LOG_MAX_LEVEL_DEBUG: &str = "\
+yy v0.1.0 (/fixture/crates/yy)|
+|-- log v0.4.30|max_level_debug
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
+const TREE_ZZ_LOG_WITHOUT_FEATURES: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+|-- log v0.4.30|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- log v0.4.30|
+";
+
+#[test]
+fn check_reds_on_a_leaf_target_split_that_a_host_root_used_to_mask() {
+    let out = Fixture::new(&yy_and_zz_build_with_u(), WS_U_ROOTS_DIFFER_IN_LEAF_LOG)
+        .tree("yy", TREE_YY_LOG_MAX_LEVEL_DEBUG)
+        .tree("zz", TREE_ZZ_LOG_WITHOUT_FEATURES)
+        .check();
+    assert_findings(
+        &out,
+        &[&[
+            "SPLIT zz ",
+            "log v0.4.30",
+            "(target)",
+            "-p resolves {}",
+            "{max_level_debug}",
+        ]],
+        "--workspace builds target log with max_level_debug only",
+    );
+}
+
+/// Real cargo 1.96 output from a scratch workspace: a -> b, b dev-depends on
+/// c, c and zz build with u, u -> memchr. u's host copy is expanded only
+/// inside b's `[dev-dependencies]` section below a.
+const WS_U_HOST_COPY_EXPANDED_BELOW_A_DEV_SECTION: &str = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- b v0.1.0 (/fixture/crates/b)|
+|   `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+|   [dev-dependencies]
+|   `-- c v0.1.0 (/fixture/crates/c)|
+|       `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+|       [build-dependencies]
+|       `-- u v0.1.0 (/fixture/crates/u)|
+|           `-- memchr v2.8.1|alloc,default,std
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+b v0.1.0 (/fixture/crates/b)| (*)
+
+c v0.1.0 (/fixture/crates/c)| (*)
+
+u v0.1.0 (/fixture/crates/u)| (*)
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc,default,std
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_A_WITH_B: &str = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- b v0.1.0 (/fixture/crates/b)|
+|   `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
+const TREE_B_DEV_DEPENDS_ON_C: &str = "\
+b v0.1.0 (/fixture/crates/b)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[dev-dependencies]
+`-- c v0.1.0 (/fixture/crates/c)|
+    `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+    [build-dependencies]
+    `-- u v0.1.0 (/fixture/crates/u)|
+        `-- memchr v2.8.1|alloc,default,std
+";
+
+const TREE_C_BUILDS_WITH_U: &str = "\
+c v0.1.0 (/fixture/crates/c)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.1|alloc,default,std
+";
+
+#[test]
+fn check_finds_a_host_variant_whose_only_expanded_line_sits_below_a_dev_section() {
+    let members = vec![
+        member("a", &[UNION, "b"]),
+        member("b", &[UNION]).dev_dep("c"),
+        member("c", &[UNION]).build_dep("u"),
+        member("u", &[]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    assert_green(
+        &Fixture::new(&members, WS_U_HOST_COPY_EXPANDED_BELOW_A_DEV_SECTION)
+            .tree("a", TREE_A_WITH_B)
+            .tree("b", TREE_B_DEV_DEPENDS_ON_C)
+            .tree("c", TREE_C_BUILDS_WITH_U)
+            .tree("zz", TREE_ZZ_BUILDS_WITH_U_MEMCHR)
+            .check(),
+        "the host memchr below b's dev-dependency c is one --workspace builds: b is a root",
+    );
+}
+
+/// u's two roots differ only in memchr's features, and nothing else on
+/// either side tells which root is the host copy.
+const WS_U_ROOTS_UNPLACEABLE: &str = "\
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|alloc
+
+u v0.1.0 (/fixture/crates/u)|
+`-- memchr v2.8.1|std
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)| (*)
+";
+
+const TREE_ZZ_BUILDS_WITH_U_MEMCHR_ALLOC: &str = "\
+zz v0.1.0 (/fixture/crates/zz)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+    `-- memchr v2.8.1|alloc
+";
+
+#[test]
+fn check_exits_2_when_the_tree_cannot_say_which_root_of_a_member_is_its_host_copy() {
+    let members = vec![
+        member("u", &[]),
+        member("zz", &[UNION]).build_dep("u"),
+        member(UNION, &[]),
+    ];
+    assert_input_error(
+        &Fixture::new(&members, WS_U_ROOTS_UNPLACEABLE)
+            .tree("zz", TREE_ZZ_BUILDS_WITH_U_MEMCHR_ALLOC)
+            .check(),
+        &["which root of u v0.1.0 is its host copy"],
+        "both side assignments obey cargo tree's printing rules and put memchr's features on \
+         different sides",
+    );
+}
+
 // --- member features ---------------------------------------------------------
 
 /// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
@@ -1004,8 +1409,10 @@ fn check_reports_a_member_feature_split_as_advisory_naming_the_selections_that_r
     );
 }
 
-/// The serde gate accepts a failing check, so it holds only while a failing
-/// check still prints every advisory line.
+/// The serde gate accepts a failing check, so it holds only while a check
+/// that fails on coverage still prints every advisory line. A HOST-UNION
+/// failure compares nothing
+/// (check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side).
 #[test]
 fn check_reports_a_member_feature_split_on_a_failing_check_without_counting_it_as_a_finding() {
     let fixture = member_split_fixture(&["e"]);
@@ -1111,6 +1518,13 @@ fn check_exits_2_when_cargo_tree_fails_naming_the_command_and_its_stderr() {
 
 #[test]
 fn check_exits_2_on_a_tree_line_it_cannot_read_quoting_the_line() {
+    let seven_undecided_pairs: String = (1..=7)
+        .map(|k| {
+            format!(
+                "\np{k} v0.1.0 (/fixture/crates/p{k})|a\n\np{k} v0.1.0 (/fixture/crates/p{k})|b"
+            )
+        })
+        .collect();
     let cases = [
         (
             "a package line with no `|`",
@@ -1131,6 +1545,39 @@ fn check_exits_2_on_a_tree_line_it_cannot_read_quoting_the_line() {
             "a line deeper than its parent",
             "|   |   `-- foo v1.0.0|",
             "foo v1.0.0",
+        ),
+        (
+            "a `(*)` line before any line lists that package's dependencies",
+            "|-- serde v1.0.0|std (*)",
+            "serde v1.0.0|std (*)",
+        ),
+        (
+            "two feature sets of one package on one side",
+            "|-- serde v1.0.0|std\n|-- serde v1.0.0|rc",
+            "serde v1.0.0|rc",
+        ),
+        (
+            "a package printed as a root three times",
+            "\na v0.1.0 (/fixture/crates/a)|\n\na v0.1.0 (/fixture/crates/a)|",
+            "3 roots of a v0.1.0",
+        ),
+        (
+            "a proc-macro printed as two roots",
+            "\npm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n\n\
+             pm v0.1.0 (proc-macro) (/fixture/crates/pm)|",
+            "2 roots of proc-macro pm v0.1.0",
+        ),
+        (
+            "a pair of roots that breaks a printing rule on either side",
+            "\nu v0.1.0 (/fixture/crates/u)|\n`-- memchr v2.0.0|std (*)\n\n\
+             u v0.1.0 (/fixture/crates/u)|\n`-- memchr v2.0.0|std (*)",
+            "roots printed twice (u v0.1.0) obeys cargo tree's printing rules; the last one \
+             tried breaks at `cargo tree -p a` line 4",
+        ),
+        (
+            "more pairs than the check tries side assignments for",
+            seven_undecided_pairs.as_str(),
+            "128 side assignments of the roots printed twice",
         ),
     ];
     for (label, line, needle) in cases {
