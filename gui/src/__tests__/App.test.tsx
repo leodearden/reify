@@ -3511,6 +3511,62 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(screen.queryByTestId('start-view')).toBeNull();
   });
 
+  it('a launch file that failed to load shows the start view with E_GUI_OPEN_FAILED naming the file', async () => {
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
+      path: '/designs/missing.ri',
+      error: 'Error reading /designs/missing.ri: No such file or directory',
+    });
+
+    await renderAndWaitForReady();
+
+    const error = screen.getByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(error.textContent).toContain('/designs/missing.ri');
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(bridge.takeInitialFileLoadFailure).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(bridge.getInitialState).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(bridge.takeInitialFileLoadFailure).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('a launch whose failing buffer still opened leaves no start-view error behind', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(
+      published({ ...emptyState, files: [{ path: 'broken.ri', content: 'structure {' }] }),
+    );
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
+      path: '/designs/broken.ri',
+      error: 'Parse errors: x',
+    });
+
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('start-view')).toBeNull();
+
+    capturedEditorStore.closeFile('broken.ri');
+
+    await waitFor(() => expect(screen.getByTestId('start-view')).toBeTruthy());
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+  });
+
+  it('a launch with no failure shows no start-view error', async () => {
+    await renderAndWaitForReady();
+
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+    expect(bridge.takeInitialFileLoadFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unreadable launch-file failure still reaches ready, toasts, and leaves no start-view error', async () => {
+    vi.mocked(bridge.takeInitialFileLoadFailure).mockRejectedValue('ipc down');
+
+    await renderAndWaitForReady();
+
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryAllByTestId('toast').some((t) => t.textContent?.includes('ipc down'))).toBe(true),
+    );
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+  });
+
   it('opening a typed path loads it, records it as recent and dismisses the start view', async () => {
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
     await renderAndWaitForReady();
