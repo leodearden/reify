@@ -730,18 +730,19 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
-    // Resolve fn SIGNATURES first (task 5494 / PRD stdlib-namespace.md D-8).
-    // Signature resolution compiles no expression, so it runs before any
-    // structure template exists; it seeds `ctx.resolution_functions` with
-    // signature-only stubs for the phases that follow.
+    // Resolve fn SIGNATURES first, then every param default that needs no
+    // same-module template (task 5494 / PRD stdlib-namespace.md D-8). Neither
+    // needs a structure template; together they seed `ctx.resolution_functions`
+    // with signature stubs carrying those defaults for the phases that follow.
     //
-    // Phase order from here: signatures → traits → fields → constraint_defs →
-    // **entities + fn bodies (one unified pass, source order)** → post-passes.
-    // Function param defaults and bodies are compiled by `phase_entities`,
-    // interleaved with entity templates in declaration order, so a fn body
-    // constructing a same-module structure gets that structure's AUTHORITATIVE
-    // template (PRD stdlib-namespace D-8).
-    compile_builder::functions_phase::phase_fn_signatures(
+    // Phase order from here: signatures → template-free param defaults →
+    // traits → fields → constraint_defs → **entities + fn bodies (one unified
+    // pass, source order)** → post-passes. Fn bodies, and defaults that need a
+    // same-module template, are compiled by `phase_entities`, interleaved with
+    // entity templates in declaration order, so a fn body constructing a
+    // same-module structure gets that structure's AUTHORITATIVE template.
+    compile_builder::functions_phase::phase_fn_signatures(&mut compile_ctx, &decl_refs.fn_refs);
+    compile_builder::functions_phase::phase_fn_param_defaults(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,

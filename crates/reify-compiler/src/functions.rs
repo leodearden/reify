@@ -63,20 +63,21 @@ pub(crate) fn declared_callable_names(
 /// can be resolved WITHOUT a template registry and WITHOUT compiling any
 /// expression.
 ///
-/// Split out of [`compile_function`] so function compilation can run as two
+/// Split out of [`compile_function`] so function compilation can run in
 /// sub-passes (task 5494 / PRD `stdlib-namespace.md` D-8): signatures resolve
-/// early — before any structure template exists — while param defaults and
-/// bodies compile later, against the *authoritative* template registry.
+/// early — before any structure template exists — while bodies, and defaults
+/// that need a same-module template, compile later against the
+/// *authoritative* template registry.
 ///
 /// `compile_expr` never reads `CompiledFunction::body`, and
 /// `resolve_function_overload` reads only `name`/`params`/`type_params`/
 /// `return_type`/`annotations`, so a `FnSignature` is sufficient for
 /// compile-time overload dispatch.  It is NOT sufficient for `try_default_padding`,
 /// which clones the callee's compiled `param_defaults` into the caller's IR —
-/// hence the second sub-pass.
+/// hence `FnParamDefaults`.
 ///
-/// Each field is computed exactly ONCE, here; [`compile_function_with_signature`]
-/// consumes it without re-resolving anything.
+/// Each field is computed exactly ONCE, here; [`compile_fn_param_defaults`] and
+/// [`compile_fn_body`] consume it without re-resolving anything.
 pub(crate) struct FnSignature {
     pub(crate) name: String,
     pub(crate) doc: Option<String>,
@@ -84,7 +85,7 @@ pub(crate) struct FnSignature {
     pub(crate) params: Vec<(String, Type)>,
     /// `param_type_resolved[i]` is `true` when the i-th param's declared type
     /// resolved successfully.  Gates the default-vs-param-type check in
-    /// [`compile_function_with_signature`]: when the type failed to resolve the
+    /// [`compile_fn_param_defaults`]: when the type failed to resolve the
     /// root-cause "unresolved type" diagnostic is already queued and a secondary
     /// `FnParamDefaultTypeMismatch` would be confusing noise.
     pub(crate) param_type_resolved: Vec<bool>,
@@ -94,6 +95,19 @@ pub(crate) struct FnSignature {
     pub(crate) optimized_target: Option<String>,
 }
 
+/// Whether a fn's param defaults could be compiled before any same-module
+/// structure template exists (task 5494, PRD stdlib-namespace D-8).
+///
+/// Decided once per fn by `functions_phase::phase_fn_param_defaults`.
+pub(crate) enum FnParamDefaults {
+    /// The defaults need no same-module template, so they are the fn's real
+    /// `param_defaults`, compiled once and reused by every later pass.
+    Compiled(Vec<Option<CompiledExpr>>),
+    /// A default uses a same-module structure (directly, or through another
+    /// fn's pending default), so it compiles in the fn's source-order slot.
+    NeedLocalTemplates,
+}
+
 /// Resolve a `fn` declaration's signature: param types, return type, type
 /// params and annotations.
 ///
@@ -101,8 +115,8 @@ pub(crate) struct FnSignature {
 /// expression, so it needs no template registry and no sibling-function table —
 /// which is what lets it run before any structure template has been built.
 ///
-/// Pair with [`compile_function_with_signature`]; [`compile_function`] is the
-/// thin wrapper that runs both back to back.
+/// Pair with [`compile_fn_param_defaults`] and [`compile_fn_body`];
+/// [`compile_function`] is the thin wrapper that runs all three back to back.
 pub(crate) fn resolve_fn_signature(
     fn_def: &reify_ast::FnDef,
     enum_defs: &[reify_ir::EnumDef],
@@ -284,65 +298,69 @@ pub(crate) fn resolve_fn_signature(
     }
 }
 
-/// Compile a `fn` declaration's param defaults and body against an
-/// already-resolved [`FnSignature`].
+/// What a free fn's param defaults and body compile against.
 ///
-/// `template_registry` is the registry the defaults and the body are compiled
-/// against, so a structure-def constructor call — e.g. `Widget()` — lowers to
-/// `CompiledExprKind::StructureInstanceCtor` rather than a generic
-/// `FunctionCall`.  It carries prelude structure_defs (esc-3851-32) plus the
-/// module's own AUTHORITATIVE structure templates built so far (task 5494).
+/// One bundle, so the default scope and the body scope are configured from the
+/// same fields and cannot drift (task 5494).
+pub(crate) struct FnCompileEnv<'a> {
+    pub(crate) enum_defs: &'a [reify_ir::EnumDef],
+    /// The call-resolution table.
+    pub(crate) functions: &'a [CompiledFunction],
+    /// The ctor view, so a structure-def constructor call — e.g. `Widget()` —
+    /// lowers to `CompiledExprKind::StructureInstanceCtor` rather than a
+    /// generic `FunctionCall` (esc-3851-32).
+    pub(crate) template_registry: Option<&'a HashMap<String, &'a TopologyTemplate>>,
+    /// See [`CompilationScope::later_declared_structure_names`].
+    pub(crate) later_declared_structure_names: Option<&'a HashSet<String>>,
+    /// See [`CompilationScope::fns_with_pending_defaults`].
+    pub(crate) fns_with_pending_defaults: Option<&'a HashSet<String>>,
+    /// The module's order-independent callable vocabulary (task #5371).
+    pub(crate) declared_callable_names: &'a HashSet<String>,
+}
+
+impl<'a> FnCompileEnv<'a> {
+    /// A scope carrying this env's registries and no value bindings.
+    fn scope(&self, fn_name: &str) -> CompilationScope<'a> {
+        let mut scope = CompilationScope::new(fn_name);
+        if let Some(reg) = self.template_registry {
+            scope.set_template_registry(reg);
+        }
+        if let Some(names) = self.later_declared_structure_names {
+            scope.set_later_declared_structure_names(names);
+        }
+        if let Some(names) = self.fns_with_pending_defaults {
+            scope.set_fns_with_pending_defaults(names);
+        }
+        scope.declared_callable_names = Some(self.declared_callable_names);
+        scope
+    }
+}
+
+/// Compile a `fn` declaration's param defaults, and type-check each against
+/// its declared param type.
 ///
-/// `functions` is the call-resolution table for the defaults and the body.
-/// `declared_callable_names` is the module's order-independent callable
-/// vocabulary (task #5371), borrowed onto both scopes.
-///
-/// Returns `None` (with a diagnostic) for a bodyless trait fn.  Signature-level
-/// diagnostics are NOT re-emitted here — [`resolve_fn_signature`] already
-/// emitted them exactly once.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function_with_signature(
+/// Defaults compile in a neutral scope (no params registered) so they cannot
+/// reference sibling params and cannot recurse into the enclosing function —
+/// definition-time semantics, pure-by-construction and order-independent. See
+/// `CompiledFunction::param_defaults` in `reify-ir/src/expr.rs` and
+/// `docs/initial-design/name-resolution-and-scoping-design-decisions.md` §2.3.
+/// The neutral scope is neutral for VALUE bindings only: it still carries the
+/// env's registries, so `= helper(1.0)` and `= Widget()` resolve the way the
+/// body would.
+pub(crate) fn compile_fn_param_defaults(
     fn_def: &reify_ast::FnDef,
     sig: &FnSignature,
-    enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
-    later_declared_structure_names: Option<&HashSet<String>>,
-    declared_callable_names: &HashSet<String>,
-    template_registry: Option<&HashMap<String, &TopologyTemplate>>,
+    env: &FnCompileEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledFunction> {
-    // Compile default expressions in a neutral scope (no params registered) so
-    // defaults cannot reference sibling params and cannot recurse into the
-    // enclosing function — definition-time semantics. Rationale: keeps defaults
-    // pure-by-construction and order-independent.
-    // See `CompiledFunction::param_defaults` in `reify-types/src/expr.rs` for the
-    // field-level doc and `docs/initial-design/name-resolution-and-scoping-design-decisions.md`
-    // §2.3 for the full language-design rationale.
-    //
-    // Thread the template registry through so that defaults written as
-    // `FieldFoo()` (a structure-def constructor) lower to
-    // CompiledExprKind::StructureInstanceCtor rather than a generic
-    // FunctionCall (esc-3851-32). Same wiring applied to the body scope below.
-    let mut neutral_scope = CompilationScope::new(&fn_def.name);
-    if let Some(reg) = template_registry {
-        neutral_scope.set_template_registry(reg);
-    }
-    // task 5494: a default using a same-module structure declared BELOW this fn
-    // is reported as an ordering error, never silently degraded.
-    if let Some(names) = later_declared_structure_names {
-        neutral_scope.set_later_declared_structure_names(names);
-    }
-    // Neutral for VALUE bindings, not for the module's declared vocabulary: a
-    // default like `= helper(1.0)` compiles against the same partially-grown
-    // `functions` table as the body below, so it must be answered the same way.
-    neutral_scope.declared_callable_names = Some(declared_callable_names);
+) -> Vec<Option<CompiledExpr>> {
+    let neutral_scope = env.scope(&fn_def.name);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
         .map(|p| {
             p.default
                 .as_ref()
-                .map(|d| compile_expr(d, &neutral_scope, enum_defs, functions, diagnostics))
+                .map(|d| compile_expr(d, &neutral_scope, env.enum_defs, env.functions, diagnostics))
         })
         .collect();
 
@@ -394,18 +412,26 @@ pub(crate) fn compile_function_with_signature(
         }
     }
 
-    // Create a scope with function params registered.
-    let mut scope = CompilationScope::new(&fn_def.name);
-    if let Some(reg) = template_registry {
-        scope.set_template_registry(reg);
-    }
-    if let Some(names) = later_declared_structure_names {
-        scope.set_later_declared_structure_names(names);
-    }
-    // The module's declared callable vocabulary — see
-    // `CompilationScope::declared_callable_names` for why this body needs it.
-    // Borrowed, never merged here: the caller builds it once per pass.
-    scope.declared_callable_names = Some(declared_callable_names);
+    param_defaults
+}
+
+/// Compile a `fn` declaration's body against an already-resolved
+/// [`FnSignature`] and its compiled `param_defaults`, and assemble the
+/// [`CompiledFunction`].
+///
+/// Returns `None` (with a diagnostic) for a bodyless trait fn.  Signature-level
+/// diagnostics are NOT re-emitted here — [`resolve_fn_signature`] already
+/// emitted them exactly once.
+pub(crate) fn compile_fn_body(
+    fn_def: &reify_ast::FnDef,
+    sig: &FnSignature,
+    param_defaults: Vec<Option<CompiledExpr>>,
+    env: &FnCompileEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    let enum_defs = env.enum_defs;
+    let functions = env.functions;
+    let mut scope = env.scope(&fn_def.name);
     for (name, ty) in &sig.params {
         scope.register(name, ty.clone());
     }
@@ -501,10 +527,11 @@ pub(crate) fn compile_function_with_signature(
 /// Compile a `fn` declaration end to end: resolve its signature, then its param
 /// defaults and body.
 ///
-/// Thin wrapper over [`resolve_fn_signature`] + [`compile_function_with_signature`],
-/// kept for callers that compile a function in one shot (trait static fns, assoc
-/// fns, tests).  The two-sub-pass pipeline calls the halves separately so
-/// signatures can be resolved before any structure template exists.
+/// Thin wrapper over [`resolve_fn_signature`] + [`compile_fn_param_defaults`] +
+/// [`compile_fn_body`], kept for callers that compile a function in one shot
+/// (trait static fns, tests).  The source-order pipeline calls the pieces
+/// separately so signatures and template-free defaults are available before
+/// any structure template exists.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
     fn_def: &reify_ast::FnDef,
@@ -525,18 +552,18 @@ pub(crate) fn compile_function(
         trait_names,
         diagnostics,
     );
-    compile_function_with_signature(
-        fn_def,
-        &sig,
+    let env = FnCompileEnv {
         enum_defs,
         functions,
-        // Trait-static and assoc fns are not in the source-order pass, so the
+        template_registry: prelude_template_registry,
+        // Trait-static fns are not in the source-order pass, so the
         // declaration-order rule does not apply to them (#5371's ruling).
-        None,
+        later_declared_structure_names: None,
+        fns_with_pending_defaults: None,
         declared_callable_names,
-        prelude_template_registry,
-        diagnostics,
-    )
+    };
+    let param_defaults = compile_fn_param_defaults(fn_def, &sig, &env, diagnostics);
+    compile_fn_body(fn_def, &sig, param_defaults, &env, diagnostics)
 }
 
 /// Rewrite bare `Identifier(x)` references to conformer members into `self.x`

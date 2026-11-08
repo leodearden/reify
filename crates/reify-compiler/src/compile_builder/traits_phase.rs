@@ -145,7 +145,7 @@ pub(crate) fn phase_traits(
     // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
     // static fn is actually registered. For modules that declare no traits or no
     // body-carrying static assoc fns, resolution_functions is already correct from
-    // `phase_fn_signatures` and the O(prelude) clone+merge is skipped entirely.
+    // `phase_fn_param_defaults` and the O(prelude) clone+merge is skipped entirely.
     // Each registered static fn's body does pay one such clone+merge
     // (`body_table`, below).
     //
@@ -222,9 +222,9 @@ pub(crate) fn phase_traits(
 
     // Rebuild `ctx.resolution_functions` so fn bodies and entity bodies (both
     // compiled in the unified source-order pass, which runs after phase_traits) can
-    // resolve `Trait::method` calls — the same helper `phase_fn_signatures` uses.
+    // resolve `Trait::method` calls — the same helper `phase_fn_param_defaults` uses.
     // `visible_fns` IS the user table — the signature stubs seeded by
-    // `phase_fn_signatures` followed by the trait-static fns just compiled — so the
+    // `phase_fn_param_defaults` followed by the trait-static fns just compiled — so the
     // stub entries the later phases depend on survive the rebuild.  Keeping the
     // stubs at indices `0..fn_signatures.len()` is load-bearing: the unified pass
     // replaces stub `i` with the real `CompiledFunction` by declaration index.
@@ -234,7 +234,7 @@ pub(crate) fn phase_traits(
     // trait-static fns …]` order that `compute_module_hash` folds.
     //
     // Skipped entirely when no static fns were registered: resolution_functions is
-    // already correct from `phase_fn_signatures` and the O(prelude) clone+merge is
+    // already correct from `phase_fn_param_defaults` and the O(prelude) clone+merge is
     // redundant.
     if any_static_fn_registered {
         ctx.resolution_functions = build_resolution_functions(&visible_fns, prelude);

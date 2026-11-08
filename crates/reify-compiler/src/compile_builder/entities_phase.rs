@@ -105,12 +105,7 @@ pub(crate) fn phase_entities(
     // (local ∪ prelude) its own consumers want, but sub-target resolution needs
     // to know which names the module OWNS — see `PreludeRegistries::
     // local_entity_names` and property 1 of `find_template_with_prelude`.
-    let local_entity_names: HashSet<String> = ctx
-        .seen_entity_names
-        .iter()
-        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-        .map(|(name, _)| name.clone())
-        .collect();
+    let local_entity_names: HashSet<String> = ctx.local_entity_names();
     let structure_names: HashSet<String> = local_entity_names
         .iter()
         .cloned()
@@ -202,7 +197,7 @@ pub(crate) fn phase_entities(
     // back into `ctx.resolution_functions` at the end of the pass.
     //
     // Entries `0..ctx.fn_signatures.len()` are the signature stubs seeded by
-    // `phase_fn_signatures` (and preserved by `phase_traits`' rebuild), in
+    // `phase_fn_param_defaults` (and preserved by `phase_traits`' rebuild), in
     // declaration order — so a fn's declaration index indexes this table directly.
     let mut resolution_functions: Vec<CompiledFunction> =
         std::mem::take(&mut ctx.resolution_functions);
@@ -294,9 +289,13 @@ pub(crate) fn phase_entities(
                     "fn_signatures must stay parallel to the source-order \
                      Declaration::Function sequence"
                 );
+                let Some(defaults) = ctx.fn_param_defaults.get(idx) else {
+                    continue;
+                };
                 if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
                     fn_def,
                     sig,
+                    defaults,
                     &ctx.resolution_enums,
                     &ctx.functions,
                     &ctx.templates,

@@ -290,6 +290,15 @@ pub(crate) struct CompilationScope<'u> {
     /// (`compile_entity` reports forward entity references its own way), and so
     /// do trait-static and assoc-fn scopes (#5371's documented ruling).
     pub(crate) later_declared_structure_names: Option<&'u HashSet<String>>,
+    /// Same-module fns whose param defaults are not yet compiled, because a
+    /// default uses a same-module structure (task #5494, PRD stdlib-namespace
+    /// D-8; `functions::FnParamDefaults::NeedLocalTemplates`).
+    ///
+    /// A call that omits such a default, resolved against a table holding the
+    /// fn's signature stub, cannot pad. `expr.rs`'s `pending_default_error`
+    /// reports it as `FnDefaultNotYetAvailable` rather than a bare
+    /// `NoMatchingOverload`. `None` where the table never holds such a stub.
+    pub(crate) fns_with_pending_defaults: Option<&'u HashSet<String>>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -448,6 +457,7 @@ impl<'u> CompilationScope<'u> {
             unit_registry: None,
             template_registry: None,
             later_declared_structure_names: None,
+            fns_with_pending_defaults: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             sub_realization_names: HashMap::new(),
@@ -476,10 +486,15 @@ impl<'u> CompilationScope<'u> {
     }
 
     /// Set the later-declared structure names (task #5494). Mirrors
-    /// `set_template_registry`; called from `compile_function_with_signature`
+    /// `set_template_registry`; called from `functions::FnCompileEnv::scope`
     /// for the param-default and body scopes of a free fn.
     pub(crate) fn set_later_declared_structure_names(&mut self, names: &'u HashSet<String>) {
         self.later_declared_structure_names = Some(names);
+    }
+
+    /// Set [`Self::fns_with_pending_defaults`].
+    pub(crate) fn set_fns_with_pending_defaults(&mut self, names: &'u HashSet<String>) {
+        self.fns_with_pending_defaults = Some(names);
     }
 
     /// Register an identifier as a purpose param in this scope (task-2181 β, contract C1).

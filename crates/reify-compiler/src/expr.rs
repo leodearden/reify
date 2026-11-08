@@ -3315,6 +3315,13 @@ fn compile_expr_guarded_with_expected_inner(
                             .collect();
                         return build_user_function_call_expr(name, coerced_args, result_type);
                     }
+                    // task 5494: the call would pad, but the callee's defaults
+                    // are not compiled yet — say so, by name.
+                    if let Some(diagnostic) =
+                        pending_default_error(scope, name, &named_candidates, &arg_types, expr.span)
+                    {
+                        return make_poison_literal(diagnostics, diagnostic);
+                    }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
                         .iter()
@@ -7051,6 +7058,48 @@ fn later_declared_structure_error(
             "structure declared later in the file",
         ))
     })
+}
+
+/// `FnDefaultNotYetAvailable` for a call to `name` that would pad (by the
+/// shared [`crate::type_compat::provided_prefix_admits_padding`]) but whose
+/// trailing defaults are not compiled yet, because `name` is one of the scope's
+/// [`CompilationScope::fns_with_pending_defaults`]; `None` otherwise.
+fn pending_default_error(
+    scope: &CompilationScope,
+    name: &str,
+    named_candidates: &[&CompiledFunction],
+    arg_types: &[Type],
+    span: reify_core::SourceSpan,
+) -> Option<Diagnostic> {
+    if !scope
+        .fns_with_pending_defaults
+        .is_some_and(|names| names.contains(name))
+    {
+        return None;
+    }
+    let provided = arg_types.len();
+    let param = named_candidates
+        .iter()
+        .filter(|cand| crate::type_compat::provided_prefix_admits_padding(cand, arg_types))
+        .find_map(|cand| {
+            cand.params[provided..]
+                .iter()
+                .zip(&cand.param_defaults[provided..])
+                .find(|(_, default)| default.is_none())
+                .map(|((param, _), _)| param)
+        })?;
+    Some(
+        Diagnostic::error(format!(
+            "function '{name}' param '{param}' default is not available here: it uses a \
+             same-module structure, so only structures and fns declared below `fn {name}` \
+             may omit it; pass it explicitly"
+        ))
+        .with_code(DiagnosticCode::FnDefaultNotYetAvailable)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "omitted default not available here",
+        )),
+    )
 }
 
 // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ───────────────

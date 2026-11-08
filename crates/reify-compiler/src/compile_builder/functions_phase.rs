@@ -1,16 +1,18 @@
-//! Function compilation, split into two sub-passes (task 5494 / PRD
+//! Function compilation, split into sub-passes (task 5494 / PRD
 //! `stdlib-namespace.md` D-8).
 //!
 //! * [`phase_fn_signatures`] runs EARLY — before any structure template exists —
-//!   and resolves every `fn` declaration's signature.  It seeds
-//!   `ctx.resolution_functions` with signature-only stubs so the phases between
-//!   it and the unified pass (`phase_traits`, `phase_fields`,
-//!   `phase_constraint_defs`) can resolve calls to same-module fns.
-//! * [`compile_function_decl`] compiles one fn's param defaults and body.  It is
-//!   driven by the unified source-order pass in `entities_phase::phase_entities`,
-//!   which interleaves fn bodies with entity templates in declaration order, so
-//!   a fn body constructs a same-module structure against that structure's
-//!   AUTHORITATIVE [`TopologyTemplate`].
+//!   and resolves every `fn` declaration's signature.
+//! * [`phase_fn_param_defaults`] runs next and compiles every fn's defaults
+//!   that need no same-module template.  It seeds `ctx.resolution_functions`
+//!   with signature stubs carrying those defaults, so the phases between it and
+//!   the unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`)
+//!   can resolve — and pad — calls to same-module fns.
+//! * [`compile_function_decl`] compiles one fn's body, plus any defaults the
+//!   early pass left pending.  It is driven by the unified source-order pass in
+//!   `entities_phase::phase_entities`, which interleaves fn bodies with entity
+//!   templates in declaration order, so a fn body constructs a same-module
+//!   structure against that structure's AUTHORITATIVE [`TopologyTemplate`].
 //!
 //! A same-module structure declared BELOW the fn has no template yet; using it
 //! draws `DiagnosticCode::StructureDeclaredAfterFunction`.
@@ -18,12 +20,15 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::FnDef;
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
-use crate::compile_builder::ctx::CompilationCtx;
-use crate::functions::{FnSignature, compile_function_with_signature, resolve_fn_signature};
+use crate::compile_builder::ctx::{CompilationCtx, signature_stub};
+use crate::functions::{
+    FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body, compile_fn_param_defaults,
+    resolve_fn_signature,
+};
 use crate::name_env::{self, Origin};
 use crate::types::TopologyTemplate;
 
@@ -32,19 +37,10 @@ use crate::types::TopologyTemplate;
 /// The first half of the two-sub-pass split (task 5494 / PRD
 /// `stdlib-namespace.md` D-8).  Signature resolution compiles no expression, so
 /// it needs no template registry — which is what lets it run before any
-/// structure template exists.  Param defaults and bodies are compiled later, by
-/// the unified source-order pass in `phase_entities`, against the authoritative
-/// registry.
-///
-/// Seeds `ctx.resolution_functions` with signature-only stubs composed with the
-/// prelude by [`build_resolution_functions`], so the phases that run between
-/// this one and the unified pass (`phase_traits`, `phase_fields`,
-/// `phase_constraint_defs`) can resolve calls to same-module fns.
-pub(crate) fn phase_fn_signatures(
-    ctx: &mut CompilationCtx,
-    prelude: &[&CompiledModule],
-    fn_refs: &[&FnDef],
-) {
+/// structure template exists.  Param defaults compile next, in
+/// [`phase_fn_param_defaults`]; bodies compile in the unified source-order pass
+/// in `phase_entities`, against the authoritative registry.
+pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) {
     for fn_def in fn_refs {
         let sig = resolve_fn_signature(
             fn_def,
@@ -56,12 +52,83 @@ pub(crate) fn phase_fn_signatures(
         );
         ctx.fn_signatures.push(sig);
     }
-
-    ctx.resolution_functions = build_resolution_functions(&ctx.fn_signature_stubs(), prelude);
 }
 
-/// Compile ONE `fn` declaration's param defaults and body — the second half of
-/// the two-sub-pass split.
+/// Compile, ONCE and in source order, every fn's param defaults that need no
+/// same-module structure template (PRD `stdlib-namespace.md` D-8).
+///
+/// Each fn's defaults are probed against what the unified pass would give them
+/// minus the module's own templates: the signature stubs of the fns above it
+/// (carrying the outcomes decided so far), the prelude ctor view, and every
+/// module-local ctor-view name marked as declared later.  The probe's
+/// diagnostics go to a scratch buffer:
+///
+/// * holding a `StructureDeclaredAfterFunction` or `FnDefaultNotYetAvailable`,
+///   the defaults need a local template (directly, or through a fn above whose
+///   defaults are pending) — `NeedLocalTemplates`, and the scratch and its
+///   result are DISCARDED; the unified pass compiles them in the fn's slot;
+/// * otherwise the result is exactly what the unified pass would compile —
+///   `Compiled`, and the scratch is emitted, once, here.
+///
+/// Seeds `ctx.resolution_functions` with the resulting stubs composed with the
+/// prelude by [`build_resolution_functions`], and records the pending fns in
+/// `ctx.fns_with_pending_defaults`.
+pub(crate) fn phase_fn_param_defaults(
+    ctx: &mut CompilationCtx,
+    prelude: &[&CompiledModule],
+    fn_refs: &[&FnDef],
+) {
+    let prelude_ctor_view = name_env::ctor_template_registry(&[], prelude);
+    let local_ctor_names = ctx.local_entity_names();
+    let declared_callables = crate::functions::declared_callable_names(
+        &ctx.declared_fn_names,
+        &ctx.resolution_structure_names,
+    );
+    let mut stubs: Vec<CompiledFunction> = Vec::with_capacity(fn_refs.len());
+    let mut pending: HashSet<String> = HashSet::new();
+    for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
+        let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
+            FnParamDefaults::Compiled(CompiledFunction::no_defaults_for(&sig.params))
+        } else {
+            let functions = build_resolution_functions(&stubs, prelude);
+            let env = FnCompileEnv {
+                enum_defs: &ctx.resolution_enums,
+                functions: &functions,
+                template_registry: Some(&prelude_ctor_view),
+                later_declared_structure_names: Some(&local_ctor_names),
+                fns_with_pending_defaults: Some(&pending),
+                declared_callable_names: &declared_callables,
+            };
+            let mut scratch = Vec::new();
+            let defaults = compile_fn_param_defaults(fn_def, sig, &env, &mut scratch);
+            let needs_local_templates = scratch.iter().any(|d| {
+                matches!(
+                    d.code,
+                    Some(
+                        DiagnosticCode::StructureDeclaredAfterFunction
+                            | DiagnosticCode::FnDefaultNotYetAvailable
+                    )
+                )
+            });
+            if needs_local_templates {
+                FnParamDefaults::NeedLocalTemplates
+            } else {
+                ctx.diagnostics.append(&mut scratch);
+                FnParamDefaults::Compiled(defaults)
+            }
+        };
+        if matches!(outcome, FnParamDefaults::NeedLocalTemplates) {
+            pending.insert(sig.name.clone());
+        }
+        stubs.push(signature_stub(sig, Some(&outcome)));
+        ctx.fn_param_defaults.push(outcome);
+    }
+    ctx.fns_with_pending_defaults = pending;
+    ctx.resolution_functions = build_resolution_functions(&stubs, prelude);
+}
+
+/// Compile ONE `fn` declaration's body, plus its param defaults when
+/// [`phase_fn_param_defaults`] left them pending.
 ///
 /// Called from the `Declaration::Function` arm of
 /// `entities_phase::phase_entities`, in source order, so `user_fns_so_far` and
@@ -84,11 +151,13 @@ pub(crate) fn phase_fn_signatures(
 /// (task #5371), built once per pass by the caller.
 ///
 /// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
-/// already emitted them exactly once.
+/// already emitted them exactly once — and neither are those of `Compiled`
+/// defaults, which are reused as compiled.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function_decl(
     fn_def: &FnDef,
     sig: &FnSignature,
+    defaults: &FnParamDefaults,
     enum_defs: &[EnumDef],
     user_fns_so_far: &[CompiledFunction],
     templates_so_far: &[TopologyTemplate],
@@ -106,16 +175,23 @@ pub(crate) fn compile_function_decl(
     let functions = build_resolution_functions(user_fns_so_far, prelude);
     let template_registry: HashMap<String, &TopologyTemplate> =
         name_env::ctor_template_registry(templates_so_far, prelude);
-    compile_function_with_signature(
-        fn_def,
-        sig,
+    let env = FnCompileEnv {
         enum_defs,
-        &functions,
-        Some(&later_declared_structure_names),
-        declared_callables,
-        Some(&template_registry),
-        diagnostics,
-    )
+        functions: &functions,
+        template_registry: Some(&template_registry),
+        later_declared_structure_names: Some(&later_declared_structure_names),
+        // Never holds a pending stub: fns above are real, fns below are #5371's
+        // forward references.
+        fns_with_pending_defaults: None,
+        declared_callable_names: declared_callables,
+    };
+    let param_defaults = match defaults {
+        FnParamDefaults::Compiled(defaults) => defaults.clone(),
+        FnParamDefaults::NeedLocalTemplates => {
+            compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
+        }
+    };
+    compile_fn_body(fn_def, sig, param_defaults, &env, diagnostics)
 }
 
 /// The compile-time overload-dispatch table: every user function, then each

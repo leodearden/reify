@@ -18,7 +18,7 @@ use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
-use crate::functions::FnSignature;
+use crate::functions::{FnParamDefaults, FnSignature};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -50,11 +50,18 @@ pub(crate) struct CompilationCtx {
     /// order — the output of `functions_phase::phase_fn_signatures`.
     ///
     /// Written before any structure template exists; consumed by the unified
-    /// source-order pass in `phase_entities`, which compiles each fn's param
-    /// defaults and body against the authoritative template registry.
+    /// source-order pass in `phase_entities`, which compiles each fn's body
+    /// against the authoritative template registry.
     /// Parallel to `decl_refs.fn_refs` (same length, same order), so a
     /// declaration index indexes both.
     pub(crate) fn_signatures: Vec<FnSignature>,
+    /// Each fn's param-default outcome, parallel to `fn_signatures` — the
+    /// output of `functions_phase::phase_fn_param_defaults`.
+    pub(crate) fn_param_defaults: Vec<FnParamDefaults>,
+    /// Names of the fns whose outcome is `FnParamDefaults::NeedLocalTemplates`.
+    /// Written once, by `phase_fn_param_defaults`; see
+    /// [`crate::scope::CompilationScope::fns_with_pending_defaults`].
+    pub(crate) fns_with_pending_defaults: HashSet<String>,
     /// Trait-static fns compiled by `phase_traits`, buffered here instead of
     /// being pushed straight into `functions`.
     ///
@@ -104,7 +111,7 @@ pub(crate) struct CompilationCtx {
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
     /// prelude functions via `functions_phase::build_resolution_functions`.
-    /// Seeded with signature-only stubs by `functions_phase::phase_fn_signatures`,
+    /// Seeded with signature stubs by `functions_phase::phase_fn_param_defaults`,
     /// then rewritten with the fully-compiled functions (param defaults and
     /// bodies) by the unified source-order pass in `entities_phase::phase_entities`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
@@ -137,7 +144,7 @@ pub(crate) struct CompilationCtx {
     ///
     /// Deliberately NOT `resolution_functions`, and the difference is the whole
     /// reason this field exists. `resolution_functions` is a table of compiled
-    /// SIGNATURES and is only complete once `phase_fn_signatures` has finished. This
+    /// SIGNATURES and is only complete once `phase_fn_param_defaults` has finished. This
     /// set answers the weaker question ("does the module declare this name at
     /// all?") and is complete before the first body compiles.
     ///
@@ -160,6 +167,8 @@ impl CompilationCtx {
             imports: Vec::new(),
             functions: Vec::new(),
             fn_signatures: Vec::new(),
+            fn_param_defaults: Vec::new(),
+            fns_with_pending_defaults: HashSet::new(),
             trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),
@@ -184,48 +193,38 @@ impl CompilationCtx {
         }
     }
 
-    /// Build a signature-only `CompiledFunction` table from `fn_signatures`.
+    /// Build a signature-stub `CompiledFunction` table from `fn_signatures`.
     ///
     /// Each stub carries the real name/params/return_type/type_params/
-    /// annotations — everything `resolve_function_overload` reads — with
-    /// `param_defaults: CompiledFunction::no_defaults_for(&params)` (satisfying
-    /// the strict `param_defaults.len() == params.len()` invariant) and an empty
-    /// body.  `compile_expr` never reads `CompiledFunction::body`, so a stub is
-    /// sufficient for compile-time overload dispatch.
+    /// annotations — everything `resolve_function_overload` reads — and an
+    /// empty body.  `compile_expr` never reads `CompiledFunction::body`, so a
+    /// stub is sufficient for compile-time overload dispatch.
     ///
-    /// It is NOT sufficient for `try_default_padding`, which clones the callee's
-    /// compiled `param_defaults` into the caller's IR: a call that omits a
-    /// defaulted arg resolved against a stub loses its padding and produces a
-    /// LOUD arity diagnostic, never a silent wrong value.  Consumers that run
-    /// before the unified pass (`phase_traits`' static-fn bodies, `phase_fields`,
-    /// `phase_constraint_defs`) accept that residual; the unified pass itself
-    /// replaces each stub with the real `CompiledFunction` as soon as it is
-    /// compiled, so structures resolve against real defaults.
+    /// `param_defaults` are the fn's REAL defaults when
+    /// `phase_fn_param_defaults` compiled them (`FnParamDefaults::Compiled`), so
+    /// `try_default_padding` pads against a stub exactly as against the real
+    /// fn.  A fn whose defaults wait for a same-module template
+    /// (`NeedLocalTemplates`, or not yet decided) gets
+    /// `CompiledFunction::no_defaults_for` — PRD stdlib-namespace D-8.
     ///
     /// Same synthetic-stub idiom as `geometry.rs`'s and `annotations.rs`'s
     /// `CompiledFunction` literals.
     pub(crate) fn fn_signature_stubs(&self) -> Vec<CompiledFunction> {
         self.fn_signatures
             .iter()
-            .map(|sig| CompiledFunction {
-                name: sig.name.clone(),
-                doc: sig.doc.clone(),
-                is_pub: sig.is_pub,
-                param_defaults: CompiledFunction::no_defaults_for(&sig.params),
-                params: sig.params.clone(),
-                return_type: sig.return_type.clone(),
-                body: reify_ir::CompiledFnBody {
-                    let_bindings: Vec::new(),
-                    result_expr: reify_ir::CompiledExpr::literal(
-                        reify_ir::Value::Real(0.0),
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                },
-                content_hash: ContentHash::of_str(&sig.name),
-                annotations: sig.annotations.clone(),
-                optimized_target: sig.optimized_target.clone(),
-                type_params: sig.type_params.clone(),
-            })
+            .enumerate()
+            .map(|(i, sig)| signature_stub(sig, self.fn_param_defaults.get(i)))
+            .collect()
+    }
+
+    /// Every module-local name that can win a ctor-view slot: the module's own
+    /// structures (top-level and purpose-nested) and occurrences —
+    /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
+    pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+        self.seen_entity_names
+            .iter()
+            .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+            .map(|(name, _)| name.clone())
             .collect()
     }
 
@@ -320,6 +319,38 @@ impl CompilationCtx {
             diagnostics: self.diagnostics,
             content_hash,
         }
+    }
+}
+
+/// One signature stub; see [`CompilationCtx::fn_signature_stubs`].
+pub(crate) fn signature_stub(
+    sig: &FnSignature,
+    defaults: Option<&FnParamDefaults>,
+) -> CompiledFunction {
+    let param_defaults = match defaults {
+        Some(FnParamDefaults::Compiled(defaults)) => defaults.clone(),
+        Some(FnParamDefaults::NeedLocalTemplates) | None => {
+            CompiledFunction::no_defaults_for(&sig.params)
+        }
+    };
+    CompiledFunction {
+        name: sig.name.clone(),
+        doc: sig.doc.clone(),
+        is_pub: sig.is_pub,
+        param_defaults,
+        params: sig.params.clone(),
+        return_type: sig.return_type.clone(),
+        body: reify_ir::CompiledFnBody {
+            let_bindings: Vec::new(),
+            result_expr: reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Real(0.0),
+                reify_core::Type::dimensionless_scalar(),
+            ),
+        },
+        content_hash: ContentHash::of_str(&sig.name),
+        annotations: sig.annotations.clone(),
+        optimized_target: sig.optimized_target.clone(),
+        type_params: sig.type_params.clone(),
     }
 }
 

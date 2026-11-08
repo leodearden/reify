@@ -4941,6 +4941,22 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     StructureDeclaredAfterFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs::pending_default_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a call omits a defaulted arg of a
+    /// same-module fn whose default uses a same-module structure, from a site
+    /// that compiles before that fn's slot in the source-order pass (a field, a
+    /// trait-static fn body, an ambient default, or a structure declared above
+    /// the fn). Such a default only exists once the structure's template does,
+    /// so only structures and fns declared below the fn may omit it.
+    ///
+    /// Canonical message: `"function '<fn>' param '<param>' default is not
+    /// available here: it uses a same-module structure, so only structures and
+    /// fns declared below `fn <fn>` may omit it; pass it explicitly"`.
+    ///
+    /// Severity: Error.
+    FnDefaultNotYetAvailable,
 }
 
 /// A diagnostic message with location and optional labels.

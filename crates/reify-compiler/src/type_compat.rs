@@ -1764,6 +1764,26 @@ pub(crate) fn mul_div_result_or_placeholder(
     })
 }
 
+/// Whether `cand` could take `arg_types` by padding its trailing params: it
+/// has strictly more params than args, and every provided arg matches its
+/// param under the tier-3 wildcard gate that `resolve_function_overload`
+/// applies — literally the same function (#5689), so the two cannot drift.
+/// Says nothing about whether the trailing defaults exist.
+///
+/// The ONE "would pad" predicate, shared by [`try_default_padding`] and
+/// `expr.rs`'s `pending_default_error` (task 5494).
+pub(crate) fn provided_prefix_admits_padding(cand: &CompiledFunction, arg_types: &[Type]) -> bool {
+    let provided = arg_types.len();
+    if cand.params.len() <= provided {
+        return false;
+    }
+    let is_generic = !cand.type_params.is_empty();
+    cand.params[..provided]
+        .iter()
+        .zip(arg_types)
+        .all(|((_, param_ty), arg_ty)| slot_matches_wildcard_tier(param_ty, arg_ty, is_generic))
+}
+
 /// Attempt to satisfy a `NoMatch` call via default-padding.
 ///
 /// Searches `named` for the UNIQUE same-name candidate where:
@@ -1803,7 +1823,8 @@ pub(crate) fn mul_div_result_or_placeholder(
 /// Returns `None` when zero candidates are satisfiable (caller falls through to the
 /// existing NoMatch error). (task-4788 / esc-4757-65.)
 ///
-/// **Invariant:** every candidate in `named` must satisfy
+/// **Invariant:** every candidate in `named` that passes
+/// [`provided_prefix_admits_padding`] must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
 /// enforced by `debug_assert!`). Violations are programming errors, not
 /// recoverable call-site conditions.
@@ -1815,8 +1836,7 @@ pub(crate) fn try_default_padding<'a>(
     let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
 
     for &cand in named {
-        // Candidate must have strictly more params than provided args.
-        if cand.params.len() <= provided {
+        if !provided_prefix_admits_padding(cand, arg_types) {
             continue;
         }
         // Strict invariant: param_defaults must be length-aligned to params.
@@ -1832,20 +1852,6 @@ pub(crate) fn try_default_padding<'a>(
             cand.param_defaults.len()
         );
         if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
-        // Provided prefix types must match candidate params using the same
-        // tier-3 wildcard predicate as `resolve_function_overload` — literally
-        // the same function now (#5689), so the two cannot drift apart. See
-        // the function-level doc for why the alignment is required.
-        let is_generic = !cand.type_params.is_empty();
-        let prefix_matches = cand.params[..provided]
-            .iter()
-            .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| {
-                slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
-            });
-        if !prefix_matches {
             continue;
         }
         // All trailing params must carry Some compiled default.
