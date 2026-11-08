@@ -570,8 +570,13 @@ fn check_reds_on_a_member_without_the_union_dependency_naming_its_manifest() {
 b v0.1.0 (/fixture/crates/b)|
 `-- memchr v2.0.0|std
 ";
+    // --workspace lists memchr's dependencies under a, so b's line is `(*)`.
+    let ws_b = "\
+b v0.1.0 (/fixture/crates/b)|
+`-- memchr v2.0.0|std (*)
+";
     let members = vec![member("a", &[UNION]), member("b", &[]), member(UNION, &[])];
-    let fixture = Fixture::new(&members, &workspace_of(&[TREE_A, tree_b, TREE_UNION]))
+    let fixture = Fixture::new(&members, &workspace_of(&[TREE_A, ws_b, TREE_UNION]))
         .tree("a", TREE_A)
         .tree("b", tree_b);
     let manifest = fixture.manifest("b");
