@@ -1,31 +1,37 @@
-// Pure-data sample payloads shared by the engineStore test files.
+// Keyed fixtures are factories: the store merges an update into the first object sent for a key.
 import type { GuiState, MeshData, ValueData, ConstraintData } from '../types';
 
-export const sampleMesh: MeshData = {
-  entity_path: 'Bracket.body',
-  vertices: new Float32Array([0, 1, 2, 3, 4, 5]),
-  indices: new Uint32Array([0, 1, 2]),
-  normals: new Float32Array([0, 0, 1, 0, 0, 1]),
-};
+export function sampleMesh(): MeshData {
+  return {
+    entity_path: 'Bracket.body',
+    vertices: new Float32Array([0, 1, 2, 3, 4, 5]),
+    indices: new Uint32Array([0, 1, 2]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+  };
+}
 
-export const sampleValue: ValueData = {
-  cell_id: 'cell_001',
-  name: 'width',
-  value: '50.0',
-  unit: 'mm',
-  determinacy: 'determined',
-  entity_path: 'Bracket.width',
-  kind: 'Param',
-  freshness: 'final',
-};
+export function sampleValue(): ValueData {
+  return {
+    cell_id: 'cell_001',
+    name: 'width',
+    value: '50.0',
+    unit: 'mm',
+    determinacy: 'determined',
+    entity_path: 'Bracket.width',
+    kind: 'Param',
+    freshness: 'final',
+  };
+}
 
-export const sampleConstraint: ConstraintData = {
-  node_id: 'constraint_001',
-  expression: 'width > 10',
-  status: 'satisfied',
-  label: null,
-  parameter_ids: ['cell_001'],
-};
+export function sampleConstraint(): ConstraintData {
+  return {
+    node_id: 'constraint_001',
+    expression: 'width > 10',
+    status: 'satisfied',
+    label: null,
+    parameter_ids: ['cell_001'],
+  };
+}
 
 // One canonical auto-resolve iteration fixture, shared by the autoResolve and
 // publish-generation suites. Previously each block re-declared this same 14-line literal;

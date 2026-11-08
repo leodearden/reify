@@ -44,15 +44,15 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
       const guiState = makeGuiState({
-        meshes: [sampleMesh],
-        values: [sampleValue],
-        constraints: [sampleConstraint],
+        meshes: [sampleMesh()],
+        values: [sampleValue()],
+        constraints: [sampleConstraint()],
       });
       initFromState(guiState);
 
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
-      expect(state.values['cell_001']).toEqual(sampleValue);
-      expect(state.constraints['constraint_001']).toEqual(sampleConstraint);
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
+      expect(state.values['cell_001']).toEqual(sampleValue());
+      expect(state.constraints['constraint_001']).toEqual(sampleConstraint());
       dispose();
     });
   });
@@ -100,11 +100,11 @@ describe('engineStore', () => {
   it('applyMeshUpdate upserts a mesh by entity_path', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
+      applyMeshUpdate(sampleMesh());
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
 
       // Update existing
-      const updated = { ...sampleMesh, vertices: new Float32Array([9, 8, 7]) };
+      const updated = { ...sampleMesh(), vertices: new Float32Array([9, 8, 7]) };
       applyMeshUpdate(updated);
       expect(state.meshes['Bracket.body'].vertices).toEqual(new Float32Array([9, 8, 7]));
       dispose();
@@ -178,8 +178,8 @@ describe('engineStore', () => {
         kind: 'Param',
         freshness: 'final',
       };
-      applyValueUpdates([sampleValue, value2]);
-      expect(state.values['cell_001']).toEqual(sampleValue);
+      applyValueUpdates([sampleValue(), value2]);
+      expect(state.values['cell_001']).toEqual(sampleValue());
       expect(state.values['cell_002']).toEqual(value2);
       dispose();
     });
@@ -195,8 +195,8 @@ describe('engineStore', () => {
         label: 'too large',
         parameter_ids: ['cell_002'],
       };
-      applyConstraintUpdates([sampleConstraint, c2]);
-      expect(state.constraints['constraint_001']).toEqual(sampleConstraint);
+      applyConstraintUpdates([sampleConstraint(), c2]);
+      expect(state.constraints['constraint_001']).toEqual(sampleConstraint());
       expect(state.constraints['constraint_002']).toEqual(c2);
       dispose();
     });
@@ -315,7 +315,7 @@ describe('engineStore', () => {
   it('removeMesh deletes a mesh entry from state.meshes by entity_path', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       expect(state.meshes['Bracket.body']).toBeDefined();
 
       removeMesh('Bracket.body');
@@ -327,7 +327,7 @@ describe('engineStore', () => {
   it('removeValue deletes a value entry from state.values by cell_id', () => {
     createRoot((dispose) => {
       const { state, applyValueUpdates, removeValue } = createEngineStore();
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       expect(state.values['cell_001']).toBeDefined();
 
       removeValue('cell_001');
@@ -339,7 +339,7 @@ describe('engineStore', () => {
   it('removeConstraint deletes a constraint entry from state.constraints by node_id', () => {
     createRoot((dispose) => {
       const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       expect(state.constraints['constraint_001']).toBeDefined();
 
       removeConstraint('constraint_001');
@@ -429,7 +429,7 @@ describe('engineStore', () => {
   it('removeMesh leaves no phantom key in Object.keys(state.meshes)', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
 
       expect(Object.keys(state.meshes)).not.toContain('Bracket.body');
@@ -441,7 +441,7 @@ describe('engineStore', () => {
   it('removeValue leaves no phantom key in Object.keys(state.values)', () => {
     createRoot((dispose) => {
       const { state, applyValueUpdates, removeValue } = createEngineStore();
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       removeValue('cell_001');
 
       expect(Object.keys(state.values)).not.toContain('cell_001');
@@ -453,7 +453,7 @@ describe('engineStore', () => {
   it('removeConstraint leaves no phantom key in Object.keys(state.constraints)', () => {
     createRoot((dispose) => {
       const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       removeConstraint('constraint_001');
 
       expect(Object.keys(state.constraints)).not.toContain('constraint_001');
@@ -465,7 +465,7 @@ describe('engineStore', () => {
   it('Object.values after removeMesh contains no undefined entries', () => {
     createRoot((dispose) => {
       const { state, applyMeshUpdate, removeMesh } = createEngineStore();
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
 
       const values = Object.values(state.meshes);
@@ -484,7 +484,7 @@ describe('engineStore', () => {
         indices: new Uint32Array([0, 1, 2]),
         normals: null,
       };
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       applyMeshUpdate(mesh2);
 
       removeMesh('Bracket.body');
@@ -505,7 +505,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyMeshUpdate, removeMesh } = createEngineStore({ onEntityRemoved: spy });
-      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(sampleMesh());
       removeMesh('Bracket.body');
       expect(spy).toHaveBeenCalledWith('Bracket.body');
       dispose();
@@ -516,7 +516,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyValueUpdates, removeValue } = createEngineStore({ onEntityRemoved: spy });
-      applyValueUpdates([sampleValue]);
+      applyValueUpdates([sampleValue()]);
       removeValue('cell_001');
       expect(spy).toHaveBeenCalledWith('cell_001');
       dispose();
@@ -527,7 +527,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { applyConstraintUpdates, removeConstraint } = createEngineStore({ onEntityRemoved: spy });
-      applyConstraintUpdates([sampleConstraint]);
+      applyConstraintUpdates([sampleConstraint()]);
       removeConstraint('constraint_001');
       expect(spy).toHaveBeenCalledWith('constraint_001');
       dispose();
@@ -542,9 +542,9 @@ describe('engineStore', () => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
       const guiState = makeGuiState({
-        meshes: [sampleMesh],
-        values: [sampleValue],
-        constraints: [sampleConstraint],
+        meshes: [sampleMesh()],
+        values: [sampleValue()],
+        constraints: [sampleConstraint()],
       });
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -568,10 +568,10 @@ describe('engineStore', () => {
   it('createEngineStore works without onEngineReinitialized (option is optional)', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState = makeGuiState({ meshes: [sampleMesh] });
+      const guiState = makeGuiState({ meshes: [sampleMesh()] });
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
-      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh());
       dispose();
     });
   });

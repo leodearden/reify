@@ -18,11 +18,11 @@ beforeEach(primeEngineStoreBridgeMocks);
 // ── task 7853: a whole-state snapshot never overwrites newer event-applied state ──
 
 describe('engineStore publish-generation guard', () => {
-  const width = (value: string): ValueData => ({ ...sampleValue, value });
+  const width = (value: string): ValueData => ({ ...sampleValue(), value });
 
   function snapshot(value: string, feaDiagnostics: FeaDiagnosticInfo[] = []): GuiState {
     return makeGuiState({
-      meshes: [sampleMesh],
+      meshes: [sampleMesh()],
       values: [width(value)],
       fea_diagnostics: feaDiagnostics,
     });
@@ -58,7 +58,7 @@ describe('engineStore publish-generation guard', () => {
   }
 
   const shownWidth = (store: ReturnType<typeof createEngineStore>) =>
-    store.state.values[sampleValue.cell_id]?.value;
+    store.state.values[sampleValue().cell_id]?.value;
 
   it('applyPublishedState applies a snapshot when no newer generation was announced', async () => {
     await createRoot(async (dispose) => {
@@ -67,7 +67,7 @@ describe('engineStore publish-generation guard', () => {
       store.applyPublishedState({ generation: 1, state: snapshot('50') });
 
       expect(shownWidth(store)).toBe('50');
-      expect(store.state.meshes[sampleMesh.entity_path]).toEqual(sampleMesh);
+      expect(store.state.meshes[sampleMesh().entity_path]).toEqual(sampleMesh());
       expect(onEngineReinitialized).toHaveBeenCalledOnce();
       dispose();
     });
