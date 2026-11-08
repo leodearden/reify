@@ -570,7 +570,9 @@ fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_
 /// An outer cell reading an override-free sub's minted cells must follow
 /// them through `edit_source`, as a cold eval's does. The walk can commit the
 /// instance cell unchanged before its re-mint, so a consumer it cut off early
-/// keeps the pre-edit handle unless the re-mint reaches it.
+/// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
+/// `self.same.*`, which names the instance cells; a bare `same.*` reads the
+/// sub's `__self` alias instead, which `edit_source` does not rebuild.
 #[test]
 fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_consumers() {
     let source = r#"
@@ -581,8 +583,8 @@ fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_
         }
 
         structure ConsOuter {
-            let v = same.body
-            let t = same.s
+            let v = self.same.body
+            let t = self.same.s
             sub same = ConsInner()
         }
     "#;
