@@ -5,8 +5,36 @@ use std::path::Path;
 
 use crate::harness::{
     Fixture, TREE_A, TREE_UNION, assert_findings, assert_green, assert_input_error, covered_a,
-    describe, stdout_of, workspace_of,
+    describe, finding_lines, real_check, stdout_of, workspace_of,
 };
+
+#[test]
+fn real_workspace_compiles_every_unit_to_the_workspace_profile() {
+    let out = real_check();
+    let stdout = stdout_of(out);
+    assert!(
+        matches!(out.status.code(), Some(0 | 1))
+            && !finding_lines(&stdout)
+                .iter()
+                .any(|line| line.starts_with("HOST-UNION ")),
+        "check must compare the unit graphs for a missing PROFILE-SPLIT line to mean \
+         anything, and a HOST-UNION finding stops it before it compares\n{}",
+        describe(out)
+    );
+    let offending: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("PROFILE-SPLIT "))
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "a -p selection compiles a unit to a profile --workspace never compiles it to, so it \
+         rebuilds in a fresh lane; set the profile field explicitly, as \
+         `[profile.dev.build-override]` in the workspace Cargo.toml does — see \
+         docs/notes/workspace-feature-union.md, \"Host profiles\"\n{}\n{}",
+        offending.join("\n"),
+        describe(out)
+    );
+}
 
 const B_PKG_ID: &str = "path+file:///fixture/crates/b#0.1.0";
 

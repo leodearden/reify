@@ -21,15 +21,15 @@ use harness::{
 
 // --- the real workspace ------------------------------------------------------
 
-/// The gate. On failure the full output carries every SPLIT/UNCOVERED line
-/// and the remedy.
+/// The gate. On failure the full output carries every finding line and the
+/// remedy.
 #[test]
 fn real_workspace_resolves_every_member_like_the_workspace() {
     let out = real_check();
     assert!(
         out.status.success(),
-        "a member resolves an external package unlike --workspace; \
-         docs/notes/workspace-feature-union.md explains the remedy\n{}",
+        "a member resolves an external package unlike --workspace, or compiles a unit to \
+         another profile; docs/notes/workspace-feature-union.md explains the remedy\n{}",
         describe(out)
     );
 }
