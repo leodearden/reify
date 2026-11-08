@@ -649,10 +649,11 @@ Evidence:
   chain (toml 0.8.2, toml_edit, toml_datetime, serde_spanned, winnow),
   `-p reify-config` adds rustc-hash, and `-p reify-gui` adds byteorder and
   fnv. With the stanza below: 0 of 37.
-- The gate at implementation: lane `_lane-33`, task branch HEAD `b8eba47c74`,
-  verify env. `check` printed 33 PROFILE-SPLIT lines without the stanza, the
-  25 reify_build_utils lines and 8 for the external units above, and none
-  with it.
+- The gate at implementation: lane `_lane-33`, verify env, at the commit
+  "feat(9884): workspace-feature-union check reports PROFILE-SPLIT from cargo
+  test --unit-graph". `check` printed 33 PROFILE-SPLIT lines without the
+  stanza, the 25 reify_build_utils lines and 8 for the external units above,
+  and none with it.
 
 The probe compares unit identity across selections without building, in about
 a second per selection, and writes only `.rustc_info.json` into the scratch
@@ -695,12 +696,21 @@ features: with the stanza in place it still compiles 3 units whose key
 `--workspace` compiles to another profile, quote's lib and build-script run
 and hashbrown 0.17.1 (re-measured at implementation). The 38 unit graphs took
 45-62 s sequentially under load average 95-130.
-`real_workspace_compiles_every_unit_to_the_workspace_profile` holds the
-invariant.
+`real_workspace_resolves_every_member_like_the_workspace`, the gate test,
+holds the invariant; a PROFILE-SPLIT line reds it like any other finding.
+
+The gate compares each unit's own profile, not its dependency edges, so it is
+a lower bound on hash identity. When `--workspace` compiles one key at two
+profiles, a host copy and a runtime copy, a `-p` unit can carry the right
+profile and still link the other copy of a dependency than `--workspace`'s
+unit does: every unit passes, yet the dependent gets a new hash. With the
+stanza every host unit compiles at debuginfo 0 and every runtime unit at 2, so
+a unit's profile names its copy, a host copy links only host copies, and the
+case does not arise today.
 
 No compile-level re-probe here. Base gen.625 predates the stanza, so a first
 build in a lane seeded from it re-hashes the host graph and measures nothing
-about the fix. The unit graph is the proof: a unit's metadata hash is a
+about the fix. The unit graph is the evidence: a unit's metadata hash is a
 function of what the graph shows (package, target, mode, features, profile
 and its dependencies' identities) plus rustc and the target, which are equal
 across selections. The compile-level re-probe on the first base gen built
@@ -737,9 +747,10 @@ kernels' accepted member-feature splits (Member features) still make a plain
   not cover it.
 - **What the gate proves.** The gate checks `cargo tree` resolution and
   `cargo test --unit-graph` profiles, not compiled units: profiles are
-  compared per unit key, and nothing is built. Resolution reproduced the
-  task's observed syn fingerprint exactly, and the probes above are the
-  compile-level evidence for features. The compile-level re-probe for host
+  compared per unit key, not along dependency edges (Host profiles), and
+  nothing is built. Resolution reproduced the task's observed syn
+  fingerprint exactly, and the probes above are the compile-level evidence
+  for features. The compile-level re-probe for host
   profiles, on the first base gen built with the stanza, is #9927.
 - **Cold and release builds.** Every Measurements row outside the Cold build
   subsection is a warm-lane build, whose base has already compiled the
