@@ -4945,18 +4945,34 @@ pub enum DiagnosticCode {
     /// (task #5494, PRD stdlib-namespace D-8).
     ///
     /// Emitted at COMPILE time when a call omits a defaulted arg of a
-    /// same-module fn whose default uses a same-module structure, from a site
-    /// that compiles before that fn's slot in the source-order pass (a field, a
-    /// trait-static fn body, an ambient default, or a structure declared above
-    /// the fn). Such a default only exists once the structure's template does,
-    /// so only structures and fns declared below the fn may omit it.
+    /// same-module fn overload whose default uses a same-module structure, from
+    /// a site that compiles before that fn's slot in the source-order pass (a
+    /// field, a trait-static fn body, an ambient default, or a structure
+    /// declared above the fn). Such a default only exists once the structure's
+    /// template does, so only free fns and structures declared below the fn may
+    /// omit it; fields, trait-static fns and ambient defaults never can.
     ///
     /// Canonical message: `"function '<fn>' param '<param>' default is not
-    /// available here: it uses a same-module structure, so only structures and
-    /// fns declared below `fn <fn>` may omit it; pass it explicitly"`.
+    /// available here: it uses a same-module structure, so only free fns and
+    /// structures declared below `fn <fn>` may omit it; fields, trait-static
+    /// fns and ambient defaults must pass it explicitly"`.
     ///
     /// Severity: Error.
     FnDefaultNotYetAvailable,
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs::fn_tables_misaligned`
+    /// (task #5494).
+    ///
+    /// INTERNAL COMPILER ERROR. The unified source-order pass found a `fn`
+    /// declaration whose per-fn records (resolved signature, param-default
+    /// outcome, or call-table signature stub, all indexed by declaration order)
+    /// describe a different fn. Reported instead of silently skipping the fn's
+    /// body or swapping the wrong call-table slot.
+    ///
+    /// Canonical message: `"internal compiler error: fn '<fn>' (fn declaration
+    /// #<i>) does not match <record>; <consequence>"`.
+    ///
+    /// Severity: Error.
+    FnDeclTablesMisaligned,
 }
 
 /// A diagnostic message with location and optional labels.

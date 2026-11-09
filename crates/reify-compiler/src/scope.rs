@@ -291,15 +291,16 @@ pub(crate) struct CompilationScope<'u> {
     /// (`compile_entity` reports forward entity references its own way), and so
     /// do trait-static and assoc-fn scopes (#5371's documented ruling).
     pub(crate) later_declared_structure_names: Option<&'u HashSet<String>>,
-    /// Same-module fns whose param defaults are not yet compiled, because a
-    /// default uses a same-module structure (task #5494, PRD stdlib-namespace
-    /// D-8; `functions::FnParamDefaults::NeedLocalTemplates`).
+    /// The same-module fn overloads whose param defaults are not yet compiled,
+    /// because a default uses a same-module structure (task #5494, PRD
+    /// stdlib-namespace D-8; `functions::FnParamDefaults::NeedLocalTemplates`),
+    /// among the stubs of the table this scope resolves calls against.
     ///
     /// A call that omits such a default, resolved against a table holding the
-    /// fn's signature stub, cannot pad. `expr.rs`'s `pending_default_error`
+    /// overload's signature stub, cannot pad. `expr.rs`'s `pending_default_error`
     /// reports it as `FnDefaultNotYetAvailable` rather than a bare
     /// `NoMatchingOverload`. `None` where the table never holds such a stub.
-    pub(crate) fns_with_pending_defaults: Option<&'u crate::functions::PendingDefaults>,
+    pub(crate) fns_with_pending_defaults: Option<&'u crate::call_table::PendingDefaults>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -493,12 +494,10 @@ impl<'u> CompilationScope<'u> {
         self.later_declared_structure_names = Some(names);
     }
 
-    /// Set [`Self::fns_with_pending_defaults`].
-    pub(crate) fn set_fns_with_pending_defaults(
-        &mut self,
-        names: &'u crate::functions::PendingDefaults,
-    ) {
-        self.fns_with_pending_defaults = Some(names);
+    /// Tell this scope which stubs of `calls`' table cannot pad yet
+    /// ([`Self::fns_with_pending_defaults`]).
+    pub(crate) fn mark_pending_stubs(&mut self, calls: crate::call_table::CallTable<'u>) {
+        self.fns_with_pending_defaults = calls.fns_with_pending_defaults;
     }
 
     /// Register an identifier as a purpose param in this scope (task-2181 β, contract C1).

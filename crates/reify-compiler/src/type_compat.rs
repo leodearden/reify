@@ -5302,4 +5302,54 @@ mod tests {
             None,
         );
     }
+
+    // ── task 5494: `provided_prefix_admits_padding` ─────────────────────────
+
+    fn real_real_string() -> CompiledFunction {
+        make_fn(
+            "f",
+            vec![
+                ("x", Type::dimensionless_scalar()),
+                ("y", Type::dimensionless_scalar()),
+                ("z", Type::String),
+            ],
+        )
+    }
+
+    #[test]
+    fn prefix_admits_padding_needs_strictly_more_params_than_args() {
+        let f = real_real_string();
+        let all = [
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+            Type::String,
+        ];
+        assert!(!provided_prefix_admits_padding(&f, &all));
+        let too_many = [all.as_slice(), &[Type::Int]].concat();
+        assert!(!provided_prefix_admits_padding(&f, &too_many));
+    }
+
+    #[test]
+    fn prefix_admits_padding_when_every_provided_arg_matches_its_param() {
+        let f = real_real_string();
+        assert!(provided_prefix_admits_padding(&f, &[]));
+        assert!(provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar()]
+        ));
+        assert!(provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]
+        ));
+    }
+
+    #[test]
+    fn prefix_does_not_admit_padding_when_a_provided_arg_mismatches() {
+        let f = real_real_string();
+        assert!(!provided_prefix_admits_padding(&f, &[Type::String]));
+        assert!(!provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar(), Type::String]
+        ));
+    }
 }

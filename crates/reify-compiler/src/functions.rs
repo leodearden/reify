@@ -1,5 +1,6 @@
 use super::*;
 
+pub(crate) use crate::call_table::CallTable;
 use crate::fn_return_check::{FnOwner, reconcile_fn_return};
 use crate::types::TopologyTemplate;
 
@@ -298,50 +299,6 @@ pub(crate) fn resolve_fn_signature(
     }
 }
 
-/// Same-module fns whose param defaults wait for a same-module template
-/// (`FnParamDefaults::NeedLocalTemplates`), each mapped to the names of its
-/// params that DECLARE a default: exactly the slots its signature stub leaves
-/// `None` that the real fn will fill. Same-name overloads share one entry.
-pub(crate) type PendingDefaults = HashMap<String, HashSet<String>>;
-
-/// A call-resolution table plus which of its same-module stubs cannot pad
-/// yet ([`CompilationScope::fns_with_pending_defaults`]). The two travel
-/// together, so every scope that resolves calls against a table holding such a
-/// stub is told which ones (task #5494, PRD stdlib-namespace D-8).
-#[derive(Clone, Copy)]
-pub(crate) struct CallTable<'a> {
-    pub(crate) functions: &'a [CompiledFunction],
-    pub(crate) fns_with_pending_defaults: Option<&'a PendingDefaults>,
-}
-
-impl<'a> CallTable<'a> {
-    /// A table whose stubs, if any, carry every default they will ever have.
-    pub(crate) fn complete(functions: &'a [CompiledFunction]) -> Self {
-        CallTable {
-            functions,
-            fns_with_pending_defaults: None,
-        }
-    }
-
-    /// A table that may hold the stubs of `pending` fns.
-    pub(crate) fn with_pending(
-        functions: &'a [CompiledFunction],
-        pending: &'a PendingDefaults,
-    ) -> Self {
-        CallTable {
-            functions,
-            fns_with_pending_defaults: Some(pending),
-        }
-    }
-
-    /// Tell `scope` which of this table's stubs cannot pad.
-    pub(crate) fn mark_pending_on(&self, scope: &mut CompilationScope<'a>) {
-        if let Some(names) = self.fns_with_pending_defaults {
-            scope.set_fns_with_pending_defaults(names);
-        }
-    }
-}
-
 /// What a free fn's param defaults and body compile against.
 ///
 /// One bundle, so the default scope and the body scope are configured from the
@@ -369,7 +326,7 @@ impl<'a> FnCompileEnv<'a> {
         if let Some(names) = self.later_declared_structure_names {
             scope.set_later_declared_structure_names(names);
         }
-        self.calls.mark_pending_on(&mut scope);
+        scope.mark_pending_stubs(self.calls);
         scope.declared_callable_names = Some(self.declared_callable_names);
         scope
     }
@@ -879,7 +836,7 @@ pub(crate) fn compile_assoc_function(
     // matching `compile_function`). The `self` receiver never carries a default.
     let mut neutral_scope = CompilationScope::new(&fn_def.name);
     neutral_scope.declared_callable_names = declared_callables;
-    calls.mark_pending_on(&mut neutral_scope);
+    neutral_scope.mark_pending_stubs(calls);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -921,7 +878,7 @@ pub(crate) fn compile_assoc_function(
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
     scope.declared_callable_names = declared_callables;
-    calls.mark_pending_on(&mut scope);
+    scope.mark_pending_stubs(calls);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -1251,7 +1208,7 @@ pub(crate) fn compile_field(
     // Create a scope for compiling field source expressions
     let functions = calls.functions;
     let mut scope = CompilationScope::new(&field_def.name);
-    calls.mark_pending_on(&mut scope);
+    scope.mark_pending_stubs(calls);
 
     let source = match &field_def.source {
         reify_ast::FieldSource::Analytical { expr } => {

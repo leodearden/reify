@@ -25,12 +25,13 @@ use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
+use crate::call_table::{CallTable, PendingDefaults};
 use crate::compile_builder::ctx::{CompilationCtx, signature_stub};
 use crate::functions::{
-    CallTable, FnCompileEnv, FnParamDefaults, FnSignature, PendingDefaults, compile_fn_body,
-    compile_fn_param_defaults, resolve_fn_signature,
+    FnCompileEnv, FnParamDefaults, FnSignature, compile_fn_body, compile_fn_param_defaults,
+    resolve_fn_signature,
 };
-use crate::name_env::{self, Origin};
+use crate::name_env::{self, Definition, FunctionSignature, Origin};
 use crate::types::TopologyTemplate;
 
 /// Resolve every `fn` declaration's SIGNATURE, in source order.
@@ -73,8 +74,8 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 ///   `Compiled`, and the scratch is emitted, once, here.
 ///
 /// Seeds `ctx.resolution_functions` with the resulting stubs composed with the
-/// prelude by [`build_resolution_functions`], and records the pending fns in
-/// `ctx.fns_with_pending_defaults`.
+/// prelude as [`build_resolution_functions`] composes them, and records the
+/// pending fns in `ctx.fns_with_pending_defaults`.
 pub(crate) fn phase_fn_param_defaults(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
@@ -86,16 +87,15 @@ pub(crate) fn phase_fn_param_defaults(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut stubs: Vec<CompiledFunction> = Vec::with_capacity(fn_refs.len());
-    let mut pending = PendingDefaults::new();
+    let mut table = ResolutionTable::new(prelude);
+    let mut pending = PendingDefaults::default();
     for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
         let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
             FnParamDefaults::Compiled(CompiledFunction::no_defaults_for(&sig.params))
         } else {
-            let functions = build_resolution_functions(&stubs, prelude);
             let env = FnCompileEnv {
                 enum_defs: &ctx.resolution_enums,
-                calls: CallTable::with_pending(&functions, &pending),
+                calls: CallTable::with_pending(table.functions(), &pending),
                 template_registry: Some(&prelude_ctor_view),
                 later_declared_structure_names: Some(&local_ctor_names),
                 declared_callable_names: &declared_callables,
@@ -119,19 +119,19 @@ pub(crate) fn phase_fn_param_defaults(
             }
         };
         if matches!(outcome, FnParamDefaults::NeedLocalTemplates) {
-            pending.entry(sig.name.clone()).or_default().extend(
-                fn_def
-                    .params
-                    .iter()
-                    .filter(|p| p.default.is_some())
-                    .map(|p| p.name.clone()),
-            );
+            let defaulted = fn_def
+                .params
+                .iter()
+                .filter(|p| p.default.is_some())
+                .map(|p| p.name.clone())
+                .collect();
+            pending.insert(&sig.name, &sig.params, defaulted);
         }
-        stubs.push(signature_stub(sig, Some(&outcome)));
+        table.push_user(signature_stub(sig, Some(&outcome)));
         ctx.fn_param_defaults.push(outcome);
     }
     ctx.fns_with_pending_defaults = pending;
-    ctx.resolution_functions = build_resolution_functions(&stubs, prelude);
+    ctx.resolution_functions = table.into_functions();
 }
 
 /// Compile ONE `fn` declaration's body, plus its param defaults when
@@ -150,9 +150,13 @@ pub(crate) fn phase_fn_param_defaults(
 ///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
 ///   references to sibling fns do not resolve.
 ///
-/// A module-local `structure def` (`local_structure_def_names`)
-/// with no template in `templates_so_far` is declared BELOW this fn; using it
-/// draws `StructureDeclaredAfterFunction` rather than a silent fallback.
+/// `later_declared_structure_names` holds the module-local `structure def`s
+/// with no template in `templates_so_far` yet — those declared BELOW this fn;
+/// using one draws `StructureDeclaredAfterFunction` rather than a silent
+/// fallback.
+///
+/// The ctor view is rebuilt per fn: it borrows `templates_so_far`, which the
+/// caller's structure arms push to between fns.
 ///
 /// `declared_callables` is the module's order-independent callable vocabulary
 /// (task #5371), built once per pass by the caller.
@@ -169,16 +173,10 @@ pub(crate) fn compile_function_decl(
     user_fns_so_far: &[CompiledFunction],
     templates_so_far: &[TopologyTemplate],
     prelude: &[&CompiledModule],
-    local_structure_def_names: &HashSet<String>,
+    later_declared_structure_names: &HashSet<String>,
     declared_callables: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let compiled_so_far: HashSet<&str> = templates_so_far.iter().map(|t| t.name.as_str()).collect();
-    let later_declared_structure_names: HashSet<String> = local_structure_def_names
-        .iter()
-        .filter(|name| !compiled_so_far.contains(name.as_str()))
-        .cloned()
-        .collect();
     let functions = build_resolution_functions(user_fns_so_far, prelude);
     let template_registry: HashMap<String, &TopologyTemplate> =
         name_env::ctor_template_registry(templates_so_far, prelude);
@@ -188,7 +186,7 @@ pub(crate) fn compile_function_decl(
         // forward references.
         calls: CallTable::complete(&functions),
         template_registry: Some(&template_registry),
-        later_declared_structure_names: Some(&later_declared_structure_names),
+        later_declared_structure_names: Some(later_declared_structure_names),
         declared_callable_names: declared_callables,
     };
     let param_defaults = match defaults {
@@ -215,4 +213,136 @@ pub(crate) fn build_resolution_functions(
         .filter(|candidate| candidate.origin != Origin::Local)
         .map(|candidate| candidate.definition.clone());
     user.iter().cloned().chain(prelude_winners).collect()
+}
+
+/// [`build_resolution_functions`] over a user list that grows one fn at a time.
+///
+/// After every [`Self::push_user`], [`Self::functions`] equals
+/// `build_resolution_functions(&users_pushed_so_far, prelude)`. A user fn that
+/// shadows no prelude winner's key is spliced in at the end of the user
+/// prefix; only one that does triggers a rebuild, so the prelude winners are
+/// cloned once rather than once per user fn.
+pub(crate) struct ResolutionTable<'p> {
+    prelude: &'p [&'p CompiledModule],
+    prelude_keys: HashSet<FunctionSignature<'p>>,
+    functions: Vec<CompiledFunction>,
+    user_len: usize,
+}
+
+impl<'p> ResolutionTable<'p> {
+    pub(crate) fn new(prelude: &'p [&'p CompiledModule]) -> Self {
+        let prelude_keys = name_env::bind::<CompiledFunction, _>(&[], prelude.iter().copied())
+            .winners()
+            .map(Definition::key)
+            .collect();
+        ResolutionTable {
+            prelude,
+            prelude_keys,
+            functions: build_resolution_functions(&[], prelude),
+            user_len: 0,
+        }
+    }
+
+    pub(crate) fn functions(&self) -> &[CompiledFunction] {
+        &self.functions
+    }
+
+    pub(crate) fn push_user(&mut self, user: CompiledFunction) {
+        if self.prelude_keys.contains(&user.key()) {
+            self.functions.truncate(self.user_len);
+            self.functions.push(user);
+            self.functions = build_resolution_functions(&self.functions, self.prelude);
+        } else {
+            self.functions.insert(self.user_len, user);
+        }
+        self.user_len += 1;
+    }
+
+    pub(crate) fn into_functions(self) -> Vec<CompiledFunction> {
+        self.functions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_core::{DiagnosticCode, ModulePath};
+
+    use super::*;
+
+    fn compile_src(source: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        crate::compile(&parsed)
+    }
+
+    fn codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
+        module.diagnostics.iter().map(|d| d.code).collect()
+    }
+
+    /// `solve(x : String, o : Real)` declares no default, so omitting `o` is an
+    /// arity error even though its same-name sibling's `o` default is pending.
+    const OVERLOADED_SOLVE: &str = "structure def Opts { param t : Real = 1.0 }\n\
+         fn solve(x : Real, o : Opts = Opts()) -> Real { x * o.t }\n\
+         fn solve(x : String, o : Real) -> Real { o }\n";
+
+    fn assert_no_matching_overload_not_pending(module: &CompiledModule, what: &str) {
+        let codes = codes(module);
+        assert!(
+            codes.contains(&Some(DiagnosticCode::NoMatchingOverload))
+                && !codes.contains(&Some(DiagnosticCode::FnDefaultNotYetAvailable)),
+            "{what}: omitting a param the matching overload never defaults is \
+             NoMatchingOverload, not a pending default; got: {:#?}",
+            module.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_sibling_overloads_pending_default_is_not_blamed_below_both_fns() {
+        let module = compile_src(&format!(
+            "{OVERLOADED_SOLVE}structure S {{ let v = solve(\"s\") }}\n"
+        ));
+        assert_no_matching_overload_not_pending(&module, "structure below both fns");
+    }
+
+    #[test]
+    fn a_sibling_overloads_pending_default_is_not_blamed_above_its_slot() {
+        let module = compile_src(&format!(
+            "{OVERLOADED_SOLVE}field def f1 : Real -> Real {{ source = analytical {{ |x| solve(\"s\") }} }}\n"
+        ));
+        assert_no_matching_overload_not_pending(&module, "field lambda");
+    }
+
+    fn signatures(
+        functions: &[CompiledFunction],
+    ) -> Vec<(String, Vec<(String, reify_core::Type)>)> {
+        functions
+            .iter()
+            .map(|f| (f.name.clone(), f.params.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+        let prelude =
+            compile_src("fn kept(x : Real) -> Real { x }\nfn shadowed(x : Real) -> Real { x }\n");
+        let users = compile_src(
+            "fn fresh(x : Real) -> Real { x }\nfn shadowed(x : Real) -> Real { x + 1.0 }\n\
+             fn kept(x : String) -> Real { 1.0 }\n",
+        )
+        .functions;
+        let prelude_refs = [&prelude];
+        let mut table = ResolutionTable::new(&prelude_refs);
+        for pushed in 1..=users.len() {
+            table.push_user(users[pushed - 1].clone());
+            assert_eq!(
+                signatures(table.functions()),
+                signatures(&build_resolution_functions(&users[..pushed], &prelude_refs)),
+                "after pushing {pushed} user fn(s)"
+            );
+        }
+    }
 }

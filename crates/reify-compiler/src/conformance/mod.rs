@@ -104,7 +104,7 @@ pub(crate) fn check_trait_conformance(
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     enum_defs: &[reify_ir::EnumDef],
-    calls: crate::functions::CallTable<'_>,
+    calls: crate::call_table::CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     // task 4497 (ambient-default-material B): the ambient-default table resolved
     // for this structure's scope. Top-level structures are fed the file-level
@@ -1743,7 +1743,7 @@ mod tests {
             &mut constraints,
             &mut constraint_index,
             enum_defs,
-            crate::functions::CallTable::complete(functions),
+            crate::call_table::CallTable::complete(functions),
             &alias_registry,
             // task 4497: empty table — these conformance unit tests exercise
             // trait-default behavior, not ambient injection.

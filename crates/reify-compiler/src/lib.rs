@@ -25,6 +25,7 @@ pub(crate) mod containment_graph;
 pub use containment_graph::sub_component_forward_adjacency;
 mod builtin_registry;
 mod builtin_signatures;
+mod call_table;
 mod datum_projection;
 mod diagnostics;
 mod entity;

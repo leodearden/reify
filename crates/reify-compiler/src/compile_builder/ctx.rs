@@ -16,9 +16,10 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
+use crate::call_table::PendingDefaults;
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
-use crate::functions::{FnParamDefaults, FnSignature, PendingDefaults};
+use crate::functions::{FnParamDefaults, FnSignature};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -58,8 +59,10 @@ pub(crate) struct CompilationCtx {
     /// Each fn's param-default outcome, parallel to `fn_signatures` — the
     /// output of `functions_phase::phase_fn_param_defaults`.
     pub(crate) fn_param_defaults: Vec<FnParamDefaults>,
-    /// The fns whose outcome is `FnParamDefaults::NeedLocalTemplates`, with
-    /// their defaulted params. Written once, by `phase_fn_param_defaults`; see
+    /// The fn overloads whose outcome is `FnParamDefaults::NeedLocalTemplates`,
+    /// with their defaulted params: the stubs of `resolution_functions` that
+    /// cannot pad yet. Written by `phase_fn_param_defaults`; the unified pass
+    /// takes each overload out as its real fn replaces its stub. See
     /// [`crate::scope::CompilationScope::fns_with_pending_defaults`].
     pub(crate) fns_with_pending_defaults: PendingDefaults,
     /// Trait-static fns compiled by `phase_traits`, buffered here instead of
@@ -168,7 +171,7 @@ impl CompilationCtx {
             functions: Vec::new(),
             fn_signatures: Vec::new(),
             fn_param_defaults: Vec::new(),
-            fns_with_pending_defaults: PendingDefaults::new(),
+            fns_with_pending_defaults: PendingDefaults::default(),
             trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),

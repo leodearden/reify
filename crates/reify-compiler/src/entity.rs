@@ -1343,7 +1343,7 @@ pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
     entity_kind: EntityKind,
     enum_defs: &[reify_ir::EnumDef],
-    calls: crate::functions::CallTable<'_>,
+    calls: crate::call_table::CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -1429,7 +1429,7 @@ pub(crate) fn compile_entity(
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
-    calls.mark_pending_on(&mut scope);
+    scope.mark_pending_stubs(calls);
 
     // Collect the set of trait names actually referenced by this structure's
     // type-param bounds.  Only these traits need a (member_name → Type) map;

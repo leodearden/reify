@@ -7062,11 +7062,12 @@ fn later_declared_structure_error(
 }
 
 /// `FnDefaultNotYetAvailable` for a call to `name` that would pad (by the
-/// shared [`crate::type_compat::provided_prefix_admits_padding`]) if only its
-/// pending defaults ([`CompilationScope::fns_with_pending_defaults`]) were
-/// compiled: every omitted param has a compiled default or a pending one, and
-/// at least one is pending. `None` otherwise — in particular when an omitted
-/// param declares no default at all, so `NoMatchingOverload` stands.
+/// shared [`crate::type_compat::provided_prefix_admits_padding`]) if only a
+/// candidate's pending defaults were compiled: the candidate IS a pending
+/// overload's stub ([`CompilationScope::fns_with_pending_defaults`]), and every
+/// param the call omits is one of that overload's pending defaulted params.
+/// `None` otherwise — in particular when an omitted param declares no default
+/// at all, so `NoMatchingOverload` stands.
 fn pending_default_error(
     scope: &CompilationScope,
     name: &str,
@@ -7074,13 +7075,14 @@ fn pending_default_error(
     arg_types: &[Type],
     span: reify_core::SourceSpan,
 ) -> Option<Diagnostic> {
-    let pending_params = scope.fns_with_pending_defaults?.get(name)?;
+    let pending = scope.fns_with_pending_defaults?;
     let provided = arg_types.len();
     let param = named_candidates
         .iter()
         .filter(|cand| cand.params.len() == cand.param_defaults.len())
         .filter(|cand| crate::type_compat::provided_prefix_admits_padding(cand, arg_types))
         .find_map(|cand| {
+            let pending_params = pending.defaulted_params_of(cand)?;
             let omitted: Vec<&String> = cand.params[provided..]
                 .iter()
                 .zip(&cand.param_defaults[provided..])
@@ -7096,8 +7098,9 @@ fn pending_default_error(
     Some(
         Diagnostic::error(format!(
             "function '{name}' param '{param}' default is not available here: it uses a \
-             same-module structure, so only structures and fns declared below `fn {name}` \
-             may omit it; pass it explicitly"
+             same-module structure, so only free fns and structures declared below \
+             `fn {name}` may omit it; fields, trait-static fns and ambient defaults must \
+             pass it explicitly"
         ))
         .with_code(DiagnosticCode::FnDefaultNotYetAvailable)
         .with_label(DiagnosticLabel::new(
@@ -10812,5 +10815,152 @@ mod member_access_completeness_canary {
             TypeDiscriminants::COUNT,
             "the special classes + named poison tail must partition every Type discriminant",
         );
+    }
+}
+
+#[cfg(test)]
+mod source_order_helper_tests {
+    //! task 5494: the fn-body declaration-order and pending-default helpers.
+    use super::*;
+
+    fn sig_stub(name: &str, params: &[(&str, Type)]) -> CompiledFunction {
+        let params: Vec<(String, Type)> = params
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.clone()))
+            .collect();
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::dimensionless_scalar(),
+            body: reify_ir::CompiledFnBody {
+                let_bindings: Vec::new(),
+                result_expr: CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
+            },
+            content_hash: ContentHash::of_str(name),
+            annotations: Vec::new(),
+            optimized_target: None,
+            type_params: Vec::new(),
+        }
+    }
+
+    fn solve_real_opts() -> CompiledFunction {
+        sig_stub(
+            "solve",
+            &[
+                ("x", Type::dimensionless_scalar()),
+                ("o", Type::StructureRef("Opts".to_string())),
+            ],
+        )
+    }
+
+    fn pending_solve() -> crate::call_table::PendingDefaults {
+        let mut pending = crate::call_table::PendingDefaults::default();
+        pending.insert(
+            "solve",
+            &solve_real_opts().params,
+            HashSet::from(["o".to_string()]),
+        );
+        pending
+    }
+
+    fn span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 1)
+    }
+
+    #[test]
+    fn pending_default_error_names_the_omitted_pending_param() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        let diag = pending_default_error(
+            &scope,
+            "solve",
+            &[&solve],
+            &[Type::dimensionless_scalar()],
+            span(),
+        )
+        .expect("omitting only `o`, which is pending, is FnDefaultNotYetAvailable");
+        assert_eq!(diag.code, Some(DiagnosticCode::FnDefaultNotYetAvailable));
+        assert!(
+            diag.message.contains("'solve'") && diag.message.contains("'o'"),
+            "{}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn pending_default_error_is_none_when_an_omitted_param_has_no_default() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        assert!(pending_default_error(&scope, "solve", &[&solve], &[], span()).is_none());
+    }
+
+    #[test]
+    fn pending_default_error_ignores_a_same_name_overload_that_is_not_pending() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        let string_overload = sig_stub(
+            "solve",
+            &[("x", Type::String), ("o", Type::dimensionless_scalar())],
+        );
+        assert!(
+            pending_default_error(
+                &scope,
+                "solve",
+                &[&solve, &string_overload],
+                &[Type::String],
+                span()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_default_error_is_none_without_a_pending_set() {
+        let scope = CompilationScope::new("S");
+        let solve = solve_real_opts();
+        assert!(
+            pending_default_error(
+                &scope,
+                "solve",
+                &[&solve],
+                &[Type::dimensionless_scalar()],
+                span()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn later_declared_structure_error_fires_only_for_names_declared_later() {
+        let later = HashSet::from(["Later".to_string()]);
+        let mut scope = CompilationScope::new("f");
+        scope.set_later_declared_structure_names(&later);
+        let diag = later_declared_structure_error(&scope, "Later", span())
+            .expect("a structure declared below the fn is a declaration-order error");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::StructureDeclaredAfterFunction)
+        );
+        assert!(
+            diag.message.contains("structure def Later"),
+            "{}",
+            diag.message
+        );
+        assert!(later_declared_structure_error(&scope, "Above", span()).is_none());
+    }
+
+    #[test]
+    fn later_declared_structure_error_is_none_for_scopes_without_the_rule() {
+        let scope = CompilationScope::new("S");
+        assert!(later_declared_structure_error(&scope, "Later", span()).is_none());
     }
 }

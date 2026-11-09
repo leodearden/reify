@@ -13,8 +13,9 @@ use std::collections::HashSet;
 
 use reify_ast::FieldDef;
 
+use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::functions::{CallTable, compile_field};
+use crate::functions::compile_field;
 
 /// Run phase-9 (fields). Compiles each `field_def` into a `CompiledField`
 /// pushed onto `ctx.fields`.

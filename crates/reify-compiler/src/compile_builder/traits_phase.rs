@@ -15,10 +15,11 @@ use reify_ast::TraitDecl;
 
 use crate::CompiledModule;
 use crate::annotations::{deprecation_message, emit_deprecation_warning};
+use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::functions_phase::build_resolution_functions;
 use crate::expr::trait_static_fn_symbol;
-use crate::functions::{CallTable, compile_function};
+use crate::functions::compile_function;
 use crate::name_env;
 use crate::traits::compile_trait;
 use crate::types::{CompiledTrait, DefaultKind};
