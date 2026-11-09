@@ -1,5 +1,6 @@
 use super::*;
 
+pub(crate) use crate::call_table::CallTable;
 use crate::fn_return_check::{FnOwner, reconcile_fn_return};
 use crate::types::TopologyTemplate;
 
@@ -59,18 +60,72 @@ pub(crate) fn declared_callable_names(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function(
+/// The signature-level result of compiling a `fn` declaration: everything that
+/// can be resolved WITHOUT a template registry and WITHOUT compiling any
+/// expression.
+///
+/// Split out of [`compile_function`] so function compilation can run in
+/// sub-passes (task 5494 / PRD `stdlib-namespace.md` D-8): signatures resolve
+/// early — before any structure template exists — while bodies, and defaults
+/// that need a same-module template, compile later against the
+/// *authoritative* template registry.
+///
+/// `compile_expr` never reads `CompiledFunction::body`, and
+/// `resolve_function_overload` reads only `name`/`params`/`type_params`/
+/// `return_type`/`annotations`, so a `FnSignature` is sufficient for
+/// compile-time overload dispatch.  It is NOT sufficient for `try_default_padding`,
+/// which clones the callee's compiled `param_defaults` into the caller's IR —
+/// hence `FnParamDefaults`.
+///
+/// Each field is computed exactly ONCE, here; [`compile_fn_param_defaults`] and
+/// [`compile_fn_body`] consume it without re-resolving anything.
+pub(crate) struct FnSignature {
+    pub(crate) name: String,
+    pub(crate) doc: Option<String>,
+    pub(crate) is_pub: bool,
+    pub(crate) params: Vec<(String, Type)>,
+    /// `param_type_resolved[i]` is `true` when the i-th param's declared type
+    /// resolved successfully.  Gates the default-vs-param-type check in
+    /// [`compile_fn_param_defaults`]: when the type failed to resolve the
+    /// root-cause "unresolved type" diagnostic is already queued and a secondary
+    /// `FnParamDefaultTypeMismatch` would be confusing noise.
+    pub(crate) param_type_resolved: Vec<bool>,
+    pub(crate) return_type: Type,
+    pub(crate) type_params: Vec<reify_ir::TypeParam>,
+    pub(crate) annotations: Vec<reify_ir::annotation::Annotation>,
+    pub(crate) optimized_target: Option<String>,
+}
+
+/// Whether a fn's param defaults could be compiled before any same-module
+/// structure template exists (task 5494, PRD stdlib-namespace D-8).
+///
+/// Decided once per fn by `functions_phase::phase_fn_param_defaults`.
+pub(crate) enum FnParamDefaults {
+    /// The defaults need no same-module template, so they are the fn's real
+    /// `param_defaults`, compiled once and reused by every later pass.
+    Compiled(Vec<Option<CompiledExpr>>),
+    /// A default uses a same-module structure (directly, or through another
+    /// fn's pending default), so it compiles in the fn's source-order slot.
+    NeedLocalTemplates,
+}
+
+/// Resolve a `fn` declaration's signature: param types, return type, type
+/// params and annotations.
+///
+/// Emits every signature-level diagnostic exactly once.  Never compiles an
+/// expression, so it needs no template registry and no sibling-function table —
+/// which is what lets it run before any structure template has been built.
+///
+/// Pair with [`compile_fn_param_defaults`] and [`compile_fn_body`];
+/// [`compile_function`] is the thin wrapper that runs all three back to back.
+pub(crate) fn resolve_fn_signature(
     fn_def: &reify_ast::FnDef,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
-    declared_callable_names: &HashSet<String>,
-    prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledFunction> {
+) -> FnSignature {
     // Build the set of declared type-parameter names so `resolve_type_expr_with_aliases`
     // can map a bare `T` → `Type::TypeParam("T")`. Mirror of entity.rs:560-563.
     let type_param_names: HashSet<String> = fn_def
@@ -159,84 +214,6 @@ pub(crate) fn compile_function(
         }
     }
 
-    // Compile default expressions in a neutral scope (no params registered) so
-    // defaults cannot reference sibling params and cannot recurse into the
-    // enclosing function — definition-time semantics. Rationale: keeps defaults
-    // pure-by-construction and order-independent.
-    // See `CompiledFunction::param_defaults` in `reify-types/src/expr.rs` for the
-    // field-level doc and `docs/initial-design/name-resolution-and-scoping-design-decisions.md`
-    // §2.3 for the full language-design rationale.
-    //
-    // Thread the prelude template registry through so that defaults written as
-    // `FieldFoo()` (a prelude structure-def constructor) lower to
-    // CompiledExprKind::StructureInstanceCtor rather than a generic
-    // FunctionCall (esc-3851-32). Same wiring applied to the body scope below.
-    let mut neutral_scope = CompilationScope::new(&fn_def.name);
-    if let Some(reg) = prelude_template_registry {
-        neutral_scope.set_template_registry(reg);
-    }
-    // Neutral for VALUE bindings, not for the module's declared vocabulary: a
-    // default like `= helper(1.0)` compiles against the same partially-grown
-    // `functions` table as the body below, so it must be answered the same way.
-    neutral_scope.declared_callable_names = Some(declared_callable_names);
-    let param_defaults: Vec<Option<CompiledExpr>> = fn_def
-        .params
-        .iter()
-        .map(|p| {
-            p.default
-                .as_ref()
-                .map(|d| compile_expr(d, &neutral_scope, enum_defs, functions, diagnostics))
-        })
-        .collect();
-
-    // Type-check default expressions against their declared param types.
-    //
-    // Uses strict equality (via `fn_param_default_compatible`). The definition-
-    // site default-expression-vs-param-type check is strict; `try_default_padding`'s
-    // PREFIX check (provided args vs leading params) uses the same trait/type-param
-    // wildcard predicate as `resolve_function_overload` and is NOT strict equality.
-    // A default value is conceptually inserted at the padded call site, so the
-    // definition-site check must be at least as strict as the call-site check.
-    //
-    // The zip over three lockstep collections (fn_def.params, param_defaults, params)
-    // makes index alignment structurally obvious: all three are built from the same
-    // fn_def.params slice so they have identical length and ordering.
-    //
-    // The `type_ok` gate skips params whose declared type failed to resolve. The
-    // root-cause "unresolved type" diagnostic is already queued; emitting a
-    // secondary FnParamDefaultTypeMismatch (against the Type::dimensionless_scalar() fallback) would
-    // be confusing noise — e.g. `fn f(x: Bogus = "hi")` would otherwise show both
-    // "unresolved type: Bogus" AND "default type mismatch: Real vs String".
-    for (((p, compiled_default), (_, param_ty)), &type_ok) in fn_def
-        .params
-        .iter()
-        .zip(param_defaults.iter())
-        .zip(params.iter())
-        .zip(param_type_resolved.iter())
-    {
-        if !type_ok {
-            continue;
-        }
-        // Match on both the compiled default and the syntactic default simultaneously.
-        // `compiled_default.is_some() ↔ p.default.is_some()` (they are built in lockstep
-        // in the param_defaults map above), so both arms are always in sync — no `.expect()`.
-        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default)
-            && !fn_param_default_compatible(param_ty, &default.result_type)
-        {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
-                    fn_def.name, p.name, param_ty, default.result_type
-                ))
-                .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
-                .with_label(DiagnosticLabel::new(
-                    syntax_default.span,
-                    "default expression type does not match declared param type",
-                )),
-            );
-        }
-    }
-
     // Resolve return type
     let return_type = {
         // Install the module's enum names as the ambient fallback set for type
@@ -301,24 +278,163 @@ pub(crate) fn compile_function(
         }
     };
 
-    // Create a scope with function params registered.
-    //
-    // The template registry (passed from `phase_functions`) is threaded
-    // through here so that a structure-def referenced in the fn body via
-    // constructor syntax — e.g. `Widget()` — lowers to
-    // `CompiledExprKind::StructureInstanceCtor` rather than a generic
-    // `FunctionCall`.  The registry now includes both (a) prelude structure_defs
-    // (esc-3851-32) and (b) same-module structure_defs via skeleton templates
-    // built by `build_structure_def_skeleton` in `phase_functions` (task 3895).
-    let mut scope = CompilationScope::new(&fn_def.name);
-    if let Some(reg) = prelude_template_registry {
-        scope.set_template_registry(reg);
+    // Extract the optimized target before lowering — the extractor requires the
+    // raw reify_syntax::ExprKind::StringLiteral trees, which are discarded by
+    // lower_annotations. Same call shape as compile_constraint_def in defs_phase.rs.
+    let optimized_target = optimized_target(&fn_def.annotations);
+
+    let annotations = lower_annotations(&fn_def.annotations, diagnostics);
+    validate_annotations(&annotations, "function", diagnostics);
+
+    FnSignature {
+        name: fn_def.name.clone(),
+        doc: fn_def.doc.clone(),
+        is_pub: fn_def.is_pub,
+        params,
+        param_type_resolved,
+        return_type,
+        type_params: convert_type_params(&fn_def.type_params),
+        annotations,
+        optimized_target,
     }
-    // The module's declared callable vocabulary — see
-    // `CompilationScope::declared_callable_names` for why this body needs it.
-    // Borrowed, never merged here: `phase_functions` builds it once.
-    scope.declared_callable_names = Some(declared_callable_names);
-    for (name, ty) in &params {
+}
+
+/// What a free fn's param defaults and body compile against.
+///
+/// One bundle, so the default scope and the body scope are configured from the
+/// same fields and cannot drift (task 5494).
+pub(crate) struct FnCompileEnv<'a> {
+    pub(crate) enum_defs: &'a [reify_ir::EnumDef],
+    pub(crate) calls: CallTable<'a>,
+    /// The ctor view, so a structure-def constructor call — e.g. `Widget()` —
+    /// lowers to `CompiledExprKind::StructureInstanceCtor` rather than a
+    /// generic `FunctionCall` (esc-3851-32).
+    pub(crate) template_registry: Option<&'a HashMap<String, &'a TopologyTemplate>>,
+    /// See [`CompilationScope::later_declared_structure_names`].
+    pub(crate) later_declared_structure_names: Option<&'a HashSet<String>>,
+    /// The module's order-independent callable vocabulary (task #5371).
+    pub(crate) declared_callable_names: &'a HashSet<String>,
+}
+
+impl<'a> FnCompileEnv<'a> {
+    /// A scope carrying this env's registries and no value bindings.
+    fn scope(&self, fn_name: &str) -> CompilationScope<'a> {
+        let mut scope = CompilationScope::new(fn_name);
+        if let Some(reg) = self.template_registry {
+            scope.set_template_registry(reg);
+        }
+        if let Some(names) = self.later_declared_structure_names {
+            scope.set_later_declared_structure_names(names);
+        }
+        scope.mark_pending_stubs(self.calls);
+        scope.declared_callable_names = Some(self.declared_callable_names);
+        scope
+    }
+}
+
+/// Compile a `fn` declaration's param defaults, and type-check each against
+/// its declared param type.
+///
+/// Defaults compile in a neutral scope (no params registered) so they cannot
+/// reference sibling params and cannot recurse into the enclosing function —
+/// definition-time semantics, pure-by-construction and order-independent. See
+/// `CompiledFunction::param_defaults` in `reify-ir/src/expr.rs` and
+/// `docs/initial-design/name-resolution-and-scoping-design-decisions.md` §2.3.
+/// The neutral scope is neutral for VALUE bindings only: it still carries the
+/// env's registries, so `= helper(1.0)` and `= Widget()` resolve the way the
+/// body would.
+pub(crate) fn compile_fn_param_defaults(
+    fn_def: &reify_ast::FnDef,
+    sig: &FnSignature,
+    env: &FnCompileEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Option<CompiledExpr>> {
+    let neutral_scope = env.scope(&fn_def.name);
+    let param_defaults: Vec<Option<CompiledExpr>> = fn_def
+        .params
+        .iter()
+        .map(|p| {
+            p.default.as_ref().map(|d| {
+                compile_expr(
+                    d,
+                    &neutral_scope,
+                    env.enum_defs,
+                    env.calls.functions,
+                    diagnostics,
+                )
+            })
+        })
+        .collect();
+
+    // Type-check default expressions against their declared param types.
+    //
+    // Uses strict equality (via `fn_param_default_compatible`). The definition-
+    // site default-expression-vs-param-type check is strict; `try_default_padding`'s
+    // PREFIX check (provided args vs leading params) uses the same trait/type-param
+    // wildcard predicate as `resolve_function_overload` and is NOT strict equality.
+    // A default value is conceptually inserted at the padded call site, so the
+    // definition-site check must be at least as strict as the call-site check.
+    //
+    // The zip over three lockstep collections (fn_def.params, param_defaults,
+    // sig.params) makes index alignment structurally obvious: all three are built
+    // from the same fn_def.params slice so they have identical length and ordering.
+    //
+    // The `type_ok` gate skips params whose declared type failed to resolve. The
+    // root-cause "unresolved type" diagnostic is already queued; emitting a
+    // secondary FnParamDefaultTypeMismatch (against the Type::dimensionless_scalar() fallback) would
+    // be confusing noise — e.g. `fn f(x: Bogus = "hi")` would otherwise show both
+    // "unresolved type: Bogus" AND "default type mismatch: Real vs String".
+    for (((p, compiled_default), (_, param_ty)), &type_ok) in fn_def
+        .params
+        .iter()
+        .zip(param_defaults.iter())
+        .zip(sig.params.iter())
+        .zip(sig.param_type_resolved.iter())
+    {
+        if !type_ok {
+            continue;
+        }
+        // Match on both the compiled default and the syntactic default simultaneously.
+        // `compiled_default.is_some() ↔ p.default.is_some()` (they are built in lockstep
+        // in the param_defaults map above), so both arms are always in sync — no `.expect()`.
+        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default)
+            && !fn_param_default_compatible(param_ty, &default.result_type)
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
+                    fn_def.name, p.name, param_ty, default.result_type
+                ))
+                .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    syntax_default.span,
+                    "default expression type does not match declared param type",
+                )),
+            );
+        }
+    }
+
+    param_defaults
+}
+
+/// Compile a `fn` declaration's body against an already-resolved
+/// [`FnSignature`] and its compiled `param_defaults`, and assemble the
+/// [`CompiledFunction`].
+///
+/// Returns `None` (with a diagnostic) for a bodyless trait fn.  Signature-level
+/// diagnostics are NOT re-emitted here — [`resolve_fn_signature`] already
+/// emitted them exactly once.
+pub(crate) fn compile_fn_body(
+    fn_def: &reify_ast::FnDef,
+    sig: &FnSignature,
+    param_defaults: Vec<Option<CompiledExpr>>,
+    env: &FnCompileEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    let enum_defs = env.enum_defs;
+    let functions = env.calls.functions;
+    let mut scope = env.scope(&fn_def.name);
+    for (name, ty) in &sig.params {
         scope.register(name, ty.clone());
     }
 
@@ -366,7 +482,8 @@ pub(crate) fn compile_function(
     // content-addressing complete.
     let content_hash = {
         let name_hash = ContentHash::of_str(&fn_def.name);
-        let param_hashes = params
+        let param_hashes = sig
+            .params
             .iter()
             .map(|(n, t)| ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t))));
         // Discriminate None and Some in disjoint hash subspaces so that absent and
@@ -389,32 +506,65 @@ pub(crate) fn compile_function(
         ContentHash::combine_all(all_hashes)
     };
 
-    // Extract the optimized target before lowering — the extractor requires the
-    // raw reify_syntax::ExprKind::StringLiteral trees, which are discarded by
-    // lower_annotations. Same call shape as compile_constraint_def in defs_phase.rs.
-    let opt_target = optimized_target(&fn_def.annotations);
-
-    let annotations = lower_annotations(&fn_def.annotations, diagnostics);
-    validate_annotations(&annotations, "function", diagnostics);
-
     let compiled = CompiledFunction {
-        name: fn_def.name.clone(),
-        doc: fn_def.doc.clone(),
-        is_pub: fn_def.is_pub,
-        params,
+        name: sig.name.clone(),
+        doc: sig.doc.clone(),
+        is_pub: sig.is_pub,
+        params: sig.params.clone(),
         param_defaults,
-        return_type,
+        return_type: sig.return_type.clone(),
         body: CompiledFnBody {
             let_bindings: compiled_lets,
             result_expr,
         },
         content_hash,
-        annotations,
-        optimized_target: opt_target,
-        type_params: convert_type_params(&fn_def.type_params),
+        annotations: sig.annotations.clone(),
+        optimized_target: sig.optimized_target.clone(),
+        type_params: sig.type_params.clone(),
     };
     reconcile_fn_return(fn_def, FnOwner::Free, &compiled, diagnostics);
     Some(compiled)
+}
+
+/// Compile a `fn` declaration end to end: resolve its signature, then its param
+/// defaults and body.
+///
+/// Thin wrapper over [`resolve_fn_signature`] + [`compile_fn_param_defaults`] +
+/// [`compile_fn_body`], kept for callers that compile a function in one shot
+/// (trait static fns, tests).  The source-order pipeline calls the pieces
+/// separately so signatures and template-free defaults are available before
+/// any structure template exists.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_function(
+    fn_def: &reify_ast::FnDef,
+    enum_defs: &[reify_ir::EnumDef],
+    calls: CallTable<'_>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    declared_callable_names: &HashSet<String>,
+    prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    let sig = resolve_fn_signature(
+        fn_def,
+        enum_defs,
+        alias_registry,
+        structure_names,
+        trait_names,
+        diagnostics,
+    );
+    let env = FnCompileEnv {
+        enum_defs,
+        calls,
+        template_registry: prelude_template_registry,
+        // Trait-static fns are not in the source-order pass, so the
+        // declaration-order rule does not apply to them (#5371's ruling).
+        later_declared_structure_names: None,
+        declared_callable_names,
+    };
+    let param_defaults = compile_fn_param_defaults(fn_def, &sig, &env, diagnostics);
+    compile_fn_body(fn_def, &sig, param_defaults, &env, diagnostics)
 }
 
 /// Rewrite bare `Identifier(x)` references to conformer members into `self.x`
@@ -612,12 +762,13 @@ pub(crate) fn compile_assoc_function(
     conformer_name: &str,
     conformer_members: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
+    let functions = calls.functions;
     // Mirror of compile_function: build the type-param name set for signature resolution.
     // No-op for today's non-generic assoc fns (empty fn_def.type_params → empty set).
     let type_param_names: HashSet<String> = fn_def
@@ -670,9 +821,10 @@ pub(crate) fn compile_assoc_function(
 
     // Only the STRUCTURE half of the callable vocabulary here — see
     // `CompilationScope::declared_callable_names`. The absent fn half is a
-    // decision, not an omission: conformance runs after `phase_functions`, so
-    // the `functions` table these bodies resolve against is already COMPLETE
-    // and a call to any declared fn resolves instead of falling through.
+    // decision, not an omission: conformance runs after `phase_fn_signatures`,
+    // so the `functions` table these bodies resolve against already holds every
+    // declared fn (at least as a signature stub) and a call to any declared fn
+    // resolves instead of falling through.
     // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
     // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
     //
@@ -684,6 +836,7 @@ pub(crate) fn compile_assoc_function(
     // matching `compile_function`). The `self` receiver never carries a default.
     let mut neutral_scope = CompilationScope::new(&fn_def.name);
     neutral_scope.declared_callable_names = declared_callables;
+    neutral_scope.mark_pending_stubs(calls);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -725,6 +878,7 @@ pub(crate) fn compile_assoc_function(
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
     scope.declared_callable_names = declared_callables;
+    scope.mark_pending_stubs(calls);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -864,7 +1018,7 @@ fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
 pub(crate) fn compile_field(
     field_def: &reify_ast::FieldDef,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -1052,7 +1206,9 @@ pub(crate) fn compile_field(
     };
 
     // Create a scope for compiling field source expressions
-    let scope = CompilationScope::new(&field_def.name);
+    let functions = calls.functions;
+    let mut scope = CompilationScope::new(&field_def.name);
+    scope.mark_pending_stubs(calls);
 
     let source = match &field_def.source {
         reify_ast::FieldSource::Analytical { expr } => {
@@ -1822,7 +1978,7 @@ mod tests {
             "Conformer",
             &HashSet::new(),
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1857,7 +2013,7 @@ mod tests {
             let compiled = compile_field(
                 &field,
                 &[],
-                &[],
+                CallTable::complete(&[]),
                 &TypeAliasRegistry::new(),
                 &HashSet::new(),
                 &HashSet::new(),
@@ -1900,7 +2056,7 @@ mod tests {
             let compiled = compile_field(
                 &field,
                 &[],
-                &[],
+                CallTable::complete(&[]),
                 &TypeAliasRegistry::new(),
                 &HashSet::new(),
                 &HashSet::new(),
@@ -1948,7 +2104,7 @@ mod tests {
         let compiled = compile_field(
             &field,
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1966,7 +2122,7 @@ mod tests {
         let compiled = compile_field(
             &field,
             &[],
-            &[],
+            CallTable::complete(&[]),
             &TypeAliasRegistry::new(),
             &HashSet::new(),
             &HashSet::new(),

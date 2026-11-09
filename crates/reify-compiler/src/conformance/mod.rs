@@ -104,7 +104,7 @@ pub(crate) fn check_trait_conformance(
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: crate::call_table::CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     // task 4497 (ambient-default-material B): the ambient-default table resolved
     // for this structure's scope. Top-level structures are fed the file-level
@@ -213,6 +213,7 @@ pub(crate) fn check_trait_conformance(
     // `Some(purpose_name)` for innermost-wins resolution (task 4639).
     check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, purpose);
 
+    let functions = calls.functions;
     let pre = check_phase_pre_register_default_types(
         &ctx,
         &structure_all_members,
@@ -271,7 +272,7 @@ pub(crate) fn check_trait_conformance(
         structure,
         &conformer_member_names,
         enum_defs,
-        functions,
+        calls,
         alias_registry,
         structure_names,
         trait_names,
@@ -1742,7 +1743,7 @@ mod tests {
             &mut constraints,
             &mut constraint_index,
             enum_defs,
-            functions,
+            crate::call_table::CallTable::complete(functions),
             &alias_registry,
             // task 4497: empty table — these conformance unit tests exercise
             // trait-default behavior, not ambient injection.
@@ -1837,9 +1838,13 @@ mod tests {
         bind_resolution_enums(&mut ctx, &[]);
         let trait_names = phase_traits(&mut ctx, &[], &decl_refs.trait_refs);
 
-        let mut conformers = decl_refs
-            .structure_refs
+        let mut conformers = parsed
+            .declarations
             .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Structure(s) => Some(s),
+                _ => None,
+            })
             .filter(|s| !s.trait_bounds.is_empty());
         let conformer = conformers
             .next()

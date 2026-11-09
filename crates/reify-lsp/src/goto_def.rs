@@ -1182,11 +1182,8 @@ mod tests {
         // - `entities_phase.rs`'s matching arm compiles it into the same
         //   `ctx.templates` as a top-level structure. The only thing scoped to
         //   the purpose is AMBIENT-DEFAULT resolution, via `Some(p.name)`
-        //   (DD6 innermost-wins).
-        // - The one documented limitation (pre_pass.rs, same arm) is that
-        //   `structure_refs` omits them, so `phase_functions` builds no
-        //   signature skeleton. That is a SKELETON gap, not a name-visibility
-        //   rule.
+        //   (DD6 innermost-wins). A fn uses it exactly like a top-level
+        //   structure, under the same declared-above rule.
         //
         // A module-level name is file-wide navigable, so goto-def resolves it
         // from anywhere in the file — and navigation is read-only, where a

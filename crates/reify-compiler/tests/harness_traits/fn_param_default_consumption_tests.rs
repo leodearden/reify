@@ -436,3 +436,331 @@ fn f(x : Int = undefined_name) -> Int { x }
         compiled.diagnostics
     );
 }
+
+// ─── default padding seen from consumers outside a fn's source-order slot ─────
+//
+// Task 5494 compiles free fn bodies in the unified source-order pass. The
+// consumers below compile BEFORE (trait-static bodies, fields, ambient
+// defaults) or ABOVE (an earlier structure) a fn's slot, so they must still see
+// its real `param_defaults` whenever those defaults need no same-module
+// template.
+
+const SCALE_FN: &str = "fn scale(x : Real, k : Real = 3.0) -> Real { x * k }\n";
+
+fn compile_src(source: &str, module: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single(module));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
+fn diag_lines(module: &reify_compiler::CompiledModule) -> Vec<String> {
+    module
+        .diagnostics
+        .iter()
+        .map(|d| format!("[{:?}] {:?} {}", d.severity, d.code, d.message))
+        .collect()
+}
+
+fn assert_no_errors(module: &reify_compiler::CompiledModule, what: &str) {
+    let errors = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let no_match = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .count();
+    assert!(
+        errors == 0 && no_match == 0,
+        "{what}: expected zero Errors and zero NoMatchingOverload; got: {:#?}",
+        diag_lines(module)
+    );
+}
+
+fn let_expr<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    template: &str,
+    member: &str,
+) -> &'m reify_ir::CompiledExpr {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == template)
+        .unwrap_or_else(|| panic!("template {template} missing"))
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{template}.{member} cell missing"))
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{template}.{member} has no expression"))
+}
+
+fn assert_padded_call(expr: &reify_ir::CompiledExpr, callee: &str, arity: usize, what: &str) {
+    match &expr.kind {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, callee, "{what}: callee");
+            assert_eq!(args.len(), arity, "{what}: padded arity; args: {args:?}");
+        }
+        other => panic!("{what}: expected UserFunctionCall {callee}, got {other:?}"),
+    }
+}
+
+/// (a) A trait-static body compiles before any free fn body, yet must pad an
+/// omitted template-free default.
+#[test]
+fn trait_static_body_pads_omitted_template_free_default() {
+    let source = format!(
+        "{SCALE_FN}trait Sc {{ fn make() -> Real {{ scale(2.0) }} }}\n\
+         structure S {{ let v = Sc::make() }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pad_a");
+    assert_no_errors(&module, "trait-static body");
+    let make = module
+        .functions
+        .iter()
+        .find(|f| f.name == "Sc::make")
+        .expect("Sc::make must be registered");
+    assert_padded_call(&make.body.result_expr, "scale", 2, "Sc::make body");
+}
+
+/// (b) A field lambda compiles before any free fn body, yet must pad.
+#[test]
+fn field_lambda_pads_omitted_template_free_default() {
+    let source = format!(
+        "{SCALE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| scale(x) }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pad_b");
+    assert_no_errors(&module, "field lambda");
+}
+
+/// (c) A structure declared ABOVE the fn must pad from its real defaults.
+#[test]
+fn structure_above_fn_pads_omitted_template_free_default() {
+    let source = format!("structure S {{ let v = scale(2.0) }}\n{SCALE_FN}");
+    let module = compile_src(&source, "test_consume_pad_c");
+    assert_no_errors(&module, "structure above fn");
+    assert_padded_call(let_expr(&module, "S", "v"), "scale", 2, "S.v");
+}
+
+/// (d) An ambient default compiles before any free fn body, yet must pad.
+#[test]
+fn ambient_default_pads_omitted_template_free_default() {
+    let source = format!("{SCALE_FN}default Real = scale(2.0)\n");
+    let module = compile_src(&source, "test_consume_pad_d");
+    assert_no_errors(&module, "ambient default");
+}
+
+/// (e) Guard: a bad default is reported exactly ONCE, however many passes see
+/// the fn.
+#[test]
+fn bad_default_type_mismatch_reported_once() {
+    let source = "fn bad(x : Int = 1.5) -> Int { x }\nstructure S { let v = bad() }\n";
+    let module = compile_src(source, "test_consume_pad_e");
+    let mismatches = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .count();
+    assert_eq!(
+        mismatches,
+        1,
+        "exactly one FnParamDefaultTypeMismatch; got: {:#?}",
+        diag_lines(&module)
+    );
+}
+
+const OPTS_SOLVE: &str = "structure def Opts { param t : Real = 1.0 }\n\
+     fn solve(x : Real, o : Opts = Opts()) -> Real { x * o.t }\n";
+
+/// (f) Guard: a template-dependent default, consumed BELOW its fn, pads with
+/// the authoritative ctor.
+#[test]
+fn ordered_template_dependent_default_pads_below_fn() {
+    let source = format!("{OPTS_SOLVE}structure S {{ let v = solve(2.0) }}\n");
+    let module = compile_src(&source, "test_consume_pad_f");
+    assert_no_errors(&module, "ordered template-dependent default");
+    let v = let_expr(&module, "S", "v");
+    assert_padded_call(v, "solve", 2, "S.v");
+    let CompiledExprKind::UserFunctionCall { args, .. } = &v.kind else {
+        unreachable!()
+    };
+    assert!(
+        matches!(&args[1].kind, CompiledExprKind::StructureInstanceCtor { type_name, .. } if type_name == "Opts"),
+        "S.v's padded `o` must be the Opts ctor; got {:?}",
+        args[1].kind
+    );
+}
+
+/// (g) Guard: a default that calls a fn whose own default is
+/// template-dependent, all consumed below.
+#[test]
+fn transitive_template_dependent_default_pads_below_fns() {
+    let source = format!(
+        "{OPTS_SOLVE}fn g(y : Real = solve(1.0)) -> Real {{ y }}\n\
+         structure S {{ let v = g() }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pad_g");
+    assert_no_errors(&module, "transitive template-dependent default");
+}
+
+// ─── the residual is loud and named at every consumer ─────────────────────────
+//
+// A default that constructs a same-module structure only compiles in its fn's
+// source-order slot. A consumer that compiles earlier and omits it must get the
+// named `FnDefaultNotYetAvailable` error, never a bare NoMatchingOverload.
+
+const OPTS: &str = "structure def Opts { param t : Real = 1.0 }\n";
+const SOLVE_FN: &str = "fn solve(x : Real, o : Opts = Opts()) -> Real { x * o.t }\n";
+
+fn assert_one_pending_default_error(module: &reify_compiler::CompiledModule, what: &str) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let no_match = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .count();
+    assert!(
+        errors.len() == 1
+            && errors[0].code == Some(DiagnosticCode::FnDefaultNotYetAvailable)
+            && no_match == 0,
+        "{what}: expected exactly one FnDefaultNotYetAvailable Error and no \
+         NoMatchingOverload; got: {:#?}",
+        diag_lines(module)
+    );
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("'solve'") && msg.contains("'o'"),
+        "{what}: the error must name the fn `solve` and its param `o`; got: {msg}"
+    );
+}
+
+/// (a) a field lambda omitting `solve`'s structure-constructing default.
+#[test]
+fn field_lambda_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve(x) }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_a");
+    assert_one_pending_default_error(&module, "field lambda");
+}
+
+/// (b) a trait-static body omitting it.
+#[test]
+fn trait_static_body_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}{SOLVE_FN}trait Sc {{ fn make() -> Real {{ solve(2.0) }} }}\n");
+    let module = compile_src(&source, "test_consume_pending_b");
+    assert_one_pending_default_error(&module, "trait-static body");
+}
+
+/// (c) a structure declared between `Opts` and `fn solve` omitting it.
+#[test]
+fn structure_above_fn_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}structure S {{ let v = solve(2.0) }}\n{SOLVE_FN}");
+    let module = compile_src(&source, "test_consume_pending_c");
+    assert_one_pending_default_error(&module, "structure above fn");
+}
+
+/// (d) an ambient default omitting it.
+#[test]
+fn ambient_default_omitting_template_dependent_default_is_named() {
+    let source = format!("{OPTS}{SOLVE_FN}default Real = solve(2.0)\n");
+    let module = compile_src(&source, "test_consume_pending_d");
+    assert_one_pending_default_error(&module, "ambient default");
+}
+
+/// (e) Control: a call no padding could fix keeps NoMatchingOverload.
+#[test]
+fn field_lambda_wrong_arg_type_to_pending_fn_stays_no_matching_overload() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve(\"s\") }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_e");
+    let codes: Vec<_> = module.diagnostics.iter().map(|d| d.code).collect();
+    assert!(
+        codes.contains(&Some(DiagnosticCode::NoMatchingOverload))
+            && !codes.contains(&Some(DiagnosticCode::FnDefaultNotYetAvailable)),
+        "a wrong-typed call must stay NoMatchingOverload; got: {:#?}",
+        diag_lines(&module)
+    );
+}
+
+fn assert_no_matching_overload_only(module: &reify_compiler::CompiledModule, what: &str) {
+    let codes: Vec<_> = module.diagnostics.iter().map(|d| d.code).collect();
+    assert!(
+        codes.contains(&Some(DiagnosticCode::NoMatchingOverload))
+            && !codes.contains(&Some(DiagnosticCode::FnDefaultNotYetAvailable)),
+        "{what}: omitting a param with NO default must stay NoMatchingOverload; got: {:#?}",
+        diag_lines(module)
+    );
+}
+
+/// (f) Control: omitting `x`, which declares no default, from a structure
+/// BELOW `fn solve` is an arity error, not a pending default.
+#[test]
+fn structure_below_fn_omitting_required_param_stays_no_matching_overload() {
+    let source = format!("{OPTS}{SOLVE_FN}structure S {{ let v = solve() }}\n");
+    let module = compile_src(&source, "test_consume_pending_f");
+    assert_no_matching_overload_only(&module, "structure below fn");
+}
+
+/// (g) Control: the same arity error from a field lambda, which compiles while
+/// `solve`'s defaults are still pending.
+#[test]
+fn field_lambda_omitting_required_param_stays_no_matching_overload() {
+    let source = format!(
+        "{OPTS}{SOLVE_FN}field def f1 : Real -> Real {{ source = analytical {{ |x| solve() }} }}\n"
+    );
+    let module = compile_src(&source, "test_consume_pending_g");
+    assert_no_matching_overload_only(&module, "field lambda");
+}
+
+/// (h) A default constructing a structure declared ABOVE the fn with a named
+/// `auto` arg compiles clean and pads a caller below — the ordering check runs
+/// before the ctor-only `auto` exemption reads the template registry.
+#[test]
+fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
+    let source = "structure def Opts { param t : Real = 1.0 }\n\
+         fn solve(x : Real, o : Opts = Opts(t: auto)) -> Real { x * o.t }\n\
+         structure S { let v = solve(2.0) }\n";
+    let module = compile_src(source, "test_consume_pad_h");
+    assert_no_errors(&module, "auto-arg ctor default");
+    assert_padded_call(let_expr(&module, "S", "v"), "solve", 2, "S.v");
+}
+
+/// (i) an assoc-fn override in a structure declared above `fn solve` omitting
+/// its structure-constructing default.
+#[test]
+fn assoc_fn_override_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}trait T {{ fn m(self) -> Real }}\n\
+         structure S : T {{ fn m(self) -> Real {{ solve(2.0) }} }}\n{SOLVE_FN}"
+    );
+    let module = compile_src(&source, "test_consume_pending_i");
+    assert_one_pending_default_error(&module, "assoc-fn override");
+}
+
+/// (j) an injected trait default method on a conformer declared above
+/// `fn solve` omitting it.
+#[test]
+fn injected_trait_default_method_omitting_template_dependent_default_is_named() {
+    let source = format!(
+        "{OPTS}trait T {{ fn m(self) -> Real {{ solve(2.0) }} }}\n\
+         structure S : T {{}}\n{SOLVE_FN}"
+    );
+    let module = compile_src(&source, "test_consume_pending_j");
+    assert_one_pending_default_error(&module, "injected trait default method");
+}

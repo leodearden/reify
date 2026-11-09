@@ -546,8 +546,8 @@ pub enum DiagnosticCode {
     /// sees the offending declaration, not a downstream consumer.
     ///
     /// Fired at two sites: (1) structure-body let (entity.rs ~1916) and (2) port-member
-    /// let (entity.rs ~2810). NOT fired at the skeleton/ctor-lowering let (throwaway_diags)
-    /// or at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+    /// let (entity.rs ~2810). NOT fired at trait-default-injected lets (those use
+    /// `TypeMismatchForTraitMember`).
     ///
     /// The PRD-prose mnemonic for this code is `E_LET_ANNOTATION_TYPE_MISMATCH`.
     LetAnnotationTypeMismatch,
@@ -4134,7 +4134,7 @@ pub enum DiagnosticCode {
     /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
     /// The guard fires on the external member-access paths — the StructureRef /
     /// TraitObject dot-access branch, the function-body member-access path (via
-    /// the skeleton template), and the purpose-subject branch; `self.<member>`
+    /// the structure's authoritative template), and the purpose-subject branch; `self.<member>`
     /// and bare-name references inside the defining structure body are resolved
     /// by an earlier branch and are exempt.
     ///
@@ -4926,6 +4926,53 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     ImportedModuleParseError,
+    /// Origin: `crates/reify-compiler/src/expr.rs::later_declared_structure_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a free fn's body or param default uses the
+    /// template of a module-local `structure def` that is declared BELOW the fn
+    /// — by constructing it (`Foo()`) or by member access on a param typed as it
+    /// (`m.x`). Fn bodies compile in source order, interleaved with structure
+    /// templates, so a fn may use a same-module structure's template only if the
+    /// `structure def` is declared above the fn. The fix-it is to move it.
+    ///
+    /// Canonical message: `"structure '<Name>' is declared after this function;
+    /// move `structure def <Name>` above it"`.
+    ///
+    /// Severity: Error.
+    StructureDeclaredAfterFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs::pending_default_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a call omits a defaulted arg of a
+    /// same-module fn overload whose default uses a same-module structure, from
+    /// a site that compiles before that fn's slot in the source-order pass (a
+    /// field, a trait-static fn body, an ambient default, or a structure
+    /// declared above the fn). Such a default only exists once the structure's
+    /// template does, so only free fns and structures declared below the fn may
+    /// omit it; fields, trait-static fns and ambient defaults never can.
+    ///
+    /// Canonical message: `"function '<fn>' param '<param>' default is not
+    /// available here: it uses a same-module structure, so only free fns and
+    /// structures declared below `fn <fn>` may omit it; fields, trait-static
+    /// fns and ambient defaults must pass it explicitly"`.
+    ///
+    /// Severity: Error.
+    FnDefaultNotYetAvailable,
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs::fn_tables_misaligned`
+    /// (task #5494).
+    ///
+    /// INTERNAL COMPILER ERROR. The unified source-order pass found a `fn`
+    /// declaration whose per-fn records (resolved signature, param-default
+    /// outcome, or call-table signature stub, all indexed by declaration order)
+    /// describe a different fn. Reported instead of silently skipping the fn's
+    /// body or swapping the wrong call-table slot.
+    ///
+    /// Canonical message: `"internal compiler error: fn '<fn>' (fn declaration
+    /// #<i>) does not match <record>; <consequence>"`.
+    ///
+    /// Severity: Error.
+    FnDeclTablesMisaligned,
 }
 
 /// A diagnostic message with location and optional labels.

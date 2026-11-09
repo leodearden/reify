@@ -160,13 +160,15 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// # Why the fallback needs it
     ///
-    /// `phase_functions` compiles each `fn` body against the user fns so far plus
-    /// the prelude (σ #8393), a table still grown in source order, so a call to a
+    /// The unified source-order pass in `phase_entities` compiles each `fn` body
+    /// against the user fns so far plus the prelude (σ #8393), a table grown in
+    /// source order, so a call to a
     /// later-declared sibling — or either half of a mutually-referential pair,
     /// which no reordering can fix — reaches the fallback with a name the module
-    /// plainly declares. Entity bodies do not have that problem: they compile
-    /// after `ctx.resolution_functions` is merged. Constructors are the mirror
-    /// case — wherever no template registry is set (`phase_traits`'s static fn
+    /// plainly declares. Entity bodies do not have that problem: their table
+    /// holds every module fn from the start, as a signature stub until the
+    /// unified pass reaches the fn (PRD stdlib-namespace D-8). Constructors are
+    /// the mirror case — wherever no template registry is set (`phase_traits`'s static fn
     /// bodies, `compile_assoc_function`'s bodies), `Widget(w: 2mm)` is never
     /// claimed as a `StructureInstanceCtor` and falls through carrying a
     /// declared name (esc-5371-12).
@@ -175,7 +177,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// It binds NO values — an entry here does not put the name in `names` and
     /// cannot make a forward reference resolve. It only withholds a diagnostic.
-    /// Forward references still do not resolve; that is `phase_functions`'s
+    /// Forward references still do not resolve; that is the source-order pass's
     /// documented contract and #6014's business.
     ///
     /// # Shape
@@ -275,6 +277,30 @@ pub(crate) struct CompilationScope<'u> {
     /// Set by compile_purpose so that concrete subject types can be validated
     /// against their declared value cells (task-2200). None for entity/function scopes.
     pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
+    /// The module's own `structure def` names (top-level and purpose-nested)
+    /// declared BELOW the fn being compiled (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Free fn bodies and param defaults compile in source order, interleaved
+    /// with structure templates, so these structures have no template yet. Using
+    /// one — by constructor or by member access — is a declaration-order error,
+    /// reported by `expr.rs`'s `later_declared_structure_error` rather than
+    /// silently degraded (a generic call, the permissive member fallback, or a
+    /// same-named prelude template).
+    ///
+    /// Only free-fn scopes set this. Entity scopes leave it `None`
+    /// (`compile_entity` reports forward entity references its own way), and so
+    /// do trait-static and assoc-fn scopes (#5371's documented ruling).
+    pub(crate) later_declared_structure_names: Option<&'u HashSet<String>>,
+    /// The same-module fn overloads whose param defaults are not yet compiled,
+    /// because a default uses a same-module structure (task #5494, PRD
+    /// stdlib-namespace D-8; `functions::FnParamDefaults::NeedLocalTemplates`),
+    /// among the stubs of the table this scope resolves calls against.
+    ///
+    /// A call that omits such a default, resolved against a table holding the
+    /// overload's signature stub, cannot pad. `expr.rs`'s `pending_default_error`
+    /// reports it as `FnDefaultNotYetAvailable` rather than a bare
+    /// `NoMatchingOverload`. `None` where the table never holds such a stub.
+    pub(crate) fns_with_pending_defaults: Option<&'u crate::call_table::PendingDefaults>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -432,6 +458,8 @@ impl<'u> CompilationScope<'u> {
             has_meta_block: false,
             unit_registry: None,
             template_registry: None,
+            later_declared_structure_names: None,
+            fns_with_pending_defaults: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             sub_realization_names: HashMap::new(),
@@ -457,6 +485,19 @@ impl<'u> CompilationScope<'u> {
         registry: &'u HashMap<String, &'u TopologyTemplate>,
     ) {
         self.template_registry = Some(registry);
+    }
+
+    /// Set the later-declared structure names (task #5494). Mirrors
+    /// `set_template_registry`; called from `functions::FnCompileEnv::scope`
+    /// for the param-default and body scopes of a free fn.
+    pub(crate) fn set_later_declared_structure_names(&mut self, names: &'u HashSet<String>) {
+        self.later_declared_structure_names = Some(names);
+    }
+
+    /// Tell this scope which stubs of `calls`' table cannot pad yet
+    /// ([`Self::fns_with_pending_defaults`]).
+    pub(crate) fn mark_pending_stubs(&mut self, calls: crate::call_table::CallTable<'u>) {
+        self.fns_with_pending_defaults = calls.fns_with_pending_defaults;
     }
 
     /// Register an identifier as a purpose param in this scope (task-2181 β, contract C1).

@@ -387,7 +387,7 @@ structure def Motor {
 //
 // A priv member must stay hidden on EVERY external access path, not just the
 // in-structure dot-access branch. These guard the two leaks found in review:
-// function bodies (the skeleton template) and purpose subjects.
+// function bodies and purpose subjects.
 
 /// A function body reading a structure-typed param's `priv` member is external
 /// access → E_PRIV_MEMBER_ACCESS.
@@ -527,12 +527,13 @@ purpose okp(subject : Motor) {
 // StructureMemberNotFound early-return, and port members (the two-level
 // `<sub>.<port>.<member>` shape) via a dedicated AST-pattern branch in
 // `compile_member_access` (see the `_emits_error` tests below). Function-body
-// access is now enforced too: `build_structure_def_skeleton` populates the
-// skeleton's `ports`/`guarded_groups` with the nested `priv`-aware members, and
-// the port case is completed by an `expr.rs` branch that resolves a fn-body
-// `StructureRef` receiver (see the `..._priv_gated` tests further below). Part D
-// itself asserts only the lowered `visibility` field, not dot-access
-// enforcement, so it stays green independent of that enforcement.
+// access is now enforced too: a function body type-checks against the
+// structure's authoritative template (declared above the fn), which carries the
+// nested `priv`-aware `ports`/`guarded_groups`, and the port case is completed
+// by an `expr.rs` branch that resolves a fn-body `StructureRef` receiver (see
+// the `..._priv_gated` tests further below). Part D itself asserts only the
+// lowered `visibility` field, not dot-access enforcement, so it stays green
+// independent of that enforcement.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -808,10 +809,11 @@ structure def PerDeclGuardHost {
 // `_emits_error` tests below), while their default-visible siblings still
 // fail via their pre-existing, unrelated diagnostics — StructureMemberNotFound
 // for guarded members, "member access not yet supported" for port members —
-// unchanged. FUNCTION-BODY access is now enforced too: the skeleton template
-// carries the port/guarded members, so both `m.secret.main` and `m.g` emit
-// exactly one E_PRIV_MEMBER_ACCESS from a function body as well (see the
-// `..._priv_gated` tests further below).
+// unchanged. FUNCTION-BODY access is now enforced too: the structure's
+// authoritative template (declared above the fn) carries the port/guarded
+// members, so both `m.secret.main` and `m.g` emit exactly one
+// E_PRIV_MEMBER_ACCESS from a function body as well (see the `..._priv_gated`
+// tests further below).
 
 /// Shared `PortHost`+`Parent` fixture for the external port-member
 /// enforcement tests below (reviewer_comprehensive suggestion #2): the priv
@@ -1190,23 +1192,22 @@ structure def Parent {
     );
 }
 
-// ── Part D coda, function-body variant — skeleton priv gating ────────────────
+// ── Part D coda, function-body variant — authoritative-template priv gating ──
 //
-// `build_structure_def_skeleton` (entity.rs) — the template consulted while
-// type-checking function bodies, before per-structure templates exist — now
-// populates `ports` and `guarded_groups` with the nested `priv`-aware members
-// (task #5161's lowering shape, kept lightweight). So a function body reading a
-// `priv` port member (`m.secret.main`) or a `priv` guarded-block member (`m.g`)
-// is priv-gated exactly like external access: each emits one
-// E_PRIV_MEMBER_ACCESS. The guarded case is gated by the skeleton population
-// alone (the SIR-α `StructureRef` E_PRIV gate scans `guarded_groups`); the port
-// case additionally needs the `expr.rs` receiver-resolution branch that resolves
-// a fn-body `StructureRef` receiver (ports are absent from `value_cells`, so
+// A function body type-checks against the structure's authoritative template
+// (declared above the fn), which carries `ports` and `guarded_groups` with the
+// nested `priv`-aware members (task #5161's lowering). So a function body
+// reading a `priv` port member (`m.secret.main`) or a `priv` guarded-block
+// member (`m.g`) is priv-gated exactly like external access: each emits one
+// E_PRIV_MEMBER_ACCESS. The guarded case is gated by the template alone (the
+// SIR-α `StructureRef` E_PRIV gate scans `guarded_groups`); the port case
+// additionally needs the `expr.rs` receiver-resolution branch that resolves a
+// fn-body `StructureRef` receiver (ports are absent from `value_cells`, so
 // `m.secret` never types as a `StructureRef`). The tests below pin both.
 
 /// A function body accessing a `priv` param nested inside a `port { }` block is
-/// now priv-gated: `build_structure_def_skeleton` populates the skeleton's
-/// `ports` (composite `"<port>.<member>"` cells) and the `expr.rs`
+/// priv-gated: the structure's authoritative template (declared above the fn)
+/// carries the port's composite `"<port>.<member>"` cells and the `expr.rs`
 /// `<sub>.<port>.<member>` branch resolves the fn-body `StructureRef` receiver,
 /// so `port_member_is_priv` fires exactly one E_PRIV_MEMBER_ACCESS on
 /// `m.secret.main`.
@@ -1231,8 +1232,8 @@ fn leak(m : PortHost) -> Length { m.secret.main }
         priv_errs.len(),
         1,
         "function-body access to a priv port-member (`m.secret.main`) must emit \
-         exactly one E_PRIV_MEMBER_ACCESS — the skeleton now carries the port's \
-         members and the expr.rs branch resolves the fn-body receiver; all \
+         exactly one E_PRIV_MEMBER_ACCESS — the authoritative template carries the \
+         port's members and the expr.rs branch resolves the fn-body receiver; all \
          diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -1240,16 +1241,13 @@ fn leak(m : PortHost) -> Length { m.secret.main }
 }
 
 /// A function body reading a *bare, non-priv* port (`m.secret`, where `secret`
-/// is a default-visible `port { }`) is NOT priv-gated, and — now that the
-/// skeleton populates `ports` — is treated as a KNOWN member: it resolves to the
-/// permissive dimensionless-scalar fallback rather than failing with
-/// E_STRUCTURE_MEMBER_NOT_FOUND. This pins the (intended) blast radius of the
-/// skeleton `ports` population: `template_has_member` now sees the port name, so
-/// a bare non-priv port access from a fn body aligns with the authoritative
-/// `StructureRef` path (which already treats port names as known members)
-/// instead of the pre-change member-not-found behaviour. It also guards the
-/// symmetric non-priv counterpart of the priv-port gate above: populating `ports`
-/// must not over-fire E_PRIV_MEMBER_ACCESS on a default-visible port.
+/// is a default-visible `port { }`) is NOT priv-gated, and — because the
+/// structure's authoritative template carries `ports` — is treated as a KNOWN
+/// member: it resolves to the permissive dimensionless-scalar fallback rather
+/// than failing with E_STRUCTURE_MEMBER_NOT_FOUND (`template_has_member` sees
+/// the port name). It also guards the symmetric non-priv counterpart of the
+/// priv-port gate above: a populated `ports` must not over-fire
+/// E_PRIV_MEMBER_ACCESS on a default-visible port.
 #[test]
 fn function_body_pub_port_access_resolves_not_priv_gated() {
     let module = compile_source(
@@ -1282,21 +1280,20 @@ fn ok(m : PortHost) -> Real { m.secret }
     assert_eq!(
         not_found, 0,
         "function-body access to a bare non-priv port (`m.secret`) must NOT emit \
-         E_STRUCTURE_MEMBER_NOT_FOUND — populating the skeleton's `ports` makes the \
-         port name a KNOWN member (template_has_member scans ports), so the access \
-         resolves to the dimensionless fallback instead of failing not-found; all \
-         diagnostics: {:?}",
+         E_STRUCTURE_MEMBER_NOT_FOUND — the authoritative template's `ports` make \
+         the port name a KNOWN member (template_has_member scans ports), so the \
+         access resolves to the dimensionless fallback instead of failing \
+         not-found; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
 /// A function body accessing a `priv` param nested inside a block-form
-/// `where cond { }` guarded group is now priv-gated:
-/// `build_structure_def_skeleton` populates the skeleton template's
-/// `guarded_groups`, so the SIR-α `StructureRef` member-access block's
-/// pre-ordered E_PRIV gate (`template_member_is_priv`'s `guarded_groups` scan)
-/// fires exactly one E_PRIV_MEMBER_ACCESS on `m.g`. No expr.rs change is
-/// needed for the guarded-member case — populating the skeleton is sufficient.
+/// `where cond { }` guarded group is priv-gated: the structure's authoritative
+/// template (declared above the fn) carries its `guarded_groups`, so the SIR-α
+/// `StructureRef` member-access block's pre-ordered E_PRIV gate
+/// (`template_member_is_priv`'s `guarded_groups` scan) fires exactly one
+/// E_PRIV_MEMBER_ACCESS on `m.g`.
 #[test]
 fn function_body_priv_guarded_member_access_priv_gated() {
     let module = compile_source(
@@ -1317,7 +1314,7 @@ fn leak(m : GuardHost) -> Length { m.g }
         priv_errs.len(),
         1,
         "function-body access to a priv guarded-block member (`m.g`) must emit \
-         exactly one E_PRIV_MEMBER_ACCESS — the skeleton template now carries the \
+         exactly one E_PRIV_MEMBER_ACCESS — the authoritative template carries the \
          guarded group's members so the priv gate fires; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );

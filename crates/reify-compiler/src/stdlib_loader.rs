@@ -137,7 +137,7 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
         //     `BucklingOptions`/
         //     `MultiCaseBucklingResult` (function bodies field-access these; requires
-        //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
+        //     them in the prelude registry when the fn bodies compile — esc-3851-32).
         //   - `std.fea.multi_case` provides `LoadCase` (task η adds
         //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
         //     type-checker must resolve).
@@ -183,7 +183,7 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
         // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
         // which requires `ModalResult`/`Mode` to already be in the prelude
-        // template registry when `phase_functions` runs. Same split +
+        // template registry when the fn bodies compile. Same split +
         // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
         // (esc-3851-32).
         (
@@ -199,7 +199,7 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // (a no-arg ctor — like `ModalResult()`, which also has no per-field
         // defaults), which requires `EndEffectorTrack` to already be in the
         // prelude template registry when
-        // `phase_functions` runs. Same split + rationale as `std.modal.analysis`
+        // the fn body compiles. Same split + rationale as `std.modal.analysis`
         // / `std.modal.analysis.fns` (modal_analysis_fns.ri:6-20). Placed before
         // the later `std.dynamics` / `std.kinematic`, which themselves depend on
         // `std.trajectory`, so order is safe (task π, prereq-2).
@@ -270,9 +270,9 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // structure_def, the `FlexureJoint` marker, and the
         // flexure_compliance() accessor (the former RotationalStiffness=Real
         // alias was removed in task 4547 — the built-in ROTATIONAL_STIFFNESS
-        // dimension shadowed it). The same-module skeleton pre-pass (task 3895)
-        // makes the structure_def visible to the accessor fn body in the same
-        // module, so no split is needed.
+        // dimension shadowed it). The structure_def is declared above the
+        // accessor fn, so the fn body compiles against its authoritative
+        // template (PRD stdlib-namespace D-8) and no split is needed.
         //
         // MUST follow `std.kinematic` (task #5476, placeholder-ratchet α) —
         // `structure def FlexureJoint : DrivingJoint` references the

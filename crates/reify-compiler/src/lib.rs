@@ -25,6 +25,7 @@ pub(crate) mod containment_graph;
 pub use containment_graph::sub_component_forward_adjacency;
 mod builtin_registry;
 mod builtin_signatures;
+mod call_table;
 mod datum_projection;
 mod diagnostics;
 mod entity;
@@ -644,7 +645,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
     //
     // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
-    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // lowers a declared type name must agree on what `Fit` means: `phase_fn_signatures`
     // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
     // `phase_entities` alone made a trait requirement / fn signature param keep
     // `Type::StructureRef("Fit")` while the conforming structure's param became
@@ -706,7 +707,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `resolve_enum_variant_payloads` reads `ctx.resolution_structure_names` /
     // `ctx.resolution_trait_names`. `build_resolution_names` has no dependency
     // on `resolution_enums`, so running it ahead of the enum clone is
-    // order-safe (its consumers — phase_functions/phase_traits — run later).
+    // order-safe (its consumers — phase_fn_signatures/phase_traits — run later).
     compile_builder::names_phase::build_resolution_names(
         &mut compile_ctx,
         prelude_refs,
@@ -730,11 +731,22 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
-    compile_builder::functions_phase::phase_functions(
+    // Resolve fn SIGNATURES first, then every param default that needs no
+    // same-module template (task 5494 / PRD stdlib-namespace.md D-8). Neither
+    // needs a structure template; together they seed `ctx.resolution_functions`
+    // with signature stubs carrying those defaults for the phases that follow.
+    //
+    // Phase order from here: signatures → template-free param defaults →
+    // traits → fields → constraint_defs → **entities + fn bodies (one unified
+    // pass, source order)** → post-passes. Fn bodies, and defaults that need a
+    // same-module template, are compiled by `phase_entities`, interleaved with
+    // entity templates in declaration order, so a fn body constructing a
+    // same-module structure gets that structure's AUTHORITATIVE template.
+    compile_builder::functions_phase::phase_fn_signatures(&mut compile_ctx, &decl_refs.fn_refs);
+    compile_builder::functions_phase::phase_fn_param_defaults(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,
-        &decl_refs.structure_refs,
     );
 
     let trait_names = compile_builder::traits_phase::phase_traits(
