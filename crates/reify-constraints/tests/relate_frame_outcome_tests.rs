@@ -96,10 +96,32 @@ fn outcome_of(
     solve_frame_outcome(relations, unknown, seed, &scaling, budget)
 }
 
+#[track_caller]
 fn failure_of(outcome: &FrameSolveOutcome) -> &SolveFailureCause {
     match &outcome.result {
         Err(cause) => cause,
         Ok(solution) => panic!("expected a failed solve, got {solution:?}"),
+    }
+}
+
+/// The adapter reports a non-Infeasible failure as `NoProgress`, rendering the
+/// cause and naming the unknown's sub; returns the reason.
+#[track_caller]
+fn assert_reports_no_progress(outcome: FrameSolveOutcome, unknown: &FrameUnknown) -> String {
+    let cause = failure_of(&outcome).to_string();
+    match outcome.into_solve_result(unknown) {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains(&cause),
+                "the reason renders the cause's own figures: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("`{}`", unknown.sub)),
+                "the reason names the sub: {reason}"
+            );
+            reason
+        }
+        other => panic!("expected NoProgress, got {other:?}"),
     }
 }
 
@@ -169,41 +191,27 @@ fn solve_result_adapter_codes_infeasible_and_reports_budget_as_no_progress() {
 
     let fixture = skewed_concentric_flush();
     let outcome = outcome_of(&fixture, SolveBudget { max_iterations: 1 });
-    match outcome.into_solve_result(&fixture.1) {
-        SolveResult::NoProgress { reason } => {
-            assert!(
-                reason.contains("1 of 1"),
-                "the reason names the counts: {reason}"
-            )
-        }
-        other => panic!("expected NoProgress, got {other:?}"),
-    }
+    let reason = assert_reports_no_progress(outcome, &fixture.1);
+    assert!(
+        reason.contains("1 of 1"),
+        "the reason names the counts: {reason}"
+    );
 }
 
 /// A stall is a search failure, so the adapter reports `NoProgress` rendering
 /// it, never a coded `Infeasible`.
 #[test]
 fn solve_result_adapter_reports_a_stall_as_no_progress() {
-    let stall = SolveFailureCause::Stalled(SolveStall {
-        iterations: 7,
-        step_norm: 1e-12,
-        range_cosine: 0.5,
-        max_scaled_residual: 40.0,
-    });
     let outcome = FrameSolveOutcome {
         iterations: 7,
-        result: Err(stall.clone()),
+        result: Err(SolveFailureCause::Stalled(SolveStall {
+            iterations: 7,
+            step_norm: 1e-12,
+            range_cosine: 0.5,
+            max_scaled_residual: 40.0,
+        })),
     };
-    match outcome.into_solve_result(&bolt_unknown()) {
-        SolveResult::NoProgress { reason } => {
-            assert!(
-                reason.contains(&stall.to_string()),
-                "the reason renders the cause's own figures: {reason}"
-            );
-            assert!(reason.contains("`bolt`"), "{reason}");
-        }
-        other => panic!("expected NoProgress, got {other:?}"),
-    }
+    assert_reports_no_progress(outcome, &bolt_unknown());
 }
 
 /// The off-axis size of a 3-vector expected to lie along `+z`.
@@ -645,19 +653,10 @@ fn a_nan_anchor_is_a_non_finite_evaluation_of_its_own_relation() {
 fn solve_result_adapter_reports_a_non_finite_evaluation_as_no_progress() {
     let fixture = nan_anchor_beside_a_seated_concentric();
     let outcome = outcome_of(&fixture, SolveBudget::default());
-    let cause = failure_of(&outcome).clone();
+    let cause = failure_of(&outcome);
     assert!(
         matches!(cause, SolveFailureCause::NonFinite(_)),
         "the fixture must end non-finite: {cause:?}"
     );
-    match outcome.into_solve_result(&fixture.1) {
-        SolveResult::NoProgress { reason } => {
-            assert!(
-                reason.contains(&cause.to_string()),
-                "the reason renders the cause's own figures: {reason}"
-            );
-            assert!(reason.contains("`bolt`"), "{reason}");
-        }
-        other => panic!("expected NoProgress, got {other:?}"),
-    }
+    assert_reports_no_progress(outcome, &fixture.1);
 }
