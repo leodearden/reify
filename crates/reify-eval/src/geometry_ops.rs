@@ -14,6 +14,8 @@ use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 use crate::eval_ctx_with_meta;
 use crate::kernel_owner::resolve_owning_kernel_name;
 
+pub(crate) mod symbolic_cell_mint;
+
 /// Minimum meaningful distance in meters (1 picometer).
 ///
 /// Distances with `|v| < DEGENERATE_LENGTH_M` cannot produce a well-defined

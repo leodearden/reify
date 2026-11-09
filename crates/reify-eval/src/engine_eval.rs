@@ -34,6 +34,9 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
+use crate::geometry_ops::symbolic_cell_mint::{
+    RealizationSource, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
+};
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
@@ -8551,42 +8554,26 @@ impl Engine {
                             // &runtime_sink before the mutable snapshot_values.insert below.
                             let _ = default_or;
 
-                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
-                            // (geometry handle for solid params, then selector).
-                            let was_undef = matches!(val, Value::Undef);
-                            let (val, det) = if was_undef {
-                                let geom = Engine::mint_symbolic_geometry_handle_for_cell(
-                                    &cell.id,
-                                    &template.realizations,
-                                    &values,
-                                    &self.functions,
-                                    &self.meta_map,
-                                );
-                                if let Some(v) = geom {
-                                    (v, DeterminacyState::Determined)
-                                } else if let Some(ref expr) = cell.default_expr {
-                                    if let Some(v) =
-                                        crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                            expr,
-                                            &values,
-                                            &mut diagnostics,
-                                        )
-                                    {
-                                        (v, DeterminacyState::Determined)
-                                    } else {
-                                        (val, det)
-                                    }
-                                } else {
-                                    (val, det)
-                                }
-                            } else {
-                                (val, det)
-                            };
+                            // R3d (#4900): see `symbolic_cell_mint`.
+                            let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                                val,
+                                cell.kind,
+                                &cell.id,
+                                cell.default_expr.as_ref(),
+                                &SymbolicMintScope {
+                                    realizations: RealizationSource::Template(template),
+                                    values: &values,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                },
+                                &mut diagnostics,
+                            );
+                            let det = if minted { DeterminacyState::Determined } else { det };
                             // R3e (#4907): record cells the in-walk mint
                             // actually resolved, so the post-mint re-eval pass
                             // below knows which same-pass consumers to
                             // re-check.
-                            if was_undef && !matches!(val, Value::Undef) {
+                            if minted {
                                 minted_in_walk.insert(cell.id.clone());
                             }
 
@@ -8765,36 +8752,25 @@ impl Engine {
                                 ),
                             );
 
-                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
-                            // (selector for Let cells, then geometry handle).
-                            let was_undef = matches!(val, Value::Undef);
-                            let val = if was_undef {
-                                let sel =
-                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                        expr,
-                                        &values,
-                                        &mut diagnostics,
-                                    );
-                                if let Some(v) = sel {
-                                    v
-                                } else {
-                                    Engine::mint_symbolic_geometry_handle_for_cell(
-                                        &cell.id,
-                                        &template.realizations,
-                                        &values,
-                                        &self.functions,
-                                        &self.meta_map,
-                                    )
-                                    .unwrap_or(val)
-                                }
-                            } else {
-                                val
-                            };
+                            // R3d (#4900): see `symbolic_cell_mint`.
+                            let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                                val,
+                                cell.kind,
+                                &cell.id,
+                                Some(expr),
+                                &SymbolicMintScope {
+                                    realizations: RealizationSource::Template(template),
+                                    values: &values,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                },
+                                &mut diagnostics,
+                            );
                             // R3e (#4907): record cells the in-walk mint
                             // actually resolved, so the post-mint re-eval pass
                             // below knows which same-pass consumers to
                             // re-check.
-                            if was_undef && !matches!(val, Value::Undef) {
+                            if minted {
                                 minted_in_walk.insert(cell.id.clone());
                             }
 
@@ -10323,41 +10299,26 @@ impl Engine {
                         );
                         continue;
                     };
-                    // R3d (#4900): if eval returned Undef, try the in-walk
-                    // symbolic mint — geometry handle first (for solid params),
-                    // then topology selector — so downstream consumer cells that
-                    // reference this cell read the minted value at topo-order
-                    // time rather than Undef.  Invariant: upstream params are
+                    // R3d (#4900): see `symbolic_cell_mint`. Upstream params are
                     // already in `values` at this slot, so the GHR-β hash fold
                     // is byte-identical to the build path.
-                    let was_undef = matches!(val, Value::Undef);
-                    let val = if was_undef {
-                        let geom = Engine::mint_symbolic_geometry_handle_for_cell(
-                            &cell.id,
-                            &template.realizations,
+                    let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                        val,
+                        cell.kind,
+                        &cell.id,
+                        cell.default_expr.as_ref(),
+                        &SymbolicMintScope {
+                            realizations: RealizationSource::Template(template),
                             values,
                             functions,
                             meta_map,
-                        );
-                        if let Some(geom) = geom {
-                            geom
-                        } else if let Some(ref expr) = cell.default_expr {
-                            crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                expr,
-                                values,
-                                diagnostics,
-                            )
-                            .unwrap_or(val)
-                        } else {
-                            val
-                        }
-                    } else {
-                        val
-                    };
+                        },
+                        diagnostics,
+                    );
                     // R3e (#4907): record cells the in-walk mint actually
                     // resolved, so the post-mint re-eval pass below knows
                     // which same-pass consumers to re-check.
-                    if was_undef && !matches!(val, Value::Undef) {
+                    if minted {
                         minted_in_walk.insert(cell.id.clone());
                     }
                     values.insert(cell.id.clone(), val.clone());
@@ -10833,33 +10794,24 @@ impl Engine {
                             continue;
                         }
                     };
-                    // R3d (#4900): if eval returned Undef, try the in-walk
-                    // symbolic mint — topology selector first (for selector lets),
-                    // then geometry handle (for any geometry let with a value cell).
-                    let was_undef = matches!(val, Value::Undef);
-                    let val = if was_undef {
-                        let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr, values, diagnostics,
-                        );
-                        if let Some(sel) = sel {
-                            sel
-                        } else {
-                            Engine::mint_symbolic_geometry_handle_for_cell(
-                                &cell_id,
-                                &template.realizations,
-                                values,
-                                functions,
-                                meta_map,
-                            )
-                            .unwrap_or(val)
-                        }
-                    } else {
-                        val
-                    };
+                    // R3d (#4900): see `symbolic_cell_mint`.
+                    let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                        val,
+                        cell.kind,
+                        &cell_id,
+                        Some(expr),
+                        &SymbolicMintScope {
+                            realizations: RealizationSource::Template(template),
+                            values,
+                            functions,
+                            meta_map,
+                        },
+                        diagnostics,
+                    );
                     // R3e (#4907): record cells the in-walk mint actually
                     // resolved, so the post-mint re-eval pass below knows
                     // which same-pass consumers to re-check.
-                    if was_undef && !matches!(val, Value::Undef) {
+                    if minted {
                         minted_in_walk.insert(cell_id.clone());
                     }
                     let dep_trace = take_trace(

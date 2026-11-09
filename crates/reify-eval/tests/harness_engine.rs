@@ -187,3 +187,9 @@ mod stdlib_fn_in_user_fn_body_e2e;
 // `reify_compiler::program::compile_program`.
 #[path = "harness_engine/def_env_skeleton.rs"]
 mod def_env_skeleton;
+// Task #8102's instance-scope symbolic geometry/selector mint pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above. They are also
+// a topical fit: they drive `Engine::eval` over `sub` instantiations to pin
+// what `unfold.rs` commits for geometry and selector cells.
+#[path = "harness_engine/instance_scope_symbolic_mint.rs"]
+mod instance_scope_symbolic_mint;

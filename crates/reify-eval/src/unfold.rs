@@ -16,6 +16,9 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
+use crate::geometry_ops::symbolic_cell_mint::{
+    RealizationSource, SymbolicMintScope, mint_template_keyed_instance_cell,
+};
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
 /// the gate, its decline report, and the shape probe they share (task #6662).
@@ -1282,7 +1285,9 @@ fn eval_child_expr(
 /// A scratch value must equal what phase 2 commits, so an `@optimized` let is
 /// resolved through the same [`resolve_optimized_instance_cell`] gate phase 2
 /// uses (task #6662). Body-inlining instead would hand every reader the `.ri`
-/// sentinel while the committed cell held the dispatched value.
+/// sentinel while the committed cell held the dispatched value. For the same
+/// parity reason an `Undef` scratch value is minted exactly as phase 2's let
+/// site mints it (see [`crate::geometry_ops::symbolic_cell_mint`]).
 ///
 /// Silent: phase 2 sees the same cell and owns the decline report, so reporting
 /// here would double every warning. Phase 1.5's overlay reaches phase 2's
@@ -1317,14 +1322,25 @@ fn eval_scratch_let(
     ) {
         OptimizedInstanceResolution::Reuse(v) => v,
         OptimizedInstanceResolution::NotOptimized
-        | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-            scope,
+        | OptimizedInstanceResolution::Unreusable { .. } => mint_template_keyed_instance_cell(
+            eval_child_expr(
+                scope,
+                expr,
+                functions,
+                meta_map,
+                determinacy,
+                runtime_sink,
+                &NoContainment,
+            ),
+            ValueCellKind::Let,
+            key,
             expr,
-            functions,
-            meta_map,
-            determinacy,
-            runtime_sink,
-            &NoContainment,
+            &SymbolicMintScope {
+                realizations: RealizationSource::Template(child_template),
+                values: scope,
+                functions,
+                meta_map,
+            },
         ),
     }
 }
@@ -1499,15 +1515,29 @@ fn elaborate_child_params_only<'f>(
             match resolution {
                 OptimizedInstanceResolution::Reuse(v) => v,
                 OptimizedInstanceResolution::NotOptimized
-                | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                    &scope,
-                    default_expr,
-                    functions,
-                    meta_map,
-                    &snapshot.values,
-                    &runtime_sink,
-                    &containment,
-                ),
+                | OptimizedInstanceResolution::Unreusable { .. } => {
+                    let evaluated = eval_child_expr(
+                        &scope,
+                        default_expr,
+                        functions,
+                        meta_map,
+                        &snapshot.values,
+                        &runtime_sink,
+                        &containment,
+                    );
+                    mint_template_keyed_instance_cell(
+                        evaluated,
+                        cell.kind,
+                        &cell.id,
+                        default_expr,
+                        &SymbolicMintScope {
+                            realizations: RealizationSource::Template(child_template),
+                            values: &scope,
+                            functions,
+                            meta_map,
+                        },
+                    )
+                }
             }
         } else {
             Value::Undef
@@ -1813,15 +1843,29 @@ fn elaborate_child_lets_only<'t, 'f>(
             // Unreusable falls through to body-inlining, unchanged from
             // pre-#6662 behaviour — only the silence is removed.
             OptimizedInstanceResolution::NotOptimized
-            | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                &child_values,
-                expr,
-                functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
-            ),
+            | OptimizedInstanceResolution::Unreusable { .. } => {
+                let evaluated = eval_child_expr(
+                    &child_values,
+                    expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                );
+                mint_template_keyed_instance_cell(
+                    evaluated,
+                    ValueCellKind::Let,
+                    child_cell_id,
+                    expr,
+                    &SymbolicMintScope {
+                        realizations: RealizationSource::Template(child_template),
+                        values: &child_values,
+                        functions,
+                        meta_map,
+                    },
+                )
+            }
         };
         child_values.insert(child_cell_id.clone(), val.clone());
 

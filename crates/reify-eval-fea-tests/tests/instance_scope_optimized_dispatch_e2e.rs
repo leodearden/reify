@@ -15,20 +15,44 @@
 //! naming this defect) at the time of writing; removing it is out of scope here.
 
 use reify_core::{Severity, ValueCellId};
+use reify_eval::CheckResult;
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
-/// Cantilever beam whose FEA-derived cells are read through a `sub`.
-///
-/// `Asm` instantiates `Beam` with NO constructor overrides, so the instance's
-/// inputs are value-identical to the template's and the two scopes must agree.
+/// Which loads the beam's solve carries.
+#[derive(Clone, Copy)]
+enum BeamLoads {
+    /// The String-targeted `tip` load only.
+    StringTarget,
+    /// `tip` plus `press`, whose `face` is a TYPED named-leaf selector over the
+    /// geometry let `body` — so the instance's solve can only equal the
+    /// template's if the instance's `body` mints the same symbolic geometry
+    /// handle the template's does.
+    ///
+    /// `FixedSupport.target` is still `String` (#5312 types it), so the typed
+    /// target rides `PressureLoad.face : Option<FaceSelector>` — the same
+    /// hoisted named-leaf selector mechanism.
+    WithTypedSelectorTarget,
+}
+
+/// The cantilever beam every fixture here reads through a `sub`, declared as
+/// `structure {name}`.
 ///
 /// Kept deliberately small and P1 (bare `ElasticOptions()`) — the assertions
 /// below are existence / determinacy / cross-scope-equality only, never a
 /// numeric tolerance, so there is nothing here that a coarser mesh can break.
-fn instance_scope_fea_source() -> &'static str {
-    r#"
-        structure Beam {
+fn beam_structure(name: &str, loads: BeamLoads) -> String {
+    let (typed_target_lets, load_list) = match loads {
+        BeamLoads::StringTarget => ("", "[tip]"),
+        BeamLoads::WithTypedSelectorTarget => (
+            r#"let body     = box(span, w, h)
+            let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))"#,
+            "[tip, press]",
+        ),
+    };
+    format!(
+        r#"
+        structure {name} {{
             param span : Length = 1000mm
             param w    : Length = 100mm
             param h    : Length = 100mm
@@ -37,20 +61,50 @@ fn instance_scope_fea_source() -> &'static str {
             let material = Steel_AISI_1045()
             let tip      = PointLoad(point: "tip", force: load)
             let mount    = FixedSupport(target: "root")
+            {typed_target_lets}
 
             let r_static = solve_elastic_static(
-                material, span, w, h, [tip], [mount], ElasticOptions()
+                material, span, w, h, {load_list}, [mount], ElasticOptions()
             )
             let defl     = max(r_static.displacement)
             let k        : Stiffness = load * 1N / defl
-        }
+        }}
+        "#
+    )
+}
 
-        structure Asm {
+/// `Beam` read through a `sub`. `Asm` instantiates it with NO constructor
+/// overrides, so the instance's inputs are value-identical to the template's
+/// and the two scopes must agree.
+fn instance_scope_fea_source(loads: BeamLoads) -> String {
+    format!(
+        r#"
+        {beam}
+        structure Asm {{
             sub beam = Beam()
             let k_from_sub = self.beam.k
             constraint self.beam.k > 1N / 1m
-        }
-    "#
+        }}
+        "#,
+        beam = beam_structure("Beam", loads)
+    )
+}
+
+/// `BeamAuto` read through an override-free `sub` by solver-visible
+/// constraints over an `auto`.
+fn solver_visible_fea_source(loads: BeamLoads) -> String {
+    format!(
+        r#"
+        {beam}
+        structure AsmAuto {{
+            sub beam = BeamAuto()
+            param budget : Stiffness = auto
+            constraint budget <= self.beam.k
+            constraint budget >= 1N / 1m
+        }}
+        "#,
+        beam = beam_structure("BeamAuto", loads)
+    )
 }
 
 /// Extract a named field from an `ElasticResult` value, handling both the
@@ -69,7 +123,15 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
 /// values, and the whole downstream chain stays determinate.
 #[test]
 fn instance_scope_fea_cells_equal_template_solved_values() {
-    let compiled = parse_and_compile_with_stdlib(instance_scope_fea_source());
+    assert_instance_fea_cells_equal_template(&instance_scope_fea_source(BeamLoads::StringTarget));
+}
+
+/// Steps (1)-(5) of the `Beam`/`Asm` acceptance check, shared by the
+/// String-target fixture and the typed-selector-target one. Returns the check
+/// result so a caller can add fixture-specific cross-scope assertions without
+/// re-running the solve.
+fn assert_instance_fea_cells_equal_template(source: &str) -> CheckResult {
+    let compiled = parse_and_compile_with_stdlib(source);
 
     let mut engine = make_simple_engine();
     reify_eval::compute_targets::register_compute_fns(&mut engine);
@@ -228,6 +290,8 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
             entry.id
         );
     }
+
+    result
 }
 
 /// An instance-scope `@optimized` cell that a SOLVER-visible constraint depends
@@ -240,6 +304,16 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
 /// that such a cell is not in those exclusion sets and could be overwritten
 /// with `Undef` by the solver's cost loop, or re-evaluated back to the
 /// body-inline sentinel by a reeval pass.
+#[test]
+fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
+    assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
+        BeamLoads::StringTarget,
+    ));
+}
+
+/// Steps (a)-(c) of the `BeamAuto`/`AsmAuto` solver-visible guard, shared by
+/// the String-target fixture and the typed-selector-target one. Returns the
+/// check result so a caller can add fixture-specific assertions.
 ///
 /// # The inline engine is load-bearing — do not collapse it to `make_simple_engine()`
 ///
@@ -270,33 +344,7 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
 /// INSTANCE-scope cell. The auto's resolved value is deliberately NOT pinned
 /// numerically — that is a Nelder-Mead `DimensionalSolver` output, and
 /// determinacy plus `Satisfied` is the robust signal.
-#[test]
-fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
-    let source = r#"
-        structure BeamAuto {
-            param span : Length = 1000mm
-            param w    : Length = 100mm
-            param h    : Length = 100mm
-            param load : Real   = 1000.0
-
-            let material = Steel_AISI_1045()
-            let tip      = PointLoad(point: "tip", force: load)
-            let mount    = FixedSupport(target: "root")
-
-            let r_static = solve_elastic_static(
-                material, span, w, h, [tip], [mount], ElasticOptions()
-            )
-            let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
-        }
-
-        structure AsmAuto {
-            sub beam = BeamAuto()
-            param budget : Stiffness = auto
-            constraint budget <= self.beam.k
-            constraint budget >= 1N / 1m
-        }
-    "#;
+fn assert_solver_visible_instance_fea_cell_survives(source: &str) -> CheckResult {
     let compiled = parse_and_compile_with_stdlib(source);
 
     // Same checker and same compute-fn registration as `make_simple_engine()`;
@@ -413,4 +461,70 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
             entry.satisfaction
         );
     }
+
+    result
+}
+
+/// The reuse gate's cross-scope preconditions for a typed selector target: the
+/// instance's geometry let and the load struct carrying the selector over it
+/// must EQUAL the template's. Either one differing makes the `@optimized` solve
+/// decline reuse and body-inline the `ElasticResult()` shell.
+fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str, instance: &str) {
+    let cell = |entity: &str, member: &str| {
+        result
+            .values
+            .get(&ValueCellId::new(entity, member))
+            .unwrap_or_else(|| panic!("cell {entity}.{member} not found in check result"))
+    };
+
+    let template_body = cell(template, "body");
+    let instance_body = cell(instance, "body");
+    assert!(
+        matches!(instance_body, Value::GeometryHandle { .. }),
+        "{instance}.body must be a symbolic GeometryHandle (it is Undef when the \
+         instance scope never mints), got {instance_body:?}"
+    );
+    assert_eq!(
+        instance_body, template_body,
+        "{instance}.body must equal {template}.body: same realization decl and \
+         same upstream values hash for an override-free sub"
+    );
+
+    let template_press = cell(template, "press");
+    let instance_press = cell(instance, "press");
+    let face = extract_field(instance_press, "face")
+        .unwrap_or_else(|| panic!("{instance}.press has no `face` field: {instance_press:?}"));
+    let face = match face {
+        Value::Option(Some(inner)) => *inner,
+        other => other,
+    };
+    assert!(
+        matches!(face, Value::Selector(_)),
+        "{instance}.press.face (unwrapped from its Option) must be a typed \
+         Selector over {instance}.body, got {face:?}"
+    );
+    assert_eq!(
+        instance_press, template_press,
+        "{instance}.press must equal {template}.press — it is in the solve's \
+         direct read set, so any difference declines reuse"
+    );
+}
+
+/// The acceptance check above with the typed selector target: the instance's
+/// solve must reuse the template's solved value through `press.face`.
+#[test]
+fn instance_scope_fea_cells_equal_template_solved_values_with_typed_selector_target() {
+    let result = assert_instance_fea_cells_equal_template(&instance_scope_fea_source(
+        BeamLoads::WithTypedSelectorTarget,
+    ));
+    assert_typed_target_cells_equal_template(&result, "Beam", "Asm.beam");
+}
+
+/// The solver-visible guard above with the typed selector target.
+#[test]
+fn solver_visible_instance_scope_fea_cell_with_typed_selector_target_is_not_clobbered() {
+    let result = assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
+        BeamLoads::WithTypedSelectorTarget,
+    ));
+    assert_typed_target_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
 }
