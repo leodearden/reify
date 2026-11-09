@@ -33,7 +33,12 @@ from reify_verify.plan import (
     StepKind,
     unquotable_knob,
 )
-from reify_verify.policy import PROFILE_TABLE, HeavyPartition, Profile
+from reify_verify.policy import (
+    PROFILE_TABLE,
+    HeavyPartition,
+    Profile,
+    refuse_fail_fast_recording,
+)
 
 GEN_NEXTEST_CONFIG = ScriptCall("scripts/gen-nextest-config.sh")
 CLI_TEST_THREADS = "REIFY_NEXTEST_CLI_TEST_THREADS"
@@ -116,7 +121,8 @@ class PassSpec:
     """What one test pass runs: the facts that vary from pass to pass.
 
     The gui-feature pass never carries a filter: one would narrow away the
-    gui-gated tests it exists to run.
+    gui-gated tests it exists to run. A pass of a recording kind carries no
+    guard, because its step's one gate path is the recorder's.
     """
 
     kind: PassKind
@@ -135,6 +141,17 @@ class PassSpec:
                 f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
                 f"retry_ids={self.retry_ids!r})"
             )
+        recorder = CONFIRM_RECORDER if self.kind.records else None
+        _refuse_guarded_recording(f"PassSpec(kind={self.kind.value})", recorder, self.guard)
+
+
+def _refuse_guarded_recording(owner: str, recorder: str | None, guard: CrateGuard | None) -> None:
+    """A step names one gate path, so a guard may not take the one a recorded pass gives its recorder."""
+    if recorder is not None and guard is not None:
+        raise ValueError(
+            f"{owner}: a pass that records its failing ids carries no guard: its step names one "
+            f"gate path, which {recorder} and {guard.setup.path} would both claim"
+        )
 
 
 @dataclass(frozen=True)
@@ -190,8 +207,7 @@ class TestRunner:
 
     nextest says whether cargo-nextest or the cargo-test fallback runs the
     passes; config is the file every nextest pass names, None when no pass
-    will name one. A recording run keeps going past a failure, so the manifest it records
-    lists every failing test, not only the first (bash's write gate).
+    will name one.
     """
 
     prio: str
@@ -203,8 +219,7 @@ class TestRunner:
     confirm: ConfirmRecording | None
 
     def __post_init__(self):
-        if self.confirm is not None and not self.no_fail_fast:
-            raise ValueError("TestRunner: a run that records a confirm manifest runs --no-fail-fast")
+        refuse_fail_fast_recording("TestRunner", self.confirm is not None, not self.no_fail_fast)
         if not self.nextest and self.config is not None:
             raise ValueError(
                 f"TestRunner: the cargo-test fallback names no nextest config (config={self.config!r})"
@@ -220,8 +235,9 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
 
     A nextest pass names the runner's config, so a nextest runner holding none
     is refused. A recording runner wraps a nextest pass of a recording kind in
-    the confirm recorder; the cargo-test fallback records nothing. The pass
-    runs without the semaphore slot's descriptor.
+    the confirm recorder, whose gate path no guard may then take; the
+    cargo-test fallback records nothing. The pass runs without the semaphore
+    slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
@@ -247,6 +263,8 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
             gate_path = CONFIRM_RECORDER
     guard_file = None
     if spec.guard is not None:
+        owner = f"emit_pass(kind={spec.kind.value}, profile={spec.profile.value})"
+        _refuse_guarded_recording(owner, gate_path, spec.guard)
         run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
     phase = _phase(spec, nextest=runner.nextest)

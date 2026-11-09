@@ -9,13 +9,7 @@ The plan-parity members (test_verify_plan_parity*.py) compare whole plans
 through the CLI and never import reify_verify. What is out of their reach is
 here:
 
-- the invariants: a step's command record must suit its kind, an emitter must
-  declare every gate path its steps name, PlanInputs holds a test region
-  exactly when the plan has one, a record rendered inside quotes refuses
-  that quote, the slot-closed wrapper holds one test pass, a recording runner
-  runs --no-fail-fast, the gui-feature pass is never filtered nor recorded,
-  and a runner states its nextest/cargo-test arm, the fallback holding no
-  config nor confirm and a config-less nextest runner refusing to emit;
+- the invariants, each stated by the test class that pins it;
 - the region's refusal of a quote-bearing path knob for every path it
   renders, of which B1 asserts one (the attempt sidecar), and the retry
   subset's own lines;
@@ -582,12 +576,15 @@ class TestSlotFdClosed(unittest.TestCase):
 
 
 class TestPassInvariants(unittest.TestCase):
-    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded."""
+    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded;
+    a recording pass carries no guard."""
 
     def test_a_recording_runner_runs_no_fail_fast(self):
         with self.assertRaises(ValueError) as raised:
             recording_runner(no_fail_fast=False)
-        self.assertIn("--no-fail-fast", str(raised.exception))
+        message = str(raised.exception)
+        for part in ("TestRunner", "--no-fail-fast", "records=True", "fail_fast=True"):
+            self.assertIn(part, message)
 
     def test_the_gui_feature_pass_carries_no_filter(self):
         for label, extra in (
@@ -598,6 +595,25 @@ class TestPassInvariants(unittest.TestCase):
                 with self.assertRaises(ValueError) as raised:
                     PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", **extra)
                 self.assertIn("gui-feature", str(raised.exception))
+
+    def test_a_recording_pass_carries_no_guard(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with self.assertRaises(ValueError) as raised:
+            PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        message = str(raised.exception)
+        for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
+        PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
+
+    def test_emitting_a_guarded_recorded_pass_is_refused_even_past_a_loosened_spec(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with mock.patch.object(PassSpec, "__post_init__", lambda self: None):
+            spec = PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        with self.assertRaises(ValueError) as raised:
+            nextest.emit_pass(spec, recording_runner())
+        message = str(raised.exception)
+        for part in ("emit_pass", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
 
     def test_only_a_profile_pass_records(self):
         runner = recording_runner()
@@ -690,6 +706,33 @@ class TestRunnerArm(unittest.TestCase):
                 self.assertIsNone(region.gui_feature, "premise: no gui-feature pass")
                 self.assertIsNone(region.runner.config)
                 self.assertIs(region.runner.nextest, has_nextest)
+
+
+class TestRolePolicyInvariants(unittest.TestCase):
+    """A recording role runs --no-fail-fast, and may still run the gui-feature pass, which records nothing."""
+
+    RECORDING_ROLE = policy.ROLE_TABLE[Role.OFFLINE]
+
+    def test_a_recording_role_is_not_fail_fast(self):
+        self.assertTrue(self.RECORDING_ROLE.records_confirm_manifest, "premise: offline records")
+        self.assertFalse(self.RECORDING_ROLE.fail_fast, "premise: offline is not fail-fast")
+        with self.assertRaises(ValueError) as raised:
+            dataclasses.replace(self.RECORDING_ROLE, fail_fast=True)
+        message = str(raised.exception)
+        for part in ("RolePolicy", "--no-fail-fast", "records=True", "fail_fast=True"):
+            self.assertIn(part, message)
+
+    def test_a_recording_role_may_run_the_gui_feature_pass(self):
+        role_policy = dataclasses.replace(self.RECORDING_ROLE, gui_feature_test_pass=True)
+        region = testregion.resolve(region_inputs(Role.OFFLINE, role_policy=role_policy))
+        self.assertIsInstance(region, testregion.TestRegion)
+        manifest = region.runner.confirm.paths(Profile.DEBUG).manifest
+        rendered = [(step.phase, render.render_step(step)) for step in testregion.steps(region)]
+        recording = [phase for phase, text in rendered if manifest in text]
+        self.assertEqual(recording, [Phase.DEBUG_NEXTEST])
+        gui = [text for phase, text in rendered if phase is Phase.GUI_FEATURE_NEXTEST]
+        self.assertEqual(len(gui), 1, "premise: the region runs the gui-feature pass")
+        self.assertNotIn(CONFIRM_RECORDER, gui[0])
 
 
 class TestQuotedPathKnobs(unittest.TestCase):
