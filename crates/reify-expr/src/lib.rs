@@ -1205,11 +1205,11 @@ fn eval_structure_instance_ctor(
     //
     // The child map is built LAZILY: a literal default (the overwhelmingly
     // common case) needs no scope at all, so ctors whose defaults are all
-    // constants pay nothing — the same "gate the O(fields) deep-clone on actual
-    // need" discipline `materialize_template_lets` gets from its
-    // `!lets.is_empty()` caller guard.  Once built, every subsequent default is
-    // written into BOTH maps so a later default sees earlier ones, matching the
-    // left-to-right scoping the compiler enforces.
+    // constants and that carry no lets pay nothing.  Once built, every
+    // subsequent default is written into BOTH maps so a later default sees
+    // earlier ones, matching the left-to-right scoping the compiler enforces —
+    // which keeps the child equal to `member_scope(type_name, &fields)`, so the
+    // lets reuse it rather than building a second one.
     let mut child: Option<ValueMap> = None;
     for (name, def) in defaults {
         if fields.contains_key(name) {
@@ -1218,13 +1218,7 @@ fn eval_structure_instance_ctor(
         let value = if matches!(def.kind, CompiledExprKind::Literal(_)) {
             eval_expr(def, ctx)
         } else {
-            let scope = child.get_or_insert_with(|| {
-                let mut m = ValueMap::new();
-                for (member, value) in fields.iter() {
-                    m.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
-                }
-                m
-            });
+            let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
             eval_expr(def, &ctx.with_scope(scope))
         };
         if let Some(scope) = child.as_mut() {
@@ -1232,9 +1226,9 @@ fn eval_structure_instance_ctor(
         }
         fields.insert(name.clone(), value);
     }
-    drop(child);
     if !lets.is_empty() {
-        materialize_template_lets(type_name, lets, &mut fields, ctx);
+        let child = child.unwrap_or_else(|| member_scope(type_name, &fields));
+        materialize_template_lets(type_name, lets, child, &mut fields, ctx);
     }
     Value::StructureInstance(Box::new(
         reify_ir::StructureInstanceData {
@@ -1247,6 +1241,24 @@ fn eval_structure_instance_ctor(
     ))
 }
 
+/// A structure instance's members as a child value scope: each field keyed by
+/// `ValueCellId::new(type_name, member)`, the cell a structure-def default or
+/// let compiles a sibling reference to.
+///
+/// PERFORMANCE NOTE: an O(fields) deep-clone — one `value.clone()` per field.
+/// Both callers gate it on actual need (a non-literal default, or a non-empty
+/// `lets`), so ctors with neither pay nothing.  If profiling ever shows this
+/// on a hot path, consider an overlay/COW scope that borrows from `fields`
+/// directly rather than copying every entry (analogous to how
+/// `ctx.with_scope` borrows without cloning the full value map).
+fn member_scope(type_name: &str, fields: &PersistentMap<String, Value>) -> ValueMap {
+    let mut scope = ValueMap::new();
+    for (member, value) in fields.iter() {
+        scope.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+    }
+    scope
+}
+
 /// Eagerly materialize template `Let` cells into a just-built structure
 /// instance's `fields` map (task-4342, step-6).
 ///
@@ -1257,37 +1269,19 @@ fn eval_structure_instance_ctor(
 /// function is called only when `!lets.is_empty()`, so the deep user-fn path
 /// (no struct lets) never pays the extra frame.
 ///
-/// Algorithm: build a child `reify_ir::ValueMap` keyed by
-/// `ValueCellId::new(type_name, member)` from the already-populated `fields`,
-/// then iterate `lets` in declaration order.  For each let evaluate its
-/// compiled expr against `ctx.with_scope(&child)` (so earlier lets are visible
-/// to later ones), and write the result into BOTH the child map and `fields`.
+/// `child` must equal [`member_scope`]`(type_name, fields)`: the let exprs
+/// reference sibling params by their `ValueCellId` (entity == type_name).
+/// Iterate `lets` in declaration order; evaluate each against
+/// `ctx.with_scope(&child)` (so earlier lets are visible to later ones), and
+/// write the result into BOTH the child map and `fields`.
 #[inline(never)]
 fn materialize_template_lets(
     type_name: &str,
     lets: &[(String, CompiledExpr)],
+    mut child: ValueMap,
     fields: &mut PersistentMap<String, Value>,
     ctx: &EvalContext,
 ) {
-    // Build a child ValueMap keyed by ValueCellId::new(type_name, member)
-    // from the already-populated `fields` (params + defaults filled in by
-    // eval_structure_instance_ctor).  The child scope lets the let exprs
-    // reference sibling params by their ValueCellId (entity == type_name).
-    //
-    // PERFORMANCE NOTE: this loop performs an O(fields) deep-clone — one
-    // `value.clone()` per param/default in the struct.  For structures with
-    // many fields instantiated in hot loops this adds up.  In practice,
-    // tolerancing-style derives are cheap arithmetic and this path is gated on
-    // `!lets.is_empty()` in the caller, so structs with no derived lets pay
-    // nothing.  If profiling ever shows this on a hot path, consider an
-    // overlay/COW scope that borrows from `fields` directly rather than copying
-    // every entry (analogous to how `ctx.with_scope` borrows without cloning the
-    // full value map).
-    let mut child = ValueMap::new();
-    for (member, value) in fields.iter() {
-        child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
-    }
-
     // Evaluate lets in declaration order.  For each let:
     //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
     //      temporary borrow is released after eval_expr returns, so
@@ -6436,6 +6430,44 @@ mod tests {
     // `eval_expr` on a `StructureInstanceCtor` carrying `lets` must eagerly
     // materialize derived members into `fields`.  RED until step-6 implements
     // `materialize_template_lets` (currently a stub that does nothing).
+
+    /// task 5494: a non-literal default that references a SIBLING param is
+    /// evaluated in the instance's own member scope, not the caller's — the
+    /// outer value map here is empty, so an outer-scope lookup would be Undef.
+    #[test]
+    fn ctor_default_referencing_a_sibling_param_sees_the_instance() {
+        let y_default = CompiledExpr::binop(
+            BinOp::Add,
+            vref("P", "x", Type::dimensionless_scalar()),
+            lit(Value::Real(1.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
+        let double_y = CompiledExpr::binop(
+            BinOp::Add,
+            vref("P", "y", Type::dimensionless_scalar()),
+            vref("P", "y", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
+        let expr = sct_with_lets(
+            "P",
+            1,
+            vec![("x", lit(Value::Real(2.0), Type::dimensionless_scalar()))],
+            vec![("y", y_default)],
+            vec![("double_y", double_y)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"y".to_string()), Some(&Value::Real(3.0)));
+                assert_eq!(
+                    data.fields.get(&"double_y".to_string()),
+                    Some(&Value::Real(6.0)),
+                    "a let reads the default the member scope was extended with"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
 
     /// (a) single `let sum = a + b` over two Real params; (e) fields.len()
     /// counts params + materialized lets.
