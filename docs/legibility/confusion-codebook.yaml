@@ -9206,6 +9206,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: A chained 'sleep 60; ls ...; journalctl ...' command was blocked by the sandbox guard, which instructed use of Monitor or run_in_background instead.
+  - date: '2026-11-08'
+    project: reify
+    session: 2e066e64-317a-4032-9670-cc719b50f0b3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 215 Bash `sleep 60; tail -3 /tmp/review5494_build.log` was blocked by the anti-chaining sleep guard, matching the chained sleep+poll pattern for waiting on background build output.
+  - date: '2026-11-08'
+    project: reify
+    session: 189de04e-81b0-4bf3-9353-e34ae2bd5849
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash call chaining `sleep 100` with a grep/tail check was blocked by the anti-chaining guard, which told the agent to use Monitor or run_in_background instead. The digest shows a single tool_error and no retry, so the recurrence is not evidenced.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -10458,6 +10470,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'The digest''s User Corrections section lists a system-injected block notice (Task ID, Worktree, ''Block reason: Post-merge verification failed'') as a user correction. This is the same digest miscategorization pattern as the codebook entry, though the source here is a block notice rather than an async background-agent failure. Partial fit; origin phase is not evidenced in the digest.'
+  - date: '2026-11-08'
+    project: reify
+    session: 52d3a7c9-edfd-45df-ba16-e1f911e2e4d3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The User Corrections section lists a system-injected spawn-brief directive (turn 4, pointing to a brief file and a result.md write requirement) as if it were a user correction. This is the same digest mislabeling pattern as the async task-notification entry. The digest contains only one user turn and no evidence of the agent's own confusion, so the phases are unknown. The single not_found signal (turn 145, 'command not found') names no command and is not matched.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -32694,6 +32712,19 @@ candidates:
     origin_phase: unknown
     manifested_phase: review
     evidence_quote: 'That''s wrong: `tracked_corpus.rs` itself says every repo-wide `.ri` sweep in the test binary uses that listing.'
+- id: cand-20261108-1
+  title: Renamed type swapped into a prior-private helper list in a PRD brief, carrying a stale visibility claim forward
+  cause: When a type was renamed, the editing agent substituted the new name into an existing list of main.rs-private helpers without checking its actual visibility. The type is public in the library module, so the brief would have told the downstream implementer to move a library type out of main.rs.
+  area: prd-brief-accuracy
+  first_seen: '2026-11-08'
+  disposition: pending
+  sightings:
+  - date: '2026-11-08'
+    project: reify
+    session: f863c481-8674-4542-94d0-8d583f6ae476
+    origin_phase: prd
+    manifested_phase: prd
+    evidence_quote: 'the edit puts `DebugServerSlot` into both lists of "main.rs-private" helpers ... swapping the new name into the same list carries an outdated fact forward. This matters because §4.1 is the brief for S26 ι #9070, which hasn''t landed. Its implementer would be told to move a library type out of `main.rs`.'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
