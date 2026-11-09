@@ -1,9 +1,9 @@
-//! The analytical references and P1-tet reference fixtures shared by this
-//! crate's analytical-validation binaries: the Timoshenko cantilever tip
-//! deflection and its face-mean measurement, P1 nodal stress recovery, and the
-//! Lamé thick-walled-cylinder reference with its quarter-annulus P1 mesh,
-//! symmetry / plane-strain BCs, inner-pressure loads and solve-and-recover
-//! driver.
+//! The analytical references and reference fixtures shared by this crate's
+//! analytical-validation binaries: the Timoshenko cantilever tip deflection
+//! and its face-mean measurement, P1 nodal stress recovery, and the Lamé
+//! thick-walled-cylinder reference with its quarter-annulus P1 mesh,
+//! symmetry / plane-strain BCs, inner-pressure loads, solve-and-recover
+//! driver and its inner-ring max-von-Mises measurement.
 //!
 //! Not a test binary. It builds on `fea_harness`, so a consumer declares both
 //! `#[path = "common/fea_harness.rs"] mod fea_harness;` and
@@ -280,8 +280,12 @@ pub fn cylinder_p1_solve_and_recover(
 /// Maximum nodal von Mises stress over the inner-ring nodes of a cylinder
 /// mesh: the nodes whose xy-plane radius is within `tol_geom` of `a`.
 ///
-/// `sigma[i]` is the recovered stress tensor at `nodes[i]`. Returns `0.0` when
-/// no node lies on the ring.
+/// `sigma[i]` is the recovered stress tensor at `nodes[i]`.
+///
+/// # Panics
+///
+/// Panics when no node lies on the ring, which is always a fixture error: a
+/// wrong `a`, too tight a `tol_geom`, or a mesh with no node at r = a.
 pub fn max_inner_ring_von_mises(
     nodes: &[[f64; 3]],
     sigma: &[[[f64; 3]; 3]],
@@ -291,5 +295,11 @@ pub fn max_inner_ring_von_mises(
     nodes.iter().enumerate()
         .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
         .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-        .fold(0.0_f64, f64::max)
+        .reduce(f64::max)
+        .unwrap_or_else(|| {
+            panic!(
+                "max_inner_ring_von_mises: no node within tol_geom={tol_geom} of r={a} (n_nodes={})",
+                nodes.len()
+            )
+        })
 }

@@ -913,6 +913,46 @@ fn annular_polar_mesh_is_valid() {
     }
 }
 
+/// A wrong inner radius `a` selects no ring node. That is a fixture error the
+/// helper must report, not mask as a `0.0` maximum.
+#[test]
+#[should_panic(
+    expected = "max_inner_ring_von_mises: no node within tol_geom=0.000000001 of r=0.5 (n_nodes=8)"
+)]
+fn max_inner_ring_von_mises_panics_when_no_node_lies_on_the_ring() {
+    let (nodes, _, _) = annular_p1_mesh(1.0, 2.0, 1.0, 1, 1, 1);
+    let sigma = vec![[[0.0_f64; 3]; 3]; nodes.len()];
+    max_inner_ring_von_mises(&nodes, &sigma, 0.5, 1e-9);
+}
+
+/// The helper's core job: the largest von Mises stress among the nodes whose
+/// xy-plane radius is within `tol_geom` of `a`, and no other node.
+///
+/// On the 1×1×1 annulus the even-indexed nodes lie on the inner ring (r = 1),
+/// the odd-indexed nodes on the outer ring (r = 2), and nodes 4..8 at z = 1.
+/// A uniaxial `σ = diag(s, 0, 0)` has von Mises `|s|`, so each `s` below is its
+/// node's expected value. Every outer-ring value exceeds every inner-ring value
+/// and the inner-ring maximum is a middle ring node at z = 1, so a missing
+/// radial filter, a 3-D radius filter, and a min / first / last reduction each
+/// return something other than 8.0.
+#[test]
+fn max_inner_ring_von_mises_returns_the_largest_stress_on_the_ring() {
+    let (nodes, _, _) = annular_p1_mesh(1.0, 2.0, 1.0, 1, 1, 1);
+    let uniaxial_stress = [2.0, 10.0, 4.0, 20.0, 8.0, 30.0, 6.0, 40.0];
+    let sigma: Vec<[[f64; 3]; 3]> = uniaxial_stress
+        .iter()
+        .map(|&s| [[s, 0.0, 0.0], [0.0; 3], [0.0; 3]])
+        .collect();
+    assert_eq!(sigma.len(), nodes.len(), "one stress tensor per node");
+
+    let max_vm = max_inner_ring_von_mises(&nodes, &sigma, 1.0, 1e-9);
+
+    assert!(
+        (max_vm - 8.0).abs() < 1e-12,
+        "inner-ring max von Mises is {max_vm}, expected 8.0",
+    );
+}
+
 // ─── slender cantilever P2 tip-deflection ≤1% validation ────────────────────
 
 /// Slender-cantilever P2 tip-deflection validation against Timoshenko (≤1%).
