@@ -904,8 +904,15 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: At turn 765 the agent ran a foreground `timeout 1500 bash -c 'until grep -q "^rc=" <task output>; do sleep 15; done'` loop to wait for a background task's completion marker. The command was killed with exit 137 and the wait was lost.
+  - date: '2026-10-16'
+    project: reify
+    session: 596e890d-4e93-4a36-a20a-c163350049b1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 1195 the agent ran a foreground `timeout 1500 tail -F summary | grep -m1 'eval rc'` to wait for an async completion marker. The call was killed with exit 137, so the wait was lost. Evidence for this being the hard-timeout pattern is moderate, because the digest does not show the harness ceiling directly.
   last_seen_runs:
   - census-reify-20261106
+  - census-reify-20261112
 - id: entry-cand-20260719-1
   title: Leak-status oracle unset silently downgrades leaked=0 into a false 'no leaks' signal
   severity: medium
@@ -6781,8 +6788,15 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Agent ran a Bash command in an autonomous session running in don''t-ask mode, and the tool call was denied. This is weak evidence: the digest shows a single tool_error and no self-correction, and the phase cannot be determined from the digest.'
+  - date: '2026-11-02'
+    project: reify
+    session: daed6905-70d6-48c2-9110-a426f3975484
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Two compound Bash commands (turns 43 and 62) were denied because the session ran in don't-ask mode. The agent had assumed unrestricted Bash and used git diff/log and sed/grep/head chains.
   last_seen_runs:
   - census-reify-20261106
+  - census-reify-20261112
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -10841,7 +10855,7 @@ entries:
 - id: entry-cand-20260921-16
   title: merge_request called without required `worktree` argument, surfacing only as a raw Pydantic error after an identical call already timed out
   severity: medium
-  status: open
+  status: fixed
   origin_phase: unknown
   manifested_phase: merge
   sightings:
@@ -10888,6 +10902,7 @@ entries:
     run_id: census-reify-20261106
     as_of_sha: null
     ticket: tkt_0RWNEF66XM5Y4NPV4MASWWG64S
+  fixed_at_sha: 2eebd70872c1dce4c957f7ffcc5fb544f21fd1f4
 - id: entry-cand-20260913-1
   title: add_design_decision rationale field polluted with self-serialized MCP envelope markup
   severity: medium
@@ -11209,8 +11224,21 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A multi-file wc call included a guessed test path (crates/reify-kernel-occt/tests/harness_occt/boolean_result_repr_integration.rs) that does not exist. wc printed partial counts for the other two files and exited 1. The digest gives no evidence the agent overlooked the failure, so this is a weak match.
+  - date: '2026-11-07'
+    project: reify
+    session: 8d4b1761-ae12-42e0-b23f-d8866cc5d33e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A multi-file `wc -l` on guessed paths (gui/src/stores/launcherStore.ts, gui/src/panels/StartView.tsx) returned a partial total of 2239 for App.tsx alone. Two of the three files were missing. The error lines were mixed into the git log and status output, which makes the failure easy to overlook.
+  - date: '2026-11-04'
+    project: reify
+    session: c769c514-98b1-4348-bef2-4c45681a2fe1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A chained multi-file grep returned exit 2 (a 'no such file or directory' not-found at the same turn 356) while the first grep's partial output printed normally. The partial output makes the failed second command easy to overlook. The digest truncates the rest of the output, so the match is tentative.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261112
 - id: entry-cand-20260827-17
   title: Recursive find over dark-factory root sweeps hundreds of orphaned/eval-worktree duplicates, guaranteeing timeout
   severity: medium
@@ -12606,6 +12634,7 @@ entries:
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
+  - census-reify-20261112
   finding_key: fk-e536a9dd5f09
   finding_area: repo
   finding_anchor: docs/notes/warm-lane-audit-runbook.md
@@ -12849,6 +12878,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Agent ran python3 to load .task/plan.json in a warm-lane worktree and got FileNotFoundError; the plan.json artifact was missing at bootstrap. Two further not-found events (turns 414, 554) are unspecified in the digest.
+  - date: '2026-11-02'
+    project: reify
+    session: daed6905-70d6-48c2-9110-a426f3975484
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'At turn 27 the agent assumed .task/metadata.json existed and got exit 2 (no such file). The lane''s .task directory held only plan.json and the claude-config directories. This is a weaker match: the missing artifact is metadata.json, not iterations or plan.json.'
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -13250,7 +13285,7 @@ entries:
   title: Capability manifest entry authored with an extra 'note' field the strict schema forbids
   severity: low
   severity_reason: The error is loud and fixed by deleting one key, but it appears only when a validator is run ad hoc, after authoring.
-  status: open
+  status: fixed
   origin_phase: prd
   manifested_phase: prd
   first_seen_run: census-reify-20261106
@@ -13280,11 +13315,12 @@ entries:
     task_id: 9855
     resolution: created
     step: curator
+  fixed_at_sha: 2eebd70872c1dce4c957f7ffcc5fb544f21fd1f4
 - id: entry-cand-20261023-2
   title: npm install in a scratch gui copy fails with an arborist 'edgesOut' null-dereference after node_modules is deleted by hand
   severity: low
   severity_reason: Contained tooling friction. Agents have a canonical path in gui-test.sh, and the failure only affects an off-path scratch-copy workflow.
-  status: open
+  status: fixed
   origin_phase: unknown
   manifested_phase: architect
   first_seen_run: census-reify-20261106
@@ -13313,6 +13349,7 @@ entries:
     task_id: 9856
     resolution: created
     step: curator
+  fixed_at_sha: 2eebd70872c1dce4c957f7ffcc5fb544f21fd1f4
 - id: entry-cand-20261021-5
   title: run_all.sh hangs on one unfinished member until the outer timeout, and the summary names no failing member
   severity: medium
@@ -13346,6 +13383,107 @@ entries:
     task_id: 9441
     resolution: combined
     step: curator
+  - ticket: tkt_0RWWQC64CMQGZA5AAEYHH9QJ7R
+    project_root: /home/leo/src/reify
+    run_id: census-reify-20261112
+    finding_key: fk-bd1a1a099642
+    task_id: 9414
+    resolution: combined
+    step: curator
+  follow_up:
+    kind: refiled
+    standing: done
+    project_root: /home/leo/src/reify
+    task_id: 9441
+    run_id: census-reify-20261112
+    as_of_sha: null
+    ticket: tkt_0RWWQC64CMQGZA5AAEYHH9QJ7R
+- id: entry-cand-20261017-4
+  title: git grep invoked with context flag after pathspec and a pathspec placed before `--`, failing with exit 128
+  severity: low
+  severity_reason: 'Contained and self-correcting: the command fails loudly with exit 128 and the agent retries with the right order, costing one wasted call.'
+  status: open
+  origin_phase: implement
+  manifested_phase: implement
+  first_seen_run: census-reify-20261112
+  last_seen_runs:
+  - census-reify-20261112
+  finding_key: fk-8439f1f175a4
+  finding_area: repo
+  finding_anchor: slug:git-grep-argument-order
+  finding_tags:
+  - h10
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 26f61862-b09b-4cd5-9e03-d32a97e25d64
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'fatal: unable to resolve revision: crates/
+
+      fatal: option ''-A12'' must come before non-option arguments'
+  filing: withheld
+- id: entry-cand-20261106-1
+  title: Ratchet failure points to a --help diagnostic the agent cannot run under don't-ask permission mode
+  severity: low
+  severity_reason: A red ratchet still names the invariant and the script to consult. The failure to run it is a permission limit of one session mode, so the cost to the next change is small and contained.
+  status: open
+  origin_phase: unknown
+  manifested_phase: verify
+  first_seen_run: census-reify-20261112
+  last_seen_runs:
+  - census-reify-20261112
+  finding_key: fk-c87a6b0141c7
+  finding_area: repo
+  finding_anchor: crates/reify-build-utils/tests/module_scc_ratchet.rs::workspace_module_sccs_match_the_committed_baseline
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-11-06'
+    project: reify
+    session: ea25fbe6-e9b9-41a4-953f-a1ef88263967
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: the workspace module-SCC ratchet (INV-ARCH-1) is red. `python3 scripts/assert-module-scc.py --help` explains GREW and STALE and how to lower a baseline row.
+  filing: withheld
+- id: entry-cand-20261102-1
+  title: Post-merge gui-script verification fails on a cold cargo registry, and the remediation is blocked by Bash permission denial
+  severity: low
+  severity_reason: The failure is contained to one infra test whose message already names the likely fix. The cost is only an agent mistaking an environmental failure for a code regression.
+  status: open
+  origin_phase: implement
+  manifested_phase: verify
+  first_seen_run: census-reify-20261112
+  last_seen_runs:
+  - census-reify-20261112
+  finding_key: fk-b86df78cf29f
+  finding_area: repo
+  finding_anchor: tests/infra/test_run_gui_scripts.sh::_rgs_tauri_features_under
+  finding_tags:
+  - h10
+  - h1
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-11-02'
+    project: reify
+    session: 3aab9aec-26a2-4591-9f59-bedc7533fea0
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'FAIL: run-gui.sh: cargo resolves reify-gui under --features ''gui,embedded-frontend'' (rc 1; on a cold registry warm it with `cargo fetch --locked`, or run scripts/setup-dev.sh)'
+  filed_tickets:
+  - ticket: null
+    project_root: /home/leo/src/reify
+    run_id: census-reify-20261112
+    finding_key: fk-b86df78cf29f
+    task_id: 9993
+    resolution: existing
+    step: semantic
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -16435,7 +16573,7 @@ candidates:
   cause: The 'Re-arm L2 watcher (reify) in background' task is dispatched as a bounded background command that frequently exceeds its wait window (exit code 124) or gets killed outright; rather than the underlying timeout/lifetime mismatch being fixed, the agent's only recourse is to keep re-issuing the same re-arm command dozens of times across the whole session, producing a chronic churn loop instead of a stable watcher.
   area: escalation-watcher ops loop / background task lifecycle
   first_seen: '2026-07-21'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-21'
     project: reify
@@ -16443,6 +16581,12 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: Background command "Re-arm L2 watcher (reify) in background" failed with exit code 124 / was stopped — recurring at turns 411,440,464,483,530,545,561,588,602,633,655,678,711,722,732,803,835,843,855,887,1040,1110,1134,1342,1350,1440,1464,1476
+  finding_key: fk-146071429797
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-background-timeout-churn
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260721-7
   title: Spawned interactive /unblock and /deb discussion sessions killed almost immediately after dispatch
   cause: Background-dispatched /spawn sessions for interactive human-facing work (unblock task 5252, discuss esc-5298-1, esc-5322-1, curator session for 5323/5324/5325, analyse-and-discuss esc-5056-11) are terminated with status 'killed' shortly after being launched, suggesting the orchestrating session's background-task management (or an overlapping re-spawn) is reaping sessions intended to stay alive for a human/agent conversation.
@@ -17946,7 +18090,7 @@ candidates:
   cause: After mcp__escalation__get_pending_escalations times out, the watcher re-issues the exact same call (identical compact/level args) five times in a row rather than adjusting scope, backing off, or diagnosing why the call is timing out — burning rotation budget on unproductive identical retries instead of treating the timeout as a signal to change strategy.
   area: escalation-watcher tool reliability / retry strategy
   first_seen: '2026-07-13'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-13'
     project: reify
@@ -17954,6 +18098,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 1}) -> The operation timed out. / Retry Loops: mcp__escalation__get_pending_escalations x5: {"compact": true, "level": 1}'
+  finding_key: fk-93a3d212abd3
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-blind-retry-wedged-mcp
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260713-5
 - id: cand-20260731-19
   title: Shell command wrapper flattens heredocs via eval, turning a valid git commit into a cryptic syntax error
   cause: The execution harness runs the agent's bash command through `eval`, which does not preserve heredoc redirection (`<<'EOF' ... EOF`) semantics inside a `$(cat <<'EOF' ...)` substitution used to build a multi-line commit message. The command that reaches bash is corrupted (heredoc body reflows onto one line, stray tokens like `skim` appear before `git status`/`git log`), producing exit 127 and `syntax error near unexpected token '('` with no indication that eval-wrapping, not the agent's command, is the defect — the agent must rediscover that heredocs can't survive eval before it can fix its own well-formed commit invocation.
@@ -18023,7 +18174,7 @@ candidates:
   cause: The agent re-launched the same 'Re-arm L2 watcher (timeout 540, exclude esc-4351-2[, esc-5191-2])' background command over 30 times across the session (turns 133-868), with each attempt ending in exit code 124 (timeout) or being killed, but never diagnosed why the timeout was being hit (e.g. host wrapper/session lifetime shorter than the requested 540s window) or switched strategy (different timeout value, systemd unit, foreground-with-shorter-wait, direct diagnostic of the wrapper). The agent treated a structurally-failing background task as if retrying unchanged would eventually succeed.
   area: escalation-watcher operational loop / background task re-arm
   first_seen: '2026-07-13'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-13'
     project: reify
@@ -18031,6 +18182,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: Background command "Re-arm L2 watcher (timeout 540, exclude esc-4351-2)" failed with exit code 124 (repeated at turns 273, 296, 314, 337, 354, ... 868)
+  finding_key: fk-146071429797
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-background-timeout-churn
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260721-6
 - id: cand-20260730-26
   title: rg (ripgrep) assumed available in task worktree sandbox
   cause: Agent invoked `rg` directly assuming ripgrep is installed in the worktree/sandbox environment; it wasn't present, producing an immediate exit-1 tool error and forcing a fallback to the Grep tool.
@@ -18111,7 +18269,7 @@ candidates:
   cause: The escalation-watcher's 'bounded wait, quiet-queue' re-arm pattern runs `python -m escalation.watcher --timeout 540` in the foreground through the Bash tool with an outer wrapper timeout of 560000ms (560s) — only 20s of slack over the watcher's own internal timeout. When the watcher process doesn't exit cleanly before the wrapper's kill fires, every invocation is terminated with exit 124 (generic timeout-kill) rather than a distinguishable 'quiet queue, timed out gracefully' signal. The agent cannot tell from exit 124 alone whether the queue was empty (expected) or the command genuinely failed, so across 10 consecutive occurrences (turns 47-107) it just re-issues the identical foreground Bash call (5x) and re-polls get_pending_escalations (5x) without ever switching to run_in_background or increasing the timeout margin — zero self-correction despite a clearly repeating failure signature.
   area: escalation_watcher_bounded_wait
   first_seen: '2026-07-10'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-10'
     project: reify
@@ -18119,6 +18277,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Bash({"command": "cd /home/leo/src/dark-factory && uv run --project escalation python -m escalation.watcher --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 540 --exclude-id esc-4958-1 ..."}) -> Exit code 124 (x10 across turns 47-107); Bash x5 retry: {"description": "Re-arm bounded wait, quiet-queue loop", "timeout": 560000}'
+  finding_key: fk-467d5d695470
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-foreground-wait-killed
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260713-4
 - id: cand-20260728-26
   title: Deferred tool invoked before loading its schema via ToolSearch
   cause: Agent called a deferred tool (Monitor) with guessed parameter names/shapes instead of first calling ToolSearch to load its schema; since the schema wasn't in the discovered-tool set, the client emitted a wrong param (`id` instead of `description`/`command`/etc.) and the call was rejected with InputValidationError.
@@ -18842,7 +19007,7 @@ candidates:
   cause: The watcher's 'bounded foreground wait for new L1' subprocess call (uv run escalation.watcher --timeout 540, wrapped in a Bash tool call with timeout=560000) exits 137 (killed) rather than completing normally or timing out cleanly. The agent has no signal to distinguish 'subprocess was killed' from 'no new escalation arrived within the wait window', so it re-issues the exact same command with the same --exclude-id 25 times in a row rather than switching to a backgrounded run, shortening the wait slice, or escalating the repeated kill as a systemic problem.
   area: escalation-watcher / autonomous ops loop
   first_seen: '2026-07-13'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-13'
     project: reify
@@ -18850,6 +19015,12 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Bash x25: {"command": "... uv run --project escalation python -m escalation.watcher --queue-dir /home/leo/src/reify/data/escalations --level 1 --exclude-id esc-5067-2 --timeout 540; echo \"WATCHER_EXIT=$?\"", "description": "Bounded foreground wait for new L1", "timeout": 560000} / turn 206 Bash -> Exit code 137'
+  finding_key: fk-467d5d695470
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-foreground-wait-killed
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260801-18
   title: Escalation-watcher session_registry lease-claim fails because DARK_FACTORY_ROOT is unset in the watcher's environment
   cause: The autonomous escalation-watcher role script builds a path via "$DARK_FACTORY_ROOT/orchestrator/src/orchestrator/session_registry.py" assuming the env var is inherited from the spawning process, but it resolved empty, producing a root-relative path and a No-such-file error on lease-claim
@@ -20375,7 +20546,7 @@ candidates:
   cause: Autonomous escalation-watcher session (reify project) hit ModuleNotFoundError three separate times across the session (turns 18, 20, 34) with no self_correct or tool_error signal recorded in between, suggesting the same missing-module/environment problem recurred without the agent diagnosing or fixing the underlying cause between hits.
   area: escalation-watcher / environment setup
   first_seen: '2026-07-04'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-04'
     project: reify
@@ -20383,6 +20554,13 @@ candidates:
     origin_phase: unknown
     manifested_phase: ops
     evidence_quote: (turn 18) modulenotfounderror; (turn 20) modulenotfounderror; (turn 34) modulenotfounderror
+  finding_key: fk-56815c9940e8
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-modulenotfounderror-env
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260704-14
 - id: cand-20260718-4
   title: Escalation watcher guesses legacy orchestrator config path instead of canonical filename
   cause: Agent probed for the orchestrator config at the legacy path `orchestrator/config.yaml` under both the current project root and dark-factory's own root, rather than the canonical `<project_root>/dark-factory-orchestrator.yaml`; both legacy paths don't exist, producing repeated not-found errors instead of locating the actual config.
@@ -20635,7 +20813,7 @@ candidates:
   cause: Once mcp__escalation__get_pending_escalations/get_escalation calls begin returning 'The operation timed out', the autonomous watcher reissues the identical call with identical params on later turns rather than recognizing the endpoint as wedged, backing off, or surfacing the failure — burning turns/escalation budget until the supervisor's rotation limit (ROTATION_ESCALATIONS/ROTATION_HOURS) forces an exit with no escalations actually handled.
   area: escalation-watcher/mcp-escalation-server
   first_seen: '2026-07-13'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-13'
     project: reify
@@ -20643,6 +20821,12 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 1}) -> The operation timed out. (turns 23, 29, 41 — same params, no adaptation)'
+  finding_key: fk-93a3d212abd3
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-blind-retry-wedged-mcp
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260802-12
   title: Prior-round mention conflated with resolved status in review re-flag adjudication
   cause: When classifying whether a current review suggestion is a repeat of an already-settled concern, the agent risks treating any suggestion appearing in the prior-round list as resolved, without distinguishing fixed/deliberately-kept-as-is from merely deferred-to-a-follow-up-task-and-still-open — collapsing 'was raised before' with 'was settled before'.
@@ -20746,7 +20930,7 @@ candidates:
   cause: An autonomous escalation-watcher rotation (reify, 4h/50-escalation limits) hit the same class of ModuleNotFoundError at three distinct turns (21, 27, 44), indicating a missing/broken Python dependency in the watcher's execution environment that was never resolved and instead recurred across separate escalation-handling attempts within one session.
   area: escalation-watcher / environment
   first_seen: '2026-07-04'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-04'
     project: reify
@@ -20754,6 +20938,12 @@ candidates:
     origin_phase: unknown
     manifested_phase: ops
     evidence_quote: modulenotfounderror (turns 21, 27, 44)
+  finding_key: fk-56815c9940e8
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-modulenotfounderror-env
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260801-26
   title: Edit old_string assembled from expected/remembered list content diverges from actual file state
   cause: Agent attempted to append entries to a KNOWN_DEBUG_TOOL_NAMES-style list in gui/test/visual/assertions.ts by supplying an old_string reconstructed from what it believed the list already contained; actual file content had diverged, so the Edit tool_use_error 'String to replace not found in file' fired instead of the agent re-reading the file first
@@ -32419,7 +32609,7 @@ candidates:
   cause: test_run_gui_scripts.sh fails during post-merge verification because cargo cannot resolve reify-gui and tauri on a cold registry. The failure message prescribes warming the registry (cargo fetch --locked or scripts/setup-dev.sh), but the autonomous don't-ask-mode session denies Bash, so the agent cannot run the prescribed fix or inspect the registry. The failure is environmental yet is reported as a test_failure, which makes it hard to distinguish from a code regression.
   area: verification
   first_seen: '2026-11-02'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-11-02'
     project: reify
@@ -32427,12 +32617,20 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'FAIL: run-gui.sh: cargo resolves reify-gui under --features ''gui,embedded-frontend'' (rc 1; on a cold registry warm it with `cargo fetch --locked`, or run scripts/setup-dev.sh)'
+  finding_key: fk-b86df78cf29f
+  finding_area: repo
+  finding_anchor: tests/infra/test_run_gui_scripts.sh::_rgs_tauri_features_under
+  finding_tags:
+  - h10
+  - h1
+  - kind:confusion
+  promoted_to: entry-cand-20261102-1
 - id: cand-20261105-1
   title: Task completion claimed via precondition commit with no declared attribution basis; operational step run out-of-band by unsandboxed architect
   cause: 'A task was marked done by pointing at a precondition commit from another task, but the attribution basis was not declared (attribution_basis: nothing_declared), so the block gate returned no_attribution. The architect then performed the required generator step itself, outside the implementer''s landlock-confined sandbox, and recorded it only in a memory and a follow-up ticket. The next change has no declared record tying the task to the generated-artifact state.'
   area: task-attribution / role-boundary
   first_seen: '2026-11-05'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-11-05'
     project: reify
@@ -32440,6 +32638,11 @@ candidates:
     origin_phase: unknown
     manifested_phase: architect
     evidence_quote: I am an unsandboxed architect; the implementer is landlock-confined to its worktree and cannot write to project_root.
+  finding_key: fk-ba88d33a9bb6
+  finding_area: repo
+  finding_anchor: slug:task-attribution-role-boundary
+  finding_tags:
+  - kind:confusion
 - id: cand-20261016-3
   title: Script path guessed from a commit subject's function name does not exist
   cause: The agent ran `git log` and `ls` on `scripts/main-gate-mark.sh`, a filename it inferred from the identifier `main_gate_mark` in a commit subject. The file does not exist, so `ls` exited 2. The commit subject names a function, not a file path. The implementation lives elsewhere, and the sentinel is marked by the hook-gated commit path. A bare `ls` of a guessed path gives no pointer to the real location, so the agent has to search again.
@@ -32678,7 +32881,7 @@ candidates:
   cause: The module-SCC ratchet assertion message directs the reader to run `scripts/assert-module-scc.py --help` for GREW/STALE explanations and baseline-lowering instructions, but Bash calls to that script were denied in don't-ask mode, leaving the agent without the documented fix path.
   area: tooling
   first_seen: '2026-11-06'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-11-06'
     project: reify
@@ -32686,12 +32889,20 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: the workspace module-SCC ratchet (INV-ARCH-1) is red. `python3 scripts/assert-module-scc.py --help` explains GREW and STALE and how to lower a baseline row.
+  finding_key: fk-c87a6b0141c7
+  finding_area: repo
+  finding_anchor: crates/reify-build-utils/tests/module_scc_ratchet.rs::workspace_module_sccs_match_the_committed_baseline
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  promoted_to: entry-cand-20261106-1
 - id: cand-20261107-1
   title: Task-completion claim reported without attribution to the declared task ID, blocking the task
   cause: The architect reported the task already done by citing a commit from a different task branch (task/9099) as the completion evidence for task 9828. The claim had no declared attribution basis, so the orchestrator blocked the task with reason no_attribution.
   area: orchestration / task attribution
   first_seen: '2026-11-07'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-11-07'
     project: reify
@@ -32699,12 +32910,18 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: Architect reported task already done at 48d52a4b02e3 but the claim could not be attributed to this task (no_attribution)
+  finding_key: fk-b9bb1cc68822
+  finding_area: repo
+  finding_anchor: slug:task-attribution-no-attribution-block
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20261107-2
   title: Shared tracked-corpus listing assumed to have a single consumer, so a fix narrowed to one reader leaves a second repo-wide sweep ungated
   cause: The plan assumed the parse guard was the only test that reads every tracked .ri file. The shared corpus listing in tracked_corpus.rs is used by every repo-wide .ri sweep in the test binary, and the agent did not check its other call sites before narrowing the change.
   area: tests
   first_seen: '2026-11-07'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-11-07'
     project: reify
@@ -32712,12 +32929,18 @@ candidates:
     origin_phase: unknown
     manifested_phase: review
     evidence_quote: 'That''s wrong: `tracked_corpus.rs` itself says every repo-wide `.ri` sweep in the test binary uses that listing.'
+  finding_key: fk-6136db709f59
+  finding_area: repo
+  finding_anchor: crates/reify-syntax/tests/common/tracked_corpus.rs
+  finding_tags:
+  - h11
+  - kind:confusion
 - id: cand-20261108-1
   title: Renamed type swapped into a prior-private helper list in a PRD brief, carrying a stale visibility claim forward
   cause: When a type was renamed, the editing agent substituted the new name into an existing list of main.rs-private helpers without checking its actual visibility. The type is public in the library module, so the brief would have told the downstream implementer to move a library type out of main.rs.
   area: prd-brief-accuracy
   first_seen: '2026-11-08'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-11-08'
     project: reify
@@ -32725,6 +32948,58 @@ candidates:
     origin_phase: prd
     manifested_phase: prd
     evidence_quote: 'the edit puts `DebugServerSlot` into both lists of "main.rs-private" helpers ... swapping the new name into the same list carries an outdated fact forward. This matters because §4.1 is the brief for S26 ι #9070, which hasn''t landed. Its implementer would be told to move a library type out of `main.rs`.'
+  finding_key: fk-0b8c5256d43b
+  finding_area: repo
+  finding_anchor: docs/prds/v0_6/gui-frontend-wire-bindings-bridge-port.md
+  finding_tags:
+  - h11
+  - kind:confusion
+- id: cand-20261017-4
+  title: git grep invoked with context flag after pathspec and a pathspec placed before `--`, failing with exit 128
+  cause: 'The agent appends `-A12` after the pattern and path, and writes `git grep -n PATTERN crates/ -- '':!*/tests/*''`. Git treats the path before `--` as a revision, so it reports ''unable to resolve revision: crates/''. Git also requires options to come before non-option arguments. The failure aborts the compound command, so the intended code read does not happen. Rewriting would need git grep''s argument grammar, which is: options, then the pattern, then optional revisions, then `--`, then pathspecs.'
+  area: 'agent shell tooling: git grep argument ordering'
+  first_seen: '2026-10-17'
+  disposition: promoted
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 26f61862-b09b-4cd5-9e03-d32a97e25d64
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'fatal: unable to resolve revision: crates/
+
+      fatal: option ''-A12'' must come before non-option arguments'
+  finding_key: fk-8439f1f175a4
+  finding_area: repo
+  finding_anchor: slug:git-grep-argument-order
+  finding_tags:
+  - h10
+  - kind:confusion
+  promoted_to: entry-cand-20261017-4
+- id: cand-20261023-3
+  title: Obsolete numeric `tail -N` applied to multiple files is rejected, turning an all-green check batch into exit 1
+  cause: The agent chained several check scripts with their rc values echoed, then ran `tail -3` over more than one log file in a single call. GNU tail rejects the obsolete `-N` form when several files are given (`option used in invalid context -- 3`) and the Bash call exits 1. Every check had already reported rc=0, so the exit status contradicts the results. The agent must notice that the failure comes only from the trailing inspection step and then re-run it as `tail -n 3`.
+  area: shell-tooling
+  first_seen: '2026-10-23'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-23'
+    project: reify
+    session: 823b4292-fbae-47c6-bfed-5a6c4ed7b2a9
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'reg rc=0
+
+      kloc rc=0
+
+      cite rc=0
+
+      tail: option used in invalid context -- 3'
+  finding_key: fk-1504ef4fe29b
+  finding_area: repo
+  finding_anchor: slug:gnu-tail-obsolete-numeric-multifile
+  finding_tags:
+  - kind:confusion
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
