@@ -237,7 +237,7 @@ beforeEach(() => {
   capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ files: [] })));
+  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -294,7 +294,7 @@ beforeEach(() => {
   vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
   vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
   vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
-  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(published(makeGuiState()));
+  vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
   vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
@@ -3256,6 +3256,10 @@ describe('App handleNew dirty-check confirmation', () => {
 });
 
 describe('App launcher Start view (alpha-spine β)', () => {
+  beforeEach(() => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ files: [] })));
+  });
+
   function typeStartPath(path: string) {
     fireEvent.input(screen.getByTestId('start-path-input'), { target: { value: path } });
   }
