@@ -29,7 +29,7 @@ pub struct EvalState {
     engine: reify_eval::Engine,
     version_counter: u64,
     /// The last evaluated document's eval-cache key.
-    last_content_hash: Option<ContentHash>,
+    last_eval_cache_key: Option<ContentHash>,
 }
 
 impl EvalState {
@@ -51,7 +51,7 @@ impl EvalState {
         Self {
             engine: reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None),
             version_counter: 0,
-            last_content_hash: None,
+            last_eval_cache_key: None,
         }
     }
 
@@ -59,7 +59,7 @@ impl EvalState {
     /// content hash, combined with every imported module's source for a
     /// document compiled as a program.
     pub fn last_content_hash(&self) -> Option<ContentHash> {
-        self.last_content_hash
+        self.last_eval_cache_key
     }
 
     /// Returns true if the engine has been initialized by a prior `eval()` or `eval_cached()` call.
@@ -235,7 +235,7 @@ pub fn compute_diagnostics_with_state(
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
-    // `compile_with_stdlib_checked` below). See task 2525.
+    // `document_compile::compile_document` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
@@ -272,9 +272,9 @@ pub fn compute_diagnostics_with_state(
     // produces misleading (here: fatal) secondary results.
     //
     // Placement before the state mutations is LOAD-BEARING. `state.version_counter`
-    // and `state.last_content_hash` both stay unadvanced, leaving `EvalState`
+    // and `state.last_eval_cache_key` both stay unadvanced, leaving `EvalState`
     // exactly as it was, so the next keystroke evaluates `content_unchanged` to
-    // false and takes the cold-start branch. Advancing `last_content_hash` here
+    // false and takes the cold-start branch. Advancing `last_eval_cache_key` here
     // would create precisely the stale-cache bug the comment below warns about:
     // `eval_cached` returns empty diagnostics by construction, so a module that
     // was never evaluated would silently report none.
@@ -299,12 +299,12 @@ pub fn compute_diagnostics_with_state(
 
     // Use the incremental eval_cached path only when content is unchanged AND
     // the engine has already been initialized by a prior eval(). An uninitialized
-    // engine must always take the cold-start branch regardless of last_content_hash:
+    // engine must always take the cold-start branch regardless of last_eval_cache_key:
     // eval_cached returns empty diagnostics by construction, so routing an
     // uninitialized engine through it would silently drop eval-time errors.
     let content_unchanged = state
-        .last_content_hash
-        .map(|h| h == document.eval_cache_key())
+        .last_eval_cache_key
+        .map(|key| key == document.eval_cache_key())
         .unwrap_or(false)
         && state.is_engine_initialized();
 
@@ -326,22 +326,22 @@ pub fn compute_diagnostics_with_state(
             .eval_result
             .diagnostics
     } else {
-        // Observability: if the hash *did* match but the engine was uninitialized,
+        // Observability: if the key *did* match but the engine was uninitialized,
         // that is the specific invariant violation the engine-init guard (above) was
-        // added to catch — last_content_hash was set without a preceding eval().
+        // added to catch — last_eval_cache_key was set without a preceding eval().
         // Log a warning in debug builds so the decoupling is not silent. Not a
         // debug_assert!: the state is reachable, if only through a panic inside
         // eval after the engine replacement below followed by the server's Mutex
         // poison recovery, and the right response is to handle it correctly
         // (which we do below) and warn.
         #[cfg(debug_assertions)]
-        if state.last_content_hash == Some(document.eval_cache_key())
+        if state.last_eval_cache_key == Some(document.eval_cache_key())
             && !state.is_engine_initialized()
         {
             log_messages.push(LogLine {
                 typ: lsp_types::MessageType::WARNING,
-                message: "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
-                          — last_content_hash was set without a preceding eval(); \
+                message: "[reify-lsp] WARNING: eval-cache key matched but engine was uninitialized \
+                          — last_eval_cache_key was set without a preceding eval(); \
                           cold-start forced to prevent silent diagnostic loss (engine-init guard)"
                     .to_string(),
             });
@@ -488,7 +488,7 @@ pub fn compute_diagnostics_with_state(
     diagnostics.extend(freshness_diagnostics(&state.engine, &document, source));
 
     // Record the eval-cache key so the next call can choose incremental vs cold-start.
-    state.last_content_hash = Some(document.eval_cache_key());
+    state.last_eval_cache_key = Some(document.eval_cache_key());
 
     DiagnosticsResult {
         diagnostics,
@@ -1975,8 +1975,8 @@ structure S {
     /// let-binding ERROR and a CheckResult, report the same set of those
     /// ERRORs, and return no log line.
     ///
-    /// Replaces two pins that wrote a matching `last_content_hash` into a
-    /// fresh `EvalState` to force the engine-init guard's precondition (hash
+    /// Replaces two pins that wrote a matching eval-cache key into a
+    /// fresh `EvalState` to force the engine-init guard's precondition (key
     /// matches, engine uninitialized), then asserted that the cold-start
     /// branch ran and that the guard's warning came back in `log_messages`.
     /// Recorded limitation: that precondition is not constructible through

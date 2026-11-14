@@ -9,7 +9,9 @@ use reify_core::ModulePath;
 use reify_ir::Satisfaction;
 use tower_lsp::lsp_types::{DiagnosticSeverity, Range, Url};
 
-use crate::diagnostics::{DiagnosticsResult, EvalState, compute_diagnostics_with_state};
+use crate::diagnostics::{
+    DiagnosticsResult, EvalState, compute_diagnostics_with_state, constraint_violated_message,
+};
 
 const PULLEY_10MM: &str =
     "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n";
@@ -80,14 +82,6 @@ fn missing_import_of_file_backed_entry_is_reported_as_unresolvable() {
     );
 }
 
-/// The published message for a violated constraint, as the pipeline words it.
-fn violation_message(entry: &reify_eval::ConstraintCheckEntry) -> String {
-    match &entry.label {
-        Some(label) => format!("constraint violated: {label}"),
-        None => format!("constraint {} violated", entry.id),
-    }
-}
-
 fn violation_range(result: &DiagnosticsResult, entity: &str) -> Vec<Range> {
     let check = result.check_result.as_ref().expect("eval ran");
     let violated: Vec<_> = check
@@ -103,7 +97,7 @@ fn violation_range(result: &DiagnosticsResult, entity: &str) -> Vec<Range> {
     violated
         .into_iter()
         .map(|entry| {
-            let message = violation_message(entry);
+            let message = constraint_violated_message(entry);
             result
                 .diagnostics
                 .iter()

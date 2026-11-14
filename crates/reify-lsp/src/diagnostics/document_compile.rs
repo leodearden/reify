@@ -6,8 +6,8 @@ use std::path::Path;
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
-use reify_compiler::program;
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::{self, CompiledProgram};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ContentHash, SourceSpan};
 use tower_lsp::lsp_types::{Range, Url};
@@ -18,8 +18,9 @@ use crate::convert;
 pub(super) struct CompiledDocument {
     module: CompiledModule,
     eval_cache_key: ContentHash,
-    /// How many of `module.templates`, from the front, the document declares;
-    /// the rest are imported, and their spans index another file.
+    /// How many of `module.templates`, from the front, the document's own
+    /// compile produced (`CompiledProgram::entry_declared_templates`); the rest
+    /// are merged imports, whose spans index another file.
     declared_templates: usize,
 }
 
@@ -36,8 +37,9 @@ impl CompiledDocument {
         &self.module
     }
 
-    /// Equal for two compiles exactly when a warm re-evaluation of the
-    /// earlier one is sound for the later one.
+    /// Equal for two compiles only when a warm re-evaluation of the earlier
+    /// one is sound for the later one; an edit eval cannot observe, such as a
+    /// comment in an import, may still change it.
     pub(super) fn eval_cache_key(&self) -> ContentHash {
         self.eval_cache_key
     }
@@ -76,10 +78,7 @@ pub(super) fn compile_document(
                 &SimpleConstraintChecker,
             );
             CompiledDocument {
-                eval_cache_key: program_eval_cache_key(
-                    compiled.entry.content_hash,
-                    &compiled.sources,
-                ),
+                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), &compiled),
                 declared_templates: compiled.entry_declared_templates().len(),
                 module: compiled.entry,
             }
@@ -92,14 +91,15 @@ pub(super) fn compile_document(
 }
 
 /// The entry's content hash covers its own text and its import paths only, so
-/// the key also covers the source of every imported module (`sources` lists
-/// them before the entry, which is last).
-fn program_eval_cache_key(entry_hash: ContentHash, sources: &[ModuleSource]) -> ContentHash {
-    let imported = sources
-        .split_last()
-        .map_or(&[][..], |(_entry, imported)| imported);
+/// the key also covers the source of every other module of `program`; the
+/// entry is the module keyed `entry_key`, wherever `program.sources` lists it.
+fn program_eval_cache_key(entry_key: &str, program: &CompiledProgram) -> ContentHash {
+    let imported = program
+        .sources
+        .iter()
+        .filter(|module| module.module_key != entry_key);
     ContentHash::combine_all(
-        std::iter::once(entry_hash).chain(imported.iter().map(|module| {
+        std::iter::once(program.entry.content_hash).chain(imported.map(|module| {
             ContentHash::of_str(&module.module_key).combine(ContentHash::of_str(&module.source))
         })),
     )
