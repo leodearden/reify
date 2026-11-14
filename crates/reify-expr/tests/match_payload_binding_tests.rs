@@ -466,9 +466,10 @@ fn variant_ctor_evaluates_payload_from_runtime_values() {
 }
 
 /// D2: an undef field leaves the tag determined — the enum is still built,
-/// the field holds Undef in its own slot, and `match` still selects the arm.
+/// the field holds Undef in its own slot, and `match` still selects the
+/// variant's own arm (not the fallback, and not an Undef no-arm result).
 #[test]
-fn variant_ctor_undef_field_keeps_tag_and_binds_undef() {
+fn variant_ctor_undef_field_keeps_tag_and_selects_arm() {
     let absent = CompiledExpr::value_ref(ValueCellId::new("Widget", "absent"), t_length());
     let ctor = shape_ctor("Circle", vec![("radius", absent)]);
     let values = ValueMap::new();
@@ -476,7 +477,7 @@ fn variant_ctor_undef_field_keeps_tag_and_binds_undef() {
     let constructed = eval_expr(&ctor, &EvalContext::simple(&values));
     assert_eq!(constructed, circle_enum(Value::Undef));
 
-    let arm = CompiledMatchArm {
+    let circle_arm = CompiledMatchArm {
         patterns: vec![CompiledPattern::VariantBind {
             name: "Circle".to_string(),
             binders: vec![(
@@ -486,7 +487,15 @@ fn variant_ctor_undef_field_keeps_tag_and_binds_undef() {
         }],
         body: CompiledExpr::literal(Value::Real(7.0), Type::dimensionless_scalar()),
     };
-    let match_expr = CompiledExpr::match_expr(ctor, vec![arm], Type::dimensionless_scalar());
+    let fallback_arm = CompiledMatchArm {
+        patterns: vec![CompiledPattern::wildcard()],
+        body: CompiledExpr::literal(Value::Real(9.0), Type::dimensionless_scalar()),
+    };
+    let match_expr = CompiledExpr::match_expr(
+        ctor,
+        vec![circle_arm, fallback_arm],
+        Type::dimensionless_scalar(),
+    );
 
     assert_eq!(
         eval_expr(&match_expr, &EvalContext::simple(&values)),

@@ -386,6 +386,16 @@ fn negated_literal_payload_compiles_clean() {
 
     let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["width", "height"]);
+    assert!(
+        matches!(payload[0].1.kind, CompiledExprKind::UnOp { .. }),
+        "width (-5mm) stays a runtime UnOp, got {:?}",
+        payload[0].1.kind
+    );
+    assert!(
+        matches!(payload[1].1.kind, CompiledExprKind::Literal(_)),
+        "height (10mm) stays a Literal inside the VariantCtor, got {:?}",
+        payload[1].1.kind
+    );
 }
 
 /// A non-literal field value is still checked against its declared type, and

@@ -66,7 +66,7 @@ fn runtime_payload_fixture_checks_clean_and_evaluates() {
         let (status, stdout, stderr) = common::run_subcommand(subcommand, &path.to_string_lossy());
         let report = format!("reify {subcommand}\nstdout: {stdout}\nstderr: {stderr}");
         assert!(status.success(), "should exit 0: {report}");
-        assert!(!report.contains("non-constant payload value"), "{report}");
+        assert!(!stderr.contains("error:"), "no error diagnostics: {report}");
         for expected in expected_lines {
             let found = stdout.lines().any(|line| line.trim() == *expected);
             assert!(found, "missing exact line {expected:?}: {report}");
