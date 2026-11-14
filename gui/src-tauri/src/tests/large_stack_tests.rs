@@ -184,7 +184,9 @@ async fn run_on_large_stack_does_not_block_the_calling_runtime() {
         "the job must still deliver its value"
     );
     assert_eq!(
-        concurrent.await.expect("the concurrent task must not panic"),
+        concurrent
+            .await
+            .expect("the concurrent task must not panic"),
         "concurrent task done",
         "the concurrent task must complete"
     );
@@ -226,10 +228,9 @@ async fn run_on_large_stack_reports_a_panic_as_an_err_carrying_its_message() {
 async fn run_on_large_stack_survives_deep_recursion_over_default_stack() {
     use crate::large_stack::{ENGINE_THREAD_NAME, run_on_large_stack};
 
-    let result = run_on_large_stack(|| {
-        deep_recurse_if_on_thread(ENGINE_THREAD_NAME, DEEP_RECURSION_DEPTH)
-    })
-    .await;
+    let result =
+        run_on_large_stack(|| deep_recurse_if_on_thread(ENGINE_THREAD_NAME, DEEP_RECURSION_DEPTH))
+            .await;
 
     assert_eq!(
         result,
