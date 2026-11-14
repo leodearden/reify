@@ -11,6 +11,8 @@
 # Verifies that:
 #   1. python3 is on PATH
 #   2. tests/infra/test_tree_sitter_abi_pin.py (stdlib unittest) exits 0
+# and prints one "  SKIP:" line per skipped test, because unittest exits 0 on a
+# skip and assert shows a member's output only when it FAILs.
 
 set -euo pipefail
 
@@ -32,7 +34,19 @@ echo "=== test_tree_sitter_abi_pin ==="
 assert "python3 is available" command -v python3
 
 # ── The suite ──────────────────────────────────────────────────────────────
-assert "tests/infra/test_tree_sitter_abi_pin.py exits 0" \
-    python3 "$SCRIPT_DIR/test_tree_sitter_abi_pin.py"
+SUITE_LOG="$(mktemp "${TMPDIR:-/tmp}/test_tree_sitter_abi_pin.XXXXXX")"
+trap 'rm -f "$SUITE_LOG"' EXIT
+
+# -v names every skipped test with its reason. On failure the log is replayed
+# into assert's capture, which assert dumps.
+run_suite() {
+    python3 "$SCRIPT_DIR/test_tree_sitter_abi_pin.py" -v >"$SUITE_LOG" 2>&1 || {
+        cat "$SUITE_LOG"
+        return 1
+    }
+}
+
+assert "tests/infra/test_tree_sitter_abi_pin.py exits 0" run_suite
+sed -n 's/^\(.*\) \.\.\. skipped /  SKIP: \1: /p' "$SUITE_LOG"
 
 test_summary

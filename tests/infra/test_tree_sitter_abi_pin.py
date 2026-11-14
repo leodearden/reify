@@ -4,11 +4,13 @@ Both tree-sitter generators must emit a parser the workspace runtime can load.
 The runtime is `tree-sitter = "0.24"`, which loads LANGUAGE_VERSION <= 14, while
 tree-sitter-cli 0.25+ generates ABI 15 by default. On CLI 0.26.8 that default
 applies only when the grammar dir has a tree-sitter.json, so the fixture grammar
-carries one. GitHub issue leodearden/reify#1, task 9727.
+carries one. A checkout that generated before the pin must heal on its next
+build, not only a fresh clone. GitHub issue leodearden/reify#1, task 9727.
 """
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -50,6 +52,21 @@ cc = "1"
 [workspace]
 """
 
+# The generator as it ran before the pin: every `--abi` argument is dropped,
+# so the real CLI falls back to its own default ABI.
+PRE_PIN_CLI_SHIM = """\
+#!/usr/bin/env bash
+args=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --abi) shift 2 || shift ;;
+        --abi=*) shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+exec @REAL_CLI@ "${args[@]}"
+"""
+
 CARGO_BUILD_TIMEOUT_SECS = 600
 
 OFFLINE_UNRESOLVED = re.compile(
@@ -67,7 +84,7 @@ def language_version(parser_c: Path) -> int:
     return int(match.group(1))
 
 
-def hermetic_env(**extra: str) -> dict:
+def env_without_abi_override(**extra: str) -> dict:
     env = dict(os.environ)
     env.pop("TREE_SITTER_ABI_VERSION", None)
     env.update(extra)
@@ -105,37 +122,52 @@ def run(argv: list, cwd: Path, env: dict, timeout=None) -> subprocess.CompletedP
 class TreeSitterAbiPinTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if shutil.which("tree-sitter") is None:
+        cls.cli = shutil.which("tree-sitter")
+        if cls.cli is None:
             raise unittest.SkipTest(
                 "tree-sitter CLI not on PATH (install via: cargo install tree-sitter-cli)"
             )
-        version = run(["tree-sitter", "--version"], REPO_ROOT, hermetic_env())
+        version = run([cls.cli, "--version"], REPO_ROOT, env_without_abi_override())
         cls.cli_version = version.stdout.strip()
+        cls._require_cli_default_above_pinned_abi()
+
+    @classmethod
+    def _require_cli_default_above_pinned_abi(cls) -> None:
+        """The control: without it, every pin assertion below passes vacuously."""
+        with tempfile.TemporaryDirectory(prefix="ts-abi-pin-control-") as tmp:
+            grammar_dir = Path(tmp)
+            write_fixture_grammar(grammar_dir)
+            result = run([cls.cli, "generate"], grammar_dir, env_without_abi_override())
+            if result.returncode != 0:
+                raise AssertionError(
+                    f"{cls.cli_version}: a bare `tree-sitter generate` of the fixture "
+                    f"grammar failed.\n{result.stdout}"
+                )
+            default_abi = language_version(grammar_dir / "src" / "parser.c")
+        if default_abi <= PINNED_ABI:
+            raise unittest.SkipTest(
+                f"{cls.cli_version} generates ABI {default_abi} by default, not above the "
+                f"pinned {PINNED_ABI}, so no test here can tell a pinned generator from an "
+                f"unpinned one"
+            )
 
     def _scratch_dir(self) -> Path:
         scratch = Path(tempfile.mkdtemp(prefix="ts-abi-pin-"))
         self.addCleanup(shutil.rmtree, scratch, True)
         return scratch
 
-    def _assert_fixture_reproduces_abi15_default(self) -> None:
-        grammar_dir = self._scratch_dir()
-        write_fixture_grammar(grammar_dir)
-        result = run(["tree-sitter", "generate"], grammar_dir, hermetic_env())
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertGreater(
-            language_version(grammar_dir / "src" / "parser.c"),
-            PINNED_ABI,
-            f"{self.cli_version}: a bare `tree-sitter generate` of the fixture grammar "
-            f"no longer reproduces the post-0.25 ABI-15 default, so the pin "
-            f"assertions in this suite cannot discriminate.\n{result.stdout}",
+    def _pre_pin_env(self, **extra: str) -> dict:
+        shim_dir = self._scratch_dir()
+        shim = shim_dir / "tree-sitter"
+        shim.write_text(PRE_PIN_CLI_SHIM.replace("@REAL_CLI@", shlex.quote(self.cli)))
+        shim.chmod(0o755)
+        return env_without_abi_override(
+            PATH=f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}", **extra
         )
 
-    def test_fixture_reproduces_the_cli_default_abi_15(self):
-        self._assert_fixture_reproduces_abi15_default()
+    # ── scripts/tree-sitter-generate.sh ───────────────────────────────────────
 
-    def test_generate_script_emits_pinned_abi(self):
-        self._assert_fixture_reproduces_abi15_default()
-
+    def _generate_script_fixture(self) -> Path:
         root = self._scratch_dir()
         shutil.copytree(
             REPO_ROOT / "scripts",
@@ -145,34 +177,63 @@ class TreeSitterAbiPinTest(unittest.TestCase):
         grammar_dir = root / "tree-sitter-reify"
         (grammar_dir / "src").mkdir(parents=True)
         write_fixture_grammar(grammar_dir)
+        return root
 
+    def _run_generate_script(self, root: Path, *args: str, env=None) -> subprocess.CompletedProcess:
         result = run(
-            ["bash", str(root / "scripts" / "tree-sitter-generate.sh"), "--force"],
+            ["bash", str(root / "scripts" / "tree-sitter-generate.sh"), *args],
             root,
-            hermetic_env(),
+            env if env is not None else env_without_abi_override(),
         )
         self.assertEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_generate_script_emits_pinned_abi(self):
+        root = self._generate_script_fixture()
+        result = self._run_generate_script(root, "--force")
         self.assertEqual(
-            language_version(grammar_dir / "src" / "parser.c"),
+            language_version(root / "tree-sitter-reify" / "src" / "parser.c"),
             PINNED_ABI,
             f"{self.cli_version}: scripts/tree-sitter-generate.sh emitted a parser "
             f"the tree-sitter 0.24 runtime cannot load.\n{result.stdout}",
         )
 
-    def test_build_rs_emits_pinned_abi(self):
-        self._assert_fixture_reproduces_abi15_default()
+    def test_generate_script_regenerates_a_parser_generated_before_the_pin(self):
+        root = self._generate_script_fixture()
+        parser_c = root / "tree-sitter-reify" / "src" / "parser.c"
+
+        self._run_generate_script(root, "--force", env=self._pre_pin_env())
+        pre_pin_abi = language_version(parser_c)
+        self.assertGreater(pre_pin_abi, PINNED_ABI, "the pre-pin shim did not take effect")
+
+        healed = self._run_generate_script(root)
+        self.assertEqual(
+            language_version(parser_c),
+            PINNED_ABI,
+            f"{self.cli_version}: without --force, scripts/tree-sitter-generate.sh kept "
+            f"the ABI-{pre_pin_abi} parser.c a pre-pin generate left behind its "
+            f"consistent stamps.\n{healed.stdout}",
+        )
+
+        settled = self._run_generate_script(root)
+        self.assertIn(
+            "up to date",
+            settled.stdout,
+            "a parser generated at the pinned ABI must read as current, or every "
+            "run pays a full tree-sitter generate",
+        )
+
+    # ── tree-sitter-reify/build.rs ────────────────────────────────────────────
+
+    def _cargo_build(self, crate: Path, target_dir: Path, env: dict) -> subprocess.CompletedProcess:
         if shutil.which("cargo") is None:
             self.skipTest("cargo not on PATH")
-
-        scratch = self._scratch_dir()
-        crate = scratch / "crate"
-        write_fixture_crate(crate)
-
+        env = dict(env, CARGO_TARGET_DIR=str(target_dir))
         try:
             result = run(
                 ["cargo", "build", "--offline", "--manifest-path", str(crate / "Cargo.toml")],
                 crate,
-                hermetic_env(CARGO_TARGET_DIR=str(scratch / "target")),
+                env,
                 timeout=CARGO_BUILD_TIMEOUT_SECS,
             )
         except subprocess.TimeoutExpired:
@@ -185,11 +246,39 @@ class TreeSitterAbiPinTest(unittest.TestCase):
                 "cargo could not resolve dependencies offline (host registry cache lacks them)"
             )
         self.assertEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_build_rs_emits_pinned_abi(self):
+        scratch = self._scratch_dir()
+        crate = scratch / "crate"
+        write_fixture_crate(crate)
+
+        result = self._cargo_build(crate, scratch / "target", env_without_abi_override())
         self.assertEqual(
             language_version(crate / "src" / "parser.c"),
             PINNED_ABI,
             f"{self.cli_version}: tree-sitter-reify/build.rs emitted a parser "
             f"the tree-sitter 0.24 runtime cannot load.\n{result.stdout}",
+        )
+
+    def test_build_rs_regenerates_a_parser_generated_before_the_pin(self):
+        scratch = self._scratch_dir()
+        crate = scratch / "crate"
+        write_fixture_crate(crate)
+        parser_c = crate / "src" / "parser.c"
+
+        self._cargo_build(crate, scratch / "target-pre-pin", self._pre_pin_env())
+        pre_pin_abi = language_version(parser_c)
+        self.assertGreater(pre_pin_abi, PINNED_ABI, "the pre-pin shim did not take effect")
+
+        # A fresh target dir re-runs the build script, as pulling the pinned
+        # build.rs does, with only the shell stamps left to vouch for parser.c.
+        healed = self._cargo_build(crate, scratch / "target", env_without_abi_override())
+        self.assertEqual(
+            language_version(parser_c),
+            PINNED_ABI,
+            f"{self.cli_version}: tree-sitter-reify/build.rs kept the ABI-{pre_pin_abi} "
+            f"parser.c a pre-pin build left behind its consistent stamps.\n{healed.stdout}",
         )
 
 

@@ -53,6 +53,9 @@ OUTPUTS_STAMP_FILE="src/.generated_outputs.stamp"
 OUTPUTS="grammar.json node-types.json parser.c"
 # Mirrors build_support.rs GENERATED_HEADERS: existence-checked only, not in the manifest.
 GENERATED_HEADERS="tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h"
+# The ABI the generate below passes as `--abi 14` (issue #1). If the two differ,
+# every run regenerates; tests/infra/test_tree_sitter_abi_pin.py catches that.
+GENERATED_PARSER_ABI=14
 
 # _hash_one <path>
 #
@@ -112,6 +115,18 @@ _render_outputs_manifest() {
     done
 }
 
+# _parser_has_pinned_abi
+#
+# Exit 0 when src/parser.c declares `#define LANGUAGE_VERSION
+# $GENERATED_PARSER_ABI`. The stamps attest grammar.js and the output bytes,
+# never the flags the generator ran with, so a parser.c generated before the
+# pin sits behind a consistent stamp pair that only this check can contradict.
+# Mirrors parser_has_pinned_abi in tree-sitter-reify/build.rs.
+_parser_has_pinned_abi() {
+    [ "$(awk '$1 == "#define" && $2 == "LANGUAGE_VERSION" { print $3; exit }' \
+        src/parser.c 2>/dev/null)" = "$GENERATED_PARSER_ABI" ]
+}
+
 # _stamp_is_current
 #
 # Exit 0 when BOTH stamps agree with the tree on disk; non-zero otherwise.
@@ -137,6 +152,7 @@ _stamp_is_current() {
     for f in $OUTPUTS $GENERATED_HEADERS; do
         [ -f "src/$f" ] || return 1
     done
+    _parser_has_pinned_abi || return 1
     [ -f "$OUTPUTS_STAMP_FILE" ] || return 1
     # Every recorded entry must match the file on disk, and the manifest must
     # name exactly the expected set — a short manifest attests nothing about the
@@ -251,7 +267,7 @@ _cleanup_partial_outputs() {
 
 GEN_EXIT=0
 # Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
-# ABI 14 is the newest the workspace's tree-sitter = "0.24" runtime loads (issue #1); see tests/infra/test_tree_sitter_abi_pin.py.
+# ABI 14 (= GENERATED_PARSER_ABI) is the newest the workspace's tree-sitter = "0.24" runtime loads (issue #1); see tests/infra/test_tree_sitter_abi_pin.py.
 portable_timeout 60 tree-sitter generate --abi 14 || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
