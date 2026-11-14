@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
+import type { DiagnosticInfo, EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
 import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -237,7 +237,7 @@ beforeEach(() => {
   capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
+  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ files: [] })));
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -8177,7 +8177,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
 
 describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
   it('passes engineStore.state.compileDiagnostics to the Editor compileDiagnostics prop', async () => {
-    const errorDiag = {
+    const errorDiag: DiagnosticInfo = {
       file_path: '/project/src/bracket.ri',
       line: 3,
       column: 5,
@@ -8189,19 +8189,7 @@ describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
     };
 
     // Seed getInitialState with an Error compile diagnostic
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      meshes: [],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [errorDiag],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    } as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ compile_diagnostics: [errorDiag] })));
 
     await renderAndWaitForReady();
 
@@ -8469,19 +8457,15 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
     const feaConvergence = { converged: false, reason: 'MaxDofs' };
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       fea_convergence: feaConvergence,
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
-      values: [], constraints: [], files: [],
-      tessellation_diagnostics: [], compile_diagnostics: [],
-      tensegrity_wires: [], tensegrity_surfaces: [],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-      display_appearance: [],
       fea_diagnostics: feaDiagnostics,
-    }));
+    })));
 
     await renderAndWaitForReady();
     expect(capturedMultiViewportProps.panes).toHaveLength(2);
@@ -8911,24 +8895,14 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
 // GREEN (step-16) — App.tsx wires both.
 describe('App FEA diagnostics wiring (#2966)', () => {
   /** GuiState with a non-empty fea_diagnostics array (Unconstrained variant). */
-  const stateWithFeaDiagnostics = {
-    meshes: [],
-    values: [],
-    constraints: [],
-    files: [],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
+  const stateWithFeaDiagnostics = makeGuiState({
     fea_diagnostics: [
-      { kind: 'Unconstrained' as const, rigid_body_modes: ['TranslationX', 'RotationZ'] as const },
+      { kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] },
     ],
-  };
+  });
 
   it('renders fea-diagnostics-panel with rows when engine state carries fea_diagnostics', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // FeaDiagnosticsPanel must be present (added to sidebar)
     const panel = screen.getByTestId('fea-diagnostics-panel');
@@ -8946,7 +8920,7 @@ describe('App FEA diagnostics wiring (#2966)', () => {
   //   gui/src/__tests__/viewport/DualViewport.test.tsx
   //   → describe('DualViewport feaDiagnostics threading (γ)', ...)
   it('passes feaDiagnostics prop to DualViewport (App→DualViewport hand-off)', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // capturedDualViewportProps captures ALL props App passes to DualViewport
     expect(capturedDualViewportProps.feaDiagnostics).toBeDefined();
@@ -8955,7 +8929,7 @@ describe('App FEA diagnostics wiring (#2966)', () => {
   });
 
   it('activating a panel row triggers the fitToView camera-focus handle', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // Ensure fitToViewRef registration has run (mock registers mockViewportFitToView)
     expect(mockViewportFitToView).toBeDefined();
