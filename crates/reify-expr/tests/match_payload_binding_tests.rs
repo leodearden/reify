@@ -455,7 +455,11 @@ fn variant_ctor_evaluates_payload_from_runtime_values() {
     assert_eq!(type_name, "Shape");
     assert_eq!(variant, "Rect");
     let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["width", "height", "sign"], "payload keeps stored order");
+    assert_eq!(
+        names,
+        ["width", "height", "sign"],
+        "payload keeps stored order"
+    );
     assert_si("width", &payload[0].1, 0.02);
     assert_si("height", &payload[1].1, 0.04);
     assert_si("sign", &payload[2].1, -1.0);
@@ -509,15 +513,24 @@ fn match_reads_back_runtime_payload() {
             t_area(),
         ),
     };
-    let ctor = shape_ctor("Rect", vec![("width", read_w()), ("height", twice(read_w()))]);
+    let ctor = shape_ctor(
+        "Rect",
+        vec![("width", read_w()), ("height", twice(read_w()))],
+    );
     let match_expr = CompiledExpr::match_expr(ctor, vec![arm], t_area());
 
     let values = values_with_w_20mm();
     let result = eval_expr(&match_expr, &EvalContext::simple(&values));
 
     match result {
-        Value::Scalar { si_value, dimension } => {
-            assert!((si_value - 0.0008).abs() < 1e-12, "expected 0.0008 m², got {si_value}");
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 0.0008).abs() < 1e-12,
+                "expected 0.0008 m², got {si_value}"
+            );
             assert_eq!(dimension, DimensionVector::AREA);
         }
         other => panic!("expected an AREA scalar, got {other:?}"),

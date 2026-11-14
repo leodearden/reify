@@ -318,6 +318,9 @@ pub(crate) fn contains_structural_query(expr: &CompiledExpr) -> bool {
                 .any(|(_, e)| contains_structural_query(e))
                 || defaults.iter().any(|(_, e)| contains_structural_query(e))
         }
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            payload.iter().any(|(_, e)| contains_structural_query(e))
+        }
         CompiledExprKind::ResolveSelector { selector } => contains_structural_query(selector),
     }
 }
@@ -444,6 +447,11 @@ fn walk_children_mut(expr: &mut CompiledExpr, visit: &mut impl FnMut(&mut Compil
             }
             for (_, def) in defaults {
                 visit(def);
+            }
+        }
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            for (_, field) in payload {
+                visit(field);
             }
         }
         CompiledExprKind::ResolveSelector { selector } => visit(selector),

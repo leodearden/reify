@@ -92,7 +92,11 @@ fn variant_ctor_stores_type_variant_payload_and_result_type() {
 fn variant_ctor_content_hash_is_structural() {
     let base = rect_reading_a().content_hash;
 
-    assert_eq!(base, rect_reading_a().content_hash, "equal inputs hash equally");
+    assert_eq!(
+        base,
+        rect_reading_a().content_hash,
+        "equal inputs hash equally"
+    );
     assert_ne!(
         base,
         rect(vec![("width", r("a")), ("height", twice(r("b")))]).content_hash,
@@ -154,7 +158,10 @@ fn map_value_refs_rebuilds_variant_ctor_with_fresh_hash() {
         if id == cell("a") { cell("a2") } else { id }
     });
 
-    assert_eq!(payload_refs(&remapped), vec![vec![cell("a2")], vec![cell("a2")]]);
+    assert_eq!(
+        payload_refs(&remapped),
+        vec![vec![cell("a2")], vec![cell("a2")]]
+    );
     let fresh = rect(vec![("width", r("a2")), ("height", twice(r("a2")))]);
     assert_eq!(remapped.content_hash, fresh.content_hash);
     assert_ne!(remapped.content_hash, original_hash);
@@ -174,5 +181,8 @@ fn remap_entity_and_remap_cell_rewrite_payload_cells() {
 
     let mut by_cell = rect(vec![("width", r("a")), ("height", twice(r("b")))]);
     by_cell.remap_cell(&cell("b"), &cell("c"));
-    assert_eq!(payload_refs(&by_cell), vec![vec![cell("a")], vec![cell("c")]]);
+    assert_eq!(
+        payload_refs(&by_cell),
+        vec![vec![cell("a")], vec![cell("c")]]
+    );
 }

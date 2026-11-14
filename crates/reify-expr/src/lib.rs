@@ -1138,6 +1138,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ctx,
         ),
 
+        CompiledExprKind::VariantCtor {
+            type_name,
+            variant,
+            payload,
+        } => eval_variant_ctor(type_name, variant, payload, ctx),
+
         // task 4118 (γ): Selector→List<Geometry> coercion node. In the
         // registry-free evaluator this is a PASSTHROUGH — evaluate the inner
         // selector (yielding a `Value::Selector`) and return it unchanged.
@@ -1239,6 +1245,30 @@ fn eval_structure_instance_ctor(
         }
         .with_source_span(span),
     ))
+}
+
+/// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
+/// evaluating each payload expr in stored (declaration) order.
+///
+/// PRD data-carrying-enums D2: an `Undef` field value stays in its own slot
+/// and the enum is still constructed — the tag is determined, so a `match`
+/// selects the arm and only that binder is undef. `#[inline(never)]` for the
+/// reason given on [`eval_structure_instance_ctor`].
+#[inline(never)]
+fn eval_variant_ctor(
+    type_name: &str,
+    variant: &str,
+    payload: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    Value::Enum {
+        type_name: type_name.to_string(),
+        variant: variant.to_string(),
+        payload: payload
+            .iter()
+            .map(|(name, field)| (name.clone(), eval_expr(field, ctx)))
+            .collect(),
+    }
 }
 
 /// A structure instance's members as a child value scope: each field keyed by
