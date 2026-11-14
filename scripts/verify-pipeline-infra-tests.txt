@@ -660,6 +660,13 @@ tree-sitter-reify/src/scanner.c      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
 
+# Task 9727 (issue #1): both generators must pass `--abi 14`, held by one
+# behavioural suite. The .py row mirrors test_flake_density_report.py above:
+# a diff touching only the .py otherwise selects no infra test at all.
+tree-sitter-reify/build.rs           tests/infra/test_tree_sitter_abi_pin.sh
+scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_abi_pin.sh
+tests/infra/test_tree_sitter_abi_pin.py    tests/infra/test_tree_sitter_abi_pin.sh
+
 # Task 7139: the reify-audit binary-freshness guard library and the pre-done
 # hook wrapper that consumes it. NEITHER had a row here, so on the task role
 # (DF_VERIFY_ROLE != merge && != background) a diff touching only these two
