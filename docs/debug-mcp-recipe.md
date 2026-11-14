@@ -23,6 +23,7 @@ scripts/run-gui-dev.sh path/to/fixture.ri
 ```
 
 The debug server accepts MCP `tools/call` JSON-RPC on `http://127.0.0.1:${REIFY_DEBUG_PORT:-3939}/mcp`.
+It refuses with 403 any request whose `Host` is not `127.0.0.1` or `localhost` on that port, or that carries a foreign `Origin` (docs/debug-mcp-contract.md §7).
 
 The launcher now self-defends against a hostile environment, so the
 `env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 scripts/run-gui-dev.sh ...`
