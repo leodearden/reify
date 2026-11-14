@@ -134,11 +134,25 @@ git diff --name-only --no-renames "$B" HEAD > /tmp/<id>-D.lst   # both names of 
 git checkout --detach "$B"
 # The checkout rewrote the paths in D. Give each one that still exists the mtime the seed gives it at $B:
 while IFS= read -r f; do [ -e "$f" ] && touch -h -d 2020-01-01T00:00:00 "$f"; done < /tmp/<id>-D.lst
-# Then touch to now the paths of D that the seed's env!() relink touches. Its rule is `_ENV_PATH_MACRO_RE` and
-# the `find` that feeds it, in scripts/seed-warm-lane.sh; the seed applies it to absolute paths, so test "$PWD/$f".
+# Then touch to now the paths of D that the seed's env!() relink touches. The regex is read from the seed; the
+# case pattern restates the seed's `find`, which matches absolute paths, so it tests "$PWD/$f".
+RE=$(sed -n "s/^ *_ENV_PATH_MACRO_RE='\(.*\)'$/\1/p" scripts/seed-warm-lane.sh)
+echo "${RE:-relink rule not found in scripts/seed-warm-lane.sh: stop}"
+relink_sources() {
+  [ -n "$RE" ] || { echo 'relink rule not found in scripts/seed-warm-lane.sh' >&2; return 1; }
+  while IFS= read -r f; do
+    case "$PWD/$f" in
+      */tests/*.rs|*/benches/*.rs) [ -f "$f" ] && [ ! -L "$f" ] && grep -qE "$RE" "$f" && printf '%s\n' "$f" ;;
+    esac
+  done
+}
+relink_sources < /tmp/<id>-D.lst | xargs -r -d '\n' touch --
 git diff --name-only "$B"   # must print nothing
-find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -print
-# must list only the sources that relink touches, plus incidentals such as .mcp.json
+# Check the whole tree both ways: every relink source at $B against every file newer than 2020-01-02.
+git ls-files | relink_sources | LC_ALL=C sort > /tmp/<id>-relink.lst
+find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -printf '%P\n' |
+  LC_ALL=C sort | LC_ALL=C comm -3 - /tmp/<id>-relink.lst
+# must print only incidentals such as .mcp.json, unindented; an indented line is a relink source still at 2020
 ```
 
 After the last probe, return with `git checkout <task branch>`, which rewrites
