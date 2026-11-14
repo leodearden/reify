@@ -63,7 +63,6 @@ async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promi
 
 export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) {
   async function openDocument(path: string): Promise<void> {
-    store.clearDocumentError();
     await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path));
     try {
       store.setRecent(await deps.recordRecent(path));
