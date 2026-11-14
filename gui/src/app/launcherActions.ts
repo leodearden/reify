@@ -1,8 +1,10 @@
 /**
  * The Start view's actions (alpha-spine β): open, create, refresh Recent and
- * select a launch mode. A failure rejects with a LaunchFailure whose code names
- * the stage that failed; presenting it is the caller's job (the Start view
- * writes it to the launcher store, the File menu toasts it).
+ * select a launch mode. An action's primary stage rejects with a LaunchFailure
+ * whose code names that stage; presenting it is the caller's job (the Start
+ * view writes it to the launcher store, the File menu toasts it). A secondary
+ * stage reports its own failure without rejecting: openDocument's Recent update
+ * through notify, adoptLiveDebugServer's set_mode as the store's mode error.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -91,7 +93,26 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  return { openDocument, createDocument, refreshRecent, selectMode };
+  async function recordDebugMode(): Promise<void> {
+    try {
+      store.applyModeState(await deps.setMode('debug'));
+    } catch (err) {
+      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: errorMessage(err) });
+    }
+  }
+
+  /**
+   * Enter Debug mode for a debug server that is already live (REIFY_DEBUG=1 at
+   * launch). The bridge does not wait on set_mode, a set_mode failure becomes
+   * the mode error, and the action rejects only when the bridge fails.
+   */
+  async function adoptLiveDebugServer(): Promise<void> {
+    const bridge = inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () => deps.ensureDebugBridge());
+    await Promise.allSettled([bridge, recordDebugMode()]);
+    await bridge;
+  }
+
+  return { openDocument, createDocument, refreshRecent, selectMode, adoptLiveDebugServer };
 }
 
 export type LauncherActions = ReturnType<typeof createLauncherActions>;
