@@ -10,7 +10,6 @@ use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::import_headers::{
     ImportPlan, NameRole, NameUse, RequiredImport, derive_std_imports, insert_imports,
-    residual_diagnostics,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 
@@ -38,11 +37,11 @@ fn compile_universe(modules: &[(&str, &str)]) -> Vec<CompiledModule> {
         .collect()
 }
 
-fn derive(source: &str, universe: &[CompiledModule]) -> ImportPlan {
+fn derive<'u>(source: &str, universe: &'u [CompiledModule]) -> ImportPlan<'u> {
     derive_parsed(&parse_clean(source, SUBJECT_PATH), universe)
 }
 
-fn derive_parsed(parsed: &ParsedModule, universe: &[CompiledModule]) -> ImportPlan {
+fn derive_parsed<'u>(parsed: &ParsedModule, universe: &'u [CompiledModule]) -> ImportPlan<'u> {
     let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     derive_std_imports(parsed, &universe_refs)
 }
@@ -446,7 +445,6 @@ fn a_module_binder_does_not_shadow_a_std_function_in_call_position() {
 #[test]
 fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_clears() {
     let universe = compile_universe(&[FNS, SHAPES]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean(
         "structure def S {\n\
              param twice : Real = 1.0\n\
@@ -454,8 +452,9 @@ fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_cl
          }\n",
         SUBJECT_PATH,
     );
+    let plan = derive_parsed(&parsed, &universe);
 
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(
         residual
             .iter()
@@ -464,8 +463,7 @@ fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_cl
         "expected an UnresolvedFunction warning; got {residual:?}"
     );
 
-    let plan = derive_parsed(&parsed, &universe);
-    let residual = residual_diagnostics(&parsed, &plan.modules(), &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &plan.modules());
     assert!(residual.is_empty(), "{residual:?}");
 }
 
@@ -516,10 +514,10 @@ fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
 #[test]
 fn a_missing_import_leaves_a_residual_that_the_derived_import_clears() {
     let universe = compile_universe(&[SHAPES, FNS]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean("structure def S { param b : Bracket }\n", SUBJECT_PATH);
+    let plan = derive_parsed(&parsed, &universe);
 
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(
         residual
             .iter()
@@ -528,17 +526,19 @@ fn a_missing_import_leaves_a_residual_that_the_derived_import_clears() {
         "expected an UnresolvedType error; got {residual:?}"
     );
 
-    let residual =
-        residual_diagnostics(&parsed, &module_paths(&["std.fake.shapes"]), &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &module_paths(&["std.fake.shapes"]));
+    assert!(residual.is_empty(), "{residual:?}");
+
+    let residual = plan.residual_diagnostics(&parsed, &plan.modules());
     assert!(residual.is_empty(), "{residual:?}");
 }
 
 #[test]
 fn a_diagnostic_the_full_universe_also_raises_is_not_residual() {
     let universe = compile_universe(&[SHAPES]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean("structure def S { param b : Nowhere }\n", SUBJECT_PATH);
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let plan = derive_parsed(&parsed, &universe);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(residual.is_empty(), "{residual:?}");
 }
 
