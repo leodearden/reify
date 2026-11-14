@@ -2,10 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { GuiState } from '../types';
 import { createDefPreviewStore } from '../stores/defPreviewStore';
+import { makeGuiState } from './test_utils/guiState';
 
 // ── Helper to build a minimal GuiState with one mesh ────────────────────────
-function makeGuiState(entityPath: string): GuiState {
-  return { fea_convergence: null,
+function oneMeshState(entityPath: string): GuiState {
+  return makeGuiState({
     meshes: [
       {
         entity_path: entityPath,
@@ -14,17 +15,7 @@ function makeGuiState(entityPath: string): GuiState {
         normals: null,
       },
     ],
-    values: [],
-    constraints: [],
-    files: [],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 }
 
 describe('defPreviewStore', () => {
@@ -66,7 +57,7 @@ describe('defPreviewStore', () => {
     it('keys meshes by entity_path, sets defName, clears error and isLoading', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
-        const guiState = makeGuiState('BoltFlange.body');
+        const guiState = oneMeshState('BoltFlange.body');
         store.applyPreview('BoltFlange', guiState);
 
         expect(store.state.defName).toBe('BoltFlange');
@@ -83,7 +74,7 @@ describe('defPreviewStore', () => {
     it('resets everything to initial state', () => {
       createRoot((dispose) => {
         const store = createDefPreviewStore();
-        store.applyPreview('BoltFlange', makeGuiState('BoltFlange.body'));
+        store.applyPreview('BoltFlange', oneMeshState('BoltFlange.body'));
         store.clearPreview();
 
         expect(store.state.defName).toBeNull();
@@ -113,7 +104,7 @@ describe('defPreviewStore', () => {
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
-          const guiState = makeGuiState('BoltFlange.body');
+          const guiState = oneMeshState('BoltFlange.body');
           let capturedLoading: boolean | undefined;
 
           const mockFetch = vi.fn(async (_name: string) => {
@@ -159,7 +150,7 @@ describe('defPreviewStore', () => {
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
-          const guiState = makeGuiState('BoltFlange.body');
+          const guiState = oneMeshState('BoltFlange.body');
           const mockFetch = vi.fn(async (_name: string) => guiState);
 
           // First load
@@ -190,8 +181,8 @@ describe('defPreviewStore', () => {
           const slowFetchPromise = new Promise<GuiState>(r => { resolveSlowFetch = r; });
           const fastFetchPromise = new Promise<GuiState>(r => { resolveFastFetch = r; });
 
-          const gsA = makeGuiState('A.body');
-          const gsB = makeGuiState('B.body');
+          const gsA = oneMeshState('A.body');
+          const gsB = oneMeshState('B.body');
 
           // Start slow fetch for 'A' (not awaited)
           const slowLoad = store.loadPreview('A', () => slowFetchPromise);
@@ -232,7 +223,7 @@ describe('defPreviewStore', () => {
           const slowFetchPromise = new Promise<GuiState>((_res, rej) => { rejectSlowFetch = rej; });
           const fastFetchPromise = new Promise<GuiState>(r => { resolveFastFetch = r; });
 
-          const gsB = makeGuiState('B.body');
+          const gsB = oneMeshState('B.body');
 
           // Start slow fetch for 'A'
           const slowLoad = store.loadPreview('A', () => slowFetchPromise);
@@ -264,7 +255,7 @@ describe('defPreviewStore', () => {
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
-          const gsA = makeGuiState('A.body');
+          const gsA = oneMeshState('A.body');
 
           await store.loadPreview('A', async () => gsA);
 
@@ -287,7 +278,7 @@ describe('defPreviewStore', () => {
           let resolveSlowFetch!: (gs: GuiState) => void;
           const slowFetchPromise = new Promise<GuiState>(r => { resolveSlowFetch = r; });
 
-          const gsA = makeGuiState('A.body');
+          const gsA = oneMeshState('A.body');
 
           // Start slow fetch for 'A' — do NOT await it yet
           const slowLoad = store.loadPreview('A', () => slowFetchPromise);
