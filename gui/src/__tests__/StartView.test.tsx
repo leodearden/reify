@@ -287,6 +287,20 @@ describe('StartView document actions', () => {
 
     await waitFor(() => expect(screen.queryByTestId('start-document-error')).toBeNull());
   });
+
+  it('dismissing the start view clears its document error', async () => {
+    actions.openDocument.mockRejectedValue(
+      new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, 'No such file'),
+    );
+    const { unmount } = renderStartView();
+    typePath('/designs/missing.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await screen.findByTestId('start-document-error');
+
+    unmount();
+
+    expect(store.state.document.error).toBeNull();
+  });
 });
 
 describe('StartView mode buttons', () => {
