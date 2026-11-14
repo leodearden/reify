@@ -113,6 +113,7 @@ G=$(for g in "$BASE"/target.gen.[0-9]*; do [ -d "$g" ] && [ "$(stat -c %y "$g")"
 echo "$G"   # one gen; empty means target/ is no longer a pristine seed
 B=$(cat "$G.basecommit")
 find target ! -type d -newer "$G.basecommit" | wc -l   # must print 0: nothing was built since the seed
+git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
 [ -n "$B" ] && printf 'L=%q\nG=%q\nB=%q\n' "$PWD" "$G" "$B" > /tmp/<id>-base.env
 ```
 
@@ -198,18 +199,22 @@ check; echo "snapshot-matches rc=$?"   # must be 0 before the first probe
 find target -mindepth 1 -maxdepth 1 ! -name .pristine -exec rm -rf {} +
 cp -a --reflink=always "$S"/. target/
 check; echo "restored-matches rc=$?"   # must be 0 before probing
+
+# after any arm B copy, immediately before every probe, the first included (arm B: see below):
 git clean -Xfd -- tree-sitter-reify/src
 git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
 ```
 
 The `git clean` line deletes the gitignored generated sources under
 `tree-sitter-reify/src`, which a fresh seed lacks and the first probe recreates
-(see the tree-sitter paragraph under Measurements). It names no files. `-X`
-removes only ignored files, so the set is whatever the ignore rules match
-there, chiefly the root `.gitignore`'s "Tree-sitter generated" block, which
-owns the generated outputs. The acquire's `git clean -xfd -e target` deletes
-those same files. A new output of `tree-sitter generate` is covered as soon as
-that block lists it.
+(see the tree-sitter paragraph under Measurements). It runs before the first
+probe too: the arm B copy below generates the same files, so an arm A probe that
+comes first, after the copy, would start with them present instead of from the
+fresh-seed state. It names no files. `-X` removes only ignored files, so the set
+is whatever the ignore rules match there, chiefly the root `.gitignore`'s
+"Tree-sitter generated" block, which owns the generated outputs. The acquire's
+`git clean -xfd -e target` deletes those same files. A new output of
+`tree-sitter generate` is covered as soon as that block lists it.
 
 The generated sources live outside `target/`, so restoring `target/` does not
 restore their absence, and the listing check does not see them. The
@@ -244,9 +249,9 @@ pin. Arm B would then link bytes its sources do not describe. Probing at the
 base commit cures the first two. Remove `/tmp/<id>-tsgen`, run the base-commit
 block, then repeat this block. A DIFF that survives that points to the CLI, and
 then the copy cannot be proven identical to the base's inputs, so arm B is not
-valid in this lane. Before every probe, the first included, put the copy in
-place of the `git clean` and `git status` lines above, since `--ignored` would
-list the copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+valid in this lane. Before every arm B probe, the first included, put the copy
+in place of the `git clean` and `git status` lines above, since `--ignored`
+would list the copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
 
 ## Measurements
 
