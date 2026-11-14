@@ -694,9 +694,8 @@ structure Insulator : NonDegenerate {
 /// no rewrite. Consequence, measured here: `= 0` stores a DIMENSIONLESS default
 /// while `= 0deg` stores `Scalar[rad]`.
 ///
-/// This is what the `HarmonicForce.phase : Angle = 0deg` note in
-/// modal_analysis.ri records — `0deg` is preferred because it dimensions the
-/// stored default, not merely because it reads better.
+/// This is why the `HarmonicForce.phase : Angle = 0deg` note in
+/// modal_analysis.ri requires `0deg`: only it dimensions the stored default.
 #[test]
 fn param_default_bare_zero_stays_dimensionless() {
     let compiled = compile_source_with_stdlib(
