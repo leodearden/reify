@@ -251,7 +251,8 @@ _cleanup_partial_outputs() {
 
 GEN_EXIT=0
 # Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
-portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
+# ABI 14 is the newest the workspace's tree-sitter = "0.24" runtime loads (issue #1); see tests/infra/test_tree_sitter_abi_pin.py.
+portable_timeout 60 tree-sitter generate --abi 14 || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     # Remove any partial output files left by the killed process to prevent
