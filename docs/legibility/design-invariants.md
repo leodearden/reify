@@ -517,14 +517,13 @@ while `param x : Angle = 2.5` is rejected:
   `let` annotation is rejected (`ParamDefaultTypeMismatch` /
   `LetAnnotationTypeMismatch`), the same as a dimensionless
   *expression* such as `param x : Angle = ratio * 2.0`. Both reach
-  `type_compatible`, which carries no dimensionless→dimensioned rule
-  (`crates/reify-compiler/src/type_compat.rs:220-237`); the former
+  `type_compatible` (`type_compat.rs`), which carries no
+  dimensionless→dimensioned rule; the former
   literal tolerance's reversal history is
   `docs/prds/v0_6/dimensioned-construction-strictness.md` §0.3.
   Function param defaults use strict equality
-  (`fn_param_default_compatible`), so `fn f(a : Angle = 2.5)` errors
-  `FnParamDefaultTypeMismatch`
-  (`crates/reify-compiler/src/functions.rs:187-215`).
+  (`fn_param_default_compatible` in `type_compat.rs`), so
+  `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`.
 - **`sin(2.5)` isn't a widening — forward-trig arguments are
   dimension-checked, and dimensionless passes that check**: since
   task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE

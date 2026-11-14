@@ -7166,6 +7166,35 @@ structure def Manifold {
             diagnostics[0].message,
         );
     }
+
+    /// `param_default_rejection_span` recovers exactly the span
+    /// `check_param_default_type` was given, and recognises nothing else.
+    #[test]
+    fn param_default_rejection_span_round_trips_the_emitted_span() {
+        let declaration = SourceSpan::new(10, 40);
+        let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        check_param_default_type(
+            "t",
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            true,
+            Some(&dimensionless),
+            declaration,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert_eq!(
+            param_default_rejection_span(&diagnostics[0]),
+            Some(declaration)
+        );
+
+        let other_code = Diagnostic::error("unrelated")
+            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
+            .with_label(DiagnosticLabel::new(declaration, "unrelated"));
+        assert_eq!(param_default_rejection_span(&other_code), None);
+    }
 }
 
 // ---------------------------------------------------------------------------

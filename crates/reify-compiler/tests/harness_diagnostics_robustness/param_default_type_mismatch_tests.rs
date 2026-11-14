@@ -588,6 +588,39 @@ fn trait_injected_bare_literal_param_default_is_still_reported_by_conformance() 
     );
 }
 
+/// The D4-4 skip is per cell. A declaration-site rejection in a template does
+/// not silence the conformance pass for that template's other defaults, whether
+/// they are declared locally or injected by a trait.
+#[test]
+fn declaration_site_rejection_leaves_other_defaults_to_conformance() {
+    let source = r#"
+trait T { param d : Length = 1.0 }
+structure S : T {
+    param m : Length = 5kg
+    param s : String = 42
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(errors.len(), 3, "got: {shapes:?}");
+    for (code, param) in [
+        (DiagnosticCode::ParamDefaultTypeMismatch, "m"),
+        (DiagnosticCode::ArgTypeMismatch, "d"),
+        (DiagnosticCode::ArgTypeMismatch, "s"),
+    ] {
+        let matching = errors
+            .iter()
+            .filter(|d| d.code == Some(code) && d.message.contains(&format!("'{param}'")))
+            .count();
+        assert_eq!(
+            matching, 1,
+            "expected one {code:?} naming '{param}', got: {shapes:?}"
+        );
+    }
+}
+
 /// A pure numeric-literal-arithmetic default is neither a single literal nor a
 /// dimensioned expression; at a dimensioned param it is rejected once, naming
 /// the declared and found types.

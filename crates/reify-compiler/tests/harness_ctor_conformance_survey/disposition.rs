@@ -991,9 +991,10 @@ fn the_census_disposition_renders_a_distinct_cell() {
     }
 }
 
-/// A verbatim copy of the two PRE-δ `purpose_compile_tests.rs` fixtures that
-/// task #7543's VERIFY names (`git show a8d7f5fb24:crates/reify-compiler/tests/
-/// harness_compilation_surface/purpose_compile_tests.rs`, lines 1441-1576),
+/// A copy, retyped as noted below, of the two PRE-δ `purpose_compile_tests.rs`
+/// fixtures that task #7543's VERIFY names (`git show a8d7f5fb24:crates/
+/// reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs`,
+/// lines 1441-1576),
 /// trimmed to each fixture's `let source` binding with nesting and indentation
 /// kept.
 ///
