@@ -240,6 +240,60 @@ async fn run_on_large_stack_survives_deep_recursion_over_default_stack() {
     );
 }
 
+/// (e) A refused spawn resolves the await as `Err` naming the refusal, and the
+/// job is never run, neither inline on the awaiter nor on a fallback thread.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_refused_spawn_as_an_err_without_running_the_job() {
+    use crate::large_stack::run_on_large_stack_via;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let job_ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&job_ran);
+
+    let outcome = run_on_large_stack_via(
+        |_job| Err(std::io::Error::other("mmap refused")),
+        move || flag.store(true, Ordering::SeqCst),
+    )
+    .await;
+
+    let message = outcome.expect_err("a refused spawn must resolve as Err");
+    assert!(
+        message.contains("mmap refused"),
+        "the Err must carry the spawn refusal, got: {message}"
+    );
+    assert!(
+        !job_ran.load(Ordering::SeqCst),
+        "a refused spawn must not run the job anywhere"
+    );
+}
+
+/// (f) A thread that drops the job unrun resolves the await as `Err` at once,
+/// never as a hang.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_job_dropped_unrun_as_an_err() {
+    use crate::large_stack::run_on_large_stack_via;
+
+    let outcome = tokio::time::timeout(
+        ANTI_WEDGE,
+        run_on_large_stack_via(
+            |job| {
+                drop(job);
+                Ok(())
+            },
+            || 7u32,
+        ),
+    )
+    .await
+    .expect("a job dropped unrun must resolve the await, not hang it");
+
+    let message = outcome.expect_err("a job dropped unrun must resolve as Err");
+    assert!(
+        message.contains("without answering"),
+        "the Err must say the job never answered, got: {message}"
+    );
+}
+
 // ── Fire-and-forget ENGINE-lane submission (task 7442) ───────────────────────
 //
 // `post_to_worker` queues a job without waiting for it, so an async command
