@@ -1483,14 +1483,22 @@ const App: Component = () => {
       subscribe: () => subscribeModeShapeFrames(bucklingStore),
       onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
     },
-    // The reify-debug server is already live (REIFY_DEBUG=1 at launch): enter
-    // Debug mode through the same action as the Start view's Debug button.
+    // The reify-debug server is already live (REIFY_DEBUG=1 at launch), so the
+    // bridge starts without waiting on set_mode. A set_mode failure is notified
+    // and kept as the mode error; a bridge failure, the graver one, is toasted
+    // and replaces it as the mode error, as a Debug click presents it.
     {
       subscribe: async () => {
-        if (await isDebugEnabled()) await launcherActions.selectMode('debug');
+        if (await isDebugEnabled()) await launcherActions.adoptLiveDebugServer();
         return () => {};
       },
-      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
+      onFailure: (err) => {
+        console.error('[debug-bridge] init failed:', err);
+        if (err instanceof LaunchFailure) {
+          launcherStore.failMode(err.toInfo());
+          showToast(`Debug bridge unavailable: ${err.message}`, 'error');
+        }
+      },
     },
   ];
 

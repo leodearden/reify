@@ -18,7 +18,7 @@ import styles from './StartView.module.css';
 
 export interface StartViewProps {
   launcher: LauncherStore;
-  actions: LauncherActions;
+  actions: Pick<LauncherActions, 'openDocument' | 'createDocument' | 'refreshRecent' | 'selectMode'>;
 }
 
 const ASSISTANT_NOTE_ID = 'start-assistant-note-text';

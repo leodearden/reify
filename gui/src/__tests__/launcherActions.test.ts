@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createLauncherActions, LaunchFailure, type LauncherDeps } from '../app/launcherActions';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
-import type { RecentEntry } from '../types';
+import type { ModeState, RecentEntry } from '../types';
+import { deferred, flushMacrotasks } from './test-utils';
 
 const RECENT: RecentEntry[] = [
   { path: '/designs/bracket.ri', opened_at: 2000 },
@@ -213,5 +214,74 @@ describe('selectMode', () => {
     expect(store.state.mode.selected).toBe('assistant');
     expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
     expect(deps.showAssistant).not.toHaveBeenCalled();
+  });
+});
+
+describe('adoptLiveDebugServer', () => {
+  it('starts the bridge without waiting on set_mode, then records the live port', async () => {
+    const reply = deferred<ModeState>();
+    deps.setMode.mockReturnValue(reply.promise);
+    const actions = createLauncherActions(store, deps);
+
+    const adopted = actions.adoptLiveDebugServer();
+    await vi.waitFor(() => expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1));
+    expect(deps.setMode).toHaveBeenCalledWith('debug');
+
+    reply.resolve({ mode: 'debug', debug_port: 3939 });
+    await adopted;
+
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+    expect(deps.showAssistant).not.toHaveBeenCalled();
+  });
+
+  it('a set_mode failure becomes the mode error and a notification, and the action still resolves with the bridge started', async () => {
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const actions = createLauncherActions(store, deps);
+
+    await expect(actions.adoptLiveDebugServer()).resolves.toBeUndefined();
+
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
+    expect(store.state.mode.error).toEqual({
+      code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      message: 'IPC channel closed',
+    });
+    expect(store.state.mode.selected).toBe('assistant');
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls[0][0]).toContain('set_mode');
+    expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
+  });
+
+  it('rejects with E_GUI_DEBUG_LISTENER_FAILED when the bridge fails, only once set_mode has replied', async () => {
+    const reply = deferred<ModeState>();
+    deps.setMode.mockReturnValue(reply.promise);
+    deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
+    const actions = createLauncherActions(store, deps);
+    let settled = false;
+
+    const adopted = failureOf(actions.adoptLiveDebugServer()).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1));
+    await flushMacrotasks();
+    expect(settled).toBe(false);
+
+    reply.resolve({ mode: 'debug', debug_port: 3939 });
+    const failure = await adopted;
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.message).toContain('Failed to fetch dynamically imported module');
+    expect(store.state.mode.debugPort).toBe(3939);
+  });
+
+  it('when both fail, rejects with the bridge failure and keeps the set_mode failure as the mode error', async () => {
+    deps.ensureDebugBridge.mockRejectedValue(new Error('listen failed'));
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const actions = createLauncherActions(store, deps);
+
+    const failure = await failureOf(actions.adoptLiveDebugServer());
+
+    expect(failure.message).toBe('listen failed');
+    expect(store.state.mode.error?.message).toBe('IPC channel closed');
+    expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
   });
 });
