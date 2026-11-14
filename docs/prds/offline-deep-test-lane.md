@@ -201,8 +201,11 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   | tier | ceiling | members |
   |---|---|---|
   | default | 1200s | everything with no more specific override |
-  | gate-resident | 1800s | `representation_within_assertion` (LPT tier 50), `solve_elastic_static_body_e2e` (task 7339 contention headroom) |
+  | gate-resident | 1800s | `representation_within_assertion` (LPT tier 50) |
   | heavy | 2160s (120s x 18) | all 8 members of `REIFY_HEAVY_NEXTEST_FILTER` |
+
+  `solve_elastic_static_body_e2e` was in the gate-resident tier from task 7339 until task 9910 moved it
+  back to the default on post-9858 measurements (`docs/notes/elastic-body-e2e-solver-threading-measurement.md`).
 
   **What the ceiling buys.** On expiry nextest SIGTERMs the offending test BY NAME. The pass-level
   `timeout` wall in `scripts/verify.sh` does not: it kills the whole nextest process tree as exit 124
