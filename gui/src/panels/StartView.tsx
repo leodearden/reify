@@ -1,9 +1,10 @@
 /**
  * The launcher's Start view (alpha-spine β): shown over the layout while no
  * document is open. Every action failure is written to the launcher store,
- * which keeps this view up with a coded error the debug MCP can observe.
+ * which keeps this view up with a coded error the debug MCP can observe; the
+ * document error lasts until the next attempt or until the view is dismissed.
  */
-import { createSignal, For, onMount, Show, type Component } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
 import { LaunchFailure, type LauncherActions } from '../app/launcherActions';
 import {
@@ -47,6 +48,8 @@ export const StartView: Component<StartViewProps> = (props) => {
       console.warn('Recent list unavailable:', err);
     });
   });
+
+  onCleanup(() => props.launcher.clearDocumentError());
 
   /**
    * Run a document attempt and present any failure in the store. A rejection
