@@ -4,10 +4,9 @@
 use std::fs;
 
 use crate::harness::{
-    BEGIN_MARKER, END_MARKER, Fixture, HOST, TREE_A, TREE_UNION, UNION, UNION_NODE, UNION_PACKAGE,
-    assert_exit, assert_findings, assert_green, assert_input_error, assert_pin, covered_a,
-    describe, empty_union_manifest, member, member_split_fixture, parse_toml,
-    workspace_building_a_with_u, workspace_of,
+    BEGIN_MARKER, END_MARKER, Fixture, HOST, TREE_A, TREE_UNION, UNION, UNION_PACKAGE, assert_exit,
+    assert_findings, assert_green, assert_input_error, assert_pin, covered_a, describe,
+    empty_union_manifest, member, member_split_fixture, parse_toml, workspace_of,
 };
 
 fn assert_region_only_rewritten(manifest: &str) {
@@ -286,11 +285,7 @@ fn generate_refuses_to_write_while_the_coverage_rule_has_findings() {
     ];
     let original =
         empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
-    )
-    .with_union_manifest(&original);
+    let fixture = Fixture::metadata_only(&members).with_union_manifest(&original);
 
     assert_findings(
         &fixture.generate(),

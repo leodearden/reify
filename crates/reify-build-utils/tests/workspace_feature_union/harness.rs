@@ -307,6 +307,14 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new(members: &[Member], workspace_tree: &str) -> Fixture {
+        let fixture = Fixture::metadata_only(members);
+        fixture.write("tree-workspace.txt", workspace_tree);
+        fixture
+    }
+
+    /// Serves `members` as cargo metadata and no `cargo tree` output, so a
+    /// check or generate that resolves any tree exits 2.
+    pub(crate) fn metadata_only(members: &[Member]) -> Fixture {
         let fixture = Fixture {
             dir: tempfile::tempdir().expect("create workspace-feature-union fixture dir"),
         };
@@ -315,7 +323,6 @@ impl Fixture {
         fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
             .unwrap_or_else(|e| panic!("chmod {}: {e}", stub.display()));
         fixture.write("metadata.json", &metadata_json(fixture.dir.path(), members));
-        fixture.write("tree-workspace.txt", workspace_tree);
         fixture
     }
 

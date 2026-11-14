@@ -228,11 +228,7 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
         member("u", &[UNION]),
         member(UNION, &[]),
     ];
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
-    )
-    .tree("a", TREE_A_UNION_MEMCHR);
+    let fixture = Fixture::metadata_only(&members);
     let manifest = fixture.manifest("u");
     let out = fixture.check();
     assert_findings(
@@ -271,16 +267,7 @@ fn check_reds_when_a_build_dependency_member_reaches_the_union_through_a_covered
         member("core", &[UNION]),
         member(UNION, &[]),
     ];
-    let tree_core = format!("core v0.1.0 (/fixture/crates/core)|\n`-- {UNION_NODE}\n");
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&[
-            "`-- core v0.1.0 (/fixture/crates/core)|",
-            &format!("    `-- {UNION_NODE}"),
-        ]),
-    )
-    .tree("a", TREE_A_UNION_MEMCHR)
-    .tree("core", &tree_core);
+    let fixture = Fixture::metadata_only(&members);
     let manifest = fixture.manifest("u");
     assert_findings(
         &fixture.check(),
@@ -302,14 +289,7 @@ fn check_names_the_covered_member_a_host_side_member_brings_on_before_it_has_the
         member("core", &[]),
         member(UNION, &[]),
     ];
-    let tree_core = "core v0.1.0 (/fixture/crates/core)|\n";
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&["`-- core v0.1.0 (/fixture/crates/core)|"]),
-    )
-    .tree("a", TREE_A_UNION_MEMCHR)
-    .tree("core", tree_core);
-    let out = fixture.check();
+    let out = Fixture::metadata_only(&members).check();
     assert_findings(
         &out,
         &[
@@ -401,11 +381,7 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
         member("pm", &[UNION]).proc_macro(),
         member(UNION, &[]),
     ];
-    let fixture = Fixture::new(
-        &members,
-        &workspace_using_proc_macro_pm(&[&format!("`-- {UNION_NODE}")]),
-    )
-    .tree("a", TREE_A_UNION_PM);
+    let fixture = Fixture::metadata_only(&members);
     let manifest = fixture.manifest("pm");
     assert_findings(
         &fixture.check(),
@@ -415,54 +391,18 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
             "remove pm's dependency on workspace-feature-union",
             &manifest,
         ]],
-        "one finding for pm, though pm is printed under a and as a root of its own",
+        "one finding for pm: a depends on pm, but only pm's own edge to the union is \
+         compiled for the host",
     );
 }
-
-/// Real cargo 1.96's `--workspace` tree for core -> union, u -> core and
-/// zz -> union with `[build-dependencies] u`. A member reached on the host
-/// side gets a second root, textually identical to its target root, and the
-/// `(*)` dedupe spans roots, so neither u root nor zz's build edge to u
-/// shows the union below it.
-const WS_ZZ_BUILDS_WITH_U: &str = "\
-core v0.1.0 (/fixture/crates/core)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-
-core v0.1.0 (/fixture/crates/core)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-
-u v0.1.0 (/fixture/crates/u)|
-`-- core v0.1.0 (/fixture/crates/core)| (*)
-
-u v0.1.0 (/fixture/crates/u)|
-`-- core v0.1.0 (/fixture/crates/core)| (*)
-
-workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-
-workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-
-zz v0.1.0 (/fixture/crates/zz)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-[build-dependencies]
-`-- u v0.1.0 (/fixture/crates/u)| (*)
-";
 
 const TREE_CORE: &str = "\
 core v0.1.0 (/fixture/crates/core)|
 `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
 ";
 
-const TREE_ZZ_BUILDS_WITH_U: &str = "\
-zz v0.1.0 (/fixture/crates/zz)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-[build-dependencies]
-`-- u v0.1.0 (/fixture/crates/u)|
-    `-- core v0.1.0 (/fixture/crates/core)|
-        `-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-";
-
 #[test]
-fn check_and_generate_red_on_a_host_union_hidden_behind_a_host_root_printed_first() {
+fn check_and_generate_report_the_same_host_union_through_a_covered_member() {
     let members = vec![
         member("core", &[UNION]),
         member("u", &["core"]),
@@ -471,10 +411,7 @@ fn check_and_generate_red_on_a_host_union_hidden_behind_a_host_root_printed_firs
     ];
     let original =
         empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
-    let fixture = Fixture::new(&members, WS_ZZ_BUILDS_WITH_U)
-        .tree("core", TREE_CORE)
-        .tree("zz", TREE_ZZ_BUILDS_WITH_U)
-        .with_union_manifest(&original);
+    let fixture = Fixture::metadata_only(&members).with_union_manifest(&original);
     let manifest = fixture.manifest("u");
     let expected: &[&[&str]] = &[&[
         "HOST-UNION u",
@@ -486,8 +423,7 @@ fn check_and_generate_red_on_a_host_union_hidden_behind_a_host_root_printed_firs
     assert_findings(
         &fixture.check(),
         expected,
-        "u reaches the union through core, though cargo tree prints u's host root \
-         before zz's build edge to it",
+        "zz builds with u, which reaches the union through core",
     );
     assert_findings(
         &fixture.generate(),
@@ -503,15 +439,8 @@ fn check_and_generate_red_on_a_host_union_hidden_behind_a_host_root_printed_firs
 
 #[test]
 fn check_reds_when_a_covered_member_build_depends_on_the_union() {
-    let tree_zz = "\
-zz v0.1.0 (/fixture/crates/zz)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-[build-dependencies]
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-";
     let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
-    let fixture = Fixture::new(&members, &workspace_of(&[TREE_UNION, TREE_UNION, tree_zz]))
-        .tree("zz", tree_zz);
+    let fixture = Fixture::metadata_only(&members);
     let manifest = fixture.manifest("zz");
     assert_findings(
         &fixture.check(),
