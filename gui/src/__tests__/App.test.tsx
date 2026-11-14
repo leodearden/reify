@@ -3773,6 +3773,35 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
     expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
   });
+
+  it('an env-launched debug session starts the debug bridge before set_mode replies', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    const reply = deferred<ModeState>();
+    vi.mocked(bridge.setMode).mockReturnValue(reply.promise);
+
+    render(() => <App />);
+
+    await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1));
+
+    reply.resolve({ mode: 'debug', debug_port: 3939 });
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true'),
+    );
+  });
+
+  it('an env-launched debug session whose set_mode fails still starts the debug bridge and shows the set_mode failure', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.setMode).mockRejectedValue('IPC channel closed');
+
+    await renderAndWaitForReady();
+
+    expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(error.textContent).toContain('IPC channel closed');
+    expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).not.toBe('true');
+  });
 });
 
 describe('App end-to-end toast integration', () => {
