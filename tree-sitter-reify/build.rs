@@ -8,9 +8,18 @@ include!("build_support.rs");
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
 
+/// The newest parser ABI the workspace's `tree-sitter = "0.24"` runtime loads
+/// (issue #1). Equal to the `--abi` in scripts/tree-sitter-generate.sh; both are
+/// held by tests/infra/test_tree_sitter_abi_pin.py.
+const GENERATED_PARSER_ABI: &str = "14";
+
 fn run_tree_sitter_generate() {
     eprintln!("tree-sitter-reify: running tree-sitter generate...");
-    if let Err(msg) = run_with_timeout("tree-sitter", &["generate"], GENERATE_TIMEOUT_SECS) {
+    if let Err(msg) = run_with_timeout(
+        "tree-sitter",
+        &["generate", "--abi", GENERATED_PARSER_ABI],
+        GENERATE_TIMEOUT_SECS,
+    ) {
         panic!(
             "tree-sitter generate failed: {}\n\
              Ensure tree-sitter CLI is installed.\n\
