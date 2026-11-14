@@ -337,7 +337,7 @@ describe('App wiring', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       constraints: [
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
-      ]
+      ],
     })));
     await renderAndWaitForReady();
     const row = screen.getByTestId('constraint-row-c1');
@@ -350,7 +350,7 @@ describe('App wiring', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       constraints: [
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
-      ]
+      ],
     })));
     await renderAndWaitForReady();
     // Open context picker — 'Violated constraints' should be enabled
