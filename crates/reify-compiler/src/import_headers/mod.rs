@@ -30,16 +30,17 @@ pub struct RequiredImport {
     pub names: Vec<NameUse>,
 }
 
-/// The std modules a module needs, sorted by dotted path, and what the whole
-/// universe it was derived over reports for that module.
+/// The std-import derivation of one module over one universe.
 #[derive(Clone)]
 pub struct ImportPlan<'u> {
+    subject: ModulePath,
     required: Vec<RequiredImport>,
     universe: Vec<&'u CompiledModule>,
     whole_universe_diagnostics: Vec<Diagnostic>,
 }
 
 impl<'u> ImportPlan<'u> {
+    /// The std modules the module needs, sorted by dotted path.
     pub fn modules(&self) -> Vec<ModulePath> {
         self.required
             .iter()
@@ -78,13 +79,24 @@ impl<'u> ImportPlan<'u> {
     /// whole universe gives it too (matched one for one on their
     /// [`DiagnosticIdentity`]). Empty when the imports supply everything the
     /// module needs from the universe; a diagnostic the module raises
-    /// regardless is never counted against them. `parsed` must be the module
-    /// the plan was derived for.
+    /// regardless is never counted against them.
+    ///
+    /// # Panics
+    ///
+    /// If `parsed` is not at the module path the plan was derived for: the
+    /// whole-universe diagnostics are that module's.
     pub fn residual_diagnostics(
         &self,
         parsed: &ParsedModule,
         imports: &[ModulePath],
     ) -> Vec<Diagnostic> {
+        assert!(
+            parsed.path == self.subject,
+            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
+             derived for `{}`, given `{}`",
+            self.subject.to_dotted(),
+            parsed.path.to_dotted()
+        );
         let imported: Vec<&CompiledModule> = self
             .universe
             .iter()
@@ -140,6 +152,7 @@ pub fn derive_std_imports<'u>(
         }
     }
     ImportPlan {
+        subject: parsed.path.clone(),
         required: by_module
             .into_values()
             .map(|(module, names)| RequiredImport {

@@ -542,6 +542,16 @@ fn a_diagnostic_the_full_universe_also_raises_is_not_residual() {
     assert!(residual.is_empty(), "{residual:?}");
 }
 
+#[test]
+#[should_panic(expected = "derived for `subject`, given `elsewhere`")]
+fn a_module_other_than_the_one_the_plan_was_derived_for_is_refused() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let plan = derive(source, &universe);
+    let elsewhere = parse_clean(source, "elsewhere");
+    plan.residual_diagnostics(&elsewhere, &[]);
+}
+
 // ─── m1-m5: declared-import coverage by import form ────────────────────────
 
 /// Calls `Bracket` and `Gizmo`, both of std.fake.shapes.
