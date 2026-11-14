@@ -113,7 +113,7 @@ G=$(for g in "$BASE"/target.gen.[0-9]*; do [ -d "$g" ] && [ "$(stat -c %y "$g")"
 echo "$G"   # one gen; empty means target/ is no longer a pristine seed
 B=$(cat "$G.basecommit")
 find target ! -type d -newer "$G.basecommit" | wc -l   # must print 0: nothing was built since the seed
-[ -n "$B" ] && printf 'G=%q\nB=%q\n' "$G" "$B" > /tmp/<id>-base.env
+[ -n "$B" ] && printf 'L=%q\nG=%q\nB=%q\n' "$PWD" "$G" "$B" > /tmp/<id>-base.env
 ```
 
 The lookup works once: it compares `target/`'s own mtime with each gen's, and
@@ -121,7 +121,9 @@ the snapshot below changes that mtime. Its `mkdir` does, and so does each
 restore's `cp -a`, which gives `target/` the snapshot's mtime. Shell variables
 do not survive between Bash calls either, so every later block that needs `$B`
 starts with `. /tmp/<id>-base.env`. The `[ -n "$B" ]` guard stops a mistaken
-re-run from overwriting a good file. Then probe:
+re-run from overwriting a good file. `L` is the lane's path: `/tmp` is shared by
+every lane, so the base-commit block stops on a file another lane wrote. Give
+each lane its own `<id>`. Then probe:
 
 ```bash
 { uptime; git rev-parse HEAD; } > /tmp/<id>.ctx
@@ -144,6 +146,7 @@ from `/tmp/<id>-base.env`, so it also works after the snapshot.
 
 ```bash
 . /tmp/<id>-base.env
+[ "$L" = "$PWD" ] || { echo "base.env records lane $L, not $PWD: stop" >&2; exit 1; }
 git diff --name-only --no-renames "$B" HEAD > /tmp/<id>-D.lst   # both names of a rename
 git checkout --detach "$B"
 # The checkout rewrote the paths in D. Give each one that still exists the mtime the seed gives it at $B:
@@ -173,8 +176,8 @@ After the last probe, return with `git checkout <task branch>`, which rewrites
 the delta with fresh mtimes, the state the seed gives a branch's HEAD. An
 orchestrator restart runs `git rebase main` in the lane and moves a detached
 HEAD to main's tip; if one lands mid-run, run the base-commit block again and
-restore `target/`. The block re-reads `$B` from the file, recomputes the delta
-against the new HEAD (main's tip) and re-applies the re-stamp and the relink.
+restore `target/`. The block recomputes the delta against the new HEAD (main's
+tip) and re-applies the re-stamp and the relink.
 
 To take several first builds in one lane, snapshot the seeded `target/` before
 the first probe and restore it before each later one. Without the restore,
@@ -239,12 +242,11 @@ from the base's: `grammar.js`, `scanner.c`, or the tree-sitter CLI that wrote
 `parser.c` and its headers, which `scripts/tree-sitter-generate.sh` does not
 pin. Arm B would then link bytes its sources do not describe. Probing at the
 base commit cures the first two. Remove `/tmp/<id>-tsgen`, run the base-commit
-block (it reads `$B` from `/tmp/<id>-base.env`, so a snapshot already taken does
-not stop it), then repeat this block. A DIFF that survives that points to the
-CLI, and then the copy cannot be proven identical to the base's inputs, so arm B
-is not valid in this lane. Before every probe, the first included, put the copy
-in place of the `git clean` and `git status` lines above, since `--ignored`
-would list the copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+block, then repeat this block. A DIFF that survives that points to the CLI, and
+then the copy cannot be proven identical to the base's inputs, so arm B is not
+valid in this lane. Before every probe, the first included, put the copy in
+place of the `git clean` and `git status` lines above, since `--ignored` would
+list the copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
 
 ## Measurements
 
