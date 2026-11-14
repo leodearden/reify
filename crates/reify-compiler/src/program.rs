@@ -93,7 +93,6 @@ impl CompiledProgram {
 
     /// The templates the entry itself declares, excluding the I5 interim
     /// pub-template merge; their spans index the entry's source.
-    // G-allow: consumed by the LSP's template span policy (resolution-unification ζ)
     pub fn entry_declared_templates(&self) -> &[crate::TopologyTemplate] {
         &self.entry.templates[..self.declared_templates]
     }
