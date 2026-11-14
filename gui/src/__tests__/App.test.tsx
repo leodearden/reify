@@ -115,6 +115,10 @@ vi.mock('../editor/FileTabs', () => ({
 // restore below load-bearing rather than cosmetic. Deliberately not restated
 // here: unlike the key sets, prose has nothing to detect it going stale.
 const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
+const oneFileState = (): GuiState => ({
+  ...emptyState,
+  files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+});
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -370,6 +374,7 @@ describe('edges-in-black toggle wiring', () => {
   const storedEdges = () => JSON.parse(localStorage.getItem(VIEWPORT_DISPLAY_STORAGE_KEY) ?? 'null');
 
   it('the E key and the toolbar button both toggle edges, persist them, and reach the viewport', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
     expect(edgesButton().getAttribute('aria-pressed')).toBe('false');
     expect(capturedDualViewportProps.showEdges).toBe(false);
@@ -3488,11 +3493,6 @@ describe('App handleNew dirty-check confirmation', () => {
 });
 
 describe('App launcher Start view (alpha-spine β)', () => {
-  const oneFileState = (): GuiState => ({
-    ...emptyState,
-    files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-  });
-
   function typeStartPath(path: string) {
     fireEvent.input(screen.getByTestId('start-path-input'), { target: { value: path } });
   }
@@ -3870,6 +3870,42 @@ describe('App launcher Start view (alpha-spine β)', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('the help and export shortcuts open nothing behind the start view', async () => {
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(document, { key: '?' });
+    fireEvent.keyDown(document, { key: 'e', ctrlKey: true });
+
+    expect(screen.queryByTestId('keyboard-help')).toBeNull();
+    expect(screen.queryByTestId('export-dialog')).toBeNull();
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+  });
+
+  it('layout shortcuts leave the covered layout untouched', async () => {
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(document, { key: 'e' });
+    fireEvent.keyDown(document, { key: 'j', ctrlKey: true });
+    fireEvent.keyDown(document, { key: 'm', ctrlKey: true, shiftKey: true });
+
+    expect(screen.getByTestId('toolbar-edges-toggle').getAttribute('aria-pressed')).toBe('false');
+    expect(capturedDualViewportProps.showEdges).toBe(false);
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
+    expect(screen.queryByTestId('splitter-problems')).toBeNull();
+  });
+
+  it('the help shortcut works once a document opens from the start view', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => expect(screen.getByTestId('keyboard-help')).toBeTruthy());
+  });
 });
 
 describe('App end-to-end toast integration', () => {
@@ -3928,6 +3964,10 @@ describe('App end-to-end toast integration', () => {
 });
 
 describe('App keyboard help overlay', () => {
+  beforeEach(() => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+  });
+
   it('pressing ? key shows keyboard help overlay', async () => {
     await renderAndWaitForReady();
 
@@ -5006,6 +5046,10 @@ describe('App diagnostics panel splitter (step 11)', () => {
 });
 
 describe('App Escape clears multi-selection', () => {
+  beforeEach(() => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+  });
+
   it('pressing Escape after multi-selection empties selectedEntities', async () => {
     await renderAndWaitForReady();
 
@@ -5323,6 +5367,7 @@ describe('App — view selector and COW integration', () => {
 
   it('pressing "2" (no modifiers) switches to the second view in ViewSelector order', async () => {
     vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
     // Wait for ViewSelector trigger button showing the active view name "Default"
     await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
@@ -5348,6 +5393,7 @@ describe('App — view selector and COW integration', () => {
 
   it('COW user view appears in ViewSelector after eye-icon click and can be activated', async () => {
     vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
     await waitFor(() => expect(screen.getByTestId('eye-icon-Root.A')).toBeTruthy());
     await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
