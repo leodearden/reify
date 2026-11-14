@@ -32,6 +32,7 @@ from reify_verify import bashcall, childproc, knobs
 from reify_verify.bashcall import BashCall, SourcedFile
 from reify_verify.childproc import CallResult
 from reify_verify.plan import (
+    ERROR,
     JOBSERVER_VAR,
     CargoEnvMissing,
     CargoEnvSourced,
@@ -216,7 +217,7 @@ class NextestBroken:
     @property
     def error(self) -> str:
         return (
-            "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe "
+            f"{ERROR}cargo-nextest is present on PATH but the availability probe "
             f"(`{' '.join(NEXTEST_PROBE)}`) failed persistently across "
             f"{self.attempts}/{NEXTEST_PROBE_RETRIES} retries ({self.attempts + 1} probes total, "
             f"including the initial attempt; last retry rc={self.returncode}) — refusing to "
