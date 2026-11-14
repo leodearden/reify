@@ -3472,18 +3472,19 @@ fn compile_expr_guarded_with_expected_inner(
                     // relation arm's shared verbs `angle`/`distance` are pinned
                     // disjoint from every row by
                     // `registry_rows_and_shared_verbs_are_disjoint_from_every_family`.
-                    // So the ordering is unobservable except at the overlaps those
-                    // two tests exempt: the names allowlisted in
-                    // `unresolved_function::tests::INTENTIONAL_OVERLAPS`, and the
-                    // shared verbs' `GEOMETRY_QUERY_NAMES` exemption. At each, an
-                    // earlier arm either hands the shapes it declines on to a later
-                    // arm or wins by design, so those arms' relative order is
-                    // load-bearing. `INTENTIONAL_OVERLAPS` records which applies to
-                    // each of its names; the shared verbs ride the relation arm's
-                    // arity gate (noted on that arm). One worked example:
-                    // `selector_composition_result_type` is arg-aware (returns None
-                    // for CSG non-selector operands) so CSG `union`/`difference`
-                    // still reach `is_geometry_function`.
+                    // So the ordering is unobservable unless an overlap those two
+                    // tests exempt lets an earlier arm shadow a later one. Such an
+                    // overlap is recorded either among the names allowlisted in
+                    // `unresolved_function::tests::INTENTIONAL_OVERLAPS` or in the
+                    // shared verbs' `GEOMETRY_QUERY_NAMES` exemption. There the
+                    // earlier arm either hands the shapes it declines on to the
+                    // later arm or wins by design, so check how the overlap is
+                    // resolved before reordering its arms: `INTENTIONAL_OVERLAPS`
+                    // records which applies to each of its names, and the shared
+                    // verbs ride the relation arm's arity gate (noted on that
+                    // arm). One worked example: `selector_composition_result_type`
+                    // is arg-aware (returns None for CSG non-selector operands) so
+                    // CSG `union`/`difference` still reach `is_geometry_function`.
                     //
                     // task 4118 γ — list-helper selector coercion (insertion
                     // site #2). When `single(selector)` is called, wrap the
