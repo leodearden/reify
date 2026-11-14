@@ -1,10 +1,12 @@
 /**
- * The Start view's actions (alpha-spine β): open, create, refresh Recent and
- * select a launch mode. An action's primary stage rejects with a LaunchFailure
- * whose code names that stage; presenting it is the caller's job (the Start
- * view writes it to the launcher store, the File menu toasts it). A secondary
- * stage reports its own failure without rejecting: openDocument's Recent update
- * through notify, adoptLiveDebugServer's set_mode as the store's mode error.
+ * The launcher's actions (alpha-spine β): open, create, refresh Recent, select
+ * a launch mode, and adopt a debug server already live at launch. An action's
+ * primary stage rejects with a LaunchFailure whose code names that stage;
+ * presenting it is the caller's job (the Start view writes it to the launcher
+ * store, the File menu toasts it, App's env launch does both). A secondary
+ * stage reports its own failure through notify without rejecting:
+ * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
+ * becomes the store's mode error.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -97,14 +99,17 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     try {
       store.applyModeState(await deps.setMode('debug'));
     } catch (err) {
-      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: errorMessage(err) });
+      const message = errorMessage(err);
+      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message });
+      deps.notify(`Debug mode not recorded (set_mode failed): ${message}`);
     }
   }
 
   /**
    * Enter Debug mode for a debug server that is already live (REIFY_DEBUG=1 at
    * launch). The bridge does not wait on set_mode, a set_mode failure becomes
-   * the mode error, and the action rejects only when the bridge fails.
+   * the mode error and a notification, and the action rejects only when the
+   * bridge fails.
    */
   async function adoptLiveDebugServer(): Promise<void> {
     const bridge = inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () => deps.ensureDebugBridge());

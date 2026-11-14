@@ -3801,6 +3801,53 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
     expect(error.textContent).toContain('IPC channel closed');
     expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).not.toBe('true');
+    const toast = await screen.findByTestId('toast');
+    expect(toast.textContent).toContain('set_mode');
+    expect(toast.textContent).toContain('IPC channel closed');
+  });
+
+  it('an env-launched debug session whose bridge fails shows the failure as the mode error and toasts it', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+      vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
+        mode,
+        debug_port: mode === 'debug' ? 3939 : null,
+      }));
+      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+
+      await renderAndWaitForReady();
+
+      const error = await screen.findByTestId('start-mode-error');
+      expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+      expect(error.textContent).toContain('listen failed');
+      const toast = await screen.findByTestId('toast');
+      expect(toast.dataset.type).toBe('error');
+      expect(toast.textContent).toContain('listen failed');
+      expect(errorSpy).toHaveBeenCalledWith('[debug-bridge] init failed:', expect.anything());
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('an env-launched debug session whose bridge and set_mode both fail shows the bridge failure as the mode error', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+      vi.mocked(bridge.setMode).mockRejectedValue('IPC channel closed');
+      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+
+      await renderAndWaitForReady();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('start-mode-error').textContent).toContain('listen failed'),
+      );
+      expect(screen.getByTestId('start-mode-error').textContent).not.toContain('IPC channel closed');
+      const toasts = await screen.findAllByTestId('toast');
+      expect(toasts.map((t) => t.textContent).join('\n')).toContain('IPC channel closed');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
