@@ -347,8 +347,7 @@ priority = 100
 # margin over the measured budget and costs only false-kill margin that was
 # already generous.
 #
-# STATE BOTH BOUNDS HONESTLY, as task 7339's block (retired by task 9910) did.
-# The measured worst per-test cost across the heavy set is 545.2s in DEBUG
+# STATE BOTH BOUNDS HONESTLY. The measured worst per-test cost across the heavy set is 545.2s in DEBUG
 # and 545.0s in RELEASE — the same test at the same cost, which matters because
 # this ceiling governs BOTH profiles and a release-only figure would have been
 # standing in for a bound it never validated. 2160s is ~4.0x that worst observed
@@ -393,8 +392,7 @@ slow-timeout = { period = "120s", terminate-after = 18 }
 #
 # slow-timeout ONLY, no `priority` key: none of these was ever in the LPT tier,
 # and adding one would silently change merge-gate scheduling — a distinct lever
-# from a kill ceiling, out of scope here (the same reasoning task 7339's block,
-# retired by task 9910, recorded for itself).
+# from a kill ceiling, out of scope here.
 #
 # Each `filter` value below is BYTE-IDENTICAL to its atom in
 # REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh) with the outer
@@ -433,8 +431,6 @@ slow-timeout = { period = "120s", terminate-after = 18 }
 # (non_prismatic_two_case_build_realizes_body_exactly_once), measured 14.1-44.5s
 # across debug and release on the 32-core main host (loadavg up to 277) and the
 # 16-core laptop: ~27x under 1200s, against the 3x false-kill floor (task 7339 /
-# 7552 precedent). These are first-hand standalone runs, not gate logs, because
-# data/verify-logs keeps per-test logs only for failing runs. A 1200s timeout of
-# this binary is a regression to escalate with its data/verify-logs path, not a
-# cue to re-add an override. Numbers:
+# 7552 precedent). A 1200s timeout of this binary is a regression to escalate
+# with its data/verify-logs path, not a cue to re-add an override. Numbers:
 # docs/notes/elastic-body-e2e-solver-threading-measurement.md.
