@@ -1433,8 +1433,8 @@ class TestReifyBinaryRefusal(_MainHarness, unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
-class TestLoneBinaryTrustOnMain(_MainHarness, unittest.TestCase):
-    """main() over a ctx the REAL trust home built: a lone unvouched binary stops it.
+class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
+    """main() over a ctx the REAL trust home built: only a vouched binary runs probes.
 
     The ctx comes from the public ProbeContext.from_environment() over a fixture
     git repository, so scripts/reify-bin-freshness.sh decides, exactly as on a
@@ -1477,6 +1477,20 @@ class TestLoneBinaryTrustOnMain(_MainHarness, unittest.TestCase):
         self.assertTrue(calls)
         for _probe, probe_ctx, _timeout in calls:
             self.assertEqual(probe_ctx.reify_bin, release)
+
+    def test_nothing_built_is_refused_before_any_probe_runs(self):
+        tmp = tempfile.TemporaryDirectory(prefix="pcc_unbuilt_main_")
+        self.addCleanup(tmp.cleanup)
+        root = make_fixture_repo(tmp.name)
+        make_git_fixture_repo(root)
+        ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
+        runner, calls = recording_runner()
+        rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET],
+                                                runner=runner, ctx=ctx)
+        self.assertEqual(rc, 64, err)
+        self.assertIn("REIFY_BIN", err)
+        self.assertEqual(out, "")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
