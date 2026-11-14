@@ -29,6 +29,10 @@ from _pcc_test_support import (
     write_bin_sidecar,
     write_profile_binary,
 )
+from _pdv_test_support import TRUST_HOME
+
+# TRUST_HOME's `resolve` exit when no profile binary is built, named as the home names it.
+REIFY_BIN_NOT_BUILT = 2
 
 
 class TestFromEnvironment(unittest.TestCase):
@@ -325,10 +329,10 @@ class TestReifyBinaryTrust(unittest.TestCase):
     def test_nothing_built_is_refused_relaying_the_trust_home_reason(self):
         """A reify on PATH has no provenance, so nothing built refuses like an unvouched binary."""
         home = subprocess.run(
-            ["bash", os.path.join(_REPO_ROOT, "scripts", "reify-bin-freshness.sh"),
-             "resolve", self.root],
+            ["bash", TRUST_HOME, "resolve", self.root],
             env=trust_environ(), capture_output=True, text=True,
         )
+        self.assertEqual(home.returncode, REIFY_BIN_NOT_BUILT, home.stdout + home.stderr)
         reason = home.stdout.strip()
         self.assertTrue(reason)
         ctx = self._ctx()

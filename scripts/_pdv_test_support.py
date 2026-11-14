@@ -1,5 +1,6 @@
 """Shared loaders and path facts for the scripts/test_prd_decompose_verify*.py partitions,
-and the one reify-e2e skip policy, which the scripts/test_pcc_*.py partitions share.
+and the one reify-e2e skip policy and the path of the trust home α asks
+(TRUST_HOME), which the scripts/test_pcc_*.py partitions share.
 
 Each partition puts its own directory on sys.path before importing this module, so every
 invocation form resolves it: `python3 scripts/<partition>.py`,
@@ -17,6 +18,7 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PDV_PY = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
 REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
+TRUST_HOME = os.path.join(_SCRIPTS_DIR, "reify-bin-freshness.sh")
 
 
 @functools.cache
@@ -59,8 +61,9 @@ def require_reify_binary(test, pcc=None):
         test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
     if not os.path.dirname(ctx.reify_bin):
         test.skipTest(
-            f"{ctx.reify_bin!r} is a bare name resolved on PATH, which carries no "
-            "provenance; build reify in this checkout or set REIFY_BIN to a path"
+            f"REIFY_BIN names the bare command {ctx.reify_bin!r}, resolved on PATH, "
+            "which carries no provenance; set REIFY_BIN to a path, e.g. "
+            '"$(command -v reify)", or unset it and build reify in this checkout'
         )
     if shutil.which(ctx.reify_bin) is None:
         test.skipTest(f"reify binary {ctx.reify_bin} not built")

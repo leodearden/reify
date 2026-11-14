@@ -263,8 +263,9 @@ def _resolve_reify_bin(
     error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
     decides, and only a vouched-for profile binary is used: a built but
     unvouched binary is refused, and so is nothing built, because a reify on
-    PATH carries no provenance.  A home that cannot be consulted refuses too: an unprovable trust answer is never "trusted",
-    and neither is a TRUSTED answer that is not one absolute-path line.
+    PATH carries no provenance.  A home that cannot be consulted refuses too:
+    an unprovable trust answer is never "trusted", and neither is a TRUSTED
+    answer that is not one absolute-path line.
     BASH_ENV is withheld from the home: bash would run it first, and anything
     it prints would join the answer.
     """
