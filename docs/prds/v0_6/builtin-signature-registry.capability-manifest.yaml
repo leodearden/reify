@@ -430,7 +430,7 @@ tasks:
       reason: adjudication of a PRD open question; the resolution is recorded here and in the
         module header, and has no single stable source pattern
   - name: drift-guard-no-registration-needed
-    binding: VERIFIED, not assumed — the trigger (.claude/skills/prd/project.md:170) is scoped
+    binding: VERIFIED, not assumed — the trigger (.claude/skills/prd/project.md → "Gate-test drift-guard registration") is scoped
       to a new gate-resident crates/*/tests/*.rs binary or a new tests/infra/test_*.sh, and
       psi ships an in-crate `#[cfg(test)] mod`, which is neither. Per-anchor, measured 2026-09-14
       on task/6013 — (1) tests/infra/run-all-classification.manifest has 238 rows and 0 matching
