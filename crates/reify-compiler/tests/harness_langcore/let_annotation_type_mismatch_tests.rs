@@ -1,20 +1,55 @@
 //! Tests for `LetAnnotationTypeMismatch` — let binding declared-type vs
 //! initializer-type mismatch detected at the declaration site.
 //!
-//! This is the let analogue of `ParamDefaultTypeMismatch` (#4318).
-//!
-//! Step 1: RED (headline + positive guard). Tests compile against current main
-//! without referencing `DiagnosticCode` (that variant does not exist yet).
-//! The headline test is RED today (silent accept); the guard already passes.
-//!
-//! Step 3 (appended): References `DiagnosticCode::LetAnnotationTypeMismatch`
-//! introduced in step 2; adds numeric-idiom (RED until step-4), code assertion,
-//! Int-arm, wrong-type, anti-cascade, scope-guard, and unresolved-annotation tests.
-//!
-//! Step 5 (appended later): RED for port-member let site (site 2).
+//! This is the let analogue of `ParamDefaultTypeMismatch` (#4318). A bare or
+//! negated numeric literal at a dimensioned Scalar let annotation is rejected
+//! like any other dimensionless initializer (see
+//! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source, errors_only};
+
+/// Assert `source` yields exactly ONE error: a `LetAnnotationTypeMismatch` that
+/// names `name` and is anchored at its `let <name>` declaration. Returns its
+/// message for callers that pin the rendered types.
+fn assert_single_let_annotation_type_mismatch(source: &str, name: &str) -> String {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error for let '{name}', got: {shapes:?}"
+    );
+    let diag = errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::LetAnnotationTypeMismatch),
+        "let '{name}': got: {shapes:?}"
+    );
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "let '{name}': got: {shapes:?}"
+    );
+    assert!(
+        diag.message.contains(&format!("'{name}'")),
+        "message must quote '{name}', got: {:?}",
+        diag.message
+    );
+    let span = diag
+        .labels
+        .first()
+        .unwrap_or_else(|| panic!("let '{name}': diagnostic has no label: {diag:?}"))
+        .span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains(&format!("let {name}")),
+        "label must cover the 'let {name}' declaration, covers: {sliced:?}"
+    );
+    diag.message.clone()
+}
 
 // ─── Step-1 tests ─────────────────────────────────────────────────────────────
 
@@ -159,37 +194,40 @@ structure S {
 
 // ─── Step-3 tests (appended) ──────────────────────────────────────────────────
 
-/// The numeric-literal idiom — whole-number, fractional, and negated literals
-/// for a dimensioned Scalar let — must NOT produce `LetAnnotationTypeMismatch`.
-///
-///   `let x : Length = 5`   — Int literal, accepted.
-///   `let y : Length = 0.5` — dimensionless Real literal, accepted.
-///   `let z : Length = -5.0` — negated Real literal, accepted.
-///
-/// RED until step-4 adds the numeric-literal guard to `check_let_annotation_type`.
-/// Mirrors `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` and
-/// `param_negative_literal_on_dimensioned_scalar_does_not_error`.
+/// Inverts a deliberate pin of the opposite rule: a bare or negated Int/Real
+/// literal at a dimensioned Scalar let is rejected. The literal tolerance was
+/// introduced by #4318; see docs/prds/v0_6/dimensioned-construction-strictness.md §0.3.
 #[test]
-fn let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error() {
-    let source = r#"
-structure S {
-    let x : Length = 5
-    let y : Length = 0.5
-    let z : Length = -5.0
+fn let_annotation_int_and_real_literal_on_dimensioned_scalar_errors() {
+    for (source, name) in [
+        ("structure S { let x : Length = 5 }", "x"),
+        ("structure S { let y : Length = 0.5 }", "y"),
+        ("structure S { let z : Length = -5.0 }", "z"),
+        ("structure S { let t : Length = 1.0 }", "t"),
+    ] {
+        assert_single_let_annotation_type_mismatch(source, name);
+    }
 }
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
 
-    let false_pos = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        false_pos.is_none(),
-        "unexpected LetAnnotationTypeMismatch for Int/Real literal on Length let; \
-         Int and dimensionless-Real literals must be accepted for any dimensioned Scalar; \
-         got: {:?}",
-        false_pos
+/// A pure numeric-literal-arithmetic initializer is neither a single literal nor
+/// a dimensioned expression; at a dimensioned let it is rejected once, naming
+/// the declared and found types.
+#[test]
+fn let_annotation_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
+    for (source, name, found) in [
+        ("structure S { let a : Length = 2 + 3 }", "a", "`Int`"),
+        ("structure S { let b : Length = 2.0 * 3.0 }", "b", "`Real`"),
+    ] {
+        let message = assert_single_let_annotation_type_mismatch(source, name);
+        assert!(
+            message.contains("`Scalar[m]`") && message.contains(found),
+            "let '{name}': message must name declared `Scalar[m]` and found {found}, \
+             got: {message:?}"
+        );
+    }
+    assert_single_let_annotation_type_mismatch(
+        "trait T { }\nstructure S { port p : out T { let c : Length = 2 + 3 } }",
+        "c",
     );
 }
 
@@ -563,38 +601,21 @@ structure S {
     );
 }
 
-/// Port-member numeric-literal idiom guard: `let d : Length = 5` must NOT produce
-/// `LetAnnotationTypeMismatch` at the port-member site (site 2).
-///
-/// Site 2 resolves the annotation through an independent code path (fresh
-/// throwaway-sink, not β's `expected_ty`). This test verifies that the numeric-
-/// literal idiom guard fires correctly via that path — a divergence (e.g. the
-/// wrong `rhs_kind` reaching the guard) would cause a spurious error with no
-/// failing test to catch it.
-///
-/// Mirrors `let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error`
-/// at the structure-body site.
+/// Inverts a deliberate pin of the opposite rule at the port-member site (site 2):
+/// a bare or negated literal at a dimensioned Scalar let is rejected. The
+/// tolerance was introduced by #4318; see docs/prds/v0_6/dimensioned-construction-strictness.md §0.3.
 #[test]
-fn port_member_let_annotation_numeric_literal_on_dimensioned_scalar_do_not_error() {
-    let source = r#"
-trait T { }
-structure S {
-    port p : out T {
-        let d : Length = 5
+fn port_member_let_annotation_numeric_literal_on_dimensioned_scalar_errors() {
+    for (source, name) in [
+        (
+            "trait T { }\nstructure S { port p : out T { let d : Length = 5 } }",
+            "d",
+        ),
+        (
+            "trait T { }\nstructure S { port p : out T { let e : Length = -0.5 } }",
+            "e",
+        ),
+    ] {
+        assert_single_let_annotation_type_mismatch(source, name);
     }
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let false_pos = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        false_pos.is_none(),
-        "unexpected LetAnnotationTypeMismatch for Int literal on Length let at \
-         port-member site; numeric literals must be accepted for any dimensioned Scalar \
-         via the idiom guard; got: {:?}",
-        false_pos
-    );
 }
