@@ -1026,3 +1026,23 @@ fn compile_program_entry_declared_templates_exclude_merged_imports() {
     assert_eq!(count(declared_names(&colliding)), 1);
     assert_eq!(count(template_names(&colliding.entry)), 1);
 }
+
+/// A caller that shrinks `entry.templates` below the declared prefix gets a
+/// panic naming the invariant and both counts, not a bare slice-index panic.
+#[test]
+#[should_panic(
+    expected = "entry_declared_templates: the entry's compile produced 1 templates \
+                but `entry.templates` now holds 0"
+)]
+fn entry_declared_templates_names_a_shrunk_template_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut program = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+        &CfgSet::default(),
+    );
+    program.entry.templates.clear();
+
+    let _ = program.entry_declared_templates();
+}

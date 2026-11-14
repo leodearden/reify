@@ -39,6 +39,8 @@ pub struct CompiledImportUnit {
 pub struct CompiledProgram {
     /// The entry module, with the direct imports' pub templates merged into its
     /// template list and every import failure attached to its diagnostics.
+    /// [`Self::entry_declared_templates`] is a prefix of `entry.templates`:
+    /// append to that list, never shrink or reorder it.
     pub entry: CompiledModule,
     /// The entry's followed, successfully compiled direct imports, in
     /// declaration order, one per distinct import path.
@@ -49,7 +51,8 @@ pub struct CompiledProgram {
     /// Which of `entry.diagnostics` are re-homed copies of a compiled user
     /// module's own diagnostics, in `entry.diagnostics` order.
     rehomed: Vec<RehomedDiagnostic>,
-    /// How many of `entry.templates`, from the front, the entry declares.
+    /// How many of `entry.templates`, from the front, the entry's own compile
+    /// produced.
     declared_templates: usize,
 }
 
@@ -91,10 +94,20 @@ impl CompiledProgram {
             .map(|(_, diag)| diag)
     }
 
-    /// The templates the entry itself declares, excluding the I5 interim
-    /// pub-template merge; their spans index the entry's source.
+    /// The templates the entry's own compile produced, excluding the I5 interim
+    /// pub-template merge. Their spans index the entry's source, except an
+    /// `auto:` monomorph of a stdlib or imported generic, which keeps that
+    /// generic's spans.
     pub fn entry_declared_templates(&self) -> &[crate::TopologyTemplate] {
-        &self.entry.templates[..self.declared_templates]
+        let templates = &self.entry.templates;
+        assert!(
+            self.declared_templates <= templates.len(),
+            "entry_declared_templates: the entry's compile produced {} templates but \
+             `entry.templates` now holds {}; the I5 merge only appends, so a caller shrank it",
+            self.declared_templates,
+            templates.len(),
+        );
+        &templates[..self.declared_templates]
     }
 }
 
