@@ -9,7 +9,8 @@ import {
   mockOnAutoResolveComplete,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleIteration, makeGuiState } from './engineStoreFixtures';
+import { sampleIteration } from './engineStoreFixtures';
+import { makeGuiState } from './test_utils/guiState';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);

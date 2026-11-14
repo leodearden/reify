@@ -24,7 +24,8 @@ import {
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleMesh, sampleValue, sampleConstraint, makeGuiState } from './engineStoreFixtures';
+import { sampleMesh, sampleValue, sampleConstraint } from './engineStoreFixtures';
+import { makeGuiState } from './test_utils/guiState';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
