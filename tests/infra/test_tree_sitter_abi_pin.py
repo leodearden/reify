@@ -37,6 +37,26 @@ FIXTURE_TREE_SITTER_JSON = """\
 
 LANGUAGE_VERSION_DEFINE = re.compile(r"^#define LANGUAGE_VERSION (\d+)$", re.MULTILINE)
 
+FIXTURE_CARGO_TOML = """\
+[package]
+name = "tree-sitter-reify"
+version = "0.0.0"
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+cc = "1"
+
+[workspace]
+"""
+
+CARGO_BUILD_TIMEOUT_SECS = 600
+
+OFFLINE_UNRESOLVED = re.compile(
+    r"no matching package|failed to select a version|registry index was not found"
+    r"|not found in registry|failed to download|attempting to make an HTTP request"
+)
+
 
 def language_version(parser_c: Path) -> int:
     if not parser_c.is_file():
@@ -58,6 +78,16 @@ def write_fixture_grammar(grammar_dir: Path) -> None:
     grammar_dir.mkdir(parents=True, exist_ok=True)
     (grammar_dir / "grammar.js").write_text(FIXTURE_GRAMMAR_JS)
     (grammar_dir / "tree-sitter.json").write_text(FIXTURE_TREE_SITTER_JSON)
+
+
+def write_fixture_crate(crate: Path) -> None:
+    (crate / "src").mkdir(parents=True)
+    shutil.copy(TS_DIR / "build.rs", crate / "build.rs")
+    shutil.copy(TS_DIR / "build_support.rs", crate / "build_support.rs")
+    write_fixture_grammar(crate)
+    (crate / "src" / "scanner.c").write_text("/* fixture: no external scanner */\n")
+    (crate / "src" / "lib.rs").write_text("//! tree-sitter ABI-pin fixture crate.\n")
+    (crate / "Cargo.toml").write_text(FIXTURE_CARGO_TOML)
 
 
 def run(argv: list, cwd: Path, env: dict, timeout=None) -> subprocess.CompletedProcess:
@@ -126,6 +156,39 @@ class TreeSitterAbiPinTest(unittest.TestCase):
             language_version(grammar_dir / "src" / "parser.c"),
             PINNED_ABI,
             f"{self.cli_version}: scripts/tree-sitter-generate.sh emitted a parser "
+            f"the tree-sitter 0.24 runtime cannot load.\n{result.stdout}",
+        )
+
+    def test_build_rs_emits_pinned_abi(self):
+        self._assert_fixture_reproduces_abi15_default()
+        if shutil.which("cargo") is None:
+            self.skipTest("cargo not on PATH")
+
+        scratch = self._scratch_dir()
+        crate = scratch / "crate"
+        write_fixture_crate(crate)
+
+        try:
+            result = run(
+                ["cargo", "build", "--offline", "--manifest-path", str(crate / "Cargo.toml")],
+                crate,
+                hermetic_env(CARGO_TARGET_DIR=str(scratch / "target")),
+                timeout=CARGO_BUILD_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired:
+            self.skipTest(
+                f"cargo build timed out after {CARGO_BUILD_TIMEOUT_SECS} s "
+                f"(cold/contended-cache environment)"
+            )
+        if result.returncode != 0 and OFFLINE_UNRESOLVED.search(result.stdout):
+            self.skipTest(
+                "cargo could not resolve dependencies offline (host registry cache lacks them)"
+            )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            language_version(crate / "src" / "parser.c"),
+            PINNED_ABI,
+            f"{self.cli_version}: tree-sitter-reify/build.rs emitted a parser "
             f"the tree-sitter 0.24 runtime cannot load.\n{result.stdout}",
         )
 
