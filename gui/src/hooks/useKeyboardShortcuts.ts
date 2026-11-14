@@ -24,6 +24,11 @@ export interface KeyboardShortcutCallbacks {
   onSwitchViewByIndex?: (index: number) => void;
 }
 
+export interface KeyboardShortcutOptions {
+  /** Whether a document is open; read on every keydown. Defaults to always open. */
+  documentLoaded?: () => boolean;
+}
+
 /**
  * Source of truth for bind→callback wiring: maps each shortcut id to the
  * corresponding callback key on KeyboardShortcutCallbacks.
@@ -113,9 +118,16 @@ function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
  * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire),
  * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
  * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
- * auto-repeat keydowns, so holding the key flips the state once.
+ * auto-repeat keydowns, so holding the key flips the state once. With no
+ * document open, only `worksWithoutDocument` shortcuts run; the others are
+ * swallowed.
  */
-export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void {
+export function useKeyboardShortcuts(
+  callbacks: KeyboardShortcutCallbacks,
+  options: KeyboardShortcutOptions = {},
+): void {
+  const documentLoaded = options.documentLoaded ?? (() => true);
+
   function handleKeyDown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
     const tagName = target.tagName?.toLowerCase();
@@ -124,6 +136,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       tagName === 'textarea' ||
       (tagName === 'select' && isSelectTypeAheadKey(e)) ||
       target.isContentEditable;
+    const noDocument = !documentLoaded();
 
     // Registry-driven matching.
     // Array order in SHORTCUTS determines priority: if two bindings could
@@ -139,6 +152,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
 
       e.preventDefault();
+      if (noDocument && !shortcut.worksWithoutDocument) return;
       if (e.repeat && shortcut.toggle) return;
       // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
       // Cast to silence TypeScript's union-type inference for the parameterised
@@ -148,8 +162,9 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       return;
     }
 
-    // Skip remaining special-case handlers when typing in form elements.
-    if (inTypingContext) return;
+    // Skip remaining special-case handlers when typing in form elements or
+    // when no document is open.
+    if (inTypingContext || noDocument) return;
 
     // Escape — Dismiss reload prompt, then clear selection.
     // Handled separately: Escape is a UI-dismiss action, not a formal application
