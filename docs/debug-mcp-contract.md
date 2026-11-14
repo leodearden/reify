@@ -19,6 +19,7 @@
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
 | §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
 | §6 Camera-state coherence | `debugBridge.test.tsx` (set\_camera `applied` read-back), `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom), `viewport/controls.test.ts` + `viewport/fitCamera.test.ts` (floor policy), `viewport/selectionOrbitFloor.test.ts` (the shipped `fitToView` path). Live-only e2e, NOT verify-gated: the camera `VALUE_SCENARIOS` in `gui/test/visual/assertions.ts` (`npm run test:e2e`) |
+| §7 Request admission | `loopback_request_guard_tests.rs` — the rule; `debug_server_admission_tests.rs` — the served listener enforces it with its bound port, before any handler |
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
@@ -1187,3 +1188,60 @@ Per §0's rule, this section deliberately does **not** enumerate per-tool return
 
 *Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray round-3
 probe (2026-09-03).*
+
+---
+
+## §7 Request admission (DNS-rebinding guard, task 9881)
+
+### The rule
+
+Every request to `/mcp` and `/debug/*` must carry a `Host` that names the bound
+listener: `127.0.0.1:<port>` or `localhost:<port>`, where `<port>` is the port the
+listener actually bound. Matching ignores ASCII case, and the port is required (a bare
+`localhost` is refused). At least one `Host` must be present, and every `Host` value
+must match.
+
+`Origin` is optional. When a request carries one, every `Origin` value must be
+`http://` followed by one of those two authorities. Anything else is refused, including
+`null`, an `https://` origin and an origin on another local port.
+
+### The refusal
+
+A refused request gets HTTP **403** with the same `{"error": string}` body that the
+REST handler uses for its other errors (the §2 shape). The message names the refused
+header and its value, or the missing `Host`, and lists the accepted authorities. The
+request never reaches a tool handler, and the server logs the refusal at `warn`.
+
+### Why
+
+The server is unauthenticated, and its tools write disk (`reify_save_file`,
+`reify_export`, `reify_set_parameter`) and drive the UI.
+
+Plain cross-origin CSRF was already blocked. A `text/plain` simple request fails the
+JSON extractor (415). An `application/json` request needs a CORS preflight, and the
+server has no `OPTIONS` route.
+
+A DNS-rebinding page gets past both. Once `http://attacker.example:<port>` rebinds its
+name to `127.0.0.1`, the browser treats the debug server as same-origin, so no preflight
+is sent. The browser still sends `Host: attacker.example:<port>`, and refusing a `Host`
+that does not name this listener is what stops it.
+
+The `Origin` check is defence in depth against a page served from another local port,
+for example `http://localhost:8080`.
+
+### What clients must do
+
+Address the server as `127.0.0.1` or `localhost`, with the bound port. An SSH tunnel or
+other port-forward must keep the same local port number, or the forwarded `Host` will
+not match.
+
+Non-browser clients send no `Origin` and are unaffected. That covers Node `fetch` (and
+so the MCP SDK's streamable-HTTP transport and the `gui/test/visual` drivers) and
+`curl`. The GUI webview never calls this server over HTTP: its debug bridge rides
+Tauri events.
+
+### Where it lives
+
+The rule is `check_loopback_request` in `gui/src-tauri/src/loopback_request_guard.rs`.
+`debug_server::serve_debug_routes` applies it with the listener's real `local_addr()`,
+and that function is the only place debug routes are served.
