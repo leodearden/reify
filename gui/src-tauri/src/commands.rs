@@ -803,6 +803,15 @@ pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
     open_file_impl(&target)
 }
 
+/// [`create_new_file_impl`], awaited on a large-stack thread: the template's
+/// parse can be the process's first stdlib compile, which must not run on the
+/// GTK main thread.
+pub async fn create_new_file_on_large_stack(path: String) -> Result<FileData, String> {
+    crate::large_stack::run_on_large_stack(move || create_new_file_impl(&path))
+        .await
+        .and_then(std::convert::identity)
+}
+
 /// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
 /// entries are still stem-only module keys rather than canonical absolute
 /// paths. The only way to get a plain [`GuiState`] back out is
