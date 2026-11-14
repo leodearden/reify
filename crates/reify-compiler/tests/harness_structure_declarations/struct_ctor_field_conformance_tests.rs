@@ -1180,7 +1180,7 @@ const PORT_PARITY_CASES: &[PortParityCase] = &[
                         structure def Root {\n    param w : Length = 5\n}\n",
         port_src: "module test.parity_bare\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param w : Length = 5\n    }\n}\n",
-        expected: &[(Severity::Error, DiagnosticCode::ArgTypeMismatch)],
+        expected: &[(Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch)],
     },
     PortParityCase {
         label: "String ← 42 (general concrete leaf)",
