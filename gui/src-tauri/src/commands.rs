@@ -790,12 +790,15 @@ pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Before the file exists: this is the slow, panic-prone step, and a panic
+    // must not leave behind an empty file that refuses the retry.
+    let template = crate::new_file_template::new_file_template(&stem);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
         .map_err(|e| format!("Error creating {target}: {e}"))?;
-    if let Err(e) = file.write_all(crate::new_file_template::new_file_template(&stem).as_bytes()) {
+    if let Err(e) = file.write_all(template.as_bytes()) {
         // The file is ours (create_new): remove the partial write so a retry is not refused.
         let _ = std::fs::remove_file(&target);
         return Err(format!("Error creating {target}: {e}"));
