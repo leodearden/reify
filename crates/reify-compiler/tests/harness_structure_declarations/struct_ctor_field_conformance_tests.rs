@@ -1071,8 +1071,9 @@ fn port_member_structureref_param_default_given_string_errors() {
 // `module.diagnostics` — not just the ctor-conformance subset — is what also
 // makes the fence prove the fix does not DOUBLE-report: `check_param_default_type`
 // (the Error-severity declared-vs-initializer check in `entity.rs`) and
-// `check_param_default_conformance` stay complementary at the port site exactly
-// as they already are at the top level.
+// `check_param_default_conformance` split the work at the port site exactly as
+// they do at the top level — conformance skips a default the declaration-site
+// check already rejected (PRD D4-4).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One parity row: the same param-default mismatch written both ways, plus the
@@ -1104,10 +1105,10 @@ struct PortParityCase {
 ///
 /// All three run over the FULL `module.diagnostics`, deliberately overriding this
 /// file's [`ctor_conformance_diags`] narrowing convention. That is not a slip:
-/// row 1's `check_param_default_type` half is `ParamDefaultTypeMismatch`, which
-/// is NOT in `CTOR_CONFORMANCE_CODES`, so a filtered comparison could not see it
-/// at all and the no-double-report claim above would silently evaporate into a
-/// check of the ctor-conformance half alone. The cost the convention exists to
+/// row 1's `check_param_default_type` diagnostic is `ParamDefaultTypeMismatch`,
+/// which is NOT in `CTOR_CONFORMANCE_CODES`, so a filtered comparison could not
+/// see it at all and the no-double-report claim above would silently evaporate
+/// into a check of the ctor-conformance subset alone. The cost the convention exists to
 /// avoid is accepted, not denied — an unrelated future `W_*` on these fixtures
 /// reds this helper — and is kept small by every fixture it drives being a
 /// three-line inline source carrying the `module test.<name>` prologue.
@@ -1167,15 +1168,11 @@ const PORT_PARITY_CASES: &[PortParityCase] = &[
                         structure def Root {\n    param w : Length = 5kg\n}\n",
         port_src: "module test.parity_dim\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param w : Length = 5kg\n    }\n}\n",
-        // Two COMPLEMENTARY emitters, not a double-report: the first is
-        // `check_param_default_type`'s declared-vs-initializer dimension rule,
-        // the second is the ctor-conformance walk #7174 widened. Both are
-        // `Error` since δ (#5306), so severity no longer tells them apart —
-        // the CODE does, which is why both columns are pinned.
-        expected: &[
-            (Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch),
-            (Severity::Error, DiagnosticCode::ArgTypeMismatch),
-        ],
+        // The declaration-site check (`check_param_default_type`) owns a
+        // scalar-comparable param default, and the conformance entry does not
+        // re-judge a default that check already rejected (PRD D4-4): one
+        // mistake, one diagnostic.
+        expected: &[(Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch)],
     },
     PortParityCase {
         label: "Length ← 5 (bare Int at a dimensioned param)",

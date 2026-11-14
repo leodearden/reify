@@ -13,7 +13,7 @@
 //!   - Cross-dimension scalar mismatch (`param x : Length = 5kg` MUST error)
 //!   - Reciprocal-dimension non-literal expression (literal-only guard → active error)
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source, errors_only};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
@@ -574,4 +574,84 @@ structure S {
             .map(|d| (&d.message, &d.code))
             .collect::<Vec<_>>()
     );
+}
+
+// ─── D4-4: one authoring mistake, one diagnostic ─────────────────────────────
+
+/// Assert `source` yields exactly ONE error: a `ParamDefaultTypeMismatch` that
+/// names `param` and is anchored at its `param <name>` declaration.
+///
+/// Pins code identity and the quoted name only, never other message prose
+/// (PRD D4-8).
+fn assert_single_param_default_type_mismatch(source: &str, param: &str) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error for param '{param}', got: {shapes:?}"
+    );
+    let diag = errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::ParamDefaultTypeMismatch),
+        "param '{param}': got: {shapes:?}"
+    );
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "param '{param}': got: {shapes:?}"
+    );
+    assert!(
+        diag.message.contains(&format!("'{param}'")),
+        "message must quote '{param}', got: {:?}",
+        diag.message
+    );
+    let span = diag
+        .labels
+        .first()
+        .unwrap_or_else(|| panic!("param '{param}': diagnostic has no label: {diag:?}"))
+        .span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains(&format!("param {param}")),
+        "label must cover the 'param {param}' declaration, covers: {sliced:?}"
+    );
+}
+
+/// A default the declaration-site check rejects is reported once, by that check:
+/// the conformance pass does not re-judge it (PRD D4-4).
+#[test]
+fn param_default_mismatch_is_reported_once() {
+    assert_single_param_default_type_mismatch("structure S { param i2 : Int = \"no\" }", "i2");
+    assert_single_param_default_type_mismatch("structure S { param r2 : Real = \"nope\" }", "r2");
+    assert_single_param_default_type_mismatch("structure S { param m : Length = 5kg }", "m");
+    assert_single_param_default_type_mismatch(
+        "trait T { param d : Length }\n\
+         structure S { port p : out T { param d : Length = 5kg } }",
+        "d",
+    );
+}
+
+/// A trait-injected default never reaches the declaration-site check, so the
+/// conformance pass still judges it: the D4-4 de-dup must not silence it.
+#[test]
+fn trait_injected_param_default_mismatch_is_still_reported_by_conformance() {
+    let module = compile_source("trait T { param d : Length = 5kg }\nstructure S : T { }");
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {shapes:?}"
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "got: {shapes:?}"
+    );
+    assert_eq!(errors[0].severity, Severity::Error, "got: {shapes:?}");
 }
