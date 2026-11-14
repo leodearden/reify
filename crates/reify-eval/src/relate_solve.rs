@@ -2204,7 +2204,7 @@ mod test_fixtures {
             .find(|t| t.name == name)
             .unwrap_or_else(|| {
                 panic!(
-                    "fixture template `{name}` must compile; got {:?}",
+                    "fixture has no template `{name}`; its templates are {:?}",
                     module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
                 )
             });
@@ -2222,6 +2222,14 @@ structure Broken {
 }
 "#;
         relate_scope(BROKEN, "Broken");
+    }
+
+    /// The fixture compiles cleanly but lacks the template asked for, as after a
+    /// rename: the panic names that template and lists those that exist.
+    #[test]
+    #[should_panic(expected = "has no template `Missing`; its templates are [\"Present\"]")]
+    fn relate_scope_names_a_missing_template_and_the_available_ones() {
+        relate_scope("structure Present {}", "Missing");
     }
 }
 
