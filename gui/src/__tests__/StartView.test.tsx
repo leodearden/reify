@@ -4,6 +4,7 @@ import { StartView } from '../panels/StartView';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
 import { LaunchFailure, type LauncherActions } from '../app/launcherActions';
 import { pickOpenPath, pickSavePath } from '../bridge';
+import { deferred } from './test-utils';
 
 vi.mock('../bridge', () => ({
   pickOpenPath: vi.fn(),
@@ -300,6 +301,40 @@ describe('StartView document actions', () => {
     unmount();
 
     expect(store.state.document.error).toBeNull();
+  });
+
+  it('dismissing the start view clears a document error it did not write', () => {
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'launch file missing' });
+    const { unmount } = renderStartView();
+    expect(screen.getByTestId('start-document-error').textContent).toContain('launch file missing');
+
+    unmount();
+
+    expect(store.state.document.error).toBeNull();
+  });
+
+  it('an attempt that fails after the start view is dismissed is logged, not written to the store', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const pending = deferred<void>();
+      actions.openDocument.mockReturnValue(pending.promise);
+      const { unmount } = renderStartView();
+      typePath('/designs/missing.ri');
+      fireEvent.click(screen.getByTestId('start-open-path'));
+      expect(actions.openDocument).toHaveBeenCalledWith('/designs/missing.ri');
+
+      unmount();
+      pending.reject(new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, 'No such file'));
+      await flush();
+
+      expect(store.state.document.error).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.any(String), {
+        code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+        message: 'No such file',
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

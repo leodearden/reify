@@ -49,12 +49,18 @@ export const StartView: Component<StartViewProps> = (props) => {
     });
   });
 
-  onCleanup(() => props.launcher.clearDocumentError());
+  let dismissed = false;
+  onCleanup(() => {
+    dismissed = true;
+    props.launcher.clearDocumentError();
+  });
 
   /**
    * Run a document attempt and present any failure in the store. A rejection
    * that is not already a LaunchFailure (a native dialog that cannot open, an
    * unexpected throw) is presented under `code`, so no attempt fails silently.
+   * A failure that settles after the view is dismissed has no presenter left,
+   * so it is logged rather than written to the store.
    */
   async function attemptDocument(code: LaunchErrorCode, run: () => Promise<void>): Promise<void> {
     props.launcher.clearDocumentError();
@@ -62,6 +68,10 @@ export const StartView: Component<StartViewProps> = (props) => {
       await run();
     } catch (err) {
       const failure = err instanceof LaunchFailure ? err.toInfo() : { code, message: errorMessage(err) };
+      if (dismissed) {
+        console.warn('Document attempt failed after the start view was dismissed:', failure);
+        return;
+      }
       props.launcher.failDocument(failure);
     }
   }
