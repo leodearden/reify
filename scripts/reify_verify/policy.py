@@ -98,6 +98,17 @@ MERGE_PRIO = PrioClass("merge", "nice -n 5 ", "nice -n 5 ", False)
 IDLE_PRIO = PrioClass("idle", "nice -n 19 ionice -c3 ", "nice -n 19 ", True)
 
 
+def refuse_fail_fast_recording(owner: str, records: bool, fail_fast: bool) -> None:
+    """A fail-fast pass stops at its first failure and exits as a full failing run does, so
+    its manifest would name one failing id as if it were all of them (bash's B11 write
+    gate, which D3 splits over two fields)."""
+    if records and fail_fast:
+        raise ValueError(
+            f"{owner}: a run that records a confirm manifest runs --no-fail-fast "
+            f"(records={records}, fail_fast={fail_fast})"
+        )
+
+
 @dataclass(frozen=True)
 class RolePolicy:
     default_profile: ProfileSelection
@@ -122,6 +133,7 @@ class RolePolicy:
                 f"RolePolicy.release_wall_default {self.release_wall_default!r} "
                 "is not a duration"
             )
+        refuse_fail_fast_recording("RolePolicy", self.records_confirm_manifest, self.fail_fast)
 
 
 @dataclass(frozen=True)

@@ -771,6 +771,38 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
+/// Create a new design at `path` (with `.ri` appended when its extension is not
+/// `ri`), holding [`crate::new_file_template::new_file_template`] for its stem,
+/// and read it back exactly as [`open_file_impl`] does, so the reply carries the
+/// canonical document key.
+///
+/// An existing file is refused, never overwritten: the native save dialog's
+/// overwrite prompt is the user's only other guard on an existing design.
+pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
+    use std::io::Write;
+
+    let target = if Path::new(path).extension().is_some_and(|ext| ext == "ri") {
+        path.to_string()
+    } else {
+        format!("{path}.ri")
+    };
+    let stem = Path::new(&target)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| format!("Error creating {target}: {e}"))?;
+    if let Err(e) = file.write_all(crate::new_file_template::new_file_template(&stem).as_bytes()) {
+        // The file is ours (create_new): remove the partial write so a retry is not refused.
+        let _ = std::fs::remove_file(&target);
+        return Err(format!("Error creating {target}: {e}"));
+    }
+    open_file_impl(&target)
+}
+
 /// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
 /// entries are still stem-only module keys rather than canonical absolute
 /// paths. The only way to get a plain [`GuiState`] back out is
@@ -929,12 +961,50 @@ pub fn load_initial_file_impl(
     Ok(state.resolve(path))
 }
 
-/// [`load_initial_file_impl`] as a queued snapshot of the argv file.
+/// Why the argv launch file failed to load: the file, and the load's error.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InitialFileLoadFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// The argv launch's [`InitialFileLoadFailure`], written by the load's own
+/// queued job, so it is set before any later-queued request (the frontend's
+/// first `get_initial_state`) runs; the frontend takes it once.
+#[derive(Debug, Default)]
+pub struct InitialFileLoadFailureSlot(Mutex<Option<InitialFileLoadFailure>>);
+
+impl InitialFileLoadFailureSlot {
+    fn record(&self, failure: InitialFileLoadFailure) {
+        *self.lock() = Some(failure);
+    }
+
+    pub fn take(&self) -> Option<InitialFileLoadFailure> {
+        self.lock().take()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<InitialFileLoadFailure>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// [`load_initial_file_impl`] as a queued snapshot of the argv file, recording
+/// a failure in `failure_slot` before it replies.
 pub fn initial_file_evaluation(
     engine: Arc<Mutex<EngineSession>>,
     canonical: PathBuf,
+    failure_slot: Arc<InitialFileLoadFailureSlot>,
 ) -> EvalRequest<PublishedState> {
-    EvalRequest::snapshot(move || load_initial_file_impl(&engine, &canonical))
+    EvalRequest::snapshot(move || {
+        load_initial_file_impl(&engine, &canonical).inspect_err(|error| {
+            failure_slot.record(InitialFileLoadFailure {
+                path: canonical.to_string_lossy().into_owned(),
+                error: error.clone(),
+            })
+        })
+    })
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
@@ -969,13 +1039,19 @@ pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
 
 /// Queue the load of the argv file: its canonical path and the ticket the
 /// load's reply arrives on, or `None` when `argv_path` names no `.ri` file.
+/// A failed load is also recorded in `failure_slot`.
 pub fn begin_initial_file_load(
     queue: &Arc<EvalQueue>,
     engine: Arc<Mutex<EngineSession>>,
+    failure_slot: Arc<InitialFileLoadFailureSlot>,
     argv_path: &str,
 ) -> Option<(PathBuf, EvalTicket<PublishedState>)> {
     let canonical = resolve_initial_file_path(argv_path)?;
-    let load = queue.submit(initial_file_evaluation(engine, canonical.clone()));
+    let load = queue.submit(initial_file_evaluation(
+        engine,
+        canonical.clone(),
+        failure_slot,
+    ));
     Some((canonical, load))
 }
 

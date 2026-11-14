@@ -56,20 +56,25 @@ assert "scripts/gui-test.sh passes 'bash -n' syntax check" \
 echo ""
 echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
 
+# Anchor on the invocation line itself: the usage() heredoc and the progress echo
+# also say `npm ci` and are not comments, so an unanchored match is satisfied by
+# text alone (task 9893).
+NPM_CI_INVOCATION_RE='^[[:space:]]*npm ci[[:space:]]'
+
 assert "scripts/gui-test.sh runs 'npm ci'" \
-    grep -q 'npm ci' "$GUI_TEST"
+    grep -qE "$NPM_CI_INVOCATION_RE" "$GUI_TEST"
 
 assert "scripts/gui-test.sh uses '--prefer-offline' (warm ~/.npm cache, offline-fast)" \
-    bash -c "grep 'npm ci' '$GUI_TEST' | grep -q -- '--prefer-offline'"
+    grep -qE "${NPM_CI_INVOCATION_RE}.*--prefer-offline" "$GUI_TEST"
 
 assert "scripts/gui-test.sh runs vitest via the shared scripts/gui-vitest-run.sh" \
     grep -q 'gui-vitest-run.sh' "$GUI_TEST"
 
 assert "scripts/gui-test.sh: 'npm ci' invocation precedes the vitest invocation" \
     bash -c "
-        # Skip comment lines so the header prose (which mentions the runner
-        # before 'npm ci') can't spoof the ordering — match the real commands.
-        ci_line=\$(awk '/^[[:space:]]*#/{next} /npm ci/{print NR; exit}' '$GUI_TEST')
+        # test_line skips comment lines so header prose that mentions the runner
+        # can't spoof the order.
+        ci_line=\$(awk -v re='$NPM_CI_INVOCATION_RE' '\$0 ~ re {print NR; exit}' '$GUI_TEST')
         test_line=\$(awk '/^[[:space:]]*#/{next} /gui-vitest-run\\.sh/{print NR; exit}' '$GUI_TEST')
         [ -n \"\$ci_line\" ] && [ -n \"\$test_line\" ] && [ \"\$ci_line\" -lt \"\$test_line\" ]
     "

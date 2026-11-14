@@ -8,14 +8,12 @@
 //   - `FlexureCompliance` structure_def (seven-field PRD §4.2 contract)
 //   - `flexure_compliance(joint) -> FlexureCompliance` accessor
 //
-// The structure_def and accessor live in the same module, enabled by the
-// skeleton pre-pass added in task 3895: `phase_functions` now builds
-// transient `TopologyTemplate` skeletons from parsed same-module
-// `structure_def`s so fn bodies can lower `Foo()` ctor expressions to
-// `CompiledExprKind::StructureInstanceCtor` without waiting for
-// `phase_entities` to run. This replaces the previous split into
-// `std.flexures.types` + `std.flexures` (esc-3851-32 workaround — now
-// retired).
+// The structure_def and accessor live in the same module: the structure_def
+// is declared ABOVE the accessor, so the fn body compiles against its
+// authoritative template and lowers `FlexureCompliance()` to
+// `CompiledExprKind::StructureInstanceCtor` (PRD stdlib-namespace D-8). This
+// replaced the earlier split into `std.flexures.types` + `std.flexures`
+// (esc-3851-32 workaround — retired).
 //
 // Module placement: registered in `stdlib_loader.rs` after `std.kinematic`
 // (task #5476 — `structure def FlexureJoint : DrivingJoint` names the
@@ -236,9 +234,9 @@ structure def FlexureJoint : DrivingJoint { }
 //
 // Stub semantics (β — this task):
 //   The body returns `FlexureCompliance()` — a bare ctor call relying on
-//   every param's sentinel-zero default. The same-module skeleton pre-pass
-//   (task 3895, functions_phase.rs) makes `FlexureCompliance` visible to
-//   this fn body without needing a separate prelude module. PRB ctors
+//   every param's sentinel-zero default. `structure def FlexureCompliance`
+//   is declared above this fn, so its template is visible to this fn body
+//   without needing a separate prelude module. PRB ctors
 //   override every field via named-field ctor syntax
 //   `FlexureCompliance(effective_stiffness: ..., max_stress: ..., ...)`,
 //   so the defaults never leak into populated records once γ / δ / ε / ζ /

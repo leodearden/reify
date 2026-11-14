@@ -101,6 +101,7 @@ export const SHARED_ESM_MODULES = [
   "sliderWriteBackGate.mjs",
   "edgesToggleGate.mjs",
   "debugServerEndpoint.mjs",
+  "launcherGate.mjs",
 ];
 
 /**

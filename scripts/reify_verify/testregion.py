@@ -223,6 +223,7 @@ def resolve(inputs: RegionInputs) -> TestRegion | Refused:
     runner = TestRunner(
         prio=inputs.prio,
         test_threads=inputs.test_threads,
+        nextest=inputs.nextest,
         config=None,
         heavy_filter=inputs.heavy_filter,
         no_fail_fast=not role_policy.fail_fast,

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Single-command release-mode launcher for reify-gui (task 2228).
 #
-# Usage: scripts/run-gui.sh <file.ri>
+# Usage: scripts/run-gui.sh [file.ri]
+#
+# With no file, reify-gui opens on the launcher Start view (Open/New/Recent).
 #
 # Performs every build step needed to launch reify-gui from a checkout that
 # scripts/setup-dev.sh has provisioned:
@@ -16,7 +18,7 @@
 #      step 3's gui/dist, never devUrl.
 #   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin) and the
 #      WebKit renderer default.
-#   6. exec target/release/reify-gui <file.ri>.
+#   6. exec target/release/reify-gui [file.ri].
 #
 # Environment contract (full version in scripts/run-gui-dev.sh's header; the
 # mechanism for all three is scripts/lib_gui_launch.sh, sourced by BOTH
@@ -46,27 +48,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib_gui_launch.sh"
 
 # -- 1. Validate args ----------------------------------------------------------
-if [ "$#" -lt 1 ]; then
-    echo "Usage: scripts/run-gui.sh <file>" >&2
+if [ "$#" -gt 1 ]; then
+    echo "Usage: scripts/run-gui.sh [file.ri]" >&2
     echo "" >&2
-    echo "  <file>  path to a .ri source file" >&2
+    echo "  file.ri  path to a .ri source file; omit it to open the launcher Start view" >&2
     echo "" >&2
     echo "Builds and launches reify-gui in release mode (run scripts/setup-dev.sh first)." >&2
     echo "For dev mode (vite, devtools, MCP debug listener), use run-gui-dev.sh." >&2
     exit 1
 fi
 
-FILE="$1"
+# FILE is the .ri reify-gui opens, or empty for the Start view.
+FILE="${1:-}"
 
-case "$FILE" in
-    *.ri) ;;
-    *)
-        echo "Error: file must have .ri extension: $FILE" >&2
-        exit 1
-        ;;
-esac
+if [ -n "$FILE" ]; then
+    case "$FILE" in
+        *.ri) ;;
+        *)
+            echo "Error: file must have .ri extension: $FILE" >&2
+            exit 1
+            ;;
+    esac
 
-[ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+    [ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+fi
 
 # Resolve repo root from this script's path so the script works from any cwd.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -105,5 +110,5 @@ cargo build -p reify-gui --bin reify-gui --features gui,embedded-frontend --rele
 gui_launch_env_pin
 
 # -- 6. Launch ----------------------------------------------------------------
-echo "==> Launching target/release/reify-gui $FILE"
-exec target/release/reify-gui "$FILE"
+echo "==> Launching target/release/reify-gui ${FILE:-(no file: Start view)}"
+exec target/release/reify-gui ${FILE:+"$FILE"}

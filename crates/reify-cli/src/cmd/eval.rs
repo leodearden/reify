@@ -5,14 +5,17 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
+use crate::args::split_cfg_args_or_usage;
 use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
 use crate::help::EVAL_USAGE;
 use crate::module_capabilities::module_has_geometry;
-use crate::{configured_eval_engine, parse_and_compile};
+use crate::{configured_eval_engine, parse_and_compile_with_cfg};
 
-/// `reify eval <file>` — parse, compile, evaluate, and print every
-/// top-level value cell as `entity.member = value`.
+/// `reify eval <file>` — compile the entry as a program (its `#cfg`-satisfied
+/// imports resolved as under `reify check`, with repeated `--cfg` selecting
+/// them), evaluate, and print every top-level value cell as
+/// `entity.member = value`.
 ///
 /// This is the SIR-α user-observable signal (task 3540): structure
 /// constructors evaluate to inspectable `Value::StructureInstance` values
@@ -51,6 +54,11 @@ use crate::{configured_eval_engine, parse_and_compile};
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, EVAL_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let args = rest.as_slice();
     // Parse args: walk the list to extract --explain-undef, --verbose,
     // --cache-dir <path>, and the file path.
     // Reject unknown flags so they are never silently misread as the file path.
@@ -99,7 +107,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile(path) {
+    let compiled = match parse_and_compile_with_cfg(path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

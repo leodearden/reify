@@ -4,8 +4,8 @@ test_pcc_seam_ratchet.py — the INV-5 adoption ratchet for ε's public seams
 (docs/prds/v0_6/prd-probe-gate-typed-outcomes.md D9, §5.5, §8 ε).  No test of
 scripts/prd-capability-check.py (α) or scripts/prd-decompose-verify.py (pdv)
 reads an α private name or patches α: they hand α a ProbeContext and a runner
-instead.  Nor does any bind α, or α's loader, to a name other than its own,
-where the other counters could not follow it.
+instead.  Nor does any bind α to a name other than `pcc`, or α's loader to a
+name other than its own.
 
 Every count is over the parsed AST, never the raw text, so a comment or a
 docstring that names a private counts nothing, and a patch call broken across
@@ -16,7 +16,6 @@ the test files as source.  Runner: tests/infra/test_prd_capability_check.sh.
 """
 
 import ast
-import functools
 import glob
 import os
 import unittest
@@ -51,9 +50,8 @@ def _scoped_files():
     return sorted(found)
 
 
-@functools.cache
 def _parsed_scope():
-    """(label, tree, source) for each scoped file, parsed once for every counter."""
+    """(label, tree, source) for each scoped file."""
     parsed = []
     for path in _scoped_files():
         with open(path, encoding="utf-8") as fh:
@@ -219,7 +217,7 @@ def _sole_name(value):
 
 
 def _alpha_rebindings(tree, source):
-    """α, or α's loader, bound to a name other than its own, where no other counter can follow it."""
+    """α bound to a name other than _ALPHA_NAME, or α's loader to a name other than its own."""
     for name, value, anchor in _name_bindings(tree):
         sole = _sole_name(value)
         if name is not None and sole not in (None, name):
@@ -378,9 +376,10 @@ class TestNoAlphaReachThrough(unittest.TestCase):
         self.assertEqual(getattr(_pcc_test_support, _ALPHA_NAME).__name__, _ALPHA_MODULE)
 
     def test_no_counter_finds_anything(self):
+        parsed_scope = _parsed_scope()
         for label, counter in _COUNTERS.items():
             with self.subTest(counter=label):
-                found = sorted(hit for parsed in _parsed_scope() for hit in _count(counter, *parsed))
+                found = sorted(hit for parsed in parsed_scope for hit in _count(counter, *parsed))
                 self.assertEqual(
                     found, [],
                     f"{label}:\n" + "\n".join(f"  {f}:{line}: {text}" for f, line, text in found),

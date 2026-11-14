@@ -267,6 +267,18 @@ pub struct EvaluationGraph {
     /// separate registry so that keyed members are never subject to positional
     /// add/remove operations.
     pub keyed_subs: Vec<KeyedSubInfo>,
+    /// Every sub-instance entity whose cells are in `value_cells` (`P.s`,
+    /// `P.s[i]`, `P.s["k"]`), mapped to the name of the template those cells
+    /// are stamped from. Read through [`Self::sub_instance_template`].
+    /// `from_templates` fills it from [`cell_contributions::sub_instances`],
+    /// the same slot enumeration that stamps those cells. The edit path's
+    /// collection resizes stamp through [`Self::insert_sub_instance_cell`],
+    /// which records the slot as it inserts the cell, so the two do not drift.
+    ///
+    /// **NOT mixed into `topology_fingerprint` or any other hash:** the
+    /// instance cells it names are already in the fingerprint via
+    /// `value_cells`, so, like `keyed_subs`, this registry is metadata-only.
+    sub_instance_templates: PersistentMap<String, String>,
     /// Captured per-element body templates for statement-form `forall`
     /// over deferred-count collection subs (task 2629; PRD criterion 7
     /// second-half). The runtime `Engine::edit_param` collection-count
@@ -545,6 +557,9 @@ impl EvaluationGraph {
         for cell in contributed_cells(templates) {
             insert_contributed_cell(&mut graph.value_cells, cell);
         }
+        for (entity, template) in cell_contributions::sub_instances(templates) {
+            graph.record_sub_instance(entity, template.to_string());
+        }
 
         graph
     }
@@ -587,6 +602,32 @@ impl EvaluationGraph {
     /// `value_cells.get(id).is_some_and(|n| n.kind.is_auto())` form.
     pub(crate) fn is_auto_cell(&self, id: &ValueCellId) -> bool {
         self.value_cells.get(id).is_some_and(|n| n.kind.is_auto())
+    }
+
+    /// The template sub instance `entity`'s cells are stamped from, or `None`
+    /// when `entity` is not a sub instance in this graph.
+    pub(crate) fn sub_instance_template(&self, entity: &str) -> Option<&str> {
+        self.sub_instance_templates.get(entity).map(String::as_str)
+    }
+
+    /// Record that `entity`'s cells are stamped from `template`.
+    fn record_sub_instance(&mut self, entity: String, template: String) {
+        self.sub_instance_templates.insert(entity, template);
+    }
+
+    /// Stamp `node`, a cell of sub instance `node.id.entity` whose cells come
+    /// from `template`, into `value_cells`, recording the instance if it is not
+    /// yet recorded.
+    pub(crate) fn insert_sub_instance_cell(&mut self, template: &str, node: ValueCellNode) {
+        if !self.sub_instance_templates.contains_key(&node.id.entity) {
+            self.record_sub_instance(node.id.entity.clone(), template.to_string());
+        }
+        self.value_cells.insert(node.id.clone(), node);
+    }
+
+    /// Forget sub instance `entity`, whose cells have left `value_cells`.
+    pub(crate) fn forget_sub_instance(&mut self, entity: &str) {
+        self.sub_instance_templates.remove(&entity.to_string());
     }
 
     /// Determine which constraint IDs are active given the current values.

@@ -35,6 +35,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import type { DebugStores } from '../debug/types';
 
 type DebugRequestHandler = (event: {
@@ -92,6 +93,7 @@ function makeStores(): DebugStores {
     viewState: makeViewStateStoreMock(),
     layout: makeLayoutStore(),
     viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 

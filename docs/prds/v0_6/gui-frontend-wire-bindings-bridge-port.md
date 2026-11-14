@@ -128,9 +128,13 @@ releases (§9). `bridge.ts` also carries hidden module state (`EDIT_EPOCH`, `las
 
 ### §2.4 The Rust wire surface is wider and less regular than `types.rs`
 
-- All 34 commands are `#[tauri::command]` fns in `gui/src-tauri/src/main.rs` (the `gui`-gated
-  binary); none is in the library, so no library test can name them. They reach main.rs-private
-  items: `engine_call`, `DebugEnabled`, `DebugMcpEndpoint`, `watch_file`/`create_watcher`.
+- All 34 commands (38 since #9730 added the Start-view commands `set_mode`, `create_new_file`,
+  `list_recent` and `record_recent`) are `#[tauri::command]` fns in `gui/src-tauri/src/main.rs`
+  (the `gui`-gated binary); none is in the library, so no library test can name them. They reach
+  main.rs-private items: `engine_call`, `watch_file`/`create_watcher`,
+  `recent_files_store`/`record_recent_now`. The three that take
+  `tauri::State<'_, DebugServerSlot>` (`is_debug_enabled`, `set_mode`, `claude_send_message`)
+  use the library's managed `debug_server_slot::DebugServerSlot` (#9730), which needs no move.
 - Wire types outside `types.rs`: `PublishedState` and `EditOrder` (`eval_queue.rs`),
   `KernelStatus` (`kernel_status.rs`), `MessageContext` and `PermissionDecisionArgs`
   (`claude_bridge.rs`), and five `reify_core` types behind its optional `serde` feature (six once S25 σ adds `Severity`)
@@ -281,7 +285,11 @@ pub const BINDINGS_TS_PATH: &str = "gui/src/bindings.ts"; // repo-relative
 pub fn export_bindings(path: &std::path::Path) -> Result<(), String>; // the one export config
 // gui/src-tauri/src/tauri_commands.rs  (#[cfg(feature = "gui")], new): every registered command,
 // each #[tauri::command] #[specta::specta], moved verbatim from main.rs with the main.rs-private
-// helpers they reach (engine_call, DebugEnabled, DebugMcpEndpoint, watch_file/create_watcher);
+// helpers they reach (engine_call, watch_file/create_watcher,
+// recent_files_store/record_recent_now); watch_file and record_recent_now are also called from
+// main()'s setup, so they must stay callable from main.rs;
+// #9730's Start-view commands (set_mode, create_new_file, list_recent, record_recent) included;
+// DebugServerSlot stays in the library's debug_server_slot module, not moved;
 // θ's validate_parameter_value included, get_active_fea_case deleted (D28).
 ```
 

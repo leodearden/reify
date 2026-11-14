@@ -595,7 +595,7 @@ structure def Box {
 //
 // The shadow set must be visible to EVERY phase that lowers a declared type
 // name in the module, not just `phase_entities`. `phase_traits` and
-// `phase_functions` both run BEFORE `phase_entities` in
+// `phase_fn_signatures` both run BEFORE `phase_entities` in
 // `compile_with_prelude_context_checked_with_config`, so a scope installed only
 // inside `phase_entities` left trait requirement types and fn signature params
 // at `Type::StructureRef("Fit")` while the conforming structure's own param

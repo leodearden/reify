@@ -2046,7 +2046,7 @@ mod tests {
     /// the 1.3.x line would still be caught here because the byte sequence is pinned
     /// explicitly. Bumping bincode past `=1.3` requires both updating this literal AND
     /// bumping `ELASTIC_RESULT_FORMAT_VERSION` (cross-checked by
-    /// `elastic_result_format_version_is_one`).
+    /// `elastic_result_format_version_pinned`).
     ///
     /// Fixture uses recognisable, non-zero field values so the LE byte order is
     /// visually verifiable at the test site (e.g. `EF BE AD DE BE BA FE CA` for

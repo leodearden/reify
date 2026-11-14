@@ -5,17 +5,11 @@ import type { GuiState, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnFeaDiagnosticsChanged,
   mockOnFeaConvergenceChanged,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
+import { makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -40,19 +34,7 @@ describe('engineStore feaDiagnostics (#2966)', () => {
         kind: 'Unconstrained',
         rigid_body_modes: ['TranslationX', 'TranslationY', 'TranslationZ'],
       };
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [diag],
-      };
+      const guiState = makeGuiState({ fea_diagnostics: [diag] });
       initFromState(guiState);
       const feaDiagnostics: FeaDiagnosticInfo[] = (state as any).feaDiagnostics;
       expect(feaDiagnostics).toHaveLength(1);
@@ -68,19 +50,7 @@ describe('engineStore feaDiagnostics (#2966)', () => {
     // RED: initFromState does not set feaDiagnostics until step-4.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = { fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-      };
+      const guiState = makeGuiState({ fea_diagnostics: [] });
       initFromState(guiState);
       expect((state as any).feaDiagnostics).toEqual([]);
       dispose();
@@ -91,21 +61,9 @@ describe('engineStore feaDiagnostics (#2966)', () => {
     // GuiState objects without fea_diagnostics (from older wire snapshots) must default to [].
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      // Cast away the required fea_diagnostics to simulate an older wire snapshot.
-      const guiState = {
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        // fea_diagnostics intentionally absent
-      } as unknown as GuiState;
-      initFromState(guiState);
+      // Omits fea_diagnostics, and only that field, to simulate an older wire snapshot.
+      const { fea_diagnostics: _absent, ...olderSnapshot } = makeGuiState();
+      initFromState(olderSnapshot as GuiState);
       expect((state as any).feaDiagnostics).toEqual([]);
       dispose();
     });
@@ -138,13 +96,6 @@ describe('engineStore setFeaDiagnostics and subscribeToEvents wiring (step s8)',
       let feaCb: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
       const spyUnlisten = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnFeaDiagnosticsChanged.mockImplementation(async (cb) => {
         feaCb = cb as (diags: FeaDiagnosticInfo[]) => void;
         return spyUnlisten;
@@ -186,20 +137,7 @@ describe('engineStore feaConvergence (task 3001)', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
       const convergence: FeaConvergenceInfo = { converged: false, reason: 'MaxDofs' };
-      const guiState: GuiState = {
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-        fea_convergence: convergence,
-      };
+      const guiState = makeGuiState({ fea_convergence: convergence });
       initFromState(guiState);
       expect((state as any).feaConvergence).toEqual({ converged: false, reason: 'MaxDofs' });
       dispose();
@@ -210,20 +148,7 @@ describe('engineStore feaConvergence (task 3001)', () => {
     // RED: initFromState does not map fea_convergence until step-16.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-        fea_convergence: { converged: true },
-      };
+      const guiState = makeGuiState({ fea_convergence: { converged: true } });
       initFromState(guiState);
       expect((state as any).feaConvergence).toEqual({ converged: true });
       dispose();
@@ -234,20 +159,7 @@ describe('engineStore feaConvergence (task 3001)', () => {
     // RED: initFromState does not map fea_convergence until step-16.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-        fea_convergence: null,
-      };
+      const guiState = makeGuiState({ fea_convergence: null });
       initFromState(guiState);
       expect((state as any).feaConvergence).toBeNull();
       dispose();
@@ -258,22 +170,9 @@ describe('engineStore feaConvergence (task 3001)', () => {
     // GuiState objects without fea_convergence (from older wire snapshots) must default to null.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      // Cast away the required fea_convergence to simulate an older wire snapshot.
-      const guiState = {
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: [],
-        // fea_convergence intentionally absent
-      } as unknown as GuiState;
-      initFromState(guiState);
+      // Omits fea_convergence, and only that field, to simulate an older wire snapshot.
+      const { fea_convergence: _absent, ...olderSnapshot } = makeGuiState();
+      initFromState(olderSnapshot as GuiState);
       expect((state as any).feaConvergence).toBeNull();
       dispose();
     });
@@ -305,13 +204,6 @@ describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', 
       let feaConvergenceCb: ((conv: FeaConvergenceInfo | null) => void) | undefined;
       const spyUnlisten = vi.fn();
 
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnFeaConvergenceChanged.mockImplementation(async (cb) => {
         feaConvergenceCb = cb as (conv: FeaConvergenceInfo | null) => void;
         return spyUnlisten;

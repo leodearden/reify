@@ -142,7 +142,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "store_state",
-            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle)",
+            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle), document (loaded, error, recent: the Start view's document state), mode (selected, debugPort, error: the launch mode)",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -3275,24 +3275,6 @@ impl BoundDebugListener {
 
     pub fn endpoint_url(&self) -> String {
         debug_endpoint_url(self.port)
-    }
-}
-
-/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
-/// the debug server is not live in this process.
-pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
-    if !debug_enabled {
-        return None;
-    }
-    match BoundDebugListener::bind(port) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            eprintln!(
-                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
-                 the in-app assistant will get no reify-debug tools"
-            );
-            None
-        }
     }
 }
 

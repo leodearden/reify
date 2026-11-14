@@ -16,10 +16,12 @@ reify-ir.workspace = true
 # invariant (zero `reify-*` deps). The `reify-eval` dep has been removed;
 # `impl PersistentlyCacheable for ShellExtractionResult` in `result.rs` now
 # references `reify_core::persistent_cache::PersistentlyCacheable` directly.
-# Wire-format toolchain mirroring `ElasticResult`'s precedent at
-# `reify-eval::persistent_cache.rs:697-803`: bincode 1.3 fixint-LE for the
-# header, zstd 0.13 level-0 for byte-deterministic compression, bytemuck for
-# zero-copy LE f64/u32 slab casts, serde-derive for the header struct.
+# Wire-format toolchain mirroring the precedent of
+# `reify_compute_contract::ElasticResult`'s `PersistentlyCacheable` impl
+# (`serialize_to_writer` / `deserialize_from_reader`): bincode 1.3 fixint-LE
+# for the header, zstd 0.13 level-0 for byte-deterministic compression,
+# bytemuck for zero-copy LE f64/u32 slab casts, serde-derive for the header
+# struct.
 bincode.workspace = true
 zstd.workspace = true
 bytemuck.workspace = true

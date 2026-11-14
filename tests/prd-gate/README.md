@@ -162,7 +162,7 @@ is still recorded.
 | 0 | All probes PASS |
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
-| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: both profile binaries built and `target/.reify-bin-sha` not naming HEAD — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
+| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: no built profile binary is vouched for (`target/.reify-bin-sha` not naming HEAD) — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
 | 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set

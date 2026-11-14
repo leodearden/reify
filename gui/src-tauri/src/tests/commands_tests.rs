@@ -1914,6 +1914,97 @@ fn open_file_impl_errors_for_nonexistent_file() {
     );
 }
 
+// --- create_new_file_impl (task 9730, Start view / File→New) ---
+
+#[test]
+fn create_new_file_impl_writes_the_template_and_loads_clean() {
+    use crate::commands::{create_new_file_impl, open_file_engine_impl};
+    use crate::new_file_template::new_file_template;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("flange_part.ri");
+
+    let created = create_new_file_impl(target.to_str().unwrap()).expect("create should succeed");
+
+    let canonical = std::fs::canonicalize(&target).expect("the created file must exist");
+    assert_eq!(created.path, canonical.to_string_lossy());
+    assert_eq!(created.content, new_file_template("flange_part"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), created.content);
+
+    let engine = Mutex::new(make_session());
+    let state = open_file_engine_impl(&engine, &created.path).expect("the new file must load");
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(errors.is_empty(), "a new file must compile clean, got: {errors:?}");
+    assert!(
+        !state.compile_diagnostics.iter().any(|d| {
+            d.message.contains("W_MODULE_DECL_MISSING")
+                || d.code.as_deref() == Some("W_MODULE_DECL_MISSING")
+        }),
+        "a declarable stem's new file must carry its module line, got: {:?}",
+        state.compile_diagnostics
+    );
+}
+
+#[test]
+fn create_new_file_impl_appends_the_ri_extension() {
+    use crate::commands::create_new_file_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bare = dir.path().join("part");
+
+    let created = create_new_file_impl(bare.to_str().unwrap()).expect("create should succeed");
+
+    let with_ext = dir.path().join("part.ri");
+    assert!(with_ext.is_file(), "create must write {}", with_ext.display());
+    assert!(!bare.exists(), "create must not write the extension-less path");
+    assert_eq!(
+        created.path,
+        std::fs::canonicalize(&with_ext).unwrap().to_string_lossy()
+    );
+}
+
+#[test]
+fn create_new_file_impl_refuses_to_clobber_an_existing_file() {
+    use crate::commands::create_new_file_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("keep.ri");
+    std::fs::write(&existing, "// precious design\n").unwrap();
+
+    let err = create_new_file_impl(existing.to_str().unwrap())
+        .expect_err("an existing file must be refused");
+
+    assert!(
+        err.contains(existing.to_str().unwrap()),
+        "the error must name the path, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&existing).unwrap(),
+        "// precious design\n",
+        "the existing file must be left untouched"
+    );
+}
+
+#[test]
+fn create_new_file_impl_errors_for_a_missing_directory() {
+    use crate::commands::create_new_file_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("no_such_dir").join("part.ri");
+
+    let err =
+        create_new_file_impl(target.to_str().unwrap()).expect_err("a missing directory must fail");
+
+    assert!(
+        err.contains(target.to_str().unwrap()),
+        "the error must name the path, got: {err}"
+    );
+}
+
 // --- open_file_engine_impl canonicalisation tests (step-5) ---
 //
 // The plan's step 5 description states that GuiState.files[0].path should be
@@ -3929,9 +4020,9 @@ mod queued_requests {
 
     use super::{make_test_engine_for_commands, make_test_engine_on_disk};
     use crate::commands::{
-        active_fea_case_evaluation, commit_parameter_edit, disk_reload_edit, editor_source_edit,
-        initial_file_evaluation, initial_state_evaluation, open_file_evaluation,
-        preview_parameter_edit,
+        InitialFileLoadFailure, InitialFileLoadFailureSlot, active_fea_case_evaluation,
+        commit_parameter_edit, disk_reload_edit, editor_source_edit, initial_file_evaluation,
+        initial_state_evaluation, open_file_evaluation, preview_parameter_edit,
     };
     use crate::engine::EngineSession;
     use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
@@ -4216,11 +4307,14 @@ mod queued_requests {
     fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
+        let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
         let rig = ManualQueue::new();
 
-        let ticket = rig
-            .queue
-            .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
+        let ticket = rig.queue.submit(initial_file_evaluation(
+            fresh_engine(),
+            canonical.clone(),
+            Arc::clone(&failure_slot),
+        ));
         rig.executor.run_pending();
 
         let published = settled(ticket).expect("the load should succeed");
@@ -4230,6 +4324,53 @@ mod queued_requests {
             assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
         }
         assert_eq!(published_width(&rig.observer), mm("80"));
+        assert_eq!(
+            failure_slot.take(),
+            None,
+            "a successful load records no failure"
+        );
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_that_fails_records_why_for_the_frontend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("missing.ri");
+        let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(initial_file_evaluation(
+            fresh_engine(),
+            path.clone(),
+            Arc::clone(&failure_slot),
+        ));
+        rig.executor.run_pending();
+
+        let error = settled(ticket).expect_err("loading a missing file must fail");
+        assert_eq!(
+            failure_slot.take(),
+            Some(InitialFileLoadFailure {
+                path: path.to_string_lossy().into_owned(),
+                error: error.clone(),
+            }),
+            "the slot must carry the file and the same error the ticket replied"
+        );
+        assert_eq!(failure_slot.take(), None, "the failure is handed out once");
+    }
+
+    #[test]
+    fn an_initial_file_load_failure_serializes_as_path_and_error() {
+        let failure = InitialFileLoadFailure {
+            path: "/d/broken.ri".into(),
+            error: "Error reading /d/broken.ri: denied".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&failure).expect("serialize"),
+            serde_json::json!({
+                "path": "/d/broken.ri",
+                "error": "Error reading /d/broken.ri: denied",
+            })
+        );
     }
 
     #[test]

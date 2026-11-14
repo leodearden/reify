@@ -135,20 +135,8 @@ assert "scripts/run-gui.sh does NOT contain 'REIFY_DEBUG'" \
 assert "scripts/run-gui.sh does NOT contain 'npm run dev'" \
     bash -c "! grep -q 'npm run dev' '$RUN_GUI'"
 
-# -- Test 9: behavioral — no args -> usage + non-zero exit -------------------
-echo ""
-echo "--- Test 9: no-args invocation prints usage and exits non-zero ---"
-
-# Capture stderr+stdout combined; the usage message may go to either stream.
-no_args_out=$(bash "$RUN_GUI" 2>&1 || true)
-no_args_rc=0
-bash "$RUN_GUI" >/dev/null 2>&1 || no_args_rc=$?
-
-assert "run-gui.sh with no args exits non-zero" \
-    bash -c '[ "$1" -ne 0 ]' _ "$no_args_rc"
-
-assert "run-gui.sh with no args prints usage mentioning '<file>'" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage.*<file>|<file>"' _ "$no_args_out"
+# Test 9 (no file launches the Start view) needs the hermetic stubs defined
+# below, so it sits after Test 21, whose run shape it mirrors.
 
 # -- Test 10: behavioral — non-.ri file is rejected --------------------------
 echo ""
@@ -298,19 +286,8 @@ assert "scripts/run-gui-dev.sh defaults REIFY_DEBUG_PORT to 3939 when unset" \
 assert "scripts/run-gui-dev.sh exports REIFY_DEBUG_PORT" \
     bash -c "grep -qE 'export REIFY_DEBUG_PORT' '$RUN_GUI_DEV'"
 
-# -- Test 21: behavioral — no args -> usage + non-zero ---------------------
-echo ""
-echo "--- Test 21: dev script no-args invocation prints usage + exits non-zero ---"
-
-dev_no_args_out=$(bash "$RUN_GUI_DEV" 2>&1 || true)
-dev_no_args_rc=0
-bash "$RUN_GUI_DEV" >/dev/null 2>&1 || dev_no_args_rc=$?
-
-assert "run-gui-dev.sh with no args exits non-zero" \
-    bash -c '[ "$1" -ne 0 ]' _ "$dev_no_args_rc"
-
-assert "run-gui-dev.sh with no args prints usage mentioning '<file>'" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage.*<file>|<file>"' _ "$dev_no_args_out"
+# Test 21 (no file launches the Start view) needs the hermetic stubs defined
+# below, so it sits after Test 33, whose run shape it shares.
 
 # -- Test 22: behavioral — non-.ri rejected --------------------------------
 echo ""
@@ -605,10 +582,11 @@ NPM_STUB
 }
 
 # _rgs_stub_gui_binary <dir> <relpath> — a stand-in for the built reify-gui
-# that records the environment the launcher handed it into "$_RGS_ENV_DUMP"
-# (one KEY=VALUE per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH
-# ordering and the vite port it was told to load without launching anything
-# real.
+# that records the environment the launcher handed it, its argument count
+# (ARGC) and its first argument (ARGV1) into "$_RGS_ENV_DUMP" (one KEY=VALUE
+# per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH ordering, the
+# vite port it was told to load and the file it was told to open without
+# launching anything real.
 _rgs_stub_gui_binary() {
     mkdir -p "$(dirname "$1/$2")"
     cat > "$1/$2" <<'GUI_STUB'
@@ -617,6 +595,8 @@ _rgs_stub_gui_binary() {
     printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}"
     printf 'WEBKIT_DISABLE_DMABUF_RENDERER=%s\n' "${WEBKIT_DISABLE_DMABUF_RENDERER:-}"
     printf 'REIFY_VITE_PORT=%s\n' "${REIFY_VITE_PORT:-}"
+    printf 'ARGC=%s\n' "$#"
+    printf 'ARGV1=%s\n' "${1:-}"
 } > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
 exit 0
 GUI_STUB
@@ -1368,6 +1348,137 @@ assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, vite is spawned on 1420" \
 
 assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, reify-gui is handed REIFY_VITE_PORT=1420" \
     bash -c '[ "$1" = 1420 ]' _ "$_t33b_seen"
+
+# -- Test 21: behavioral — no file launches the Start view; a file is passed --
+echo ""
+echo "--- Test 21: run-gui-dev.sh launches reify-gui with no file, or with the one .ri given ---"
+
+# The file is optional (task 9730): with none, reify-gui opens on the launcher
+# Start view. Same stubs and run shape as Test 33.
+
+_rgs_mktemp _t21_tmpdir
+_mk_rungui_dev_fixture "$_t21_tmpdir"
+_rgs_stub_npm_serving "$_t21_tmpdir"
+_rgs_stub_curl_stateful "$_t21_tmpdir"
+_rgs_stub_cargo "$_t21_tmpdir"
+_rgs_stub_gui_binary "$_t21_tmpdir" target/debug/reify-gui
+
+# _t21_run_dev [file] — run the dev launcher with the given arguments (none,
+# or one file) and REIFY_VITE_PORT scrubbed; its exit status lands in _t21_rc.
+_t21_run_dev() {
+    rm -f "$_t21_tmpdir/curl-count" "$_t21_tmpdir/env-dump" "$_t21_tmpdir/npm-dev-args"
+    _t21_rc=0
+    env -u REIFY_VITE_PORT \
+        DISPLAY=:99 \
+        _RGS_CURL_COUNTER="$_t21_tmpdir/curl-count" \
+        _RGS_CURL_READY_FILE="$_t21_tmpdir/npm-dev-args" \
+        _RGS_ENV_DUMP="$_t21_tmpdir/env-dump" \
+        _RGS_NPM_DEV_ARGS="$_t21_tmpdir/npm-dev-args" \
+        PATH="$_t21_tmpdir/bin:$PATH" \
+        bash "$_t21_tmpdir/scripts/run-gui-dev.sh" "$@" >/dev/null 2>&1 || _t21_rc=$?
+}
+
+# --- 21a: no file ---
+_t21_run_dev
+_t21a_rc=$_t21_rc
+_t21a_argc=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGC)
+
+assert "run-gui-dev.sh with no file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t21a_rc"
+
+assert "run-gui-dev.sh with no file hands reify-gui zero arguments (the Start view)" \
+    bash -c '[ "$1" = 0 ]' _ "$_t21a_argc"
+
+# --- 21b: one .ri file ---
+_t21_run_dev "$_t21_tmpdir/test.ri"
+_t21b_rc=$_t21_rc
+_t21b_argc=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGC)
+_t21b_argv1=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGV1)
+
+assert "run-gui-dev.sh with a .ri file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t21b_rc"
+
+assert "run-gui-dev.sh with a .ri file hands reify-gui exactly one argument" \
+    bash -c '[ "$1" = 1 ]' _ "$_t21b_argc"
+
+assert "run-gui-dev.sh hands reify-gui the .ri file it was given" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t21b_argv1" "$_t21_tmpdir/test.ri"
+
+# -- Test 9: behavioral — no file launches the Start view; a file is passed --
+echo ""
+echo "--- Test 9: run-gui.sh launches reify-gui with no file, or with the one .ri given ---"
+
+# The file is optional (task 9821, the release twin of Test 21): with none,
+# reify-gui opens on the launcher Start view. Hermetic, because a no-arg run of
+# the real launcher would install, build --release and launch the real GUI.
+
+_rgs_mktemp _t9_tmpdir
+_mk_rungui_fixture "$_t9_tmpdir"
+_rgs_stub_npm_serving "$_t9_tmpdir"
+_rgs_stub_cargo "$_t9_tmpdir"
+_rgs_stub_gui_binary "$_t9_tmpdir" target/release/reify-gui
+
+# _t9_run_rel [arg...] — run the release launcher with the given arguments
+# (none, one file, or two); its exit status lands in _t9_rc and its combined
+# output in _t9_out. Call it directly, never inside $(...), so those land in
+# this shell.
+_t9_run_rel() {
+    rm -f "$_t9_tmpdir/env-dump" "$_t9_tmpdir/cargo-argv"
+    _t9_rc=0
+    _t9_out=$(env DISPLAY=:99 \
+        _RGS_ENV_DUMP="$_t9_tmpdir/env-dump" \
+        _RGS_CARGO_ARGV="$_t9_tmpdir/cargo-argv" \
+        PATH="$_t9_tmpdir/bin:$PATH" \
+        bash "$_t9_tmpdir/scripts/run-gui.sh" "$@" 2>&1) || _t9_rc=$?
+}
+
+# --- 9a: no file ---
+_t9_run_rel
+_t9a_rc=$_t9_rc
+_t9a_argc=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGC)
+
+assert "run-gui.sh with no file exits 0 (rc $_t9a_rc)" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t9a_rc"
+
+assert "run-gui.sh with no file hands reify-gui zero arguments (the Start view)" \
+    bash -c '[ "$1" = 0 ]' _ "$_t9a_argc"
+
+# --- 9b: one .ri file ---
+_t9_run_rel "$_t9_tmpdir/test.ri"
+_t9b_rc=$_t9_rc
+_t9b_argc=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGC)
+_t9b_argv1=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGV1)
+
+assert "run-gui.sh with a .ri file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t9b_rc"
+
+assert "run-gui.sh with a .ri file hands reify-gui exactly one argument" \
+    bash -c '[ "$1" = 1 ]' _ "$_t9b_argc"
+
+assert "run-gui.sh hands reify-gui the .ri file it was given" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t9b_argv1" "$_t9_tmpdir/test.ri"
+
+# The control for 9c's no-cargo assert: a call that is let through does record
+# one, so that file's absence there can only mean the launcher never got that far.
+assert "run-gui.sh with a .ri file reaches the cargo build" \
+    test -e "$_t9_tmpdir/cargo-argv"
+
+# --- 9c: two arguments ---
+_t9_run_rel "$_t9_tmpdir/test.ri" "$_t9_tmpdir/test.ri"
+_t9c_rc=$_t9_rc
+_t9c_out=$_t9_out
+
+assert "run-gui.sh with two arguments exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t9c_rc"
+
+assert "run-gui.sh with two arguments prints usage" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage"' _ "$_t9c_out"
+
+assert "run-gui.sh with two arguments is refused before any cargo call" \
+    bash -c '! [ -e "$1" ]' _ "$_t9_tmpdir/cargo-argv"
+
+assert "run-gui.sh with two arguments never launches reify-gui" \
+    bash -c '! [ -e "$1" ]' _ "$_t9_tmpdir/env-dump"
 
 # -- Test 34: behavioral — a malformed REIFY_VITE_PORT is refused up front ----
 echo ""

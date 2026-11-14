@@ -1,6 +1,10 @@
-//! Phase-11 entities: compile every `structure` / `occurrence` declaration
-//! and forward `import` declarations into `ctx.imports`; other decl arms are
-//! passthroughs (already compiled in earlier phases).
+//! Phase-11, the unified source-order pass (PRD `stdlib-namespace.md` D-8):
+//! compiles `structure` / `occurrence` templates AND free-fn bodies (plus any
+//! param defaults `phase_fn_param_defaults` left pending) interleaved in
+//! declaration order, so each sees the authoritative output of everything
+//! declared above it. Also forwards `import` declarations into `ctx.imports`
+//! and runs the joint self-check; the remaining decl arms are passthroughs
+//! (already compiled in earlier phases).
 //!
 //! ## Import warning policy (task 2226)
 //!
@@ -31,6 +35,7 @@ use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
 use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
@@ -62,15 +67,18 @@ use crate::types::{
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
 
-/// Run phase-11 (entity compile) over `parsed.declarations`.
+/// Run phase-11, the unified source-order pass, over `parsed.declarations`.
 ///
 /// Constructs phase-local registries (`trait_registry`, `field_registry`,
-/// `constraint_def_registry`) and dispatches each declaration to its
-/// handler. Structure / Occurrence arms call `compile_entity` and push
-/// onto `ctx.templates`. Import arm appends to `ctx.imports` unconditionally;
-/// a "not resolved" warning is emitted only when the import path is absent from
-/// `prelude` (see import warning policy in the module-level doc). Other arms
-/// are passthroughs — they were already handled in earlier phases.
+/// `constraint_def_registry`) and dispatches each declaration, in source order,
+/// to its handler. Structure / Occurrence arms call `compile_entity` and push
+/// onto `ctx.templates`. The Function arm is the ONLY site that compiles a free
+/// fn's body (and its pending defaults), against the templates built so far,
+/// then swaps the real fn into the call table for later declarations. Import
+/// arm appends to `ctx.imports` unconditionally; a "not resolved" warning is
+/// emitted only when the import path is absent from `prelude` (see import
+/// warning policy in the module-level doc). Joint arm runs the DOF self-check.
+/// The remaining arms are passthroughs — handled in earlier phases.
 pub(crate) fn phase_entities(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
@@ -97,7 +105,7 @@ pub(crate) fn phase_entities(
     // The module-local `enum N` shadowing rule that reinterprets a name in this
     // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
     // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
-    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // because `phase_fn_signatures`/`phase_traits` run earlier and must agree with this
     // phase on what the name means (esc-5429-1). See
     // `enums_phase::build_local_enum_shadow_set`.
     //
@@ -105,12 +113,7 @@ pub(crate) fn phase_entities(
     // (local ∪ prelude) its own consumers want, but sub-target resolution needs
     // to know which names the module OWNS — see `PreludeRegistries::
     // local_entity_names` and property 1 of `find_template_with_prelude`.
-    let local_entity_names: HashSet<String> = ctx
-        .seen_entity_names
-        .iter()
-        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-        .map(|(name, _)| name.clone())
-        .collect();
+    let local_entity_names: HashSet<String> = ctx.local_entity_names();
     let structure_names: HashSet<String> = local_entity_names
         .iter()
         .cloned()
@@ -181,10 +184,51 @@ pub(crate) fn phase_entities(
         &structure_names,
         trait_names,
         &ctx.resolution_enums,
-        &ctx.resolution_functions,
+        CallTable::with_pending(&ctx.resolution_functions, &ctx.fns_with_pending_defaults),
         &ctx.unit_registry,
         &ctx.alias_registry,
         &mut ctx.diagnostics,
+    );
+
+    // ── Pass-local function resolution table (task 5494) ──
+    //
+    // This pass is the UNIFIED source-order pass: it compiles fn param defaults
+    // and bodies interleaved with entity templates, in declaration order, so each
+    // side sees the authoritative output of everything declared above it.  That
+    // requires mutating the function table mid-loop: a structure declared after
+    // `fn run(...)` must pad an omitted defaulted arg from `run`'s REAL
+    // `param_defaults`, which its signature stub lacks when a default constructs
+    // a same-module structure (`FnParamDefaults::NeedLocalTemplates`, PRD
+    // stdlib-namespace D-8).
+    //
+    // The table is pass-LOCAL rather than a `ctx` field because `compile_entity_decl`
+    // already takes 20 split `ctx` borrows (rationale at the bottom of this file); a
+    // `&mut` on a `ctx` field aliased by those borrows would not compile.  Written
+    // back into `ctx.resolution_functions` at the end of the pass.
+    //
+    // Entries `0..ctx.fn_signatures.len()` are the signature stubs seeded by
+    // `phase_fn_param_defaults` (and preserved by `phase_traits`' rebuild), in
+    // declaration order — so a fn's declaration index indexes this table directly.
+    // `pending` travels with it: a fn leaves it when its real fn replaces its stub.
+    let mut resolution_functions: Vec<CompiledFunction> =
+        std::mem::take(&mut ctx.resolution_functions);
+    let mut pending = std::mem::take(&mut ctx.fns_with_pending_defaults);
+    // The module-local `structure def`s with no template yet, i.e. declared
+    // below the current declaration: what a fn's body may not use.
+    let mut later_declared_structures = ctx.local_structure_def_names.clone();
+    let mut templates_seen: usize = 0;
+    // Declaration index of the next `Declaration::Function` — parallel to
+    // `decl_refs.fn_refs` and hence to `ctx.fn_signatures`, because
+    // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
+    // order with no filtering.
+    let mut fn_decl_index: usize = 0;
+    // The order-INDEPENDENT companion to the order-dependent call table each fn
+    // body resolves against (task #5371), merged ONCE for the whole pass and
+    // borrowed by every fn scope. It changes nothing about which overload
+    // resolves; see `CompilationScope::declared_callable_names` for what it is for.
+    let declared_callables = crate::functions::declared_callable_names(
+        &ctx.declared_fn_names,
+        &ctx.resolution_structure_names,
     );
 
     for decl in &parsed.declarations {
@@ -195,7 +239,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(structure),
                         EntityKind::Structure,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        CallTable::with_pending(&resolution_functions, &pending),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -247,8 +291,54 @@ pub(crate) fn phase_entities(
                     );
                 }
             }
-            reify_ast::Declaration::Function(_) => {
-                // Already compiled by functions_phase::phase_functions.
+            reify_ast::Declaration::Function(fn_def) => {
+                // task 5494 (PRD `stdlib-namespace.md` D-8): a fn's param defaults
+                // and body compile HERE, in source order, against the AUTHORITATIVE
+                // structure templates built so far — never against a mirror.
+                let idx = fn_decl_index;
+                fn_decl_index += 1;
+                let records = ctx
+                    .fn_signatures
+                    .get(idx)
+                    .zip(ctx.fn_param_defaults.get(idx));
+                let Some((sig, defaults)) = records.filter(|(sig, _)| sig.name == fn_def.name)
+                else {
+                    ctx.diagnostics.push(fn_tables_misaligned(
+                        fn_def,
+                        idx,
+                        "its signature record; its body was not compiled",
+                    ));
+                    continue;
+                };
+                if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
+                    fn_def,
+                    sig,
+                    defaults,
+                    &ctx.resolution_enums,
+                    &ctx.functions,
+                    &ctx.templates,
+                    prelude,
+                    &later_declared_structures,
+                    &declared_callables,
+                    &mut ctx.diagnostics,
+                ) {
+                    // Replace this fn's signature stub with the real
+                    // `CompiledFunction` so a LATER structure calling it pads an
+                    // omitted defaulted arg from real `param_defaults`
+                    // (`try_default_padding`), not from the stub's empty ones.
+                    match resolution_functions.get_mut(idx) {
+                        Some(slot) if slot.name == f.name && slot.params == f.params => {
+                            *slot = f.clone();
+                            pending.resolve(&f);
+                        }
+                        _ => ctx.diagnostics.push(fn_tables_misaligned(
+                            fn_def,
+                            idx,
+                            "its call-table slot; later declarations resolve against its stub",
+                        )),
+                    }
+                    ctx.functions.push(f);
+                }
             }
             reify_ast::Declaration::Trait(_) => {
                 // Already compiled by traits_phase::phase_traits.
@@ -259,7 +349,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(occurrence),
                         EntityKind::Occurrence,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        CallTable::with_pending(&resolution_functions, &pending),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -304,7 +394,7 @@ pub(crate) fn phase_entities(
                             EntityDefRef::from(s),
                             EntityKind::Structure,
                             &ctx.resolution_enums,
-                            &ctx.resolution_functions,
+                            CallTable::with_pending(&resolution_functions, &pending),
                             &trait_registry,
                             &structure_names,
                             trait_names,
@@ -356,12 +446,47 @@ pub(crate) fn phase_entities(
                     trait_names,
                     &ctx.alias_registry,
                     &ctx.resolution_enums,
-                    &ctx.resolution_functions,
+                    CallTable::with_pending(&resolution_functions, &pending),
                     &mut ctx.diagnostics,
                 );
             }
         }
+        for template in &ctx.templates[templates_seen..] {
+            later_declared_structures.remove(&template.name);
+        }
+        templates_seen = ctx.templates.len();
     }
+
+    // ── Unified-pass epilogue (task 5494) ──
+    //
+    // Append the trait-static fns buffered by `phase_traits` AFTER the user fns,
+    // reproducing the pre-5494 observable order `[user fns in source order …,
+    // trait-static fns …]` that `compute_module_hash` folds and
+    // `CompiledModule::functions` first-match dispatch depends on.
+    let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
+    ctx.functions.append(&mut trait_static_fns);
+
+    // Publish the pass-local table (real `CompiledFunction`s in place of the
+    // signature stubs) for the post-passes that read `ctx.resolution_functions`,
+    // and the stubs still pending in it.
+    ctx.resolution_functions = resolution_functions;
+    ctx.fns_with_pending_defaults = pending;
+}
+
+/// The unified pass's per-fn records — `ctx.fn_signatures`,
+/// `ctx.fn_param_defaults` and the signature-stub prefix of the call table —
+/// are indexed by declaration order and must describe `fn_def`. A mismatch is
+/// a compiler bug: reported, never skipped silently.
+fn fn_tables_misaligned(fn_def: &reify_ast::FnDef, idx: usize, mismatch: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "internal compiler error: fn '{}' (fn declaration #{idx}) does not match {mismatch}",
+        fn_def.name
+    ))
+    .with_code(DiagnosticCode::FnDeclTablesMisaligned)
+    .with_label(DiagnosticLabel::new(
+        fn_def.span,
+        "ICE: source-order fn tables misaligned",
+    ))
 }
 
 /// Ambient-default collection — file scope AND purpose scope (task B).
@@ -394,11 +519,12 @@ fn collect_ambient_defaults(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AmbientDefaults {
+    let functions = calls.functions;
     // A non-entity file scope carrying the unit registry (so `5mm` / `200GPa`
     // unit literals resolve) and the prelude template registry (so a
     // `Material(...)` constructor lowers to a `StructureInstanceCtor` with a
@@ -407,6 +533,7 @@ fn collect_ambient_defaults(
     let mut scope = CompilationScope::new("<file>");
     scope.set_unit_registry(unit_registry);
     scope.set_template_registry(prelude_template_registry);
+    scope.mark_pending_stubs(calls);
 
     let mut table = AmbientDefaults::default();
     // First-seen declaration span per type name within FILE scope, for same-scope
@@ -615,9 +742,10 @@ fn compile_joint_self_check(
     trait_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let functions = calls.functions;
     // Type-param names in scope (e.g. `joint j<T>(...)`); empty for the common
     // monomorphic joint. Threaded into the resolver so a datum/DOF type that
     // names a joint type-param resolves rather than erroring.
@@ -626,6 +754,7 @@ fn compile_joint_self_check(
 
     // (1) Build the datum-param scope.
     let mut scope = CompilationScope::new(&joint.name);
+    scope.mark_pending_stubs(calls);
     for param in &joint.params {
         let ty = resolve_type_expr_with_aliases(
             &param.type_expr,
@@ -740,7 +869,7 @@ fn compile_entity_decl(
     entity_ref: EntityDefRef<'_>,
     kind: EntityKind,
     resolution_enums: &[EnumDef],
-    resolution_functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -772,7 +901,7 @@ fn compile_entity_decl(
         &entity_ref,
         kind,
         resolution_enums,
-        resolution_functions,
+        calls,
         trait_registry,
         structure_names,
         trait_names,

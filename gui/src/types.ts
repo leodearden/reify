@@ -447,6 +447,27 @@ export interface FileData {
   content: string;
 }
 
+/** A Start-view Recent entry: its canonical document path, opened at (unix ms). */
+export interface RecentEntry {
+  path: string;
+  opened_at: number;
+}
+
+/** The Start view's launch modes; `set_mode`'s wire strings. */
+export type LaunchMode = 'design' | 'assistant' | 'debug';
+
+/** `set_mode`'s reply: the mode just selected and the debug server's live port, if any. */
+export interface ModeState {
+  mode: LaunchMode;
+  debug_port: number | null;
+}
+
+/** take_initial_file_load_failure's reply: the argv launch file that failed to load, and why. */
+export interface InitialFileLoadFailure {
+  path: string;
+  error: string;
+}
+
 /**
  * A single tensegrity wire endpoint pair with member-type tag, as emitted by
  * the backend `build_tensegrity_wires` extractor (T0b). Mirrors the Rust

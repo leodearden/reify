@@ -4,13 +4,6 @@ import { createRoot } from 'solid-js';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
-  mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnSolverProgress,
   mockCancelSolve,
   primeEngineStoreBridgeMocks,
@@ -146,14 +139,6 @@ describe('engineStore solverProgress', () => {
 
   it('(step-9a) subscribeToEvents registers onSolverProgress listener', async () => {
     await createRoot(async (dispose) => {
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
-
       const store = createEngineStore();
       await store.subscribeToEvents();
 
@@ -165,13 +150,6 @@ describe('engineStore solverProgress', () => {
   it('(step-9b) onSolverProgress callback drives state.solverProgress', async () => {
     await createRoot(async (dispose) => {
       let progressCb: ((p: { solver_kind: string; iter: number; residual: number }) => void) | undefined;
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnSolverProgress.mockImplementation(async (cb) => { progressCb = cb as typeof progressCb; return vi.fn(); });
 
       const store = createEngineStore();
@@ -187,13 +165,6 @@ describe('engineStore solverProgress', () => {
   it('(step-9c) cleanup invokes the onSolverProgress unlisten fn', async () => {
     await createRoot(async (dispose) => {
       const unlistenSolverProgress = vi.fn();
-      mockOnMeshUpdate.mockResolvedValue(vi.fn());
-      mockOnValueUpdate.mockResolvedValue(vi.fn());
-      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-      mockOnMeshRemoved.mockResolvedValue(vi.fn());
-      mockOnValueRemoved.mockResolvedValue(vi.fn());
-      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
       mockOnSolverProgress.mockResolvedValue(unlistenSolverProgress);
 
       const store = createEngineStore();
@@ -224,14 +195,6 @@ describe('engineStore solverProgress', () => {
     await createRoot(async (dispose) => {
       vi.useFakeTimers();
       try {
-        mockOnMeshUpdate.mockResolvedValue(vi.fn());
-        mockOnValueUpdate.mockResolvedValue(vi.fn());
-        mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-        mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-        mockOnMeshRemoved.mockResolvedValue(vi.fn());
-        mockOnValueRemoved.mockResolvedValue(vi.fn());
-        mockOnConstraintRemoved.mockResolvedValue(vi.fn());
-
         const store = createEngineStore();
         const cleanup = await store.subscribeToEvents();
 

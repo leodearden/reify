@@ -59,6 +59,8 @@ export interface ShortcutDef {
   bind?: KeyBinding;
   /** When true, the action flips a state on and off, so a held key fires it once, not on every auto-repeat. */
   toggle?: boolean;
+  /** When true, the shortcut also fires while no document is open (the Start view is up); every other shortcut acts on the layout the Start view covers, so it is suppressed then. */
+  worksWithoutDocument?: boolean;
 }
 
 // Private definition uses `as const satisfies` to validate shape against ShortcutDef
@@ -69,8 +71,8 @@ const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
   // accept. This restores the behavior of the original per-key equality checks.
-  { id: 'new',        key: 'Ctrl+N',       description: 'New file',             bind: { key: 'n', ctrl: true, shift: false } },
-  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false } },
+  { id: 'new',        key: 'Ctrl+N',       description: 'New file',             bind: { key: 'n', ctrl: true, shift: false }, worksWithoutDocument: true },
+  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false }, worksWithoutDocument: true },
   { id: 'save',       key: 'Ctrl+S',       description: 'Save file',            bind: { key: 's', ctrl: true, shift: false } },
   { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true, shift: false } },
   // shift: false makes the undo intent explicit and prevents it from shadowing redo

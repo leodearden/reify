@@ -12,6 +12,7 @@ strum.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
+default = ["serde"]
 serde = ["dep:serde"]
 
 [dev-dependencies]

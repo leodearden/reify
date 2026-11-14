@@ -1,0 +1,7 @@
+module parts
+
+pub structure def Pulley {
+    param diameter : Length = 40mm
+    param width : Length = 10mm
+    let body = cylinder(diameter / 2, width)
+}

@@ -51,7 +51,7 @@ binary built once, idle host, `nproc=32`.
 ## Hypothesis (NOT established fact) — RESOLVED by task 7411, see below
 
 > **Status:** the hypothesis below was tested and CONFIRMED for the attributed
-> call site, and both grounds it gave for deferring the fix were measured and
+> call site (task 7411) and the plain one (task 9858), and both grounds it gave for deferring the fix were measured and
 > overturned. Text preserved verbatim as the record of what was believed
 > before the measurement; read
 > "[Measured (task 7411)](#measured-task-7411--the-hypothesis-above-tested)"
@@ -136,46 +136,62 @@ the open questions here.
   which taxes both arms equally — gmsh itself is the prebuilt optimized native
   library, and it dominates.
 
-### What remains unpinned after 7411
+### What remained unpinned after 7411 — now pinned (task 9858)
 
-This note's remaining scope is now strictly narrower. Of the two
-`kernel_real.rs` volume-meshing call sites its hypothesis named:
+Of the two `kernel_real.rs` volume-meshing call sites this note's hypothesis
+named, task 7411 pinned the **attributed** override
+(`GmshKernel::mesh_surface_to_volume_attributed`), guarded by
+`reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs::attributed_producer_output_is_reproducible_across_repeated_calls`.
+7411 stopped there deliberately: only the attributed branch produces morph
+sources (`decide_morph_or_remesh` remeshes any source lacking the task-4092
+`BoundaryAssociation`, which only that branch attaches), so the flake it was
+fixing was exclusive to it.
 
-- the **attributed** override (`GmshKernel::mesh_surface_to_volume_attributed`)
-  is **pinned** by task 7411, guarded by
-  `reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs::attributed_producer_output_is_reproducible_across_repeated_calls`
-  (deterministically red without the pin);
-- the **plain** override (`GmshKernel::mesh_surface_to_volume`) is **still
-  unpinned**, and is now that file's only `MeshingOptions::default()` call site.
+Task 9858 pinned the **plain** override (`GmshKernel::mesh_surface_to_volume`)
+to the same options, now named once for both overrides as
+`kernel_real.rs`'s `trait_producer_meshing_options`. It is guarded by
+`reify-kernel-gmsh/tests/mesh_to_volume_tests.rs::trait_mesh_surface_to_volume_output_is_reproducible_across_repeated_calls`
+(red without the pin: on `tessellated_cylinder_mesh(0.05, 0.2, 32)`, 7500 vs
+7460 and 7537 vs 7494 tets between reps, in 2 of 2 processes). The guard can
+only discriminate on a host where `available_parallelism() > 1`, as with
+7411's attributed guard. The plain path
+serves every `VolumeMesh` realization without a boundary demand, GUI
+realization rebuilds included. It was found as one root cause of
+`reify-eval::solve_elastic_static_body_e2e`'s intermittent 1800s timeout,
+measured on warm lane `_lane-0`, 32 cores, loadavg ~100-167, release build,
+both arms at the same moment:
 
-What the pinned branch's reach actually is, since both the kernel doc and an
-earlier draft of this section framed it as the morph-source supplier alone: it
-is NOT morph-only. `reify-eval` takes it for every boundary-demanded
-`VolumeMesh` realization — i.e. every FEA face-selector-BC solve on real user
-geometry — so the pin lands on user-facing work, which is why the mesh-size
-sweep above was measured rather than deferred.
+| Realized `cylinder(50mm, 200mm)`, 280 surface tris → ~20.4k nodes | `default()` (32 threads) | `deterministic: true` (1 thread) |
+|---|---|---|
+| wall time per mesh | 29.4s, 58.5s | 1.3–2.6s |
+| nodes | 20376 vs 20393 within ONE process | 20390 every time |
 
-7411 stopped at that branch deliberately: only the attributed branch produces
-morph sources (`decide_morph_or_remesh` remeshes any source lacking the
-task-4092 `BoundaryAssociation`, which only this branch attaches), so the flake
-mechanism was exclusive to it, and the plain override additionally serves GUI
-realization rebuilds on surfaces this task never measured. Tracked as ticket
-`tkt_0RTPM0DR78N6RG5Y7PZJNH2FZF`, alongside this note's existing
-`tkt_0RTGVY62JW40ZMJDEQWEJRYCSE`.
+gdb samples of the 32-thread arm showed every OpenMP thread in libgomp
+spin/lock frames under `hxtOptimizeTetrahedra`, so its wall time is
+synchronization latency, which host load amplifies without bound; the pinned
+arm is plain CPU work.
 
-That ticket also carries a SPOT item, and its text UNDERCOUNTS the target: the
-`deterministic ? 1 : threads ? available_parallelism()` block is **triplicated**,
-not duplicated — `GmshKernel::mesh_to_volume` (`kernel_real.rs`),
-`run_meshing_with_entity_queries` (`mesh_boundary.rs`, the mesher behind the
-attributed path) and `refine_volume_with_size_field` (`refine_volume.rs`). A
-`resolve_num_threads(&MeshingOptions) -> f64` helper beside `MeshingOptions` in
-`options.rs` is the natural fix. (`mesh_plane_2d` in `mesh_profile_2d.rs` reads
-similarly but is a genuinely different shape — it sets `NumThreads = 1` only
-under `deterministic` and honours no `threads` override — so it is a variant to
-reconcile deliberately, not a fourth copy to fold in blindly.) Whoever picks the
-ticket up should take the site list from this paragraph, not from the ticket
-text.
+The pinned branch's reach is user-facing on both paths: `reify-eval` takes the
+attributed one for every boundary-demanded `VolumeMesh` realization (every FEA
+face-selector-BC solve on real user geometry) and the plain one for the rest.
 
-Note the seed/refine asymmetry above is now half-closed: `RealizedAdaptiveProblem::new`
-pins the REFINE step, 7411 pins the ATTRIBUTED seed producer, and only the plain
-seed producer still drifts.
+The thread count every 3D entry point hands gmsh now has one resolver,
+`MeshingOptions::resolved_num_threads` in `options.rs`. (`mesh_plane_2d` in
+`mesh_profile_2d.rs` is a genuinely different shape — it sets `NumThreads = 1`
+only under `deterministic` and honours no `threads` override.)
+
+The seed/refine asymmetry above is now closed: `RealizedAdaptiveProblem::new`
+pins the REFINE step, and both seed producers, attributed and plain, are
+single-threaded.
+
+Both tickets this note cites are therefore discharged, and neither has an
+open task behind it. This note's seed ticket `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE`
+matches task #7409, and 7411's plain-producer follow-up ticket
+`tkt_0RTPM0DR78N6RG5Y7PZJNH2FZF` matches task #7592 (the plain pin plus the
+triplicated thread-count block). Both tasks were cancelled on 2026-10-07 as
+superseded by meshing-service β #8285. The pin above discharges their
+determinism item, and `resolved_num_threads` discharges #7592's thread-block
+item. #7409's `mesh_size` and cache items moved to meshing-service η #8290.
+
+The other load-amplified stage behind that timeout, the CG solve's threading,
+is logged in `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.

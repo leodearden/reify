@@ -9,12 +9,7 @@ The plan-parity members (test_verify_plan_parity*.py) compare whole plans
 through the CLI and never import reify_verify. What is out of their reach is
 here:
 
-- the invariants: a step's command record must suit its kind, an emitter must
-  declare every gate path its steps name, PlanInputs holds a test region
-  exactly when the plan has one, a record rendered inside quotes refuses
-  that quote, the slot-closed wrapper holds one test pass, a recording runner
-  runs --no-fail-fast, and the gui-feature pass is never filtered nor
-  recorded;
+- the invariants, each stated by the test class that pins it;
 - the region's refusal of a quote-bearing path knob for every path it
   renders, of which B1 asserts one (the attempt sidecar), and the retry
   subset's own lines;
@@ -432,7 +427,8 @@ class TestPlanInputsTestRegion(unittest.TestCase):
 
     def region(self) -> testregion.TestRegion:
         runner = nextest.TestRunner(
-            prio="", test_threads=None, config=None, heavy_filter="H", no_fail_fast=False, confirm=None
+            prio="", test_threads=None, nextest=False, config=None, heavy_filter="H",
+            no_fail_fast=False, confirm=None,
         )
         return testregion.TestRegion(
             attempt_stamp=None, passes=(), gui_feature=None, runner=runner,
@@ -518,8 +514,8 @@ def nextest_run(**overrides) -> NextestRun:
 
 def recording_runner(**overrides) -> TestRunner:
     fields = dict(
-        prio="", test_threads=None, config=OVERRIDE_CONFIG, heavy_filter="H", no_fail_fast=True,
-        confirm=RECORDING,
+        prio="", test_threads=None, nextest=True, config=OVERRIDE_CONFIG, heavy_filter="H",
+        no_fail_fast=True, confirm=RECORDING,
     )
     fields.update(overrides)
     return TestRunner(**fields)
@@ -580,12 +576,15 @@ class TestSlotFdClosed(unittest.TestCase):
 
 
 class TestPassInvariants(unittest.TestCase):
-    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded."""
+    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded;
+    a recording pass carries no guard."""
 
     def test_a_recording_runner_runs_no_fail_fast(self):
         with self.assertRaises(ValueError) as raised:
             recording_runner(no_fail_fast=False)
-        self.assertIn("--no-fail-fast", str(raised.exception))
+        message = str(raised.exception)
+        for part in ("TestRunner", "--no-fail-fast", "records=True", "fail_fast=True"):
+            self.assertIn(part, message)
 
     def test_the_gui_feature_pass_carries_no_filter(self):
         for label, extra in (
@@ -596,6 +595,25 @@ class TestPassInvariants(unittest.TestCase):
                 with self.assertRaises(ValueError) as raised:
                     PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", **extra)
                 self.assertIn("gui-feature", str(raised.exception))
+
+    def test_a_recording_pass_carries_no_guard(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with self.assertRaises(ValueError) as raised:
+            PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        message = str(raised.exception)
+        for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
+        PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
+
+    def test_emitting_a_guarded_recorded_pass_is_refused_even_past_a_loosened_spec(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with mock.patch.object(PassSpec, "__post_init__", lambda self: None):
+            spec = PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        with self.assertRaises(ValueError) as raised:
+            nextest.emit_pass(spec, recording_runner())
+        message = str(raised.exception)
+        for part in ("emit_pass", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
 
     def test_only_a_profile_pass_records(self):
         runner = recording_runner()
@@ -617,7 +635,7 @@ class TestPassInvariants(unittest.TestCase):
         gui = PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m")
         cases = (
             (gui, runner, Phase.GUI_FEATURE_NEXTEST),
-            (gui, dataclasses.replace(runner, config=None), Phase.GUI_FEATURE_CARGO_TEST),
+            (gui, dataclasses.replace(runner, nextest=False, config=None), Phase.GUI_FEATURE_CARGO_TEST),
             (PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", features=("x",)), runner, Phase.DEBUG_NEXTEST),
             (PassSpec(PassKind.PROFILE, Profile.RELEASE, Workspace(), "90m"), runner, Phase.RELEASE_NEXTEST),
         )
@@ -634,6 +652,87 @@ class TestPassInvariants(unittest.TestCase):
                 self.assertEqual(len(gui), int(policy.ROLE_TABLE[role].gui_feature_test_pass))
                 for step in gui:
                     self.assertNotIn(CONFIRM_RECORDER, render.render_step(step))
+
+
+class TestRunnerArm(unittest.TestCase):
+    """The runner states whether nextest or the cargo-test fallback runs its passes; config None
+    only means no pass names a config."""
+
+    def test_a_nextest_runner_without_a_config_refuses_to_emit_a_pass(self):
+        runner = recording_runner(config=None, confirm=None, no_fail_fast=False)
+        with self.assertRaises(ValueError) as raised:
+            nextest.emit_pass(PassSpec(PassKind.PROFILE, Profile.RELEASE, Workspace(), "90m"), runner)
+        message = str(raised.exception)
+        self.assertIn("emit_pass", message)
+        self.assertIn("config", message)
+        self.assertIn("kind=profile", message)
+        self.assertIn("profile=release", message)
+
+    def test_the_cargo_test_fallback_names_no_config(self):
+        with self.assertRaises(ValueError) as raised:
+            recording_runner(nextest=False, confirm=None, no_fail_fast=False)
+        message = str(raised.exception)
+        self.assertIn("TestRunner", message)
+        self.assertIn("config", message)
+
+    def test_the_cargo_test_fallback_records_nothing(self):
+        with self.assertRaises(ValueError) as raised:
+            recording_runner(nextest=False, config=None)
+        message = str(raised.exception)
+        self.assertIn("TestRunner", message)
+        self.assertIn("confirm", message)
+
+    def test_the_fallback_runs_cargo_test(self):
+        runner = recording_runner(nextest=False, config=None, confirm=None, no_fail_fast=False)
+        step = nextest.emit_pass(PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m"), runner)
+        self.assertIsInstance(step.command, SlotFdClosed)
+        self.assertIsInstance(step.command.body, CargoTestRun)
+        self.assertEqual(step.phase, Phase.DEBUG_CARGO_TEST)
+
+    def test_a_region_with_no_pass_naming_a_config_keeps_its_arm(self):
+        for has_nextest in (True, False):
+            with self.subTest(nextest=has_nextest):
+                region = testregion.resolve(
+                    region_inputs(
+                        Role.MERGE, profiles=(Profile.RELEASE,), release_delta_skips=True,
+                        reaches_gui=False, nextest=has_nextest,
+                    )
+                )
+                self.assertIsInstance(region, testregion.TestRegion)
+                self.assertFalse(
+                    any(isinstance(spec, PassSpec) for spec in region.passes),
+                    "premise: the release-delta decision skipped the only pass",
+                )
+                self.assertIsNone(region.gui_feature, "premise: no gui-feature pass")
+                self.assertIsNone(region.runner.config)
+                self.assertIs(region.runner.nextest, has_nextest)
+
+
+class TestRolePolicyInvariants(unittest.TestCase):
+    """A recording role runs --no-fail-fast, and may still run the gui-feature pass, which records nothing."""
+
+    RECORDING_ROLE = policy.ROLE_TABLE[Role.OFFLINE]
+
+    def test_a_recording_role_is_not_fail_fast(self):
+        self.assertTrue(self.RECORDING_ROLE.records_confirm_manifest, "premise: offline records")
+        self.assertFalse(self.RECORDING_ROLE.fail_fast, "premise: offline is not fail-fast")
+        with self.assertRaises(ValueError) as raised:
+            dataclasses.replace(self.RECORDING_ROLE, fail_fast=True)
+        message = str(raised.exception)
+        for part in ("RolePolicy", "--no-fail-fast", "records=True", "fail_fast=True"):
+            self.assertIn(part, message)
+
+    def test_a_recording_role_may_run_the_gui_feature_pass(self):
+        role_policy = dataclasses.replace(self.RECORDING_ROLE, gui_feature_test_pass=True)
+        region = testregion.resolve(region_inputs(Role.OFFLINE, role_policy=role_policy))
+        self.assertIsInstance(region, testregion.TestRegion)
+        manifest = region.runner.confirm.paths(Profile.DEBUG).manifest
+        rendered = [(step.phase, render.render_step(step)) for step in testregion.steps(region)]
+        recording = [phase for phase, text in rendered if manifest in text]
+        self.assertEqual(recording, [Phase.DEBUG_NEXTEST])
+        gui = [text for phase, text in rendered if phase is Phase.GUI_FEATURE_NEXTEST]
+        self.assertEqual(len(gui), 1, "premise: the region runs the gui-feature pass")
+        self.assertNotIn(CONFIRM_RECORDER, gui[0])
 
 
 class TestQuotedPathKnobs(unittest.TestCase):

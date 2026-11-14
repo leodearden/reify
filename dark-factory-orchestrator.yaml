@@ -588,34 +588,6 @@ merge_train_former_enabled: true
 merge_train_coalesce_enabled: false
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
-# Variable-depth speculative verify placement (task 2359) — ACTIVATE the deep
-# probe (operator decision, 2026-07-19). Reify is the primary consumer: the K=2
-# multi-host queue whose queues actually go deep, and the source of the 2340
-# calibration (p_good≈0.97, N*≈20). probe_fraction=0.5: half of second-slot
-# dispatch rounds target a deeper already-built speculative stack (probe_depths
-# default [2,3,5,8]) instead of the adjacent depth-1 stack, producing genuine
-# depth≥2 merge_verify records (labelled by task 2340's depth field) so
-# scripts/analyze_speculation_depth.py can print the deep P(pass|depth) curve that
-# validates/refutes N*≈20. suppress_flake_rate=0.40 lifts the thrash guard above
-# reify's ~0.33 per-attempt verify fail rate so the probe actually fires (the 0.30
-# default sat at/below the flake floor and self-suppressed).
-# NOTE: 0.5 is ~5x the 2359 design-suggested bound (≤0.1); a failed deep probe
-# skips the safe depth-1 item, so this trades throughput for curve data. Green-tier
-# hot-reloadable (RELOADABLE_FIELDS) — live via reload_config, no restart;
-# probe_fraction=0.0 reverts byte-identically.
-# DEACTIVATED 2026-07-23 (operator decision): the probe CANNOT produce genuine
-# depth≥2 records under K=2 — build-ahead is capped at speculation_depth, so
-# probe_depths 3/5/8 never pass select_probe_depth's availability guard, and a
-# firing d=2 probe is attribution-only (ProbePlacement Phase-1 limitation) with
-# an off-by-one label: it relabels an ordinary 2-item adjacent verify as depth=2,
-# corrupting analyze_speculation_depth.py's depth calibration. Its 5 collected
-# events (all 2026-07-22) are 2-item trees, not the 3-item trees the depth=2
-# label implies — exclude label≥2 events from calibration. Deep P(pass|d) is
-# being measured instead by the offline replay study (reify-replay-study unit).
-speculation_probe:
-  probe_fraction: 0.0
-  suppress_flake_rate: 0.40
-
 # Per-role USD budgets. architect 15 -> 25 (2026-08-19, Leo approved, esc-6090-3).
 #
 # Same failure class as the reviewer 5 -> 12 bump in dark-factory defaults.yaml:

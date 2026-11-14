@@ -27,7 +27,7 @@ portable_sha256() {
 # choose.  Prints the port number (an integer in 1..65535) to stdout.
 #
 # Uses python3 socket bind-to-0, the same OS mechanism node uses in
-# allocateFreePort() (gui/test/visual/endpoint.ts) and the exact one-liner
+# allocateFreePort() (gui/test/visual/perRunPort.ts) and the exact one-liner
 # already used in tests/infra/test_run_gui_scripts.sh Test 25.
 #
 # Returns non-zero with an error on stderr if python3 is unavailable.

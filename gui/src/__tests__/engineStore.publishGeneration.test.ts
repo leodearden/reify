@@ -5,18 +5,12 @@ import type { GuiState, ValueData, FeaDiagnosticInfo } from '../types';
 vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  mockOnMeshUpdate,
   mockOnValueUpdate,
-  mockOnConstraintUpdate,
-  mockOnEvaluationStatus,
-  mockOnMeshRemoved,
-  mockOnValueRemoved,
-  mockOnConstraintRemoved,
   mockOnFeaDiagnosticsChanged,
   mockOnEvalGeneration,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { sampleMesh, sampleValue, sampleIteration } from './engineStoreFixtures';
+import { sampleMesh, sampleValue, sampleIteration, makeGuiState } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
@@ -24,23 +18,14 @@ beforeEach(primeEngineStoreBridgeMocks);
 // ── task 7853: a whole-state snapshot never overwrites newer event-applied state ──
 
 describe('engineStore publish-generation guard', () => {
-  const width = (value: string): ValueData => ({ ...sampleValue, value });
+  const width = (value: string): ValueData => ({ ...sampleValue(), value });
 
   function snapshot(value: string, feaDiagnostics: FeaDiagnosticInfo[] = []): GuiState {
-    return {
-      fea_convergence: null,
-      meshes: [sampleMesh],
+    return makeGuiState({
+      meshes: [sampleMesh()],
       values: [width(value)],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
       fea_diagnostics: feaDiagnostics,
-    };
+    });
   }
 
   /** A store subscribed to its events, and the callbacks it handed the bridge. */
@@ -48,12 +33,6 @@ describe('engineStore publish-generation guard', () => {
     let announce: ((generation: number) => void) | undefined;
     let valueUpdate: ((value: ValueData) => void) | undefined;
     let feaDiagnosticsChanged: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
-    mockOnMeshUpdate.mockResolvedValue(vi.fn());
-    mockOnConstraintUpdate.mockResolvedValue(vi.fn());
-    mockOnEvaluationStatus.mockResolvedValue(vi.fn());
-    mockOnMeshRemoved.mockResolvedValue(vi.fn());
-    mockOnValueRemoved.mockResolvedValue(vi.fn());
-    mockOnConstraintRemoved.mockResolvedValue(vi.fn());
     mockOnEvalGeneration.mockImplementation(async (cb) => {
       announce = cb;
       return vi.fn();
@@ -79,7 +58,7 @@ describe('engineStore publish-generation guard', () => {
   }
 
   const shownWidth = (store: ReturnType<typeof createEngineStore>) =>
-    store.state.values[sampleValue.cell_id]?.value;
+    store.state.values[sampleValue().cell_id]?.value;
 
   it('applyPublishedState applies a snapshot when no newer generation was announced', async () => {
     await createRoot(async (dispose) => {
@@ -88,7 +67,7 @@ describe('engineStore publish-generation guard', () => {
       store.applyPublishedState({ generation: 1, state: snapshot('50') });
 
       expect(shownWidth(store)).toBe('50');
-      expect(store.state.meshes[sampleMesh.entity_path]).toEqual(sampleMesh);
+      expect(store.state.meshes[sampleMesh().entity_path]).toEqual(sampleMesh());
       expect(onEngineReinitialized).toHaveBeenCalledOnce();
       dispose();
     });

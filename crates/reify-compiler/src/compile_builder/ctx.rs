@@ -16,8 +16,10 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
+use crate::call_table::PendingDefaults;
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
+use crate::functions::{FnParamDefaults, FnSignature};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -45,6 +47,34 @@ pub(crate) struct CompilationCtx {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) imports: Vec<CompiledImport>,
     pub(crate) functions: Vec<CompiledFunction>,
+    /// Resolved signatures of the module's own `fn` declarations, in source
+    /// order — the output of `functions_phase::phase_fn_signatures`.
+    ///
+    /// Written before any structure template exists; consumed by the unified
+    /// source-order pass in `phase_entities`, which compiles each fn's body
+    /// against the authoritative template registry.
+    /// Parallel to `decl_refs.fn_refs` (same length, same order), so a
+    /// declaration index indexes both.
+    pub(crate) fn_signatures: Vec<FnSignature>,
+    /// Each fn's param-default outcome, parallel to `fn_signatures` — the
+    /// output of `functions_phase::phase_fn_param_defaults`.
+    pub(crate) fn_param_defaults: Vec<FnParamDefaults>,
+    /// The fn overloads whose outcome is `FnParamDefaults::NeedLocalTemplates`,
+    /// with their defaulted params: the stubs of `resolution_functions` that
+    /// cannot pad yet. Written by `phase_fn_param_defaults`; the unified pass
+    /// takes each overload out as its real fn replaces its stub. See
+    /// [`crate::scope::CompilationScope::fns_with_pending_defaults`].
+    pub(crate) fns_with_pending_defaults: PendingDefaults,
+    /// Trait-static fns compiled by `phase_traits`, buffered here instead of
+    /// being pushed straight into `functions`.
+    ///
+    /// `phase_traits` now runs BEFORE user fn bodies are compiled, so appending
+    /// its output to `functions` directly would invert today's observable order
+    /// (`[user fns in source order …, trait-static fns …]`) — which
+    /// `compute_module_hash` folds and `CompiledModule::functions` first-match
+    /// dispatch depends on.  Buffering keeps that order byte-identical: the
+    /// unified pass appends this vec to `functions` after the user fns.
+    pub(crate) trait_static_fns: Vec<CompiledFunction>,
     pub(crate) fields: Vec<CompiledField>,
     pub(crate) templates: Vec<TopologyTemplate>,
     pub(crate) enum_defs: Vec<reify_ir::EnumDef>,
@@ -84,30 +114,40 @@ pub(crate) struct CompilationCtx {
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
     /// prelude functions via `functions_phase::build_resolution_functions`.
-    /// Populated by `functions_phase::phase_functions`.
+    /// Seeded with signature stubs by `functions_phase::phase_fn_param_defaults`,
+    /// then rewritten with the fully-compiled functions (param defaults and
+    /// bodies) by the unified source-order pass in `entities_phase::phase_entities`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
-    /// `phase_functions` so fn-signature type resolution can resolve trait names
-    /// to `Type::TraitObject`. Consumed by both `phase_functions` (via
-    /// `compile_function`) and `phase_traits` (replacing its previously-local
-    /// construction).
+    /// `phase_fn_signatures` so fn-signature type resolution can resolve trait
+    /// names to `Type::TraitObject`. Consumed by `phase_fn_signatures` (via
+    /// `resolve_fn_signature`) and `phase_traits` (replacing its
+    /// previously-local construction).
     pub(crate) resolution_trait_names: HashSet<String>,
     /// Structure/occurrence names known at compile time: local structure and
     /// occurrence declarations + prelude templates. Populated by
-    /// `names_phase::build_resolution_names` BEFORE `phase_functions` so
+    /// `names_phase::build_resolution_names` BEFORE `phase_fn_signatures` so
     /// fn-signature type resolution can resolve structure names to
-    /// `Type::StructureRef`. Consumed by both `phase_functions` and `phase_traits`.
+    /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
+    /// and `phase_entities`.
     pub(crate) resolution_structure_names: HashSet<String>,
+    /// The module's own `structure def` names, top-level and purpose-nested
+    /// (first definition only; occurrences excluded). Recorded by
+    /// `pre_pass::collect_decl_refs`. The fn-body declaration-order rule
+    /// (task #5494) is keyed on this set: unlike `resolution_structure_names` it
+    /// holds no prelude or occurrence names, which never enter the ctor view the
+    /// way a local structure does.
+    pub(crate) local_structure_def_names: HashSet<String>,
     /// Names this module DECLARES as functions: every local `fn` declaration +
     /// every prelude function. Populated by `names_phase::build_resolution_names`
-    /// BEFORE `phase_functions`; consumed by both `phase_functions` and
-    /// `phase_traits` (task #5371). Why a fn body needs it:
+    /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
+    /// `phase_entities` and `phase_traits` (task #5371). Why a fn body needs it:
     /// [`crate::scope::CompilationScope::declared_callable_names`].
     ///
     /// Deliberately NOT `resolution_functions`, and the difference is the whole
     /// reason this field exists. `resolution_functions` is a table of compiled
-    /// SIGNATURES and is only complete once `phase_functions` has finished. This
+    /// SIGNATURES and is only complete once `phase_fn_param_defaults` has finished. This
     /// set answers the weaker question ("does the module declare this name at
     /// all?") and is complete before the first body compiles.
     ///
@@ -129,6 +169,10 @@ impl CompilationCtx {
             diagnostics: Vec::new(),
             imports: Vec::new(),
             functions: Vec::new(),
+            fn_signatures: Vec::new(),
+            fn_param_defaults: Vec::new(),
+            fns_with_pending_defaults: PendingDefaults::default(),
+            trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),
             enum_defs: Vec::new(),
@@ -147,8 +191,45 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
+            local_structure_def_names: HashSet::new(),
             declared_fn_names: HashSet::new(),
         }
+    }
+
+    /// Build a signature-stub `CompiledFunction` table from `fn_signatures`.
+    ///
+    /// Each stub carries the real name/params/return_type/type_params/
+    /// annotations — everything `resolve_function_overload` reads — and an
+    /// empty body.  `compile_expr` never reads `CompiledFunction::body`, so a
+    /// stub is sufficient for compile-time overload dispatch.
+    ///
+    /// `param_defaults` are the fn's REAL defaults when
+    /// `phase_fn_param_defaults` compiled them (`FnParamDefaults::Compiled`), so
+    /// `try_default_padding` pads against a stub exactly as against the real
+    /// fn.  A fn whose defaults wait for a same-module template
+    /// (`NeedLocalTemplates`, or not yet decided) gets
+    /// `CompiledFunction::no_defaults_for`, and a call omitting one of those
+    /// defaults draws `FnDefaultNotYetAvailable` — PRD stdlib-namespace D-8.
+    ///
+    /// Same synthetic-stub idiom as `geometry.rs`'s and `annotations.rs`'s
+    /// `CompiledFunction` literals.
+    pub(crate) fn fn_signature_stubs(&self) -> Vec<CompiledFunction> {
+        self.fn_signatures
+            .iter()
+            .enumerate()
+            .map(|(i, sig)| signature_stub(sig, self.fn_param_defaults.get(i)))
+            .collect()
+    }
+
+    /// Every module-local name that can win a ctor-view slot: the module's own
+    /// structures (top-level and purpose-nested) and occurrences —
+    /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
+    pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+        self.seen_entity_names
+            .iter()
+            .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
@@ -242,6 +323,38 @@ impl CompilationCtx {
             diagnostics: self.diagnostics,
             content_hash,
         }
+    }
+}
+
+/// One signature stub; see [`CompilationCtx::fn_signature_stubs`].
+pub(crate) fn signature_stub(
+    sig: &FnSignature,
+    defaults: Option<&FnParamDefaults>,
+) -> CompiledFunction {
+    let param_defaults = match defaults {
+        Some(FnParamDefaults::Compiled(defaults)) => defaults.clone(),
+        Some(FnParamDefaults::NeedLocalTemplates) | None => {
+            CompiledFunction::no_defaults_for(&sig.params)
+        }
+    };
+    CompiledFunction {
+        name: sig.name.clone(),
+        doc: sig.doc.clone(),
+        is_pub: sig.is_pub,
+        param_defaults,
+        params: sig.params.clone(),
+        return_type: sig.return_type.clone(),
+        body: reify_ir::CompiledFnBody {
+            let_bindings: Vec::new(),
+            result_expr: reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Real(0.0),
+                reify_core::Type::dimensionless_scalar(),
+            ),
+        },
+        content_hash: ContentHash::of_str(&sig.name),
+        annotations: sig.annotations.clone(),
+        optimized_target: sig.optimized_target.clone(),
+        type_params: sig.type_params.clone(),
     }
 }
 
@@ -385,6 +498,14 @@ mod tests {
         assert!(ctx.diagnostics.is_empty(), "diagnostics should be empty");
         assert!(ctx.imports.is_empty(), "imports should be empty");
         assert!(ctx.functions.is_empty(), "functions should be empty");
+        assert!(
+            ctx.fn_signatures.is_empty(),
+            "fn_signatures should be empty"
+        );
+        assert!(
+            ctx.trait_static_fns.is_empty(),
+            "trait_static_fns should be empty"
+        );
         assert!(ctx.fields.is_empty(), "fields should be empty");
         assert!(ctx.templates.is_empty(), "templates should be empty");
         assert!(ctx.enum_defs.is_empty(), "enum_defs should be empty");

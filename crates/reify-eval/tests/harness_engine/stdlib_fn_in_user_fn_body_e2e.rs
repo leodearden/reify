@@ -55,7 +55,7 @@ structure def Holder {
 
 fn make_holder() -> Holder { Holder() }
 
-structure def SkeletonRoute {
+structure def FnBodyCtorRoute {
     let direct = Holder()
     let direct_first = direct.first
     let via_fn = make_holder()
@@ -209,7 +209,7 @@ fn fn_body_ctor_of_same_module_structure_resolves_its_stdlib_default() {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    assert_wrapped_equals_direct(&result, "SkeletonRoute", "direct_first", "via_fn_first");
+    assert_wrapped_equals_direct(&result, "FnBodyCtorRoute", "direct_first", "via_fn_first");
 }
 
 /// KNOWN LIMITATION, owned by #9363 (eval runs the overload the compiler
