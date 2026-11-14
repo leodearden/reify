@@ -899,28 +899,6 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
-/// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
-/// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
-///
-/// Used by `check_let_annotation_type` to recognise the numeric-literal idiom for
-/// dimensioned Scalar lets (`let x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
-/// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
-fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp {
-            op: UnOp::Neg,
-            operand,
-        } => {
-            matches!(
-                operand.kind,
-                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
-            )
-        }
-        _ => false,
-    }
-}
-
 /// Cross-check a structure `param`'s declared type against its initializer's inferred type.
 ///
 /// An explicitly annotated `Int` / `Scalar` param default must be `type_compatible`
@@ -1016,8 +994,8 @@ pub(crate) fn param_default_rejection_span(diagnostic: &Diagnostic) -> Option<So
 /// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
 /// - `declared` is NOT `Type::Error` (anti-cascade)
 /// - `rhs_is_collection_literal` is false (β owns the literal path)
-/// - RHS is NOT a numeric literal for a dimensioned Scalar (numeric-idiom guard)
-/// - `type_compatible(declared, &rhs.result_type)` returns false
+/// - `type_compatible(declared, &rhs.result_type)` returns false, with no literal
+///   exemption (PRD dimensioned-construction-strictness §0.3)
 ///
 /// Called at the two unchecked structure let sites:
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
@@ -1058,18 +1036,6 @@ fn check_let_annotation_type(
     //   - `let a : Length = 5N`           (scalar declared, dimension mismatch)
     //   - `let a : Length = some_geo()`   (scalar declared, geometry RHS → false)
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
-        return;
-    }
-    // Numeric-literal idiom guard (mirrors check_param_default_type exactly):
-    // `let x : Length = 5`, `= 0.5`, or `= -5.0` — a bare/negated numeric literal
-    // that is an Int or a dimensionless scalar is accepted for any dimensioned Scalar
-    // declared type. Compound expressions (e.g. `ratio * 2.0`) are NOT literals and
-    // fall through to `type_compatible`.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(rhs)
-        && (matches!(rhs.result_type, Type::Int)
-            || matches!(&rhs.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
         return;
     }
     if !type_compatible(declared, &rhs.result_type) {
