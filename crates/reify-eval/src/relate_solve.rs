@@ -2156,7 +2156,7 @@ mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
-    use reify_test_support::{compile_source_with_stdlib, errors_only};
+    use reify_test_support::parse_and_compile_with_stdlib;
 
     use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
@@ -2197,12 +2197,7 @@ mod test_fixtures {
     /// rather than as `unwrap` on `None`. A fixture that compiles with errors
     /// panics first, with its diagnostics.
     pub(super) fn relate_scope(source: &str, name: &str) -> RelateScope {
-        let module = compile_source_with_stdlib(source);
-        let errors = errors_only(&module);
-        assert!(
-            errors.is_empty(),
-            "relate fixture must compile without errors; got: {errors:#?}"
-        );
+        let module = parse_and_compile_with_stdlib(source);
         let template = module
             .templates
             .iter()
@@ -2219,7 +2214,7 @@ mod test_fixtures {
     /// `Broken` parses and still compiles to its template, so the template lookup
     /// alone would accept it; only a check of the compile diagnostics refuses it.
     #[test]
-    #[should_panic(expected = "must compile without errors")]
+    #[should_panic(expected = "compile errors")]
     fn relate_scope_refuses_a_fixture_that_compiles_with_errors() {
         const BROKEN: &str = r#"
 structure Broken {
