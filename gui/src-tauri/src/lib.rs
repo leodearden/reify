@@ -36,7 +36,8 @@ pub mod eval_queue;
 pub mod gui_state_schema;
 pub mod kernel_status;
 pub mod large_stack;
-pub mod loopback_request_guard;
+#[cfg(feature = "gui")]
+mod loopback_request_guard;
 pub mod lsp_bridge;
 pub mod mcp_context;
 pub mod screenshot_save;

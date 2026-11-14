@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use axum::routing::post;
 use axum::{Json, Router};
@@ -59,9 +60,23 @@ fn counting_routes(handled: &Arc<AtomicUsize>) -> Router {
         .route("/debug/{command}", post(count(handled.clone())))
 }
 
+const EXCHANGE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// POST `{}` to `127.0.0.1:port` with the given Host and optional Origin over
-/// raw HTTP/1.1; returns the response status code and body.
+/// raw HTTP/1.1; returns the response status code and body. Panics, naming the
+/// request, if the exchange does not complete within [`EXCHANGE_DEADLINE`].
 async fn post_json(port: u16, host: &str, origin: Option<&str>, path: &str) -> (u16, String) {
+    tokio::time::timeout(EXCHANGE_DEADLINE, exchange(port, host, origin, path))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "POST {path} to 127.0.0.1:{port} (Host {host}, Origin {origin:?}) got no \
+                 complete response within {EXCHANGE_DEADLINE:?}"
+            )
+        })
+}
+
+async fn exchange(port: u16, host: &str, origin: Option<&str>, path: &str) -> (u16, String) {
     let body = "{}";
     let origin_line = origin
         .map(|o| format!("Origin: {o}\r\n"))

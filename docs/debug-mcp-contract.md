@@ -1236,12 +1236,16 @@ other port-forward must keep the same local port number, or the forwarded `Host`
 not match.
 
 Non-browser clients send no `Origin` and are unaffected. That covers Node `fetch` (and
-so the MCP SDK's streamable-HTTP transport and the `gui/test/visual` drivers) and
-`curl`. The GUI webview never calls this server over HTTP: its debug bridge rides
-Tauri events.
+so the MCP SDK's streamable-HTTP transport and the `gui/test/visual` drivers), the
+native `claude` CLI that the in-app assistant runs, and `curl`. The GUI webview never
+calls this server over HTTP: its debug bridge rides Tauri events.
+
+*Measured against a header-echo server: Node 22 `fetch` on 2026-11-07, and the
+`claude` CLI 2.1.325's MCP HTTP client on 2026-11-14. Both sent
+`Host: 127.0.0.1:<port>` and no `Origin`.*
 
 ### Where it lives
 
-The rule is `check_loopback_request` in `gui/src-tauri/src/loopback_request_guard.rs`.
+The rule is `ListenerAuthorities::check` in `gui/src-tauri/src/loopback_request_guard.rs`.
 `debug_server::serve_debug_routes` applies it with the listener's real `local_addr()`,
 and that function is the only place debug routes are served.
