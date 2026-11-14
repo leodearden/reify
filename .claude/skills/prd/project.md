@@ -118,7 +118,7 @@ Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversar
 
 ### Choosing the reify binary
 
-α refuses (exit 64, no JSON) when any built `target/{release,debug}/reify` is not vouched for, i.e. `target/.reify-bin-sha` does not name `HEAD`, a lone binary included. That is the usual state of a dev lane. Every leaf then comes back `BLOCKS`, with a `HARNESS_ERROR` whose stderr is α's refusal naming every built binary. To pick the binary yourself, pass the envelope form of `args`:
+α refuses (exit 64, no JSON) when any built `target/{release,debug}/reify` is not vouched for, i.e. `target/.reify-bin-sha` does not name `HEAD`, a lone binary included. That is the usual state of a dev lane. It also refuses when neither is built: it never falls back to a `reify` on `PATH`, whose source commit is unknown. Every leaf then comes back `BLOCKS`, with a `HARNESS_ERROR` whose stderr is α's refusal naming every built binary, or saying that none is built. To pick the binary yourself, pass the envelope form of `args`:
 
 ```
 Workflow({scriptPath: "scripts/prd-decompose-verify.mjs",

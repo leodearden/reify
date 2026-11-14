@@ -44,12 +44,13 @@ def require_reify_binary(test, pcc=None):
     Asking α's own ProbeContext.from_environment() keeps the skip and the CLI in
     agreement, and an α subprocess inheriting os.environ reaches the same
     answer.  Three skips:
-      * α refused: no built profile binary is vouched for (α's exit 64); the
-        refusal is the reason, so a stale binary is never probed.
-      * a bare name: α's PATH fallback when no profile binary is built, or a
-        bare REIFY_BIN.  A PATH reify (a `cargo install`ed one, say) says
-        nothing about which source built it, so its verdicts are not this
-        checkout's.  A REIFY_BIN path is the caller's explicit choice and runs.
+      * α refused: no built profile binary is vouched for, or none is built
+        (α's exit 64); the refusal is the reason, so a stale binary, or one
+        of unknown source, is never probed.
+      * a bare name: a bare REIFY_BIN, which α takes verbatim.  A PATH reify
+        (a `cargo install`ed one, say) says nothing about which source built
+        it, so its verdicts are not this checkout's.  A REIFY_BIN path is the
+        caller's explicit choice and runs.
       * the named binary is not there to run.
     """
     pcc = load_pcc() if pcc is None else pcc
