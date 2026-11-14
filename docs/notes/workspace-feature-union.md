@@ -113,6 +113,7 @@ G=$(for g in "$BASE"/target.gen.[0-9]*; do [ -d "$g" ] && [ "$(stat -c %y "$g")"
 echo "$G"   # one gen; empty means target/ is no longer a pristine seed
 B=$(cat "$G.basecommit")
 find target ! -type d -newer "$G.basecommit" | wc -l   # must print 0: nothing was built since the seed
+git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
 [ -n "$B" ] && printf 'L=%q\nG=%q\nB=%q\n' "$PWD" "$G" "$B" > /tmp/<id>-base.env
 ```
 
@@ -199,7 +200,7 @@ find target -mindepth 1 -maxdepth 1 ! -name .pristine -exec rm -rf {} +
 cp -a --reflink=always "$S"/. target/
 check; echo "restored-matches rc=$?"   # must be 0 before probing
 
-# before every probe, the first included (arm B: see below):
+# after any arm B copy, immediately before every probe, the first included (arm B: see below):
 git clean -Xfd -- tree-sitter-reify/src
 git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
 ```
