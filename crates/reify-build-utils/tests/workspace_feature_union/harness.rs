@@ -431,7 +431,7 @@ a v0.1.0 (/fixture/crates/a)|
 pub(crate) const TREE_UNION: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|\n";
 
-/// `--workspace` over roots `a` and the union crate.
+/// A `--workspace` tree printing each of `roots` as its own root, in order.
 pub(crate) fn workspace_of(roots: &[&str]) -> String {
     roots.join("\n")
 }
@@ -440,26 +440,8 @@ pub(crate) fn covered_a() -> Vec<Member> {
     vec![member("a", &[UNION]), member(UNION, &[])]
 }
 
-pub(crate) const UNION_NODE: &str =
+const UNION_NODE: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|";
-
-/// `--workspace` with `a` building with member `u`, whose subtree below its
-/// `[build-dependencies]` line is `u_children` (each line indented under u).
-pub(crate) fn workspace_building_a_with_u(u_children: &[&str]) -> String {
-    let below_u: String = u_children
-        .iter()
-        .map(|line| format!("    {line}\n"))
-        .collect();
-    let tree_a = format!(
-        "a v0.1.0 (/fixture/crates/a)|\n\
-         |-- {UNION_NODE}\n\
-         `-- memchr v2.0.0|std\n\
-         [build-dependencies]\n\
-         `-- u v0.1.0 (/fixture/crates/u)|\n\
-         {below_u}"
-    );
-    workspace_of(&[&tree_a, TREE_UNION])
-}
 
 /// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
 /// `-p d` resolve it without. Each of `uncovered` joins as a member that

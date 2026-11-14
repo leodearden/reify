@@ -14,10 +14,10 @@ mod harness;
 mod profile_split;
 
 use harness::{
-    END_MARKER, Fixture, Member, TREE_A, TREE_UNION, UNION, UNION_NODE, assert_exit,
-    assert_findings, assert_green, assert_input_error, assert_pin, covered_a, describe,
-    empty_union_manifest, finding_lines, member, member_split_fixture, parse_toml, real_check,
-    run_script, stdout_of, workspace_building_a_with_u, workspace_of, write_file,
+    END_MARKER, Fixture, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings,
+    assert_green, assert_input_error, assert_pin, covered_a, describe, empty_union_manifest,
+    finding_lines, member, member_split_fixture, parse_toml, real_check, run_script, stdout_of,
+    workspace_of, write_file,
 };
 
 // --- the real workspace ------------------------------------------------------
@@ -221,6 +221,17 @@ a v0.1.0 (/fixture/crates/a)|
 `-- memchr v2.0.0|std
 ";
 
+/// `--workspace` with `a` building with member `u`.
+const WS_A_BUILDS_WITH_U: &str = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- memchr v2.0.0|std
+[build-dependencies]
+`-- u v0.1.0 (/fixture/crates/u)|
+
+workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
+
 #[test]
 fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
     let members = vec![
@@ -320,7 +331,7 @@ fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
         member(UNION, &[]),
     ];
     assert_green(
-        &Fixture::new(&members, &workspace_building_a_with_u(&[]))
+        &Fixture::new(&members, WS_A_BUILDS_WITH_U)
             .tree("a", TREE_A_UNION_MEMCHR)
             .check(),
         "a build-dependency member is neither required to depend on the union nor \
@@ -328,29 +339,7 @@ fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
     );
 }
 
-const PM_NODE: &str = "pm v0.1.0 (proc-macro) (/fixture/crates/pm)|";
-
-/// `--workspace` with `a` depending on the proc-macro member `pm`, whose
-/// subtree is `pm_children`; pm is also a root of its own, which is `(*)`
-/// when it has children, because a's line lists them.
-fn workspace_using_proc_macro_pm(pm_children: &[&str]) -> String {
-    let below_pm: String = pm_children
-        .iter()
-        .map(|line| format!("    {line}\n"))
-        .collect();
-    let tree_a = format!(
-        "a v0.1.0 (/fixture/crates/a)|\n\
-         |-- {UNION_NODE}\n\
-         `-- {PM_NODE}\n\
-         {below_pm}"
-    );
-    let tree_pm = if pm_children.is_empty() {
-        format!("{PM_NODE}\n")
-    } else {
-        format!("{PM_NODE} (*)\n")
-    };
-    workspace_of(&[&tree_a, &tree_pm, TREE_UNION])
-}
+const TREE_PM: &str = "pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n";
 
 const TREE_A_UNION_PM: &str = "\
 a v0.1.0 (/fixture/crates/a)|
@@ -366,9 +355,12 @@ fn check_exempts_a_proc_macro_member_from_coverage() {
         member(UNION, &[]),
     ];
     assert_green(
-        &Fixture::new(&members, &workspace_using_proc_macro_pm(&[]))
-            .tree("a", TREE_A_UNION_PM)
-            .check(),
+        &Fixture::new(
+            &members,
+            &workspace_of(&[TREE_A_UNION_PM, TREE_PM, TREE_UNION]),
+        )
+        .tree("a", TREE_A_UNION_PM)
+        .check(),
         "a proc-macro member is compiled for the host: it is neither required to depend \
          on the union nor resolved with -p (the stub exits 3 on -p pm)",
     );
