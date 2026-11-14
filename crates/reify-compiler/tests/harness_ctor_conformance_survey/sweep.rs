@@ -698,7 +698,7 @@ const INLINE_SYNTH_HOST: &str = r####"// A synthetic host for the inline sweep.
 fn warns() {
     let source = r##"
 structure def W {
-    param z : Length = 5.0
+    param z : String = 5.0
 }
 "##;
     let _ = source;
@@ -780,7 +780,7 @@ fn survey_inline_corpus_finds_the_snippet_site_at_its_host_position() {
     );
     assert_eq!(
         site.line,
-        host_line_of(INLINE_SYNTH_HOST, "param z : Length"),
+        host_line_of(INLINE_SYNTH_HOST, "param z : String"),
         "a row's `line` is the HOST line of the offending declaration"
     );
     let snippet_line = site

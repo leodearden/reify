@@ -902,8 +902,8 @@ fn emit_outside_match_collision(
 /// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
 /// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
 ///
-/// Used by `check_param_default_type` to recognise the numeric-default idiom for
-/// dimensioned Scalar params (`param x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
+/// Used by `check_let_annotation_type` to recognise the numeric-literal idiom for
+/// dimensioned Scalar lets (`let x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
 /// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
 fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
     match &expr.kind {
@@ -922,6 +922,12 @@ fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
 }
 
 /// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// An explicitly annotated `Int` / `Scalar` param default must be `type_compatible`
+/// with the annotation, with no literal exemption: `param t : Length = 1.0` is
+/// rejected like any dimensionless initializer (reversal history: PRD
+/// dimensioned-construction-strictness §0.3). The conformance param-default entry
+/// defers to this check (see [`param_default_rejection_span`]).
 ///
 /// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
 /// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
@@ -973,33 +979,6 @@ fn check_param_default_type(
     let Some(default) = default_expr else {
         return;
     };
-    // `param x : Length = 1`, `= 0.5`, or `= -5.0` — whole-number, fractional, or
-    // negated numeric literal idiom.  A *numeric literal* (or negated literal) that is
-    // either an `Int` or a dimensionless scalar (a bare `Real`-typed literal, which under
-    // the real-dimensionless unification IS a dimensionless `Type::Scalar`) is accepted
-    // for any dimensioned Scalar param.
-    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
-    // provides, extended one dimension further (any dimensionless literal accepted for
-    // a dimensioned Scalar):
-    //   - `param x : Length = 0`    → Int literal, accepted (whole-number idiom).
-    //   - `param x : Length = 0.5`  → dimensionless literal, accepted (fractional idiom).
-    //   - `param x : Length = -5.0` → negated literal (`UnOp::Neg` + `Literal`), accepted.
-    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
-    // users routinely write fractional dimensionless defaults for dimensioned params.
-    //
-    // The guard is intentionally restricted to literal nodes (bare or negated; see
-    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
-    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
-    // Scalar) still fall through to `type_compatible` and are correctly flagged.
-    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
-    // a literal and is flagged regardless of this guard.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(default)
-        && (matches!(default.result_type, Type::Int)
-            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
-        return;
-    }
     if !type_compatible(declared, &default.result_type) {
         diagnostics.push(
             Diagnostic::error(format!(

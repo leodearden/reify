@@ -301,32 +301,14 @@ structure S {
     );
 }
 
-/// A non-literal initializer (`1.0 / 1m` is a BinOp Div, not a
-/// `CompiledExprKind::Literal`) for a dimensioned Scalar param (`Length`) MUST
-/// produce `ParamDefaultTypeMismatch`.
-///
-/// **Why this works (the literal-guard mechanism):** the Scalar guard in
-/// `check_param_default_type` is restricted to `CompiledExprKind::Literal` nodes.
-/// `1.0 / 1m` is a binary division expression — not a literal — so the guard does
-/// NOT fire regardless of the expression's inferred result_type.  The check falls
-/// through to `type_compatible(Scalar[m], <inferred>)`, which returns `false`
-/// whether `1.0/1m` is inferred as dimensionless (`Scalar[]`) or as the more
-/// precise `Scalar[1/m]` — the mismatch is flagged either way.
-///
-/// Note: a future inference improvement that tracks `1.0/1m` as `Scalar[1/m]`
-/// rather than dimensionless would only refine the printed dimension string in the
-/// error message; it would NOT affect whether an error fires.  The inference gap
-/// is therefore genuinely out of scope and is NOT a prerequisite for this test.
-///
-/// This test is the active regression proof for the literal-only guard (S1): it
-/// would regress to a false-negative if the guard were ever relaxed back to keying
-/// on result_type alone (which would silently accept any dimensionless expression).
+/// A reciprocal-dimension initializer (`1.0 / 1m`, `Scalar[1/m]`) at a `Length`
+/// param MUST produce `ParamDefaultTypeMismatch`: `type_compatible(Scalar[m],
+/// Scalar[1/m])` is false.
 #[test]
 fn param_reciprocal_dim_mismatch_errors() {
     let source = r#"
 structure S {
-    // Length (Scalar[m]) ≠ reciprocal-dimension expression (non-literal BinOp).
-    // The literal-only guard does NOT fire; falls through to type_compatible → error.
+    // Length (Scalar[m]) ≠ reciprocal-dimension expression → error.
     param bad_dim : Length = 1.0 / 1m
 }
 "#;
@@ -339,29 +321,15 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param bad_dim : Length = 1.0/1m' \
-         (non-literal initializer bypasses the literal guard and falls through to \
-         type_compatible(Scalar[m], _) which is false)"
+         (type_compatible(Scalar[m], _) is false)"
     );
 }
 
-// ─── S1 amendment: canonical literal-only guard proof ────────────────────────
+// ─── Dimensionless compound initializer ──────────────────────────────────────
 
-/// A non-literal compound expression that *happens to infer a dimensionless
-/// result* MUST still produce `ParamDefaultTypeMismatch` when assigned to a
-/// dimensioned Scalar param.
-///
-/// `ratio * 2.0` is a `BinOp(Mul)` expression — NOT a `CompiledExprKind::Literal`
-/// — that infers `Scalar[dimensionless]` (product of a dimensionless Real and a
-/// scalar 2.0).  Without the literal-only guard the Scalar early-return would fire
-/// on the dimensionless `result_type` and silently accept the mismatch.  With the
-/// literal-only guard in place `BinOp(Mul)` is NOT a literal, the guard does NOT
-/// fire, and the check falls through to
-/// `type_compatible(Scalar[m], Scalar[dimensionless])` which returns false →
-/// `ParamDefaultTypeMismatch` is correctly emitted.
-///
-/// This is the canonical S1 proof: it would regress to a false-negative if the
-/// guard were ever relaxed back to keying on `result_type` alone (which would
-/// silently accept any dimensionless expression, literal or compound).
+/// A compound initializer that infers dimensionless (`ratio * 2.0`) at a
+/// `Length` param MUST produce `ParamDefaultTypeMismatch`:
+/// `type_compatible(Scalar[m], Scalar[dimensionless])` is false.
 #[test]
 fn param_nonliteral_dimensionless_compound_on_dimensioned_scalar_errors() {
     let source = r#"
@@ -379,9 +347,7 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param x : Length = ratio * 2.0' \
-         (ratio*2.0 infers dimensionless Scalar but is a BinOp, not a literal; \
-         the literal-only guard does NOT fire; falls through to \
-         type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
+         (type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
         errors
             .iter()
             .map(|d| (&d.message, &d.code))
@@ -392,9 +358,7 @@ structure S {
 // ─── S2 amendment: Int-arm + anti-cascade coverage ───────────────────────────
 
 /// A param declared `Int` with a dimensioned initializer (`5kg`) MUST produce
-/// `ParamDefaultTypeMismatch`.  The `Int` arm of the declared-type guard is not
-/// affected by the Scalar literal early-return, so it falls directly through to
-/// `type_compatible(Int, Scalar[kg])` which returns false.
+/// `ParamDefaultTypeMismatch`: `type_compatible(Int, Scalar[kg])` is false.
 #[test]
 fn param_int_declared_with_dimensioned_initializer_errors() {
     let source = r#"
@@ -447,20 +411,9 @@ structure S {
     );
 }
 
-/// A `Real`-declared param with a non-literal reciprocal-dimension initializer
-/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch`.
-///
-/// **Why this works:** `1.0/1m` correctly infers as `Scalar[1/m]` (reciprocal
-/// dimension) — no inference gap exists here.  The literal-only guard does NOT
-/// fire (BinOp Div is not a literal), so the check falls through to
-/// `type_compatible(Real/dimensionless, Scalar[1/m])` which returns false
-/// (distinct Scalar types: dimensionless ≠ 1/m).
-///
-/// Note: this is the *declared=Real* side of the S3 asymmetry, complementary
-/// to `param_reciprocal_dim_mismatch_errors` which covers the *declared=Length*
-/// side.  Both cases fire because `type_compatible` has no Scalar→Scalar
-/// widening rule: only the `Int→dimensionless` coercion and the identity
-/// short-circuit exist.
+/// A `Real`-declared param with a reciprocal-dimension initializer (`1.0/1m`)
+/// MUST produce `ParamDefaultTypeMismatch`: `type_compatible(Real, Scalar[1/m])`
+/// is false. The declared=`Length` twin is `param_reciprocal_dim_mismatch_errors`.
 #[test]
 fn param_real_declared_with_reciprocal_dim_initializer_errors() {
     let source = r#"
