@@ -2209,6 +2209,19 @@ mod test_fixtures {
             });
         collect_relate_scope(template)
     }
+
+    /// `Broken` parses and still compiles to its template, so the template lookup
+    /// alone would accept it; only a check of the compile diagnostics refuses it.
+    #[test]
+    #[should_panic(expected = "must compile without errors")]
+    fn relate_scope_refuses_a_fixture_that_compiles_with_errors() {
+        const BROKEN: &str = r#"
+structure Broken {
+    let x : Length = true
+}
+"#;
+        relate_scope(BROKEN, "Broken");
+    }
 }
 
 #[cfg(test)]
