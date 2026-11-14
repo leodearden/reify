@@ -3450,10 +3450,12 @@ fn compile_expr_guarded_with_expected_inner(
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
+                    // `relation_fn_result_type` → `datum_constructor_result_type` →
                     // `is_geometry_query` → `selector_composition_result_type` (task 4119 δ)
-                    // → `is_geometry_function` →
+                    // → `is_tolerancing_marker` → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
+                    // `affine_map_algebra_result_type` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_flexure_typed_fn` (task #5476) →
                     // `trajectory_scalar_intrinsic_result_type` (task #8119) →
@@ -3466,14 +3468,24 @@ fn compile_expr_guarded_with_expected_inner(
                     // first-arg fallback. Every name family above is a
                     // `BUILTIN_NAME_FAMILIES` row, and
                     // `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
-                    // pins the rows pairwise disjoint; the registry arm is pinned
+                    // pins the rows pairwise disjoint; the registry arm and the
+                    // relation arm's shared verbs `angle`/`distance` are pinned
                     // disjoint from every row by
                     // `registry_rows_and_shared_verbs_are_disjoint_from_every_family`.
-                    // So within this arm the ordering is unobservable, save for the
-                    // allowlisted `union`/`difference` overlap:
-                    // `selector_composition_result_type` is
-                    // arg-aware (returns None for CSG non-selector operands) so CSG
-                    // `union`/`difference` still reach `is_geometry_function`.
+                    // So the ordering is unobservable unless an overlap those two
+                    // tests exempt lets an earlier arm shadow a later one. Such an
+                    // overlap is recorded either among the names allowlisted in
+                    // `unresolved_function::tests::INTENTIONAL_OVERLAPS` or in the
+                    // shared verbs' `GEOMETRY_QUERY_NAMES` exemption. There the
+                    // earlier arm either hands the shapes it declines on to the
+                    // later arm or wins by design, so check how the overlap is
+                    // resolved before reordering its arms: `INTENTIONAL_OVERLAPS`
+                    // records which applies to each of its names, and the shared
+                    // verbs ride the relation arm's arity gate (noted on that
+                    // arm). One worked example: `selector_composition_result_type`
+                    // is arg-aware (returns None for CSG non-selector operands) so
+                    // CSG `union`/`difference` still reach `is_geometry_function`.
+                    //
                     // task 4118 γ — list-helper selector coercion (insertion
                     // site #2). When `single(selector)` is called, wrap the
                     // `Selector(k)` argument in `ResolveSelector` so the helper
