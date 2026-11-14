@@ -119,8 +119,8 @@ function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
  * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
  * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
  * auto-repeat keydowns, so holding the key flips the state once. With no
- * document open, only `worksWithoutDocument` shortcuts run; the others are
- * swallowed.
+ * document open, only `worksWithoutDocument` shortcuts run; the others, and
+ * the Escape and 1–9 keys, are swallowed.
  */
 export function useKeyboardShortcuts(
   callbacks: KeyboardShortcutCallbacks,
@@ -162,15 +162,15 @@ export function useKeyboardShortcuts(
       return;
     }
 
-    // Skip remaining special-case handlers when typing in form elements or
-    // when no document is open.
-    if (inTypingContext || noDocument) return;
+    // Skip remaining special-case handlers when typing in form elements.
+    if (inTypingContext) return;
 
     // Escape — Dismiss reload prompt, then clear selection.
     // Handled separately: Escape is a UI-dismiss action, not a formal application
     // shortcut shown in the KeyboardHelp overlay.
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (noDocument) return;
       callbacks.onDismissReload?.();
       callbacks.onClearSelection?.();
       return;
@@ -182,6 +182,7 @@ export function useKeyboardShortcuts(
     // no modifier is held, mirroring the restriction on the registry-driven loop.
     if (/^[1-9]$/.test(e.key) && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
+      if (noDocument) return;
       callbacks.onSwitchViewByIndex?.(parseInt(e.key, 10) - 1);
       return;
     }

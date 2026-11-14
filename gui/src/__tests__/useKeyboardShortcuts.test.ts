@@ -980,20 +980,22 @@ describe('useKeyboardShortcuts — no document loaded (Start view)', () => {
       });
       expect(matchesEvent(bind, event)).toBe(true);
       document.dispatchEvent(event);
-      expect(callbacks[ID_TO_CALLBACK[s.id]!], s.id).not.toHaveBeenCalled();
       expect(event.defaultPrevented, s.id).toBe(true);
     }
-    expect(callbacks.onNew).not.toHaveBeenCalled();
-    expect(callbacks.onOpen).not.toHaveBeenCalled();
+    for (const [key, fn] of Object.entries(callbacks)) expect(fn, key).not.toHaveBeenCalled();
     expect(iterated).toEqual(
       expect.arrayContaining(['help', 'export', 'toggleEdges', 'toggleChat', 'commandPalette']),
     );
   });
 
-  it('Escape and the 1-9 view keys do nothing', () => {
+  it('Escape and the 1-9 view keys are swallowed: no callback runs and the default is prevented', () => {
     const callbacks = wire();
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    const digit = new KeyboardEvent('keydown', { key: '1', bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+    document.dispatchEvent(digit);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(digit.defaultPrevented).toBe(true);
     expect(callbacks.onDismissReload).not.toHaveBeenCalled();
     expect(callbacks.onClearSelection).not.toHaveBeenCalled();
     expect(callbacks.onSwitchViewByIndex).not.toHaveBeenCalled();
@@ -1018,6 +1020,29 @@ describe('useKeyboardShortcuts — no document loaded (Start view)', () => {
       input.dispatchEvent(event);
       expect(callbacks.onHelp).not.toHaveBeenCalled();
       expect(event.defaultPrevented).toBe(false);
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it.each([
+    ['commandPalette', 'onCommandPalette', 'p'],
+    ['symbolJump', 'onSymbolJump', 'o'],
+  ] as const)('%s pressed in an <input> with no document is swallowed', (_id, callbackKey, key) => {
+    const callbacks = wire();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      input.dispatchEvent(event);
+      expect(callbacks[callbackKey]).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
     } finally {
       document.body.removeChild(input);
     }
