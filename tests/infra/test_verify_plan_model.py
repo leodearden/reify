@@ -551,15 +551,16 @@ class TestSlotFdClosed(unittest.TestCase):
     """The slot-closed wrapper a CARGO step admits holds one test pass, bare or behind its crate's guard."""
 
     def test_a_bare_or_guarded_test_pass_is_held(self):
-        run = nextest_run()
-        bodies = (
-            run,
-            CargoTestRun(Workspace(), False, (), "60m", "", 1),
-            ConfirmRecorded(run, "j.xml", "m.txt", "s.json", Profile.DEBUG),
-            gatepaths.GUI_CRATE_GUARD.around(run),
-        )
-        for body in bodies:
-            with self.subTest(body=type(body).__name__):
+        nextest_pass = nextest_run()
+        cargo_test_pass = CargoTestRun(Workspace(), False, (), "60m", "", 1)
+        recorded_pass = ConfirmRecorded(nextest_pass, "j.xml", "m.txt", "s.json", Profile.DEBUG)
+        bare = (nextest_pass, cargo_test_pass, recorded_pass)
+        # the bodies emit_pass puts behind a crate guard: a recording pass carries none
+        guarded = (nextest_pass, cargo_test_pass)
+        shapes = [(record, False) for record in bare] + [(record, True) for record in guarded]
+        for record, is_guarded in shapes:
+            with self.subTest(record=type(record).__name__, guarded=is_guarded):
+                body = gatepaths.GUI_CRATE_GUARD.around(record) if is_guarded else record
                 step = Step(StepKind.CARGO, Phase.DEBUG_NEXTEST, SlotFdClosed(body), None, None)
                 self.assertTrue(render.render_step(step).endswith(" 9<&-"))
 
