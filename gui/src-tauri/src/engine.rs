@@ -9590,5 +9590,23 @@ mod format_expr_tests {
 
         assert_eq!(format_expr(&expr), "x > 0");
     }
+
+    #[test]
+    fn variant_ctor_renders_as_brace_construction() {
+        let read = |member: &str| {
+            CompiledExpr::value_ref(ValueCellId::new("p_1", member), Type::dimensionless_scalar())
+        };
+        let expr = CompiledExpr::variant_ctor(
+            "Shape".to_string(),
+            "Rect".to_string(),
+            vec![
+                ("width".to_string(), read("w")),
+                ("height".to_string(), read("h")),
+            ],
+            Type::Enum("Shape".to_string()),
+        );
+
+        assert_eq!(format_expr(&expr), "Rect { width: w, height: h }");
+    }
 }
 

@@ -374,3 +374,152 @@ fn wildcard_arm_unchanged() {
 
     assert_eq!(result, Value::Int(0), "Wildcard arm should evaluate body (INV-5)");
 }
+
+// ── runtime-constructed discriminant (task 7456) ─────────────────────────────
+
+/// `Shape::{variant} { … }` built by the runtime `VariantCtor` node.
+fn shape_ctor(variant: &str, payload: Vec<(&str, CompiledExpr)>) -> CompiledExpr {
+    CompiledExpr::variant_ctor(
+        "Shape".to_string(),
+        variant.to_string(),
+        payload
+            .into_iter()
+            .map(|(field, e)| (field.to_string(), e))
+            .collect(),
+        Type::Enum("Shape".to_string()),
+    )
+}
+
+fn w_cell() -> ValueCellId {
+    ValueCellId::new("Widget", "w")
+}
+
+fn read_w() -> CompiledExpr {
+    CompiledExpr::value_ref(w_cell(), t_length())
+}
+
+fn twice(e: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::binop(
+        BinOp::Mul,
+        e,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        t_length(),
+    )
+}
+
+fn values_with_w_20mm() -> ValueMap {
+    let mut values = ValueMap::new();
+    values.insert(w_cell(), mm(20.0));
+    values
+}
+
+fn assert_si(field: &str, actual: &Value, expected: f64) {
+    let si = actual
+        .as_f64()
+        .unwrap_or_else(|| panic!("field {field}: expected a number, got {actual:?}"));
+    assert!(
+        (si - expected).abs() < 1e-12,
+        "field {field}: expected {expected}, got {si}"
+    );
+}
+
+#[test]
+fn variant_ctor_evaluates_payload_from_runtime_values() {
+    let ctor = shape_ctor(
+        "Rect",
+        vec![
+            ("width", read_w()),
+            ("height", twice(read_w())),
+            (
+                "sign",
+                CompiledExpr::unop(
+                    reify_ir::UnOp::Neg,
+                    CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
+                ),
+            ),
+        ],
+    );
+
+    let values = values_with_w_20mm();
+    let result = eval_expr(&ctor, &EvalContext::simple(&values));
+
+    let Value::Enum {
+        type_name,
+        variant,
+        payload,
+    } = result
+    else {
+        panic!("expected Value::Enum, got {result:?}");
+    };
+    assert_eq!(type_name, "Shape");
+    assert_eq!(variant, "Rect");
+    let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["width", "height", "sign"], "payload keeps stored order");
+    assert_si("width", &payload[0].1, 0.02);
+    assert_si("height", &payload[1].1, 0.04);
+    assert_si("sign", &payload[2].1, -1.0);
+}
+
+/// D2: an undef field leaves the tag determined — the enum is still built,
+/// the field holds Undef in its own slot, and `match` still selects the arm.
+#[test]
+fn variant_ctor_undef_field_keeps_tag_and_binds_undef() {
+    let absent = CompiledExpr::value_ref(ValueCellId::new("Widget", "absent"), t_length());
+    let ctor = shape_ctor("Circle", vec![("radius", absent)]);
+    let values = ValueMap::new();
+
+    let constructed = eval_expr(&ctor, &EvalContext::simple(&values));
+    assert_eq!(constructed, circle_enum(Value::Undef));
+
+    let arm = CompiledMatchArm {
+        patterns: vec![CompiledPattern::VariantBind {
+            name: "Circle".to_string(),
+            binders: vec![(
+                "radius".to_string(),
+                ValueCellId::new("$matcharm0.Shape", "r"),
+            )],
+        }],
+        body: CompiledExpr::literal(Value::Real(7.0), Type::dimensionless_scalar()),
+    };
+    let match_expr = CompiledExpr::match_expr(ctor, vec![arm], Type::dimensionless_scalar());
+
+    assert_eq!(
+        eval_expr(&match_expr, &EvalContext::simple(&values)),
+        Value::Real(7.0)
+    );
+}
+
+#[test]
+fn match_reads_back_runtime_payload() {
+    let a_cell = ValueCellId::new("$matcharm0.Shape", "a");
+    let b_cell = ValueCellId::new("$matcharm0.Shape", "b");
+    let arm = CompiledMatchArm {
+        patterns: vec![CompiledPattern::VariantBind {
+            name: "Rect".to_string(),
+            binders: vec![
+                ("width".to_string(), a_cell.clone()),
+                ("height".to_string(), b_cell.clone()),
+            ],
+        }],
+        body: CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(a_cell, t_length()),
+            CompiledExpr::value_ref(b_cell, t_length()),
+            t_area(),
+        ),
+    };
+    let ctor = shape_ctor("Rect", vec![("width", read_w()), ("height", twice(read_w()))]);
+    let match_expr = CompiledExpr::match_expr(ctor, vec![arm], t_area());
+
+    let values = values_with_w_20mm();
+    let result = eval_expr(&match_expr, &EvalContext::simple(&values));
+
+    match result {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.0008).abs() < 1e-12, "expected 0.0008 m², got {si_value}");
+            assert_eq!(dimension, DimensionVector::AREA);
+        }
+        other => panic!("expected an AREA scalar, got {other:?}"),
+    }
+}
