@@ -719,10 +719,12 @@ structure FeaBodyMultiCase {
 /// i.e. the 3165 sentinel components are gone — that was the coverage defect
 /// #6200 fixed, not anything this test owns. The reproducible claim is the
 /// helper's `missed_interior == 0`, which is keyed on COVERAGE rather than on a
-/// count and so survives the drift the total is subject to; the exact-count form
-/// stays where #6154 put it. Both this test and the green no-leading-template
-/// sibling [`multi_case_body_solve_shares_one_realization_across_cases`] now
-/// state that same contract through the same helper, on the byte-identical body.
+/// count and so holds across gmsh builds, where the total (run-to-run
+/// reproducible since task 9858's single-thread gmsh pin) is no contract; the
+/// exact-count form stays where #6154 put it. Both this test and the green
+/// no-leading-template sibling
+/// [`multi_case_body_solve_shares_one_realization_across_cases`] now state that
+/// same contract through the same helper, on the byte-identical body.
 #[cfg(has_gmsh)]
 #[test]
 fn multi_case_body_solve_survives_a_preceding_template() {
@@ -894,16 +896,12 @@ fn multi_case_body_solve_survives_a_preceding_template() {
 ///
 /// ## Why `ElasticOptions(deterministic: true)` — shared by all three cylinder fixtures
 ///
-/// The realized cylinder is ~43.7k DOFs (693 CG iterations), above
-/// `PARALLEL_DOF_THRESHOLD`, so default options take `SolverMode::Parallel`
-/// at host width, which spawns a fresh thread team per SpMV/dot and whose wall
-/// time is load-amplified: measured 41–78s per solve vs 11–12s
-/// `Deterministic` under host load. Together with the plain gmsh producer's
-/// multi-threaded HXT, since pinned to one thread, that was the root cause of
-/// this file's 1800s B9 timeouts. The fixtures therefore pin the
-/// single-threaded solve that `docs/prds/v0_6/elastic-static-solver-performance.md`
-/// makes universal (it deletes the parallel mode). Solver threading is an axis
-/// these caching/result-shape tests do not exercise.
+/// The fixtures pin the single-threaded `Deterministic` execution mode (no
+/// thread team, no CG warm start) that
+/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes universal,
+/// because at the realized cylinder's DOF count the default `Parallel` mode is
+/// amplified by host load and was half the root cause of this file's 1800s B9
+/// timeouts. Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
 #[cfg(has_gmsh)]
 const NON_PRISMATIC_BODY_SOURCE: &str = r#"
 structure FeaBodyNonPrismatic {
@@ -1927,8 +1925,9 @@ fn assert_stress_miss_set_matches_displacement(
 /// It stays `== 0` on `missed_interior` rather than tightening to `n_missed ==
 /// 0`, even though the box currently measures zero misses in total. The
 /// AABB-shell buckets (face/edge/corner) remain legitimately exposed to boundary
-/// round-off, and the total drifts run to run. Tightening would trade a stable
-/// invariant for a flake.
+/// round-off, and the total, though run-to-run reproducible since task 9858's
+/// single-thread gmsh pin, is no contract across gmsh builds. Tightening would
+/// trade a stable invariant for a flake.
 ///
 /// ### `missed_interior` counts GRID points, NOT mesh nodes
 ///
