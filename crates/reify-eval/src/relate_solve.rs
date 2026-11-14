@@ -2156,7 +2156,7 @@ mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
-    use reify_test_support::compile_source_with_stdlib;
+    use reify_test_support::{compile_source_with_stdlib, errors_only};
 
     use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
@@ -2194,9 +2194,15 @@ mod test_fixtures {
 
     /// Collect the scope of `source`'s template `name`, panicking with the
     /// available template names on a miss so a fixture rename fails legibly
-    /// rather than as `unwrap` on `None`.
+    /// rather than as `unwrap` on `None`. A fixture that compiles with errors
+    /// panics first, with its diagnostics.
     pub(super) fn relate_scope(source: &str, name: &str) -> RelateScope {
         let module = compile_source_with_stdlib(source);
+        let errors = errors_only(&module);
+        assert!(
+            errors.is_empty(),
+            "relate fixture must compile without errors; got: {errors:#?}"
+        );
         let template = module
             .templates
             .iter()
