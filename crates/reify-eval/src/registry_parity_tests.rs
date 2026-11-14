@@ -71,9 +71,10 @@
 //! 4. **It creates no new gate artifact.** An in-crate `#[cfg(test)] mod` is
 //!    neither a `crates/*/tests/*.rs` integration binary nor a
 //!    `tests/infra/test_*.sh` script, so it fires neither the overlay rule's
-//!    drift-guard registration trigger (`.claude/skills/prd/project.md:170`)
-//!    nor the I-REG-1 string-dispatch scan, which masks `#[cfg(test)]` blocks
-//!    before scanning. The per-anchor adjudication is recorded in
+//!    drift-guard registration trigger (`.claude/skills/prd/project.md` →
+//!    "Gate-test drift-guard registration") nor the I-REG-1 string-dispatch
+//!    scan, which masks `#[cfg(test)]` blocks before scanning. The per-anchor
+//!    adjudication is recorded in
 //!    `docs/prds/v0_6/builtin-signature-registry.capability-manifest.md`.
 //!
 //! # Why a trivial-accept pair is `Vacuous`, not a pass
