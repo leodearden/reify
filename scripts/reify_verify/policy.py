@@ -24,9 +24,7 @@ class Role(Enum):
 class UnknownRoleError(ValueError):
     def __init__(self, raw: str):
         wanted = "|".join(role.value for role in Role)
-        super().__init__(
-            f"unknown DF_VERIFY_ROLE '{raw}' (want {wanted})"
-        )
+        super().__init__(f"unknown DF_VERIFY_ROLE '{raw}' (want {wanted})")
 
 
 def parse_role(raw: str | None) -> Role:

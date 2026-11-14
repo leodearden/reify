@@ -14,9 +14,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import bashcall, build, knobs, plan, queries, render
+from reify_verify import bashcall, build, knobs, queries, render
 from reify_verify.invocation import Action, Invocation, PlanFormat, Query, Scope
-from reify_verify.plan import ERROR
+from reify_verify.plan import ERROR, Refused
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64
@@ -356,7 +356,7 @@ def _print_plan(invocation: Invocation, plan_format: PlanFormat, env: dict[str, 
         _diagnose((f"{ERROR}{err}",))
         return 1
     match outcome:
-        case plan.Refused(lines=lines, exit_code=exit_code):
+        case Refused(lines=lines, exit_code=exit_code):
             _diagnose(lines)
             return exit_code
         case build.Planned(plan=planned, diagnostics=diagnostics):
