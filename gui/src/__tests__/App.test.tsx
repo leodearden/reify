@@ -3677,6 +3677,27 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(capturedEditorStore.state.activeFile).toBe('/project/bracket.ri');
   });
 
+  it('a File→Open that dismisses the start view leaves no stale document error behind', async () => {
+    vi.mocked(bridge.openFile)
+      .mockRejectedValueOnce('No such file: /designs/missing.ri')
+      .mockResolvedValueOnce({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/missing.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await screen.findByTestId('start-document-error');
+
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/designs/bracket.ri');
+    await vi.waitFor(() => expect(capturedEditorOnOpen).toBeDefined());
+    capturedEditorOnOpen!();
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+
+    capturedEditorStore.closeFile('/designs/bracket.ri');
+
+    await screen.findByTestId('start-view');
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+  });
+
   it('creating a typed path writes the template, then opens the path the backend returned', async () => {
     vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });

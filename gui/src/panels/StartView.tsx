@@ -1,9 +1,10 @@
 /**
  * The launcher's Start view (alpha-spine β): shown over the layout while no
  * document is open. Every action failure is written to the launcher store,
- * which keeps this view up with a coded error the debug MCP can observe.
+ * which keeps this view up with a coded error the debug MCP can observe; the
+ * document error lasts until the next attempt or until the view is dismissed.
  */
-import { createSignal, For, onMount, Show, type Component } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
 import { LaunchFailure, type LauncherActions } from '../app/launcherActions';
 import {
@@ -48,10 +49,18 @@ export const StartView: Component<StartViewProps> = (props) => {
     });
   });
 
+  let dismissed = false;
+  onCleanup(() => {
+    dismissed = true;
+    props.launcher.clearDocumentError();
+  });
+
   /**
    * Run a document attempt and present any failure in the store. A rejection
    * that is not already a LaunchFailure (a native dialog that cannot open, an
    * unexpected throw) is presented under `code`, so no attempt fails silently.
+   * A failure that settles after the view is dismissed has no presenter left,
+   * so it is logged rather than written to the store.
    */
   async function attemptDocument(code: LaunchErrorCode, run: () => Promise<void>): Promise<void> {
     props.launcher.clearDocumentError();
@@ -59,6 +68,10 @@ export const StartView: Component<StartViewProps> = (props) => {
       await run();
     } catch (err) {
       const failure = err instanceof LaunchFailure ? err.toInfo() : { code, message: errorMessage(err) };
+      if (dismissed) {
+        console.warn('Document attempt failed after the start view was dismissed:', failure);
+        return;
+      }
       props.launcher.failDocument(failure);
     }
   }

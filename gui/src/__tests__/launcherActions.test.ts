@@ -57,13 +57,16 @@ describe('openDocument', () => {
     expect(store.state.document.recent).toEqual(RECENT);
   });
 
-  it('clears a prior document error', async () => {
+  it('leaves the document error to its presenter', async () => {
     store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
     const actions = createLauncherActions(store, deps);
 
     await actions.openDocument('/designs/bracket.ri');
 
-    expect(store.state.document.error).toBeNull();
+    expect(store.state.document.error).toEqual({
+      code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+      message: 'earlier',
+    });
   });
 
   it('rejects with E_GUI_OPEN_FAILED carrying the backend message when the load fails, recording nothing', async () => {
@@ -76,6 +79,7 @@ describe('openDocument', () => {
     expect(failure.message).toBe('No such file: /designs/missing.ri');
     expect(failure.toInfo()).toEqual({ code: failure.code, message: failure.message });
     expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.error).toBeNull();
   });
 
   it('still resolves when recording the recent entry fails after a successful load, and notifies', async () => {
