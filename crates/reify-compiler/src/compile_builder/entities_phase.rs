@@ -46,7 +46,7 @@ use crate::conformance::{
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
-    check_type_param_bounds, compile_entity,
+    check_type_param_bounds, compile_entity, param_default_rejection_span,
 };
 use crate::expr::compile_expr;
 use crate::name_env;
@@ -1456,6 +1456,14 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // template_registry / resolution_functions while also needing &mut ctx.diagnostics).
     let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
 
+    // Param defaults the declaration-site check already rejected; the conformance
+    // entry does not re-judge them (PRD D4-4: one mistake, one diagnostic).
+    let rejected_at_declaration: HashSet<SourceSpan> = ctx
+        .diagnostics
+        .iter()
+        .filter_map(param_default_rejection_span)
+        .collect();
+
     let walk = |expr: &CompiledExpr, span: SourceSpan, diags: &mut Vec<reify_core::Diagnostic>| {
         // task 4232 γ: single walk resolves each UserFunctionCall overload once,
         // performing both trait-object arg conformance (D4) and fn type-param
@@ -1494,7 +1502,12 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
         // Geometry/Solid defaults are handled by the Type::Geometry arm of
         // check_param_default_conformance (no separate helper).
-        check_param_default_conformance(template, registries, &mut new_diagnostics);
+        check_param_default_conformance(
+            template,
+            registries,
+            &rejected_at_declaration,
+            &mut new_diagnostics,
+        );
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.

@@ -455,8 +455,10 @@ pub(crate) fn check_fn_arg_conformance(
 /// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
 /// which IS gated on `param.type_expr.is_some()` at both its call sites and so
 /// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
-/// The two checks are complementary, not alike-gated; what holds both SITES to
-/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+/// The two checks are complementary, not alike-gated: where both would judge an
+/// annotated default, a rejection by `check_param_default_type` wins and this
+/// pass skips the cell (see [`check_param_default_conformance`]). What holds both
+/// SITES to one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
 ///
 /// Whether an inference fallback should be judged AT ALL is a live question, and
 /// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
@@ -493,13 +495,24 @@ fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &Val
 ///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
 ///
 /// All other cell types (Real, Int, List, …) are out of scope for this pass.
+///
+/// A cell whose span is in `rejected_at_declaration` is skipped: its default was
+/// already rejected by the declaration-site `check_param_default_type`, and one
+/// mistake gets one diagnostic (PRD D4-4). The skip keys on that rejection, not
+/// on the cell type, because trait-injected cells (`checker.rs`
+/// `check_phase_inject_defaults`) and unannotated fallback cells reach only this
+/// pass and share their cell types with the ones the declaration check judges.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     registries: ConformanceRegistries<'_>,
+    rejected_at_declaration: &HashSet<SourceSpan>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        if rejected_at_declaration.contains(&vc.span) {
             continue;
         }
         let Some(default) = &vc.default_expr else {
@@ -3561,6 +3574,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
+            &HashSet::new(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -3632,6 +3646,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
+            &HashSet::new(),
             &mut diagnostics,
         );
         assert_eq!(

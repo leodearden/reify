@@ -1016,6 +1016,16 @@ fn check_param_default_type(
     }
 }
 
+/// Recognises a diagnostic emitted by [`check_param_default_type`] and returns the
+/// param declaration span its first label carries, which is also that param's
+/// `ValueCellDecl.span` at both call sites.
+pub(crate) fn param_default_rejection_span(diagnostic: &Diagnostic) -> Option<SourceSpan> {
+    if diagnostic.code != Some(DiagnosticCode::ParamDefaultTypeMismatch) {
+        return None;
+    }
+    diagnostic.labels.first().map(|label| label.span)
+}
+
 /// Cross-check a structure `let` binding's declared type against its initializer's
 /// inferred type.
 ///
