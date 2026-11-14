@@ -1348,7 +1348,8 @@ const App: Component = () => {
     onToggleDiagnostics: handleToggleDiagnostics,
     onToggleEdges: () => viewportDisplayStore.toggleEdges(),
   };
-  useKeyboardShortcuts(shortcutCallbacks);
+  const documentLoaded = () => isDocumentLoaded(editorStore.state);
+  useKeyboardShortcuts(shortcutCallbacks, { documentLoaded });
 
   // Palette symbol fetch — uses the same URI normalisation as Editor.tsx:104-108
   // so the request URI matches the uri used at didOpen time.
@@ -1578,7 +1579,7 @@ const App: Component = () => {
   async function presentInitialFileLoadFailure(): Promise<void> {
     try {
       const failure = await bridgeTakeInitialFileLoadFailure();
-      if (failure && alive && !isDocumentLoaded(editorStore.state)) {
+      if (failure && alive && !documentLoaded()) {
         launcherStore.failDocument(initialFileLoadFailureInfo(failure));
       }
     } catch (err) {
@@ -2343,7 +2344,7 @@ const App: Component = () => {
           </div>
         </div>
         {/* Over the still-mounted layout, so its initPhase-keyed effects run unchanged. */}
-        <Show when={!isDocumentLoaded(editorStore.state)}>
+        <Show when={!documentLoaded()}>
           <StartView launcher={launcherStore} actions={launcherActions} />
         </Show>
       </Show>
