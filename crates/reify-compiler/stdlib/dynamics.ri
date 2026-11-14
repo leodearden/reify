@@ -117,16 +117,8 @@ structure def MassProperties {
 // already ships two: `Result<T,E>` (result.ri) and `ConvergenceStatus`
 // (solver_elastic.ri).
 //
-// Runtime-computed payloads ARE constructible: `compile_variant_construct`
-// lowers a non-literal payload field to a runtime `VariantCtor` (introduced
-// by #7456), so `ScalarTorque { magnitude: <computed τ> }` can be written even
-// though joint forces are computed by the η dispatcher at eval time
-// (crates/reify-stdlib/src/dynamics/eval.rs,
-// crates/reify-eval/src/dynamics_ops.rs). Switching this family's encoding is
-// #7744's.
-//
-// The marker trait stays for THIS family until then — one decisive blocker
-// (plus a weaker second reason):
+// The marker trait stays for THIS family — one decisive blocker (plus a
+// weaker second reason):
 //   - Payload fields are unreadable outside a `match` binder. `Type::Enum`
 //     falls through to the residual member-access arm in
 //     crates/reify-compiler/src/expr.rs, yielding "member access not yet
@@ -143,9 +135,9 @@ structure def MassProperties {
 // This marker-trait + refining-structure_defs pattern is the established
 // stdlib idiom for sum types (trajectory.ri BoundaryCondition/Shaper,
 // modal_analysis ForcingFunction) and is how the PRD's "tagged union" is
-// expressed here. Non-constant payload construction has landed; revisit the
-// encoding once payload member access lands too — until then this is a
-// deliberate choice, not a grammar workaround.
+// expressed here. Revisit the encoding once payload member access lands;
+// #7744 owns the switch. Until then this is a deliberate choice, not a
+// grammar workaround.
 trait JointForceValue { }
 
 // ── JointForceValue variants ──────────────────────────────────────────────

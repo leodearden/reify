@@ -352,17 +352,17 @@ pub(crate) fn compile_variant_construct(
     // (PRD D6/Q4 — normalize construction-site field order so the value's
     // content-hash / PartialEq / Ord are order-stable). A valid field-set
     // guarantees every declared field is supplied exactly once.
-    let ordered: Vec<(String, CompiledExpr)> = declared_fields
+    let ordered: Vec<(&str, &CompiledExpr)> = declared_fields
         .iter()
         .map(|(decl_name, _decl_ty)| {
             let (_, compiled) = compiled_fields
                 .iter()
                 .find(|(n, _)| n == decl_name)
                 .expect("valid field-set guarantees every declared field is supplied");
-            (decl_name.clone(), compiled.clone())
+            (decl_name.as_str(), compiled)
         })
         .collect();
-    fold_or_construct(enum_name, variant_name, ordered, constructed_type)
+    fold_or_construct(enum_name, variant_name, &ordered, constructed_type)
 }
 
 /// An all-literal payload folds to a literal `Value::Enum`; any other payload
@@ -371,13 +371,13 @@ pub(crate) fn compile_variant_construct(
 fn fold_or_construct(
     enum_name: &str,
     variant_name: &str,
-    ordered: Vec<(String, CompiledExpr)>,
+    ordered: &[(&str, &CompiledExpr)],
     constructed_type: Type,
 ) -> CompiledExpr {
     let literal_payload: Option<Vec<(String, Value)>> = ordered
         .iter()
         .map(|(name, field)| match &field.kind {
-            CompiledExprKind::Literal(value) => Some((name.clone(), value.clone())),
+            CompiledExprKind::Literal(value) => Some((name.to_string(), value.clone())),
             _ => None,
         })
         .collect();
@@ -393,7 +393,10 @@ fn fold_or_construct(
         None => CompiledExpr::variant_ctor(
             enum_name.to_string(),
             variant_name.to_string(),
-            ordered,
+            ordered
+                .iter()
+                .map(|(name, field)| (name.to_string(), (*field).clone()))
+                .collect(),
             constructed_type,
         ),
     }
