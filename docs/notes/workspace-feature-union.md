@@ -206,10 +206,10 @@ The `git clean` line deletes the gitignored generated sources under
 `tree-sitter-reify/src`, which a fresh seed lacks and the first probe recreates
 (see the tree-sitter paragraph under Measurements). It names no files. `-X`
 removes only ignored files, so the set is whatever the ignore rules match
-there: today the root `.gitignore`'s "Tree-sitter generated" block, plus the
-`*.o` rule in `tree-sitter-reify/.gitignore`. The acquire's
-`git clean -xfd -e target` deletes those same files. A new output of
-`tree-sitter generate` is covered as soon as that block lists it.
+there, chiefly the root `.gitignore`'s "Tree-sitter generated" block, which
+owns the generated outputs. The acquire's `git clean -xfd -e target` deletes
+those same files. A new output of `tree-sitter generate` is covered as soon as
+that block lists it.
 
 The generated sources live outside `target/`, so restoring `target/` does not
 restore their absence, and the listing check does not see them. The
