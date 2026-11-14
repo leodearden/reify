@@ -43,3 +43,33 @@ fn eval_data_carrying_enum_reports_area() {
         "stdout should contain the exact line {expected_outline:?}\nstdout: {stdout}"
     );
 }
+
+const RUNTIME_PAYLOAD_FIXTURE: &str = "tests/prd-gate/fixtures/dce_runtime_payload.ri";
+
+/// BT7 (task 7456): payload values that are not literals (`w`, `w * 2.0`,
+/// `-1.0`) construct at eval time, check clean, and read back through `match`.
+/// `big` is the INV-SF-7 multi-line construction.
+#[test]
+fn runtime_payload_fixture_checks_clean_and_evaluates() {
+    let path = common::workspace_root().join(RUNTIME_PAYLOAD_FIXTURE);
+    let check_lines = [
+        "OK RuntimePayload#constraint[0]",
+        "OK RuntimePayload#constraint[1]",
+    ];
+    let eval_lines = [
+        "RuntimePayload.area = -0.0008 m^2",
+        "RuntimePayload.big_area = 0.0008 m^2",
+        "RuntimePayload.outline = Shape::Rect { width: 0.02 m, height: 0.04 m, sign: -1 }",
+        "RuntimePayload.big = Shape::Rect { width: 0.02 m, height: 0.04 m, sign: 1 }",
+    ];
+    for (subcommand, expected_lines) in [("check", &check_lines[..]), ("eval", &eval_lines[..])] {
+        let (status, stdout, stderr) = common::run_subcommand(subcommand, &path.to_string_lossy());
+        let report = format!("reify {subcommand}\nstdout: {stdout}\nstderr: {stderr}");
+        assert!(status.success(), "should exit 0: {report}");
+        assert!(!report.contains("non-constant payload value"), "{report}");
+        for expected in expected_lines {
+            let found = stdout.lines().any(|line| line.trim() == *expected);
+            assert!(found, "missing exact line {expected:?}: {report}");
+        }
+    }
+}
