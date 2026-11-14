@@ -3964,8 +3964,11 @@ describe('App end-to-end toast integration', () => {
 });
 
 describe('App keyboard help overlay', () => {
-  it('pressing ? key shows keyboard help overlay', async () => {
+  beforeEach(() => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+  });
+
+  it('pressing ? key shows keyboard help overlay', async () => {
     await renderAndWaitForReady();
 
     // Help overlay should not be visible initially
@@ -3980,7 +3983,6 @@ describe('App keyboard help overlay', () => {
   });
 
   it('pressing ? again hides keyboard help (toggle behavior)', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
 
     // Show help
@@ -3997,7 +3999,6 @@ describe('App keyboard help overlay', () => {
   });
 
   it('pressing Escape while help is shown hides it', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
 
     // Show help
@@ -5045,8 +5046,11 @@ describe('App diagnostics panel splitter (step 11)', () => {
 });
 
 describe('App Escape clears multi-selection', () => {
-  it('pressing Escape after multi-selection empties selectedEntities', async () => {
+  beforeEach(() => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+  });
+
+  it('pressing Escape after multi-selection empties selectedEntities', async () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
@@ -5070,7 +5074,6 @@ describe('App Escape clears multi-selection', () => {
   });
 
   it('pressing Escape after multi-selection also clears selectedEntity', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
     await renderAndWaitForReady();
 
     await waitFor(() => {
