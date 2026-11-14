@@ -57,13 +57,24 @@ describe('openDocument', () => {
     expect(store.state.document.recent).toEqual(RECENT);
   });
 
-  it('clears a prior document error', async () => {
+  it('leaves the document error to its presenter', async () => {
     store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
     const actions = createLauncherActions(store, deps);
 
     await actions.openDocument('/designs/bracket.ri');
 
-    expect(store.state.document.error).toBeNull();
+    expect(store.state.document.error).toEqual({
+      code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+      message: 'earlier',
+    });
+
+    const freshStore = createLauncherStore();
+    deps.loadDocument.mockRejectedValue('No such file');
+    const failingActions = createLauncherActions(freshStore, deps);
+
+    await failureOf(failingActions.openDocument('/designs/missing.ri'));
+
+    expect(freshStore.state.document.error).toBeNull();
   });
 
   it('rejects with E_GUI_OPEN_FAILED carrying the backend message when the load fails, recording nothing', async () => {
