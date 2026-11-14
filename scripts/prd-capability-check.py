@@ -73,10 +73,11 @@ Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise an
 auto-discovered executable target/release/reify or target/debug/reify, lone or
 not, is used only when scripts/reify-bin-freshness.sh, the one home of the
 SHA-identity rule, vouches for it: target/.reify-bin-sha names the checkout's
-HEAD (outside a git checkout it fails open).  An unvouched binary is REFUSED,
-not warned about: every probe set needing reify exits 64 naming REIFY_BIN,
-because an agent reading --json never sees a stderr warning.  With nothing
-built, "reify" on PATH.  An mtime never decides.
+HEAD (outside a git checkout it fails open).  An unvouched binary and nothing
+built are both REFUSED, not warned about: every probe set needing reify exits
+64 naming REIFY_BIN, because an agent reading --json never sees a stderr
+warning.  A `reify` on PATH is never used: its source commit is unknown.  An
+mtime never decides.
 TREE_SITTER_BIN, when set, is the tree-sitter CLI; otherwise "tree-sitter" on
 PATH.  ProbeContext.from_environment() is the one place all of this is read.
 
@@ -260,9 +261,9 @@ def _resolve_reify_bin(
 
     REIFY_BIN (non-empty) is taken verbatim: whether it exists is a launch
     error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
-    decides: a vouched-for profile binary is used, nothing built means "reify"
-    on PATH, and a built but unvouched binary is refused.  A home that cannot
-    be consulted refuses too: an unprovable trust answer is never "trusted",
+    decides, and only a vouched-for profile binary is used: a built but
+    unvouched binary is refused, and so is nothing built, because a reify on
+    PATH carries no provenance.  A home that cannot be consulted refuses too: an unprovable trust answer is never "trusted",
     and neither is a TRUSTED answer that is not one absolute-path line.
     BASH_ENV is withheld from the home: bash would run it first, and anything
     it prints would join the answer.
@@ -285,9 +286,7 @@ def _resolve_reify_bin(
     if (proc.returncode == _TrustVerdict.TRUSTED and len(lines) == 1
             and os.path.isabs(lines[0])):
         return lines[0], None
-    if proc.returncode == _TrustVerdict.NOT_BUILT:
-        return "reify", None  # expect it on PATH
-    if proc.returncode == _TrustVerdict.UNVOUCHED:
+    if proc.returncode in (_TrustVerdict.UNVOUCHED, _TrustVerdict.NOT_BUILT):
         return None, _reify_bin_refusal(proc.stdout.strip())
     return None, _reify_bin_refusal(
         f"`{_TRUST_HOME} resolve` gave no readable verdict (exit {proc.returncode}, "
@@ -382,8 +381,8 @@ class ProbeContext:
         The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
         an empty value counts as unset for all three.  repo_root defaults to
         _find_repo_root().  Prints nothing: a reify binary that
-        scripts/reify-bin-freshness.sh does not vouch for is recorded as
-        reify_bin_refusal (see _resolve_reify_bin).
+        scripts/reify-bin-freshness.sh does not vouch for, or no built binary
+        at all, is recorded as reify_bin_refusal (see _resolve_reify_bin).
         """
         env = os.environ if environ is None else environ
         root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
