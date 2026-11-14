@@ -10,6 +10,7 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
+import { makeGuiState } from './test_utils/guiState';
 import { splitGridTracks } from './test_utils/gridTracks';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
@@ -102,6 +103,8 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
+const oneFileState = (): GuiState => makeGuiState({ files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }] });
+
 // --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
 //
 // STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
@@ -114,11 +117,6 @@ vi.mock('../editor/FileTabs', () => ({
 // rather than loudly, and for the measured truth table that makes the beforeEach
 // restore below load-bearing rather than cosmetic. Deliberately not restated
 // here: unlike the key sets, prose has nothing to detect it going stale.
-const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
-const oneFileState = (): GuiState => ({
-  ...emptyState,
-  files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-});
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -239,7 +237,7 @@ beforeEach(() => {
   capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -296,7 +294,7 @@ beforeEach(() => {
   vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
   vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
   vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
-  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(published(emptyState));
+  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(published(makeGuiState()));
   vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
@@ -1103,13 +1101,12 @@ describe('App navigation wiring', () => {
   });
 
   function twoFileState(active: string, other: string): GuiState {
-    return {
-      ...emptyState,
+    return makeGuiState({
       files: [
         { path: active, content: '' },
         { path: other, content: '' },
       ],
-    };
+    });
   }
 
   /** Renders App with both files open and `active` the active tab. */
@@ -1203,10 +1200,9 @@ describe('App navigation wiring', () => {
 });
 
 describe('Find-uses panel navigation (task 9203)', () => {
-  const mainOnlyState: GuiState = {
-    ...emptyState,
+  const mainOnlyState = makeGuiState({
     files: [{ path: '/proj/main.ri', content: 'structure Main {}' }],
-  };
+  });
 
   function reference(uri: string): ReferenceResult {
     return { uri, line: 2, character: 4, endLine: 2, endCharacter: 9 };
@@ -2092,8 +2088,7 @@ describe('App handleSetParameter error handling', () => {
 describe('App parameter input: the reconciled unit/bare-number contract (task #5757)', () => {
   /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
   function capacityState(): GuiState {
-    return { fea_convergence: null,
-      meshes: [],
+    return makeGuiState({
       values: [
         {
           cell_id: 'Tank.capacity',
@@ -2108,17 +2103,8 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
           si_value: 0.00704500224,
           declared_dimension: 'Volume',
         },
-      ],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+      ]
+    });
   }
 
   /**
@@ -3238,8 +3224,7 @@ describe('App whole-state replies honour the publish generation', () => {
     kind: 'parameter',
     freshness: 'final',
   });
-  const stateWithWidth = (value: string): GuiState => ({
-    ...emptyState,
+  const stateWithWidth = (value: string): GuiState => makeGuiState({
     values: [width(value)],
     files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
   });
@@ -3532,7 +3517,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
   it('a launch whose failing buffer still opened leaves no start-view error behind', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(
-      published({ ...emptyState, files: [{ path: 'broken.ri', content: 'structure {' }] }),
+      published(makeGuiState({ files: [{ path: 'broken.ri', content: 'structure {' }] })),
     );
     vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
       path: '/designs/broken.ri',
@@ -6509,10 +6494,9 @@ describe('App side-panel entry list (β #9063)', () => {
   }
 
   it('buckling + FEA + chat mounted: one track per child, chat in its minmax(160px, 1fr) track', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] }],
-    }));
+    })));
     let modeShapeCallback: ((f: any) => void) | undefined;
     vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(async (cb: (f: any) => void) => {
       modeShapeCallback = cb;
@@ -8102,14 +8086,13 @@ const DEMAND_SYNC_WAIT_TIMEOUT_MS = SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 850;
 
 describe('App selective-demand enforcement sync (task 6045)', () => {
   it('(a) the visible-realization set is synced to bridge.syncDemand, excluding non-realization mesh keys', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [
         makeMesh('Bracket#realization[0]'),
         makeMesh('Bracket#realization[1]'),
         makeMesh('Bracket.geometry'),
       ],
-    }));
+    })));
     // getEntityTree stays at the factory default `[]`: with an empty tree,
     // viewStateStore's `nodeByPath.size === 0` short-circuit makes
     // `getEffectiveVisibility` return 'show' for every path, so the payload
@@ -8137,10 +8120,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // selector now re-subscribes through viewStateStore's treeVersion, which every
   // query reads before that short-circuit (PRD §4.5).
   it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
-    }));
+    })));
     // Unlike case (a), this case needs a POPULATED tree: the eye icon must
     // render, and effective visibility must resolve per node rather than via
     // the empty-tree short-circuit. `defaultVisibilityFor` returns 'show' for a
@@ -8196,10 +8178,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // DesignTree rows and their eye memos exist before the store has a tree:
   // the production slow-backend ordering (PRD §4.5 B8).
   it('(c) B8: with the entity tree arriving after mount, the first eye toggle reaches the DesignTree eye and bridge.syncDemand', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
-    }));
+    })));
     const tree = deferred<EntityTreeNode[]>();
     vi.mocked(bridge.getEntityTree).mockImplementation(() => tree.promise);
 
@@ -8265,10 +8246,9 @@ describe('App selective-demand enforcement sync — failure path (task 6045)', (
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
-        vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-          ...emptyState,
+        vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
           meshes: [makeMesh('Bracket#realization[0]')],
-        }));
+        })));
 
         await renderAndWaitForReady();
 
@@ -9126,11 +9106,10 @@ describe('computeAppearanceOverrides unit tests (task-4773 δ)', () => {
 describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)', () => {
   it('warns for a dangling display_appearance directive on initial render', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('real')],
       display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
-    }));
+    })));
     try {
       await renderAndWaitForReady();
       const msgs = warnSpy.mock.calls.map(args => String(args.join(' ')));
@@ -9149,11 +9128,10 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
     });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('real')],
       display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
-    }));
+    })));
     try {
       await renderAndWaitForReady();
 
@@ -9206,14 +9184,13 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
   });
 
   it('(a) multi-pane: EVERY rendered pane is addressable by its viewportId', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-    }));
+    })));
 
     await renderAndWaitForReady();
 
@@ -9263,11 +9240,10 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
       { subject: 'A#realization[0]', pane: 0 },
       { subject: 'B#realization[0]', pane: 1 },
     ];
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: twoPanes,
-    }));
+    })));
 
     await renderAndWaitForReady();
     const designMain = (window as any).__REIFY_DEBUG__.feaModes['design-main'];
@@ -9302,14 +9278,13 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
   });
 
   it('(d) legacy scalar slot mirrors feaModes[design-main]', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-    }));
+    })));
 
     await renderAndWaitForReady();
 
