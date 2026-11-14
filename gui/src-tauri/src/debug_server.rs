@@ -3298,6 +3298,28 @@ pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugL
 
 // --- Server spawn ---
 
+/// Serve `routes` on `listener`, admitting only requests addressed to its bound
+/// loopback address (docs/debug-mcp-contract.md §7).
+pub async fn serve_debug_routes(
+    listener: BoundDebugListener,
+    routes: Router,
+) -> Result<(), String> {
+    let endpoint = listener.endpoint_url();
+    let bound = listener
+        .listener
+        .local_addr()
+        .map_err(|e| format!("failed to read debug listener address for {endpoint}: {e}"))?;
+    let app = crate::loopback_request_guard::admit_only_loopback_requests(routes, bound);
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
+
+    tracing::info!("Debug server listening on {endpoint}");
+
+    axum::serve(listener, app.into_make_service())
+        .await
+        .map_err(|e| format!("debug server error: {e}"))
+}
+
 pub async fn spawn_debug_server(
     listener: BoundDebugListener,
     engine: Arc<Mutex<EngineSession>>,
@@ -3324,15 +3346,7 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let endpoint = listener.endpoint_url();
-    let listener = tokio::net::TcpListener::from_std(listener.listener)
-        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
-
-    tracing::info!("Debug server listening on {endpoint}");
-
-    axum::serve(listener, app.into_make_service())
-        .await
-        .map_err(|e| format!("debug server error: {e}"))
+    serve_debug_routes(listener, app).await
 }
 
 #[cfg(test)]

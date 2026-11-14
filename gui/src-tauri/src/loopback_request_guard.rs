@@ -18,7 +18,10 @@ pub fn admit_only_loopback_requests<S: Clone + Send + Sync + 'static>(
     router: Router<S>,
     bound: SocketAddr,
 ) -> Router<S> {
-    router.layer(middleware::from_fn_with_state(bound, refuse_unless_loopback))
+    router.layer(middleware::from_fn_with_state(
+        bound,
+        refuse_unless_loopback,
+    ))
 }
 
 async fn refuse_unless_loopback(
