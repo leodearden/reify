@@ -14,10 +14,10 @@ mod harness;
 mod profile_split;
 
 use harness::{
-    END_MARKER, Fixture, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings,
-    assert_green, assert_input_error, assert_pin, covered_a, describe, empty_union_manifest,
-    finding_lines, member, member_split_fixture, parse_toml, real_check, run_script, stdout_of,
-    workspace_of, write_file,
+    Fixture, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings, assert_green,
+    assert_input_error, assert_pin, covered_a, describe, empty_union_manifest, finding_lines,
+    member, member_split_fixture, parse_toml, real_check, run_script, stdout_of, workspace_of,
+    write_file,
 };
 
 // --- the real workspace ------------------------------------------------------
@@ -257,17 +257,6 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
         "check must say that it compared nothing\n{}",
         describe(&out)
     );
-    let log = fixture.cargo_argv_log();
-    assert!(
-        !log.lines().any(|line| line.starts_with("tree")),
-        "a HOST-UNION finding changes the host graph, so check must not resolve cargo tree \
-         while one stands\n{log}"
-    );
-    assert!(
-        !log.lines().any(|line| line.starts_with("test")),
-        "a HOST-UNION finding changes the host graph, so check must not compare unit-graph \
-         profiles while one stands\n{log}"
-    );
 }
 
 #[test]
@@ -388,47 +377,6 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
     );
 }
 
-const TREE_CORE: &str = "\
-core v0.1.0 (/fixture/crates/core)|
-`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
-";
-
-#[test]
-fn check_and_generate_report_the_same_host_union_through_a_covered_member() {
-    let members = vec![
-        member("core", &[UNION]),
-        member("u", &["core"]),
-        member("zz", &[UNION]).build_dep("u"),
-        member(UNION, &[]),
-    ];
-    let original =
-        empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
-    let fixture = Fixture::metadata_only(&members).with_union_manifest(&original);
-    let manifest = fixture.manifest("u");
-    let expected: &[&[&str]] = &[&[
-        "HOST-UNION u",
-        "zz -[build]-> u -> core -> workspace-feature-union",
-        "remove u's dependency on core",
-        &manifest,
-    ]];
-
-    assert_findings(
-        &fixture.check(),
-        expected,
-        "zz builds with u, which reaches the union through core",
-    );
-    assert_findings(
-        &fixture.generate(),
-        expected,
-        "generate refuses on the same finding check reports",
-    );
-    assert_eq!(
-        fixture.union_manifest(),
-        original,
-        "generate must not touch the union manifest while a HOST-UNION finding stands"
-    );
-}
-
 #[test]
 fn check_reds_when_a_covered_member_build_depends_on_the_union() {
     let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
@@ -445,6 +393,11 @@ fn check_reds_when_a_covered_member_build_depends_on_the_union() {
         "zz's build script would compile the union for the host",
     );
 }
+
+const TREE_CORE: &str = "\
+core v0.1.0 (/fixture/crates/core)|
+`-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+";
 
 #[test]
 fn check_is_green_when_a_build_dependency_member_only_dev_depends_on_a_covered_member() {

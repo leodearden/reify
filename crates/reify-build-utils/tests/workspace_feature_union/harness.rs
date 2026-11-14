@@ -236,7 +236,8 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// `test --workspace` serves unit-graph-workspace.json and `test -p NAME`
 /// serves unit-graph-NAME.json, or the empty version-1 unit graph when that
 /// file is absent; every `test` call appends its RUSTC_BOOTSTRAP and
-/// CARGO_TARGET_DIR to cargo-env.log.
+/// CARGO_TARGET_DIR to cargo-env.log, then exits 3 when unit-graph-refuse
+/// exists.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -279,6 +280,10 @@ case "${1:-}" in
   test)
     printf 'RUSTC_BOOTSTRAP=%s CARGO_TARGET_DIR=%s\n' "${RUSTC_BOOTSTRAP:-}" "${CARGO_TARGET_DIR:-}" \
       >> "$here/cargo-env.log"
+    if [ -e "$here/unit-graph-refuse" ]; then
+      echo 'stub cargo: this fixture serves no unit graph' >&2
+      exit 3
+    fi
     prev=""
     for arg in "$@"; do
       graph=""
@@ -307,14 +312,21 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new(members: &[Member], workspace_tree: &str) -> Fixture {
-        let fixture = Fixture::metadata_only(members);
+        let fixture = Fixture::serving_metadata(members);
         fixture.write("tree-workspace.txt", workspace_tree);
         fixture
     }
 
-    /// Serves `members` as cargo metadata and no `cargo tree` output, so a
-    /// check or generate that resolves any tree exits 2.
+    /// Serves `members` as cargo metadata and nothing else, so a check or
+    /// generate that resolves any `cargo tree` or `cargo test --unit-graph`
+    /// exits 2.
     pub(crate) fn metadata_only(members: &[Member]) -> Fixture {
+        let fixture = Fixture::serving_metadata(members);
+        fixture.write("unit-graph-refuse", "");
+        fixture
+    }
+
+    fn serving_metadata(members: &[Member]) -> Fixture {
         let fixture = Fixture {
             dir: tempfile::tempdir().expect("create workspace-feature-union fixture dir"),
         };
