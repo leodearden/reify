@@ -148,13 +148,13 @@ sources (`decide_morph_or_remesh` remeshes any source lacking the task-4092
 fixing was exclusive to it.
 
 Task 9858 pinned the **plain** override (`GmshKernel::mesh_surface_to_volume`)
-with the same `MeshingOptions { deterministic: true, ..Default::default() }`
-literal, guarded by
+to the same options, now named once for both overrides as
+`kernel_real.rs`'s `trait_producer_meshing_options`. It is guarded by
 `reify-kernel-gmsh/tests/mesh_to_volume_tests.rs::trait_mesh_surface_to_volume_output_is_reproducible_across_repeated_calls`
 (red without the pin: on `tessellated_cylinder_mesh(0.05, 0.2, 32)`, 7500 vs
-7460 and 7537 vs 7494 tets between reps, in 2 of 2 processes). That was the
-plain-producer item tracked as ticket `tkt_0RTPM0DR78N6RG5Y7PZJNH2FZF`,
-alongside this note's `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE`. The plain path
+7460 and 7537 vs 7494 tets between reps, in 2 of 2 processes). The guard can
+only discriminate on a host where `available_parallelism() > 1`, as with
+7411's attributed guard. The plain path
 serves every `VolumeMesh` realization without a boundary demand, GUI
 realization rebuilds included. It was found as one root cause of
 `reify-eval::solve_elastic_static_body_e2e`'s intermittent 1800s timeout,
@@ -183,3 +183,15 @@ only under `deterministic` and honours no `threads` override.)
 The seed/refine asymmetry above is now closed: `RealizedAdaptiveProblem::new`
 pins the REFINE step, and both seed producers, attributed and plain, are
 single-threaded.
+
+Both tickets this note cites are therefore discharged, and neither has an
+open task behind it. This note's seed ticket `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE`
+matches task #7409, and 7411's plain-producer follow-up ticket
+`tkt_0RTPM0DR78N6RG5Y7PZJNH2FZF` matches task #7592 (the plain pin plus the
+triplicated thread-count block). Both tasks were cancelled on 2026-10-07 as
+superseded by meshing-service β #8285. The pin above discharges their
+determinism item, and `resolved_num_threads` discharges #7592's thread-block
+item. #7409's `mesh_size` and cache items moved to meshing-service η #8290.
+
+The other load-amplified stage behind that timeout, the CG solve's threading,
+is logged in `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
