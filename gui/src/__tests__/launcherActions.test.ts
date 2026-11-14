@@ -67,14 +67,6 @@ describe('openDocument', () => {
       code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
       message: 'earlier',
     });
-
-    const freshStore = createLauncherStore();
-    deps.loadDocument.mockRejectedValue('No such file');
-    const failingActions = createLauncherActions(freshStore, deps);
-
-    await failureOf(failingActions.openDocument('/designs/missing.ri'));
-
-    expect(freshStore.state.document.error).toBeNull();
   });
 
   it('rejects with E_GUI_OPEN_FAILED carrying the backend message when the load fails, recording nothing', async () => {
@@ -87,6 +79,7 @@ describe('openDocument', () => {
     expect(failure.message).toBe('No such file: /designs/missing.ri');
     expect(failure.toInfo()).toEqual({ code: failure.code, message: failure.message });
     expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.error).toBeNull();
   });
 
   it('still resolves when recording the recent entry fails after a successful load, and notifies', async () => {
