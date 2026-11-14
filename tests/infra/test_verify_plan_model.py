@@ -16,7 +16,9 @@ here:
 - nextest.nextest_config_path's generate arm, which only the executor reaches,
   and the removal of a generated config when planning fails after it;
 - bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
-  the lib seams run under, over a scratch lib.
+  the lib seams run under, over a scratch lib;
+- policy's unknown-role refusal text, which no CLI run shows bare because the
+  CLI always prefixes it.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_model.sh.
@@ -733,6 +735,18 @@ class TestRolePolicyInvariants(unittest.TestCase):
         gui = [text for phase, text in rendered if phase is Phase.GUI_FEATURE_NEXTEST]
         self.assertEqual(len(gui), 1, "premise: the region runs the gui-feature pass")
         self.assertNotIn(CONFIRM_RECORDER, gui[0])
+
+
+class TestUnknownRoleText(unittest.TestCase):
+    """policy names the unknown-role fact bare, and the CLI prefixes it once (end to end: test_verify_policy.py TestRolePolicyTable.test_a_query_takes_the_same_validation_path)."""
+
+    def test_the_refusal_names_only_the_fact(self):
+        with self.assertRaises(policy.UnknownRoleError) as caught:
+            policy.parse_role("bogus")
+        self.assertEqual(
+            str(caught.exception),
+            "unknown DF_VERIFY_ROLE 'bogus' (want task|merge|offline|background)",
+        )
 
 
 class TestQuotedPathKnobs(unittest.TestCase):
