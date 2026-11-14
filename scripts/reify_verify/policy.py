@@ -25,7 +25,7 @@ class UnknownRoleError(ValueError):
     def __init__(self, raw: str):
         wanted = "|".join(role.value for role in Role)
         super().__init__(
-            f"verify.sh: ERROR — unknown DF_VERIFY_ROLE '{raw}' (want {wanted})"
+            f"unknown DF_VERIFY_ROLE '{raw}' (want {wanted})"
         )
 
 

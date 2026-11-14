@@ -495,6 +495,9 @@ class Plan:
     steps: tuple[Step, ...] = ()
 
 
+ERROR = "verify.sh: ERROR — "
+
+
 @dataclass(frozen=True)
 class Refused:
     """The refusal to plan: the lines bash would print instead of a plan, and its exit code."""
@@ -512,7 +515,7 @@ def unquotable_knob(values: Iterable[tuple[str, str]], quote: str) -> Refused | 
         if quote in value:
             return Refused(
                 (
-                    f"verify.sh: ERROR — {name}={value} holds a {QUOTE_NAMES[quote]} quote, and the "
+                    f"{ERROR}{name}={value} holds a {QUOTE_NAMES[quote]} quote, and the "
                     f"plan renders it inside {QUOTE_NAMES[quote]} quotes; refusing to plan a broken "
                     "command line",
                 ),

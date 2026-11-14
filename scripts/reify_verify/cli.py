@@ -16,11 +16,11 @@ from pathlib import Path
 
 from reify_verify import bashcall, build, knobs, plan, queries, render
 from reify_verify.invocation import Action, Invocation, PlanFormat, Query, Scope
+from reify_verify.plan import ERROR
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64
 EX_UNAVAILABLE = 69
-ERROR = "verify.sh: ERROR — "
 PRD = "docs/prds/v0_6/verify-structured-plan-and-role-table.md"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -236,7 +236,7 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     try:
         role = parse_role(env.get("DF_VERIFY_ROLE"))
     except UnknownRoleError as err:
-        raise CliError((str(err),)) from None
+        raise CliError((f"{ERROR}{err}",)) from None
     return Invocation(
         action=action,
         profile_arg=profile_arg,

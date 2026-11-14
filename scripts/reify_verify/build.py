@@ -52,6 +52,7 @@ from reify_verify.gatepaths import COMPILE_GATE, GUI_CRATE_GUARD, RUN_ALL
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
+    ERROR,
     ArtifactAssertion,
     Cargo,
     Guarded,
@@ -85,7 +86,6 @@ from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
 from reify_verify.testregion import PassWalls, RegionInputs, TestRegion
 
-ERROR = "verify.sh: ERROR — "
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
 HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
 # The libs verify.sh sources at load, in its order; the first missing one refuses the run.

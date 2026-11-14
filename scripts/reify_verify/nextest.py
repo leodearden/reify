@@ -21,6 +21,7 @@ from reify_verify.bashcall import ScriptCall
 from reify_verify.gatepaths import CrateGuard
 from reify_verify.plan import (
     CONFIRM_RECORDER,
+    ERROR,
     CargoTestRun,
     ConfirmRecorded,
     NextestFlags,
@@ -94,7 +95,7 @@ def nextest_config_path(
         return Refused(
             (
                 *result.stderr_lines,
-                f"verify.sh: ERROR — {Path(GEN_NEXTEST_CONFIG.path).name} refused to generate "
+                f"{ERROR}{Path(GEN_NEXTEST_CONFIG.path).name} refused to generate "
                 f"the nextest config (exit {result.returncode}); its diagnostic is immediately above",
             ),
             result.returncode,
