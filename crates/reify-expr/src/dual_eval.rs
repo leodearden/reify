@@ -321,6 +321,7 @@ fn kind_name(expr: &CompiledExpr) -> &'static str {
         CompiledExprKind::PurposeReflectiveAggregation { .. } => "PurposeReflectiveAggregation",
         CompiledExprKind::ReflectiveCellList(_) => "ReflectiveCellList",
         CompiledExprKind::StructureInstanceCtor { .. } => "StructureInstanceCtor",
+        CompiledExprKind::VariantCtor { .. } => "VariantCtor",
         _ => "unsupported expression kind",
     }
 }
@@ -440,14 +441,13 @@ fn eval_dual_match(
     // The `VariantBind` arm below cracks the payload's VALUES into a child scope
     // and binds no tangents, so a binder resolves through `env.get` → `None` →
     // `Tangent::Zero` and the arm body returns a confident FLAT row.  That is
-    // right only while every payload is a compile-time constant — which it is
-    // today, because `reify-compiler`'s `variant_construct` refuses a
-    // non-constant payload value outright ("not yet supported") and lowers it to
-    // `Value::Undef`.  That restriction is marked a deferred follow-up there,
-    // i.e. it belongs to a module this one does not own, so it is CHECKED here
-    // rather than relied on.
+    // right only while the payload is constant.  A payload can be a runtime
+    // expression (a `VariantCtor` node), and `refuse_or_constant` does not
+    // differentiate `VariantCtor`: a seed-dependent one reaches this point as a
+    // discriminant whose tangent is `None`.  So the discriminant's tangent is
+    // the check that matters here.
     //
-    // `Tangent::None` gets the same treatment for a different reason: the
+    // `Tangent::None` must not be passed through to the arms: the
     // discriminant's refusal is already in the first-wins slot, and a confident
     // row from an arm body makes `jacobian_row` return `Ok` and DISCARD it
     // unread.
