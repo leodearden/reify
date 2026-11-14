@@ -719,10 +719,12 @@ structure FeaBodyMultiCase {
 /// i.e. the 3165 sentinel components are gone — that was the coverage defect
 /// #6200 fixed, not anything this test owns. The reproducible claim is the
 /// helper's `missed_interior == 0`, which is keyed on COVERAGE rather than on a
-/// count and so survives the drift the total is subject to; the exact-count form
-/// stays where #6154 put it. Both this test and the green no-leading-template
-/// sibling [`multi_case_body_solve_shares_one_realization_across_cases`] now
-/// state that same contract through the same helper, on the byte-identical body.
+/// count and so holds across gmsh builds, where the total (run-to-run
+/// reproducible since task 9858's single-thread gmsh pin) is no contract; the
+/// exact-count form stays where #6154 put it. Both this test and the green
+/// no-leading-template sibling
+/// [`multi_case_body_solve_shares_one_realization_across_cases`] now state that
+/// same contract through the same helper, on the byte-identical body.
 #[cfg(has_gmsh)]
 #[test]
 fn multi_case_body_solve_survives_a_preceding_template() {
@@ -891,6 +893,15 @@ fn multi_case_body_solve_survives_a_preceding_template() {
 /// `GmshKernel::mesh_surface_to_volume` → `assert_valid_volume_mesh` and PASSES
 /// (not `#[ignore]`d) — so a real OCCT cylinder is already proven to mesh
 /// through the exact PLAIN producer this test uses.
+///
+/// ## Why `ElasticOptions(deterministic: true)` — shared by all three cylinder fixtures
+///
+/// The fixtures pin the single-threaded `Deterministic` execution mode (no
+/// thread team, no CG warm start) that
+/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes universal,
+/// because at the realized cylinder's DOF count the default `Parallel` mode is
+/// amplified by host load and was half the root cause of this file's 1800s B9
+/// timeouts. Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
 #[cfg(has_gmsh)]
 const NON_PRISMATIC_BODY_SOURCE: &str = r#"
 structure FeaBodyNonPrismatic {
@@ -898,7 +909,7 @@ structure FeaBodyNonPrismatic {
     let body     = cylinder(50mm, 200mm)
     let tip_load = PointLoad(point: "tip", force: 1000.0)
     let mount    = FixedSupport(target: "root")
-    let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions())
+    let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions(deterministic: true))
 }
 "#;
 
@@ -909,11 +920,12 @@ structure FeaBodyNonPrismatic {
 /// `(body, material, element_order, mesh_size)` is shared by construction and the
 /// single realized tet VolumeMesh must serve BOTH cases.
 ///
-/// Mirrors `MULTI_CASE_BODY_SOURCE`'s verified syntax exactly, including the
-/// INLINE `ElasticOptions()` argument (not a shared `let opts` binding): sharing
-/// is already guaranteed by the single `body`/`material` args, and the inline
-/// form is the shape proven to compile here. See `NON_PRISMATIC_BODY_SOURCE`
-/// above for the cylinder-vs-CSG rationale.
+/// Mirrors `MULTI_CASE_BODY_SOURCE`'s verified syntax, including its INLINE
+/// options argument (not a shared `let opts` binding), here
+/// `ElasticOptions(deterministic: true)`: sharing is already guaranteed by the
+/// single `body`/`material` args, and the inline form is the shape proven to
+/// compile here. See `NON_PRISMATIC_BODY_SOURCE` above for the cylinder-vs-CSG
+/// rationale and for why the solve is pinned deterministic.
 ///
 /// ## Why this fixture declares a `RepresentationWithin` bound — PRECONDITION
 ///
@@ -991,7 +1003,7 @@ structure FeaBodyNonPrismaticMultiCase {
         loads:    [PointLoad(point: "tip", force: 2000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions(deterministic: true))
 }
 "#;
 
@@ -1021,7 +1033,7 @@ structure FeaBodyNonPrismaticMultiCase {
         loads:    [PointLoad(point: "tip", force: 1000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result = solve_load_cases(material, body, [lc1], ElasticOptions())
+    let result = solve_load_cases(material, body, [lc1], ElasticOptions(deterministic: true))
 }
 "#;
 
@@ -1291,8 +1303,9 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 ///
 /// Two load cases sharing `(body, material, element_order, mesh_size)` — they
 /// share the single `body`/`material` args and the one inline
-/// `ElasticOptions()`, and differ ONLY in tip force (1000 N vs 2000 N) — must
-/// each come back with their own populated result off the ONE shared mesh.
+/// `ElasticOptions(deterministic: true)`, and differ ONLY in tip force (1000 N
+/// vs 2000 N) — must each come back with their own populated result off the
+/// ONE shared mesh.
 ///
 /// **The re-mesh-avoidance assertions of B9 are NOT here.** They live in the
 /// sibling [`non_prismatic_two_case_build_realizes_body_exactly_once`] above:
@@ -1366,9 +1379,10 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// `data.iter().any(is_finite)`. It is not redundant. The helper asserts only
 /// that predicted-outside nodes DO miss; the opposite direction is logged, not
 /// asserted, because an EXCESS miss is #6200's mesh-coverage territory and the
-/// gmsh/HXT tetrahedralization is not bit-reproducible. An ALL-sentinel field
-/// therefore passes the helper — and an all-sentinel field is precisely #5951's
-/// silent failure mode. `any(is_finite)` is the weakest live statement of "the
+/// gmsh/HXT tetrahedralization, though run-to-run reproducible since the plain
+/// producer was pinned to one thread (task 9858), is no contract across gmsh
+/// builds. An ALL-sentinel field therefore passes the helper — and an
+/// all-sentinel field is precisely #5951's silent failure mode. `any(is_finite)` is the weakest live statement of "the
 /// solve actually ran" that no mesh drift can redden.
 ///
 /// # History — this was `#[ignore]`d on a false attribution
@@ -1493,12 +1507,12 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
         // of anything. The helper asserts only that predicted-outside nodes DO
         // carry the sentinel; the opposite direction (a node the geometry puts
         // INSIDE coming back NaN) it deliberately logs rather than asserts,
-        // that being #6200's non-bit-reproducible mesh-coverage territory. An
-        // ALL-sentinel field therefore walks straight through it — and an
-        // all-sentinel field is exactly #5951's silent failure mode. This is
-        // the weakest live statement of "the solve actually ran" that no mesh
-        // drift can redden: not that any particular node is finite, only that
-        // not every one of them missed.
+        // that being #6200's mesh-coverage territory. An ALL-sentinel field
+        // therefore walks straight through it — and an all-sentinel field is
+        // exactly #5951's silent failure mode. This is the weakest live
+        // statement of "the solve actually ran" that no mesh drift can redden:
+        // not that any particular node is finite, only that not every one of
+        // them missed.
         assert!(
             disp.data.iter().any(|v| v.is_finite()),
             "case \"{case_name}\": displacement must carry at least one finite \
@@ -1885,7 +1899,9 @@ fn assert_stress_miss_set_matches_displacement(
 ///     `--test-threads=1` and at the default). *Hypothesis:* gmsh/HXT's parallel
 ///     tetrahedralization is not bit-reproducible under varying host load —
 ///     project memory carries an independent measurement of the same effect at
-///     ~1–6% tet-count drift;
+///     ~1–6% tet-count drift (task 9858 since measured that drift on this
+///     file's plain producer and pinned it to one thread; the first ground
+///     above stands regardless);
 ///   - the bucket-sum identity — `classify_grid_misses` satisfies it by
 ///     construction, so it says nothing about this field (it is pinned in that
 ///     function's own crate-local fixtures instead).
@@ -1909,8 +1925,9 @@ fn assert_stress_miss_set_matches_displacement(
 /// It stays `== 0` on `missed_interior` rather than tightening to `n_missed ==
 /// 0`, even though the box currently measures zero misses in total. The
 /// AABB-shell buckets (face/edge/corner) remain legitimately exposed to boundary
-/// round-off, and the total drifts run to run. Tightening would trade a stable
-/// invariant for a flake.
+/// round-off, and the total, though run-to-run reproducible since task 9858's
+/// single-thread gmsh pin, is no contract across gmsh builds. Tightening would
+/// trade a stable invariant for a flake.
 ///
 /// ### `missed_interior` counts GRID points, NOT mesh nodes
 ///
@@ -2052,7 +2069,8 @@ const CYLINDER_PREDICTED_MISSES: usize = 84;
 /// an EXCESS miss, i.e. a node the geometry puts inside that the realized mesh
 /// failed to cover — would be a regression of the upstream mesh-coverage defect
 /// that #6200 fixed, which this test explicitly disclaims ownership of; and the
-/// realized mesh is not bit-reproducible across runs, so pinning it live would
+/// realized mesh is run-to-run reproducible only since task 9858's single-thread
+/// gmsh pin, and no contract across gmsh builds, so pinning it live would
 /// let upstream drift red the merge gate for something that "must not be fixed
 /// here". The excess is logged loudly instead, and the exact-count/bucket form
 /// of the claim is kept in [`realized_cylinder_mesh_covers_its_own_aabb`].
@@ -2142,8 +2160,9 @@ fn assert_cylinder_grid_miss_measurement(
 ///
 /// Measured green on this base, and `#[ignore]`d anyway — the gate is about
 /// DRIFT and EXPENSE, not about waiting on anyone. What it pins is an EXACT node
-/// count over a gmsh/HXT tetrahedralization that is not bit-reproducible run to
-/// run (the box's pre-fix split drifted on this very host, 1055 vs 1060 across
+/// count over a gmsh/HXT tetrahedralization that is run-to-run reproducible only
+/// since task 9858's single-thread gmsh pin, and no contract across gmsh builds
+/// (the box's pre-fix split drifted on this very host, 1055 vs 1060 across
 /// five runs; this fixture has only ever been observed on one host and one gmsh
 /// build). Live, one drifted node would red the merge queue for a mesh property
 /// this crate does not own and this file explicitly says "must not be fixed
@@ -2160,7 +2179,7 @@ fn assert_cylinder_grid_miss_measurement(
 /// coverage defect fixed under #6200, not an instance of it.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "expensive: re-measures the realized cylinder's exact coverage; gmsh/HXT tetrahedralization is not bit-reproducible, so the exact count is run-explicit only"]
+#[ignore = "expensive: re-measures the realized cylinder's exact coverage; the exact count is no contract across gmsh builds, so it is run-explicit only"]
 fn realized_cylinder_mesh_covers_its_own_aabb() {
     let Some((disp, stress)) =
         realized_cylinder_fields("realized_cylinder_mesh_covers_its_own_aabb")
