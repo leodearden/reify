@@ -115,6 +115,130 @@ fn the_per_call_thread_is_named_for_observability() {
     );
 }
 
+// ── Awaitable per-call submission (task 9878) ────────────────────────────────
+//
+// `run_on_large_stack` is the per-call tier's awaitable form: compiler work that
+// belongs to no lane, awaited by an async command without parking any thread.
+
+/// (a) The closure's value comes back to the awaiter, and the closure ran on a
+/// per-call large-stack thread — not the caller's — named for observability.
+#[tokio::test]
+async fn run_on_large_stack_returns_the_value_from_a_named_per_call_thread() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, run_on_large_stack};
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on, ran_on_name) = run_on_large_stack(|| {
+        let thread = std::thread::current();
+        (42u32, thread.id(), thread.name().map(str::to_owned))
+    })
+    .await
+    .expect("a closure that returns normally must resolve Ok");
+
+    assert_eq!(value, 42, "the closure's value must reach the awaiter");
+    assert_ne!(
+        ran_on, caller_id,
+        "the closure must run on its own thread, never inline on the awaiter"
+    );
+    assert_eq!(
+        ran_on_name.as_deref(),
+        Some(ENGINE_THREAD_NAME),
+        "the closure must run on the per-call tier's named large-stack thread"
+    );
+}
+
+/// (b) Awaiting a slow job leaves the calling runtime free to poll other tasks.
+///
+/// The same ORDERING proof as `lane_dispatch_does_not_block_the_calling_runtime`:
+/// on the default current-thread `#[tokio::test]` runtime, an implementation
+/// that ran the job inline (or parked in a blocking `recv`) would resolve only
+/// after the 300 ms job with the one thread busy throughout, so the
+/// already-ready spawned task could not have run and the flag would read false.
+#[tokio::test]
+async fn run_on_large_stack_does_not_block_the_calling_runtime() {
+    use crate::large_stack::run_on_large_stack;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let concurrent_ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&concurrent_ran);
+
+    let concurrent = tokio::spawn(async move {
+        flag.store(true, Ordering::SeqCst);
+        "concurrent task done"
+    });
+
+    let job_result = run_on_large_stack(|| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        "job done"
+    })
+    .await;
+
+    // Read the flag at THIS instant — before awaiting the handle, which would
+    // give a blocked runtime a second chance to run the task and hide the bug.
+    let ran_during_the_job = concurrent_ran.load(Ordering::SeqCst);
+
+    assert_eq!(
+        job_result,
+        Ok("job done"),
+        "the job must still deliver its value"
+    );
+    assert_eq!(
+        concurrent.await.expect("the concurrent task must not panic"),
+        "concurrent task done",
+        "the concurrent task must complete"
+    );
+    assert!(
+        ran_during_the_job,
+        "a concurrently-spawned task had still not been polled when the job \
+         finished — awaiting run_on_large_stack BLOCKED the runtime thread"
+    );
+}
+
+/// (c) A panicking job resolves the await as `Err` carrying the ORIGINAL panic
+/// message, rather than panicking the awaiter or leaving it hung.
+///
+/// The message assertion is load-bearing: a thread that merely died, or a
+/// oneshot that merely disconnected, would also yield an `Err`, just without
+/// the job's own words.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_panic_as_an_err_carrying_its_message() {
+    use crate::large_stack::run_on_large_stack;
+
+    let outcome = run_on_large_stack::<_, ()>(|| panic!("create boom")).await;
+
+    let message = outcome.expect_err("a panicking job must resolve as Err");
+    assert!(
+        message.contains("create boom"),
+        "the Err must carry the job's original panic message, got: {message}"
+    );
+}
+
+/// (d) The awaitable path carries the 256 MiB stack: ~16 MiB of recursion, 8x
+/// the ~2 MiB a tokio worker or `spawn_blocking` thread would have given it,
+/// runs to completion.
+///
+/// Per the module's "no violent RED" doctrine the recursion is reached ONLY
+/// through [`deep_recurse_if_on_thread`], so an implementation that ran the job
+/// anywhere but the per-call thread yields a clean assertion failure instead of
+/// overflowing and aborting the whole test binary.
+#[tokio::test]
+async fn run_on_large_stack_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, run_on_large_stack};
+
+    let result = run_on_large_stack(|| {
+        deep_recurse_if_on_thread(ENGINE_THREAD_NAME, DEEP_RECURSION_DEPTH)
+    })
+    .await;
+
+    assert_eq!(
+        result,
+        Ok(Ok(u64::from(DEEP_RECURSION_DEPTH) + 1)),
+        "deep recursion must run to completion on the per-call large stack, \
+         reached through the awaitable entry point"
+    );
+}
+
 // ── Fire-and-forget ENGINE-lane submission (task 7442) ───────────────────────
 //
 // `post_to_worker` queues a job without waiting for it, so an async command
