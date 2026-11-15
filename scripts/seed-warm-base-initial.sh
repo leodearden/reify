@@ -25,6 +25,16 @@
 # The script's exit status is the preflight result.  A base is NEVER seeded
 # from a failed or empty build.
 #
+# Stale build stamp: a <merge-verify>/target left by an earlier merge verify keeps
+# that verify's reify-verify-attempt.json.  When it names another tree,
+# refresh-warm-base.sh's inv.9 built-tree guard (added by #9765) refuses Step 2,
+# because a cold `cargo build --release` neither rewrites the stamp nor rebuilds the
+# debug artifacts it describes.  So look for that file BEFORE the multi-hour Step 1.
+# Remedies: run the merge gate in <merge-verify> (DF_VERIFY_ROLE=merge
+# scripts/verify.sh all --profile both --scope all), which re-stamps it; or, for a
+# genuinely cold seed, remove <merge-verify>/target.  Block H of
+# tests/infra/test_seed_warm_base_initial.sh is the executable spec.
+#
 # Options:
 #   --mount DIR         Warm-lane mount point
 #                       (env: REIFY_WARM_LANE_MOUNT; default: <_default_mount>)
@@ -118,6 +128,10 @@ Usage: $(basename "$0") [OPTIONS]
     - XFS mount at <mount> with reflink support (provision-warm-lane-fs.sh)
     - _merge-verify worktree on XFS (relocate-worktrees-to-warm-lane.sh)
     - _merge-verify must be a clean git worktree at a commit already on refs/heads/main
+    - <merge-verify>/target must not carry a prior merge verify's build stamp for
+      another tree, because Step 2 refuses it; remove target/ for a cold seed, or
+      run the merge gate (DF_VERIFY_ROLE=merge scripts/verify.sh all --profile both
+      --scope all)
 EOF
 }
 
@@ -261,12 +275,23 @@ info "Step 2: initializing gen-dir base via refresh-warm-base.sh ..."
 info "  advancing source: $MERGE_VERIFY/target"
 info "  base dir:         $BASE_DIR"
 info "  landed-commit:    $LANDED_COMMIT"
+_refresh_rc=0
 "$_SCRIPT_DIR/refresh-warm-base.sh" \
     --landed-commit "$LANDED_COMMIT" \
     --rustflags "$RUSTFLAGS_VAL" \
     --invocation "$INVOCATION_VAL" \
     "$MERGE_VERIFY/target" \
-    "$BASE_DIR"
+    "$BASE_DIR" || _refresh_rc=$?
+if [ "$_refresh_rc" -ne 0 ]; then
+    err "Step 2 refused: refresh-warm-base.sh exited $_refresh_rc; base NOT seeded."
+    err "If the refusal above is a built-tree mismatch, $MERGE_VERIFY/target still holds a"
+    err "prior merge verify's stamped build: Step 1's build does not replace that stamp or"
+    err "the debug artifacts it describes."
+    err "For a genuinely cold seed (no merge verify in flight), remove it and re-run this script:"
+    err "    rm -rf \"$MERGE_VERIFY/target\""
+    err "or rebuild it at the landed commit with the merge gate, as the refusal says."
+    exit "$_refresh_rc"
+fi
 
 # ── Step 3: validate with warm-lane-preflight.sh ──────────────────────────────
 # The script's overall exit status gates on the preflight result.
