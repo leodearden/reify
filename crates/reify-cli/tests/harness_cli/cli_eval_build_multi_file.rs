@@ -111,4 +111,8 @@ fn eval_and_build_fail_on_an_import_of_a_missing_module() {
             "{args:?} must fail on the missing import.\nstatus: {status}\nstdout: {stdout}\nstderr: {stderr}"
         );
     }
+    assert!(
+        !out.exists(),
+        "build wrote geometry despite the missing import"
+    );
 }
