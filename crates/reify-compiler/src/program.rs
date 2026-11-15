@@ -402,12 +402,62 @@ mod tests {
         )
     }
 
+    fn rehomed_block(start: usize, module_keys: &[&str]) -> RehomedBlock {
+        RehomedBlock {
+            start,
+            module_keys: module_keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    fn warnings(count: usize) -> Vec<Diagnostic> {
+        (0..count)
+            .map(|i| Diagnostic::warning(format!("warning {i}")))
+            .collect()
+    }
+
+    #[test]
+    fn rehomed_block_range_is_its_run_of_copies() {
+        let diagnostics = warnings(4);
+
+        assert_eq!(rehomed_block(1, &["a", "b"]).range_in(&diagnostics), 1..3);
+        assert_eq!(rehomed_block(2, &["a", "b"]).range_in(&diagnostics), 2..4);
+        assert_eq!(rehomed_block(4, &[]).range_in(&diagnostics), 4..4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the re-homed copies 1..3 must lie within \
+                    the entry's 2 diagnostics"
+    )]
+    fn rehomed_block_outside_the_diagnostics_names_the_invariant() {
+        let _ = rehomed_block(1, &["a", "b"]).range_in(&warnings(2));
+    }
+
+    /// The invariants are checked where a program is built, not only where it
+    /// is read.
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the entry's 2 declared templates must be \
+                    a prefix of its 1 templates"
+    )]
+    fn compiled_program_new_rejects_a_declared_prefix_longer_than_the_templates() {
+        let program = compile_one_template_entry();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(0, &[]),
+            2,
+        );
+    }
+
     /// A shrunk `entry.templates` below the declared prefix gets a panic naming
     /// the invariant and both counts, not a bare slice-index panic.
     #[test]
     #[should_panic(
-        expected = "entry_declared_templates: the entry's compile produced 1 templates \
-                    but `entry.templates` now holds 0"
+        expected = "CompiledProgram invariant: the entry's 1 declared templates must be \
+                    a prefix of its 0 templates"
     )]
     fn entry_declared_templates_names_a_shrunk_template_list() {
         let mut program = compile_one_template_entry();
