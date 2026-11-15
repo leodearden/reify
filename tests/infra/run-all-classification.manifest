@@ -65,6 +65,12 @@ test_verify_nextest_absent_suites.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
 
 # --- host-exclusive (5) ------------------------------------------------------
+# test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by
+# REIFY_RUN_BUNDLE_CLEAN_INSTALL=1, when it runs a cold scripts/build-bundle.sh
+# (cargo release builds, npm, tauri bundling) plus two docker containers —
+# real CPU, disk and network burn, kept off the merge gate the same way as
+# test_seed_lane_lock_release_soak.sh below.
+test_bundle_clean_install.sh host-exclusive
 test_cpu_governed_exec_hostexcl.sh host-exclusive
 test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
