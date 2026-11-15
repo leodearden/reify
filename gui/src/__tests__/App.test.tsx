@@ -3480,6 +3480,52 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
+  it('a Start-view open the engine is still loading shows Opening… with the document actions disabled until it loads', async () => {
+    vi.mocked(bridge.listRecent).mockResolvedValue([{ path: '/designs/flange.ri', opened_at: 1000 }]);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    const reply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
+    await renderAndWaitForReady();
+    await screen.findByTestId('start-recent-item');
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    await screen.findByTestId('start-document-pending');
+    for (const id of ['start-open-path', 'start-open-dialog', 'start-new-dialog', 'start-create-path', 'start-recent-item']) {
+      expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
+    }
+
+    reply.resolve(published(makeGuiState()));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+  });
+
+  it('a Ctrl+O while a Start-view open is still loading toasts E_GUI_OPEN_FAILED and starts no second load', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    const reply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/bracket.ri'));
+
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/designs/flange.ri');
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() =>
+      expect(
+        toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED') && t.includes('still opening')),
+      ).toBe(true),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalledWith('/designs/flange.ri');
+    expect(bridge.openFileEngine).toHaveBeenCalledTimes(1);
+
+    reply.resolve(published(makeGuiState()));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    expect(openPaths()).toEqual(['/designs/bracket.ri']);
+  });
+
   it('Design closes the chat panel and Assistant reopens it', async () => {
     vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({ mode, debug_port: null }));
     await renderAndWaitForReady();
