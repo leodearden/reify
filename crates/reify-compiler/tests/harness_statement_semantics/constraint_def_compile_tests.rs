@@ -1419,10 +1419,10 @@ occurrence def MyOccurrence {
 /// Pin that exactly ONE diagnostic carries `DiagnosticCode::ConstraintArgTypeMismatch`
 /// when a Bool literal is passed where a Length param is declared.
 ///
-/// The filter is by code (not message substring) so the count remains stable
-/// against task 4490's co-emitted `CmpOperandKind` error for the substituted
-/// predicate `true > 0mm` — those diagnostics have a distinct code and are
-/// not counted here.
+/// The filter is by code (not message substring), so the count is about this
+/// code alone. Since task 5762 the rejected binding short-circuits the
+/// instantiation, so the substituted predicate `true > 0mm` is no longer
+/// compiled and task 4490's `CmpOperandKind` is not co-emitted.
 ///
 /// `DiagnosticCode` is in scope via `use reify_core::*` at the top of this file.
 ///

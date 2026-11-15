@@ -6511,6 +6511,8 @@ pub(crate) fn trait_satisfies(
 ///     emit a single error diagnostic and return.
 ///   * Validate named-argument set against the def's params (unknown args,
 ///     missing required args). Validation errors short-circuit emission.
+///   * Type-check each explicit arg (`constraint_arg_type_conforms`); a
+///     rejection also short-circuits emission.
 ///   * Allocate one shared `inst_idx` for this instantiation by bumping the
 ///     `constraint_inst_counts` entry for `ci.name`, so all predicates from
 ///     this call share the same inst_idx and differ only by `pred_idx`.
@@ -6603,20 +6605,6 @@ pub(crate) fn expand_constraint_inst(
         return;
     }
 
-    // Allocate this instantiation's inst_idx before the per-predicate loop
-    // so all predicates from one `constraint MinWall(...)` share the same
-    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
-    // split to avoid cloning `ci.name` on the common case where the entry
-    // already exists.
-    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
-        let idx = *entry;
-        *entry += 1;
-        idx
-    } else {
-        constraint_inst_counts.insert(ci.name.clone(), 1);
-        0
-    };
-
     // η/4480: capture the EXPLICIT call-site argument bindings, attached to
     // every CompiledConstraint emitted for this instantiation. The presence of
     // a binding (e.g. `"actual"`) is how the GD&T conformance pass detects a
@@ -6643,89 +6631,65 @@ pub(crate) fn expand_constraint_inst(
     // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
-    {
-        let mut throwaway_diag_sink = Vec::new();
-        for (name, expr) in &ci.args {
-            // Probe map for this single param — depends only on the param name,
-            // so it is built once per arg (not once per arg×predicate).
-            let mut probe = HashMap::new();
-            probe.insert(
-                name.clone(),
-                reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Undef,
-                    span: expr.span,
-                },
-            );
-            // If substituting this param changes a predicate, the param's arg
-            // expr is inlined into that predicate and compiled (with real
-            // diagnostics) below — so route this binding compile to the
-            // throwaway sink. Otherwise it is compiled ONLY here.
-            let referenced_by_predicate = def
-                .predicates
-                .iter()
-                .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
-            let compiled = if referenced_by_predicate {
-                compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
-            } else {
-                compile_expr(expr, scope, enum_defs, functions, diagnostics)
-            };
-            arg_bindings.push((name.clone(), compiled));
-        }
+    let mut throwaway_diag_sink = Vec::new();
+    for (name, expr) in &ci.args {
+        // Probe map for this single param — depends only on the param name,
+        // so it is built once per arg (not once per arg×predicate).
+        let mut probe = HashMap::new();
+        probe.insert(
+            name.clone(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Undef,
+                span: expr.span,
+            },
+        );
+        // If substituting this param changes a predicate, the param's arg
+        // expr is inlined into that predicate and compiled (with real
+        // diagnostics) below — so route this binding compile to the
+        // throwaway sink. Otherwise it is compiled ONLY here.
+        let referenced_by_predicate = def
+            .predicates
+            .iter()
+            .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
+        let compiled = if referenced_by_predicate {
+            compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
+        } else {
+            compile_expr(expr, scope, enum_defs, functions, diagnostics)
+        };
+        arg_bindings.push((name.clone(), compiled));
     }
 
     // Task 4546: param-level argument type conformance check.
     //
-    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // Run AFTER the arg_bindings loop (which compiles all explicit args into
     // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
     // std::mem::take's arg_bindings). This is the earliest point where both the
     // compiled arg types AND the declared param types (now stored on
     // CompiledConstraintParam.ty) are available simultaneously.
     //
-    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
-    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
-    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
-    // (dimensional strictness within predicates is task 4490's responsibility).
-    //
-    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
-    // task 4490's emit_comparison_operand_diagnostics also fires for the
-    // substituted predicate. Both diagnostics are accepted (they fire at
-    // distinct seams — binding site vs. predicate body).
-    {
-        // Build a name→arg-expr-span map so the diagnostic label can point at
-        // the argument expression, not the whole constraint instantiation.
-        let arg_spans: HashMap<&str, SourceSpan> = ci
-            .args
-            .iter()
-            .map(|(name, expr)| (name.as_str(), expr.span))
-            .collect();
-        for (arg_name, compiled_arg) in &arg_bindings {
-            // Look up the matching declared param.
-            // Unknown arg names are already diagnosed by the validation above;
-            // skip names that have no matching param to avoid double-reporting.
-            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
-                continue;
-            };
-            // Skip params with no resolved type (unannotated or resolution failed).
-            let Some(ref param_ty) = param.ty else {
-                continue;
-            };
-            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type mismatch: argument '{}' for constraint '{}' \
-                         has type {} but parameter expects {}",
-                        arg_name, ci.name, compiled_arg.result_type, param_ty,
-                    ))
-                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        arg_span,
-                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
-                    )),
-                );
-            }
-        }
+    // A rejected binding short-circuits emission like a missing argument, so the
+    // mistake is reported once, at the argument, instead of again from inside the
+    // def body. The throwaway sink holds diagnostics predicate compilation was
+    // going to report; it will no longer run, so they are flushed. Pinned by
+    // constraint_def_compile_tests.rs::rejected_constraint_arg_is_reported_once_at_the_binding_site.
+    if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {
+        diagnostics.append(&mut throwaway_diag_sink);
+        return;
     }
+
+    // Allocate this instantiation's inst_idx before the per-predicate loop
+    // so all predicates from one `constraint MinWall(...)` share the same
+    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
+    // split to avoid cloning `ci.name` on the common case where the entry
+    // already exists.
+    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+        let idx = *entry;
+        *entry += 1;
+        idx
+    } else {
+        constraint_inst_counts.insert(ci.name.clone(), 1);
+        0
+    };
 
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
@@ -6779,6 +6743,55 @@ pub(crate) fn expand_constraint_inst(
             constraints.push(cc);
         }
     }
+}
+
+/// Emit one `ConstraintArgTypeMismatch` per explicit arg whose compiled type
+/// does not conform (`constraint_arg_type_conforms`) to its declared param
+/// type; returns whether any was emitted.
+fn emit_constraint_arg_type_mismatches(
+    ci: &reify_ast::ConstraintInstDecl,
+    def: &CompiledConstraintDef,
+    arg_bindings: &[(String, CompiledExpr)],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    // Build a name→arg-expr-span map so the diagnostic label can point at
+    // the argument expression, not the whole constraint instantiation.
+    let arg_spans: HashMap<&str, SourceSpan> = ci
+        .args
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr.span))
+        .collect();
+    let mut any_emitted = false;
+    for (arg_name, compiled_arg) in arg_bindings {
+        // Look up the matching declared param.
+        // Unknown arg names are already diagnosed by `expand_constraint_inst`'s
+        // validation; skip names that have no matching param to avoid
+        // double-reporting.
+        let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+            continue;
+        };
+        // Skip params with no resolved type (unannotated or resolution failed).
+        let Some(ref param_ty) = param.ty else {
+            continue;
+        };
+        if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+            let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch: argument '{}' for constraint '{}' \
+                     has type {} but parameter expects {}",
+                    arg_name, ci.name, compiled_arg.result_type, param_ty,
+                ))
+                .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    arg_span,
+                    format!("expected {}, got {}", param_ty, compiled_arg.result_type),
+                )),
+            );
+            any_emitted = true;
+        }
+    }
+    any_emitted
 }
 
 #[cfg(test)]
