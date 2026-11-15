@@ -1768,6 +1768,93 @@ SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
     bash -c 'grep -qF "cd gui/sidecar && npm ci" <<<"$1"' _ "$(_rgs_code_lines "$SETUP_DEV")"
 
+# -- Test 40: gui_launch_resolve_file — the launchers' one [file.ri] policy ---
+echo ""
+echo "--- Test 40: gui_launch_resolve_file — the launchers' one optional [file.ri] policy ---"
+
+# Both launchers cd to REPO_ROOT before launching, so the file they hand
+# reify-gui must be absolute, resolved against the CALLER's cwd. The lib owns
+# that policy; this drives it through Test 35's sourced-child seam, under the
+# launchers' strict mode.
+
+_rgs_mktemp _t40_tmpdir
+mkdir -p "$_t40_tmpdir/caller/sub" "$_t40_tmpdir/decoy/sub" "$_t40_tmpdir/real/inner"
+: > "$_t40_tmpdir/caller/design.ri"
+: > "$_t40_tmpdir/caller/sub/design.ri"
+: > "$_t40_tmpdir/caller/notes.txt"
+: > "$_t40_tmpdir/real/a.ri"
+ln -s "$_t40_tmpdir/real/inner" "$_t40_tmpdir/caller/lnk"
+_t40_caller=$(cd -P "$_t40_tmpdir/caller" && pwd -P)
+_t40_real=$(cd -P "$_t40_tmpdir/real" && pwd -P)
+
+# _t40_resolve <arg> [VAR=value...] — run gui_launch_resolve_file <arg> from
+# the caller dir with the extra env; sets _t40_rc, _t40_out, _t40_err and
+# _t40_err_lines. Call it directly, never inside $(...), so those land here.
+_t40_resolve() {
+    local _arg="$1"
+    shift
+    _t40_rc=0
+    _t40_out=$(cd "$_t40_tmpdir/caller" && env "$@" \
+        bash -c 'set -euo pipefail; source "$1"; gui_launch_resolve_file "$2"' \
+        _ "$LIB_GUI_LAUNCH" "$_arg" 2>"$_t40_tmpdir/stderr") || _t40_rc=$?
+    _t40_err=$(cat "$_t40_tmpdir/stderr")
+    _t40_err_lines=$(grep -c '' "$_t40_tmpdir/stderr" || true)
+}
+
+# --- 40a: no file is the Start view ---
+_t40_resolve ''
+assert "gui_launch_resolve_file '': rc 0 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 0
+assert "gui_launch_resolve_file '': prints nothing (got '$_t40_out')" \
+    test -z "$_t40_out"
+
+# --- 40b: a non-.ri file is refused ---
+_t40_resolve notes.txt
+assert "gui_launch_resolve_file notes.txt: rc 1 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 1
+assert "gui_launch_resolve_file notes.txt: prints nothing on stdout (got '$_t40_out')" \
+    test -z "$_t40_out"
+assert "gui_launch_resolve_file notes.txt: ONE stderr line naming .ri and notes.txt (got $_t40_err_lines: '$_t40_err')" \
+    bash -c '[ "$1" -eq 1 ] && [[ "$2" == *.ri* && "$2" == *notes.txt* ]]' _ "$_t40_err_lines" "$_t40_err"
+
+# --- 40c: a missing .ri is refused ---
+_t40_resolve missing.ri
+assert "gui_launch_resolve_file missing.ri: rc 1 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 1
+assert "gui_launch_resolve_file missing.ri: prints nothing on stdout (got '$_t40_out')" \
+    test -z "$_t40_out"
+assert "gui_launch_resolve_file missing.ri: ONE stderr line saying missing.ri is 'not found' (got $_t40_err_lines: '$_t40_err')" \
+    bash -c '[ "$1" -eq 1 ] && [[ "$2" == *"not found"* && "$2" == *missing.ri* ]]' _ "$_t40_err_lines" "$_t40_err"
+
+# --- 40d: a bare relative name resolves against the caller's cwd ---
+_t40_resolve design.ri
+assert "gui_launch_resolve_file design.ri: rc 0 and prints <caller>/design.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/design.ri"
+
+# --- 40e: CDPATH cannot redirect a relative directory ---
+# Control: the decoy is live — an unguarded cd from the caller dir lands in it.
+_t40_decoy_cd=$(cd "$_t40_tmpdir/caller" && CDPATH="$_t40_tmpdir/decoy" \
+    bash -c 'cd -P -- sub >/dev/null && pwd -P') || _t40_decoy_cd=""
+assert "control: with CDPATH=<decoy>, a bare 'cd sub' from the caller dir lands in the decoy (got '$_t40_decoy_cd')" \
+    test "$_t40_decoy_cd" = "$(cd -P "$_t40_tmpdir/decoy/sub" && pwd -P)"
+
+_t40_resolve sub/design.ri CDPATH="$_t40_tmpdir/decoy"
+assert "gui_launch_resolve_file sub/design.ri under CDPATH=<decoy>: rc 0 and prints exactly <caller>/sub/design.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/sub/design.ri"
+
+# --- 40f: symlink/.. names the file the existence check saw ---
+assert "control: <caller>/a.ri does not exist, so a logical lnk/.. would name a missing file" \
+    bash -c '! [ -e "$1" ]' _ "$_t40_tmpdir/caller/a.ri"
+
+_t40_resolve lnk/../a.ri
+assert "gui_launch_resolve_file lnk/../a.ri: rc 0 and prints <real>/a.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_real/a.ri"
+
+# --- 40g: an absolute path comes back unchanged ---
+_t40_resolve "$_t40_caller/design.ri"
+assert "gui_launch_resolve_file <abs>: rc 0 and prints the same path (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/design.ri"
+
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
 echo "--- Test 32: suite-level DISPLAY=:99 pin still holds at end of suite ---"
