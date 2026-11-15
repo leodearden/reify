@@ -1800,6 +1800,55 @@ _row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=
 assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
     test "$_row1_inactive_vacuity4_rc" -ne 0
 
+# ROW1-1-WINDOW-VACUITY (task 10023): ROW1-1 divides by the interval MEASURED
+# between its two cgroup-usage-stamped reads, never by the nominal MEASURE_S
+# sleep.  _row1_measure_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<delta_usage_us> <window_us> <saturation>", or "unavailable".  Pure awk, no
+# python3, no cgroup: always-on.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs, rather than
+# manufacture the sentinel a case expects.  Outputs compare by exact string.
+_row1_window_vacuity1="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 6.0 CPU-s over a MEASURED 3.6 s window on 2 cores => '6000000 3600000 0.833333' (got '${_row1_window_vacuity1}'); a nominal 3 s budget would have read 1.000000 and hidden the deficit" \
+    test "$_row1_window_vacuity1" = "6000000 3600000 0.833333"
+
+_row1_window_vacuity2="$(_row1_measure_window "0 0" "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-2: 6.0 CPU-s over a 3.0 s window on 2 cores => '6000000 3000000 1.000000' (got '${_row1_window_vacuity2}')" \
+    test "$_row1_window_vacuity2" = "6000000 3000000 1.000000"
+
+_row1_window_vacuity3="$(_row1_measure_window unavailable "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-3: unavailable BEFORE sample => 'unavailable' (got '${_row1_window_vacuity3}')" \
+    test "$_row1_window_vacuity3" = "unavailable"
+
+_row1_window_vacuity4="$(_row1_measure_window "0 0" unavailable 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-4: unavailable AFTER sample => 'unavailable' (got '${_row1_window_vacuity4}')" \
+    test "$_row1_window_vacuity4" = "unavailable"
+
+_row1_window_vacuity5="$(_row1_measure_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-5: non-advancing stamp (before=after=5000000) => 'unavailable' (got '${_row1_window_vacuity5}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row1_window_vacuity5" = "unavailable"
+
+_row1_window_vacuity6="$(_row1_measure_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-6: counter wrap (after usage < before usage) => '0 3000000 0.000000' (got '${_row1_window_vacuity6}'); delta clamps to 0 so the live chain's delta<=0 SKIP still fires" \
+    test "$_row1_window_vacuity6" = "0 3000000 0.000000"
+
+_row1_window_vacuity7="$(_row1_measure_window 123 "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7: malformed one-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7}')" \
+    test "$_row1_window_vacuity7" = "unavailable"
+
+_row1_window_vacuity7b="$(_row1_measure_window "abc 5000000" "6000000 8000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7b: non-numeric field in a two-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7b}'); awk would otherwise coerce it to 0 and print a plausible number" \
+    test "$_row1_window_vacuity7b" = "unavailable"
+
+_row1_window_vacuity8="$(_row1_measure_window "1000000 5000000" "7000000 8600000" x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8: non-numeric cores => 'unavailable' (got '${_row1_window_vacuity8}')" \
+    test "$_row1_window_vacuity8" = "unavailable"
+
+_row1_window_vacuity8b="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 0 || true)"
+assert "ROW1-1-WINDOW-VACUITY-8b: zero cores => 'unavailable' (got '${_row1_window_vacuity8b}'); never a divide-by-zero" \
+    test "$_row1_window_vacuity8b" = "unavailable"
+
 # Non-vacuity guard for the NEW ROW2-1 band-decision predicate (task 4970,
 # esc-4959-53/esc-4959-57): closes the 50-90 avg10 gap in Cycle ROW2_3's
 # ROW2-1 assertion, where an in-band [AGENT_THRESHOLD, 90) avg10 sample falls
