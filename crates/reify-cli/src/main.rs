@@ -238,7 +238,7 @@ fn parse_and_compile_with_cfg(
         cfg,
         &SimpleConstraintChecker,
     )
-    .entry;
+    .into_entry();
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);

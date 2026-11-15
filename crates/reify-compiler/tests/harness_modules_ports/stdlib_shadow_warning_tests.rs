@@ -238,7 +238,7 @@ fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     );
-    assert_eq!(errors_of(&program.entry), Vec::<&str>::new());
+    assert_eq!(errors_of(program.entry()), Vec::<&str>::new());
     let is_shadow = |d: &&Diagnostic| d.code == Some(DiagnosticCode::StdlibNameShadowed);
     let local: Vec<&Diagnostic> = program.entry_own_diagnostics().filter(is_shadow).collect();
     assert!(
@@ -249,7 +249,7 @@ fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
     assert!(
         rehomed.iter().any(|d| d.message.contains("Color")),
         "a.ri's own shadowing of Color is re-homed onto the entry, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
 }
 

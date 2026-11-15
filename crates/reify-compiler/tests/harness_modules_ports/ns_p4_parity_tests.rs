@@ -238,7 +238,7 @@ fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> Compiled
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
-    .entry
+    .into_entry()
 }
 
 /// Parse a project entry knowing the enum names of the stdlib AND of its

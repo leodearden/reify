@@ -37,22 +37,19 @@ pub struct CompiledImportUnit {
 /// A compiled program: an entry module plus everything it was compiled with.
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
-    /// The entry module, with the direct imports' pub templates merged into its
-    /// template list and every import failure attached to its diagnostics.
-    /// [`Self::entry_declared_templates`] is a prefix of `entry.templates`:
-    /// append to that list, never shrink or reorder it.
-    pub entry: CompiledModule,
+    /// See [`Self::entry`].
+    entry: CompiledModule,
     /// The entry's followed, successfully compiled direct imports, in
     /// declaration order, one per distinct import path.
     pub imports: Vec<CompiledImportUnit>,
     /// The source of every user module compiled into the program, in
     /// topological order (dependencies first), entry last.
     pub sources: Vec<ModuleSource>,
-    /// Which of `entry.diagnostics` are re-homed copies of a compiled user
-    /// module's own diagnostics, in `entry.diagnostics` order.
+    /// Which of [`Self::entry`]'s diagnostics are re-homed copies of a compiled
+    /// user module's own diagnostics, in diagnostics order.
     rehomed: Vec<RehomedDiagnostic>,
     /// How many of `entry.templates`, from the front, the entry's own compile
-    /// produced.
+    /// produced: a prefix of that list, which the I5 merge only appends to.
     declared_templates: usize,
 }
 
@@ -67,6 +64,17 @@ struct RehomedDiagnostic {
 }
 
 impl CompiledProgram {
+    /// The entry module, with the direct imports' pub templates merged into its
+    /// template list and every import failure attached to its diagnostics.
+    pub fn entry(&self) -> &CompiledModule {
+        &self.entry
+    }
+
+    /// The same module as [`Self::entry`], handed back by value.
+    pub fn into_entry(self) -> CompiledModule {
+        self.entry
+    }
+
     /// The entry's diagnostics re-homed from the user module `module_key` (a
     /// direct or transitive import), in the order they were raised.
     // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ε #5519
@@ -121,13 +129,14 @@ impl CompiledProgram {
 /// `std.*` imports are skipped because the stdlib is already present.
 ///
 /// **Diagnostics-embedded contract.** Nothing short-circuits. An entry parse
-/// error reaches `entry.diagnostics` through the compiler's own parse-error
-/// forwarding, and a followed import that is missing or broken surfaces as
-/// `Error` diagnostics on the entry while the entry itself still compiles, so a
-/// caller's "any Error diagnostic, exit non-zero" policy handles every failure
-/// uniformly. Every Error and Warning a compiled user module carries —
-/// transitive modules included — is re-homed onto the entry too, attributed to
-/// its file (see `rehome_imported`); [`CompiledProgram::rehomed_from`] and
+/// error reaches the diagnostics of [`CompiledProgram::entry`] through the
+/// compiler's own parse-error forwarding, and a followed import that is missing
+/// or broken surfaces as `Error` diagnostics on the entry while the entry
+/// itself still compiles, so a caller's "any Error diagnostic, exit non-zero"
+/// policy handles every failure uniformly. Every Error and Warning a compiled
+/// user module carries — transitive modules included — is re-homed onto the
+/// entry too, attributed to its file (see `rehome_imported`);
+/// [`CompiledProgram::rehomed_from`] and
 /// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
 /// entry's own diagnostics.
 ///
