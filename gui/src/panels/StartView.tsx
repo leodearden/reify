@@ -3,6 +3,8 @@
  * document is open. Every action failure is written to the launcher store,
  * which keeps this view up with a coded error the debug MCP can observe; the
  * document error lasts until the next attempt or until the view is dismissed.
+ * While a document attempt is pending its actions are disabled and the view
+ * says so.
  */
 import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
@@ -114,6 +116,7 @@ export const StartView: Component<StartViewProps> = (props) => {
   }
 
   const state = () => props.launcher.state;
+  const pending = () => state().document.pending;
 
   return (
     <div class={styles.startView} data-testid="start-view">
@@ -159,10 +162,22 @@ export const StartView: Component<StartViewProps> = (props) => {
         <section class={styles.section}>
           <h2 class={styles.heading}>Document</h2>
           <div class={styles.row}>
-            <button type="button" class={styles.button} data-testid="start-open-dialog" onClick={() => void openFromDialog()}>
+            <button
+              type="button"
+              class={styles.button}
+              data-testid="start-open-dialog"
+              disabled={pending()}
+              onClick={() => void openFromDialog()}
+            >
               Open…
             </button>
-            <button type="button" class={styles.button} data-testid="start-new-dialog" onClick={() => void createFromDialog()}>
+            <button
+              type="button"
+              class={styles.button}
+              data-testid="start-new-dialog"
+              disabled={pending()}
+              onClick={() => void createFromDialog()}
+            >
               New…
             </button>
           </div>
@@ -181,6 +196,7 @@ export const StartView: Component<StartViewProps> = (props) => {
               type="button"
               class={styles.button}
               data-testid="start-open-path"
+              disabled={pending()}
               onClick={() => withTypedPath(openPath)}
             >
               Open
@@ -189,11 +205,17 @@ export const StartView: Component<StartViewProps> = (props) => {
               type="button"
               class={styles.button}
               data-testid="start-create-path"
+              disabled={pending()}
               onClick={() => withTypedPath(createPath)}
             >
               Create
             </button>
           </div>
+          <Show when={pending()}>
+            <p class={styles.note} role="status" data-testid="start-document-pending">
+              Opening…
+            </p>
+          </Show>
           <Show when={state().document.error}>
             {(error) => <ErrorLine testId="start-document-error" error={error()} />}
           </Show>
@@ -210,6 +232,7 @@ export const StartView: Component<StartViewProps> = (props) => {
                       type="button"
                       class={styles.recentItem}
                       data-testid="start-recent-item"
+                      disabled={pending()}
                       onClick={() => void openPath(entry.path)}
                     >
                       {entry.path}
