@@ -4671,6 +4671,16 @@ mod tests {
         );
     }
 
+    /// (deferred leniency) Length passed where Int expected → true. The reverse
+    /// of the case above; its removal is likewise deferred to #10029.
+    #[test]
+    fn constraint_arg_type_conforms_length_arg_for_int_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Int, &length_ty()),
+            "Length arg passed as Int param must be tolerated (numeric leniency)"
+        );
+    }
+
     /// (cross-dimension rejected, task 5762) Mass passed where Length expected → false.
     #[test]
     fn constraint_arg_type_conforms_mass_for_length_is_false() {

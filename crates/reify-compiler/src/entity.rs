@@ -6669,11 +6669,17 @@ pub(crate) fn expand_constraint_inst(
     //
     // A rejected binding short-circuits emission like a missing argument, so the
     // mistake is reported once, at the argument, instead of again from inside the
-    // def body. The throwaway sink holds diagnostics predicate compilation was
-    // going to report; it will no longer run, so they are flushed. Pinned by
-    // constraint_def_compile_tests.rs::rejected_constraint_arg_is_reported_once_at_the_binding_site.
+    // def body. Predicate compilation and the guard group will no longer run, so
+    // the diagnostics they were going to report are reported here instead: the
+    // throwaway sink is flushed and the `where` condition is compiled for its
+    // diagnostics alone. Pinned by constraint_def_compile_tests.rs's
+    // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
+    // does_not_swallow siblings.
     if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {
         diagnostics.append(&mut throwaway_diag_sink);
+        if let Some(wc) = &ci.where_clause {
+            compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
+        }
         return;
     }
 
