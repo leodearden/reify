@@ -13,6 +13,8 @@ use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Va
 
 pub mod cell_contributions;
 #[cfg(test)]
+mod scalar_geometry_cell_realization_tests;
+#[cfg(test)]
 mod value_cell_fold_tests;
 
 use cell_contributions::{ContributedCell, SubShape, contributed_cells};
