@@ -310,4 +310,71 @@ mod tests {
         assert!(!requests_help(&argv(&["file.ri"])));
         assert!(!requests_help(&argv(&["--helpful"])));
     }
+
+    fn demo_entry(details: &'static [HelpSection]) -> SubcommandHelp {
+        SubcommandHelp {
+            name: "demo",
+            command: Command::Check,
+            synopsis: "demo",
+            usage: "Usage: reify demo",
+            summary: "Demo summary.",
+            details,
+        }
+    }
+
+    fn rendered(entry: &SubcommandHelp) -> String {
+        let mut out = Vec::new();
+        write_subcommand_help(entry, &mut out);
+        String::from_utf8(out).expect("help text is UTF-8")
+    }
+
+    #[test]
+    fn a_flags_section_aligns_every_description_past_the_widest_flag_and_wraps_within_80_columns() {
+        let entry = demo_entry(&[
+            HelpSection::Prose("Intro paragraph."),
+            HelpSection::Flags(&[
+                FlagHelp {
+                    synopsis: "--quiet",
+                    summary: "Print nothing but errors",
+                },
+                FlagHelp {
+                    synopsis: "--long-flag <value>",
+                    summary: "Sets the long flag to the given value for this run alone, \
+                              overrides any default and each earlier setting; repeatable",
+                },
+                FlagHelp {
+                    synopsis: "--docs <url>",
+                    summary: "https://example.invalid/reify/reference/flags/the-complete-list \
+                              explains every flag in full",
+                },
+            ]),
+        ]);
+        let over_long_word_row = "  --docs <url>         https://example.invalid/reify/reference/flags/the-complete-list";
+        let expected = [
+            "Usage: reify demo",
+            "",
+            "Demo summary.",
+            "",
+            "Intro paragraph.",
+            "",
+            "Flags:",
+            "  --quiet              Print nothing but errors",
+            "  --long-flag <value>  Sets the long flag to the given value for this run alone,",
+            "                       overrides any default and each earlier setting;",
+            "                       repeatable",
+            over_long_word_row,
+            "                       explains every flag in full",
+        ]
+        .join("\n")
+            + "\n";
+        assert_eq!(rendered(&entry), expected);
+    }
+
+    #[test]
+    fn an_entry_with_no_sections_prints_only_usage_and_summary() {
+        assert_eq!(
+            rendered(&demo_entry(&[])),
+            "Usage: reify demo\n\nDemo summary.\n"
+        );
+    }
 }
