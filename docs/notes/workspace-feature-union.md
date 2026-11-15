@@ -234,10 +234,11 @@ the same files the reset line removes, chosen by the same ignore rules:
 
 ```bash
 bash scripts/tree-sitter-generate.sh   # about 5 s: tree-sitter generate only, no cargo
+git status --porcelain --untracked-files=all -- tree-sitter-reify/src   # must print nothing: the generator touched only ignored files
+git status --porcelain --untracked-files=all --ignored -- tree-sitter-reify/src | LC_ALL=C sort > /tmp/<id>-tsgen.lst   # what every restore below must reproduce
 mkdir /tmp/<id>-tsgen
 (cd tree-sitter-reify/src && git ls-files -z -oi --exclude-standard --directory . | xargs -0 cp -a -t /tmp/<id>-tsgen/)
 find /tmp/<id>-tsgen -mindepth 1 -exec touch -h -d 2020-01-01T00:00:00 {} +
-(cd /tmp/<id>-tsgen && find . ! -type d -printf '!! tree-sitter-reify/src/%P\n' | LC_ALL=C sort) > /tmp/<id>-tsgen.lst
 bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
 for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
 ```
@@ -259,16 +260,22 @@ cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/
 git status --porcelain --untracked-files=all --ignored -- tree-sitter-reify/src | LC_ALL=C sort | cmp - /tmp/<id>-tsgen.lst; echo "tsgen-matches rc=$?"   # must be 0 before probing
 ```
 
-The clean empties the directory of ignored files first, so the copy is not laid
-over what an earlier arm A build left there, and the directory holds exactly the
-copy afterwards. The check compares `git status` with the file list recorded
-with the copy, so it passes only when the directory holds unmodified tracked
-files plus exactly the copy: any `??`, `M` or extra `!!` line breaks the match
-(the `git status` paragraph above says what each marker means).
-`--untracked-files=all` makes `git status` list each file in the ignored
-`tree_sitter/` directory, as the copy's list does, instead of the directory
-alone. Like `normal` in the arm A line, it also stops a
-`status.showUntrackedFiles=no` in user config from hiding the `??` lines.
+The clean removes the directory's ignored files first, so the copy is not laid
+over what an earlier arm A build left there, and no ignored file but the copy
+remains. The check passes only when the directory holds unmodified tracked
+files plus exactly the files the generator wrote: any `??`, `M` or extra `!!`
+line breaks the match, and so does a missing `!!` line (the `git status`
+paragraph above says what each marker means). The list is recorded in the copy
+block from the directory itself, right after the generator ran, not from the
+copy: a list built from the copy would lose a file the copy dropped, and the
+check would pass. The stamp check hashes the directory's files, not the copy's,
+so only this check proves that the copy holds every file the generator wrote.
+The copy block's status line without `--ignored` must print nothing, so that
+the list holds `!!` lines only. `--untracked-files=all` makes the list and the
+check list each file in the ignored `tree_sitter/` directory instead of the
+directory alone, so a file missing from it breaks the match. Like `normal` in
+the arm A line, it also stops a `status.showUntrackedFiles=no` in user config
+from hiding the `??` lines.
 
 ## Measurements
 
