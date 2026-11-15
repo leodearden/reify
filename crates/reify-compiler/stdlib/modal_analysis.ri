@@ -752,15 +752,10 @@ structure def ImpulseForce : ForcingFunction {
 //               negative frequency is degenerate (symmetric to positive under the
 //               sine function). Encoded as `Frequency` (bare dimension name).
 //   phase     — initial phase offset in angle units. Default `0deg` (zero Angle
-//               literal) per PRD §5.1 "default: 0". `= 0deg` is a CONVENTION,
-//               not a requirement — a bare `= 0` compiles, accepted by the
-//               param-default literal guard (esc-3115-112). But the
+//               literal) per PRD §5.1 "default: 0". `= 0deg` is REQUIRED: the
 //               DIMENSIONED-ZERO CONVENTION above does NOT reach a param
-//               default: that guard only SUPPRESSES the
-//               `ParamDefaultTypeMismatch` diagnostic, it performs no rewrite,
-//               so `= 0` leaves the stored default DIMENSIONLESS while `= 0deg`
-//               stores `Scalar<Angle>(0.0)`. `0deg` is preferred for that
-//               reason, not merely for readability. Choice of `deg` over `rad`
+//               default, so a bare `= 0` is rejected with
+//               `ParamDefaultTypeMismatch`. Choice of `deg` over `rad`
 //               follows the `Angularity.nominal_angle : Angle = 0deg`
 //               precedent in `tolerancing.ri` and is more user-intuitive
 //               for the typical 0/90/180 phase-offset workflow. Any real phase

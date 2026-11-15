@@ -455,8 +455,10 @@ pub(crate) fn check_fn_arg_conformance(
 /// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
 /// which IS gated on `param.type_expr.is_some()` at both its call sites and so
 /// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
-/// The two checks are complementary, not alike-gated; what holds both SITES to
-/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+/// The two checks are complementary, not alike-gated: where both would judge an
+/// annotated default, a rejection by `check_param_default_type` wins and this
+/// pass skips the cell (see [`check_param_default_conformance`]). What holds both
+/// SITES to one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
 ///
 /// Whether an inference fallback should be judged AT ALL is a live question, and
 /// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
@@ -492,14 +494,36 @@ fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &Val
 ///   (GHR-γ), so plain `type_compatible(Geometry, result_type)` would falsely reject
 ///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
 ///
-/// All other cell types (Real, Int, List, …) are out of scope for this pass.
+/// - **Every other cell type** (Real, Int, String, List, …): the general
+///   concrete-leaf arm routes the default through [`walk_param_against_arg`],
+///   as described at that arm.
+///
+/// A cell whose span is in `rejected_at_declaration` is skipped: its default was
+/// already rejected by the declaration-site `check_param_default_type`, and one
+/// mistake gets one diagnostic (PRD D4-4). The skip keys on that rejection, not
+/// on the cell type, because trait-injected cells (`checker.rs`
+/// `check_phase_inject_defaults`) and unannotated fallback cells reach only this
+/// pass and share their cell types with the ones the declaration check judges.
+///
+/// A `SourceSpan` is unique only within one file. Every rejected span is an
+/// offset into the module being compiled, but a cell injected from a trait
+/// declared in another file (prelude or an import) carries that file's
+/// offsets. Such a cell is skipped wrongly only if its span coincides, start and
+/// end, with a rejected local param's span. That residual collision is accepted
+/// because no file identity reaches this pass: neither `SourceSpan` nor
+/// `Diagnostic` carries one, and the rejection is recovered from the
+/// diagnostics rather than handed over as owned state.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     registries: ConformanceRegistries<'_>,
+    rejected_at_declaration: &HashSet<SourceSpan>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        if rejected_at_declaration.contains(&vc.span) {
             continue;
         }
         let Some(default) = &vc.default_expr else {
@@ -3561,6 +3585,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
+            &HashSet::new(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -3632,6 +3657,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
+            &HashSet::new(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -3645,6 +3671,54 @@ mod tests {
         assert!(
             diagnostics[0].message.contains("mount.region"),
             "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
+    /// defaults in one template, only the one whose span is in the set is
+    /// skipped, and the other is still judged.
+    #[test]
+    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
+        let geometry_cell_with_scalar_default = |member: &str, span: SourceSpan| ValueCellDecl {
+            id: ValueCellId::new("Test", member),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::dimensionless_scalar(),
+            )),
+            solver_hints: vec![],
+            span,
+        };
+        let rejected_span = SourceSpan::new(10, 20);
+        let template = minimal_template(
+            "Test",
+            vec![
+                geometry_cell_with_scalar_default("rejected", rejected_span),
+                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
+            ],
+        );
+
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &HashSet::from([rejected_span]),
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("'judged'"),
+            "the cell outside the set must still be judged, got: {:?}",
             diagnostics[0].message
         );
     }

@@ -991,9 +991,10 @@ fn the_census_disposition_renders_a_distinct_cell() {
     }
 }
 
-/// A verbatim copy of the two PRE-δ `purpose_compile_tests.rs` fixtures that
-/// task #7543's VERIFY names (`git show a8d7f5fb24:crates/reify-compiler/tests/
-/// harness_compilation_surface/purpose_compile_tests.rs`, lines 1441-1576),
+/// A copy, retyped as noted below, of the two PRE-δ `purpose_compile_tests.rs`
+/// fixtures that task #7543's VERIFY names (`git show a8d7f5fb24:crates/
+/// reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs`,
+/// lines 1441-1576),
 /// trimmed to each fixture's `let source` binding with nesting and indentation
 /// kept.
 ///
@@ -1001,6 +1002,9 @@ fn the_census_disposition_renders_a_distinct_cell() {
 /// `Real`, so post-δ main no longer carries them. The artifact committed at
 /// 2f7cafa18a, generated at the pre-δ base, lists them as
 /// `purpose_compile_tests.rs:1453/1454/1567`.
+///
+/// Retyped from `Length` to `String` at #5646: a bare literal at a `Length`
+/// default is now rejected by the declaration-site check, outside this census.
 #[cfg(test)]
 const PRE_DELTA_PURPOSE_FIXTURES_HOST: &str = r##"mod guarded {
     use super::*;
@@ -1009,8 +1013,8 @@ const PRE_DELTA_PURPOSE_FIXTURES_HOST: &str = r##"mod guarded {
     fn guarded_where_arm_lowers_to_implies() {
         let source = r#"
 structure Frame {
-    param material : Length = 1.0
-    param youngs_modulus : Length = 200.0
+    param material : String = 1.0
+    param youngs_modulus : String = 200.0
 }
 
 purpose p(subject : Structure) {
@@ -1025,7 +1029,7 @@ purpose p(subject : Structure) {
     fn guarded_else_arm_lowers_to_not_implies() {
         let source = r#"
 structure Frame {
-    param z : Length = 5.0
+    param z : String = 5.0
 }
 
 purpose p(subject : Structure) {
@@ -1059,12 +1063,12 @@ fn survey_inline_corpus_still_sees_the_sites_task_7543_verify_names() {
         .collect();
     found.sort();
     let mut expected = vec![
-        ("material", host_line_of(host, "param material : Length")),
+        ("material", host_line_of(host, "param material : String")),
         (
             "youngs_modulus",
-            host_line_of(host, "param youngs_modulus : Length"),
+            host_line_of(host, "param youngs_modulus : String"),
         ),
-        ("z", host_line_of(host, "param z : Length")),
+        ("z", host_line_of(host, "param z : String")),
     ];
     expected.sort();
     assert_eq!(found, expected, "sites: {:#?}", run.sites);
@@ -1072,8 +1076,8 @@ fn survey_inline_corpus_still_sees_the_sites_task_7543_verify_names() {
     for site in &run.sites {
         assert_eq!(
             (site.expected.as_deref(), site.found.as_deref()),
-            (Some("Scalar[m]"), Some("Real")),
-            "a bare number at a `Length` param: {}",
+            (Some("String"), Some("Real")),
+            "a bare number at a `String` param: {}",
             site.message
         );
         assert_eq!(disposition_of(site), Disposition::InlineCensus);

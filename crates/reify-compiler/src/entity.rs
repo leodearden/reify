@@ -899,29 +899,13 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
-/// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
-/// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
-///
-/// Used by `check_param_default_type` to recognise the numeric-default idiom for
-/// dimensioned Scalar params (`param x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
-/// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
-fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp {
-            op: UnOp::Neg,
-            operand,
-        } => {
-            matches!(
-                operand.kind,
-                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
-            )
-        }
-        _ => false,
-    }
-}
-
 /// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// An explicitly annotated `Int` / `Scalar` param default must be `type_compatible`
+/// with the annotation, with no literal exemption: `param t : Length = 1.0` is
+/// rejected like any dimensionless initializer (reversal history: PRD
+/// dimensioned-construction-strictness §0.3). The conformance param-default entry
+/// defers to this check (see [`param_default_rejection_span`]).
 ///
 /// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
 /// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
@@ -973,33 +957,6 @@ fn check_param_default_type(
     let Some(default) = default_expr else {
         return;
     };
-    // `param x : Length = 1`, `= 0.5`, or `= -5.0` — whole-number, fractional, or
-    // negated numeric literal idiom.  A *numeric literal* (or negated literal) that is
-    // either an `Int` or a dimensionless scalar (a bare `Real`-typed literal, which under
-    // the real-dimensionless unification IS a dimensionless `Type::Scalar`) is accepted
-    // for any dimensioned Scalar param.
-    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
-    // provides, extended one dimension further (any dimensionless literal accepted for
-    // a dimensioned Scalar):
-    //   - `param x : Length = 0`    → Int literal, accepted (whole-number idiom).
-    //   - `param x : Length = 0.5`  → dimensionless literal, accepted (fractional idiom).
-    //   - `param x : Length = -5.0` → negated literal (`UnOp::Neg` + `Literal`), accepted.
-    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
-    // users routinely write fractional dimensionless defaults for dimensioned params.
-    //
-    // The guard is intentionally restricted to literal nodes (bare or negated; see
-    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
-    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
-    // Scalar) still fall through to `type_compatible` and are correctly flagged.
-    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
-    // a literal and is flagged regardless of this guard.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(default)
-        && (matches!(default.result_type, Type::Int)
-            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
-        return;
-    }
     if !type_compatible(declared, &default.result_type) {
         diagnostics.push(
             Diagnostic::error(format!(
@@ -1016,6 +973,16 @@ fn check_param_default_type(
     }
 }
 
+/// Recognises a diagnostic emitted by [`check_param_default_type`] and returns the
+/// param declaration span its first label carries, which is also that param's
+/// `ValueCellDecl.span` at both call sites.
+pub(crate) fn param_default_rejection_span(diagnostic: &Diagnostic) -> Option<SourceSpan> {
+    if diagnostic.code != Some(DiagnosticCode::ParamDefaultTypeMismatch) {
+        return None;
+    }
+    diagnostic.labels.first().map(|label| label.span)
+}
+
 /// Cross-check a structure `let` binding's declared type against its initializer's
 /// inferred type.
 ///
@@ -1027,8 +994,8 @@ fn check_param_default_type(
 /// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
 /// - `declared` is NOT `Type::Error` (anti-cascade)
 /// - `rhs_is_collection_literal` is false (β owns the literal path)
-/// - RHS is NOT a numeric literal for a dimensioned Scalar (numeric-idiom guard)
-/// - `type_compatible(declared, &rhs.result_type)` returns false
+/// - `type_compatible(declared, &rhs.result_type)` returns false, with no literal
+///   exemption (PRD dimensioned-construction-strictness §0.3)
 ///
 /// Called at the two unchecked structure let sites:
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
@@ -1069,18 +1036,6 @@ fn check_let_annotation_type(
     //   - `let a : Length = 5N`           (scalar declared, dimension mismatch)
     //   - `let a : Length = some_geo()`   (scalar declared, geometry RHS → false)
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
-        return;
-    }
-    // Numeric-literal idiom guard (mirrors check_param_default_type exactly):
-    // `let x : Length = 5`, `= 0.5`, or `= -5.0` — a bare/negated numeric literal
-    // that is an Int or a dimensionless scalar is accepted for any dimensioned Scalar
-    // declared type. Compound expressions (e.g. `ratio * 2.0`) are NOT literals and
-    // fall through to `type_compatible`.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(rhs)
-        && (matches!(rhs.result_type, Type::Int)
-            || matches!(&rhs.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
         return;
     }
     if !type_compatible(declared, &rhs.result_type) {
@@ -7210,6 +7165,35 @@ structure def Manifold {
             "expected the wildcard-arm diagnostic, got: {:?}",
             diagnostics[0].message,
         );
+    }
+
+    /// `param_default_rejection_span` recovers exactly the span
+    /// `check_param_default_type` was given, and recognises nothing else.
+    #[test]
+    fn param_default_rejection_span_round_trips_the_emitted_span() {
+        let declaration = SourceSpan::new(10, 40);
+        let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        check_param_default_type(
+            "t",
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            true,
+            Some(&dimensionless),
+            declaration,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert_eq!(
+            param_default_rejection_span(&diagnostics[0]),
+            Some(declaration)
+        );
+
+        let other_code = Diagnostic::error("unrelated")
+            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
+            .with_label(DiagnosticLabel::new(declaration, "unrelated"));
+        assert_eq!(param_default_rejection_span(&other_code), None);
     }
 }
 

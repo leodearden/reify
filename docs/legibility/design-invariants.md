@@ -509,24 +509,21 @@ producer or consumer materializes.
 ### Enforcement honesty (D7)
 
 The crossing idiom is **teachable but not yet mandatory**. `sin(2.5)`
-and `param x : Angle = 2.5` both pass silently **today**, for two
-unrelated reasons — nothing in this family changes that:
+passes silently **today** — nothing in this family changes that —
+while `param x : Angle = 2.5` is rejected:
 
-- **Literal-only, `param`/`let` only**: a bare or negated
-  dimensionless literal widens into a dimensioned `Scalar` param
-  default or `let` annotation (`is_numeric_literal_expr`,
-  `crates/reify-compiler/src/entity.rs:390`; guards at `:479-485`
-  and `:563-569`). A dimensionless *expression* at the same boundary
-  is rejected instead: `param x : Angle = ratio * 2.0` is a `BinOp`,
-  so it falls through to `type_compatible` — which carries no
-  dimensionless→dimensioned rule of its own
-  (`crates/reify-compiler/src/type_compat.rs:220-237`) — and errors
-  `ParamDefaultTypeMismatch` (`let` twin:
-  `LetAnnotationTypeMismatch`). The carve-out never reaches function
-  param defaults: those use strict equality
-  (`fn_param_default_compatible`), so even
-  `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
-  (`crates/reify-compiler/src/functions.rs:187-215`).
+- **`param`/`let` annotations are strict**: a bare or negated
+  dimensionless literal at a dimensioned `Scalar` param default or
+  `let` annotation is rejected (`ParamDefaultTypeMismatch` /
+  `LetAnnotationTypeMismatch`), the same as a dimensionless
+  *expression* such as `param x : Angle = ratio * 2.0`. Both reach
+  `type_compatible` (`type_compat.rs`), which carries no
+  dimensionless→dimensioned rule; the former
+  literal tolerance's reversal history is
+  `docs/prds/v0_6/dimensioned-construction-strictness.md` §0.3.
+  Function param defaults use strict equality
+  (`fn_param_default_compatible` in `type_compat.rs`), so
+  `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`.
 - **`sin(2.5)` isn't a widening — forward-trig arguments are
   dimension-checked, and dimensionless passes that check**: since
   task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
