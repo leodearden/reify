@@ -33,20 +33,20 @@
 #
 # FAIL POLICY
 # ------------
-# A missing binary, a missing sidecar, or a sidecar/HEAD mismatch all mean the
-# binary's provenance relative to the CURRENT tree is unproven — treated as
-# STALE. Callers must map staleness to a clean SKIP (never a verdict), matching
-# the existing toolchain-not-built guard pattern. A repo_root in which git
-# finds no repository at all fails OPEN (treated as fresh) so
-# edge/CI/unit-test-fixture invocations that aren't inside a git checkout are
-# not incorrectly blocked — mirrors reify-audit-freshness.sh's fail-open
-# precedent. Inside a checkout, a HEAD git cannot read (unborn, corrupt ref,
-# lost worktree gitdir, dubious ownership, no git on PATH) is STALE too.
+# No profile binary built is REIFY_BIN_NOT_BUILT. A missing sidecar or a
+# sidecar/HEAD mismatch means the binary's provenance relative to the CURRENT
+# tree is unproven: REIFY_BIN_UNVOUCHED. Callers must map both to a clean SKIP
+# (never a verdict), matching the existing toolchain-not-built guard pattern.
+# A repo_root in which git finds no repository at all fails OPEN (the build is
+# trusted) so edge/CI/unit-test-fixture invocations that aren't inside a git
+# checkout are not incorrectly blocked — mirrors reify-audit-freshness.sh's
+# fail-open precedent. Inside a checkout, a HEAD git cannot read (unborn,
+# corrupt ref, lost worktree gitdir, dubious ownership, no git on PATH) is
+# REIFY_BIN_UNVOUCHED too.
 #
 # USAGE
 # -----
 #   source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
-#   if reify_bin_is_stale "$BIN" "$REPO_ROOT"; then ...treat as unproven... fi
 #   reify_bin_stamp "$REPO_ROOT"     # record build-time HEAD (called by verify.sh)
 #   resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
 #   # on success: $REIFY_BIN_RESOLVED is the vetted binary path
@@ -153,21 +153,6 @@ reify_bin_unvouched_reason() {
     if [ "$recorded" != "$head" ]; then
         printf "%s records '%s' but HEAD is '%s'\n" "$sidecar" "$recorded" "$head"
     fi
-}
-
-# reify_bin_is_stale <bin> [repo_root]
-#
-# Returns 0 (stale — provenance unproven) when the binary is missing or
-# reify_bin_unvouched_reason names a reason. Returns 1 (fresh) otherwise:
-# the sidecar names HEAD, or git finds no repository at all (fail-open).
-reify_bin_is_stale() {
-    local bin="$1"
-    local repo_root="${2:-$PWD}"
-
-    if [ ! -f "$bin" ]; then
-        return 0
-    fi
-    [ -n "$(reify_bin_unvouched_reason "$repo_root")" ]
 }
 
 # reify_bin_stamp [repo_root]
