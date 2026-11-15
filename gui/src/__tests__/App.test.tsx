@@ -3528,7 +3528,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
   });
 
-  it('a debug bridge that fails to start shows E_GUI_DEBUG_LISTENER_FAILED, and Debug again retries it', async () => {
+  it('a debug bridge that fails to start shows E_GUI_DEBUG_BRIDGE_FAILED, and Debug again retries it', async () => {
     vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
       mode,
       debug_port: mode === 'debug' ? 3939 : null,
@@ -3539,13 +3539,32 @@ describe('App launcher Start view (alpha-spine β)', () => {
     fireEvent.click(screen.getByTestId('start-mode-debug'));
 
     const error = await screen.findByTestId('start-mode-error');
-    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(error.textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
     expect(error.textContent).toContain('listen failed');
 
     fireEvent.click(screen.getByTestId('start-mode-debug'));
 
     await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId('start-mode-error')).toBeNull());
+  });
+
+  it('a Design click whose set_mode fails shows E_GUI_MODE_FAILED and leaves the chat panel open', async () => {
+    vi.mocked(bridge.setMode).mockImplementation((mode) =>
+      mode === 'design'
+        ? Promise.reject('state not managed')
+        : Promise.resolve({ mode, debug_port: mode === 'debug' ? 3939 : null }),
+    );
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-design'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_MODE_FAILED');
+    expect(error.textContent).toContain('state not managed');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
+    expect(mockedInitDebugBridge).not.toHaveBeenCalled();
   });
 
   it('an env-launched debug session reports Debug mode', async () => {

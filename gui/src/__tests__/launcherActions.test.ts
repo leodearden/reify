@@ -174,13 +174,13 @@ describe('selectMode', () => {
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(2);
   });
 
-  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED when the debug bridge fails to start', async () => {
+  it('debug: rejects with E_GUI_DEBUG_BRIDGE_FAILED when the debug bridge fails to start', async () => {
     deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
     const actions = createLauncherActions(store, deps);
 
     const failure = await failureOf(actions.selectMode('debug'));
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toContain('Failed to fetch dynamically imported module');
     expect(store.state.mode.debugPort).toBe(3939);
   });
@@ -203,12 +203,12 @@ describe('selectMode', () => {
     await Promise.all([first, second]);
 
     expect(settled).toEqual([
-      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
-      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED,
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED,
     ]);
   });
 
-  it('rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails', async () => {
+  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails', async () => {
     deps.setMode.mockRejectedValue('Address already in use (os error 98)');
     const actions = createLauncherActions(store, deps);
 
@@ -219,6 +219,23 @@ describe('selectMode', () => {
     expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
     expect(deps.showAssistant).not.toHaveBeenCalled();
   });
+
+  it.each(['design', 'assistant'] as const)(
+    '%s: rejects with E_GUI_MODE_FAILED when set_mode fails, keeping the selection and the assistant panel as they were',
+    async (mode) => {
+      store.applyModeState({ mode: 'debug', debug_port: 3939 });
+      deps.setMode.mockRejectedValue('state not managed for field `debug_server`');
+      const actions = createLauncherActions(store, deps);
+
+      const failure = await failureOf(actions.selectMode(mode));
+
+      expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+      expect(failure.message).toBe('state not managed for field `debug_server`');
+      expect(store.state.mode.selected).toBe('debug');
+      expect(deps.showAssistant).not.toHaveBeenCalled();
+      expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('adoptLiveDebugServer', () => {
