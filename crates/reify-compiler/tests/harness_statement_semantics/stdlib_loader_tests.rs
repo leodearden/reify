@@ -1277,9 +1277,19 @@ const FOLDED_FNS: &[FoldedFn] = &[
         overloads: 2,
         optimized_target: Some("modal::displacement_at"),
     },
+    FoldedFn {
+        parent: "std/trajectory",
+        name: "simulate_trajectory",
+        overloads: 1,
+        optimized_target: Some("trajectory::simulate"),
+    },
 ];
 
-const FOLDED_PARENTS: &[&str] = &["std.solver.buckling", "std.modal.analysis"];
+const FOLDED_PARENTS: &[&str] = &[
+    "std.solver.buckling",
+    "std.modal.analysis",
+    "std.trajectory",
+];
 
 fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
     stdlib_loader::load_stdlib()
