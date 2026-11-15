@@ -1204,10 +1204,11 @@ fn associated_types_are_not_module_level_type_aliases() {
 
 // ─── task 5498 (stdlib-namespace δ): boundary #6 — vestigial *_fns folds ───
 //
-// Each folded fn is declared by exactly its parent module, with the expected
-// overload count and `@optimized` dispatch target. Asserted over the compiled
-// stdlib, so it pins where the fn resolves from without naming the file or
-// module it used to live in.
+// Each folded fn is declared by its parent module, with the expected overload
+// count and `@optimized` dispatch target, and by no `*/fns` module. Asserted
+// over the compiled stdlib, so it pins where the fn resolves from without
+// naming the file or module it used to live in. A same-name overload in some
+// other module is legal stdlib and is deliberately not an offender here.
 
 struct FoldedFn {
     parent: &'static str,
@@ -1285,12 +1286,6 @@ const FOLDED_FNS: &[FoldedFn] = &[
     },
 ];
 
-const FOLDED_PARENTS: &[&str] = &[
-    "std.solver.buckling",
-    "std.modal.analysis",
-    "std.trajectory",
-];
-
 fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
     stdlib_loader::load_stdlib()
         .iter()
@@ -1304,22 +1299,25 @@ fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
 }
 
 #[test]
-fn folded_fns_are_declared_only_by_their_parent_module() {
+fn folded_fns_are_declared_by_their_parent_module_and_no_fns_module() {
     let offenders: Vec<String> = FOLDED_FNS
         .iter()
         .filter_map(|row| {
             let declarations = stdlib_declarations_of(row.name);
-            let declaring: BTreeSet<&str> =
-                declarations.iter().map(|(path, _)| path.as_str()).collect();
-            let resolves_from_parent_only = declaring == BTreeSet::from([row.parent]);
-            let overloads_match = declarations.len() == row.overloads;
-            let targets_match = declarations
+            let in_parent: Vec<&Option<String>> = declarations
                 .iter()
-                .all(|(_, target)| target.as_deref() == row.optimized_target);
-            (!(resolves_from_parent_only && overloads_match && targets_match)).then(|| {
+                .filter(|(path, _)| path == row.parent)
+                .map(|(_, target)| target)
+                .collect();
+            let parent_matches = in_parent.len() == row.overloads
+                && in_parent
+                    .iter()
+                    .all(|target| target.as_deref() == row.optimized_target);
+            let in_fns_module = declarations.iter().any(|(path, _)| path.ends_with("/fns"));
+            (!parent_matches || in_fns_module).then(|| {
                 format!(
-                    "fn {}: expected {} overload(s), all in {} with optimized_target {:?}; \
-                     found (module, optimized_target) = {:?}",
+                    "fn {}: expected {} overload(s) in {} with optimized_target {:?} and \
+                     none in a */fns module; found (module, optimized_target) = {:?}",
                     row.name, row.overloads, row.parent, row.optimized_target, declarations
                 )
             })
@@ -1327,27 +1325,29 @@ fn folded_fns_are_declared_only_by_their_parent_module() {
         .collect();
     assert!(
         offenders.is_empty(),
-        "folded stdlib fns must be declared only by their parent module, with their \
-         @optimized target intact:\n{}",
+        "folded stdlib fns must be declared by their parent module, with their \
+         @optimized target intact, and by no */fns module (a legitimate same-name \
+         overload in another module is allowed and is not what this reports):\n{}",
         offenders.join("\n")
     );
 }
 
 #[test]
-fn no_fns_sibling_is_registered_beside_a_folded_parent() {
-    let registered: BTreeSet<&'static str> = stdlib_loader::stdlib_sources()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    let offenders: Vec<String> = FOLDED_PARENTS
+fn no_fns_sibling_is_loaded_beside_a_folded_parent() {
+    let loaded: BTreeSet<String> = stdlib_loader::load_stdlib()
         .iter()
+        .map(|m| m.path.to_string())
+        .collect();
+    let parents: BTreeSet<&str> = FOLDED_FNS.iter().map(|row| row.parent).collect();
+    let offenders: Vec<String> = parents
+        .into_iter()
         .flat_map(|parent| {
-            let sibling = format!("{parent}.fns");
-            let missing_parent = (!registered.contains(parent))
-                .then(|| format!("{parent} is not registered in stdlib_sources()"));
-            let stale_sibling = registered
-                .contains(sibling.as_str())
-                .then(|| format!("{sibling} is still registered beside its folded parent"));
+            let sibling = format!("{parent}/fns");
+            let missing_parent =
+                (!loaded.contains(parent)).then(|| format!("{parent} is not in the loaded stdlib"));
+            let stale_sibling = loaded
+                .contains(&sibling)
+                .then(|| format!("{sibling} is still loaded beside its folded parent"));
             missing_parent.into_iter().chain(stale_sibling)
         })
         .collect();
