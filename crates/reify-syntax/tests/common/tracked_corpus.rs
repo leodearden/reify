@@ -194,6 +194,35 @@ fn swept_ri_paths_omits_verify_inert_trees() {
     );
 }
 
+/// A stand-in for the scope classifier that honours its `attribute --format
+/// tsv` record contract but marks only `notes/` inert.
+const FAKE_SCOPE_CLASSIFIER: &str = r#"import sys
+
+for line in sys.stdin:
+    path = line.rstrip("\n")
+    inert = 1 if path.startswith("notes/") else 0
+    sys.stdout.write(f"0\t{inert}\tother\t-\t-\t{path}\n")
+"#;
+
+#[test]
+fn swept_ri_paths_follows_the_classifier_it_is_given() {
+    let repo = tracked_fixture_repo(&[
+        ("docs/zz_section/zz_synthetic.ri", ""),
+        ("examples/zz_kept.ri", ""),
+        ("notes/zz_section/zz_synthetic.ri", ""),
+    ]);
+    let classifier_dir = prefixed_tempdir("reify-fake-scope-classifier-");
+    let script = classifier_dir.path().join("fake_scope_classifier.py");
+    std::fs::write(&script, FAKE_SCOPE_CLASSIFIER)
+        .unwrap_or_else(|e| panic!("cannot write {}: {e}", script.display()));
+    assert_eq!(
+        swept_ri_paths_classified_by(repo.path(), &script),
+        ["docs/zz_section/zz_synthetic.ri", "examples/zz_kept.ri"],
+        "the listing drops exactly what the classifier marks inert: a tree it newly marks \
+         (notes/) leaves the listing, and a tree it does not mark (docs/) stays"
+    );
+}
+
 /// `is_verify_inert` and the scope classifier agree on every tracked `.ri`,
 /// and on a probe inside and beside each table entry, so the probes still
 /// test both answers when no tracked `.ri` lies in a table tree.
