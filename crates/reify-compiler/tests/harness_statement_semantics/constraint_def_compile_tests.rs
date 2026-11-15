@@ -1490,11 +1490,15 @@ structure S {
 /// Guard: an Int literal passed where a Length param is declared must NOT
 /// produce any `ConstraintArgTypeMismatch` diagnostic.
 ///
-/// This integration test covers the numeric-leniency design decision: Int-for-Length
-/// is deliberately tolerated at the binding site (Rule 4 of
-/// `constraint_arg_type_conforms`), with dimensional strictness deferred to task
-/// 4490's comparison-operand guard inside the expanded predicate. A false-positive
-/// here would break existing valid instantiations (see design decision in the plan).
+/// The Int-for-Length tolerance is a DELIBERATE DEFERRAL: task 5762 (δ₂) removed
+/// only the cross-dimension half of Rule 4 of `constraint_arg_type_conforms`, and
+/// this half is owned by #10029. In this masked fixture (`w > 0mm`) task 4490's
+/// comparison guard still rejects the substituted predicate; the unmasked shape
+/// (`w > 0`) is silent, and that is the hole #10029 closes.
+///
+/// The rationale is restated rather than deleted per PRD
+/// docs/prds/v0_6/dimensioned-construction-strictness.md §0.3 and §13 Open
+/// question 1.
 #[test]
 fn int_literal_for_length_param_no_constraint_arg_type_mismatch() {
     let source = r#"
@@ -1515,9 +1519,135 @@ structure S {
     assert_eq!(
         code_count, 0,
         "expected zero ConstraintArgTypeMismatch diagnostics for an Int literal arg \
-         (numeric leniency — dimensional strictness is task 4490's job), \
-         got {}; diagnostics: {:?}",
+         (Int-for-Length is deliberately deferred to #10029; task 5762 removed only \
+         the cross-dimension half of Rule 4), got {}; diagnostics: {:?}",
         code_count, module.diagnostics
+    );
+}
+
+// ── Task 5762 (δ₂): cross-dimension constraint args are rejected at the binding site ──
+
+/// Collect only the diagnostics carrying `DiagnosticCode::ConstraintArgTypeMismatch`.
+fn constraint_arg_type_mismatches(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .collect()
+}
+
+/// Assert the binding-site rejection is the module's ONLY error: exactly one
+/// `ConstraintArgTypeMismatch`, at Error severity, and no other Error. The
+/// sole-error clause also proves the fixture is otherwise well-formed.
+fn assert_sole_error_is_constraint_arg_type_mismatch(diags: &[Diagnostic]) {
+    let mismatches = constraint_arg_type_mismatches(diags);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "expected exactly 1 ConstraintArgTypeMismatch, got {}; diagnostics: {:?}",
+        mismatches.len(),
+        diags
+    );
+    assert_eq!(
+        mismatches[0].severity,
+        Severity::Error,
+        "ConstraintArgTypeMismatch must be Error severity; diagnostics: {:?}",
+        diags
+    );
+    let errors = error_diags(diags);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the binding-site ConstraintArgTypeMismatch must be the only error, got {}; \
+         diagnostics: {:?}",
+        errors.len(),
+        diags
+    );
+}
+
+/// A Mass arg at a Length param whose predicate does not compare dimensions
+/// (`determined(v)`) is rejected at the binding site — no predicate-side guard
+/// could catch it.
+#[test]
+fn cross_dimension_arg_at_determinacy_predicate_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def Determined {
+    param v : Length
+    determined(v)
+}
+structure S {
+    param m : Mass = 3kg
+    constraint Determined(v: m)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// A Mass arg at a Length param compared against a bare zero (`w > 0`, which
+/// adopts the arg's dimension) is rejected at the binding site.
+#[test]
+fn cross_dimension_arg_at_bare_zero_comparison_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def Positive {
+    param w : Length
+    w > 0
+}
+structure S {
+    param m : Mass = 3kg
+    constraint Positive(w: m)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// A dimensionless literal arg at a Length param is rejected at the binding site.
+#[test]
+fn dimensionless_literal_arg_for_length_param_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def Positive {
+    param w : Length
+    w > 0
+}
+structure S {
+    constraint Positive(w: 2.5)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// Vacuity guard and clean twin of the three rejections above: a same-dimension
+/// arg at both defs compiles with no mismatch and no error.
+#[test]
+fn same_dimension_arg_at_constraint_def_param_compiles_clean() {
+    let source = r#"
+constraint def Determined {
+    param v : Length
+    determined(v)
+}
+constraint def Positive {
+    param w : Length
+    w > 0
+}
+structure S {
+    param t : Length = 5mm
+    constraint Determined(v: t)
+    constraint Positive(w: t)
+}
+"#;
+    let module = compile_source(source);
+    let mismatches = constraint_arg_type_mismatches(&module.diagnostics);
+    assert!(
+        mismatches.is_empty(),
+        "expected zero ConstraintArgTypeMismatch for same-dimension args, got: {:?}",
+        mismatches
+    );
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected zero errors for same-dimension args, got: {:?}",
+        errors
     );
 }
 

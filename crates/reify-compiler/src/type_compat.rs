@@ -4636,7 +4636,7 @@ mod tests {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 
-    // ── constraint_arg_type_conforms (task 4546) ──────────────────────────────
+    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂) ───────────────
 
     /// (gap) Bool passed where Length expected → false.
     /// This is the primary gap this task closes.
@@ -4648,8 +4648,10 @@ mod tests {
         );
     }
 
-    /// (numeric leniency) Int passed where Length expected → true.
-    /// Dimensional strictness within predicates is task 4490's job.
+    /// (deferred leniency) Int passed where Length expected → true.
+    /// Still tolerated at the binding site: task 5762 removed only the
+    /// cross-dimension half of Rule 4, and removing this half is deferred to
+    /// #10029.
     #[test]
     fn constraint_arg_type_conforms_int_for_length_is_true() {
         assert!(
@@ -4658,22 +4660,62 @@ mod tests {
         );
     }
 
-    /// (cross-dimension numeric tolerated) Mass passed where Length expected → true.
-    /// Both sides are Scalar — the numeric-leniency rule applies.
+    /// (cross-dimension rejected, task 5762) Mass passed where Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_mass_for_length_is_true() {
+    fn constraint_arg_type_conforms_mass_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &mass_ty()),
-            "Mass scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &mass_ty()),
+            "Mass scalar passed as Length param must be rejected (cross-dimension)"
         );
     }
 
-    /// (dimensionless numeric tolerated) dimensionless Real passed where Length → true.
+    /// (cross-dimension rejected, task 5762) dimensionless Real passed where
+    /// Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_dimensionless_for_length_is_true() {
+    fn constraint_arg_type_conforms_dimensionless_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
-            "dimensionless Real scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
+            "dimensionless Real scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Length passed where a dimensionless
+    /// Real param is declared → false. The reverse direction of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_length_for_dimensionless_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::dimensionless_scalar(), &length_ty()),
+            "Length scalar passed as dimensionless Real param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Length is
+    /// declared → true. Guards against over-removing Rule 4.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Length param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Length passed where a dimension-generic `ScalarParam` param
+    /// is declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_length_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &length_ty()),
+            "Length arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Int passed where a dimension-generic `ScalarParam` param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Int),
+            "Int arg passed as ScalarParam param must be accepted (dimension-generic fence)"
         );
     }
 
