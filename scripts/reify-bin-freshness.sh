@@ -47,7 +47,7 @@
 # USAGE
 # -----
 #   source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
-#   reify_bin_stamp "$REPO_ROOT"     # record build-time HEAD (called by verify.sh)
+#   reify_bin_stamp "$REPO_ROOT"     # record build-time HEAD (verify.sh stamps inline instead)
 #   resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
 #   # on success: $REIFY_BIN_RESOLVED is the vetted binary path
 #
