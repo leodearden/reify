@@ -51,11 +51,13 @@ HOST_LDD = """\
 \tlibTKBool.so.7.8 => /lib/x86_64-linux-gnu/libTKBool.so.7.8 (0x00007cdc2b800000)
 """
 
-# DERIVED: the shape glibc's ldd prints for several files at once on a target
-# that lacks one library and carries a libstdc++ short of a symbol version.
+# DERIVED from two measurements: glibc 2.39's ldd given several files prints a
+# `<file>:` header per file and, for a library short of a symbol version, an
+# unindented `<file>: <lib>: version ... not found` line on stdout (measured with
+# a version-scripted libv.so.1); the missing lines are from stock ubuntu:24.04.
 PROBE_LDD = """\
 /probe/usr/bin/reify:
-\t/probe/usr/bin/reify: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.34' not found (required by /probe/usr/bin/reify)
+/probe/usr/bin/reify: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.34' not found (required by /probe/usr/bin/reify)
 \tlinux-vdso.so.1 (0x00007ffd3f1e2000)
 \tlibgmsh.so.4.15 => /probe/usr/lib/Reify/lib/libgmsh.so.4.15 (0x00007f0a10000000)
 \tlibfoo.so.1 => not found
