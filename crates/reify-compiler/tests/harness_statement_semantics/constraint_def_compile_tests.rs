@@ -1651,6 +1651,100 @@ structure S {
     );
 }
 
+/// A rejected binding REPLACES the predicate-body diagnostic rather than adding
+/// to it: the mistake is reported once, at the argument, and the instantiation
+/// is dropped exactly as a missing argument drops it.
+///
+/// Both masked fixtures would otherwise also be rejected inside the def body
+/// (`w > 0mm`): a Mass arg by the comparison's dimension check, a Bool arg by
+/// task 4490's comparison-operand guard.
+#[test]
+fn rejected_constraint_arg_is_reported_once_at_the_binding_site() {
+    let cases = [
+        (
+            "Mass arg",
+            "param m : Mass = 3kg\n    constraint MinWall(w: m)",
+        ),
+        ("Bool arg", "constraint MinWall(w: true)"),
+    ];
+    for (case, body) in cases {
+        let source = format!(
+            r#"
+constraint def MinWall {{
+    param w : Length
+    w > 0mm
+}}
+structure S {{
+    {body}
+}}
+"#
+        );
+        let (tmpl, diags) = compile_template(&source, "S");
+        let errors = error_diags(&diags);
+        assert_eq!(
+            errors.len(),
+            1,
+            "[{case}] expected exactly 1 error (the binding-site rejection), got {}; \
+             diagnostics: {:?}",
+            errors.len(),
+            diags
+        );
+        assert_eq!(
+            errors[0].code,
+            Some(DiagnosticCode::ConstraintArgTypeMismatch),
+            "[{case}] the sole error must be ConstraintArgTypeMismatch; diagnostics: {:?}",
+            diags
+        );
+        let emitted: Vec<&Option<String>> = tmpl
+            .constraints
+            .iter()
+            .map(|c| &c.label)
+            .filter(|label| label.as_deref().is_some_and(|l| l.starts_with("MinWall#")))
+            .collect();
+        assert!(
+            emitted.is_empty(),
+            "[{case}] a rejected instantiation must contribute no CompiledConstraint, \
+             got labels: {:?}",
+            emitted
+        );
+    }
+}
+
+/// Guard for the throwaway-sink flush: rejecting `w` must not swallow the
+/// diagnostics of a sibling arg (`lim`) that was compiled on the promise that
+/// predicate compilation would report them.
+#[test]
+fn rejected_constraint_arg_does_not_swallow_a_sibling_args_diagnostics() {
+    let source = r#"
+constraint def Within {
+    param w : Length
+    param lim : Length
+    w < lim
+}
+structure S {
+    param m : Mass = 3kg
+    constraint Within(w: m, lim: no_such_name)
+}
+"#;
+    let module = compile_source(source);
+    let mismatches = constraint_arg_type_mismatches(&module.diagnostics);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "expected exactly 1 ConstraintArgTypeMismatch (for `w`), got {}; diagnostics: {:?}",
+        mismatches.len(),
+        module.diagnostics
+    );
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
+        "the sibling arg's unresolved name must still be reported; diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
 // ── Task 6416: enum-typed constraint def params resolve to Type::Enum ────────
 
 /// A bare enum-typed `constraint def` param must store the RESOLVED enum type on
