@@ -172,7 +172,9 @@ if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
         else
             echo "  Free the port before retrying." >&2
         fi
-        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh${FILE:+ $FILE}" >&2
+        _preflight_file_arg=""
+        [ -z "$FILE" ] || printf -v _preflight_file_arg ' %q' "$FILE"
+        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh$_preflight_file_arg" >&2
         exit 1
     fi
 fi

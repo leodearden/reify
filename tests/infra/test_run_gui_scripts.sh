@@ -774,6 +774,40 @@ DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
 assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the port gate" \
     test -e "$_t26_tmpdir/npm-invoked"
 
+# --- 26b: the relocate remedy relaunches the same file, however it is spelled ---
+# The launcher resolves FILE to an absolute path, so every ancestor directory
+# lands in the remedy. Past `scripts/run-gui-dev.sh`, the line must parse as
+# shell words into exactly the arguments this launch got.
+
+# _t26_relaunch_args [file] — run against the occupied port and set
+# _t26_hint (the remedy line) and _t26_relaunch (argc, then each argument the
+# shell would parse from the remedy's tail, one per line).
+_t26_relaunch_args() {
+    _t26_hint=$(DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
+        _RGS_NPM_MARKER="$_t26_tmpdir/npm-invoked" \
+        PATH="$_t26_tmpdir/bin:$PATH" \
+        bash "$_t26_tmpdir/scripts/run-gui-dev.sh" "$@" 2>&1 \
+        | grep -F 'REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh' || true)
+    _t26_relaunch=$(bash -c 'eval "set -- ${1#*"scripts/run-gui-dev.sh"}"; printf "%s\n" "$#" "$@"' \
+        _ "$_t26_hint")
+}
+
+mkdir -p "$_t26_tmpdir/My Designs"
+: > "$_t26_tmpdir/My Designs/design.ri"
+_t26b_want="$(cd -P "$_t26_tmpdir/My Designs" && pwd -P)/design.ri"
+
+_t26_relaunch_args "$_t26_tmpdir/My Designs/design.ri"
+assert "control: the occupied-port refusal printed the relocate remedy (got '$_t26_hint')" \
+    test -n "$_t26_hint"
+assert "run-gui-dev.sh: relocate remedy for a file under 'My Designs' relaunches exactly that one file (got '$_t26_hint')" \
+    test "$_t26_relaunch" = "$(printf '1\n%s' "$_t26b_want")"
+
+_t26_relaunch_args
+assert "control: the no-file occupied-port refusal printed the relocate remedy (got '$_t26_hint')" \
+    test -n "$_t26_hint"
+assert "run-gui-dev.sh: relocate remedy for a no-file launch relaunches with no file (got '$_t26_hint')" \
+    test "$_t26_relaunch" = 0
+
 # -- Test 27: behavioral — display preflight fails fast, both launchers ------
 echo ""
 echo "--- Test 27: launchers refuse to build with no display ---"
