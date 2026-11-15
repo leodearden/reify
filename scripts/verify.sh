@@ -4051,29 +4051,28 @@ build_plan() {
         add_tool "./scripts/check-manifold-deps.sh"
     fi
 
-    # tree-sitter parser regeneration is a Rust-build prerequisite.
+    # tree-sitter-reify/src for the `tree-sitter parse` CLI consumers
+    # (scripts/prd-capability-check.py, scripts/prd-gate-substrate-guard.sh).
+    # The cargo build generates its own copy into OUT_DIR
+    # (tree-sitter-reify/build.rs) and never reads src/.
     if [ "$RUN_RUST" -eq 1 ]; then
         add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
-    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
-    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
-    # cargo recompile it: cargo re-runs a build script only for paths declared
-    # via rerun-if-changed, and cc emits none of its own. So without this leaf
-    # the gate can link a libtree_sitter_reify.a built from different bytes than
-    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). cargo
+    # re-runs a build script only for watched paths whose mtime moved, and
+    # warm-lane seeding rewinds source mtimes, so without this leaf the gate can
+    # link a libtree_sitter_reify.a built from different grammar.js or
+    # src/scanner.c bytes than the tree it is verifying — a false GREEN.
     # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
     # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
     #
-    # Placement is load-bearing, both halves:
-    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
-    #     before it is fingerprinted, or the verdict describes a stale input set.
-    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
-    #     after the compile repairs nothing.
+    # Placement is load-bearing: BEFORE `verify.sh compile-gate` and every cargo
+    # leaf, since a force applied after the compile repairs nothing.
     # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
     # gui-src-only plans keep zero command leaves.
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
-    # test_verify_plan_includes_freshness_after_generation.
+    # test_verify_plan_brackets_the_cargo_wave_with_freshness.
     if [ "$RUN_RUST" -eq 1 ]; then
         add_tool "./scripts/tree-sitter-freshness.sh ensure"
     fi
@@ -4648,7 +4647,7 @@ build_plan() {
     # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
     # them, stale forever, so a whole-tree assertion would be permanently RED.
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
-    # test_verify_plan_includes_freshness_after_generation.
+    # test_verify_plan_brackets_the_cargo_wave_with_freshness.
     if [ "$RUN_RUST" -eq 1 ] \
         && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
         add_tool "./scripts/tree-sitter-freshness.sh check"

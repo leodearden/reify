@@ -2,13 +2,19 @@
 #
 # Tree-sitter Pipeline Infrastructure Tests
 #
-# Validates the tree-sitter parser auto-generation pipeline:
-#   1. build.rs auto-generation — deletes parser.c and verifies cargo check
-#      regenerates it via the needs_generate -> run_tree_sitter_generate path.
-#   2. scripts/tree-sitter-generate.sh — positive and negative tests for the
-#      standalone generation script.
-#   3. Infrastructure checks — .gitignore, git tracking, orchestrator config,
-#      hooks, and install guidance.
+# Validates the tree-sitter parser pipeline:
+#   1. build.rs generation into $OUT_DIR/src (#9896) — on a hermetic fixture
+#      crate running the real build.rs/build_support.rs, CLI and cargo: what it
+#      writes, reads and watches, that damage to OUT_DIR or a grammar/CLI
+#      change regenerates, and that nothing in tree-sitter-reify/src reruns or
+#      feeds the build.
+#   2. scripts/tree-sitter-freshness.sh — the out-of-build attestation of
+#      grammar.js and src/scanner.c, its check/ensure verdicts and its verify.sh
+#      placement around the cargo wave.
+#   3. scripts/tree-sitter-generate.sh — positive and negative tests for the
+#      script that writes tree-sitter-reify/src for the `tree-sitter parse` CLI.
+#   4. Infrastructure checks — .gitignore, git tracking, orchestrator config,
+#      hooks, routing, and install guidance.
 #
 # Assert helpers capture full stdout/stderr on failure for diagnostics.
 # File state is managed via backup/restore with trap-based cleanup.
@@ -2677,7 +2683,7 @@ test_freshness_leaves_are_ld_scrubbed() {
                   "lint --scope all --include-infra" \
                   "typecheck --scope all"; do
         # Retrying, completeness-guarded capture — same rationale/pattern as
-        # test_verify_plan_includes_freshness_after_generation. $action word-splits
+        # test_verify_plan_brackets_the_cargo_wave_with_freshness. $action word-splits
         # inside the inner bash -c (its unquoted $2), so no outer SC2086 exposure.
         capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
             bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "$action" || true
@@ -2745,7 +2751,7 @@ test_freshness_leaves_are_ld_scrubbed() {
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no freshness leaf to assert on"
             echo "  (matched 'ensure' lines: $n_ensure, 'check' lines: $n_check) — the scrub"
             echo "  assertion above would be vacuous. Both leaves are required on every"
-            echo "  RUN_RUST plan; see test_verify_plan_includes_freshness_after_generation."
+            echo "  RUN_RUST plan; see test_verify_plan_brackets_the_cargo_wave_with_freshness."
             return 1
         fi
         if [ "$n_control" -eq 0 ]; then
@@ -2758,14 +2764,15 @@ test_freshness_leaves_are_ld_scrubbed() {
     done
 }
 
-test_verify_plan_includes_freshness_after_generation() {
+test_verify_plan_brackets_the_cargo_wave_with_freshness() {
     # The guard is only worth anything if the gate RUNS it, and runs it in the
-    # right place. Two orderings are load-bearing and both are asserted here:
-    #   generate BEFORE freshness — src/parser.c must be current on disk before
-    #     it is fingerprinted, or the check compares against a stale input set;
-    #   freshness BEFORE the first cargo leaf — a force applied after the
-    #     compile repairs nothing (cargo has already linked the stale archive).
-    # Asserted on the emitted plan, not on verify.sh source text.
+    # right place: `ensure` BEFORE the first cargo leaf, since a force applied
+    # after the compile repairs nothing (cargo has already linked the stale
+    # archive), and `check` after the cargo wave. The generate leaf must still
+    # be present for the `tree-sitter parse` CLI consumers, but its position
+    # relative to freshness no longer matters: the fingerprint covers tracked
+    # files only (#9896). Asserted on the emitted plan, not on verify.sh source
+    # text.
     local verify="$REPO_ROOT/scripts/verify.sh"
     assert_file_exists "$verify" || return 1
 
@@ -2810,13 +2817,6 @@ test_verify_plan_includes_freshness_after_generation() {
         if [ "$i_gen" -lt 0 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no tree-sitter-generate leaf"
-            return 1
-        fi
-        if [ "$i_gen" -ge "$i_fresh" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: verify.sh '$action' runs freshness BEFORE generate"
-            echo "  (generate step $i_gen, freshness step $i_fresh) —"
-            echo "  parser.c would be fingerprinted before it is regenerated."
             return 1
         fi
         if [ "$i_cargo" -lt 0 ]; then
@@ -3023,7 +3023,10 @@ test_freshness_guard_is_routed_by_infra_test_map() {
 
     local want="tests/infra/test_tree_sitter_pipeline.sh"
     local artifact rc=0
+    # build_support.rs holds the generation and attestation predicates that
+    # build.rs include!s, so an edit to it alone must route here too.
     for artifact in "tree-sitter-reify/build.rs" \
+                    "tree-sitter-reify/build_support.rs" \
                     "tree-sitter-reify/src/scanner.c" \
                     "scripts/tree-sitter-generate.sh" \
                     "scripts/tree-sitter-freshness.sh"; do
