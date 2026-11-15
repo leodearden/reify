@@ -1,4 +1,4 @@
-use reify_ast::ImportKind;
+use reify_ast::{ImportBinding, ImportKind};
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
@@ -310,16 +310,12 @@ pub fn compute_goto_definition_cross_file_with_parsed(
     // Check if the word matches an imported name.
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Import(import) = decl {
-            let target_name = match &import.kind {
-                ImportKind::Entity(name) if name == word => Some(name.as_str()),
-                ImportKind::EntityAliased { entity, alias } if alias == word => {
-                    Some(entity.as_str())
-                }
-                ImportKind::Destructured(names) => names
-                    .iter()
-                    .find(|n| n.as_str() == word)
-                    .map(|n| n.as_str()),
-                _ => None,
+            let target_name = match import.kind.binding() {
+                ImportBinding::Entities(entities) => entities
+                    .into_iter()
+                    .find(|b| b.local_name() == word)
+                    .map(|b| b.entity),
+                ImportBinding::Namespace { .. } => None,
             };
 
             if let Some(target_entity) = target_name
