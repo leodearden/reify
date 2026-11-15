@@ -443,4 +443,5 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
 5. **ε tool packaging.** *Decided in ε (#5497):* a `reify fix --imports [--check]
    <file>...` subcommand (`crates/reify-cli/src/cmd/fix.rs`) backed by the library module
    `reify_compiler::import_headers`. ζ and λ consume the same functions —
-   `derive_std_imports`, `insert_imports` and `residual_diagnostics` — or run the CLI.
+   `derive_std_imports`, whose `ImportPlan::residual_diagnostics` judges an import set
+   against the universe the plan was derived over, and `insert_imports` — or run the CLI.

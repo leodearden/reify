@@ -30,13 +30,17 @@ pub struct RequiredImport {
     pub names: Vec<NameUse>,
 }
 
-/// The std modules a module needs, sorted by dotted path.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ImportPlan {
+/// The std-import derivation of one module over one universe.
+#[derive(Clone)]
+pub struct ImportPlan<'u> {
+    subject: ModulePath,
     required: Vec<RequiredImport>,
+    universe: Vec<&'u CompiledModule>,
+    whole_universe_diagnostics: Vec<Diagnostic>,
 }
 
-impl ImportPlan {
+impl<'u> ImportPlan<'u> {
+    /// The std modules the module needs, sorted by dotted path.
     pub fn modules(&self) -> Vec<ModulePath> {
         self.required
             .iter()
@@ -69,13 +73,70 @@ impl ImportPlan {
             })
             .collect()
     }
+
+    /// The Error and Warning diagnostics `parsed` gets when compiled against
+    /// only the `imports` modules of the plan's universe, less those the
+    /// whole universe gives it too (matched one for one on their
+    /// [`DiagnosticIdentity`]). Empty when the imports supply everything the
+    /// module needs from the universe; a diagnostic the module raises
+    /// regardless is never counted against them.
+    ///
+    /// # Panics
+    ///
+    /// If `parsed` is not at the module path the plan was derived for: the
+    /// whole-universe diagnostics are that module's.
+    pub fn residual_diagnostics(
+        &self,
+        parsed: &ParsedModule,
+        imports: &[ModulePath],
+    ) -> Vec<Diagnostic> {
+        assert!(
+            parsed.path == self.subject,
+            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
+             derived for `{}`, given `{}`",
+            self.subject.to_dotted(),
+            parsed.path.to_dotted()
+        );
+        let imported: Vec<&CompiledModule> = self
+            .universe
+            .iter()
+            .copied()
+            .filter(|module| imports.contains(&module.path))
+            .collect();
+        let restricted = crate::compile_with_prelude_refs(parsed, &imported);
+
+        let mut unmatched: HashMap<DiagnosticIdentity<'_>, usize> = HashMap::new();
+        for diagnostic in &self.whole_universe_diagnostics {
+            *unmatched
+                .entry(DiagnosticIdentity::of(diagnostic))
+                .or_default() += 1;
+        }
+        restricted
+            .diagnostics
+            .iter()
+            .filter(|d| is_reportable(d))
+            .filter(
+                |diagnostic| match unmatched.get_mut(&DiagnosticIdentity::of(diagnostic)) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        false
+                    }
+                    _ => true,
+                },
+            )
+            .cloned()
+            .collect()
+    }
 }
 
 /// Derive the std imports `parsed` needs, attributing each written name to
 /// its winning definition over `parsed`'s own definitions and `universe`.
 /// Which modules of `universe` are std-tier is
 /// [`name_env::Origin::tier`](crate::name_env::Origin::tier)'s decision.
-pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -> ImportPlan {
+pub fn derive_std_imports<'u>(
+    parsed: &ParsedModule,
+    universe: &[&'u CompiledModule],
+) -> ImportPlan<'u> {
     let local = crate::compile_with_prelude_refs(parsed, universe);
     let index = attribution::ExportIndex::new(&local, universe);
     let uses = name_uses::collect_name_uses(parsed);
@@ -91,12 +152,19 @@ pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -
         }
     }
     ImportPlan {
+        subject: parsed.path.clone(),
         required: by_module
             .into_values()
             .map(|(module, names)| RequiredImport {
                 module,
                 names: names.into_iter().collect(),
             })
+            .collect(),
+        universe: universe.to_vec(),
+        whole_universe_diagnostics: local
+            .diagnostics
+            .into_iter()
+            .filter(is_reportable)
             .collect(),
     }
 }
@@ -119,47 +187,6 @@ pub fn stdlib_universe_excluding(module: &ModulePath) -> Vec<&'static CompiledMo
     crate::stdlib_loader::load_stdlib()
         .iter()
         .filter(|candidate| &candidate.path != module)
-        .collect()
-}
-
-/// The Error and Warning diagnostics `parsed` gets when compiled against only
-/// the `imports` modules of `universe`, less those the whole `universe` gives
-/// it too (matched one for one on their [`DiagnosticIdentity`]). Empty when the
-/// imports supply everything the module needs from `universe`; a diagnostic
-/// the module raises regardless is never counted against them.
-pub fn residual_diagnostics(
-    parsed: &ParsedModule,
-    imports: &[ModulePath],
-    universe: &[&CompiledModule],
-) -> Vec<Diagnostic> {
-    let imported: Vec<&CompiledModule> = universe
-        .iter()
-        .copied()
-        .filter(|module| imports.contains(&module.path))
-        .collect();
-    let restricted = crate::compile_with_prelude_refs(parsed, &imported);
-    let full = crate::compile_with_prelude_refs(parsed, universe);
-
-    let mut unmatched: HashMap<DiagnosticIdentity<'_>, usize> = HashMap::new();
-    for diagnostic in full.diagnostics.iter().filter(|d| is_reportable(d)) {
-        *unmatched
-            .entry(DiagnosticIdentity::of(diagnostic))
-            .or_default() += 1;
-    }
-    restricted
-        .diagnostics
-        .iter()
-        .filter(|d| is_reportable(d))
-        .filter(
-            |diagnostic| match unmatched.get_mut(&DiagnosticIdentity::of(diagnostic)) {
-                Some(count) if *count > 0 => {
-                    *count -= 1;
-                    false
-                }
-                _ => true,
-            },
-        )
-        .cloned()
         .collect()
 }
 
