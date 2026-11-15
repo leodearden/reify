@@ -145,7 +145,13 @@ impostor() {
     printf '%s\n' "$path"
 }
 
-rejects() { ! "$@"; }
+# rejects <check> <script>: <script> runs cleanly and <check> rejects it. A script
+# that dies was never judged, so a broken impostor fails its pin instead of
+# leaving it vacuously green.
+rejects() {
+    local check=$1 script=$2
+    gui_test_calls "$script" >/dev/null && ! "$check" "$script"
+}
 
 IMPOSTOR_NO_RUNNER="$(impostor no-runner \
     $'npm ci --prefer-offline --no-audit\necho "==> vitest run (via scripts/gui-vitest-run.sh)..."')"
@@ -170,6 +176,13 @@ assert "sensitivity pin: prefers-offline check rejects the no-prefer-offline imp
 
 assert "sensitivity pin: runs-npm-ci check rejects the no-npm-ci impostor (its echo says npm ci, nothing runs it)" \
     rejects script_runs_npm_ci "$IMPOSTOR_NO_NPM_CI"
+
+IMPOSTOR_DIES="$(impostor dies 'exit 64')"
+
+dead_script_is_not_rejected() { ! rejects script_runs_runner "$IMPOSTOR_DIES"; }
+
+assert "sensitivity pin: a pin fails on an impostor that dies (no check ever judged it), so a broken impostor cannot pass vacuously" \
+    dead_script_is_not_rejected
 
 # -- Test 4: resolves gui/ from the script path (works from any cwd) ---------
 echo ""
