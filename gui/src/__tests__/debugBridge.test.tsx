@@ -4031,7 +4031,7 @@ describe('debug bridge store_state document and mode', () => {
 
   const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
-  it('reports no loaded document, no error and no recent entries before anything is opened', async () => {
+  it('reports no loaded document, no error, no recent entries and no pending attempt before anything is opened', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
 
@@ -4039,6 +4039,7 @@ describe('debug bridge store_state document and mode', () => {
       loaded: false,
       error: null,
       recent: [],
+      pending: false,
     });
   });
 
@@ -4065,7 +4066,16 @@ describe('debug bridge store_state document and mode', () => {
       loaded: false,
       error: { code: 'E_GUI_OPEN_FAILED', message: 'No such file' },
       recent: [{ path: '/designs/bracket.ri', opened_at: 1000 }],
+      pending: false,
     });
+  });
+
+  it('reports a document attempt in flight as document.pending', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    stores.launcher.setDocumentPending(true);
+
+    expect((await dispatchCmd(10205, 'store_state', {})).document.pending).toBe(true);
   });
 
   it('reset_app_state clears the launcher errors', async () => {
@@ -4078,6 +4088,16 @@ describe('debug bridge store_state document and mode', () => {
 
     expect(stores.launcher.state.document.error).toBeNull();
     expect(stores.launcher.state.mode.error).toBeNull();
+  });
+
+  it('reset_app_state leaves an in-flight document attempt pending', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    stores.launcher.setDocumentPending(true);
+
+    await dispatchCmd(10206, 'reset_app_state', {});
+
+    expect(stores.launcher.state.document.pending).toBe(true);
   });
 });
 
