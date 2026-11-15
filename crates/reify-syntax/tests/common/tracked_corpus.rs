@@ -27,12 +27,32 @@ pub fn is_verify_inert(rel: &str) -> bool {
         .any(|tree| rel.starts_with(tree))
 }
 
-/// The corpus every repo-wide sweep reads: [`tracked_ri_paths`] without the
-/// [`is_verify_inert`] paths, still sorted.
+/// The corpus every repo-wide sweep reads: [`tracked_ri_paths`] without every
+/// path verify's scope classifier (the `inert` fact of
+/// `scripts/reify_path_attribution.py`) marks inert, still sorted. The
+/// classifier is asked once per listing.
 pub fn swept_ri_paths(root: &Path) -> Vec<String> {
-    let mut paths = tracked_ri_paths(root);
-    paths.retain(|rel| !is_verify_inert(rel));
+    swept_ri_paths_classified_by(root, &scope_classifier())
+}
+
+/// Verify's own scope classifier, taken from this workspace rather than from
+/// a listing root, so a fixture repo, which carries no `scripts/`, is
+/// classified by the real one.
+fn scope_classifier() -> PathBuf {
+    workspace_root().join("scripts/reify_path_attribution.py")
+}
+
+/// [`tracked_ri_paths`] under `root` without the paths `classifier` marks
+/// inert, still sorted.
+fn swept_ri_paths_classified_by(root: &Path, classifier: &Path) -> Vec<String> {
+    let paths = tracked_ri_paths(root);
+    let inert = classifier_inert_facts(classifier, &paths);
     paths
+        .into_iter()
+        .zip(inert)
+        .filter(|(_, inert)| !inert)
+        .map(|(path, _)| path)
+        .collect()
 }
 
 /// The workspace root, resolved from this crate's manifest dir
@@ -110,33 +130,32 @@ pub fn tracked_fixture_repo(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 
-/// The scope classifier's `inert` fact for each of `paths`, in order, from
-/// `scripts/reify_path_attribution.py attribute --format tsv` under `root`.
-fn classifier_inert_facts(root: &Path, paths: &[String]) -> Vec<bool> {
-    let script = root.join("scripts/reify_path_attribution.py");
+/// The scope classifier's `inert` fact for each of `paths`, in order, from one
+/// `<classifier> attribute --format tsv` run.
+fn classifier_inert_facts(classifier: &Path, paths: &[String]) -> Vec<bool> {
     let mut child = Command::new("python3")
         .arg("-I")
-        .arg(&script)
+        .arg(classifier)
         .args(["attribute", "--format", "tsv"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("cannot spawn python3 {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot spawn python3 {}: {e}", classifier.display()));
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let input: String = paths.iter().map(|path| format!("{path}\n")).collect();
     let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
     let output = child
         .wait_with_output()
-        .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", classifier.display()));
     writer
         .join()
         .expect("the stdin writer thread does not panic")
-        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
     assert!(
         output.status.success(),
         "{} attribute failed ({}): {}",
-        script.display(),
+        classifier.display(),
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -148,7 +167,8 @@ fn classifier_inert_facts(root: &Path, paths: &[String]) -> Vec<bool> {
     assert_eq!(
         records.len(),
         paths.len(),
-        "the classifier must print one record per path"
+        "{} must print one record per path",
+        classifier.display()
     );
     paths
         .iter()
@@ -239,7 +259,7 @@ fn is_verify_inert_agrees_with_the_scope_classifier() {
     }
     let disagreements: Vec<String> = paths
         .iter()
-        .zip(classifier_inert_facts(&root, &paths))
+        .zip(classifier_inert_facts(&scope_classifier(), &paths))
         .filter(|(path, inert)| is_verify_inert(path) != *inert)
         .map(|(path, inert)| {
             format!(
