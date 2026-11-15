@@ -846,7 +846,7 @@ Against `docs/legibility/design-invariants.md`:
 | Invariant | Bearing |
 |---|---|
 | **INV-SF-3** `declared-intent-consumed-or-diagnosed` | **This PRD is a remediation of it.** ~25 stdlib params declare a dimension and enforce nothing; the declaration is design intent that no pass consumes. γ makes it consumed. |
-| **INV-SF-4** `indeterminate-attributable-transient` | **Confirmed violation, and this PRD is its remedy** — §10.3. γ makes the permanently-Indeterminate input class impossible at construction; ε pins the recovery and files the one residual defect (operand-kind `Undef` emitted at Warning) by name rather than leaving it silent. |
+| **INV-SF-4** `indeterminate-attributable-transient` | **Confirmed violation, and this PRD is its remedy** — §10.3. γ's gate-2 half plus δ₁ make the permanently-Indeterminate input class impossible at the declaration; ε pins the recovery and files the one residual defect (operand-kind `Undef` emitted at Warning) by name rather than leaving it silent. |
 | **INV-SF-5** `placeholders-owned-and-loud` | The trajectory bare-number call sites are acknowledged placeholders (`printer_print_envelope.ri` calls its own args *"(mm/s placeholder Real)"*); β makes them real. New placeholders are not introduced. |
 | **INV-SF-6** `diagnostics-carry-codes` | D4-8: every new/changed diagnostic carries a code; every assertion is on code identity. |
 | **INV-SF-2** `error-severity-exits-nonzero` | Respected and *relied upon* (§3.2). This PRD adds no per-code escalation and no Error-severity output on a healthy path. |
@@ -925,8 +925,8 @@ The brief asked this PRD to establish whether strict ctor conformance makes the
 independent constraint-evaluation defect remains. **Both questions are now answered**, by
 tracing the full path this session.
 
-**Verdict: the Indeterminate is a CONSEQUENCE. γ fixes it. There is no defect in
-order-comparison evaluation for well-typed operands.**
+**Verdict: the Indeterminate is a CONSEQUENCE. γ's gate-2 half plus δ₁ fix it. There is no
+defect in order-comparison evaluation for well-typed operands.**
 
 The causal chain is single-threaded and cut at the declaration:
 
@@ -938,7 +938,8 @@ The causal chain is single-threaded and cut at the declaration:
    `Scalar{FORCE}` — clean. **The compiler is right given what it is told.**
 2. The only thing that makes the declaration a lie is the param-DEFAULT path's tolerance of a
    bare literal — gate 2 (the conformance pass, riding the `conformance/mod.rs:1694`
-   predicate) and gate 3 (`check_param_default_type`'s literal early-return).
+   predicate; closed by γ, #5627) and gate 3 (`check_param_default_type`'s literal
+   early-return; deleted by δ₁, #5646).
 3. The param default is then stored **verbatim**, with no dimension stamping.
 4. At eval, `eval_cmp` (`crates/reify-expr/src/lib.rs:5070-5110`) hits the
    Real-vs-dimensioned arm (`:5099-5103`) → `Value::Undef` → `Satisfaction::Indeterminate`
@@ -965,7 +966,8 @@ dimensionless (the `HarmonicForce.phase : Angle = 0deg` note in `modal_analysis.
 same mechanism). That is the configuration the manifest's `probe:epsilon-recovery-target`
 observed — `param magnitude : Force = -10.0` → `INDETERMINATE`, "operator undefined for these
 operand kinds: Real" — and the one ε pins. The research doc's framing ("constraints are
-NOT a backstop") is **correct as stated**; the reason is the constructor, not the comparator.
+NOT a backstop") is **correct as stated**; the reason is the param-default declaration, not
+the comparator.
 
 **One genuinely independent defect survives, and one asymmetry.** Neither is fixed by this
 PRD; ε files both by name.
@@ -989,8 +991,8 @@ PRD; ε files both by name.
   `constraint magnitude > 0N` reports **INDETERMINATE** (silent, exit 0). Any
   "constraints as backstop" reasoning must not generalize across the two families.
 
-**INV-SF-4 assessment.** This *is* a violation as written — for the input class "`StepForce`
-constructed with a bare number", the constraint is Indeterminate in **every** run, and no
+**INV-SF-4 assessment.** This *is* a violation as written — for the input class "a `Force` param
+defaulted to a bare number", the constraint is Indeterminate in **every** run, and no
 runtime condition clears it. It is worse in kind than the invariant's own cited evidence
 (inert `frame_align` selectors): this constraint *looks* enforced, is asserted by a dedicated
 compiler test (`crates/reify-compiler/tests/modal_options_validation_tests.rs:1465-1505`
@@ -998,7 +1000,7 @@ compiler test (`crates/reify-compiler/tests/modal_options_validation_tests.rs:14
 reason a dimensioned zero was chosen — and disarms itself precisely on the inputs it exists
 to catch. **The correct INV-SF-4 remedy is not "make this constraint a compile error"** — the
 constraint text is well-formed and definite for every well-typed instance. It is *"make the
-input class that renders it permanently Indeterminate impossible at construction"* — i.e.
+input class that renders it permanently Indeterminate impossible at the declaration"* — i.e.
 γ's gate-2 half plus δ₁.
 
 ### 10.4 In-flight tasks
@@ -1021,8 +1023,8 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 ```
 ζ₀ ──┐
-     ├──► α ──► β ──► γ ──┬──► δ₁ ──► δ₂
-     │                    ├──► ε
+     ├──► α ──► β ──► γ ──┬──► δ₁ ──┬──► δ₂
+     │                    │         └──► ε
      │                    └──► ζ₁ ──► ζ₂ ──► ζ₃ ──► ζ₄
 ```
 
@@ -1224,7 +1226,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 ### ε — Constraint backstop: pin the recovered verdict; file the residual defect by name
 
-**The investigation this leaf was going to perform has been done at authoring time** (§10.4).
+**The investigation this leaf was going to perform has been done at authoring time** (§10.3).
 The verdict is settled, so ε is now a *pin-and-file* leaf, not an open investigation.
 
 - **Modules:** a constraint-outcome pin under `crates/reify-eval/tests/`; the follow-up is
