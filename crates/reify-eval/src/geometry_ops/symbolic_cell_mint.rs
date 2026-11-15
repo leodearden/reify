@@ -361,11 +361,15 @@ fn project_instance_reads(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use reify_compiler::ValueCellKind;
     use reify_core::ValueCellId;
     use reify_ir::{Value, ValueMap};
+    use reify_test_support::parse_and_compile;
 
-    use super::{SymbolicMintOrder, project_instance_reads};
+    use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads};
+    use crate::graph::EvaluationGraph;
 
     fn id(entity: &str, member: &str) -> ValueCellId {
         ValueCellId::new(entity, member)
@@ -442,5 +446,90 @@ mod tests {
             SymbolicMintOrder::for_kind(ValueCellKind::Let),
             SymbolicMintOrder::SelectorFirst
         );
+    }
+
+    /// An instance cell mints as its template's cell (task #9846): for a scalar
+    /// geometry let, a length-1 and a length-3 geometry-list let, the instance
+    /// arm must answer what the graph mint answers for the template cell.
+    ///
+    /// Drives `InstanceMintScope` directly, as
+    /// `engine_build/geometry_cell_mint_from_graph_tests.rs` drives the graph
+    /// mint: the edit path never reaches it with a list cell, since a list
+    /// reevaluates to `List`, not `Undef`, so a public-seam test would pass
+    /// whether or not the two mints agree on list cells.
+    #[test]
+    fn the_instance_mint_of_a_sub_cell_pairs_with_the_graph_mint_of_its_template_cell() {
+        let graph = EvaluationGraph::from_templates(
+            &parse_and_compile(
+                r#"structure T {
+                    let a = box(10mm, 10mm, 10mm)
+                    let one = generate(1, |i| cylinder(5mm, 20mm))
+                    let holes = generate(3, |i| cylinder(5mm, 20mm))
+                }
+                structure P {
+                    sub s = T()
+                }"#,
+            )
+            .templates,
+        );
+        let values = ValueMap::new();
+        let meta = HashMap::new();
+        let graph_mint = |cell: &ValueCellId| {
+            crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                cell,
+                &graph,
+                &values,
+                &[],
+                &meta,
+            )
+        };
+        let scope = InstanceMintScope {
+            graph: &graph,
+            values: &values,
+            functions: &[],
+            meta_map: &meta,
+        };
+        assert_eq!(graph.sub_instance_template("P.s"), Some("T"));
+        assert!(
+            matches!(
+                graph_mint(&id("T", "a")),
+                Some(Value::GeometryHandle {
+                    kernel_handle: None,
+                    ..
+                })
+            ),
+            "control: the graph mint must answer the scalar geometry let `T.a`"
+        );
+        for member in ["one", "holes"] {
+            let cell = id("T", member);
+            assert!(
+                graph
+                    .realizations
+                    .values()
+                    .any(|r| r.geometry_cell.as_ref() == Some(&cell)),
+                "control: some realization must link the list cell `{cell}` \
+                 (task #5385), or its pairing below is vacuous"
+            );
+        }
+
+        for member in ["a", "one", "holes"] {
+            let instance_cell = id("P.s", member);
+            let node = graph
+                .value_cells
+                .get(&instance_cell)
+                .unwrap_or_else(|| panic!("precondition: `{instance_cell}` must be stamped"));
+            let expr = node
+                .default_expr
+                .as_ref()
+                .unwrap_or_else(|| panic!("precondition: `{instance_cell}` must have an expr"));
+
+            assert_eq!(
+                scope.mint_undef_instance_cell(&instance_cell, node.kind, expr),
+                Some(graph_mint(&id("T", member)).unwrap_or(Value::Undef)),
+                "the instance arm must mint `{instance_cell}` as the graph mint mints \
+                 `T.{member}`; an instance early-out to Undef where the graph mint \
+                 answers is the drift task #9846 retires"
+            );
+        }
     }
 }
