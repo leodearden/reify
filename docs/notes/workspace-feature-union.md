@@ -243,7 +243,7 @@ bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
 for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
 ```
 
-Every stamp must match: that proves the copy holds the bytes the seeded
+Every stamp must match: that proves the directory holds the bytes the seeded
 archive was compiled from. A DIFF means the generated or compiled inputs differ
 from the base's: `grammar.js`, `scanner.c`, or the tree-sitter CLI that wrote
 `parser.c` and its headers, which `scripts/tree-sitter-generate.sh` does not
