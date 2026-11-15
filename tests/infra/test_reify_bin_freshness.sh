@@ -49,7 +49,8 @@
 #   21:  resolve — usage (no args, unknown verb, an extra arg) → exit 64, usage
 #        on stderr, nothing on stdout
 #   22:  resolve — -x discovery: a non-executable release is no candidate (a
-#        0644 release beside a 0755 debug resolves to debug; alone → exit 2)
+#        0644 release beside a 0755 debug resolves to debug; alone → exit 2,
+#        "not built")
 #   23:  resolve — both profiles built but unvouched → refuses the release
 #        binary and names the debug one ("also built:")
 #   24:  resolve — an exported GIT_DIR naming another repository does not
@@ -57,8 +58,8 @@
 #        `git -C`)
 #   25:  resolve — GIT_CEILING_DIRECTORIES survives the GIT_* scrub (a nested
 #        plain dir fails open under a ceiling) yet never hides a checkout's own
-#        root, and only "no repository at all" fails open: an unborn HEAD is a
-#        reason
+#        root, and only "no repository at all" fails open: an unborn HEAD and a
+#        linked worktree whose gitdir was pruned are reasons
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
@@ -500,18 +501,15 @@ assert "merge-all plan: .reify-bin-sha stamp index < run_all.sh index (stamp ord
     ' _ "$MERGE_ALL_PLAN"
 
 # ==============================================================================
-# Check 19: behavioral wiring — running the (not-yet-modified) PRD gate tests
-#           as black-box subprocesses with REIFY_BIN pointing at a missing
-#           file must produce a clean SKIP citing the new freshness guard
-#           (REIFY_BIN), not a HARNESS_ERROR/FAIL. Today both tests trust
-#           REIFY_BIN blindly (no existence check), so this exercises the
-#           real, unmodified gate test files end to end.
+# Check 19: behavioral wiring — test_prd_gate_corpus.sh and
+#           test_prd_gate_objective_inheritance.sh, run as black-box
+#           subprocesses with REIFY_BIN pointing at a missing file, SKIP
+#           cleanly: exit 0, output citing REIFY_BIN, not a HARNESS_ERROR/FAIL.
+#           This exercises the real gate test files end to end.
 #
-# set -e note: the gate tests may currently exit non-zero (e.g.
-# test_prd_gate_objective_inheritance.sh FAILs today under a missing
-# REIFY_BIN) — capture via `cmd || VAR=$?` (mirroring the ALPHA_EXIT idiom
-# inside those same gate tests) so a non-zero exit doesn't trip this script's
-# own `set -e` before the assertion runs.
+# set -e note: a gate that stops skipping may exit non-zero, and that must reach
+# the assertion, not trip this script's own `set -e` first — capture via
+# `cmd || VAR=$?` (mirroring the ALPHA_EXIT idiom inside those same gate tests).
 # ==============================================================================
 echo ""
 echo "--- Check 19: PRD gate tests SKIP cleanly under a missing REIFY_BIN ---"
@@ -639,6 +637,9 @@ run_resolve resolve "$LONE_NOX_REPO"
 assert "resolve: only a release binary of mode 644 → exit 2 (REIFY_BIN_NOT_BUILT)" \
     test "$RUN_RC" -eq 2
 
+assert "resolve: only a release binary of mode 644 → the line says 'not built'" \
+    text_contains "$RUN_OUT" 'not built'
+
 # ==============================================================================
 # Check 23: an unvouched answer refuses the first candidate and names the other
 #           built profile ("also built:"), so the operator sees what else exists
@@ -716,8 +717,11 @@ assert "resolve under GIT_DIR=<another repository> → the fixture's binary" \
 #           A ceiling can only stop discovery short of a repository, so a
 #           caller may bound the walk-up for a repo_root that is not one; it
 #           never hides repo_root itself, so a checkout is still judged.  Any
-#           other HEAD git cannot read inside a checkout (an unborn one) is a
-#           reason, never fail-open.
+#           other HEAD git cannot read inside a checkout is a reason, never
+#           fail-open: an unborn one, and that of a linked worktree whose
+#           gitdir was pruned (the warm-lane shape).  Only git's message tells
+#           that worktree's "not a git repository: <gitdir>" from "not a git
+#           repository (or any ..." for no repository at all.
 # ==============================================================================
 echo ""
 echo "--- Check 25: the ceiling bounds discovery above repo_root; only no-repository fails open ---"
@@ -764,6 +768,36 @@ assert "resolve: a checkout whose HEAD is unborn is not fail-open → exit 1 (RE
     test "$RUN_RC" -eq 1
 
 assert "resolve: a checkout whose HEAD is unborn → the line says HEAD is 'undeterminable'" \
+    text_contains "$RUN_OUT" 'undeterminable'
+
+# A linked worktree made at the main checkout's HEAD, with a sidecar naming that
+# HEAD: vouched while its gitdir exists (the control), so that once the gitdir
+# is pruned, only the unreadable HEAD can refuse it.
+PRUNE_MAIN_REPO="$TMPDIR_BINFRESH/prune-main"
+PRUNE_HEAD_SHA=$(make_fixture_repo "$PRUNE_MAIN_REPO")
+PRUNED_WORKTREE="$TMPDIR_BINFRESH/pruned-worktree"
+PRUNED_BIN="$PRUNED_WORKTREE/target/debug/reify"
+git -C "$PRUNE_MAIN_REPO" worktree add -q --detach "$PRUNED_WORKTREE"
+place_binary "$PRUNED_BIN"
+printf '%s\n' "$PRUNE_HEAD_SHA" > "$PRUNED_WORKTREE/target/.reify-bin-sha"
+
+run_resolve resolve "$PRUNED_WORKTREE"
+
+assert "control: an intact linked worktree whose sidecar names its HEAD is vouched → exit 0" \
+    test "$RUN_RC" -eq 0
+
+assert "control: an intact linked worktree → its binary" \
+    test "$RUN_OUT" = "$PRUNED_BIN"
+
+# SAFETY: a mktemp fixture — never point this rm at a reify checkout's .git.
+rm -rf "$PRUNE_MAIN_REPO/.git/worktrees"
+
+run_resolve resolve "$PRUNED_WORKTREE"
+
+assert "resolve: a linked worktree whose gitdir was pruned is not fail-open → exit 1 (REIFY_BIN_UNVOUCHED)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: a linked worktree whose gitdir was pruned → the line says HEAD is 'undeterminable'" \
     text_contains "$RUN_OUT" 'undeterminable'
 
 # -- Summary ------------------------------------------------------------------
