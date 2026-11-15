@@ -4,10 +4,10 @@
 use std::fs;
 
 use crate::harness::{
-    BEGIN_MARKER, END_MARKER, Fixture, HOST, TREE_A, TREE_UNION, UNION, UNION_NODE, UNION_PACKAGE,
-    assert_exit, assert_findings, assert_green, assert_input_error, assert_pin, covered_a,
-    describe, empty_union_manifest, member, member_split_fixture, parse_toml,
-    workspace_building_a_with_u, workspace_of,
+    BEGIN_MARKER, END_MARKER, Fixture, HOST, TREE_A, TREE_UNION, UNION, UNION_PACKAGE, assert_exit,
+    assert_findings, assert_green, assert_input_error, assert_pin, covered_a, describe,
+    empty_union_manifest, finding_lines, member, member_split_fixture, parse_toml, stdout_of,
+    workspace_of,
 };
 
 fn assert_region_only_rewritten(manifest: &str) {
@@ -276,6 +276,11 @@ fn generate_never_pins_a_workspace_member() {
     );
 }
 
+/// A union manifest whose region holds a line generate would never write.
+fn stale_union_manifest() -> String {
+    empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"))
+}
+
 #[test]
 fn generate_refuses_to_write_while_the_coverage_rule_has_findings() {
     let members = vec![
@@ -284,13 +289,8 @@ fn generate_refuses_to_write_while_the_coverage_rule_has_findings() {
         member("u", &[UNION]),
         member(UNION, &[]),
     ];
-    let original =
-        empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
-    let fixture = Fixture::new(
-        &members,
-        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
-    )
-    .with_union_manifest(&original);
+    let original = stale_union_manifest();
+    let fixture = Fixture::metadata_only(&members).with_union_manifest(&original);
 
     assert_findings(
         &fixture.generate(),
@@ -301,6 +301,45 @@ fn generate_refuses_to_write_while_the_coverage_rule_has_findings() {
         fixture.union_manifest(),
         original,
         "generate must not touch the union manifest while coverage findings stand"
+    );
+}
+
+#[test]
+fn generate_refuses_with_the_same_host_union_line_check_prints() {
+    let members = vec![
+        member("a", &[UNION]).build_dep("u"),
+        member("u", &["core"]),
+        member("core", &[UNION]),
+        member(UNION, &[]),
+    ];
+    let original = stale_union_manifest();
+    let fixture = Fixture::metadata_only(&members).with_union_manifest(&original);
+    let manifest = fixture.manifest("u");
+    let checked = fixture.check();
+    let generated = fixture.generate();
+
+    assert_findings(
+        &generated,
+        &[&[
+            "HOST-UNION u",
+            "a -[build]-> u -> core -> workspace-feature-union",
+            "remove u's dependency on core",
+            &manifest,
+        ]],
+        "u reaches the union through covered member core",
+    );
+    assert_eq!(
+        finding_lines(&stdout_of(&generated)),
+        finding_lines(&stdout_of(&checked)),
+        "generate must refuse with exactly the finding lines check prints\n--- check ---\n{}\n\
+         --- generate ---\n{}",
+        describe(&checked),
+        describe(&generated)
+    );
+    assert_eq!(
+        fixture.union_manifest(),
+        original,
+        "generate must not touch the union manifest while a HOST-UNION finding stands"
     );
 }
 
