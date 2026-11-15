@@ -36,7 +36,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode};
 use reify_eval::{CheckResult, ConstraintCheckEntry, Engine, SolverPosture};
 use reify_ir::{ResolutionProfile, Satisfaction};
-use reify_test_support::{collect_errors, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    collect_errors, compile_source_with_stdlib, parse_and_compile_with_stdlib,
+};
 
 fn step_force_shape_source(magnitude_default: &str) -> String {
     format!(
@@ -117,5 +119,40 @@ fn negative_force_default_is_definitely_violated() {
         !carries_code(&result.diagnostics, DiagnosticCode::ConstraintIndeterminate),
         "no constraint may come back Indeterminate; diagnostics: {:?}",
         result.diagnostics
+    );
+}
+
+/// Decompose-time before-image of this input: `INDETERMINATE … operator
+/// undefined for these operand kinds: Real`, exit 0 (PRD §10.3); rejected at
+/// the declaration since #5646, so `reify check` exits 1 before any constraint
+/// is evaluated.
+#[test]
+fn bare_literal_force_default_is_rejected_at_compile_time() {
+    for bare_default in ["-10.0", "10.0"] {
+        let module = compile_source_with_stdlib(&step_force_shape_source(bare_default));
+        let errors = collect_errors(&module.diagnostics);
+        assert!(
+            errors.iter().any(|d| {
+                d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch)
+                    && d.message.contains("'magnitude'")
+            }),
+            "a bare `{bare_default}` Force default must be a ParamDefaultTypeMismatch Error \
+             naming 'magnitude'; errors: {errors:?}"
+        );
+    }
+}
+
+/// The §10.3 symmetry: a dimensionless field against a dimensioned threshold is
+/// a hard compile error through the same comparison guard.
+#[test]
+fn dimensionless_param_against_length_threshold_is_rejected_at_compile_time() {
+    let module = compile_source_with_stdlib(
+        "structure def EfficiencyShape {\n    param efficiency : Real = 0.85\n    constraint efficiency > 5mm\n}",
+    );
+    assert!(
+        has_error_with_code(&module.diagnostics, DiagnosticCode::DimensionMismatch),
+        "a Real param compared against a Length must be a DimensionMismatch Error; \
+         diagnostics: {:?}",
+        module.diagnostics
     );
 }
