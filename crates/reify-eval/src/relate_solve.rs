@@ -3135,7 +3135,8 @@ structure PerpendicularScope {
 #[cfg(test)]
 mod tests_driving_set_failure {
     //! Kernel-free unit tests of a failed driving-set solve's renderer
-    //! (`failure_diagnostic`) and conflict search (`minimal_infeasible_subset`).
+    //! (`failure_diagnostic`) and conflict search: `first_certified_pair`, driven
+    //! by injected pair outcomes, and `minimal_infeasible_subset` end to end.
     //!
     //! In-file because those functions, `FailureContext` and `RealizedDatums`'
     //! map are crate-private. The datums are hand-built via `super::test_datums`,
@@ -3516,10 +3517,11 @@ structure PairSearchScope {
         assert!(tried.is_empty(), "a lone driver has no pair: {tried:?}");
     }
 
-    /// A pair that merely ran out of budget proves nothing; only a pair whose own
-    /// solve is CERTIFIED infeasible is the minimal conflict.
+    /// Real pair solves, through the context production builds, blame the one
+    /// inconsistent pair, (0, 2). Which pair outcomes the search skips is pinned
+    /// with injected outcomes, in the `first_certified_pair` tests.
     #[test]
-    fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
+    fn the_conflict_search_blames_the_first_certified_pair_end_to_end() {
         with_failure_context(STARVED_BUDGET, |context| {
             assert_eq!(
                 context.partition.driving,
@@ -3528,24 +3530,11 @@ structure PairSearchScope {
                 context.partition
             );
 
-            let instances = &context.built.instances;
-            let full = solve_in_context(context, instances, context.budget);
+            let full = solve_in_context(context, &context.built.instances, context.budget);
             assert!(
                 matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
                 "the full driving set is certified under this budget, so production \
                  reaches the conflict search: {full:?}"
-            );
-
-            let pair = [instances[0].clone(), instances[1].clone()];
-            let starved = solve_in_context(context, &pair, context.budget);
-            assert!(
-                matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
-                "the first pair is out of budget, not infeasible: {starved:?}"
-            );
-            let funded = solve_in_context(context, &pair, SolveBudget::default());
-            assert!(
-                funded.result.is_ok(),
-                "the first pair has a root: {funded:?}"
             );
 
             assert_eq!(
