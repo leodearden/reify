@@ -433,14 +433,8 @@ mod tests {
                     summary: "Sets the long flag to the given value for this run alone, \
                               overrides any default and each earlier setting; repeatable",
                 },
-                FlagHelp {
-                    synopsis: "--docs <url>",
-                    summary: "https://example.invalid/reify/reference/flags/the-complete-list \
-                              explains every flag in full",
-                },
             ]),
         ]);
-        let over_long_word_row = "  --docs <url>         https://example.invalid/reify/reference/flags/the-complete-list";
         let expected = [
             "Usage: reify demo",
             "",
@@ -453,8 +447,28 @@ mod tests {
             "  --long-flag <value>  Sets the long flag to the given value for this run alone,",
             "                       overrides any default and each earlier setting;",
             "                       repeatable",
-            over_long_word_row,
-            "                       explains every flag in full",
+        ]
+        .join("\n")
+            + "\n";
+        assert_eq!(rendered(&entry), expected);
+    }
+
+    #[test]
+    fn a_word_wider_than_the_description_width_sits_alone_on_its_line_unsplit() {
+        let entry = demo_entry(&[HelpSection::Flags(&[FlagHelp {
+            synopsis: "--docs <url>",
+            summary: "Read https://example.invalid/reify/reference/flags/the-complete-list.html \
+                      for the details",
+        }])]);
+        let expected = [
+            "Usage: reify demo",
+            "",
+            "Demo summary.",
+            "",
+            "Flags:",
+            "  --docs <url>  Read",
+            "                https://example.invalid/reify/reference/flags/the-complete-list.html",
+            "                for the details",
         ]
         .join("\n")
             + "\n";
@@ -466,6 +480,38 @@ mod tests {
         assert_eq!(
             rendered(&demo_entry(&[])),
             "Usage: reify demo\n\nDemo summary.\n"
+        );
+    }
+
+    /// Every row of every subcommand's `Flags:` table, with the subcommand that lists it.
+    fn listed_flags() -> impl Iterator<Item = (&'static str, &'static FlagHelp)> {
+        SUBCOMMANDS.iter().flat_map(|entry| {
+            entry
+                .details
+                .iter()
+                .filter_map(|section| match section {
+                    HelpSection::Flags(flags) => Some(*flags),
+                    _ => None,
+                })
+                .flatten()
+                .map(move |flag| (entry.name, flag))
+        })
+    }
+
+    #[test]
+    fn every_flag_row_in_the_subcommand_table_has_a_non_blank_summary() {
+        assert!(
+            listed_flags().next().is_some(),
+            "no subcommand lists a flag, so there was nothing to check"
+        );
+        let undescribed: Vec<String> = listed_flags()
+            .filter(|(_, flag)| flag.summary.trim().is_empty())
+            .map(|(name, flag)| format!("`reify {name} --help`: {}", flag.synopsis))
+            .collect();
+        assert!(
+            undescribed.is_empty(),
+            "every `Flags:` row must say what its flag does, but these have no description: \
+             {undescribed:?}"
         );
     }
 }
