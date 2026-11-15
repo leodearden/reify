@@ -167,10 +167,6 @@ fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<b
     let output = child
         .wait_with_output()
         .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", classifier.display()));
-    writer
-        .join()
-        .expect("the stdin writer thread does not panic")
-        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
     assert!(
         output.status.success(),
         "{} attribute failed ({}): {}",
@@ -178,6 +174,10 @@ fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<b
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+    writer
+        .join()
+        .expect("the stdin writer thread does not panic")
+        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
 
     // One record per input path, in order:
     // `<is_global>\t<inert>\t<tree>\t<seed_crates>\t<unioned_crates>\t<path>`.
