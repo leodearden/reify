@@ -1,8 +1,9 @@
 //! `reify eval` and `reify build` compile the entry as a program (task #5517,
 //! PRD resolution-unification.md γ): a plain `import` reaches its pub
 //! structures, and repeated `--cfg` selects `#cfg`-gated platform modules
-//! exactly as `reify check` does. Inputs are the committed fixture dirs
-//! `tests/fixtures/multi_file/` and `tests/fixtures/multi_file_cfg/`.
+//! exactly as `reify check` does, and an import of a missing module fails both
+//! commands. Inputs are the committed fixture dirs `tests/fixtures/multi_file/`,
+//! `tests/fixtures/multi_file_cfg/` and `tests/fixtures/multi_file_missing_import/`.
 
 use crate::common;
 
@@ -92,4 +93,26 @@ fn build_cfg_target_selects_the_platform_module_as_check_does() {
             "build --cfg {cfg} wrote no geometry.\nstderr: {stderr}"
         );
     }
+}
+
+#[test]
+fn eval_and_build_fail_on_an_import_of_a_missing_module() {
+    let main = common::fixture_path("multi_file_missing_import/main.ri");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out.step");
+    let out_arg = out.to_str().expect("utf-8 tempdir");
+    for args in [
+        vec!["eval", main.as_str()],
+        vec!["build", main.as_str(), "-o", out_arg],
+    ] {
+        let (status, stdout, stderr) = common::run_with_args(&args);
+        assert!(
+            status.code() == Some(1) && stderr.contains("module 'nosuch' not found"),
+            "{args:?} must fail on the missing import.\nstatus: {status}\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    assert!(
+        !out.exists(),
+        "build wrote geometry despite the missing import"
+    );
 }

@@ -953,10 +953,10 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
 }
 
 /// Dedup key for [`dedup_diagnostics_preserve_order`]: the fields that
-/// jointly determine a [`Diagnostic`]'s rendered identity (see that
-/// function's doc comment for why `Diagnostic` itself can't derive
-/// `PartialEq`/`Hash`). Factored out of the function signature per
-/// `clippy::type_complexity`.
+/// jointly determine a [`Diagnostic`]'s rendered identity. That function's
+/// doc comment says why the key is hand-rolled and why it is stricter than
+/// `reify_core::DiagnosticIdentity`. Factored out of the function
+/// signature per `clippy::type_complexity`.
 type DiagnosticDedupKey = (
     Severity,
     Option<DiagnosticCode>,
@@ -988,11 +988,13 @@ type DiagnosticDedupKey = (
 /// (correctly, per the prior amendment) reopened this narrow
 /// duplicate-diagnostic edge case for both entry points.
 ///
-/// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
-/// `reify-core`, outside this task's locked module), so this keys on the
+/// [`Diagnostic`] has no `PartialEq`/`Hash` derive, so this keys on the
 /// fields that jointly determine a diagnostic's rendered identity —
-/// severity, code, message, label `(span, message)` pairs, and candidates —
-/// rather than requiring an upstream derive change.
+/// severity, code, message, label `(span, message)` pairs, and candidates.
+/// Deliberately stricter than [`reify_core::DiagnosticIdentity`] (severity,
+/// code, message only): the same-cell duplicate agrees on labels and
+/// candidates too, but findings differing only by span or candidates are
+/// distinct and must both survive — so do not swap this key for that one.
 ///
 /// # Caller scope (amend, task ε #4957 review rounds 4-5)
 ///

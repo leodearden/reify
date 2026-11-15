@@ -2165,12 +2165,13 @@ structure MechFixed {
 }
 
 #[cfg(test)]
-mod test_datums {
+mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
+    use reify_test_support::parse_and_compile_with_stdlib;
 
-    use super::RealizedDatums;
+    use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
     pub(super) fn point3v(x: f64, y: f64, z: f64) -> Value {
         Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
@@ -2203,6 +2204,46 @@ mod test_datums {
         }
         RealizedDatums { operands }
     }
+
+    /// Collect the scope of `source`'s template `name`, panicking with the
+    /// available template names on a miss so a fixture rename fails legibly
+    /// rather than as `unwrap` on `None`. A fixture that compiles with errors
+    /// panics first, with its diagnostics.
+    pub(super) fn relate_scope(source: &str, name: &str) -> RelateScope {
+        let module = parse_and_compile_with_stdlib(source);
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture has no template `{name}`; its templates are {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        collect_relate_scope(template)
+    }
+
+    /// `Broken` parses and still compiles to its template, so the template lookup
+    /// alone would accept it; only a check of the compile diagnostics refuses it.
+    #[test]
+    #[should_panic(expected = "compile errors")]
+    fn relate_scope_refuses_a_fixture_that_compiles_with_errors() {
+        const BROKEN: &str = r#"
+structure Broken {
+    let x : Length = true
+}
+"#;
+        relate_scope(BROKEN, "Broken");
+    }
+
+    /// The fixture compiles cleanly but lacks the template asked for, as after a
+    /// rename: the panic names that template and lists those that exist.
+    #[test]
+    #[should_panic(expected = "has no template `Missing`; its templates are [\"Present\"]")]
+    fn relate_scope_names_a_missing_template_and_the_available_ones() {
+        relate_scope("structure Present {}", "Missing");
+    }
 }
 
 #[cfg(test)]
@@ -2219,13 +2260,9 @@ mod tests_static_verification {
 
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::Value;
-    use reify_test_support::compile_source_with_stdlib;
 
-    use super::test_datums::{axis_v, plane_v, point3v, realized};
-    use super::{
-        RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
-        verify_static_scope,
-    };
+    use super::test_fixtures::{axis_v, plane_v, point3v, realized, relate_scope};
+    use super::{RealizedDatums, RelateScope, StaticRelateFacts, verify_static_scope};
 
     /// Three scopes covering the whole `posed` classification:
     ///
@@ -2331,21 +2368,9 @@ structure PerpendicularScope {
 }
 "#;
 
-    /// Collect the named scope, panicking with the available template names on a
-    /// miss so a fixture rename fails legibly rather than as `unwrap` on `None`.
+    /// Collect the named scope from this module's `SOURCE`.
     fn scope(name: &str) -> RelateScope {
-        let module = compile_source_with_stdlib(SOURCE);
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "fixture template `{name}` must compile; got {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        collect_relate_scope(template)
+        relate_scope(SOURCE, name)
     }
 
     /// A sub declared with a concrete `at <pose>` is recorded in `posed`, in
@@ -3139,7 +3164,7 @@ mod tests_driving_set_failure {
     //! by injected pair outcomes, and `minimal_infeasible_subset` end to end.
     //!
     //! In-file because those functions, `FailureContext` and `RealizedDatums`'
-    //! map are crate-private. The datums are hand-built via `super::test_datums`,
+    //! map are crate-private. The datums are hand-built via `super::test_fixtures`,
     //! so no geometry kernel is involved.
 
     use reify_constraints::relate_solve::{FrameSolution, FrameSolveOutcome};
@@ -3148,14 +3173,13 @@ mod tests_driving_set_failure {
         BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
         ResidualSource, SolveFailureCause, SolveStall,
     };
-    use reify_test_support::compile_source_with_stdlib;
 
-    use super::test_datums::{axis_v, plane_v, realized};
+    use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
     use super::{
-        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
-        RelationInstance, RelationPartition, SolveBudget, build_relation_instances,
-        collect_relate_scope, failure_diagnostic, first_certified_pair, minimal_infeasible_subset,
-        partition_driving_set, solve_frame_outcome, solve_relate_scope_within, solve_scaling,
+        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, RelationInstance,
+        RelationPartition, SolveBudget, build_relation_instances, failure_diagnostic,
+        first_certified_pair, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3218,27 +3242,12 @@ structure PairSearchScope {
         ])
     }
 
-    fn pair_search_scope() -> RelateScope {
-        let module = compile_source_with_stdlib(SOURCE);
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == "PairSearchScope")
-            .unwrap_or_else(|| {
-                panic!(
-                    "fixture template `PairSearchScope` must compile; got {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        collect_relate_scope(template)
-    }
-
     /// Run `f` over the `FailureContext` production builds for `PairSearchScope`
     /// under `budget`: the scope's instances, its single auto Frame unknown at
     /// the identity seed, one scaling over every instance, and the driving-set
     /// partition at that seed.
     fn with_failure_context<R>(budget: SolveBudget, f: impl FnOnce(&FailureContext) -> R) -> R {
-        let scope = pair_search_scope();
+        let scope = relate_scope(SOURCE, "PairSearchScope");
         let datums = pair_search_datums();
         let built = build_relation_instances(&scope, &datums);
         let auto = &scope.auto_unknowns[0];
