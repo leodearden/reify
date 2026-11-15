@@ -209,7 +209,7 @@ def _decide(
     declared = releasescope.release_declared(repo_root, planning)
     if isinstance(declared, Refused):
         return Refused((*diagnostics, *declared.lines), declared.exit_code)
-    skips, delta_diagnostics = releasescope.decide_release_delta(role_policy, planning, repo_root)
+    skips, delta_diagnostics = releasescope.decide_release_delta(role_policy, repo_root, planning)
     return Decided(
         Families.of(action), decision, step_env, selected, narrowed, declared, skips,
         (*diagnostics, *delta_diagnostics),

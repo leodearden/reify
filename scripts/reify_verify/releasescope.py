@@ -30,7 +30,7 @@ def release_declared(repo_root: Path, planning: Mapping[str, str]) -> tuple[str,
 
 
 def decide_release_delta(
-    role_policy: RolePolicy, planning: Mapping[str, str], repo_root: Path
+    role_policy: RolePolicy, repo_root: Path, planning: Mapping[str, str]
 ) -> tuple[bool, tuple[str, ...]]:
     """Whether the run skips its release pass, and the predicate's stderr lines.
 
