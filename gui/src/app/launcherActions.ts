@@ -111,7 +111,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
       store.applyModeState(await deps.setMode('debug'));
     } catch (err) {
       const message = errorMessage(err);
-      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message });
+      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED, message });
       deps.notify(`Debug mode not recorded (set_mode failed): ${message}`);
     }
   }
@@ -119,8 +119,8 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   /**
    * Enter Debug mode for a debug server that is already live (REIFY_DEBUG=1 at
    * launch). The bridge does not wait on set_mode, a set_mode failure becomes
-   * the mode error and a notification, and the action rejects only when the
-   * bridge fails.
+   * the mode error and a notification (E_GUI_MODE_FAILED, since the listener
+   * is already live), and the action rejects only when the bridge fails.
    */
   async function adoptLiveDebugServer(): Promise<void> {
     const bridge = debugBridgeStage();
