@@ -67,6 +67,121 @@ max_per_module: 1
 # deep-file coarsening. The residual shared-dispatch-registry contention (compute_targets/
 # mod.rs, engine_build match family) needs data-driven dispatch tables, not lock depth.
 lock_depth: 10
+# Documentation lock keys take unlimited holders (Leo's ruling, 2026-11-13, dark_factory task
+# 5467), switched on by reify task 9995 after reify task 5099 waited 24.4 h on
+# docs/debug-mcp-contract.md (esc-5099-8). The keys stay in every task's lock list; only their
+# capacity changes.
+# SHARED: every other key under docs/ plus root *.md. That includes prose that reify-audit's
+# live-tree tests and the doc-sync infra tests read (reify-stdlib-reference.md, invariants.md,
+# PRD status and citations, capability manifests, verify-pipeline-knobs.md): the merge gate
+# re-runs those checks on the merged tree, and these are the most contended files.
+# EXCLUSIVE, via an exact module_overrides entry at 1, which beats the rule: files a gate-run
+# test compiles in or reads as data, and code under docs/. A concurrent edit to those can break
+# a test, not merely conflict as text. Every ancestor directory key of an exclusive file is
+# pinned too; otherwise a task declaring the directory takes the unlimited limit and co-holds
+# with that file's holder. Guard: tests/infra/test_unlimited_holder_lock_pins.py.
+# Keys are exact lock keys at lock_depth 10. Red tier: takes effect at the next orchestrator
+# restart. Reference: dark-factory skills/orchestrate/references/project-setup.md
+# "Per-subproject module overrides".
+unlimited_holder_locks:
+  prefixes: ["docs/"]
+  root_markdown: true
+module_overrides:
+  # Language spec (include_str! and keyword tests) and its spec-anchor-lint tombstones.
+  docs/reify-language-spec.md: 1
+  docs/reify-language-spec.tombstones: 1
+  # .ri fixtures: the tracked-.ri parse guard and include_str! tests. Drop these and the
+  # fixtures directory pin when #6431 moves them to tests/prd-gate/fixtures/.
+  docs/prds/v0_6/fixtures/adv_csg_boolean_substrate.ri: 1
+  docs/prds/v0_6/fixtures/adv_iso_it_precedent.ri: 1
+  docs/prds/v0_6/fixtures/adv_thread_solid_precollision.ri: 1
+  docs/prds/v0_6/fixtures/appearance_surface.ri: 1
+  docs/prds/v0_6/fixtures/determinacy_intrinsics.ri: 1
+  docs/prds/v0_6/fixtures/dic_inert_connect.ri: 1
+  docs/prds/v0_6/fixtures/dic_min_no_autos.ri: 1
+  docs/prds/v0_6/fixtures/dic_min_unconstrained.ri: 1
+  docs/prds/v0_6/fixtures/dic_min_unread.ri: 1
+  docs/prds/v0_6/fixtures/dic_relate_static_ok.ri: 1
+  docs/prds/v0_6/fixtures/dic_relate_static_violated.ri: 1
+  docs/prds/v0_6/fixtures/dic_string_auto.ri: 1
+  docs/prds/v0_6/fixtures/dimensioned_construction_strictness.ri: 1
+  docs/prds/v0_6/fixtures/discrete_balance_inline.ri: 1
+  docs/prds/v0_6/fixtures/discrete_balance_lets.ri: 1
+  docs/prds/v0_6/fixtures/discrete_balance_min.ri: 1
+  docs/prds/v0_6/fixtures/discrete_enum_auto.ri: 1
+  docs/prds/v0_6/fixtures/discrete_int_auto.ri: 1
+  docs/prds/v0_6/fixtures/discrete_let_cont.ri: 1
+  docs/prds/v0_6/fixtures/discrete_mixed.ri: 1
+  docs/prds/v0_6/fixtures/discrete_set_hint.ri: 1
+  docs/prds/v0_6/fixtures/fit_enum_user_module_wart.ri: 1
+  docs/prds/v0_6/fixtures/fit_if_then_else_let.ri: 1
+  docs/prds/v0_6/fixtures/fit_match_enum_let.ri: 1
+  docs/prds/v0_6/fixtures/helix_sweep_dep_5342.ri: 1
+  docs/prds/v0_6/fixtures/hole_cutter_member_gap.ri: 1
+  docs/prds/v0_6/fixtures/hole_same_struct_cutter.ri: 1
+  docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri: 1
+  docs/prds/v0_6/fixtures/member_chain_geom.ri: 1
+  docs/prds/v0_6/fixtures/member_chain_scalar.ri: 1
+  docs/prds/v0_6/fixtures/member_enum_ctor.ri: 1
+  docs/prds/v0_6/fixtures/member_fn_geometry.ri: 1
+  docs/prds/v0_6/fixtures/member_geom_alias.ri: 1
+  docs/prds/v0_6/fixtures/member_geom_let_instance.ri: 1
+  docs/prds/v0_6/fixtures/member_instance_geom_field.ri: 1
+  docs/prds/v0_6/fixtures/member_let_read.ri: 1
+  docs/prds/v0_6/fixtures/member_sub_geom_baseline.ri: 1
+  docs/prds/v0_6/fixtures/multi_pane_surface.ri: 1
+  docs/prds/v0_6/fixtures/placement_b3_operand_type.ri: 1
+  docs/prds/v0_6/fixtures/placement_b5_world_frame.ri: 1
+  docs/prds/v0_6/fixtures/placement_b8_min_clearance_structs.ri: 1
+  docs/prds/v0_6/fixtures/placement_b9_no_undeclared.ri: 1
+  docs/prds/v0_6/fixtures/placement_relations_surfaces.ri: 1
+  docs/prds/v0_6/fixtures/shadow_oblig_omitted.ri: 1
+  docs/prds/v0_6/fixtures/shadow_oblig_redeclared.ri: 1
+  docs/prds/v0_6/fixtures/shadow_oblig_required.ri: 1
+  docs/prds/v0_6/fixtures/shadow_payload_binder.ri: 1
+  docs/prds/v0_6/fixtures/silent_undef_generate_geometry.ri: 1
+  docs/prds/v0_6/fixtures/silent_undef_unbound_param.ri: 1
+  docs/prds/v0_6/fixtures/surface_finish_area_cost.ri: 1
+  docs/prds/v0_6/fixtures/surface_finish_functional.ri: 1
+  docs/prds/v0_6/fixtures/thread_form_some_geometry.ri: 1
+  docs/prds/v0_6/fixtures/thread_repr_pragma.ri: 1
+  docs/prds/v0_6/fixtures/thread_spec_ctor_derived_lets.ri: 1
+  # Units-length PRD: the ledger test binds its section 6 table.
+  docs/prds/v0_6/units-length-gate-completion.md: 1
+  # Ctor-conformance survey: the committed_survey_* tests read it.
+  docs/prds/struct-ctor-field-type-conformance.survey.md: 1
+  # Jobserver tuning measurements: test_jobserver_tuning_harness.sh runs --check against it.
+  docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json: 1
+  # e3 analysis code and committed results: imported or run by tests/infra/test_e3_*.
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_analysis.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_cadence.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_inspect.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_m3.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_models.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_task_models.json: 1
+  docs/prds/v0_6/e3-granularity/analysis/e2_df_widening.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e3_model.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e3_sources.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/e3_stats.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/refine2.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/reify_e2.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/reify_refine.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/reify_task_size_analysis.py: 1
+  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/endpoints.json: 1
+  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/report.txt: 1
+  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/tasks-snapshot.json: 1
+  docs/prds/v0_6/e3-granularity/analysis/task_size_analysis.py: 1
+  # Every ancestor directory key of the files above.
+  docs: 1
+  docs/prds: 1
+  docs/prds/v0_6: 1
+  docs/prds/v0_6/e3-granularity: 1
+  docs/prds/v0_6/e3-granularity/analysis: 1
+  docs/prds/v0_6/e3-granularity/analysis/results: 1
+  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z: 1
+  docs/prds/v0_6/fixtures: 1
 
 # TEMP (Leo 2026-06-18): bumped the per-task verify timeout 1800 (package default) -> 3600 for cold-cache
 # verify-timeout relief until the Phase 6 warm-lane CoW pool (#4665) is live. REVERT at #4665.
