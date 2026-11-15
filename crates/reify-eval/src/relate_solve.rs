@@ -3128,10 +3128,11 @@ mod tests_driving_set_failure {
     //! map are crate-private. The datums are hand-built via `super::test_datums`,
     //! so no geometry kernel is involved.
 
-    use reify_constraints::relate_solve::FrameSolveOutcome;
+    use reify_constraints::relate_solve::{FrameSolution, FrameSolveOutcome};
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
-        NonFiniteEntry, NonFiniteEvaluation, ResidualSource, SolveFailureCause, SolveStall,
+        BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+        ResidualSource, SolveFailureCause, SolveStall,
     };
     use reify_test_support::compile_source_with_stdlib;
 
@@ -3139,8 +3140,8 @@ mod tests_driving_set_failure {
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
         RelationInstance, RelationPartition, SolveBudget, build_relation_instances,
-        collect_relate_scope, failure_diagnostic, minimal_infeasible_subset, partition_driving_set,
-        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
+        collect_relate_scope, failure_diagnostic, first_certified_pair, minimal_infeasible_subset,
+        partition_driving_set, solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3267,6 +3268,67 @@ structure PairSearchScope {
         )
     }
 
+    // Hand-built pair-solve outcomes, one per way a solve can end.
+
+    fn certified() -> SolveFailureCause {
+        SolveFailureCause::Infeasible(InfeasibilityCertificate {
+            gradient_norm: 0.0,
+            range_cosine: 0.0,
+            max_scaled_residual: 2.0,
+            blame: vec![],
+        })
+    }
+
+    fn exhausted() -> SolveFailureCause {
+        SolveFailureCause::BudgetExhausted(BudgetExhaustion {
+            iterations: 0,
+            budget: 0,
+            step_norms: vec![],
+            max_scaled_residual: 2.0,
+        })
+    }
+
+    fn stalled() -> SolveFailureCause {
+        SolveFailureCause::Stalled(SolveStall {
+            iterations: 7,
+            step_norm: 1e-12,
+            range_cosine: 0.5,
+            max_scaled_residual: 40.0,
+        })
+    }
+
+    fn non_finite() -> SolveFailureCause {
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(0),
+            row: 0,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        })
+    }
+
+    fn converged() -> FrameSolution {
+        FrameSolution {
+            pose: Pose::identity(),
+            rank: 6,
+            null_space: vec![],
+        }
+    }
+
+    /// Run `first_certified_pair` over `driving`, answering each pair with
+    /// `outcome`: what it found, and the pairs it solved to get there, in order.
+    fn search(
+        driving: &[usize],
+        outcome: impl Fn(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+    ) -> (Option<[usize; 2]>, Vec<[usize; 2]>) {
+        let mut tried = Vec::new();
+        let found = first_certified_pair(driving, |i, j| {
+            tried.push([i, j]);
+            outcome(i, j)
+        });
+        (found, tried)
+    }
+
     /// `with_failure_context` hands its callers the context
     /// `solve_relate_scope_within` builds: production's driving-set solve fails
     /// with the same cause, and production renders it to the same single message.
@@ -3319,12 +3381,7 @@ structure PairSearchScope {
     /// never as a certified conflict.
     #[test]
     fn a_stalled_driving_set_is_coded_constraint_unsatisfiable() {
-        let cause = SolveFailureCause::Stalled(SolveStall {
-            iterations: 7,
-            step_norm: 1e-12,
-            range_cosine: 0.5,
-            max_scaled_residual: 40.0,
-        });
+        let cause = stalled();
         let diagnostic = with_failure_context(SolveBudget::default(), |context| {
             failure_diagnostic(&cause, context)
         });
@@ -3384,6 +3441,66 @@ structure PairSearchScope {
             "{diagnostic:?}"
         );
         assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
+    }
+
+    /// The search walks the driving set's pairs i-before-j, in INSTANCE positions
+    /// (`[3, 5, 8]`, not `[0, 1, 2]`), and stops at the first certified one.
+    #[test]
+    fn the_conflict_is_the_first_certified_pair_in_pairwise_order() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 8] | [5, 8] => Err(certified()),
+            _ => Ok(converged()),
+        });
+        assert_eq!(conflict, Some([3, 8]));
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8]],
+            "the search stops at the first certified pair"
+        );
+    }
+
+    /// A pair that converged, ran out of budget, stalled or met a non-finite value
+    /// proves nothing: the search skips it and blames the next certified pair.
+    #[test]
+    fn only_a_certified_pair_is_the_conflict() {
+        let skipped = [
+            ("converged", Ok(converged())),
+            ("budget-exhausted", Err(exhausted())),
+            ("stalled", Err(stalled())),
+            ("non-finite", Err(non_finite())),
+        ];
+        for (label, first_pair) in skipped {
+            let (conflict, _) = search(&[3, 5, 8], |i, j| match [i, j] {
+                [3, 5] => first_pair.clone(),
+                _ => Err(certified()),
+            });
+            assert_eq!(
+                conflict,
+                Some([3, 8]),
+                "a {label} pair must be skipped, not blamed"
+            );
+        }
+    }
+
+    /// With no certified pair there is no pairwise conflict (the caller falls back
+    /// to the whole driving set); a lone driver has no pair to try.
+    #[test]
+    fn no_certified_pair_is_no_conflict() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 5] => Err(exhausted()),
+            [3, 8] => Err(stalled()),
+            _ => Err(non_finite()),
+        });
+        assert_eq!(conflict, None);
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8], [5, 8]],
+            "every pair is tried before the search gives up"
+        );
+
+        let (conflict, tried) = search(&[4], |_, _| Err(certified()));
+        assert_eq!(conflict, None);
+        assert!(tried.is_empty(), "a lone driver has no pair: {tried:?}");
     }
 
     /// A pair that merely ran out of budget proves nothing; only a pair whose own
