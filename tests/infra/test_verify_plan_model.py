@@ -25,6 +25,7 @@ thin wrapper tests/infra/test_verify_plan_model.sh.
 """
 
 import dataclasses
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,7 @@ INFRA_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INFRA_DIR.parents[1]
 sys.path.insert(0, str(INFRA_DIR))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from scope_record_harness import InClone, discard_clone  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 from reify_verify import (  # noqa: E402
@@ -93,6 +95,10 @@ LINT_ALL_INFRA = ["lint", "--scope", "all", "--include-infra", "--print-plan"]
 GUI_CRATE = Packages((narrowing.GUI_CRATE,))
 OVERRIDE_CONFIG = NextestConfig("/caller/nextest.toml", ConfigOrigin.OVERRIDE)
 RECORDING = ConfirmRecording("j.xml", ((Profile.DEBUG, ConfirmPaths("m.txt", "s.json")),))
+
+
+def tearDownModule():
+    discard_clone()
 
 
 def base_env(**overrides):
@@ -855,6 +861,58 @@ class TestGeneratedConfigCleanup(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 build.plan_invocation(invocation, env, REPO_ROOT)
         self.assertEqual(self.generated(), [])
+
+
+class TestCompositionFailureAfterTheRegion(InClone):
+    """A nextest config the test region generated is removed when composing the plan fails after it.
+
+    The failure is a real one, in the shared clone: its git-env scrub lib
+    fails, and a SELECTIVE role reads that lib only after the region holds its
+    generated config. The planted function lists TMPDIR as it fails, so a case
+    that fails before any config exists cannot pass for want of one.
+    """
+
+    GENERATED_PREFIX = "reify-nextest-occt."
+    FAULT_EXIT = 7
+
+    def setUp(self):
+        super().setUp()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.tmpdir = Path(scratch.name) / "tmp"
+        self.tmpdir.mkdir()
+        self.listed_at_fault = Path(scratch.name) / "tmpdir-at-fault.txt"
+
+    def plant_fault(self):
+        """Make the clone's scrub-prefix function list TMPDIR into a file, then exit FAULT_EXIT."""
+        scrub = build.GIT_ENV_SCRUB_PREFIX
+        listing = f"ls -1 -- {shlex.quote(str(self.tmpdir))} > {shlex.quote(str(self.listed_at_fault))}"
+        self.clone.append(scrub.lib, f"\n{scrub.function}() {{ {listing}; return {self.FAULT_EXIT}; }}\n")
+
+    def generated_names(self, names) -> list[str]:
+        return [name for name in names if name.startswith(self.GENERATED_PREFIX)]
+
+    def test_a_failure_after_the_region_removes_its_generated_config(self):
+        self.clone.stage("scripts/verify.sh")
+        self.plant_fault()
+        env = base_env(TMPDIR=str(self.tmpdir), DF_VERIFY_ROLE="task")
+        invocation = cli.parse_invocation(["test", "--scope", "staged"], env)
+        self.assertIsNone(invocation.plan_format, "premise: an execute-mode invocation")
+        self.assertIs(
+            policy.ROLE_TABLE[invocation.role].infra_tier,
+            policy.InfraTier.SELECTIVE,
+            "premise: only a SELECTIVE role reads the scrub prefix",
+        )
+
+        with self.assertRaises(BashCallError) as raised:
+            build.plan_invocation(invocation, env, self.clone.root)
+
+        self.assertEqual(raised.exception.call, build.GIT_ENV_SCRUB_PREFIX)
+        self.assertEqual(raised.exception.result.returncode, self.FAULT_EXIT)
+        self.assertTrue(self.listed_at_fault.is_file(), "premise: the planted function ran")
+        at_fault = self.generated_names(self.listed_at_fault.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(len(at_fault), 1, "premise: the region had generated its config when composing failed")
+        self.assertEqual(sorted(self.tmpdir.glob(f"{self.GENERATED_PREFIX}*")), [])
 
 
 if __name__ == "__main__":
