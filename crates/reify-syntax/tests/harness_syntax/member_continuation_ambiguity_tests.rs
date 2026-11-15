@@ -383,9 +383,9 @@ fn member_continuation_sweep(root: &Path) -> ContinuationSweep {
     sweep
 }
 
-/// The sweep reads the shared listing, so it never reads a `.ri` under a
-/// `VERIFY_INERT_RI_TREES` tree. The listing's own tests pin which trees those
-/// are; this pins that the sweep reads that listing.
+/// The sweep reads the shared listing, so it never reads a `.ri` verify's
+/// scope classifier marks inert. The listing's own tests pin that it follows
+/// the classifier; this pins that the sweep reads that listing.
 #[test]
 fn member_continuation_sweep_skips_verify_inert_trees() {
     let dir = tracked_fixture_repo(&[

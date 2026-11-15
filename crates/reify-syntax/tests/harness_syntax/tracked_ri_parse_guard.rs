@@ -2,13 +2,13 @@
 //! `docs/prds/v0_6/syntax-lowering-contract.md` D12 / §9 α (task #9343).
 //!
 //! Every `.ri` in the shared swept listing (`tracked_corpus::swept_ri_paths`,
-//! which omits `tracked_corpus::VERIFY_INERT_RI_TREES`) must have a clean Rust
-//! tree-sitter CST and an empty `reify_syntax::parse(..).errors`. Two kinds of
-//! file are excepted. A file declared in [`MUST_ERROR_RI_FIXTURES`] must keep
-//! its declared fault, wherever it lives. An undeclared member of
-//! [`UNSWEPT_RI_TREES`] is skipped unread. No entry may be declared under a
-//! verify-inert tree. When this guard reds, fix the file in the same diff, or
-//! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
+//! which omits every path verify's scope classifier marks inert) must have a
+//! clean Rust tree-sitter CST and an empty `reify_syntax::parse(..).errors`.
+//! Two kinds of file are excepted. A file declared in [`MUST_ERROR_RI_FIXTURES`]
+//! must keep its declared fault, wherever it lives. An undeclared member of
+//! [`UNSWEPT_RI_TREES`] is skipped unread. No entry may be a path the scope
+//! classifier marks inert. When this guard reds, fix the file in the same diff,
+//! or declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -19,7 +19,7 @@ use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
-use crate::common::tracked_corpus::{is_verify_inert, swept_ri_paths, workspace_root};
+use crate::common::tracked_corpus::{swept_ri_paths, verify_inert_facts, workspace_root};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,19 +187,22 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
     },
 ];
 
-/// Declared entries under a verify-inert tree. The guard never reads such a
-/// file, so its declaration can never be checked.
-fn declared_entries_in_inert_trees(fixtures: &[MustErrorFixture]) -> Vec<&str> {
-    fixtures
-        .iter()
-        .map(|fixture| fixture.path)
-        .filter(|path| is_verify_inert(path))
+/// Declared entries the scope classifier marks inert. The swept listing omits
+/// such a file, so its declaration can never be checked.
+fn inert_declared_entries(fixtures: &[MustErrorFixture]) -> Vec<&str> {
+    let paths: Vec<&str> = fixtures.iter().map(|fixture| fixture.path).collect();
+    let inert = verify_inert_facts(&paths);
+    paths
+        .into_iter()
+        .zip(inert)
+        .filter(|(_, inert)| *inert)
+        .map(|(path, _)| path)
         .collect()
 }
 
 /// The prefixes of the rows that cover none of `swept`: stale, so to be
-/// deleted. `swept` omits the verify-inert trees, so a row placed under one is
-/// flagged too.
+/// deleted. `swept` omits the classifier-inert paths, so a row placed over
+/// only such paths is flagged too.
 fn dead_unswept_rows<'r>(rows: &'r [UnsweptTree], swept: &[String]) -> Vec<&'r str> {
     rows.iter()
         .map(|row| row.prefix)
@@ -215,12 +218,8 @@ enum Expectation {
     Unswept,
 }
 
-/// A path in a verify-inert tree is never read, declared or not. Otherwise a
-/// declared entry wins over an unswept tree, so it is checked even there.
+/// A declared entry wins over an unswept tree, so it is checked even there.
 fn expectation(path: &str) -> Expectation {
-    if is_verify_inert(path) {
-        return Expectation::Unswept;
-    }
     if let Some(fixture) = MUST_ERROR_RI_FIXTURES.iter().find(|f| f.path == path) {
         return Expectation::MustError(fixture.kind);
     }
@@ -338,7 +337,7 @@ impl fmt::Display for Violation {
             ),
             Self::StaleEntry => f.write_str(
                 "declared in MUST_ERROR_RI_FIXTURES but not in the swept listing (untracked, or \
-                 under a verify-inert tree); fix or remove the entry",
+                 a path verify's scope classifier marks inert); fix or remove the entry",
             ),
         }
     }
@@ -466,10 +465,6 @@ const DECLARED_IN_UNSWEPT_TREE: &str =
 /// An undeclared member of an unswept tree.
 const UNDECLARED_IN_UNSWEPT_TREE: &str =
     "crates/reify-spec-conformance/fixtures/zz_section/zz_synthetic.ri";
-
-/// An undeclared member of the `docs/` tree, outside the deprecated fixtures
-/// tier, so the test pins the whole tree and not one directory of it.
-const UNDECLARED_IN_DOCS_TREE: &str = "docs/zz_section/zz_synthetic.ri";
 
 fn faulty_site() -> CstFaultSite {
     observe(FAULTY)
@@ -648,20 +643,6 @@ fn sweep_skips_an_undeclared_member_of_an_unswept_tree_unread() {
 }
 
 #[test]
-fn sweep_skips_an_undeclared_member_of_the_docs_tree_unread() {
-    let result = sweep(
-        &listing(&[UNDECLARED_IN_DOCS_TREE]),
-        |rel| panic!("{rel} is under a verify-inert tree and must not be read"),
-        observe,
-    );
-    assert_eq!(
-        findings_on(&result, UNDECLARED_IN_DOCS_TREE),
-        Vec::<&Violation>::new()
-    );
-    assert_eq!(result.swept, 0);
-}
-
-#[test]
 fn sweep_reports_an_unreadable_file() {
     let result = sweep(
         &listing(&[PROBE_PATH]),
@@ -742,11 +723,11 @@ const SYNTHETIC_UNSWEPT: &[UnsweptTree] = &[
 ];
 
 #[test]
-fn declared_entries_in_inert_trees_names_each_offender() {
+fn inert_declared_entries_names_each_offender() {
     assert_eq!(
-        declared_entries_in_inert_trees(SYNTHETIC_DECLARED),
+        inert_declared_entries(SYNTHETIC_DECLARED),
         ["docs/zz_section/zz_synthetic.ri"],
-        "only a declared entry under a verify-inert tree is an offender"
+        "only a declared entry the scope classifier marks inert is an offender"
     );
 }
 
@@ -856,12 +837,12 @@ fn must_error_and_unswept_tables_are_well_formed() {
          tree: {unterminated:?}"
     );
 
-    let declared_in_inert_trees = declared_entries_in_inert_trees(MUST_ERROR_RI_FIXTURES);
+    let inert_declared = inert_declared_entries(MUST_ERROR_RI_FIXTURES);
     assert!(
-        declared_in_inert_trees.is_empty(),
-        "these entries lie under a VERIFY_INERT_RI_TREES tree, which the guard never reads, so \
-         their declaration cannot be checked; a file must live outside it to be declared: \
-         {declared_in_inert_trees:?}"
+        inert_declared.is_empty(),
+        "these entries are paths verify's scope classifier (scripts/reify_path_attribution.py) \
+         marks inert, which the guard never reads, so their declaration cannot be checked; a \
+         file must not be inert to be declared: {inert_declared:?}"
     );
 
     let swept = swept_ri_paths(&workspace_root());
