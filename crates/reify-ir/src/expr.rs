@@ -209,6 +209,18 @@ pub enum CompiledExprKind {
         /// likewise excluded from value-level identity via `user_fields()`.
         span: Option<SourceSpan>,
     },
+    /// Runtime constructor for a data-carrying enum variant (task 7456).
+    ///
+    /// Emitted by reify-compiler's `variant_construct` for a payload variant
+    /// whose field values are not all literals (an all-literal construction
+    /// folds to a `Literal(Value::Enum)` instead). `payload` is in the
+    /// variant's DECLARATION order; reify-expr evaluates it pointwise into a
+    /// `Value::Enum` with the same field names and order.
+    VariantCtor {
+        type_name: String,
+        variant: String,
+        payload: Vec<(String, CompiledExpr)>,
+    },
     /// Compiler-inserted Selector→`List<Geometry>` coercion node (task 4118, γ).
     ///
     /// Wraps an inner expression whose `result_type` is `Selector(k)` and
@@ -459,7 +471,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[29]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[30]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -493,6 +505,8 @@ pub const TAG_CROSS_SUB_GEOMETRY_REF: u8 = 27;
 /// the next free `CompiledExpr` tag after `TAG_CROSS_SUB_GEOMETRY_REF` (27) is
 /// 28. (The plan's draft cited 21; superseded by the in-code reservation.)
 pub const TAG_RESOLVE_SELECTOR: u8 = 28;
+/// task 7456: runtime data-carrying enum variant constructor.
+pub const TAG_VARIANT_CTOR: u8 = 29;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -679,6 +693,11 @@ impl CompiledExpr {
                 }
                 for (_, def) in defaults {
                     def.walk(f);
+                }
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                for (_, field) in payload {
+                    field.walk(f);
                 }
             }
             CompiledExprKind::ResolveSelector { selector } => {
@@ -979,6 +998,17 @@ impl CompiledExpr {
                     result_type,
                 )
             }
+            CompiledExprKind::VariantCtor {
+                type_name,
+                variant,
+                payload,
+            } => {
+                let new_payload: Vec<(String, CompiledExpr)> = payload
+                    .into_iter()
+                    .map(|(n, e)| (n, e.map_value_refs(f)))
+                    .collect();
+                CompiledExpr::variant_ctor(type_name, variant, new_payload, result_type)
+            }
             CompiledExprKind::ResolveSelector { selector } => {
                 // Rebuild via `resolve_selector` so the variant (and its fixed
                 // List<Geometry> result_type) survive the hash-rebuild path.
@@ -1166,6 +1196,11 @@ impl CompiledExpr {
                 }
                 for (_, def) in defaults {
                     def.try_for_each_value_ref(f)?;
+                }
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                for (_, field) in payload {
+                    field.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::ResolveSelector { selector } => {
@@ -1524,6 +1559,11 @@ impl CompiledExpr {
                     def.remap_entity(from_entity, to_entity);
                 }
             }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                for (_, field) in payload {
+                    field.remap_entity(from_entity, to_entity);
+                }
+            }
             CompiledExprKind::ResolveSelector { selector } => {
                 selector.remap_entity(from_entity, to_entity);
             }
@@ -1679,6 +1719,11 @@ impl CompiledExpr {
                 }
                 for (_, def) in defaults {
                     def.remap_cell(from, to);
+                }
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                for (_, field) in payload {
+                    field.remap_cell(from, to);
                 }
             }
             CompiledExprKind::ResolveSelector { selector } => {
@@ -1882,6 +1927,37 @@ impl CompiledExpr {
                 defaults,
                 lets,
                 span,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a runtime enum-variant constructor expression (task 7456).
+    ///
+    /// Hash fold: `TAG_VARIANT_CTOR || type_name || variant || for each
+    /// payload entry: name || expr.content_hash`, in stored (declaration)
+    /// order — the `structure_instance_ctor` scheme. The tag keeps it distinct
+    /// from a folded `Literal(Value::Enum)` over the same values.
+    pub fn variant_ctor(
+        type_name: String,
+        variant: String,
+        payload: Vec<(String, CompiledExpr)>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[TAG_VARIANT_CTOR])
+            .combine(ContentHash::of_str(&type_name))
+            .combine(ContentHash::of_str(&variant));
+        for (name, field) in &payload {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(name))
+                .combine(field.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::VariantCtor {
+                type_name,
+                variant,
+                payload,
             },
             result_type,
             content_hash,
@@ -2382,7 +2458,7 @@ mod tests {
             TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
             TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
             TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_REFLECTIVE_CELL_LIST,
-            TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+            TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF, TAG_VARIANT_CTOR,
         };
 
         assert_eq!(TAG_LITERAL, 0u8);
@@ -2408,6 +2484,7 @@ mod tests {
         assert_eq!(TAG_MATCH, 24u8);
         // task-2458: new variant tag byte
         assert_eq!(TAG_REFLECTIVE_CELL_LIST, 26u8);
+        assert_eq!(TAG_VARIANT_CTOR, 29u8);
 
         // Lock: constructing via the public API and reconstructing via TAG_*
         // must produce the same content hash.

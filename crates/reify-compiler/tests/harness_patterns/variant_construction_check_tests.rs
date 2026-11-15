@@ -317,56 +317,105 @@ fn duplicate_field_emits_variant_duplicate_field() {
     );
 }
 
-/// Amendment (reviewer suggestions 2 + 3): a non-constant payload field value is
-/// out of v1 scope (the runtime constructor node is a deferred follow-up). Here
-/// `radius: r` references sibling param `r` (declared first, so in scope), which
-/// compiles to a `ValueRef` (non-literal) that type-checks as `Length` and so
-/// reaches the non-constant assembly arm. The construction must:
-///   (a) emit the "non-constant payload value … is not yet supported" error
-///       (suggestion 3 — this user-reachable v1 limitation was untested), AND
-///   (b) still return a TYPED placeholder (`Type::Enum("Shape")`, not a
-///       `Type::Error` poison) so the not-yet-supported signal does not cascade
-///       a spurious type mismatch at the `outline` binding site (suggestion 2).
-#[test]
-fn non_constant_payload_field_is_not_yet_supported_without_cascade() {
-    let source = "\
-enum Shape {
-    Circle { radius: Length },
-    Rect { width: Length, height: Length },
-    Point,
+/// Like [`shape_param_source`], with a sibling `param r : Length = 5mm`
+/// declared before `outline` so the construction can read it.
+fn shape_param_reading_r_source(construction: &str) -> String {
+    format!(
+        "{SHAPE_ENUM}\nstructure def Widget {{\n    param r : Length = 5mm\n    \
+         param outline : Shape = {construction}\n}}\n"
+    )
 }
-structure def Widget {
-    param r : Length = 5mm
-    param outline : Shape = Circle { radius: r }
-}
-";
-    let module = compile_with_stdlib_helper(source);
 
-    // (a) The not-yet-supported diagnostic fires. There is no typed
-    // DiagnosticCode for this v1 limitation, so match on the message (mirrors
-    // the CLI message-substring assertions for the same family).
+/// Compile `construction` (via [`shape_param_reading_r_source`]), assert it
+/// checks clean, and return the `VariantCtor` payload of the `outline` default
+/// after checking its type name, variant and result type.
+fn clean_variant_ctor_payload(
+    construction: &str,
+    expected_variant: &str,
+) -> Vec<(String, CompiledExpr)> {
+    let module = compile_with_stdlib_helper(&shape_param_reading_r_source(construction));
     assert!(
-        module
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error
-                && d.message.contains("non-constant payload value")),
-        "expected a 'non-constant payload value … is not yet supported' error; got {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module_error_codes(&module).is_empty(),
+        "{construction} should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
     );
-
-    // (b) The placeholder is TYPED (Type::Enum), not a Type::Error poison — the
-    // variant resolved, so the binding site must not see a second (cascaded)
-    // type-mismatch error.
     let expr = outline_default(&module);
-    assert_eq!(
-        expr.result_type,
-        Type::Enum("Shape".to_string()),
-        "a non-constant payload must yield a TYPED placeholder, not a Type::Error poison"
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    match &expr.kind {
+        CompiledExprKind::VariantCtor {
+            type_name,
+            variant,
+            payload,
+        } => {
+            assert_eq!(type_name, "Shape");
+            assert_eq!(variant, expected_variant);
+            payload.clone()
+        }
+        other => panic!("expected VariantCtor for {construction}, got {other:?}"),
+    }
+}
+
+/// A payload field that reads a sibling param is not a literal, so the
+/// construction lowers to the runtime `VariantCtor` node (task 7456).
+#[test]
+fn param_reference_payload_lowers_to_variant_ctor() {
+    let payload = clean_variant_ctor_payload("Circle { radius: r }", "Circle");
+
+    assert_eq!(payload.len(), 1);
+    let (name, field) = &payload[0];
+    assert_eq!(name, "radius");
+    match &field.kind {
+        CompiledExprKind::ValueRef(id) => assert_eq!(id.member, "r"),
+        other => panic!("radius should read param r, got {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_payload_is_normalized_to_declaration_order() {
+    let payload = clean_variant_ctor_payload("Rect { height: r * 2.0, width: r }", "Rect");
+
+    let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["width", "height"]);
+}
+
+/// Only fields that are already `Literal` fold; a negated literal is a `UnOp`
+/// and is evaluated at runtime instead.
+#[test]
+fn negated_literal_payload_compiles_clean() {
+    let payload = clean_variant_ctor_payload("Rect { width: -5mm, height: 10mm }", "Rect");
+
+    let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["width", "height"]);
+    assert!(
+        matches!(payload[0].1.kind, CompiledExprKind::UnOp { .. }),
+        "width (-5mm) stays a runtime UnOp, got {:?}",
+        payload[0].1.kind
+    );
+    assert!(
+        matches!(payload[1].1.kind, CompiledExprKind::Literal(_)),
+        "height (10mm) stays a Literal inside the VariantCtor, got {:?}",
+        payload[1].1.kind
+    );
+}
+
+/// A non-literal field value is still checked against its declared type, and
+/// a failed check yields the TYPED placeholder (no cascade at the binding).
+#[test]
+fn non_literal_payload_still_type_checked() {
+    let source = shape_param_reading_r_source("Circle { radius: r * r }");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "an Area at Length field 'radius' -> expected VariantPayloadType; got {:?}",
+        module_error_codes(&module)
+    );
+    let expr = outline_default(&module);
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    assert!(
+        matches!(expr.kind, CompiledExprKind::Literal(Value::Undef)),
+        "a failed check yields the Undef placeholder, got {:?}",
+        expr.kind
     );
 }
 

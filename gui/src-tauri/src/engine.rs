@@ -8668,6 +8668,15 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
             format!("{}({})", type_name, arg_strs.join(", "))
         }
+        CompiledExprKind::VariantCtor {
+            variant, payload, ..
+        } => {
+            let field_strs: Vec<String> = payload
+                .iter()
+                .map(|(name, e)| format!("{}: {}", name, format_expr(e)))
+                .collect();
+            format!("{} {{ {} }}", variant, field_strs.join(", "))
+        }
         // task 4118 (γ): the Selector→List<Geometry> coercion is compiler-
         // inserted and invisible in source, so format transparently as the
         // inner selector (the user wrote `faces(b)`, not a coercion wrapper).
@@ -9589,6 +9598,27 @@ mod format_expr_tests {
         let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::dimensionless_scalar());
 
         assert_eq!(format_expr(&expr), "x > 0");
+    }
+
+    #[test]
+    fn variant_ctor_renders_as_brace_construction() {
+        let read = |member: &str| {
+            CompiledExpr::value_ref(
+                ValueCellId::new("p_1", member),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let expr = CompiledExpr::variant_ctor(
+            "Shape".to_string(),
+            "Rect".to_string(),
+            vec![
+                ("width".to_string(), read("w")),
+                ("height".to_string(), read("h")),
+            ],
+            Type::Enum("Shape".to_string()),
+        );
+
+        assert_eq!(format_expr(&expr), "Rect { width: w, height: h }");
     }
 }
 

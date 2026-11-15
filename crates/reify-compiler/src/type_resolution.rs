@@ -3489,6 +3489,11 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
                 substitute_expr_result_types(def, subst);
             }
         }
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            for (_, field) in payload {
+                substitute_expr_result_types(field, subst);
+            }
+        }
         // task 4118 (γ): recurse into the wrapped selector. The node's own
         // result_type is the invariant List<Geometry> (no TypeParam to
         // substitute), but the inner selector may carry substitutable types.

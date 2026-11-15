@@ -98,12 +98,11 @@ pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }
 /// propagation).
 ///
 /// Placeholder body returns `err` directly (NOT `Err { error: err }`):
-/// variant-construction payload fields must be compile-time literals
-/// (variant_construct.rs's v1 non-constant-payload restriction), and `err` is
-/// a runtime param reference, so constructing `Err { error: err }` here draws
-/// an Error diagnostic ("non-constant payload value for field 'error'").
 /// result_type is derived from call-site signature substitution independent
 /// of the body (exactly as every other combinator above), so a bare param
 /// reference is a safe, minimal placeholder — the real Option→Result bridge
-/// runs in eval (option_recovery.rs's eval_ok_or, step 4).
+/// runs in eval (option_recovery.rs's eval_ok_or, step 4). Constructing
+/// `Err { error: err }` is compilable now that a non-literal payload lowers to
+/// a runtime `VariantCtor` (introduced by #7456); switching the body to it is
+/// #7744's.
 pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }

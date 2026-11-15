@@ -157,6 +157,11 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 collect_body_refs_inner(def, refs);
             }
         }
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            for (_, field) in payload {
+                collect_body_refs_inner(field, refs);
+            }
+        }
         // task 4118 (γ): recurse into the wrapped selector so guarded-group
         // ref collection sees through the Selector→List<Geometry> coercion.
         CompiledExprKind::ResolveSelector { selector } => {
