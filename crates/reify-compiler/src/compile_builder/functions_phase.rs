@@ -138,25 +138,26 @@ pub(crate) fn phase_fn_param_defaults(
 /// [`phase_fn_param_defaults`] left them pending.
 ///
 /// Called from the `Declaration::Function` arm of
-/// `entities_phase::phase_entities`, in source order, so `user_fns_so_far` and
+/// `entities_phase::phase_entities`, in source order, so `calls_above` and
 /// `templates_so_far` hold only what is declared ABOVE this fn:
 ///
-/// * constructors resolve against [`name_env::ctor_template_registry`] over
-///   `templates_so_far`, so a fn body may construct a same-module structure
-///   declared above it and get that structure's authoritative template — the
-///   same no-forward-reference rule `compile_entity` obeys for entity → entity
+/// * constructors resolve against `prelude_ctor_view`, built once per pass,
+///   overlaid by `templates_so_far` ([`name_env::overlay_local_templates`]),
+///   so a fn body may construct a same-module structure declared above it and
+///   get that structure's authoritative template — the same
+///   no-forward-reference rule `compile_entity` obeys for entity → entity
 ///   references;
-/// * calls resolve against [`build_resolution_functions`] over
-///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
-///   references to sibling fns do not resolve.
+/// * calls resolve against `calls_above`: the real fns declared above plus
+///   every prelude fn they do not shadow, so forward references to sibling
+///   fns do not resolve.
 ///
 /// `later_declared_structure_names` holds the module-local `structure def`s
 /// with no template in `templates_so_far` yet — those declared BELOW this fn;
 /// using one draws `StructureDeclaredAfterFunction` rather than a silent
 /// fallback.
 ///
-/// The ctor view is rebuilt per fn: it borrows `templates_so_far`, which the
-/// caller's structure arms push to between fns.
+/// The overlay is per fn because it borrows `templates_so_far`, which the
+/// caller pushes to between fns.
 ///
 /// `declared_callables` is the module's order-independent callable vocabulary
 /// (task #5371), built once per pass by the caller.
@@ -165,26 +166,24 @@ pub(crate) fn phase_fn_param_defaults(
 /// already emitted them exactly once — and neither are those of `Compiled`
 /// defaults, which are reused as compiled.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function_decl(
+pub(crate) fn compile_function_decl<'t>(
     fn_def: &FnDef,
     sig: &FnSignature,
     defaults: &FnParamDefaults,
     enum_defs: &[EnumDef],
-    user_fns_so_far: &[CompiledFunction],
-    templates_so_far: &[TopologyTemplate],
-    prelude: &[&CompiledModule],
+    calls_above: &ResolutionTable<'_>,
+    templates_so_far: &'t [TopologyTemplate],
+    prelude_ctor_view: &HashMap<String, &'t TopologyTemplate>,
     later_declared_structure_names: &HashSet<String>,
     declared_callables: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let functions = build_resolution_functions(user_fns_so_far, prelude);
-    let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::ctor_template_registry(templates_so_far, prelude);
+    let template_registry = name_env::overlay_local_templates(prelude_ctor_view, templates_so_far);
     let env = FnCompileEnv {
         enum_defs,
         // Never holds a pending stub: fns above are real, fns below are #5371's
         // forward references.
-        calls: CallTable::complete(&functions),
+        calls: CallTable::complete(calls_above.functions()),
         template_registry: Some(&template_registry),
         later_declared_structure_names: Some(later_declared_structure_names),
         declared_callable_names: declared_callables,

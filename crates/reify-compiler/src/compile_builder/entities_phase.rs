@@ -38,6 +38,7 @@ use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
+use crate::compile_builder::functions_phase::ResolutionTable;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{
     ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
@@ -205,6 +206,9 @@ pub(crate) fn phase_entities(
     let mut resolution_functions: Vec<CompiledFunction> =
         std::mem::take(&mut ctx.resolution_functions);
     let mut pending = std::mem::take(&mut ctx.fns_with_pending_defaults);
+    // What fn BODIES resolve against: the fns above plus the prelude. It owns
+    // the pass's user fns until the epilogue.
+    let mut fn_bodies = ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude);
     // The module-local `structure def`s with no template yet, i.e. declared
     // below the current declaration: what a fn's body may not use.
     let mut later_declared_structures = ctx.local_structure_def_names.clone();
@@ -307,9 +311,9 @@ pub(crate) fn phase_entities(
                     sig,
                     defaults,
                     &ctx.resolution_enums,
-                    &ctx.functions,
+                    &fn_bodies,
                     &ctx.templates,
-                    prelude,
+                    prelude_registries.ctor,
                     &later_declared_structures,
                     &declared_callables,
                     &mut ctx.diagnostics,
@@ -329,7 +333,7 @@ pub(crate) fn phase_entities(
                             "its call-table slot; later declarations resolve against its stub",
                         )),
                     }
-                    ctx.functions.push(f);
+                    fn_bodies.push_user(f);
                 }
             }
             reify_ast::Declaration::Trait(_) => {
@@ -456,6 +460,7 @@ pub(crate) fn phase_entities(
     // trait-static fns …]` that `compute_module_hash` folds and
     // `CompiledModule::functions` first-match dispatch depends on.
     let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
+    ctx.functions = fn_bodies.into_user_functions();
     ctx.functions.append(&mut trait_static_fns);
 
     // Publish the pass-local table (real `CompiledFunction`s in place of the
