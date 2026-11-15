@@ -2063,25 +2063,24 @@ test_freshness_ensure_forces_and_is_idempotent() {
     # ledger in this fresh target dir => the force is unconditionally due.
     mk_ts_fixture "$tmp/target_unrepairable" "tree-sitter-reify-2222222222222222" "$altered5"
 
-    # (12a) a watched input that is GONE. grammar.js is watched but is not part of
-    # the fingerprint (it is an input to generation, not to compilation), so the
-    # scan still computes a verdict and the failure lands squarely in ts_force_touch.
+    # (12a) a watched input that is GONE. Since #9896 the force set IS the
+    # fingerprint's input set, so the fingerprint fails first, and must fail
+    # closed naming the file rather than reach a verdict over what is left.
     rm -f "$broken/grammar.js"
     run_ts_freshness ensure "$tmp/target_unrepairable" "$broken"
     if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
         echo ""
-        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) with a stale"
-        echo "  archive it could NOT repair — a watched input was missing, so the force"
-        echo "  cannot have taken. Continuing green here reports success against a parser"
-        echo "  the gate never compiled."
+        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) with a watched"
+        echo "  input missing, so no force can have taken. Continuing green here reports"
+        echo "  success against a parser the gate never compiled."
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
-    if [[ "$TS_FRESHNESS_OUT" != *"DETECTED BUT UNREPAIRABLE"* ]]; then
+    if [[ "$TS_FRESHNESS_OUT" != *"freshness input is missing: $broken/grammar.js"* ]]; then
         echo ""
-        echo "  ASSERTION FAILED: the unrepairable exit is not greppable — no"
-        echo "  'DETECTED BUT UNREPAIRABLE' line. A bare non-zero exit from a mid-plan leaf"
-        echo "  leaves the operator no way to tell this apart from a crash."
+        echo "  ASSERTION FAILED: the failing ensure does not name the missing grammar.js."
+        echo "  A bare non-zero exit from a mid-plan leaf leaves the operator no way to"
+        echo "  tell this apart from a crash."
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
