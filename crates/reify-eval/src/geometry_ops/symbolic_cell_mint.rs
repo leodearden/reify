@@ -351,7 +351,11 @@ mod tests {
     use reify_test_support::parse_and_compile;
 
     use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads};
+    use crate::deps::extract_dependency_trace;
     use crate::graph::EvaluationGraph;
+    use crate::graph::geometry_cell_link_fixture::{
+        GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
+    };
 
     fn id(entity: &str, member: &str) -> ValueCellId {
         ValueCellId::new(entity, member)
@@ -430,9 +434,12 @@ mod tests {
         );
     }
 
-    /// An instance cell mints as its template's cell (task #9846): for a scalar
-    /// geometry let, a length-1 and a length-3 geometry-list let, the instance
-    /// arm must answer what the graph mint answers for the template cell.
+    /// An instance cell mints as its template's cell (task #9846). For each
+    /// geometry let `m` of the fixture's `T`, the instance arm minting `P.s.m`
+    /// must answer what the graph mint answers for `T.m` over the instance's
+    /// values keyed at template scope. That pins both halves of the pairing: the
+    /// early-out (a list cell mints `Undef`), and the read projection (`b`'s hash
+    /// folds `P.s.w`, which only `b`'s realization reads, not its expression).
     ///
     /// Drives `InstanceMintScope` directly, as
     /// `engine_build/geometry_cell_mint_from_graph_tests.rs` drives the graph
@@ -441,29 +448,39 @@ mod tests {
     /// whether or not the two mints agree on list cells.
     #[test]
     fn the_instance_mint_of_a_sub_cell_pairs_with_the_graph_mint_of_its_template_cell() {
-        let graph = EvaluationGraph::from_templates(
-            &parse_and_compile(
-                r#"structure T {
-                    let a = box(10mm, 10mm, 10mm)
-                    let one = generate(1, |i| cylinder(5mm, 20mm))
-                    let holes = generate(3, |i| cylinder(5mm, 20mm))
-                }
-                structure P {
-                    sub s = T()
-                }"#,
-            )
-            .templates,
-        );
-        let values = ValueMap::new();
+        let graph = EvaluationGraph::from_templates(&parse_and_compile(SRC).templates);
+        let params = [
+            ("w", Value::length(0.01), Value::length(0.02)),
+            ("on", Value::Bool(true), Value::Bool(true)),
+        ];
+        let mut values = ValueMap::new();
+        let mut instance_values_at_template_scope = ValueMap::new();
+        for (member, template_value, instance_value) in params {
+            values.insert(id("T", member), template_value);
+            values.insert(id("P.s", member), instance_value.clone());
+            instance_values_at_template_scope.insert(id("T", member), instance_value);
+        }
         let meta = HashMap::new();
-        let graph_mint = |cell: &ValueCellId| {
+        let graph_mint = |cell: &ValueCellId, values: &ValueMap| {
             crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
                 cell,
                 &graph,
-                &values,
+                values,
                 &[],
                 &meta,
             )
+        };
+        let instance_cell_node = |member: &str| {
+            let cell = id("P.s", member);
+            let node = graph
+                .value_cells
+                .get(&cell)
+                .unwrap_or_else(|| panic!("precondition: `{cell}` must be stamped"));
+            let expr = node
+                .default_expr
+                .as_ref()
+                .unwrap_or_else(|| panic!("precondition: `{cell}` must have an expr"));
+            (cell, node.kind, expr)
         };
         let scope = InstanceMintScope {
             graph: &graph,
@@ -472,45 +489,52 @@ mod tests {
             meta_map: &meta,
         };
         assert_eq!(graph.sub_instance_template("P.s"), Some("T"));
-        assert!(
-            matches!(
-                graph_mint(&id("T", "a")),
-                Some(Value::GeometryHandle {
-                    kernel_handle: None,
-                    ..
-                })
-            ),
-            "control: the graph mint must answer the scalar geometry let `T.a`"
-        );
-        for member in ["one", "holes"] {
-            let cell = id("T", member);
+        for member in SCALAR_GEOMETRY_MEMBERS {
             assert!(
-                graph
-                    .realizations
-                    .values()
-                    .any(|r| r.geometry_cell.as_ref() == Some(&cell)),
-                "control: some realization must link the list cell `{cell}` \
-                 (task #5385), or its pairing below is vacuous"
+                matches!(
+                    graph_mint(&id("T", member), &values),
+                    Some(Value::GeometryHandle {
+                        kernel_handle: None,
+                        ..
+                    })
+                ),
+                "control: the graph mint must answer the scalar geometry let `T.{member}`"
             );
         }
+        for member in GEOMETRY_LIST_MEMBERS {
+            assert_some_realization_links(&graph, &id("T", member));
+        }
+        let (_, _, b_expr) = instance_cell_node("b");
+        assert!(
+            !extract_dependency_trace(b_expr)
+                .reads
+                .contains(&id("T", "w")),
+            "precondition: `b`'s expression must not read `w`, so only the reads of \
+             `b`'s realization bring `w` into the instance's projection"
+        );
+        assert_ne!(
+            graph_mint(&id("T", "b"), &values),
+            graph_mint(&id("T", "b"), &instance_values_at_template_scope),
+            "control: `T.b`'s handle must fold `w`, or pairing `P.s.b` is vacuous \
+             on the read projection"
+        );
 
-        for member in ["a", "one", "holes"] {
-            let instance_cell = id("P.s", member);
-            let node = graph
-                .value_cells
-                .get(&instance_cell)
-                .unwrap_or_else(|| panic!("precondition: `{instance_cell}` must be stamped"));
-            let expr = node
-                .default_expr
-                .as_ref()
-                .unwrap_or_else(|| panic!("precondition: `{instance_cell}` must have an expr"));
+        for member in SCALAR_GEOMETRY_MEMBERS
+            .into_iter()
+            .chain(GEOMETRY_LIST_MEMBERS)
+        {
+            let (instance_cell, kind, expr) = instance_cell_node(member);
 
             assert_eq!(
-                scope.mint_undef_instance_cell(&instance_cell, node.kind, expr),
-                Some(graph_mint(&id("T", member)).unwrap_or(Value::Undef)),
+                scope.mint_undef_instance_cell(&instance_cell, kind, expr),
+                Some(
+                    graph_mint(&id("T", member), &instance_values_at_template_scope)
+                        .unwrap_or(Value::Undef)
+                ),
                 "the instance arm must mint `{instance_cell}` as the graph mint mints \
-                 `T.{member}`; an instance early-out to Undef where the graph mint \
-                 answers is the drift task #9846 retires"
+                 `T.{member}` over the instance's values: an early-out to Undef where \
+                 the graph mint answers is the drift task #9846 retires, and a \
+                 projection missing a read of the realization the one #8102 fixed"
             );
         }
     }

@@ -13,6 +13,8 @@ use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Va
 
 pub mod cell_contributions;
 #[cfg(test)]
+pub(crate) mod geometry_cell_link_fixture;
+#[cfg(test)]
 mod scalar_geometry_cell_realization_tests;
 #[cfg(test)]
 mod value_cell_fold_tests;
@@ -619,6 +621,10 @@ impl EvaluationGraph {
     /// count, so the cell's type decides. A list cell's value is never one
     /// element's handle: it is assembled by the list regroup and by
     /// `tessellate_snapshot`'s baseline mint.
+    ///
+    /// A scalar geometry cell is linked by at most one realization, since
+    /// `from_templates` links it by name and realization names are unique
+    /// within an entity. Debug builds panic on a second link, naming both.
     pub(crate) fn scalar_geometry_cell_realization(
         &self,
         cell: &ValueCellId,
@@ -630,9 +636,21 @@ impl EvaluationGraph {
         {
             return None;
         }
-        self.realizations
+        let mut linking = self
+            .realizations
             .values()
-            .find(|realization| realization.geometry_cell.as_ref() == Some(cell))
+            .filter(|realization| realization.geometry_cell.as_ref() == Some(cell));
+        let realization = linking.next()?;
+        if cfg!(debug_assertions)
+            && let Some(other) = linking.next()
+        {
+            panic!(
+                "scalar geometry cell `{cell}` is linked by two realizations, \
+                 `{}` and `{}`; a scalar geometry cell holds one realization's handle",
+                realization.id, other.id
+            );
+        }
+        Some(realization)
     }
 
     /// Record that `entity`'s cells are stamped from `template`.
