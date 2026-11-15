@@ -20,7 +20,7 @@
 //     - `Mechanism` from `std.kinematic`
 //   This is the canonical fix for the prelude-ordering constraint until a
 //   declared `import std.kinematic` lets the fn fold into `std.modal.analysis`
-//   (stdlib-namespace θ).
+//   (stdlib-namespace θ, #5501).
 
 // ── mechanism_modal_analysis ─────────────────────────────────────────────────
 

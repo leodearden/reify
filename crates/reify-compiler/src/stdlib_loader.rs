@@ -307,7 +307,7 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // this entry (`std.kinematic` is itself pulled in ahead of
         // `std.dynamics`).
         // Folding it into `std.modal.analysis` needs a declared
-        // `import std.kinematic` (stdlib-namespace θ).
+        // `import std.kinematic` (stdlib-namespace θ, #5501).
         (
             "std.modal.mechanism.fns",
             include_str!("../stdlib/modal_mechanism_fns.ri").to_owned(),

@@ -271,8 +271,8 @@ structure ElasticDefaultsTest {
 /// (`= BucklingOptions()`), AND a 6-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// GREEN; `= BucklingOptions()` was added to solver_buckling.ri in step-6
-/// (same commit as this test).
+/// GREEN; `= BucklingOptions()` lives on `solver_buckling.ri :: solve_buckling`
+/// and was added in the same commit as this test.
 #[test]
 fn solve_buckling_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("BucklingOptions") ──
@@ -367,8 +367,8 @@ structure BucklingDefaultsTest {
 /// (`= ModalOptions()`), AND a 4-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// GREEN; `= ModalOptions()` was added to modal_analysis.ri in step-8
-/// (same commit as this test).
+/// GREEN; `= ModalOptions()` lives on `modal_analysis.ri :: modal_analysis`
+/// and was added in the same commit as this test.
 #[test]
 fn modal_analysis_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("ModalOptions") ──

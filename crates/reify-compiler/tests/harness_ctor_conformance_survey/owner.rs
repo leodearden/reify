@@ -120,7 +120,7 @@ const FEA_STDLIB_MODULES: &[&str] = &[
 /// This list exists so that "not FEA-owned" is a RECORDED decision rather than
 /// an omission. [`every_fea_family_shaped_stdlib_module_is_classified`] requires
 /// every FEA-shaped stem to appear in exactly one of the two lists, so adding
-/// `fea_contact.ri` (or a fourth `modal_*`) to the stdlib turns that guard red
+/// `fea_contact.ri` (or another `modal_*`) to the stdlib turns that guard red
 /// instead of silently routing its defs into `Owner::NonFea` — the group the
 /// artifact labels "the group to size γ against". Mis-classifying INTO that
 /// group is, per [`d9_owner`], "the one classification error with a real cost",

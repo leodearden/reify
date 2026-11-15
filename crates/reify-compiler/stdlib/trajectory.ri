@@ -28,12 +28,12 @@
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
 //   - fn simulate_trajectory            (forward-pass simulator, π; PRD §6.1)
 //
-// Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
-// has no compile-time dependency on any other stdlib module (every type it
-// references is a primitive, builtin parametric container, the `Time`
-// dimension from `std.units`, or a name declared in this file). The trailing
-// position keeps the v0.3 trajectory cluster visually grouped at the end of
-// the loader, ready for the planned `std.modal` / `std.dynamics` siblings.
+// Module placement: `std.trajectory` must follow `std.modal.analysis` in
+// `stdlib_loader.rs` — it consumes that module's `ModalResult` / `Mode`
+// (`EndEffectorTrack.modal_result`, the TOTS shapers' `modes`, and
+// `simulate_trajectory`'s `modal`). Every other type it references is a
+// primitive, a builtin type, the `Time` dimension from `std.units`, or a name
+// declared in this file.
 //
 // Encoding notes:
 //   1. `JointValue` is declared as a `pub type JointValue = Real` alias at

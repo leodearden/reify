@@ -34,9 +34,9 @@
 //
 // History: originally fed a TOPOLOGY SELECTOR where `displacement_at` accepted
 // only a String location, proving the eval-path selector->node resolver was
-// unbuilt; the R3b resolver landed and `modal_analysis.ri` added the
-// `location : FaceSelector` overload the `top` argument below now resolves
-// against, sharing the String overload's trampoline.
+// unbuilt; the R3b resolver landed with a `location : FaceSelector` overload
+// (today at `modal_analysis.ri :: displacement_at`) that the `top` argument
+// below resolves against, sharing the String overload's trampoline.
 //
 // PRD: docs/prds/v0_6/value-eval-geometry-addressing.md (Leaf R3b — eval-path
 // selector->node resolver, the re-homed task 4122 deliverable).
