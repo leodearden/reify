@@ -30,14 +30,18 @@
 //! `SolverPosture::Solve(ResolutionProfile::FRESH)`, `SimpleConstraintChecker`,
 //! `Engine::check`), and its exit code is read off what that boundary exposes:
 //! a compile Error or a `Violated` verdict fails, `Satisfied` with no Error
-//! diagnostic passes.
+//! diagnostic passes. Indeterminacy is read off `StepForceShape#constraint[0]`'s
+//! own entry, never module-wide: an Indeterminate warning elsewhere does not
+//! move the exit code, and prelude constraints may start reporting one once
+//! #5765 lands.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode};
+use reify_core::{ConstraintNodeId, DiagnosticCode};
 use reify_eval::{CheckResult, ConstraintCheckEntry, Engine, SolverPosture};
 use reify_ir::{ResolutionProfile, Satisfaction};
 use reify_test_support::{
-    collect_errors, compile_source_with_stdlib, parse_and_compile_with_stdlib,
+    assert_error_code_present, assert_no_error_diagnostics, collect_errors,
+    compile_source_with_stdlib, parse_and_compile_with_stdlib,
 };
 
 fn step_force_shape_source(magnitude_default: &str) -> String {
@@ -46,8 +50,8 @@ fn step_force_shape_source(magnitude_default: &str) -> String {
     )
 }
 
-fn check_as_reify_check_does(source: &str) -> (CheckResult, ConstraintCheckEntry) {
-    let compiled = parse_and_compile_with_stdlib(source);
+fn check_step_force_shape(magnitude_default: &str) -> (CheckResult, ConstraintCheckEntry) {
+    let compiled = parse_and_compile_with_stdlib(&step_force_shape_source(magnitude_default));
     let mut engine = Engine::new(
         SolverPosture::Solve(ResolutionProfile::FRESH),
         Box::new(SimpleConstraintChecker),
@@ -67,19 +71,9 @@ fn check_as_reify_check_does(source: &str) -> (CheckResult, ConstraintCheckEntry
     (result, entry)
 }
 
-fn carries_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> bool {
-    diagnostics.iter().any(|d| d.code == Some(code))
-}
-
-fn has_error_with_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> bool {
-    collect_errors(diagnostics)
-        .iter()
-        .any(|d| d.code == Some(code))
-}
-
 #[test]
 fn positive_force_default_is_definitely_satisfied() {
-    let (result, entry) = check_as_reify_check_does(&step_force_shape_source("10N"));
+    let (result, entry) = check_step_force_shape("10N");
 
     assert_eq!(
         (entry.satisfaction, &entry.indeterminate_reason),
@@ -87,21 +81,15 @@ fn positive_force_default_is_definitely_satisfied() {
         "a positive force default must be definitely Satisfied; diagnostics: {:?}",
         result.diagnostics
     );
-    let errors = collect_errors(&result.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "a Satisfied check must carry no Error diagnostic (the exit-0 shape); errors: {errors:?}"
-    );
-    assert!(
-        !carries_code(&result.diagnostics, DiagnosticCode::ConstraintIndeterminate),
-        "no constraint may come back Indeterminate; diagnostics: {:?}",
-        result.diagnostics
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "a Satisfied check must carry no Error diagnostic (the exit-0 shape)",
     );
 }
 
 #[test]
 fn negative_force_default_is_definitely_violated() {
-    let (result, entry) = check_as_reify_check_does(&step_force_shape_source("-10N"));
+    let (result, entry) = check_step_force_shape("-10N");
 
     assert_eq!(
         (entry.satisfaction, &entry.indeterminate_reason),
@@ -109,16 +97,10 @@ fn negative_force_default_is_definitely_violated() {
         "a negative force default must be definitely Violated; diagnostics: {:?}",
         result.diagnostics
     );
-    assert!(
-        has_error_with_code(&result.diagnostics, DiagnosticCode::ConstraintViolated),
-        "a Violated check must carry a ConstraintViolated Error (the exit-1 shape); \
-         diagnostics: {:?}",
-        result.diagnostics
-    );
-    assert!(
-        !carries_code(&result.diagnostics, DiagnosticCode::ConstraintIndeterminate),
-        "no constraint may come back Indeterminate; diagnostics: {:?}",
-        result.diagnostics
+    assert_error_code_present(
+        &result.diagnostics,
+        DiagnosticCode::ConstraintViolated,
+        "a Violated check must carry a ConstraintViolated Error (the exit-1 shape)",
     );
 }
 
@@ -143,16 +125,17 @@ fn bare_literal_force_default_is_rejected_at_compile_time() {
 }
 
 /// The §10.3 symmetry: a dimensionless field against a dimensioned threshold is
-/// a hard compile error through the same comparison guard.
+/// a hard compile error through the same comparison guard. This is the `param`
+/// form; the compiler-layer `let` form is reify-compiler's
+/// `dimensionless_ratio_gt_dimensioned_threshold_emits_dimension_mismatch`.
 #[test]
 fn dimensionless_param_against_length_threshold_is_rejected_at_compile_time() {
     let module = compile_source_with_stdlib(
         "structure def EfficiencyShape {\n    param efficiency : Real = 0.85\n    constraint efficiency > 5mm\n}",
     );
-    assert!(
-        has_error_with_code(&module.diagnostics, DiagnosticCode::DimensionMismatch),
-        "a Real param compared against a Length must be a DimensionMismatch Error; \
-         diagnostics: {:?}",
-        module.diagnostics
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::DimensionMismatch,
+        "a Real param compared against a Length must be a DimensionMismatch Error",
     );
 }
