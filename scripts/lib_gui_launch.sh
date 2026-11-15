@@ -102,15 +102,14 @@ gui_launch_resolve_file() {
         *.ri) ;;
         *) echo "Error: file must have .ri extension: $file" >&2; return 1 ;;
     esac
-    [ -f "$file" ] || { echo "Error: file not found: $file" >&2; return 1; }
     case "$file" in
         */*) dir="${file%/*}" ;;
         *) dir=. ;;
     esac
-    dir=$(CDPATH= cd -P -- "${dir:-/}" && pwd -P) || {
-        echo "Error: cannot resolve the directory of $file" >&2
+    if ! [ -f "$file" ] || ! dir=$(CDPATH= cd -P -- "${dir:-/}" 2>/dev/null && pwd -P); then
+        echo "Error: file not found: $file" >&2
         return 1
-    }
+    fi
     printf '%s\n' "${dir%/}/${file##*/}"
 }
 
