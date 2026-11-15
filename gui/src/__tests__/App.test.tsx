@@ -3605,7 +3605,8 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
     expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
     const error = await screen.findByTestId('start-mode-error');
-    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(error.textContent).toContain('E_GUI_MODE_FAILED');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
     expect(error.textContent).toContain('IPC channel closed');
     expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).not.toBe('true');
     const toast = await screen.findByTestId('toast');
@@ -3626,7 +3627,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
       await renderAndWaitForReady();
 
       const error = await screen.findByTestId('start-mode-error');
-      expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+      expect(error.textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
       expect(error.textContent).toContain('listen failed');
       const toast = await screen.findByTestId('toast');
       expect(toast.dataset.type).toBe('error');
@@ -3649,6 +3650,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
       await waitFor(() =>
         expect(screen.getByTestId('start-mode-error').textContent).toContain('listen failed'),
       );
+      expect(screen.getByTestId('start-mode-error').textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
       expect(screen.getByTestId('start-mode-error').textContent).not.toContain('IPC channel closed');
       const toasts = await screen.findAllByTestId('toast');
       expect(toasts.map((t) => t.textContent).join('\n')).toContain('IPC channel closed');

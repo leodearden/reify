@@ -263,7 +263,7 @@ describe('adoptLiveDebugServer', () => {
 
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
     expect(store.state.mode.error).toEqual({
-      code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
       message: 'IPC channel closed',
     });
     expect(store.state.mode.selected).toBe('assistant');
@@ -272,7 +272,7 @@ describe('adoptLiveDebugServer', () => {
     expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
   });
 
-  it('rejects with E_GUI_DEBUG_LISTENER_FAILED when the bridge fails, only once set_mode has replied', async () => {
+  it('rejects with E_GUI_DEBUG_BRIDGE_FAILED when the bridge fails, only once set_mode has replied', async () => {
     const reply = deferred<ModeState>();
     deps.setMode.mockReturnValue(reply.promise);
     deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
@@ -289,7 +289,7 @@ describe('adoptLiveDebugServer', () => {
     reply.resolve({ mode: 'debug', debug_port: 3939 });
     const failure = await adopted;
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toContain('Failed to fetch dynamically imported module');
     expect(store.state.mode.debugPort).toBe(3939);
   });
@@ -301,7 +301,9 @@ describe('adoptLiveDebugServer', () => {
 
     const failure = await failureOf(actions.adoptLiveDebugServer());
 
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toBe('listen failed');
+    expect(store.state.mode.error?.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
     expect(store.state.mode.error?.message).toBe('IPC channel closed');
     expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
   });
