@@ -612,6 +612,29 @@ impl EvaluationGraph {
         self.sub_instance_templates.get(entity).map(String::as_str)
     }
 
+    /// The realization whose handle the scalar geometry cell `cell` holds: the
+    /// one whose `geometry_cell` link, set by [`Self::from_templates`], names
+    /// it. `None` for any other cell. A geometry-list cell is linked N:1 (task
+    /// #5385), and for length 1 that is indistinguishable from 1:1 by link
+    /// count, so the cell's type decides. A list cell's value is never one
+    /// element's handle: it is assembled by the list regroup and by
+    /// `tessellate_snapshot`'s baseline mint.
+    pub(crate) fn scalar_geometry_cell_realization(
+        &self,
+        cell: &ValueCellId,
+    ) -> Option<&RealizationNodeData> {
+        if !self
+            .value_cells
+            .get(cell)
+            .is_some_and(|node| node.cell_type == Type::Geometry)
+        {
+            return None;
+        }
+        self.realizations
+            .values()
+            .find(|realization| realization.geometry_cell.as_ref() == Some(cell))
+    }
+
     /// Record that `entity`'s cells are stamped from `template`.
     fn record_sub_instance(&mut self, entity: String, template: String) {
         self.sub_instance_templates.insert(entity, template);
