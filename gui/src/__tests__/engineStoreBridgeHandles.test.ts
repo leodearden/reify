@@ -18,7 +18,7 @@ describe('engineStoreBridgeHandles', () => {
     expect(vi.isMockFunction(handles.mockOnEvalGeneration)).toBe(true);
   });
 
-  it('primeEngineStoreBridgeMocks resets every channel subscribeToEvents subscribes to, whatever an earlier test left installed', async () => {
+  it('primeEngineStoreBridgeMocks resets every channel subscribeToEvents subscribes to, and cancelSolve, whatever an earlier test left installed', async () => {
     vi.resetModules();
     vi.doMock('../bridge', async () =>
       (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock(),
@@ -43,6 +43,7 @@ describe('engineStoreBridgeHandles', () => {
     } finally {
       warn.mockRestore();
     }
+    await expect(handles.mockCancelSolve()).resolves.toBeUndefined();
   });
 
   it('refuses to load against the real bridge, naming the vi.mock it needs', async () => {
