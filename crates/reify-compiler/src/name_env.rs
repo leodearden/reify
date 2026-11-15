@@ -348,3 +348,132 @@ pub(crate) fn ctor_template_registry<'a>(
         .map(|candidate| (candidate.definition.name.clone(), candidate.definition))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    fn compile_at(path: ModulePath, src: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(src, path);
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        crate::compile(&parsed)
+    }
+
+    /// `hi` (import tier) outranks `lo` (std tier). `local` declares `L` twice
+    /// and an OCCURRENCE `Q` over `hi`'s structure `Q`.
+    struct Fixture {
+        hi: CompiledModule,
+        lo: CompiledModule,
+        local: Vec<TopologyTemplate>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let hi = compile_at(
+                ModulePath::single("hi"),
+                "occurrence X { let d = 5.0 }\nstructure def Q { param q : Real = 1.0 }\n",
+            );
+            let lo = compile_at(
+                ModulePath(vec!["std".into(), "lo".into()]),
+                "structure def X { param a : Real = 1.0 }\n\
+                 structure def P { param a : Real = 1.0 }\n\
+                 structure def S { param a : Real = 1.0 }\n",
+            );
+            let mut local = compile_at(
+                ModulePath::single("local_one"),
+                "structure def S { param b : Real = 2.0 }\n\
+                 occurrence Q { let d = 1.0 }\n\
+                 structure def L { param c : Real = 3.0 }\n",
+            )
+            .templates;
+            local.extend(
+                compile_at(
+                    ModulePath::single("local_two"),
+                    "structure def L { param c : Real = 4.0 }\n",
+                )
+                .templates,
+            );
+            Fixture { hi, lo, local }
+        }
+
+        fn prelude(&self) -> [&CompiledModule; 2] {
+            [&self.hi, &self.lo]
+        }
+
+        /// The bindings of the prelude-only ctor view.
+        fn expected_prelude_view(&self) -> Vec<(&str, &TopologyTemplate)> {
+            vec![
+                ("Q", first_named(&self.hi.templates, "Q")),
+                ("P", first_named(&self.lo.templates, "P")),
+                ("S", first_named(&self.lo.templates, "S")),
+            ]
+        }
+
+        /// The bindings of the prelude view overlaid by `local`.
+        fn expected_overlaid_view(&self) -> Vec<(&str, &TopologyTemplate)> {
+            vec![
+                ("Q", first_named(&self.local, "Q")),
+                ("P", first_named(&self.lo.templates, "P")),
+                ("S", first_named(&self.local, "S")),
+                ("L", first_named(&self.local, "L")),
+            ]
+        }
+    }
+
+    fn first_named<'a>(templates: &'a [TopologyTemplate], name: &str) -> &'a TopologyTemplate {
+        templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("fixture declares {name}"))
+    }
+
+    fn assert_binds(
+        view: &HashMap<String, &TopologyTemplate>,
+        expected: &[(&str, &TopologyTemplate)],
+    ) {
+        let keys: BTreeSet<&str> = view.keys().map(String::as_str).collect();
+        let expected_keys: BTreeSet<&str> = expected.iter().map(|(name, _)| *name).collect();
+        assert_eq!(keys, expected_keys);
+        for (name, template) in expected {
+            assert!(
+                std::ptr::eq(view[*name], *template),
+                "{name} binds the wrong {} template",
+                view[*name].entity_kind
+            );
+        }
+    }
+
+    #[test]
+    fn prelude_ctor_view_keeps_winning_prelude_structures_only() {
+        let fixture = Fixture::new();
+        assert_binds(
+            &prelude_ctor_view(&fixture.prelude()),
+            &fixture.expected_prelude_view(),
+        );
+    }
+
+    #[test]
+    fn overlaying_local_templates_shadows_the_prelude_by_name() {
+        let fixture = Fixture::new();
+        let prelude_view = prelude_ctor_view(&fixture.prelude());
+        assert_binds(
+            &overlay_local_templates(&prelude_view, &fixture.local),
+            &fixture.expected_overlaid_view(),
+        );
+    }
+
+    #[test]
+    fn ctor_template_registry_is_the_prelude_view_overlaid_by_the_locals() {
+        let fixture = Fixture::new();
+        assert_binds(
+            &ctor_template_registry(&fixture.local, &fixture.prelude()),
+            &fixture.expected_overlaid_view(),
+        );
+    }
+}
