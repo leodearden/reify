@@ -602,7 +602,7 @@ mod multi_file_tests;
 mod tests {
     use super::*;
     use super::fea_hint::{FEA_NOT_EVALUATED_CODE, FEA_NOT_EVALUATED_HINT};
-    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, test_uri};
+    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, FEA_WITH_AUTO_PARAM_SRC, test_uri};
     use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
@@ -633,13 +633,16 @@ mod tests {
     /// the compile-time `CompileTimeIndeterminateChecker` stub: the route of
     /// every document that follows no import.
     ///
-    /// Any test below that independently reproduces what
-    /// `compute_diagnostics_with_state` computes internally (e.g. a
-    /// `CompiledModule` for a hand-built engine or a span lookup) MUST route
-    /// through this helper rather than calling `compile_with_stdlib` directly — a
-    /// stub-compiled mirror agrees with production only by coincidence
-    /// today (no fixture below carries an `auto:` clause), and would
-    /// silently drift the moment one does.
+    /// The canonical production compile is `document_compile::compile_document`,
+    /// the call `compute_diagnostics_with_state` itself makes; this helper is
+    /// that function's single-file arm, for a test that wants an owned
+    /// `CompiledModule` or has no source text to pass it. A test that
+    /// independently reproduces what `compute_diagnostics_with_state` computes
+    /// internally (e.g. a `CompiledModule` for a hand-built engine or a span
+    /// lookup) MUST compile through one of the two rather than calling
+    /// `compile_with_stdlib` directly — a stub-compiled mirror agrees with
+    /// production only by coincidence today (no fixture below carries an
+    /// `auto:` clause), and would silently drift the moment one does.
     ///
     /// Do NOT use this helper in the BT8 anti-vacuity guards
     /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
@@ -2949,32 +2952,8 @@ structure S {
     fn fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint() {
         let uri = test_uri();
 
-        // FEA portion copied verbatim from `FEA_BEARING_SRC`'s known-good
-        // body (material / tip_load / mount / solve_elastic_static /
-        // peak_stress) so it compiles, collapsed to ONE compound constraint
-        // that references `peak_stress` twice, plus an unrelated
-        // genuinely-unresolved `auto` param with its own constraint.
-        const SRC: &str = r#"structure FeaBearingMixed {
-    param length : Length = 1000mm
-    param width  : Length = 100mm
-    param height : Length = 100mm
-    param gap : Length = auto
-
-    let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
-
-    let result = solve_elastic_static(
-        material, length, width, height, [tip_load], [mount], ElasticOptions()
-    )
-
-    let peak_stress = result.max_von_mises
-
-    constraint peak_stress < 1MPa && peak_stress < 100MPa
-    constraint gap > 1mm
-}"#;
-
-        let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_WITH_AUTO_PARAM_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         // Guard fixture validity like C1's lock: a fixture typo must fail
@@ -2986,10 +2965,12 @@ structure S {
             .collect();
         assert!(
             compile_errors.is_empty(),
-            "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
+            "fixture sanity: FEA_WITH_AUTO_PARAM_SRC must compile without errors; \
+             got: {compile_errors:#?}"
         );
 
-        let result = compute_diagnostics_with_state(&mut EvalState::new(), SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_WITH_AUTO_PARAM_SRC, &uri);
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3011,7 +2992,7 @@ structure S {
         let check_result = result
             .check_result
             .as_ref()
-            .expect("the pipeline evaluated SRC, so it must carry its CheckResult");
+            .expect("the pipeline evaluated the fixture, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -3038,16 +3019,18 @@ structure S {
 
         // Belt-and-suspenders: directly confirm the surviving hint is not
         // anchored to the `gap > 1mm` constraint's span (identify that
-        // constraint's span by slicing its source text out of SRC, rather
-        // than assuming declaration order).
+        // constraint's span by slicing its source text out of the fixture,
+        // rather than assuming declaration order).
         let gap_constraint_span = compiled
             .templates
             .iter()
             .flat_map(|t| t.constraints.iter())
-            .find(|c| SRC[c.span.start as usize..c.span.end as usize].contains("gap"))
+            .find(|c| {
+                FEA_WITH_AUTO_PARAM_SRC[c.span.start as usize..c.span.end as usize].contains("gap")
+            })
             .map(|c| c.span)
             .expect("fixture sanity: expected a constraint referencing `gap`");
-        let gap_range = convert::span_to_range(SRC, gap_constraint_span);
+        let gap_range = convert::span_to_range(FEA_WITH_AUTO_PARAM_SRC, gap_constraint_span);
         assert!(
             !hints.iter().any(|h| h.range == gap_range),
             "no FEA hint should be anchored to the auto-param `gap` \

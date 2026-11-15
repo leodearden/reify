@@ -323,12 +323,68 @@ fn constraint_depends_on_unregistered_optimized_compute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, test_uri};
+    use crate::convert::span_to_range;
+    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, FEA_WITH_AUTO_PARAM_SRC, test_uri};
     use crate::diagnostics::document_compile::compile_document;
     use reify_compiler::cfg::CfgSet;
     use reify_constraints::SimpleConstraintChecker;
-    use reify_core::{ModulePath, VersionId};
-    use reify_ir::Satisfaction;
+    use reify_core::{ModulePath, Severity, VersionId};
+
+    /// `source` compiled by the production route and evaluated once on the
+    /// engine `EvalState::new()` builds: solver-free, with no compute
+    /// trampoline registered.
+    fn compile_and_eval(source: &str) -> (CompiledDocument, reify_eval::Engine) {
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        let document = compile_document(&parsed, source, &test_uri(), &CfgSet::host_default());
+        let compile_errors: Vec<_> = document
+            .module()
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            compile_errors.is_empty(),
+            "fixture sanity: the source must compile without errors; got: {compile_errors:#?}"
+        );
+        let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
+            Box::new(SimpleConstraintChecker),
+            None,
+        );
+        let _ = engine.eval(document.module());
+        (document, engine)
+    }
+
+    fn indeterminate_count(check_result: &reify_eval::CheckResult) -> usize {
+        check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count()
+    }
+
+    /// The range of the one constraint of `document` whose source text
+    /// contains `needle`.
+    fn constraint_range(
+        document: &CompiledDocument,
+        source: &str,
+        needle: &str,
+    ) -> lsp_types::Range {
+        let mut matching = document
+            .module()
+            .templates
+            .iter()
+            .flat_map(|t| t.constraints.iter())
+            .filter(|c| source[c.span.start as usize..c.span.end as usize].contains(needle));
+        let constraint = matching
+            .next()
+            .unwrap_or_else(|| panic!("fixture sanity: no constraint contains {needle:?}"));
+        assert!(
+            matching.next().is_none(),
+            "fixture sanity: more than one constraint contains {needle:?}"
+        );
+        span_to_range(source, constraint.span)
+    }
 
     /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
     /// C2): pins the *other* half of
@@ -371,20 +427,8 @@ mod tests {
             }
         }
 
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let document = compile_document(
-            &parsed,
-            FEA_BEARING_SRC,
-            &test_uri(),
-            &CfgSet::host_default(),
-        );
+        let (document, mut engine) = compile_and_eval(FEA_BEARING_SRC);
         let compiled = document.module();
-        let mut engine = reify_eval::Engine::new(
-            reify_eval::SolverPosture::SolverFree,
-            Box::new(SimpleConstraintChecker),
-            None,
-        );
-        let _ = engine.eval(compiled);
 
         // Positive control: the same engine and module, target still
         // unregistered, DO produce hints — so the empty result below is the
@@ -413,13 +457,8 @@ mod tests {
         let check_result = engine.check_snapshot(compiled).expect(
             "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval_cached",
         );
-        let indeterminate_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
-            .count();
         assert!(
-            indeterminate_count >= 1,
+            indeterminate_count(&check_result) >= 1,
             "fixture/test sanity: the registered trampoline returns Undef \
              (mirroring the unregistered body-inline fallback's value) so \
              the constraint(s) must still be Indeterminate here — otherwise \
@@ -436,6 +475,100 @@ mod tests {
             "no FEA \"not evaluated in editor\" hint should fire once \
              solver::elastic_static has a registered compute trampoline \
              (compute_dispatch(..).is_some()) — got: {hints:#?}"
+        );
+    }
+
+    /// Pins the discriminator's other core behaviour at this module's own
+    /// seam: of two `Indeterminate` constraints, only the FEA-dependent one
+    /// gets a hint, and exactly one, though it reads the FEA result twice.
+    /// The `gap` constraint is `Indeterminate` only because no solver
+    /// resolves its `auto` param, which is not an unevaluated compute target.
+    #[test]
+    fn fea_hint_skips_non_fea_indeterminate_and_dedups_per_constraint() {
+        let (document, engine) = compile_and_eval(FEA_WITH_AUTO_PARAM_SRC);
+        let check_result = engine
+            .check_snapshot(document.module())
+            .expect("the engine should hold a snapshot immediately after eval");
+        assert_eq!(
+            indeterminate_count(&check_result),
+            2,
+            "fixture sanity: the FEA constraint and the `gap` auto-param \
+             constraint must both be Indeterminate; got constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        let hints =
+            fea_not_evaluated_hints(&engine, &document, &check_result, FEA_WITH_AUTO_PARAM_SRC);
+
+        let fea_constraint = constraint_range(&document, FEA_WITH_AUTO_PARAM_SRC, "peak_stress");
+        let hint_ranges: Vec<_> = hints.iter().map(|h| h.range).collect();
+        assert_eq!(
+            hint_ranges,
+            vec![fea_constraint],
+            "expected exactly one hint, on the FEA constraint; got: {hints:#?}"
+        );
+    }
+
+    /// Pins the lookup's precedence: a module-local function sharing a
+    /// prelude FEA solver's name shadows it, so an `Indeterminate` constraint
+    /// calling the module's own `solve_elastic_static` gets no hint even
+    /// though the prelude's same-named solver names an unregistered
+    /// `@optimized` target.
+    #[test]
+    fn fea_hint_module_local_function_shadows_same_named_prelude_solver() {
+        const SRC: &str = r#"fn solve_elastic_static(x: Length) -> Length { x }
+
+structure ShadowedSolver {
+    param gap : Length = auto
+    let stress = solve_elastic_static(gap)
+    constraint stress > 1mm
+}"#;
+        let (document, engine) = compile_and_eval(SRC);
+
+        let module_solvers: Vec<_> = document
+            .module()
+            .functions
+            .iter()
+            .filter(|f| f.name == "solve_elastic_static")
+            .collect();
+        assert!(
+            !module_solvers.is_empty()
+                && module_solvers.iter().all(|f| f.optimized_target.is_none()),
+            "fixture sanity: the module must declare its own, non-`@optimized` \
+             `solve_elastic_static`"
+        );
+        assert!(
+            engine
+                .prelude()
+                .iter()
+                .flat_map(|m| m.functions.iter())
+                .filter(|f| f.name == "solve_elastic_static")
+                .any(|f| f
+                    .optimized_target
+                    .as_deref()
+                    .is_some_and(|t| engine.compute_dispatch(t).is_none())),
+            "fixture sanity: the prelude must declare a same-named \
+             `solve_elastic_static` naming an unregistered `@optimized` target, \
+             or there is nothing to shadow"
+        );
+
+        let check_result = engine
+            .check_snapshot(document.module())
+            .expect("the engine should hold a snapshot immediately after eval");
+        assert_eq!(
+            indeterminate_count(&check_result),
+            1,
+            "fixture sanity: the constraint over the unresolved `auto` param \
+             must be Indeterminate, or the hint loop never reaches the \
+             discriminator; got constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        let hints = fea_not_evaluated_hints(&engine, &document, &check_result, SRC);
+        assert!(
+            hints.is_empty(),
+            "the call resolves to the module's own `solve_elastic_static`, so \
+             no FEA hint should fire; got: {hints:#?}"
         );
     }
 }

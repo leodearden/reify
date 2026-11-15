@@ -100,8 +100,8 @@ pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
 ///   rewording either one breaks it
 /// - `diagnostics::fea_hint::tests::fea_hint_does_not_fire_when_compute_target_is_registered`
 ///
-/// `diagnostics::tests::fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
-/// does not read it but carries a verbatim copy of its FEA body.
+/// [`FEA_WITH_AUTO_PARAM_SRC`] does not read it but carries a verbatim copy of
+/// its FEA body.
 pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
     param length : Length = 1000mm
     param width  : Length = 100mm
@@ -119,6 +119,38 @@ pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
 
     constraint peak_stress < 1MPa
     constraint peak_stress < 100MPa
+}"#;
+
+/// Two constraints that are both `Indeterminate` under the LSP's solver-free
+/// engine, for different reasons: one compound constraint that reads the
+/// `@optimized` `solve_elastic_static` result twice, and one over a
+/// genuinely-unresolved `auto` param. Only the first is FEA-dependent.
+///
+/// The FEA portion is copied verbatim from [`FEA_BEARING_SRC`]'s known-good
+/// body so it compiles; the `auto` constraint is the only one whose text
+/// contains `gap`, and consumers locate it by that.
+///
+/// Consumers:
+/// - `diagnostics::tests::fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
+/// - `diagnostics::fea_hint::tests::fea_hint_skips_non_fea_indeterminate_and_dedups_per_constraint`
+pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"structure FeaBearingMixed {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    param gap : Length = auto
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa && peak_stress < 100MPa
+    constraint gap > 1mm
 }"#;
 
 /// Byte offsets of every occurrence of `needle` in `source`, ascending.
