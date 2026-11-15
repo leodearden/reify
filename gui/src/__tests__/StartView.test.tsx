@@ -347,31 +347,38 @@ describe('StartView mode buttons', () => {
     await waitFor(() => expect(actions.selectMode).toHaveBeenCalledWith(mode));
   });
 
-  it('a failed mode selection shows E_GUI_DEBUG_LISTENER_FAILED', async () => {
+  it("a failed mode selection shows the LaunchFailure's own code", async () => {
     actions.selectMode.mockRejectedValue(
-      new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, 'Address already in use'),
+      new LaunchFailure(
+        LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED,
+        'Failed to fetch dynamically imported module',
+      ),
     );
     renderStartView();
 
     fireEvent.click(screen.getByTestId('start-mode-debug'));
 
     const error = await screen.findByTestId('start-mode-error');
-    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
-    expect(store.state.mode.error?.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(error.textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
+    expect(store.state.mode.error?.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(store.state.mode.selected).toBe('assistant');
   });
 
-  it('a mode rejection that is not a LaunchFailure is presented under E_GUI_DEBUG_LISTENER_FAILED', async () => {
-    actions.selectMode.mockRejectedValue(new Error('unexpected'));
-    renderStartView();
+  it.each(['design', 'assistant', 'debug'] as const)(
+    'a mode rejection that is not a LaunchFailure is presented under E_GUI_MODE_FAILED, whichever mode was clicked (%s)',
+    async (mode) => {
+      actions.selectMode.mockRejectedValue(new Error('unexpected'));
+      renderStartView();
 
-    fireEvent.click(screen.getByTestId('start-mode-debug'));
+      fireEvent.click(screen.getByTestId(`start-mode-${mode}`));
 
-    const error = await screen.findByTestId('start-mode-error');
-    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
-    expect(store.state.mode.error).toEqual({
-      code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
-      message: 'unexpected',
-    });
-  });
+      const error = await screen.findByTestId('start-mode-error');
+      expect(error.textContent).toContain('E_GUI_MODE_FAILED');
+      expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
+      expect(store.state.mode.error).toEqual({
+        code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
+        message: 'unexpected',
+      });
+    },
+  );
 });
