@@ -1,5 +1,6 @@
 """Shared loaders and path facts for the scripts/test_prd_decompose_verify*.py partitions,
-and the one reify-e2e skip policy, which the scripts/test_pcc_*.py partitions share.
+and the one reify-e2e skip policy and the path of the trust home α asks
+(TRUST_HOME), which the scripts/test_pcc_*.py partitions share.
 
 Each partition puts its own directory on sys.path before importing this module, so every
 invocation form resolves it: `python3 scripts/<partition>.py`,
@@ -17,6 +18,7 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PDV_PY = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
 REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
+TRUST_HOME = os.path.join(_SCRIPTS_DIR, "reify-bin-freshness.sh")
 
 
 @functools.cache
@@ -44,12 +46,13 @@ def require_reify_binary(test, pcc=None):
     Asking α's own ProbeContext.from_environment() keeps the skip and the CLI in
     agreement, and an α subprocess inheriting os.environ reaches the same
     answer.  Three skips:
-      * α refused: no built profile binary is vouched for (α's exit 64); the
-        refusal is the reason, so a stale binary is never probed.
-      * a bare name: α's PATH fallback when no profile binary is built, or a
-        bare REIFY_BIN.  A PATH reify (a `cargo install`ed one, say) says
-        nothing about which source built it, so its verdicts are not this
-        checkout's.  A REIFY_BIN path is the caller's explicit choice and runs.
+      * α refused: no built profile binary is vouched for, or none is built
+        (α's exit 64); the refusal is the reason, so a stale binary, or one
+        of unknown source, is never probed.
+      * a bare name: a bare REIFY_BIN, which α takes verbatim.  A PATH reify
+        (a `cargo install`ed one, say) says nothing about which source built
+        it, so its verdicts are not this checkout's.  A REIFY_BIN path is the
+        caller's explicit choice and runs.
       * the named binary is not there to run.
     """
     pcc = load_pcc() if pcc is None else pcc
@@ -58,8 +61,9 @@ def require_reify_binary(test, pcc=None):
         test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
     if not os.path.dirname(ctx.reify_bin):
         test.skipTest(
-            f"{ctx.reify_bin!r} is a bare name resolved on PATH, which carries no "
-            "provenance; build reify in this checkout or set REIFY_BIN to a path"
+            f"REIFY_BIN names the bare command {ctx.reify_bin!r}, resolved on PATH, "
+            "which carries no provenance; set REIFY_BIN to a path, e.g. "
+            '"$(command -v reify)", or unset it and build reify in this checkout'
         )
     if shutil.which(ctx.reify_bin) is None:
         test.skipTest(f"reify binary {ctx.reify_bin} not built")

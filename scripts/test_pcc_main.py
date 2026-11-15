@@ -1433,34 +1433,37 @@ class TestReifyBinaryRefusal(_MainHarness, unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
-class TestLoneBinaryTrustOnMain(_MainHarness, unittest.TestCase):
-    """main() over a ctx the REAL trust home built: a lone unvouched binary stops it.
+class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
+    """main() over a ctx the REAL trust home built: only a vouched binary runs probes.
 
     The ctx comes from the public ProbeContext.from_environment() over a fixture
     git repository, so scripts/reify-bin-freshness.sh decides, exactly as on a
     real invocation, and this pins the two languages' verdict protocol together.
     """
 
-    def _lone_release_ctx(self, sidecar_for_head):
-        """(release path, ctx) over a fixture git repo holding only target/release/reify.
+    _RELEASE = "target/release/reify"
 
+    def _trust_ctx(self, binary=None, sidecar_for_head=lambda _head: None):
+        """(binary path or None, ctx) over a fixture git repo holding only `binary`.
+
+        `binary` is the repo-relative profile binary to build, or None for none;
         `sidecar_for_head(head)` is the sidecar text to write, or None for none.
         """
-        tmp = tempfile.TemporaryDirectory(prefix="pcc_lone_main_")
+        tmp = tempfile.TemporaryDirectory(prefix="pcc_trust_main_")
         self.addCleanup(tmp.cleanup)
         root = make_fixture_repo(tmp.name)
         head = make_git_fixture_repo(root)
-        release = write_profile_binary(root, "target/release/reify")
+        path = None if binary is None else write_profile_binary(root, binary)
         sidecar = sidecar_for_head(head)
         if sidecar is not None:
             write_bin_sidecar(root, sidecar)
         ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
-        return release, ctx
+        return path, ctx
 
     def test_an_unvouched_lone_binary_is_refused_before_any_probe_runs(self):
         for sidecar in (None, "0" * 40):
             with self.subTest(sidecar=sidecar):
-                release, ctx = self._lone_release_ctx(lambda _head: sidecar)
+                release, ctx = self._trust_ctx(self._RELEASE, lambda _head: sidecar)
                 runner, calls = recording_runner()
                 rc, _, err = self._run_main_capturing([_EXAMPLE_PROBE_SET],
                                                       runner=runner, ctx=ctx)
@@ -1470,13 +1473,23 @@ class TestLoneBinaryTrustOnMain(_MainHarness, unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_a_vouched_lone_binary_runs_the_probes(self):
-        release, ctx = self._lone_release_ctx(lambda head: head + "\n")
+        release, ctx = self._trust_ctx(self._RELEASE, lambda head: head + "\n")
         runner, calls = recording_runner()
         rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
         self.assertNotEqual(rc, 64, out + err)
         self.assertTrue(calls)
         for _probe, probe_ctx, _timeout in calls:
             self.assertEqual(probe_ctx.reify_bin, release)
+
+    def test_nothing_built_is_refused_before_any_probe_runs(self):
+        _, ctx = self._trust_ctx()
+        runner, calls = recording_runner()
+        rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET],
+                                                runner=runner, ctx=ctx)
+        self.assertEqual(rc, 64, err)
+        self.assertIn("REIFY_BIN", err)
+        self.assertEqual(out, "")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

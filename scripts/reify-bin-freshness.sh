@@ -218,9 +218,10 @@ reify_bin_stamp() {
 #      the sidecar is kept.
 #
 # prd-capability-check.py consumes this rule through `resolve` and adds only
-# its own two layers: it takes a non-empty REIFY_BIN verbatim without asking
-# (a missing one is its launch error to report), and on REIFY_BIN_NOT_BUILT it
-# falls back to `reify` on PATH.
+# its own layer: it takes a non-empty REIFY_BIN verbatim without asking (a
+# missing one is its launch error to report); every verdict but
+# REIFY_BIN_TRUSTED, REIFY_BIN_NOT_BUILT included, is its refusal (exit 64) —
+# it never falls back to `reify` on PATH.
 #
 # Returns REIFY_BIN_TRUSTED, REIFY_BIN_UNVOUCHED (SKIP — never a verdict) or
 # REIFY_BIN_NOT_BUILT (SKIP); every non-zero verdict is a SKIP to a `||` caller.

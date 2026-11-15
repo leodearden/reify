@@ -14,6 +14,7 @@ tests/infra/test_prd_capability_check.sh.
 import dataclasses
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -28,6 +29,10 @@ from _pcc_test_support import (
     write_bin_sidecar,
     write_profile_binary,
 )
+from _pdv_test_support import TRUST_HOME
+
+# TRUST_HOME's `resolve` exit when no profile binary is built, named as the home names it.
+REIFY_BIN_NOT_BUILT = 2
 
 
 class TestFromEnvironment(unittest.TestCase):
@@ -47,7 +52,8 @@ class TestFromEnvironment(unittest.TestCase):
         ctx = self._ctx({})
         self.assertEqual(ctx.repo_root, self.root)
         self.assertEqual(ctx.tree_sitter_bin, "tree-sitter")
-        self.assertEqual(ctx.reify_bin, "reify")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
         self.assertIsNone(ctx.cache_home_override)
         self.assertGreater(ctx.substrate_timeout_s, 0)
 
@@ -58,8 +64,9 @@ class TestFromEnvironment(unittest.TestCase):
     def test_reify_bin_is_taken_verbatim(self):
         self.assertEqual(self._ctx({"REIFY_BIN": "/x/reify"}).reify_bin, "/x/reify")
 
-    def test_empty_reify_bin_falls_through_to_path(self):
-        self.assertEqual(self._ctx({"REIFY_BIN": ""}).reify_bin, "reify")
+    def test_an_empty_reify_bin_counts_as_unset(self):
+        self.assertEqual(self._ctx({"REIFY_BIN": ""}), self._ctx({}))
+        self.assertIsNone(self._ctx({"REIFY_BIN": ""}).reify_bin)
 
     def test_cache_home_override_is_read_and_empty_counts_as_unset(self):
         # The operator-facing name, written as a literal: it is the documented
@@ -70,8 +77,10 @@ class TestFromEnvironment(unittest.TestCase):
         self.assertIsNone(self._ctx({"REIFY_TS_CACHE_HOME": ""}).cache_home_override)
 
     def test_a_non_executable_profile_binary_is_not_picked(self):
-        write_profile_binary(self.root, "target/release/reify", mode=0o644)
-        self.assertEqual(self._ctx({}).reify_bin, "reify")
+        path = write_profile_binary(self.root, "target/release/reify", mode=0o644)
+        ctx = self._ctx({})
+        self.assertIsNone(ctx.reify_bin)
+        self.assertNotIn(path, ctx.reify_bin_refusal)
 
     def test_repo_root_defaults_to_this_checkout(self):
         ctx = pcc.ProbeContext.from_environment(environ={})
@@ -317,8 +326,19 @@ class TestReifyBinaryTrust(unittest.TestCase):
         self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
         self.assertIsNone(ctx.reify_bin_refusal)
 
-    def test_no_binary_falls_back_to_path(self):
-        self.assertEqual(self._ctx().reify_bin, "reify")
+    def test_nothing_built_is_refused_relaying_the_trust_home_reason(self):
+        """A reify on PATH has no provenance, so nothing built refuses like an unvouched binary."""
+        home = subprocess.run(
+            ["bash", TRUST_HOME, "resolve", self.root],
+            env=trust_environ(), capture_output=True, text=True,
+        )
+        self.assertEqual(home.returncode, REIFY_BIN_NOT_BUILT, home.stdout + home.stderr)
+        reason = home.stdout.strip()
+        self.assertTrue(reason)
+        ctx = self._ctx()
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(reason, ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
 
     def test_require_reify_bin_returns_the_path_or_raises_the_refusal(self):
         self.assertEqual(probe_context(reify_bin="/x/reify").require_reify_bin(), "/x/reify")
