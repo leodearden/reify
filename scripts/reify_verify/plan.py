@@ -343,7 +343,6 @@ class ConfirmRecorded:
             _refuse_quote("ConfirmRecorded", field, getattr(self, field), self.PATH_QUOTE)
 
 
-TEST_PASSES = (NextestRun, CargoTestRun, ConfirmRecorded)
 TestPass = NextestRun | CargoTestRun | ConfirmRecorded
 
 
@@ -351,7 +350,7 @@ def _is_guarded_test_pass(command) -> bool:
     """`if test -f <manifest>; then <script> && … && <test pass>; fi`: a test pass behind its crate's guard."""
     match command:
         case Guarded(body=Chain(parts=(*setup, run))):
-            return isinstance(run, TEST_PASSES) and all(isinstance(part, Script) for part in setup)
+            return isinstance(run, TestPass) and all(isinstance(part, Script) for part in setup)
     return False
 
 
@@ -366,7 +365,7 @@ class SlotFdClosed:
     body: "TestPass | Guarded"
 
     def __post_init__(self):
-        if not (isinstance(self.body, TEST_PASSES) or _is_guarded_test_pass(self.body)):
+        if not (isinstance(self.body, TestPass) or _is_guarded_test_pass(self.body)):
             raise ValueError(
                 f"SlotFdClosed: the body is one test pass, bare or guarded, not {self.body!r}"
             )
