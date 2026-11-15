@@ -70,7 +70,8 @@ echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
 # gui_test_calls <script>: run a copy of <script> as scripts/gui-test.sh in a fresh
 # repo-shaped tree whose npm and sibling scripts/gui-vitest-run.sh are stubs, and
 # print the calls they recorded, one "<program> <argv>" line each. Returns the
-# run's exit status, so a script that dies part-way fails every check.
+# run's exit status (its output goes to stderr when non-zero), so a script that
+# dies part-way fails every check.
 gui_test_calls() {
     local dir
     dir="$(mktemp -d "$FIXTURE_ROOT/run.XXXXXX")" || return 1
@@ -85,7 +86,7 @@ STUB
     : >"$dir/calls.log"
     GUI_TEST_CALL_LOG="$dir/calls.log" PATH="$dir/bin:$PATH" \
         "$dir/scripts/gui-test.sh" >"$dir/out.log" 2>&1 \
-        || { cat "$dir/out.log" >&2; return 1; }
+        || { local rc=$?; cat "$dir/out.log" >&2; return "$rc"; }
     cat "$dir/calls.log"
 }
 
