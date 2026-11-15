@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
+import type { DiagnosticInfo, EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
 import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -10,6 +10,7 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
+import { makeGuiState } from './test_utils/guiState';
 import { splitGridTracks } from './test_utils/gridTracks';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
@@ -102,6 +103,8 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
+const oneFileState = (): GuiState => makeGuiState({ files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }] });
+
 // --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
 //
 // STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
@@ -114,11 +117,6 @@ vi.mock('../editor/FileTabs', () => ({
 // rather than loudly, and for the measured truth table that makes the beforeEach
 // restore below load-bearing rather than cosmetic. Deliberately not restated
 // here: unlike the key sets, prose has nothing to detect it going stale.
-const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
-const oneFileState = (): GuiState => ({
-  ...emptyState,
-  files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-});
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -239,7 +237,7 @@ beforeEach(() => {
   capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -296,7 +294,7 @@ beforeEach(() => {
   vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
   vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
   vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
-  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(published(emptyState));
+  vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
   vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
@@ -401,18 +399,13 @@ describe('edges-in-black toggle wiring', () => {
   });
 
   it('reaches every pane of a display_panes layout', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
-      values: [], constraints: [], files: [],
-      tessellation_diagnostics: [], compile_diagnostics: [],
-      tensegrity_wires: [], tensegrity_surfaces: [],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-      display_appearance: [],
-      fea_diagnostics: [],
-    }));
+    })));
     await renderAndWaitForReady();
     const panes = () => capturedMultiViewportProps.panes as Array<{ showEdges?: boolean }>;
     expect(panes()).toHaveLength(2);
@@ -463,8 +456,7 @@ describe('App resizable splitters', () => {
 
 describe('App initial state loading', () => {
   it('calls getInitialState on mount and populates store values into PropertyEditor', async () => {
-    const testState: GuiState = { fea_convergence: null,
-      meshes: [],
+    const testState = makeGuiState({
       values: [
         {
           cell_id: 'c1',
@@ -477,16 +469,8 @@ describe('App initial state loading', () => {
           freshness: 'final',
         },
       ],
-      constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
 
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
 
@@ -504,8 +488,7 @@ describe('App initial state loading', () => {
 
 describe('App unit ladders (task #5199)', () => {
   it('fetches get_unit_ladders on mount and threads it into PropertyEditor', async () => {
-    const testState: GuiState = { fea_convergence: null,
-      meshes: [],
+    const testState = makeGuiState({
       values: [
         {
           cell_id: 'Tank.capacity',
@@ -520,16 +503,7 @@ describe('App unit ladders (task #5199)', () => {
           si_value: 0.00704500224,
         },
       ],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
     vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
       {
@@ -556,8 +530,7 @@ describe('App unit ladders (task #5199)', () => {
     // console.warn — no user-visible signal, unlike the app's other
     // best-effort one-time subscriptions (event/file-change/serialization
     // monitoring), which all surface their own failures via toast.
-    const testState: GuiState = { fea_convergence: null,
-      meshes: [],
+    const testState = makeGuiState({
       values: [
         {
           cell_id: 'Tank.capacity',
@@ -572,16 +545,7 @@ describe('App unit ladders (task #5199)', () => {
           si_value: 0.00704500224,
         },
       ],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
     vi.mocked((bridge as any).getUnitLadders).mockRejectedValueOnce(new Error('backend unavailable'));
 
@@ -645,15 +609,7 @@ describe('App side panel vertical splitter', () => {
 
 describe('App dynamic window title', () => {
   it('sets document.title to "Reify" when no file is open', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ files: [] })));
 
     render(() => <App />);
 
@@ -663,19 +619,9 @@ describe('App dynamic window title', () => {
   });
 
   it('sets document.title to "{basename} - Reify" when a file is open and idle', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
 
     render(() => <App />);
 
@@ -692,19 +638,9 @@ describe('App dynamic window title', () => {
       return () => {};
     });
 
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
 
     render(() => <App />);
 
@@ -783,8 +719,7 @@ describe('App async mount/cleanup race conditions', () => {
     unmount();
 
     // Resolve getInitialState with data (values + files)
-    resolveGetState(published({ fea_convergence: null,
-      meshes: [],
+    resolveGetState(published(makeGuiState({
       values: [{
         cell_id: 'c1',
         name: 'testval',
@@ -795,16 +730,8 @@ describe('App async mount/cleanup race conditions', () => {
         kind: 'parameter',
         freshness: 'final',
       }],
-      constraints: [],
       files: [{ path: '/test.ri', content: '' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
 
     // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
@@ -928,8 +855,7 @@ describe('App new component integration', () => {
 });
 
 describe('App navigation wiring', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
+  const testState = makeGuiState({
     values: [
       {
         cell_id: 'c1',
@@ -951,15 +877,7 @@ describe('App navigation wiring', () => {
         parameter_ids: ['c1'],
       },
     ],
-    files: [],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   it('viewport onSelect triggers getSourceLocation from bridge', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
@@ -1103,13 +1021,12 @@ describe('App navigation wiring', () => {
   });
 
   function twoFileState(active: string, other: string): GuiState {
-    return {
-      ...emptyState,
+    return makeGuiState({
       files: [
         { path: active, content: '' },
         { path: other, content: '' },
       ],
-    };
+    });
   }
 
   /** Renders App with both files open and `active` the active tab. */
@@ -1203,10 +1120,9 @@ describe('App navigation wiring', () => {
 });
 
 describe('Find-uses panel navigation (task 9203)', () => {
-  const mainOnlyState: GuiState = {
-    ...emptyState,
+  const mainOnlyState = makeGuiState({
     files: [{ path: '/proj/main.ri', content: 'structure Main {}' }],
-  };
+  });
 
   function reference(uri: string): ReferenceResult {
     return { uri, line: 2, character: 4, endLine: 2, endCharacter: 9 };
@@ -1285,7 +1201,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+    resolveGetState(published(makeGuiState()));
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -1339,7 +1255,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -1352,7 +1268,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
 
     render(() => <App />);
 
@@ -1418,22 +1334,12 @@ describe('App toast queue (TO-2)', () => {
 });
 
 describe('App changedFiles multi-file tracking (R-1)', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -1530,22 +1436,12 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
 });
 
 describe('App dirty-file check before reload (R-4)', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -1657,22 +1553,12 @@ describe('App dirty-file check before reload (R-4)', () => {
 });
 
 describe('App handleReload partial failure', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -1853,23 +1739,13 @@ describe('App handleReload partial failure', () => {
 });
 
 describe('App handleReload race condition', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
       { path: '/project/housing.ri', content: 'structure Housing {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -1987,8 +1863,7 @@ describe('App handleSetParameter error handling', () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-        meshes: [],
+      vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
         values: [{
           cell_id: 'c1',
           name: 'width',
@@ -1999,16 +1874,7 @@ describe('App handleSetParameter error handling', () => {
           kind: 'parameter',
           freshness: 'final',
         }],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      })));
 
       render(() => <App />);
 
@@ -2092,8 +1958,7 @@ describe('App handleSetParameter error handling', () => {
 describe('App parameter input: the reconciled unit/bare-number contract (task #5757)', () => {
   /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
   function capacityState(): GuiState {
-    return { fea_convergence: null,
-      meshes: [],
+    return makeGuiState({
       values: [
         {
           cell_id: 'Tank.capacity',
@@ -2109,16 +1974,7 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
           declared_dimension: 'Volume',
         },
       ],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
   }
 
   /**
@@ -2319,19 +2175,9 @@ describe('App re-evaluate error toast', () => {
   it('shows error toast when re-evaluate (F5) fails', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
+      vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      })));
 
       render(() => <App />);
 
@@ -2364,22 +2210,12 @@ describe('App re-evaluate error toast', () => {
 describe('App F5 re-evaluate multi-file', () => {
   it('F5 re-evaluate sends only the active file content when multiple files are open', async () => {
     // Arrange: two files — after init, mount.ri is activeFile (last opened)
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [
         { path: '/project/bracket.ri', content: 'structure Bracket {}' },
         { path: '/project/mount.ri', content: 'structure Mount {}' },
       ],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
     render(() => <App />);
@@ -2420,19 +2256,9 @@ describe('App F5 re-evaluate multi-file', () => {
 describe('App F5 re-evaluate uses live buffer content', () => {
   it('F5 sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
     // Arrange: one file loaded
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [{ path: '/project/bracket.ri', content: 'INITIAL' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
     render(() => <App />);
@@ -2476,19 +2302,7 @@ describe('App event subscription error toast', () => {
         throw new Error('subscription failed');
       });
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
 
       render(() => <App />);
 
@@ -2553,19 +2367,9 @@ describe('App reload error toast', () => {
       // Make bridgeOpenFile reject
       vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
+      vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      })));
 
       render(() => <App />);
 
@@ -2773,7 +2577,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+    resolveRetry(published(makeGuiState()));
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2798,15 +2602,7 @@ describe('App initApp concurrent execution guard', () => {
     vi.mocked(bridge.onMeshUpdate).mockResolvedValueOnce(priorUnsub);
     vi.mocked(bridge.onFileChanged).mockResolvedValueOnce(priorFileUnsub);
 
-    vi.mocked(bridge.getInitialState).mockResolvedValueOnce(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    vi.mocked(bridge.getInitialState).mockResolvedValueOnce(published(makeGuiState()));
 
     const { unmount } = render(() => <App />);
     await waitFor(() => {
@@ -2868,7 +2664,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+    resolveRetry(published(makeGuiState()));
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -3111,17 +2907,9 @@ describe('App Ctrl+O open file', () => {
   });
 
   it('dispatching Ctrl+O triggers pickOpenPath then openFile', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
 
     // Mock pickOpenPath to return a path
     vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
@@ -3153,15 +2941,7 @@ describe('App handleOpen dirty-check confirmation', () => {
   function setupHappyPathMocks() {
     vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
   }
 
   it('Ctrl+O with dirty buffer and confirm cancelled: pickOpenPath not called', async () => {
@@ -3238,8 +3018,7 @@ describe('App whole-state replies honour the publish generation', () => {
     kind: 'parameter',
     freshness: 'final',
   });
-  const stateWithWidth = (value: string): GuiState => ({
-    ...emptyState,
+  const stateWithWidth = (value: string): GuiState => makeGuiState({
     values: [width(value)],
     files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
   });
@@ -3309,15 +3088,7 @@ describe('App File→New (Ctrl+N) create-and-open flow', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
     vi.mocked(bridge.createNewFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
   }
 
   it('Ctrl+N happy path: calls pickSavePath, createNewFile, openFile, openFileEngine in order', async () => {
@@ -3430,15 +3201,7 @@ describe('App handleNew dirty-check confirmation', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
     vi.mocked(bridge.createNewFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
   }
 
   it('Ctrl+N with dirty buffer and confirm cancelled: pickSavePath not called', async () => {
@@ -3493,6 +3256,10 @@ describe('App handleNew dirty-check confirmation', () => {
 });
 
 describe('App launcher Start view (alpha-spine β)', () => {
+  beforeEach(() => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ files: [] })));
+  });
+
   function typeStartPath(path: string) {
     fireEvent.input(screen.getByTestId('start-path-input'), { target: { value: path } });
   }
@@ -3532,7 +3299,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
   it('a launch whose failing buffer still opened leaves no start-view error behind', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(
-      published({ ...emptyState, files: [{ path: 'broken.ri', content: 'structure {' }] }),
+      published(makeGuiState({ files: [{ path: 'broken.ri', content: 'structure {' }] })),
     );
     vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
       path: '/designs/broken.ri',
@@ -3912,8 +3679,7 @@ describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     await withSuppressedRejections(async () => {
       vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-        meshes: [],
+      vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
         values: [{
           cell_id: 'c1',
           name: 'width',
@@ -3924,16 +3690,7 @@ describe('App end-to-end toast integration', () => {
           kind: 'parameter',
           freshness: 'final',
         }],
-        constraints: [],
-        files: [],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      })));
 
       render(() => <App />);
 
@@ -4106,19 +3863,9 @@ describe('App Claude error handling', () => {
 describe('App onSend context forwarding', () => {
   it('forwards currentFile and attachedContexts to claudeSendMessage', async () => {
     // Set up initial state with a file so activeFile is set in ChatPanel
-    const testState: GuiState = { fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    const testState = makeGuiState({
       files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
 
     render(() => <App />);
@@ -4167,19 +3914,9 @@ describe('App claudeSendMessage error-path integration', () => {
   it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
-      vi.mocked(bridge.getInitialState).mockResolvedValueOnce(published({ fea_convergence: null,
-        meshes: [],
-        values: [],
-        constraints: [],
+      vi.mocked(bridge.getInitialState).mockResolvedValueOnce(published(makeGuiState({
         files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
-        tessellation_diagnostics: [],
-        compile_diagnostics: [],
-        tensegrity_wires: [],
-        tensegrity_surfaces: [],
-        display_panes: [],
-        display_appearance: [],
-        fea_diagnostics: []
-      }));
+      })));
 
       render(() => <App />);
 
@@ -4475,19 +4212,9 @@ describe('App handleSave uses live buffer content', () => {
   it('Ctrl+S sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
     const path = '/project/test.ri';
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
-      constraints: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       files: [{ path, content: 'STALE' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
 
     render(() => <App />);
     await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
@@ -6509,10 +6236,9 @@ describe('App side-panel entry list (β #9063)', () => {
   }
 
   it('buckling + FEA + chat mounted: one track per child, chat in its minmax(160px, 1fr) track', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] }],
-    }));
+    })));
     let modeShapeCallback: ((f: any) => void) | undefined;
     vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(async (cb: (f: any) => void) => {
       modeShapeCallback = cb;
@@ -6726,21 +6452,11 @@ describe('App slider parameter cadence', () => {
 // ─── externallyChanged wiring in App.tsx ─────────────────────────────────────
 
 describe('App externallyChanged store wiring', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -6895,21 +6611,11 @@ describe('App externallyChanged store wiring', () => {
 // ─── Auto-reload non-dirty tabs on file-changed event ────────────────────────
 
 describe('App file-changed auto-reload (non-dirty)', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -6991,21 +6697,11 @@ describe('App file-changed auto-reload (non-dirty)', () => {
 // ─── isSameFile cross-format path matching in onFileChanged ─────────────────
 
 describe('App file-changed isSameFile cross-format matching', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/foo.ri', content: 'old content' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7045,21 +6741,11 @@ describe('App file-changed isSameFile cross-format matching', () => {
 // ─── handleSave aborts when file is externally changed ───────────────────────
 
 describe('App handleSave aborts when file is externally changed', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7181,21 +6867,11 @@ describe('App handleSave aborts when file is externally changed', () => {
 // ─── Conflict prompt: Reload from disk action ────────────────────────────────
 
 describe('App handleSave conflict prompt: Reload from disk', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7269,21 +6945,11 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
 // ─── Conflict prompt: Overwrite action ───────────────────────────────────────
 
 describe('App handleSave conflict prompt: Overwrite', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7351,21 +7017,11 @@ describe('App handleSave conflict prompt: Overwrite', () => {
 // ─── Conflict prompt: Overwrite uses live buffer content ─────────────────────
 
 describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'STALE' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7435,21 +7091,11 @@ describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
 // ─── Save-conflict resolution clears the reload-prompt banner ────────────────
 
 describe('App save-conflict resolution clears the reload-prompt banner', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
 
@@ -7750,21 +7396,11 @@ describe('App editor→selection wiring', () => {
 // ─── file-removed event handling (step-23) ───────────────────────────────────
 
 describe('App file-removed event handling', () => {
-  const testState: GuiState = { fea_convergence: null,
-    meshes: [],
-    values: [],
-    constraints: [],
+  const testState = makeGuiState({
     files: [
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
     ],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
-    fea_diagnostics: []
-  };
+  });
 
   let fileRemovedCallback: ((data: { path: string }) => void) | undefined;
 
@@ -8102,14 +7738,13 @@ const DEMAND_SYNC_WAIT_TIMEOUT_MS = SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 850;
 
 describe('App selective-demand enforcement sync (task 6045)', () => {
   it('(a) the visible-realization set is synced to bridge.syncDemand, excluding non-realization mesh keys', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [
         makeMesh('Bracket#realization[0]'),
         makeMesh('Bracket#realization[1]'),
         makeMesh('Bracket.geometry'),
       ],
-    }));
+    })));
     // getEntityTree stays at the factory default `[]`: with an empty tree,
     // viewStateStore's `nodeByPath.size === 0` short-circuit makes
     // `getEffectiveVisibility` return 'show' for every path, so the payload
@@ -8137,10 +7772,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // selector now re-subscribes through viewStateStore's treeVersion, which every
   // query reads before that short-circuit (PRD §4.5).
   it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
-    }));
+    })));
     // Unlike case (a), this case needs a POPULATED tree: the eye icon must
     // render, and effective visibility must resolve per node rather than via
     // the empty-tree short-circuit. `defaultVisibilityFor` returns 'show' for a
@@ -8196,10 +7830,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // DesignTree rows and their eye memos exist before the store has a tree:
   // the production slow-backend ordering (PRD §4.5 B8).
   it('(c) B8: with the entity tree arriving after mount, the first eye toggle reaches the DesignTree eye and bridge.syncDemand', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
-    }));
+    })));
     const tree = deferred<EntityTreeNode[]>();
     vi.mocked(bridge.getEntityTree).mockImplementation(() => tree.promise);
 
@@ -8265,10 +7898,9 @@ describe('App selective-demand enforcement sync — failure path (task 6045)', (
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
-        vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-          ...emptyState,
+        vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
           meshes: [makeMesh('Bracket#realization[0]')],
-        }));
+        })));
 
         await renderAndWaitForReady();
 
@@ -8408,22 +8040,12 @@ describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
     const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
     const orphanMeshKey = 'ShuttlePlates#realization0';
 
-    const initialState: GuiState = { fea_convergence: null,
+    const initialState = makeGuiState({
       meshes: [
         { entity_path: liveMeshKey, vertices: new Float32Array([0, 1, 2]), indices: new Uint32Array([0, 1, 2]), normals: null },
         { entity_path: orphanMeshKey, vertices: new Float32Array([3, 4, 5]), indices: new Uint32Array([0, 1, 2]), normals: null },
       ],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
 
     // Seed both meshes via getInitialState
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(initialState));
@@ -8474,7 +8096,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
 
   it('stale in-flight entity-tree snapshot fetched before an engine reinit does not prune the freshly-loaded design', async () => {
     // Design A: loaded by getInitialState during initApp
-    const designAState: GuiState = { fea_convergence: null,
+    const designAState = makeGuiState({
       meshes: [
         {
           entity_path: 'PrinterFrame.gantry#r0',
@@ -8483,20 +8105,10 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
           normals: null,
         },
       ],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
 
     // Design B: loaded directly via initFromState (simulates a file-switch reinit)
-    const designBState: GuiState = { fea_convergence: null,
+    const designBState = makeGuiState({
       meshes: [
         {
           entity_path: 'CapstanDrive.capstan#r0',
@@ -8511,17 +8123,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
           normals: null,
         },
       ],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    };
+    });
 
     // Deferred promise for the FIRST getEntityTree call (the stale in-flight fetch).
     // It is issued during initApp → initFromState → onEngineReinitialized → refreshEntityTree.
@@ -8579,7 +8181,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
 
 describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
   it('passes engineStore.state.compileDiagnostics to the Editor compileDiagnostics prop', async () => {
-    const errorDiag = {
+    const errorDiag: DiagnosticInfo = {
       file_path: '/project/src/bracket.ri',
       line: 3,
       column: 5,
@@ -8591,19 +8193,7 @@ describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
     };
 
     // Seed getInitialState with an Error compile diagnostic
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      meshes: [],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [errorDiag],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    } as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({ compile_diagnostics: [errorDiag] })));
 
     await renderAndWaitForReady();
 
@@ -8832,18 +8422,13 @@ describe('syncActiveViewToViewports unit tests (task-4767 δ)', () => {
 
 describe('App N-pane render integration tests (task-4767 δ)', () => {
   it('step-9 case A: display_panes routing B to pane 1 → MultiViewport renders, DualViewport absent', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
-      values: [], constraints: [], files: [],
-      tessellation_diagnostics: [], compile_diagnostics: [],
-      tensegrity_wires: [], tensegrity_surfaces: [],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     await renderAndWaitForReady();
     // MultiViewport IS rendered (capturedMultiViewportProps populated by mock)
     expect(capturedMultiViewportProps.panes).toBeDefined();
@@ -8876,19 +8461,15 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
     const feaConvergence = { converged: false, reason: 'MaxDofs' };
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       fea_convergence: feaConvergence,
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
-      values: [], constraints: [], files: [],
-      tessellation_diagnostics: [], compile_diagnostics: [],
-      tensegrity_wires: [], tensegrity_surfaces: [],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-      display_appearance: [],
       fea_diagnostics: feaDiagnostics,
-    }));
+    })));
 
     await renderAndWaitForReady();
     expect(capturedMultiViewportProps.panes).toHaveLength(2);
@@ -8955,16 +8536,11 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
   it('step-11: dangling directive (no realized mesh) → console.warn logged, no phantom pane, DualViewport renders', async () => {
     // Spy on console.warn BEFORE rendering so we capture all warnings during render.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]')],
-      values: [], constraints: [], files: [],
-      tessellation_diagnostics: [], compile_diagnostics: [],
-      tensegrity_wires: [], tensegrity_surfaces: [],
       // Ghost has no realized mesh → dropped directive (Open-Q3/inv.1/boundary scenario 7)
       display_panes: [{ subject: 'Ghost#realization[0]', pane: 2 }],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     try {
       await renderAndWaitForReady();
       // dropped directive MUST be logged (step-12 impl makes this green)
@@ -9126,11 +8702,10 @@ describe('computeAppearanceOverrides unit tests (task-4773 δ)', () => {
 describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)', () => {
   it('warns for a dangling display_appearance directive on initial render', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('real')],
       display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
-    }));
+    })));
     try {
       await renderAndWaitForReady();
       const msgs = warnSpy.mock.calls.map(args => String(args.join(' ')));
@@ -9149,11 +8724,10 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
     });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('real')],
       display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
-    }));
+    })));
     try {
       await renderAndWaitForReady();
 
@@ -9206,14 +8780,13 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
   });
 
   it('(a) multi-pane: EVERY rendered pane is addressable by its viewportId', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-    }));
+    })));
 
     await renderAndWaitForReady();
 
@@ -9263,11 +8836,10 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
       { subject: 'A#realization[0]', pane: 0 },
       { subject: 'B#realization[0]', pane: 1 },
     ];
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: twoPanes,
-    }));
+    })));
 
     await renderAndWaitForReady();
     const designMain = (window as any).__REIFY_DEBUG__.feaModes['design-main'];
@@ -9302,14 +8874,13 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
   });
 
   it('(d) legacy scalar slot mirrors feaModes[design-main]', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
-      ...emptyState,
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       display_panes: [
         { subject: 'A#realization[0]', pane: 0 },
         { subject: 'B#realization[0]', pane: 1 },
       ],
-    }));
+    })));
 
     await renderAndWaitForReady();
 
@@ -9328,24 +8899,14 @@ describe('App feaMode debug-context registration (keyed, #5670)', () => {
 // GREEN (step-16) — App.tsx wires both.
 describe('App FEA diagnostics wiring (#2966)', () => {
   /** GuiState with a non-empty fea_diagnostics array (Unconstrained variant). */
-  const stateWithFeaDiagnostics = {
-    meshes: [],
-    values: [],
-    constraints: [],
-    files: [],
-    tessellation_diagnostics: [],
-    compile_diagnostics: [],
-    tensegrity_wires: [],
-    tensegrity_surfaces: [],
-    display_panes: [],
-    display_appearance: [],
+  const stateWithFeaDiagnostics = makeGuiState({
     fea_diagnostics: [
-      { kind: 'Unconstrained' as const, rigid_body_modes: ['TranslationX', 'RotationZ'] as const },
+      { kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] },
     ],
-  };
+  });
 
   it('renders fea-diagnostics-panel with rows when engine state carries fea_diagnostics', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // FeaDiagnosticsPanel must be present (added to sidebar)
     const panel = screen.getByTestId('fea-diagnostics-panel');
@@ -9363,7 +8924,7 @@ describe('App FEA diagnostics wiring (#2966)', () => {
   //   gui/src/__tests__/viewport/DualViewport.test.tsx
   //   → describe('DualViewport feaDiagnostics threading (γ)', ...)
   it('passes feaDiagnostics prop to DualViewport (App→DualViewport hand-off)', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // capturedDualViewportProps captures ALL props App passes to DualViewport
     expect(capturedDualViewportProps.feaDiagnostics).toBeDefined();
@@ -9372,7 +8933,7 @@ describe('App FEA diagnostics wiring (#2966)', () => {
   });
 
   it('activating a panel row triggers the fitToView camera-focus handle', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics as any));
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithFeaDiagnostics));
     await renderAndWaitForReady();
     // Ensure fitToViewRef registration has run (mock registers mockViewportFitToView)
     expect(mockViewportFitToView).toBeDefined();

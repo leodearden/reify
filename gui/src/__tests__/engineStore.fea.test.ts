@@ -9,7 +9,7 @@ import {
   mockOnFeaConvergenceChanged,
   primeEngineStoreBridgeMocks,
 } from './engineStoreBridgeHandles';
-import { makeGuiState } from './engineStoreFixtures';
+import { makeGuiState } from './test_utils/guiState';
 import { createEngineStore } from '../stores/engineStore';
 
 beforeEach(primeEngineStoreBridgeMocks);
