@@ -235,6 +235,19 @@ fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
         describe(&output)
     );
     assert_eq!(fs::read_to_string(&broken).expect("read fixture"), BROKEN);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parse_errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("Parse error"))
+        .collect();
+    assert!(!parse_errors.is_empty(), "{}", describe(&output));
+    let lead = format!("{broken}: Parse error: ");
+    assert!(
+        parse_errors.iter().all(|line| line.starts_with(&lead)),
+        "{}",
+        describe(&output)
+    );
 }
 
 #[test]
