@@ -36,6 +36,7 @@ from reify_verify import (
     environment,
     knobs,
     narrowing,
+    releasescope,
     retry,
     scope,
     selection,
@@ -205,10 +206,10 @@ def _decide(
         *selection_warnings,
         *narrowing_warnings,
     )
-    declared = testregion.release_declared(repo_root, planning)
+    declared = releasescope.release_declared(repo_root, planning)
     if isinstance(declared, Refused):
         return Refused((*diagnostics, *declared.lines), declared.exit_code)
-    skips, delta_diagnostics = testregion.decide_release_delta(role_policy, planning, repo_root)
+    skips, delta_diagnostics = releasescope.decide_release_delta(role_policy, planning, repo_root)
     return Decided(
         Families.of(action), decision, step_env, selected, narrowed, declared, skips,
         (*diagnostics, *delta_diagnostics),
