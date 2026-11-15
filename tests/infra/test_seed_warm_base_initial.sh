@@ -23,7 +23,8 @@
 #   B-e2e — full happy path: preflight gated, exits 0, stdout empty
 #   E — failure propagation: not-mounted / not-reflink → non-zero at FS pre-check (before build)
 #   H — stale foreign build-provenance sidecar: refresh's Step 2 refusal propagates,
-#       the seed names the cold-seed remedy, and that remedy seeds the base
+#       the seed names the cold-seed remedy (only while a sidecar exists), and that
+#       remedy seeds the base
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -541,6 +542,7 @@ printf '{"tree_oid":"%s","profiles":"debug release","timestamp":"2026-11-01T06:2
 H_BUILD_CMD="mkdir -p target && printf 'x' > target/rustc"
 
 # One definition of the run, so H6's re-run is the identical invocation.
+# The optional argument overrides --landed-commit (H7's wrong-commit refusal).
 run_h_seed() {
     reset_calls
     REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 RUSTFLAGS="" \
@@ -549,7 +551,7 @@ run_h_seed() {
         --base-dir "$H_BASE" \
         --merge-verify "$H_LANE" \
         --build-cmd "$H_BUILD_CMD" \
-        --landed-commit "$H_HEAD" \
+        --landed-commit "${1:-$H_HEAD}" \
         --rustflags "" \
         --invocation "sha256:h-test"
 }
@@ -571,6 +573,8 @@ assert "H3: no <base>.rustflags stamp" test ! -f "${H_BASE}.rustflags"
 # H4: refresh's own refusal is on stderr, above the seed's context
 assert "H4: stderr carries refresh's built-tree refusal" \
     bash -c 'printf "%s\n" "$1" | grep -qF -- "built from a different tree"' _ "$ERR_OUT"
+assert "H4: stderr carries the seed's own Step 2 refusal line" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "Step 2 refused"' _ "$ERR_OUT"
 
 # H5: the seed's own remedy, as the literal copyable command.  The seed echoes
 # "$MERGE_VERIFY/target" in its Step 2 info lines, so the path alone would pass
@@ -586,5 +590,18 @@ assert "H6: re-run seeded <base-dir> (symlink)" \
     bash -c '[ -L "$1" ]' _ "$H_BASE"
 assert "H6: 'warm-lane-preflight: all checks passed' on stderr (preflight ran)" \
     bash -c 'printf "%s\n" "$1" | grep -qF -- "warm-lane-preflight: all checks passed"' _ "$ERR_OUT"
+
+# H7: a refusal with no build stamp to blame must not offer to delete the build.
+# H6's rebuilt target/ carries no sidecar, so a wrong --landed-commit is refused by
+# refresh's HEAD-mismatch guard, which removing target/ cannot cure.  The seed still
+# prints its refusal line.  The remedy pattern is H5's, so H5 proves the seed does
+# print it when a stamp exists.
+assert "H7: premise: the rebuilt target/ carries no sidecar" test ! -e "$H_SIDECAR"
+run_h_seed "0000000000000000000000000000000000000000"
+assert "H7: wrong --landed-commit exits non-zero" test "$RC" -ne 0
+assert "H7: stderr still carries the seed's own Step 2 refusal line" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "Step 2 refused"' _ "$ERR_OUT"
+assert "H7: no cold-seed remedy when no stamp exists" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "rm -rf \"$2/target\""' _ "$ERR_OUT" "$H_LANE"
 
 test_summary
