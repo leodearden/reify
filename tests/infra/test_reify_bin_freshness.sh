@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Unit tests for scripts/reify-bin-freshness.sh — the shared freshness guard
-# library used by the PRD-gate tests (test_prd_gate_corpus.sh,
-# test_prd_gate_objective_inheritance.sh) to refuse a verdict against a reify
-# binary whose provenance is unproven — e.g. a cross-candidate leftover left
-# behind in the shared _merge-verify warm lane by a sibling merge candidate
-# (task #5133).
+# Unit tests for scripts/reify-bin-freshness.sh — the one home of the reify
+# binary trust rule: refuse a verdict against a binary whose provenance is
+# unproven, e.g. a cross-candidate leftover left behind in the shared
+# _merge-verify warm lane by a sibling merge candidate (task #5133).  Two forms:
+#   sourced    resolve_trusted_reify_bin, by the tests/infra/test_prd_gate_*.sh gates
+#   executed   `resolve [repo_root]`, by scripts/prd-capability-check.py
 #
 # Unlike scripts/reify-audit-freshness.sh (mtime vs. last crate-commit epoch),
 # this guard compares a build-time HEAD-SHA sidecar (target/.reify-bin-sha)
@@ -25,16 +25,16 @@
 #   10:  reify_bin_stamp on a non-git dir → non-zero, no sidecar written
 #   11:  resolve_trusted_reify_bin — explicit existing REIFY_BIN → trusted,
 #        freshness bypassed entirely
-#   12:  resolve_trusted_reify_bin — explicit REIFY_BIN missing path → SKIP,
-#        reason mentions REIFY_BIN + missing
-#   13:  resolve_trusted_reify_bin — no REIFY_BIN, no target bins → SKIP,
-#        reason mentions "not built"
+#   12:  resolve_trusted_reify_bin — explicit REIFY_BIN missing path → exactly
+#        REIFY_BIN_UNVOUCHED (1), reason mentions REIFY_BIN + missing
+#   13:  resolve_trusted_reify_bin — no REIFY_BIN, no target bins → exactly
+#        REIFY_BIN_NOT_BUILT (2), reason mentions "not built"
 #   14:  resolve_trusted_reify_bin — fresh release bin → trusted, resolves
 #        the release path
 #   15:  resolve_trusted_reify_bin — fresh debug-only bin → trusted, resolves
 #        the debug path
-#   16:  resolve_trusted_reify_bin — release bin + stale sidecar → SKIP,
-#        reason mentions "stale"
+#   16:  resolve_trusted_reify_bin — release bin + stale sidecar → exactly
+#        REIFY_BIN_UNVOUCHED (1), reason mentions "stale"
 #   17:  resolve_trusted_reify_bin — release+debug both fresh → resolves
 #        release (precedence)
 #   18:  verify.sh merge-tier plan — reify-cli release pre-build + .reify-bin-sha
@@ -44,6 +44,21 @@
 #        with REIFY_BIN pointing at a missing file, SKIP cleanly (exit 0,
 #        output cites REIFY_BIN) instead of falling through to a
 #        HARNESS_ERROR/FAIL
+#   20:  resolve (executed) — the verdict protocol: exit 0 with the vetted path
+#        and an empty stderr, exit 1 with the reason; repo_root defaults to $PWD
+#   21:  resolve — usage (no args, unknown verb, an extra arg) → exit 64, usage
+#        on stderr, nothing on stdout
+#   22:  resolve — -x discovery: a non-executable release is no candidate (a
+#        0644 release beside a 0755 debug resolves to debug; alone → exit 2)
+#   23:  resolve — both profiles built but unvouched → refuses the release
+#        binary and names the debug one ("also built:")
+#   24:  resolve — an exported GIT_DIR naming another repository does not
+#        decide whose HEAD is compared (control: it does redirect a bare
+#        `git -C`)
+#   25:  resolve — GIT_CEILING_DIRECTORIES survives the GIT_* scrub (a nested
+#        plain dir fails open under a ceiling) yet never hides a checkout's own
+#        root, and only "no repository at all" fails open: an unborn HEAD is a
+#        reason
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
