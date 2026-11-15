@@ -9,11 +9,13 @@ records each kind may hold, checked whenever a Step is built.
 The environment section's lines are records here too (EnvLine); environment
 builds them, so it imports this module, never the other way round.
 
-A record whose text render puts inside single (or double) quotes refuses that
-quote, since the rendered shell line would otherwise break. A record that
-renders an operator's knob value names that quote as a class constant, so the
-resolver that reads the knob refuses the value with unquotable_knob before any
-record is built.
+A record whose text render puts a field inside single (or double) quotes
+refuses that quote, since the rendered shell line would otherwise break. Where
+a reader can refuse the text before any record is built, the record names the
+quote as a class constant for it: the path-knob resolvers refuse the plan with
+unquotable_knob (AttemptStamp, ConfirmRecorded), and retry.subset runs a pass
+in full instead of subsetting it by an unquotable retry id
+(NextestFlags.RETRY_ID_QUOTE).
 """
 
 from collections.abc import Iterable
