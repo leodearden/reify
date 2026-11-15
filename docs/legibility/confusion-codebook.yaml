@@ -3920,6 +3920,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Same session — the recurring 'no such file or directory' pattern (not a one-off) matches the known mechanism of watcher script paths being resolved relative to the reify target-project cwd instead of the dark-factory tooling root.
+  - date: '2026-11-14'
+    project: reify
+    session: 6caaeba7-1d50-4519-866f-fe33d47ab0f3
+    origin_phase: ops
+    manifested_phase: ops
+    note: The dark-factory script path (orchestrator/src/orchestrator/session_registry.py) was resolved relative to the target project cwd (/home/leo/src/reify) and returned 'can't open file' with exit 2, because DARK_FACTORY_ROOT was empty.
 - id: entry-cand-20260723-3
   title: Ad-hoc sleep+tail polling for background task output blocked by guard
   severity: medium
@@ -4409,6 +4415,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher session ran with DARK_FACTORY_ROOT empty. The python3 $DARK_FACTORY_ROOT/... call resolved to /orchestrator/src/... and failed with exit 2 and 'no such file or directory'.
+  - date: '2026-11-14'
+    project: reify
+    session: 6caaeba7-1d50-4519-866f-fe33d47ab0f3
+    origin_phase: ops
+    manifested_phase: ops
+    note: Watcher session ran with DFR empty (echo at turn 30 shows DARK_FACTORY_ROOT unset). A later python3 call resolved session_registry.py against the reify cwd and failed with ENOENT. The agent then had to set DARK_FACTORY_ROOT explicitly in the rearm command.
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -4876,6 +4888,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'The watcher-rearm command at turn 84 is identical to the one at turn 70, which had just hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING). The bounded rearm wait was re-issued unchanged after its ceiling.'
+  - date: '2026-11-14'
+    project: reify
+    session: 6caaeba7-1d50-4519-866f-fe33d47ab0f3
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh Bash call with timeout 3600 was re-issued 20 times with an identical command string under run_in_background, instead of changing strategy after the bounded wait.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -10292,6 +10310,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: The digest quotes a cluster where `reify build ... 2>&1 | tail -15; echo "exit=$?"` echoed tail's exit status (0) and masked real compiler errors. This matches the existing entry on exit codes echoed after a `cmd | tail -N` pipe. The phase values come from the cluster text itself. The session is a census verifier re-checking that cluster, and its own probe (`false | tail -1; echo exit=$?`) was blocked pending approval.
+  - date: '2026-11-14'
+    project: reify
+    session: bf916e87-8dea-47b7-a93b-64957ee0ef99
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'A chained command ended in `| tail -3`, which failed with ''option used in invalid context''. The reported exit 1 therefore reflects tail''s status, while the echoed rc values (model=0, policy=0, parity=0) show the test runs passed. This is the same pattern: the exit code of a pipe tail does not reflect the piped command.'
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -11482,6 +11506,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'The ''User Corrections'' section (turn 3) contains an orchestrator block-reason notification for task 9798, not a user turn. The digest reports n_user_turns: 1, so the notification is mislabeled as a User Correction, matching this entry''s pattern.'
+  - date: '2026-11-14'
+    project: reify
+    session: 6caaeba7-1d50-4519-866f-fe33d47ab0f3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The '## User Corrections' section labels the injected /escalation-watcher command-message block (a system-issued skill invocation with its own output-format instructions) as a user correction. Same digest-mislabel class as the injected-escalation case. Phase cannot be supported from the digest.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -13424,6 +13454,12 @@ entries:
     evidence_quote: 'fatal: unable to resolve revision: crates/
 
       fatal: option ''-A12'' must come before non-option arguments'
+  - date: '2026-11-14'
+    project: reify
+    session: 92dff965-ee2c-49e2-8fc9-9f954e93c013
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'git grep was given `-A 12` after the pattern and before `--`. Git treated `-A` as a revision and exited 128 with ''unable to resolve revision: -A'', the same context-flag-placement failure this entry describes. Phase cannot be supported from the digest, so both phases are unknown.'
   filing: withheld
 - id: entry-cand-20261106-1
   title: Ratchet failure points to a --help diagnostic the agent cannot run under don't-ask permission mode
@@ -13476,6 +13512,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'FAIL: run-gui.sh: cargo resolves reify-gui under --features ''gui,embedded-frontend'' (rc 1; on a cold registry warm it with `cargo fetch --locked`, or run scripts/setup-dev.sh)'
+  - date: '2026-11-14'
+    project: reify
+    session: 359774b0-dc9c-4d86-a18d-dfb287e12729
+    origin_phase: verify
+    manifested_phase: verify
+    note: Post-merge gui-script verification (test_run_gui_scripts.sh) failed because the cold cargo registry did not resolve reify-gui; the error text itself names the fix (cargo fetch --locked or setup-dev.sh). The remediation attempt was then blocked by a Bash permission denial under don't-ask mode, matching the entry's cold-registry plus permission-denial pattern.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -33000,6 +33042,19 @@ candidates:
   finding_anchor: slug:gnu-tail-obsolete-numeric-multifile
   finding_tags:
   - kind:confusion
+- id: cand-20261114-1
+  title: Stale docstring left contradicting a newly added paragraph in the same comment block
+  cause: The agent added a new paragraph to a doc comment without removing an older line that asserted the opposite scope, so the comment became self-contradictory and misleads any later reader about what the pass covers.
+  area: code-comments
+  first_seen: '2026-11-14'
+  disposition: pending
+  sightings:
+  - date: '2026-11-14'
+    project: reify
+    session: 92dff965-ee2c-49e2-8fc9-9f954e93c013
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Contradictory docstring: in `conformance/mod.rs`, an older line says Real and Int are out of scope for the pass. That''s wrong, and the new paragraph right below it now contradicts it.'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
