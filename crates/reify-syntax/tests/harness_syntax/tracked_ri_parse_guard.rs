@@ -19,7 +19,9 @@ use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
-use crate::common::tracked_corpus::{swept_ri_paths, verify_inert_facts, workspace_root};
+use crate::common::tracked_corpus::{
+    INERT_PROBE_RI, partition_by_verify_inert, swept_ri_paths, workspace_root,
+};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,14 +192,7 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
 /// Declared entries the scope classifier marks inert. The swept listing omits
 /// such a file, so its declaration can never be checked.
 fn inert_declared_entries(fixtures: &[MustErrorFixture]) -> Vec<&str> {
-    let paths: Vec<&str> = fixtures.iter().map(|fixture| fixture.path).collect();
-    let inert = verify_inert_facts(&paths);
-    paths
-        .into_iter()
-        .zip(inert)
-        .filter(|(_, inert)| *inert)
-        .map(|(path, _)| path)
-        .collect()
+    partition_by_verify_inert(fixtures.iter().map(|fixture| fixture.path).collect()).inert
 }
 
 /// The prefixes of the rows that cover none of `swept`: stale, so to be
@@ -705,7 +700,7 @@ const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
         reason: "synthetic",
     },
     MustErrorFixture {
-        path: "docs/zz_section/zz_synthetic.ri",
+        path: INERT_PROBE_RI,
         kind: MustErrorKind::CstFault,
         reason: "synthetic",
     },
@@ -726,7 +721,7 @@ const SYNTHETIC_UNSWEPT: &[UnsweptTree] = &[
 fn inert_declared_entries_names_each_offender() {
     assert_eq!(
         inert_declared_entries(SYNTHETIC_DECLARED),
-        ["docs/zz_section/zz_synthetic.ri"],
+        [INERT_PROBE_RI],
         "only a declared entry the scope classifier marks inert is an offender"
     );
 }
@@ -849,7 +844,7 @@ fn must_error_and_unswept_tables_are_well_formed() {
     let dead = dead_unswept_rows(UNSWEPT_RI_TREES, &swept);
     assert!(
         dead.is_empty(),
-        "these UNSWEPT_RI_TREES rows cover no swept .ri (none tracked, or the row lies under a \
-         verify-inert tree); delete them: {dead:?}"
+        "these UNSWEPT_RI_TREES rows cover no swept .ri (none tracked, or each is a path \
+         verify's scope classifier marks inert); delete them: {dead:?}"
     );
 }

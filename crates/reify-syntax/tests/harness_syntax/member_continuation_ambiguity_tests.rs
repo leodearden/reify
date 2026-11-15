@@ -12,7 +12,9 @@
 //! that the join is now reported instead of being silently picked. See
 //! `crates/reify-syntax/src/member_continuation.rs` for the normative rule.
 
-use crate::common::tracked_corpus::{swept_ri_paths, tracked_fixture_repo, workspace_root};
+use crate::common::tracked_corpus::{
+    INERT_PROBE_RI, swept_ri_paths, tracked_fixture_repo, workspace_root,
+};
 use reify_core::ModulePath;
 use std::path::Path;
 // The "is this a member-continuation diagnostic?" question is answered by the
@@ -320,8 +322,8 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
     (line, col)
 }
 
-/// THE STANDING GUARD: no tracked `.ri` outside a verify-inert tree may trip
-/// the member-continuation check.
+/// THE STANDING GUARD: no tracked `.ri`, save a path verify's scope classifier
+/// marks inert, may trip the member-continuation check.
 ///
 /// A hit here is a genuine finding, and it has exactly two dispositions: the
 /// rule is wrong (fix `member_continuation.rs`), or the source really is
@@ -387,9 +389,9 @@ fn member_continuation_sweep(root: &Path) -> ContinuationSweep {
 /// scope classifier marks inert. The listing's own tests pin that it follows
 /// the classifier; this pins that the sweep reads that listing.
 #[test]
-fn member_continuation_sweep_skips_verify_inert_trees() {
+fn member_continuation_sweep_skips_what_the_scope_classifier_marks_inert() {
     let dir = tracked_fixture_repo(&[
-        ("docs/zz_section/zz_synthetic.ri", REPRO_ONE),
+        (INERT_PROBE_RI, REPRO_ONE),
         ("examples/zz_kept.ri", REPRO_ONE),
     ]);
 

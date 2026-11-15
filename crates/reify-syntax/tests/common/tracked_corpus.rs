@@ -23,10 +23,22 @@ pub fn swept_ri_paths(root: &Path) -> Vec<String> {
     swept_ri_paths_classified_by(root, &scope_classifier())
 }
 
-/// Verify's scope-classifier `inert` fact for each repo-relative path in
-/// `paths`, in order, from one classifier run.
-pub fn verify_inert_facts(paths: &[impl AsRef<str>]) -> Vec<bool> {
-    classifier_inert_facts(&scope_classifier(), paths)
+/// A repo-relative `.ri` path verify's scope classifier marks inert, for the
+/// tests that need one. `docs/` is the tree its `_INERT_GLOBS` marks inert
+/// today; if that set is narrowed past this path, repoint this one constant.
+pub const INERT_PROBE_RI: &str = "docs/zz_section/zz_synthetic.ri";
+
+/// Repo-relative paths split by a scope classifier's `inert` fact, each side
+/// in input order.
+pub struct InertPartition<T> {
+    pub inert: Vec<T>,
+    pub not_inert: Vec<T>,
+}
+
+/// `paths` split by verify's scope-classifier `inert` fact, from one
+/// classifier run.
+pub fn partition_by_verify_inert<T: AsRef<str>>(paths: Vec<T>) -> InertPartition<T> {
+    partition_inert_by(&scope_classifier(), paths)
 }
 
 /// Verify's own scope classifier, taken from this workspace rather than from
@@ -39,14 +51,24 @@ fn scope_classifier() -> PathBuf {
 /// [`tracked_ri_paths`] under `root` without the paths `classifier` marks
 /// inert, still sorted.
 fn swept_ri_paths_classified_by(root: &Path, classifier: &Path) -> Vec<String> {
-    let paths = tracked_ri_paths(root);
-    let inert = classifier_inert_facts(classifier, &paths);
-    paths
-        .into_iter()
-        .zip(inert)
-        .filter(|(_, inert)| !inert)
-        .map(|(path, _)| path)
-        .collect()
+    partition_inert_by(classifier, tracked_ri_paths(root)).not_inert
+}
+
+/// `paths` split by `classifier`'s `inert` fact, from one classifier run.
+fn partition_inert_by<T: AsRef<str>>(classifier: &Path, paths: Vec<T>) -> InertPartition<T> {
+    let facts = classifier_inert_facts(classifier, &paths);
+    let mut partition = InertPartition {
+        inert: Vec::new(),
+        not_inert: Vec::new(),
+    };
+    for (path, inert) in paths.into_iter().zip(facts) {
+        if inert {
+            partition.inert.push(path);
+        } else {
+            partition.not_inert.push(path);
+        }
+    }
+    partition
 }
 
 /// The workspace root, resolved from this crate's manifest dir
@@ -186,15 +208,12 @@ fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<b
 
 #[test]
 fn swept_ri_paths_omits_what_the_scope_classifier_marks_inert() {
-    let dir = tracked_fixture_repo(&[
-        ("docs/zz_section/zz_synthetic.ri", ""),
-        ("docsx/zz_sibling.ri", ""),
-        ("examples/zz_kept.ri", ""),
-    ]);
+    let dir = tracked_fixture_repo(&[(INERT_PROBE_RI, ""), ("examples/zz_kept.ri", "")]);
     assert_eq!(
         swept_ri_paths(dir.path()),
-        ["docsx/zz_sibling.ri", "examples/zz_kept.ri"],
-        "a docs/ member leaves the listing; docsx/ shares the name's prefix but is not the tree"
+        ["examples/zz_kept.ri"],
+        "swept_ri_paths must drop what verify's real scope classifier marks inert; if \
+         _INERT_GLOBS no longer covers INERT_PROBE_RI, repoint that constant"
     );
 }
 
