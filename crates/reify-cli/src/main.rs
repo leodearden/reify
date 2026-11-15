@@ -443,6 +443,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn report_parse_errors_in_leads_each_rendered_error_with_its_file() {
+        let mut out = Vec::new();
+        report_parse_errors_in(
+            "f.ri",
+            vec!["2:20: a".to_string(), "5:1: b".to_string()],
+            &mut out,
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("CLI output must be UTF-8"),
+            "f.ri: Parse error: 2:20: a\nf.ri: Parse error: 5:1: b\n"
+        );
+    }
+
     /// Piece-1 force-link pin: asserts that `reify-kernel-manifold`'s
     /// `inventory::submit!` fires inside this binary so the Manifold kernel
     /// appears in the global registry.  This MUST be an in-`main.rs` unit test
