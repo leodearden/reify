@@ -1247,9 +1247,39 @@ const FOLDED_FNS: &[FoldedFn] = &[
         overloads: 1,
         optimized_target: Some("solver::buckling_multi_case"),
     },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "modal_analysis",
+        overloads: 1,
+        optimized_target: Some("modal::free_vibration"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "first_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "mode_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "transient_response",
+        overloads: 1,
+        optimized_target: Some("modal::transient_response"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "displacement_at",
+        overloads: 2,
+        optimized_target: Some("modal::displacement_at"),
+    },
 ];
 
-const FOLDED_PARENTS: &[&str] = &["std.solver.buckling"];
+const FOLDED_PARENTS: &[&str] = &["std.solver.buckling", "std.modal.analysis"];
 
 fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
     stdlib_loader::load_stdlib()
