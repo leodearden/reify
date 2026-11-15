@@ -107,8 +107,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// The label on every parse-error line the CLI writes.
+const PARSE_ERROR_LABEL: &str = "Parse error";
+
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
-/// gets, so both entry points cannot drift apart on the prefix or the code.
+/// gets, so both single-file entry points cannot drift apart on the prefix or the code.
+/// The label in that prefix is `PARSE_ERROR_LABEL`, shared with `report_parse_errors_in`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
@@ -137,8 +141,6 @@ fn report_parse_errors_in(path: &str, rendered: Vec<String>, out: &mut impl std:
         let _ = writeln!(out, "{path}: {PARSE_ERROR_LABEL}: {error}");
     }
 }
-
-const PARSE_ERROR_LABEL: &str = "Parse error";
 
 /// The module path a file's own name gives it: its stem as a single segment.
 ///
