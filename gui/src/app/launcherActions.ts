@@ -53,10 +53,11 @@ export interface LauncherDeps {
 }
 
 /**
- * set_mode's failure code per mode: only Debug's set_mode starts the listener
- * (launch_mode.rs::set_mode_impl).
+ * selectMode's set_mode failure code per mode: only Debug's set_mode can bind
+ * the listener (launch_mode.rs::set_mode_impl). A set_mode against a listener
+ * already live cannot fail at bind, so recordDebugMode codes its own failure.
  */
-const SET_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> = Object.freeze({
+const SELECT_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> = Object.freeze({
   design: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
   assistant: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
   debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
@@ -97,7 +98,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    const reply = await inStage(SET_MODE_FAILURE_CODES[mode], () => deps.setMode(mode));
+    const reply = await inStage(SELECT_MODE_FAILURE_CODES[mode], () => deps.setMode(mode));
     store.applyModeState(reply);
     if (mode === 'debug') {
       await debugBridgeStage();
