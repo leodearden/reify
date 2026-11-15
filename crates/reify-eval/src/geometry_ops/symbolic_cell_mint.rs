@@ -204,12 +204,11 @@ impl InstanceMintScope<'_> {
     ) -> Option<Value> {
         let template = self.graph.sub_instance_template(&instance_cell.entity)?;
         let template_cell = ValueCellId::new(template, &instance_cell.member);
-        if geometry_cell_realization(self.graph, &template_cell).is_none()
-            && !is_symbolic_eval_wired_selector_ctor(expr)
-        {
+        let realization = self.graph.scalar_geometry_cell_realization(&template_cell);
+        if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
             return Some(Value::Undef);
         }
-        let reads = instance_mint_reads(self.graph, &template_cell, expr);
+        let reads = instance_mint_reads(realization, expr);
         let Ok(instance_values) =
             project_instance_reads(self.values, &instance_cell.entity, template, &reads)
         else {
@@ -248,39 +247,19 @@ impl InstanceMintScope<'_> {
     }
 }
 
-/// The template-scoped cells an instance mint of `template_cell` reads: the
-/// expression's reads, plus, for a geometry cell, the reads of its
-/// realization's operations, which the handle's hash folds.
+/// The template-scoped cells an instance mint of a cell with expression `expr`
+/// reads: the expression's reads, plus, for a geometry cell, the reads of the
+/// operations of `realization`, the one its geometry mint names, which the
+/// handle's hash folds.
 fn instance_mint_reads(
-    graph: &EvaluationGraph,
-    template_cell: &ValueCellId,
+    realization: Option<&RealizationNodeData>,
     expr: &CompiledExpr,
 ) -> Vec<ValueCellId> {
     let mut reads = extract_dependency_trace(expr).reads;
-    if let Some(realization) = geometry_cell_realization(graph, template_cell) {
+    if let Some(realization) = realization {
         reads.extend(extract_realization_dependencies(&realization.operations).reads);
     }
     reads
-}
-
-/// The realization a scalar geometry cell's handle names, found as
-/// [`crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph`] finds
-/// it. `None` for any other cell, which only the selector mint can resolve.
-fn geometry_cell_realization<'g>(
-    graph: &'g EvaluationGraph,
-    template_cell: &ValueCellId,
-) -> Option<&'g RealizationNodeData> {
-    let is_geometry = graph
-        .value_cells
-        .get(template_cell)
-        .is_some_and(|cell| cell.cell_type == Type::Geometry);
-    if !is_geometry {
-        return None;
-    }
-    graph
-        .realizations
-        .values()
-        .find(|realization| realization.geometry_cell.as_ref() == Some(template_cell))
 }
 
 /// The order each slot of `col_sub` must commit its cells in, so no instance
@@ -297,7 +276,10 @@ pub(crate) fn slot_commit_order<'c>(
             let template_cell = ValueCellId::new(&col_sub.structure_name, member);
             let reads = default_expr
                 .as_ref()
-                .map(|expr| instance_mint_reads(graph, &template_cell, expr))
+                .map(|expr| {
+                    let realization = graph.scalar_geometry_cell_realization(&template_cell);
+                    instance_mint_reads(realization, expr)
+                })
                 .unwrap_or_default();
             let trace = DependencyTrace {
                 reads,

@@ -10756,12 +10756,9 @@ impl Engine {
     /// an in-walk symbolic `GeometryHandle` with a byte-identical
     /// `upstream_values_hash` (GHR-β invariant preserved).
     ///
-    /// The lookup key is `RealizationNodeData.geometry_cell`, set at
-    /// graph-construction time in `EvaluationGraph::from_templates`. It answers
-    /// only for a SCALAR `Type::Geometry` cell. A geometry-list cell is linked
-    /// N:1 (task #5385), and for length 1 that is indistinguishable from 1:1 by
-    /// link count; its value is never one element's handle, but is assembled by
-    /// the list regroup and by `tessellate_snapshot`'s baseline mint.
+    /// The cell's realization comes from
+    /// [`crate::graph::EvaluationGraph::scalar_geometry_cell_realization`], which
+    /// answers only for a scalar geometry cell.
     pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
         cell_id: &reify_core::identity::ValueCellId,
         graph: &crate::graph::EvaluationGraph,
@@ -10778,24 +10775,13 @@ impl Engine {
         ) {
             return None;
         }
-        if graph
-            .value_cells
-            .get(cell_id)
-            .is_none_or(|cell| cell.cell_type != reify_core::Type::Geometry)
-        {
-            return None;
-        }
-        // Find the realization whose geometry_cell link points at this cell.
-        let (rid, rnode) = graph
-            .realizations
-            .iter()
-            .find(|(_, rnode)| rnode.geometry_cell.as_ref() == Some(cell_id))?;
+        let realization = graph.scalar_geometry_cell_realization(cell_id)?;
 
         let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
         let upstream_values_hash =
-            compute_realization_upstream_values_hash_from_ops(&rnode.operations, &ctx);
+            compute_realization_upstream_values_hash_from_ops(&realization.operations, &ctx);
         Some(Value::GeometryHandle {
-            realization_ref: rid.clone(),
+            realization_ref: realization.id.clone(),
             upstream_values_hash,
             kernel_handle: None,
         })
