@@ -325,8 +325,9 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+    /// A prelude with fns `kept` and `shadowed`, and three users: `fresh`, a
+    /// `shadowed` that shadows the prelude's, and a `kept(String)` that does not.
+    fn prelude_and_users() -> (CompiledModule, Vec<CompiledFunction>) {
         let prelude =
             compile_src("fn kept(x : Real) -> Real { x }\nfn shadowed(x : Real) -> Real { x }\n");
         let users = compile_src(
@@ -334,8 +335,14 @@ mod tests {
              fn kept(x : String) -> Real { 1.0 }\n",
         )
         .functions;
+        (prelude, users)
+    }
+
+    #[test]
+    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+        let (prelude, users) = prelude_and_users();
         let prelude_refs = [&prelude];
-        let mut table = ResolutionTable::new(&prelude_refs);
+        let mut table = ResolutionTable::new(Vec::new(), &prelude_refs);
         for pushed in 1..=users.len() {
             table.push_user(users[pushed - 1].clone());
             assert_eq!(
@@ -344,5 +351,26 @@ mod tests {
                 "after pushing {pushed} user fn(s)"
             );
         }
+    }
+
+    #[test]
+    fn a_seeded_resolution_table_matches_build_resolution_functions_and_hands_back_its_users() {
+        let (prelude, users) = prelude_and_users();
+        let prelude_refs = [&prelude];
+        let mut table = ResolutionTable::new(users[..1].to_vec(), &prelude_refs);
+        assert_eq!(
+            signatures(table.functions()),
+            signatures(&build_resolution_functions(&users[..1], &prelude_refs)),
+            "straight after seeding with 1 user fn"
+        );
+        for held in 2..=users.len() {
+            table.push_user(users[held - 1].clone());
+            assert_eq!(
+                signatures(table.functions()),
+                signatures(&build_resolution_functions(&users[..held], &prelude_refs)),
+                "holding {held} user fn(s)"
+            );
+        }
+        assert_eq!(signatures(&table.into_user_functions()), signatures(&users));
     }
 }
