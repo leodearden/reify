@@ -958,6 +958,37 @@ _row4_stop_burns() {
     _ROW4_BURN_PIDS=""
 }
 
+# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
+# wallclock-deflake.md).  Waiting for both burns to report ready is bounded
+# only so a burn that never reports cannot hang the suite; it never
+# discriminates pass from fail.  When it expires ROW4-1 SKIPs as a
+# measurement-integrity failure, like the slice-discovery SKIP below.
+_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
+
+# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
+# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
+_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
+
+# _row4_sample_host_avg10 <proc_path>
+#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
+#   literal "unavailable" when the path is missing/unreadable/malformed
+#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
+#   SAME sampler ROW2_3 uses at its own bracket — which already prints
+#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
+#   covers python3 itself failing to launch.
+#
+#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
+#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
+#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
+#   a numeric 0 reads as a maximally quiet box for the same reason, but does
+#   so by ASSERTING quiet rather than by declining to measure, which is the
+#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
+_row4_sample_host_avg10() {
+    local proc_path="$1"
+    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
+        || echo "unavailable"
+}
+
 # ============================================================================
 # ROW4 per-worker pinning + readiness — always-on guards (task 9698).
 #
@@ -2834,12 +2865,6 @@ _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
 # ROW2_3 warm-up design + PRD §11 Q5.
 _ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
 _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
-# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
-# wallclock-deflake.md).  Waiting for both burns to report ready is bounded
-# only so a burn that never reports cannot hang the suite; it never
-# discriminates pass from fail.  When it expires ROW4-1 SKIPs as a
-# measurement-integrity failure, like the slice-discovery SKIP below.
-_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
 # Burn must outlast readiness wait + warm-up + measure window + a settle margin
 # so the AFTER sample lands while BOTH roles are still contending (never during
 # teardown).  Derived from the readiness deadline so that holds by construction:
@@ -2856,9 +2881,6 @@ _ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW4_BURN_MIN}"
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 # Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
 _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
-# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
-_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
 # _row4_share_inconclusive <merge_delta> <task_delta> <w_merge> <w_task> <tol>
 #                          <host_avg10> <ceiling>
@@ -3000,26 +3022,6 @@ else:
     # Share strictly inside the dilution corridor AND a hot box — the only
     # inconclusive quadrant.
     return 0
-}
-
-# _row4_sample_host_avg10 <proc_path>
-#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
-#   literal "unavailable" when the path is missing/unreadable/malformed
-#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
-#   SAME sampler ROW2_3 uses at its own bracket — which already prints
-#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
-#   covers python3 itself failing to launch.
-#
-#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
-#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
-#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
-#   a numeric 0 reads as a maximally quiet box for the same reason, but does
-#   so by ASSERTING quiet rather than by declining to measure, which is the
-#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
-_row4_sample_host_avg10() {
-    local proc_path="$1"
-    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
-        || echo "unavailable"
 }
 
 # _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
