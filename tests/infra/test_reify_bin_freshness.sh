@@ -343,28 +343,29 @@ assert "resolve_trusted_reify_bin: explicit REIFY_BIN → REIFY_BIN_RESOLVED equ
 
 # ==============================================================================
 # Check 12: resolve_trusted_reify_bin — explicit REIFY_BIN pointing at a
-#           missing path → SKIP (non-zero), reason mentions REIFY_BIN + missing.
+#           missing path → SKIP: exactly REIFY_BIN_UNVOUCHED (1), the code
+#           prd-capability-check.py reads; reason mentions REIFY_BIN + missing.
 # ==============================================================================
 echo ""
 echo "--- Check 12: resolve_trusted_reify_bin rejects a missing explicit REIFY_BIN ---"
 
 MISSING_BIN="$TMPDIR_BINFRESH/does-not-exist-reify-bin"
 
-assert "resolve_trusted_reify_bin: missing explicit REIFY_BIN → non-zero (SKIP)" \
-    env REIFY_BIN="$MISSING_BIN" bash -c "source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO'"
+assert "resolve_trusted_reify_bin: missing explicit REIFY_BIN → exactly REIFY_BIN_UNVOUCHED (1)" \
+    env REIFY_BIN="$MISSING_BIN" bash -c "source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; rc=\$?; [ \"\$rc\" -eq \"\$REIFY_BIN_UNVOUCHED\" ] && [ \"\$REIFY_BIN_UNVOUCHED\" -eq 1 ]"
 
 assert "resolve_trusted_reify_bin: missing explicit REIFY_BIN → reason mentions REIFY_BIN and missing" \
     env REIFY_BIN="$MISSING_BIN" bash -c "source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -q 'REIFY_BIN' && echo \"\$REIFY_BIN_SKIP_REASON\" | grep -qi 'missing'"
 
 # ==============================================================================
-# Check 13: resolve_trusted_reify_bin — REIFY_BIN unset, no target bins → SKIP,
-#           reason mentions 'not built'.
+# Check 13: resolve_trusted_reify_bin — REIFY_BIN unset, no target bins → SKIP:
+#           exactly REIFY_BIN_NOT_BUILT (2); reason mentions 'not built'.
 # ==============================================================================
 echo ""
 echo "--- Check 13: resolve_trusted_reify_bin SKIPs when nothing is built ---"
 
-assert "resolve_trusted_reify_bin: no REIFY_BIN, no target bins → non-zero (SKIP)" \
-    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO'"
+assert "resolve_trusted_reify_bin: no REIFY_BIN, no target bins → exactly REIFY_BIN_NOT_BUILT (2)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; rc=\$?; [ \"\$rc\" -eq \"\$REIFY_BIN_NOT_BUILT\" ] && [ \"\$REIFY_BIN_NOT_BUILT\" -eq 2 ]"
 
 assert "resolve_trusted_reify_bin: no REIFY_BIN, no target bins → reason mentions 'not built'" \
     bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -q 'not built'"
@@ -410,21 +411,21 @@ assert "resolve_trusted_reify_bin: fresh debug-only bin → REIFY_BIN_RESOLVED i
     bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_E' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$E_DEBUG_BIN' ]"
 
 # ==============================================================================
-# Check 16: resolve_trusted_reify_bin — release bin + sidecar MISMATCH → SKIP,
-#           reason mentions 'stale'.
+# Check 16: resolve_trusted_reify_bin — release bin + sidecar MISMATCH → SKIP:
+#           exactly REIFY_BIN_UNVOUCHED (1); reason mentions 'stale'.
 # ==============================================================================
 echo ""
 echo "--- Check 16: resolve_trusted_reify_bin SKIPs a stale release bin ---"
 
 RESOLVE_REPO_F="$TMPDIR_BINFRESH/resolve-f"
-make_fixture_repo "$RESOLVE_REPO_F" >/dev/null
+F_HEAD_SHA=$(make_fixture_repo "$RESOLVE_REPO_F")
 
 F_RELEASE_BIN="$RESOLVE_REPO_F/target/release/reify"
 place_binary "$F_RELEASE_BIN"
 printf '%s\n' "0000000000000000000000000000000000000000" > "$RESOLVE_REPO_F/target/.reify-bin-sha"
 
-assert "resolve_trusted_reify_bin: release bin + sidecar mismatch → non-zero (SKIP)" \
-    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_REPO_F'"
+assert "resolve_trusted_reify_bin: release bin + sidecar mismatch → exactly REIFY_BIN_UNVOUCHED (1)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_REPO_F' >/dev/null; rc=\$?; [ \"\$rc\" -eq \"\$REIFY_BIN_UNVOUCHED\" ] && [ \"\$REIFY_BIN_UNVOUCHED\" -eq 1 ]"
 
 assert "resolve_trusted_reify_bin: release bin + sidecar mismatch → reason mentions 'stale'" \
     bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_REPO_F' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -qi 'stale'"
@@ -523,6 +524,232 @@ assert "test_prd_gate_objective_inheritance.sh: REIFY_BIN=missing file → outpu
 
 assert "test_prd_gate_objective_inheritance.sh: REIFY_BIN=missing file → output cites REIFY_BIN (new freshness guard)" \
     bash -c 'printf "%s\n" "$1" | grep -q "REIFY_BIN"' _ "$OBJECTIVE_GATE_OUT"
+
+# ==============================================================================
+# Check 20: `resolve` — the executed form scripts/prd-capability-check.py reads:
+#           one stdout line, and the exit code is the verdict.  0
+#           (REIFY_BIN_TRUSTED) answers the vetted path and nothing on stderr;
+#           1 (REIFY_BIN_UNVOUCHED) answers why.  2 (REIFY_BIN_NOT_BUILT) is
+#           Check 3.  repo_root defaults to $PWD.
+# ==============================================================================
+echo ""
+echo "--- Check 20: resolve answers one stdout line, and its exit code is the verdict ---"
+
+run_resolve resolve "$RESOLVE_REPO_D"
+
+assert "resolve: vouched release binary → exit 0 (REIFY_BIN_TRUSTED)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: vouched release binary → stdout is the vetted path" \
+    test "$RUN_OUT" = "$D_RELEASE_BIN"
+
+assert "resolve: vouched release binary → nothing on stderr" \
+    test -z "$RUN_ERR"
+
+run_captured bash -c 'cd "$1" && exec bash "$2" resolve' _ "$RESOLVE_REPO_D" "$FRESHNESS_LIB"
+
+assert "resolve with no repo_root, run from a vouched checkout → exit 0" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve with no repo_root → the binary of the working directory" \
+    test "$RUN_OUT" = "$D_RELEASE_BIN"
+
+run_resolve resolve "$RESOLVE_REPO_F"
+
+assert "resolve: sidecar mismatch → exit 1 (REIFY_BIN_UNVOUCHED)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: sidecar mismatch → the line says 'stale'" \
+    text_contains "$RUN_OUT" 'stale'
+
+assert "resolve: sidecar mismatch → the line names the recorded SHA" \
+    text_contains "$RUN_OUT" '0000000000000000000000000000000000000000'
+
+assert "resolve: sidecar mismatch → the line names HEAD" \
+    text_contains "$RUN_OUT" "$F_HEAD_SHA"
+
+# ==============================================================================
+# Check 21: anything but `resolve [repo_root]` is usage on stderr and exit 64,
+#           with nothing on stdout
+# ==============================================================================
+echo ""
+echo "--- Check 21: any other invocation is usage on stderr, exit 64 ---"
+
+# assert_usage_refusal <what> [args...] — `resolve` run with <args>, refused.
+assert_usage_refusal() {
+    local invocation="$1"
+    shift
+    run_resolve "$@"
+    assert "$invocation → exit 64" \
+        test "$RUN_RC" -eq 64
+    assert "$invocation → nothing on stdout" \
+        test -z "$RUN_OUT"
+    assert "$invocation → usage on stderr" \
+        text_contains "$RUN_ERR" 'usage'
+}
+
+assert_usage_refusal "no arguments"
+assert_usage_refusal "an unknown verb" frobnicate
+assert_usage_refusal "resolve with two repo_roots" resolve a b
+
+# ==============================================================================
+# Check 22: discovery wants an EXECUTABLE.  A release binary that is a file but
+#           not executable is no candidate, and does not shadow the debug one;
+#           alone, it leaves nothing built.
+# ==============================================================================
+echo ""
+echo "--- Check 22: discovery skips a built-but-not-executable binary ---"
+
+NOX_REPO="$TMPDIR_BINFRESH/resolve-nox"
+NOX_HEAD_SHA=$(make_fixture_repo "$NOX_REPO")
+NOX_DEBUG_BIN="$NOX_REPO/target/debug/reify"
+place_binary "$NOX_REPO/target/release/reify" 644
+place_binary "$NOX_DEBUG_BIN"
+printf '%s\n' "$NOX_HEAD_SHA" > "$NOX_REPO/target/.reify-bin-sha"
+
+run_resolve resolve "$NOX_REPO"
+
+assert "resolve: release mode 644 beside an executable debug → exit 0" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: release mode 644 beside an executable debug → the debug binary" \
+    test "$RUN_OUT" = "$NOX_DEBUG_BIN"
+
+LONE_NOX_REPO="$TMPDIR_BINFRESH/resolve-lone-nox"
+make_fixture_repo "$LONE_NOX_REPO" >/dev/null
+place_binary "$LONE_NOX_REPO/target/release/reify" 644
+
+run_resolve resolve "$LONE_NOX_REPO"
+
+assert "resolve: only a release binary of mode 644 → exit 2 (REIFY_BIN_NOT_BUILT)" \
+    test "$RUN_RC" -eq 2
+
+# ==============================================================================
+# Check 23: an unvouched answer refuses the first candidate and names the other
+#           built profile ("also built:"), so the operator sees what else exists
+# ==============================================================================
+echo ""
+echo "--- Check 23: an unvouched answer names the other built profile ---"
+
+BOTH_REPO="$TMPDIR_BINFRESH/resolve-both-unvouched"
+make_fixture_repo "$BOTH_REPO" >/dev/null
+BOTH_RELEASE_BIN="$BOTH_REPO/target/release/reify"
+BOTH_DEBUG_BIN="$BOTH_REPO/target/debug/reify"
+place_binary "$BOTH_RELEASE_BIN"
+place_binary "$BOTH_DEBUG_BIN"
+printf '%s\n' "0000000000000000000000000000000000000000" > "$BOTH_REPO/target/.reify-bin-sha"
+
+run_resolve resolve "$BOTH_REPO"
+
+assert "resolve: release and debug built, sidecar mismatch → exit 1 (REIFY_BIN_UNVOUCHED)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: release and debug built, sidecar mismatch → the line refuses the release binary" \
+    text_contains "$RUN_OUT" "reify binary $BOTH_RELEASE_BIN is stale"
+
+assert "resolve: release and debug built, sidecar mismatch → the line names the debug binary" \
+    text_contains "$RUN_OUT" "also built: $BOTH_DEBUG_BIN"
+
+# ==============================================================================
+# Check 24: an exported GIT_DIR does not decide whose HEAD the sidecar is
+#           compared with.  Under a hook GIT_DIR can name another repository;
+#           the home drops every GIT_* variable except the ceiling, so
+#           `-C repo_root` alone decides.  The control comes first: the poison
+#           must bite a bare `git -C` on this git, or the behavioural
+#           assertion would test nothing.
+#           SAFETY: GIT_DIR only ever names the throwaway OTHER_REPO below,
+#           never a reify checkout (see test_infra_git_env_isolation.sh).
+# ==============================================================================
+echo ""
+echo "--- Check 24: an exported GIT_DIR does not redirect the HEAD comparison ---"
+
+GITDIR_REPO="$TMPDIR_BINFRESH/resolve-gitdir"
+GITDIR_HEAD_SHA=$(make_fixture_repo "$GITDIR_REPO")
+GITDIR_RELEASE_BIN="$GITDIR_REPO/target/release/reify"
+place_binary "$GITDIR_RELEASE_BIN"
+printf '%s\n' "$GITDIR_HEAD_SHA" > "$GITDIR_REPO/target/.reify-bin-sha"
+
+# One more commit than any single-commit fixture, so its HEAD differs even from
+# a fixture made within the same second.
+OTHER_REPO="$TMPDIR_BINFRESH/other-repo"
+make_fixture_repo "$OTHER_REPO" >/dev/null
+git -C "$OTHER_REPO" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -q --allow-empty -m "another repository"
+OTHER_HEAD_SHA=$(git -C "$OTHER_REPO" rev-parse HEAD)
+
+assert "control: the other repository's HEAD differs from the fixture's" \
+    test "$OTHER_HEAD_SHA" != "$GITDIR_HEAD_SHA"
+
+run_captured env GIT_DIR="$OTHER_REPO/.git" git -C "$GITDIR_REPO" rev-parse HEAD
+
+assert "control: GIT_DIR outranks git -C — a bare rev-parse answers with the other repository's HEAD" \
+    test "$RUN_OUT" = "$OTHER_HEAD_SHA"
+
+run_captured env GIT_DIR="$OTHER_REPO/.git" bash "$FRESHNESS_LIB" resolve "$GITDIR_REPO"
+
+assert "resolve under GIT_DIR=<another repository> → exit 0 (the fixture's own HEAD was compared)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve under GIT_DIR=<another repository> → the fixture's binary" \
+    test "$RUN_OUT" = "$GITDIR_RELEASE_BIN"
+
+# ==============================================================================
+# Check 25: GIT_CEILING_DIRECTORIES survives the GIT_* scrub, and only "git
+#           finds no repository at all" fails open.
+#           A ceiling can only stop discovery short of a repository, so a
+#           caller may bound the walk-up for a repo_root that is not one; it
+#           never hides repo_root itself, so a checkout is still judged.  Any
+#           other HEAD git cannot read inside a checkout (an unborn one) is a
+#           reason, never fail-open.
+# ==============================================================================
+echo ""
+echo "--- Check 25: the ceiling bounds discovery above repo_root; only no-repository fails open ---"
+
+CEILING_OUTER_REPO="$TMPDIR_BINFRESH/ceiling-outer"
+make_fixture_repo "$CEILING_OUTER_REPO" >/dev/null
+NESTED_NON_GIT_DIR="$CEILING_OUTER_REPO/nongit"
+NESTED_BIN="$NESTED_NON_GIT_DIR/target/release/reify"
+place_binary "$NESTED_BIN"
+
+run_captured env -u GIT_CEILING_DIRECTORIES bash "$FRESHNESS_LIB" resolve "$NESTED_NON_GIT_DIR"
+
+assert "control: with no ceiling the walk-up from the nested plain dir finds the outer repo → exit 1" \
+    test "$RUN_RC" -eq 1
+
+assert "control: with no ceiling → the outer repo has no sidecar for the nested dir ('is absent')" \
+    text_contains "$RUN_OUT" 'is absent'
+
+run_captured env GIT_CEILING_DIRECTORIES="$(cd "$CEILING_OUTER_REPO" && pwd -P)" \
+    bash "$FRESHNESS_LIB" resolve "$NESTED_NON_GIT_DIR"
+
+assert "resolve: a ceiling at the outer repo leaves the nested plain dir without a repository → exit 0 (fail-open)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: a ceiling at the outer repo → the nested dir's binary" \
+    test "$RUN_OUT" = "$NESTED_BIN"
+
+run_captured env GIT_CEILING_DIRECTORIES="$(cd "$RESOLVE_REPO_F" && pwd -P)" \
+    bash "$FRESHNESS_LIB" resolve "$RESOLVE_REPO_F"
+
+assert "resolve: a ceiling equal to a checkout's own root does not hide it → exit 1 (still judged)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: a ceiling equal to a checkout's own root → its stale sidecar is still named" \
+    text_contains "$RUN_OUT" 'stale'
+
+UNBORN_REPO="$TMPDIR_BINFRESH/resolve-unborn"
+git init -q "$UNBORN_REPO"
+place_binary "$UNBORN_REPO/target/debug/reify"
+
+run_resolve resolve "$UNBORN_REPO"
+
+assert "resolve: a checkout whose HEAD is unborn is not fail-open → exit 1 (REIFY_BIN_UNVOUCHED)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: a checkout whose HEAD is unborn → the line says HEAD is 'undeterminable'" \
+    text_contains "$RUN_OUT" 'undeterminable'
 
 # -- Summary ------------------------------------------------------------------
 test_summary
