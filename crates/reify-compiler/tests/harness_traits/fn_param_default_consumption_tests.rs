@@ -565,12 +565,39 @@ fn structure_above_fn_pads_omitted_template_free_default() {
     assert_padded_call(cell_expr(&module, "S", "v"), "scale", 2, "S.v");
 }
 
-/// (d) An ambient default compiles before any free fn body, yet must pad.
+/// (d) An ambient default compiles before any free fn body, yet its value must pad
+/// — in the file-scope pre-pass and when injected into a `Physical` conformer above the fn.
 #[test]
 fn ambient_default_pads_omitted_template_free_default() {
-    let source = format!("{SCALE_FN}default Real = scale(2.0)\n");
-    let module = compile_src(&source, "test_consume_pad_d");
+    let source = "structure def Bracket : Physical { param geometry : Solid = box(10mm, 20mm, 30mm) }\n\
+         fn dens(x : Real, k : Real = 1000.0) -> Real { x * k }\n\
+         default Material = Material(name: \"steel\", density: dens(7.85) * 1kg/m^3, youngs_modulus: 200GPa)\n";
+    let module = reify_test_support::compile_source_with_stdlib(source);
     assert_no_errors(&module, "ambient default");
+    let material = cell_expr(&module, "Bracket", "material");
+    let CompiledExprKind::StructureInstanceCtor {
+        type_name,
+        ordered_args,
+        ..
+    } = &material.kind
+    else {
+        panic!(
+            "Bracket.material must be the injected Material ctor; got {:?}",
+            material.kind
+        )
+    };
+    assert_eq!(type_name, "Material", "Bracket.material ctor type");
+    let (_, density) = ordered_args
+        .iter()
+        .find(|(name, _)| name == "density")
+        .expect("Material ctor must carry a density arg");
+    let CompiledExprKind::BinOp { left, .. } = &density.kind else {
+        panic!(
+            "Bracket.material density must be a product; got {:?}",
+            density.kind
+        )
+    };
+    assert_padded_call(left, "dens", 2, "Bracket.material density");
 }
 
 /// (e) Guard: a bad default is reported exactly ONCE, however many passes see
