@@ -1,6 +1,7 @@
 /**
- * The Start view's state (alpha-spine β): the document-opening error and Recent
- * list, and the selected launch mode with the debug server's live port.
+ * The Start view's state (alpha-spine β): the document-opening error, Recent
+ * list and pending attempt, and the selected launch mode with the debug
+ * server's live port.
  */
 import { createStore } from 'solid-js/store';
 import type { InitialFileLoadFailure, LaunchMode, ModeState, RecentEntry } from '../types';
@@ -19,7 +20,7 @@ export interface LaunchErrorInfo {
 }
 
 export interface LauncherState {
-  document: { error: LaunchErrorInfo | null; recent: RecentEntry[] };
+  document: { error: LaunchErrorInfo | null; recent: RecentEntry[]; pending: boolean };
   mode: { selected: LaunchMode; debugPort: number | null; error: LaunchErrorInfo | null };
 }
 
@@ -43,7 +44,7 @@ export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): Lau
 
 export function createLauncherStore() {
   const [state, setState] = createStore<LauncherState>({
-    document: { error: null, recent: [] },
+    document: { error: null, recent: [], pending: false },
     // The chat panel opens by default, so the initial selection is the assistant.
     mode: { selected: 'assistant', debugPort: null, error: null },
   });
@@ -68,13 +69,30 @@ export function createLauncherStore() {
     setState('document', 'recent', recent);
   }
 
-  /** Clear both errors; the Recent list and the mode stay (a bound listener cannot be un-bound). */
+  function setDocumentPending(pending: boolean): void {
+    setState('document', 'pending', pending);
+  }
+
+  /**
+   * Clear both errors; the Recent list and the mode stay (a bound listener
+   * cannot be un-bound), and so does the pending flag, which the in-flight
+   * attempt owns.
+   */
   function reset(): void {
     setState('document', 'error', null);
     setState('mode', 'error', null);
   }
 
-  return { state, applyModeState, failDocument, clearDocumentError, failMode, setRecent, reset };
+  return {
+    state,
+    applyModeState,
+    failDocument,
+    clearDocumentError,
+    failMode,
+    setRecent,
+    setDocumentPending,
+    reset,
+  };
 }
 
 export type LauncherStore = ReturnType<typeof createLauncherStore>;
