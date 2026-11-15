@@ -2,12 +2,12 @@
 # Infrastructure tests for the canonical frontend-checkpoint runner
 # scripts/gui-test.sh (esc-5232-3).
 #
-# Validates the script's CONTRACT statically (contents + arg-parsing smoke) so
-# the guarantee "an agent can reliably run the gui vitest suites in any lane"
-# can't silently regress. Deliberately does NOT execute the full
-# `npm ci`/typecheck/vitest path (slow, network-adjacent) — mirroring
-# test_run_gui_scripts.sh, which checks the launcher contract without launching
-# the GUI.
+# Validates the script's CONTRACT (source checks, arg-parsing smoke, and Test 3's
+# run of a copy against stub npm / stub runner) so the guarantee "an agent can
+# reliably run the gui vitest suites in any lane" can't silently regress.
+# Deliberately never executes the real `npm ci`/typecheck/vitest path (slow,
+# network-adjacent) — mirroring test_run_gui_scripts.sh, which checks the
+# launcher contract without launching the GUI.
 
 set -euo pipefail
 
@@ -19,8 +19,8 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 GUI_TEST="$REPO_ROOT/scripts/gui-test.sh"
 
-# Suite-private scratch root. test_helpers.sh installs no EXIT trap, so this one
-# clobbers nothing.
+# Suite-private scratch root for Test 3's impostors and stub-driven run trees.
+# test_helpers.sh installs no EXIT trap, so this one clobbers nothing.
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/reify-guitest.XXXXXX")"
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
@@ -58,35 +58,66 @@ assert "scripts/gui-test.sh passes 'bash -n' syntax check" \
 # with verify.sh's gui block, so the two can no longer drift. This script's
 # contract is unchanged in substance -- provision, then typecheck, then vitest;
 # only the spelling of the vitest step moved.
+#
+# The checks run a copy of the script against a stub npm and a stub runner and
+# judge the calls those recorded, so a usage line or progress echo that merely
+# names `npm ci` or the runner cannot satisfy them. The impostor pins below
+# prove each check tells an invocation from a mention (tests/infra/README.md
+# "Assert behaviour, not source prose").
 echo ""
 echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
 
-# Anchor on the invocation line itself: the usage() heredoc and the progress echo
-# also say `npm ci` and are not comments, so an unanchored match is satisfied by
-# text alone (task 9893).
-NPM_CI_INVOCATION_RE='^[[:space:]]*npm ci[[:space:]]'
+# gui_test_calls <script>: run a copy of <script> as scripts/gui-test.sh in a fresh
+# repo-shaped tree whose npm and sibling scripts/gui-vitest-run.sh are stubs, and
+# print the calls they recorded, one "<program> <argv>" line each. Returns the
+# run's exit status, so a script that dies part-way fails every check.
+gui_test_calls() {
+    local dir
+    dir="$(mktemp -d "$FIXTURE_ROOT/run.XXXXXX")" || return 1
+    mkdir "$dir/scripts" "$dir/gui" "$dir/bin" || return 1
+    cp "$1" "$dir/scripts/gui-test.sh" || return 1
+    cat >"$dir/bin/npm" <<'STUB' || return 1
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >>"$GUI_TEST_CALL_LOG"
+STUB
+    cp "$dir/bin/npm" "$dir/scripts/gui-vitest-run.sh" || return 1
+    chmod +x "$dir/scripts/gui-test.sh" "$dir/scripts/gui-vitest-run.sh" "$dir/bin/npm" || return 1
+    : >"$dir/calls.log"
+    GUI_TEST_CALL_LOG="$dir/calls.log" PATH="$dir/bin:$PATH" \
+        "$dir/scripts/gui-test.sh" >"$dir/out.log" 2>&1 \
+        || { cat "$dir/out.log" >&2; return 1; }
+    cat "$dir/calls.log"
+}
 
-# Each check judges the script whose path it is given, so the sensitivity pins
-# below can aim the same check at an impostor.
+# first_call <calls> <program> [first-arg]: 1-based index of the first call to
+# <program> (whose first argument is <first-arg>, when given); empty when none.
+first_call() {
+    awk -v program="$2" -v first_arg="${3:-}" \
+        '$1 == program && (first_arg == "" || $2 == first_arg) { print NR; exit }' <<<"$1"
+}
+
 script_runs_npm_ci() {
-    grep -qE "$NPM_CI_INVOCATION_RE" "$1"
+    local calls; calls="$(gui_test_calls "$1")" || return 1
+    [ -n "$(first_call "$calls" npm ci)" ]
 }
 
 script_npm_ci_prefers_offline() {
-    grep -qE "${NPM_CI_INVOCATION_RE}.*--prefer-offline" "$1"
+    local calls; calls="$(gui_test_calls "$1")" || return 1
+    awk '$1 == "npm" && $2 == "ci" { for (i = 3; i <= NF; i++) if ($i == "--prefer-offline") found = 1 }
+         END { exit !found }' <<<"$calls"
 }
 
 script_runs_runner() {
-    grep -q 'gui-vitest-run.sh' "$1"
+    local calls; calls="$(gui_test_calls "$1")" || return 1
+    [ -n "$(first_call "$calls" gui-vitest-run.sh)" ]
 }
 
 script_runs_npm_ci_before_runner() {
-    local ci_line test_line
-    ci_line=$(awk -v re="$NPM_CI_INVOCATION_RE" '$0 ~ re {print NR; exit}' "$1")
-    # test_line skips comment lines so header prose that mentions the runner
-    # can't spoof the order.
-    test_line=$(awk '/^[[:space:]]*#/{next} /gui-vitest-run\.sh/{print NR; exit}' "$1")
-    [ -n "$ci_line" ] && [ -n "$test_line" ] && [ "$ci_line" -lt "$test_line" ]
+    local calls ci runner
+    calls="$(gui_test_calls "$1")" || return 1
+    ci="$(first_call "$calls" npm ci)"
+    runner="$(first_call "$calls" gui-vitest-run.sh)"
+    [ -n "$ci" ] && [ -n "$runner" ] && [ "$ci" -lt "$runner" ]
 }
 
 assert "scripts/gui-test.sh runs 'npm ci'" \
@@ -101,10 +132,9 @@ assert "scripts/gui-test.sh runs vitest via the shared scripts/gui-vitest-run.sh
 assert "scripts/gui-test.sh: 'npm ci' invocation precedes the vitest invocation" \
     script_runs_npm_ci_before_runner "$GUI_TEST"
 
-# Sensitivity pins (tests/infra/README.md "Assert behaviour, not source prose").
-# An impostor MENTIONS a step in an echo without performing it, and lacks exactly
-# the property one check guards. Each check must reject its impostor, or text
-# alone satisfies it.
+# Sensitivity pins: an impostor MENTIONS a step in an echo without performing it,
+# and lacks exactly the property one check guards. Each check must reject its
+# impostor.
 
 # impostor <name> <body>: write <body> as an executable script, print its path.
 impostor() {
