@@ -6,7 +6,9 @@
  * store, the File menu toasts it, App's env launch does both). A secondary
  * stage reports its own failure through notify without rejecting:
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
- * becomes the store's mode error.
+ * becomes the store's mode error. One document attempt (open or create) runs at
+ * a time: the store's document.pending marks it, and a second attempt is
+ * refused with a LaunchFailure under its own code.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -62,7 +64,7 @@ async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promi
 }
 
 export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) {
-  async function openDocument(path: string): Promise<void> {
+  async function loadAndRecord(path: string): Promise<void> {
     await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path));
     try {
       store.setRecent(await deps.recordRecent(path));
@@ -71,11 +73,32 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  async function createDocument(path: string): Promise<void> {
-    const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
-      deps.createNewFile(path),
-    );
-    await openDocument(created.path);
+  async function exclusiveDocumentAttempt<T>(
+    code: LaunchErrorCode,
+    attempt: () => Promise<T>,
+  ): Promise<T> {
+    if (store.state.document.pending) {
+      throw new LaunchFailure(code, 'another document is still opening');
+    }
+    store.setDocumentPending(true);
+    try {
+      return await attempt();
+    } finally {
+      store.setDocumentPending(false);
+    }
+  }
+
+  function openDocument(path: string): Promise<void> {
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => loadAndRecord(path));
+  }
+
+  function createDocument(path: string): Promise<void> {
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, async () => {
+      const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
+        deps.createNewFile(path),
+      );
+      await loadAndRecord(created.path);
+    });
   }
 
   async function refreshRecent(): Promise<void> {
