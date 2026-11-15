@@ -533,7 +533,8 @@ fn trait_static_body_pads_omitted_template_free_default() {
     assert_padded_call(&make.body.result_expr, "scale", 2, "Sc::make body");
 }
 
-/// (b) A field lambda compiles before any free fn body, yet must pad.
+/// (b) A field lambda compiles before any free fn body, yet its body must be
+/// the padded 2-arg call.
 #[test]
 fn field_lambda_pads_omitted_template_free_default() {
     let source = format!(
@@ -541,6 +542,18 @@ fn field_lambda_pads_omitted_template_free_default() {
     );
     let module = compile_src(&source, "test_consume_pad_b");
     assert_no_errors(&module, "field lambda");
+    let f1 = module
+        .fields
+        .iter()
+        .find(|f| f.name == "f1")
+        .expect("field f1 must be compiled");
+    let reify_compiler::CompiledFieldSource::Analytical { expr } = &f1.source else {
+        panic!("f1 must be an analytical field; got {:?}", f1.source)
+    };
+    let CompiledExprKind::Lambda { body, .. } = &expr.kind else {
+        panic!("f1 source must be a lambda; got {:?}", expr.kind)
+    };
+    assert_padded_call(body, "scale", 2, "f1 lambda body");
 }
 
 /// (c) A structure declared ABOVE the fn must pad from its real defaults.
