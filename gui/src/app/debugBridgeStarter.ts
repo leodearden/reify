@@ -1,9 +1,10 @@
 /**
  * Start the debug bridge unless it is live or starting, so one debug-request
  * listener answers however many callers ask. Every caller awaits the one start
- * and sees its failure. The live handle joins the subscription set; a failed
- * start, or disposing the handle (including a `disposeAll` that overtakes a
- * pending start), lets the next call start afresh.
+ * and sees its failure. The live handle joins the subscription set. A failed
+ * start, or disposing the handle, lets the next call after that start afresh;
+ * a handle a `disposeAll` overtook is disposed only when it arrives, so an
+ * ensure issued before then shares the overtaken start.
  */
 import type { SubscriptionSet, Unsubscribe } from './subscriptionSet';
 

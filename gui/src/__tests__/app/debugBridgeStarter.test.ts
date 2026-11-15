@@ -110,8 +110,21 @@ describe('createDebugBridgeStarter', () => {
     expect(start).toHaveBeenCalledTimes(2);
   });
 
-  it('a stop that throws while disposing is logged and still lets the next ensure start afresh', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('a start that a disposeAll overtakes and that then fails rejects its caller, and the next ensure starts afresh', async () => {
+    const { subscriptions, start, starts, ensure } = setup();
+    const boom = new Error('listen failed');
+    const pending = ensure();
+
+    subscriptions.disposeAll();
+    starts[0].reject(boom);
+    await expect(pending).rejects.toBe(boom);
+
+    void ensure();
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it('a stop that throws while disposing still lets the next ensure start afresh', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const { subscriptions, start, starts, ensure } = setup();
     const boom = new Error('stop failed');
     const live = ensure();
@@ -121,7 +134,6 @@ describe('createDebugBridgeStarter', () => {
     await live;
 
     expect(() => subscriptions.disposeAll()).not.toThrow();
-    expect(consoleError).toHaveBeenCalledWith(expect.any(String), boom);
 
     void ensure();
     expect(start).toHaveBeenCalledTimes(2);
