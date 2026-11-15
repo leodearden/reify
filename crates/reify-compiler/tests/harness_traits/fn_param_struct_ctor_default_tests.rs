@@ -271,17 +271,17 @@ structure ElasticDefaultsTest {
 /// (`= BucklingOptions()`), AND a 6-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// GREEN; `= BucklingOptions()` was added to solver_buckling_fns.ri in step-6
+/// GREEN; `= BucklingOptions()` was added to solver_buckling.ri in step-6
 /// (same commit as this test).
 #[test]
 fn solve_buckling_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("BucklingOptions") ──
     let buckling_module = stdlib_loader::load_stdlib()
         .iter()
-        .find(|m| m.path.to_string() == "std/solver/buckling/fns")
+        .find(|m| m.path.to_string() == "std/solver/buckling")
         .unwrap_or_else(|| {
             panic!(
-                "stdlib must contain std/solver/buckling/fns; available paths: {:?}",
+                "stdlib must contain std/solver/buckling; available paths: {:?}",
                 stdlib_loader::load_stdlib()
                     .iter()
                     .map(|m| m.path.to_string())
@@ -294,7 +294,7 @@ fn solve_buckling_options_defaults_and_omittable() {
         .find(|f| f.name == "solve_buckling")
         .unwrap_or_else(|| {
             panic!(
-                "fn solve_buckling not found in std/solver/buckling/fns; \
+                "fn solve_buckling not found in std/solver/buckling; \
                  available functions: {:?}",
                 buckling_module
                     .functions
@@ -316,7 +316,7 @@ fn solve_buckling_options_defaults_and_omittable() {
     let options_default = solve_fn.param_defaults[6].as_ref().expect(
         "solve_buckling's `options` param must carry a compiled default \
              (= BucklingOptions()); None means the default is missing from \
-             solver_buckling_fns.ri",
+             solver_buckling.ri",
     );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {

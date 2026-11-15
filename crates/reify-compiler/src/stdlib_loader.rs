@@ -35,7 +35,7 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// `std.determinacy.purposes` stays last.
 ///
 /// **Ordering footgun:** the hand-chosen positions encode implicit load-order
-/// constraints (e.g. `std.solver.buckling.fns` after `std.solver.buckling`,
+/// constraints (e.g. `std.solver.buckling` after `std.fea.multi_case`,
 /// `std.determinacy.purposes` last) that are NOT expressed as `import` edges
 /// and are therefore NOT machine-checked by the topo-sort.  Adding any `import`
 /// declaration to a stdlib module causes `compile_modules_topo` to reorder it
@@ -125,26 +125,16 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             include_str!("../stdlib/solver_elastic.ri").to_owned(),
         ),
         (
-            "std.solver.buckling",
-            include_str!("../stdlib/solver_buckling.ri").to_owned(),
-        ),
-        (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
-        // `std.fea.multi_case`:
-        //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
-        //     `BucklingOptions`/
-        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
-        //     them in the prelude registry when the fn bodies compile — esc-3851-32).
-        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
-        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
-        //     type-checker must resolve).
-        // Same split + rationale as `std.flexures.types` / `std.flexures`.
+        // `std.solver.buckling` MUST follow `std.fea.multi_case` (`LoadCase`,
+        // consumed by `solve_buckling_load_cases`) and `std.solver.elastic`
+        // (`ElasticResult` / `ElementOrder`). `std.fea.multi_case` references
+        // no buckling name, so loading buckling after it hides nothing.
         (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
+            "std.solver.buckling",
+            include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
         (
             "std.analysis",

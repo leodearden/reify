@@ -111,7 +111,6 @@ const FEA_STDLIB_MODULES: &[&str] = &[
     "fea_types",
     "materials_fea",
     "solver_buckling",
-    "solver_buckling_fns",
     "solver_elastic",
 ];
 
