@@ -18,7 +18,8 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
     examples/m5_geometry.ri exits 0, and `reify-gui` under xvfb answers a
     debug-MCP store_state with at least one mesh;
   * the AppImage does the same on a desktop-session stand-in (xvfb, xauth,
-    curl and GTK 3, but no WebKit, which the AppImage must carry itself).
+    curl, GTK 3 and the GL front-ends, but no WebKit, which the AppImage must
+    carry itself).
 
 Knobs: REIFY_BUNDLE_DEB + REIFY_BUNDLE_APPIMAGE reuse a prior build instead of
 running scripts/build-bundle.sh; REIFY_BUNDLE_PROOF_READY_SECS (default 600) is
@@ -58,6 +59,12 @@ STORE_STATE_BODY = json.dumps({
 })
 BUNDLED_NOT_DEPENDED = re.compile(r"^(libocct|gmsh|libgmsh|libopenvdb|libtbb)")
 APPIMAGE_CARRIES_WEBKIT = re.compile(r"^libwebkit2gtk")
+# The desktop-session stand-in for the AppImage: the libraries the AppImage
+# excludelist leaves to the host. GTK 3 brings X11, fontconfig and freetype;
+# the glvnd GL front-ends (linked, or dlopened by WebKit and libepoxy) come
+# from the desktop install itself: ubuntu-24.04.5.1-desktop-amd64.manifest
+# lists all four.
+DESKTOP_STAND_IN = ("libgtk-3-0t64", "libopengl0", "libegl1", "libgles2", "libgl1")
 
 
 def _log(message):
@@ -229,7 +236,7 @@ class BundleCleanInstall(unittest.TestCase):
         appimage = f"/assets/{self.appimage.name}"
         box = self.container((self.appimage, appimage))
         box.assert_stock_premises()
-        box.apt_install("xvfb", "xauth", "curl", "libgtk-3-0t64")
+        box.apt_install("xvfb", "xauth", "curl", *DESKTOP_STAND_IN)
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.assert_none_installed(APPIMAGE_CARRIES_WEBKIT)
         box.check(f"mkdir -p /tmp/extract && cd /tmp/extract && {appimage} --appimage-extract >/dev/null"
