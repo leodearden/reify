@@ -125,10 +125,20 @@ fn main() -> ExitCode {
 /// position gone.
 fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
     for error in rendered {
-        let _ = writeln!(out, "Parse error: {error}");
+        let _ = writeln!(out, "{PARSE_ERROR_LABEL}: {error}");
     }
     ExitCode::FAILURE
 }
+
+/// Writes `report_parse_errors`' lines, each led by `path`, for a command that reports on
+/// several files in one run; the caller owns the failure.
+fn report_parse_errors_in(path: &str, rendered: Vec<String>, out: &mut impl std::io::Write) {
+    for error in rendered {
+        let _ = writeln!(out, "{path}: {PARSE_ERROR_LABEL}: {error}");
+    }
+}
+
+const PARSE_ERROR_LABEL: &str = "Parse error";
 
 /// The module path a file's own name gives it: its stem as a single segment.
 ///

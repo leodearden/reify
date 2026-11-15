@@ -63,7 +63,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
     };
     let parsed = reify_compiler::parse_with_stdlib(&source, crate::module_path_for_file(path));
     if !parsed.errors.is_empty() {
-        crate::report_parse_errors(parsed.render_errors(&source), &mut std::io::stderr());
+        crate::report_parse_errors_in(path, parsed.render_errors(&source), &mut std::io::stderr());
         return false;
     }
 
