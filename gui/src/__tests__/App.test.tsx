@@ -3533,7 +3533,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
       mode,
       debug_port: mode === 'debug' ? 3939 : null,
     }));
-    vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+    vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('debug-request subscription failed'));
     await renderAndWaitForReady();
 
     fireEvent.click(screen.getByTestId('start-mode-debug'));
@@ -3541,7 +3541,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     const error = await screen.findByTestId('start-mode-error');
     expect(error.textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
     expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
-    expect(error.textContent).toContain('listen failed');
+    expect(error.textContent).toContain('debug-request subscription failed');
 
     fireEvent.click(screen.getByTestId('start-mode-debug'));
 
@@ -3622,16 +3622,16 @@ describe('App launcher Start view (alpha-spine β)', () => {
         mode,
         debug_port: mode === 'debug' ? 3939 : null,
       }));
-      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('debug-request subscription failed'));
 
       await renderAndWaitForReady();
 
       const error = await screen.findByTestId('start-mode-error');
       expect(error.textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
-      expect(error.textContent).toContain('listen failed');
+      expect(error.textContent).toContain('debug-request subscription failed');
       const toast = await screen.findByTestId('toast');
       expect(toast.dataset.type).toBe('error');
-      expect(toast.textContent).toContain('listen failed');
+      expect(toast.textContent).toContain('debug-request subscription failed');
       expect(errorSpy).toHaveBeenCalledWith('[debug-bridge] init failed:', expect.anything());
     } finally {
       errorSpy.mockRestore();
@@ -3643,12 +3643,12 @@ describe('App launcher Start view (alpha-spine β)', () => {
     try {
       vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
       vi.mocked(bridge.setMode).mockRejectedValue('IPC channel closed');
-      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+      vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('debug-request subscription failed'));
 
       await renderAndWaitForReady();
 
       await waitFor(() =>
-        expect(screen.getByTestId('start-mode-error').textContent).toContain('listen failed'),
+        expect(screen.getByTestId('start-mode-error').textContent).toContain('debug-request subscription failed'),
       );
       expect(screen.getByTestId('start-mode-error').textContent).toContain('E_GUI_DEBUG_BRIDGE_FAILED');
       expect(screen.getByTestId('start-mode-error').textContent).not.toContain('IPC channel closed');

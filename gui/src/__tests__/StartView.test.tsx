@@ -373,6 +373,7 @@ describe('StartView mode buttons', () => {
       fireEvent.click(screen.getByTestId(`start-mode-${mode}`));
 
       const error = await screen.findByTestId('start-mode-error');
+      expect(error.textContent).toContain('E_GUI_MODE_FAILED');
       expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
       expect(store.state.mode.error).toEqual({
         code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
