@@ -54,6 +54,21 @@ fn re_recording_a_path_moves_it_to_the_front_without_duplicating_it() {
 }
 
 #[test]
+fn two_spellings_of_one_file_share_one_entry_under_its_canonical_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("recent-files.json");
+    let (a, a_key) = touch(dir.path(), "a.ri");
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let roundabout = dir.path().join("sub").join("..").join("a.ri");
+
+    record_recent(&store, roundabout.to_str().unwrap(), 1000).unwrap();
+    let recorded = record_recent(&store, a.to_str().unwrap(), 2000).unwrap();
+
+    assert_eq!(recorded, vec![entry(&a_key, 2000)]);
+    assert_eq!(list_recent(&store), recorded);
+}
+
+#[test]
 fn only_the_newest_entries_up_to_the_limit_are_kept() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("recent-files.json");
