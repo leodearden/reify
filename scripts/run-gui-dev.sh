@@ -96,20 +96,10 @@ if [ "$#" -gt 1 ]; then
     exit 1
 fi
 
-# FILE is the .ri reify-gui opens, or empty for the Start view.
-FILE="${1:-}"
-
-if [ -n "$FILE" ]; then
-    case "$FILE" in
-        *.ri) ;;
-        *)
-            echo "Error: file must have .ri extension: $FILE" >&2
-            exit 1
-            ;;
-    esac
-
-    [ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
-fi
+# FILE is the absolute path of the .ri reify-gui opens, or empty for the Start
+# view (policy: scripts/lib_gui_launch.sh). Resolved here, before the cd below,
+# so a relative path means the caller's cwd.
+FILE=$(gui_launch_resolve_file "${1:-}") || exit 1
 
 # Resolve repo root from this script's path so the script works from any cwd.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
