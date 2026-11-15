@@ -61,9 +61,10 @@ fn two_spellings_of_one_file_share_one_entry_under_its_canonical_path() {
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     let roundabout = dir.path().join("sub").join("..").join("a.ri");
 
-    record_recent(&store, roundabout.to_str().unwrap(), 1000).unwrap();
+    let after_roundabout = record_recent(&store, roundabout.to_str().unwrap(), 1000).unwrap();
     let recorded = record_recent(&store, a.to_str().unwrap(), 2000).unwrap();
 
+    assert_eq!(after_roundabout, vec![entry(&a_key, 1000)]);
     assert_eq!(recorded, vec![entry(&a_key, 2000)]);
     assert_eq!(list_recent(&store), recorded);
 }
