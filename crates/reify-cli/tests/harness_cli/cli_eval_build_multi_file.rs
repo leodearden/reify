@@ -53,9 +53,14 @@ fn build_writes_geometry_for_an_importing_entry() {
 #[test]
 fn eval_cfg_target_selects_the_platform_module() {
     let main = common::fixture_path("multi_file_cfg/main.ri");
-    for (target, size) in [("linux", "0.01 m"), ("wasm", "0.02 m")] {
+    for (target, size, expect_success) in [("linux", "0.01 m", true), ("wasm", "0.02 m", false)] {
         let cfg = format!("target={target}");
-        let (_status, stdout, stderr) = common::run_with_args(&["eval", "--cfg", &cfg, &main]);
+        let (status, stdout, stderr) = common::run_with_args(&["eval", "--cfg", &cfg, &main]);
+        assert_eq!(
+            status.success(),
+            expect_success,
+            "--cfg {cfg}: eval exited {status}, expected success = {expect_success}.\nstdout: {stdout}\nstderr: {stderr}"
+        );
         let expected = format!("Rig.housing.size = {size}");
         assert!(
             stdout.contains(&expected),
