@@ -532,6 +532,39 @@ else
             out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
             [ "$out" = "unavailable" ]
         ' _ "$INSTRUMENT" "$_SELF6_MALFORMED_FIXTURE"
+
+    # SELF-7 (task 10023): cgroup-usage-stamped prints the cpu.stat usage_usec
+    # AND a CLOCK_MONOTONIC stamp taken in the SAME process right after the
+    # read, so ROW1-1 measures its window read-to-read instead of trusting
+    # the nominal sleep.  Contract: one stdout line "<usage_usec> <monotonic_usec>"
+    # or the literal "unavailable", exit 0 either way (same as cgroup-usage).
+    # The fixture path ends in cpu.stat, which read_cgroup_cpu_usage takes verbatim.
+    _SELF7_DIR="$(mktemp -d -p "$WORK" self7.XXXXXX)"
+    printf 'usage_usec 424242\nuser_usec 1\nsystem_usec 2\n' > "$_SELF7_DIR/cpu.stat"
+    assert "SELF-7a: cpu_gov_instrument.py cgroup-usage-stamped <synthetic cpu.stat usage_usec=424242> == '424242 <monotonic_usec>' (exactly two integer fields, exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$out" =~ ^424242\ [0-9]+$ ]]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
+
+    assert "SELF-7b: cpu_gov_instrument.py cgroup-usage-stamped <non-existent cpu.stat> == unavailable (exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [ "$out" = "unavailable" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/absent/cpu.stat"
+
+    # Ordering only, no elapsed bound: two successive calls cannot stamp the
+    # same instant, so a constant stamp (or the usage echoed back) fails here.
+    assert "SELF-7c: cpu_gov_instrument.py cgroup-usage-stamped stamps a clock that advances — the second call's stamp is greater than the first's" \
+        bash -c '
+            re="^[0-9]+ ([0-9]+)\$"
+            first=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            second=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$first" =~ $re ]] || exit 1
+            first_stamp="${BASH_REMATCH[1]}"
+            [[ "$second" =~ $re ]] || exit 1
+            [ "${BASH_REMATCH[1]}" -gt "$first_stamp" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
 fi
 
 # ============================================================================
