@@ -2,7 +2,7 @@
 //!
 //! Every repo-wide `.ri` sweep in a binary that includes this module reads
 //! [`swept_ri_paths`], so the sweeps agree on what "the corpus" is, including
-//! that it omits [`VERIFY_INERT_RI_TREES`].
+//! that it omits every path verify's scope classifier marks inert.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -10,29 +10,65 @@ use std::process::{Command, Stdio};
 
 use reify_test_support::{TempDir, prefixed_tempdir};
 
-/// Trees whose `.ri` files verify's scope classifier marks inert (the `inert`
-/// fact of `scripts/reify_path_attribution.py`), so a change there runs no
-/// heavy checks. Docs land on `main` by a hook-gated commit, so a sweep that
-/// read a `.ri` here would let such a commit land green and then red every
-/// later merge gate. Each entry ends with `/`, so it cannot match a sibling
-/// tree, and `is_verify_inert_agrees_with_the_scope_classifier` holds the table
-/// equal to the classifier. Recorded on the guard row of
+/// The corpus every repo-wide sweep reads: [`tracked_ri_paths`] without every
+/// path verify's scope classifier (the `inert` fact of
+/// `scripts/reify_path_attribution.py`) marks inert, still sorted. The
+/// classifier is asked once per listing.
+///
+/// A change to an inert path runs no heavy checks, and docs land on `main` by
+/// a hook-gated commit, so a sweep that read such a `.ri` would let that commit
+/// land green and then red every later merge gate. Recorded on the guard row of
 /// `docs/prds/v0_6/syntax-lowering-contract.md` §7.
-pub const VERIFY_INERT_RI_TREES: &[&str] = &["docs/"];
-
-/// Whether the repo-relative `rel` lies in a [`VERIFY_INERT_RI_TREES`] tree.
-pub fn is_verify_inert(rel: &str) -> bool {
-    VERIFY_INERT_RI_TREES
-        .iter()
-        .any(|tree| rel.starts_with(tree))
+pub fn swept_ri_paths(root: &Path) -> Vec<String> {
+    swept_ri_paths_classified_by(root, &scope_classifier())
 }
 
-/// The corpus every repo-wide sweep reads: [`tracked_ri_paths`] without the
-/// [`is_verify_inert`] paths, still sorted.
-pub fn swept_ri_paths(root: &Path) -> Vec<String> {
-    let mut paths = tracked_ri_paths(root);
-    paths.retain(|rel| !is_verify_inert(rel));
-    paths
+/// A repo-relative `.ri` path verify's scope classifier marks inert, for the
+/// tests that need one. `docs/` is the tree its `_INERT_GLOBS` marks inert
+/// today; if that set is narrowed past this path, repoint this one constant.
+pub const INERT_PROBE_RI: &str = "docs/zz_section/zz_synthetic.ri";
+
+/// Repo-relative paths split by a scope classifier's `inert` fact, each side
+/// in input order.
+pub struct InertPartition<T> {
+    pub inert: Vec<T>,
+    pub not_inert: Vec<T>,
+}
+
+/// `paths` split by verify's scope-classifier `inert` fact, from one
+/// classifier run.
+pub fn partition_by_verify_inert<T: AsRef<str>>(paths: Vec<T>) -> InertPartition<T> {
+    partition_inert_by(&scope_classifier(), paths)
+}
+
+/// Verify's own scope classifier, taken from this workspace rather than from
+/// a listing root, so a fixture repo, which carries no `scripts/`, is
+/// classified by the real one.
+fn scope_classifier() -> PathBuf {
+    workspace_root().join("scripts/reify_path_attribution.py")
+}
+
+/// [`tracked_ri_paths`] under `root` without the paths `classifier` marks
+/// inert, still sorted.
+fn swept_ri_paths_classified_by(root: &Path, classifier: &Path) -> Vec<String> {
+    partition_inert_by(classifier, tracked_ri_paths(root)).not_inert
+}
+
+/// `paths` split by `classifier`'s `inert` fact, from one classifier run.
+fn partition_inert_by<T: AsRef<str>>(classifier: &Path, paths: Vec<T>) -> InertPartition<T> {
+    let facts = classifier_inert_facts(classifier, &paths);
+    let mut partition = InertPartition {
+        inert: Vec::new(),
+        not_inert: Vec::new(),
+    };
+    for (path, inert) in paths.into_iter().zip(facts) {
+        if inert {
+            partition.inert.push(path);
+        } else {
+            partition.not_inert.push(path);
+        }
+    }
+    partition
 }
 
 /// The workspace root, resolved from this crate's manifest dir
@@ -110,33 +146,35 @@ pub fn tracked_fixture_repo(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 
-/// The scope classifier's `inert` fact for each of `paths`, in order, from
-/// `scripts/reify_path_attribution.py attribute --format tsv` under `root`.
-fn classifier_inert_facts(root: &Path, paths: &[String]) -> Vec<bool> {
-    let script = root.join("scripts/reify_path_attribution.py");
+/// The scope classifier's `inert` fact for each of `paths`, in order, from one
+/// `<classifier> attribute --format tsv` run.
+fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<bool> {
     let mut child = Command::new("python3")
         .arg("-I")
-        .arg(&script)
+        .arg(classifier)
         .args(["attribute", "--format", "tsv"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("cannot spawn python3 {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot spawn python3 {}: {e}", classifier.display()));
     let mut stdin = child.stdin.take().expect("stdin is piped");
-    let input: String = paths.iter().map(|path| format!("{path}\n")).collect();
+    let input: String = paths
+        .iter()
+        .map(|path| format!("{}\n", path.as_ref()))
+        .collect();
     let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
     let output = child
         .wait_with_output()
-        .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", classifier.display()));
     writer
         .join()
         .expect("the stdin writer thread does not panic")
-        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", script.display()));
+        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
     assert!(
         output.status.success(),
         "{} attribute failed ({}): {}",
-        script.display(),
+        classifier.display(),
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -148,16 +186,18 @@ fn classifier_inert_facts(root: &Path, paths: &[String]) -> Vec<bool> {
     assert_eq!(
         records.len(),
         paths.len(),
-        "the classifier must print one record per path"
+        "{} must print one record per path",
+        classifier.display()
     );
     paths
         .iter()
         .zip(records)
         .map(|(path, record)| {
+            let path = path.as_ref();
             let fields: Vec<&str> = record.split('\t').collect();
             match fields.as_slice() {
-                [_, "0", _, _, _, echoed] if echoed == path => false,
-                [_, "1", _, _, _, echoed] if echoed == path => true,
+                [_, "0", _, _, _, echoed] if *echoed == path => false,
+                [_, "1", _, _, _, echoed] if *echoed == path => true,
                 _ => panic!("unexpected classifier record for {path}: {record:?}"),
             }
         })
@@ -167,62 +207,41 @@ fn classifier_inert_facts(root: &Path, paths: &[String]) -> Vec<bool> {
 // ── this module's own behaviour ─────────────────────────────────────────────
 
 #[test]
-fn verify_inert_trees_are_slash_terminated() {
-    let unterminated: Vec<&str> = VERIFY_INERT_RI_TREES
-        .iter()
-        .copied()
-        .filter(|tree| !tree.ends_with('/'))
-        .collect();
-    assert!(
-        unterminated.is_empty(),
-        "VERIFY_INERT_RI_TREES entries must end with '/' so they cannot match a sibling \
-         tree: {unterminated:?}"
-    );
-}
-
-#[test]
-fn swept_ri_paths_omits_verify_inert_trees() {
-    let dir = tracked_fixture_repo(&[
-        ("docs/zz_section/zz_synthetic.ri", ""),
-        ("docsx/zz_sibling.ri", ""),
-        ("examples/zz_kept.ri", ""),
-    ]);
+fn swept_ri_paths_omits_what_the_scope_classifier_marks_inert() {
+    let dir = tracked_fixture_repo(&[(INERT_PROBE_RI, ""), ("examples/zz_kept.ri", "")]);
     assert_eq!(
         swept_ri_paths(dir.path()),
-        ["docsx/zz_sibling.ri", "examples/zz_kept.ri"],
-        "a docs/ member leaves the listing; docsx/ shares the name's prefix but is not the tree"
+        ["examples/zz_kept.ri"],
+        "swept_ri_paths must drop what verify's real scope classifier marks inert; if \
+         _INERT_GLOBS no longer covers INERT_PROBE_RI, repoint that constant"
     );
 }
 
-/// `is_verify_inert` and the scope classifier agree on every tracked `.ri`,
-/// and on a probe inside and beside each table entry, so the probes still
-/// test both answers when no tracked `.ri` lies in a table tree.
+/// A stand-in for the scope classifier that honours its `attribute --format
+/// tsv` record contract but marks only `notes/` inert.
+const FAKE_SCOPE_CLASSIFIER: &str = r#"import sys
+
+for line in sys.stdin:
+    path = line.rstrip("\n")
+    inert = 1 if path.startswith("notes/") else 0
+    sys.stdout.write(f"0\t{inert}\tother\t-\t-\t{path}\n")
+"#;
+
 #[test]
-fn is_verify_inert_agrees_with_the_scope_classifier() {
-    let root = workspace_root();
-    let mut paths = tracked_ri_paths(&root);
-    for tree in VERIFY_INERT_RI_TREES {
-        paths.push(format!("{tree}zz_inert_probe.ri"));
-        paths.push(format!(
-            "{}x/zz_sibling_probe.ri",
-            tree.trim_end_matches('/')
-        ));
-    }
-    let disagreements: Vec<String> = paths
-        .iter()
-        .zip(classifier_inert_facts(&root, &paths))
-        .filter(|(path, inert)| is_verify_inert(path) != *inert)
-        .map(|(path, inert)| {
-            format!(
-                "{path}: classifier inert={inert}, is_verify_inert={}",
-                !inert
-            )
-        })
-        .collect();
-    assert!(
-        disagreements.is_empty(),
-        "VERIFY_INERT_RI_TREES disagrees with scripts/reify_path_attribution.py's inert \
-         fact; change the table to match the classifier:\n{}",
-        disagreements.join("\n")
+fn swept_ri_paths_follows_the_classifier_it_is_given() {
+    let repo = tracked_fixture_repo(&[
+        ("docs/zz_section/zz_synthetic.ri", ""),
+        ("examples/zz_kept.ri", ""),
+        ("notes/zz_section/zz_synthetic.ri", ""),
+    ]);
+    let classifier_dir = prefixed_tempdir("reify-fake-scope-classifier-");
+    let script = classifier_dir.path().join("fake_scope_classifier.py");
+    std::fs::write(&script, FAKE_SCOPE_CLASSIFIER)
+        .unwrap_or_else(|e| panic!("cannot write {}: {e}", script.display()));
+    assert_eq!(
+        swept_ri_paths_classified_by(repo.path(), &script),
+        ["docs/zz_section/zz_synthetic.ri", "examples/zz_kept.ri"],
+        "the listing drops exactly what the classifier marks inert: a tree it newly marks \
+         (notes/) leaves the listing, and a tree it does not mark (docs/) stays"
     );
 }
