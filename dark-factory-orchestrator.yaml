@@ -71,15 +71,19 @@ lock_depth: 10
 # 5467), switched on by reify task 9995 after reify task 5099 waited 24.4 h on
 # docs/debug-mcp-contract.md (esc-5099-8). The keys stay in every task's lock list; only their
 # capacity changes.
-# SHARED: every other key under docs/ plus root *.md. That includes prose that reify-audit's
-# live-tree tests and the doc-sync infra tests read (reify-stdlib-reference.md, invariants.md,
-# PRD status and citations, capability manifests, verify-pipeline-knobs.md): the merge gate
-# re-runs those checks on the merged tree, and these are the most contended files.
-# EXCLUSIVE, via an exact module_overrides entry at 1, which beats the rule: files a gate-run
-# test compiles in or reads as data, and code under docs/. A concurrent edit to those can break
-# a test, not merely conflict as text. Every ancestor directory key of an exclusive file is
-# pinned too; otherwise a task declaring the directory takes the unlimited limit and co-holds
-# with that file's holder. Guard: tests/infra/test_unlimited_holder_lock_pins.py.
+# EXCLUSIVE, via an exact module_overrides entry at 1, which beats the rule: code under docs/,
+# and files a gate-run test takes as its input. That means compiled in, parsed, imported or
+# replayed, checked as a generated artifact, or bound as a normative table that code must
+# match. A concurrent edit to those can break a test, not merely conflict as text. Every
+# ancestor directory key of an exclusive file is pinned too; otherwise a task declaring the
+# directory takes the unlimited limit and co-holds with that file's holder.
+# Guard: tests/infra/test_unlimited_holder_lock_pins.py.
+# SHARED: every other key under docs/ plus root *.md. That includes docs that a test checks
+# only as a description of code: the ones reify-audit's live-tree tests and the doc-sync infra
+# tests read (reify-stdlib-reference.md, invariants.md, PRD status and citations, capability
+# manifests, verify-pipeline-knobs.md), and gui-event-channels.md, whose rows the GUI
+# event-channel contract vitest checks. The merge gate re-runs those checks on the merged tree,
+# and these are the most contended files.
 # Keys are exact lock keys at lock_depth 10. Red tier: takes effect at the next orchestrator
 # restart. Reference: dark-factory skills/orchestrate/references/project-setup.md
 # "Per-subproject module overrides".
@@ -152,13 +156,13 @@ module_overrides:
   docs/prds/struct-ctor-field-type-conformance.survey.md: 1
   # Jobserver tuning measurements: test_jobserver_tuning_harness.sh runs --check against it.
   docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json: 1
-  # e3 analysis code and committed results: imported or run by tests/infra/test_e3_*.
+  # e3 analysis code: tests/infra/test_e3_* import the e3_*.py modules; the other .py are
+  # pinned as code under docs/.
   docs/prds/v0_6/e3-granularity/analysis/e2_df_analysis.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e2_df_cadence.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e2_df_inspect.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e2_df_m3.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e2_df_models.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_task_models.json: 1
   docs/prds/v0_6/e3-granularity/analysis/e2_df_widening.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_model.py: 1
@@ -169,10 +173,11 @@ module_overrides:
   docs/prds/v0_6/e3-granularity/analysis/reify_e2.py: 1
   docs/prds/v0_6/e3-granularity/analysis/reify_refine.py: 1
   docs/prds/v0_6/e3-granularity/analysis/reify_task_size_analysis.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/endpoints.json: 1
-  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/report.txt: 1
-  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/tasks-snapshot.json: 1
   docs/prds/v0_6/e3-granularity/analysis/task_size_analysis.py: 1
+  # Committed e3 records: CommittedRecordTests reads every results/*/tasks-snapshot.json, so
+  # pin each new record's snapshot and its results/<as-of> directory. A record's report.txt
+  # and endpoints.json stay shared: no gate test reads the committed copies.
+  docs/prds/v0_6/e3-granularity/analysis/results/20261010T200000Z/tasks-snapshot.json: 1
   # Every ancestor directory key of the files above.
   docs: 1
   docs/prds: 1
