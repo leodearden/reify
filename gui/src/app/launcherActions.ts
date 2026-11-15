@@ -52,6 +52,16 @@ export interface LauncherDeps {
   notify(message: string): void;
 }
 
+/**
+ * set_mode's failure code per mode: only Debug's set_mode starts the listener
+ * (launch_mode.rs::set_mode_impl).
+ */
+const SET_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> = Object.freeze({
+  design: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
+  assistant: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
+  debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+});
+
 /** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
 async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
   try {
@@ -62,6 +72,10 @@ async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promi
 }
 
 export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) {
+  function debugBridgeStage(): Promise<void> {
+    return inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED, () => deps.ensureDebugBridge());
+  }
+
   async function openDocument(path: string): Promise<void> {
     await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path));
     try {
@@ -83,12 +97,10 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    const reply = await inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () =>
-      deps.setMode(mode),
-    );
+    const reply = await inStage(SET_MODE_FAILURE_CODES[mode], () => deps.setMode(mode));
     store.applyModeState(reply);
     if (mode === 'debug') {
-      await inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () => deps.ensureDebugBridge());
+      await debugBridgeStage();
     } else {
       deps.showAssistant(mode === 'assistant');
     }
@@ -111,7 +123,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
    * bridge fails.
    */
   async function adoptLiveDebugServer(): Promise<void> {
-    const bridge = inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () => deps.ensureDebugBridge());
+    const bridge = debugBridgeStage();
     await Promise.allSettled([bridge, recordDebugMode()]);
     await bridge;
   }
