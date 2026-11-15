@@ -19,6 +19,9 @@
 //!   a lane: `debug_server::run_on_engine`'s engine closures, which still bypass
 //!   the evaluation queue (tkt_0RV0J0HK8TK4WRS6YJVYEFP93C), and a job that
 //!   [`post`] or [`dispatch_async`] got back from a dead lane.
+//!   [`run_on_large_stack`] is its awaitable form, for compiler work that
+//!   belongs to no lane: `commands::create_new_file_on_large_stack`, whose
+//!   template parse can be the process's first stdlib compile.
 //! * **Persistent lanes — [`ENGINE_LANE`], [`LSP_LANE`] and [`LSP_POOL`].** A
 //!   lane's consumer threads live for the process, so the per-call cost becomes
 //!   a queue push; see [`Lane`].
@@ -43,7 +46,8 @@
 //!    document the bound holds with at most a one-parse wait; the contract is
 //!    `reify_lsp::document::DocumentState::parsed_module`'s.
 //! 2. **No drop-cancellation.** An abandoned submission still runs to
-//!    completion; see [`dispatch_async`]'s "Abandonment".
+//!    completion; see the "Abandonment" sections of [`dispatch_async`] and
+//!    [`run_on_large_stack`].
 //!
 //! # The degradation invariant
 //!
@@ -57,6 +61,11 @@
 //! * Dead lane (the queue hands the job back unrun): the job goes to
 //!   [`spawn_on_large_stack`]. If that spawn fails too, [`post`] returns `Err`
 //!   and [`dispatch_async`]'s awaiter gets a loud panic.
+//! * No per-call thread (the OS refused [`spawn_on_large_stack`]'s mapping):
+//!   [`run_on_large_stack`] resolves `Err` naming the refusal, and runs the job
+//!   nowhere, neither inline nor on a default-stack thread. Unlike a lane's
+//!   one-time refusal at initialisation, which [`post`] must outlive, a per-call
+//!   refusal costs only that call, and the next call asks again.
 //!
 //! The one shape that would not resolve — a job WAITING on work it queued to its
 //! own lane — is rejected by [`assert_not_reentrant`]. The worst outcome
@@ -137,6 +146,58 @@ where
         .spawn(f)
 }
 
+/// What a job sends back to its submitter: the value, or the panic payload its
+/// body raised, so the submitter can re-raise or report the ORIGINAL panic.
+type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
+
+/// Run `f` on a per-call [`spawn_on_large_stack`] thread and AWAIT its value.
+///
+/// The per-call tier's awaitable form: the awaiting task parks no thread while
+/// `f` runs, and no tokio runtime context is required. Every outcome resolves
+/// the await — a panic in `f` or a failed spawn comes back as `Err` carrying the
+/// reason, never as an unwind on the awaiter and never as a hang. A failed spawn
+/// runs `f` nowhere; see the module's degradation invariant.
+///
+/// # Abandonment
+///
+/// Dropping this future drops only the `oneshot` receiver: `f` still runs to
+/// completion and its side effects happen (`create_new_file_on_large_stack`
+/// still creates its file); only its value is discarded.
+pub async fn run_on_large_stack<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    run_on_large_stack_via(|job| spawn_on_large_stack(job).map(drop), f).await
+}
+
+/// [`run_on_large_stack`] with the thread spawner as a parameter, so a test can
+/// reach the refused-spawn and dropped-unrun arms without a real
+/// `pthread_create` failure. `spawn` either starts a thread running the job or
+/// returns `Err`.
+pub(crate) async fn run_on_large_stack_via<S, F, T>(spawn: S, f: F) -> Result<T, String>
+where
+    S: FnOnce(Job) -> std::io::Result<()>,
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
+    spawn(Box::new(move || {
+        // A dropped receiver means the awaiting task is gone; nothing to report.
+        let _ = reply_tx.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
+    }))
+    .map_err(|e| format!("could not spawn a large-stack thread: {e}"))?;
+
+    match reply_rx.await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(payload)) => Err(format!(
+            "a large-stack job panicked: {}",
+            panic_payload_message(&*payload)
+        )),
+        Err(_) => Err("a large-stack thread exited without answering".to_owned()),
+    }
+}
+
 // ── Persistent large-stack worker (task 5772) ────────────────────────────────
 
 /// A type-erased unit of work queued to a persistent lane. `'static` because the
@@ -145,11 +206,6 @@ where
 ///
 /// `pub(crate)` so tests can build a SYNTHETIC queue.
 pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
-
-/// What a job sends back to its submitter: the value, or the panic payload its
-/// body raised, so the submitter can [`std::panic::resume_unwind`] the ORIGINAL
-/// panic.
-type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 
 /// The submit end of a lane's job queue, TAGGED with the lane it feeds so
 /// [`assert_not_reentrant`] can tell a self-submission (a wedge) from a

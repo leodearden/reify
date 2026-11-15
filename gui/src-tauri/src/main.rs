@@ -345,7 +345,9 @@ fn watch_file(app: &tauri::AppHandle, state: &AppState, file: &Path) {
 // Engine-touching commands are async: each submits a request to the evaluation
 // queue and awaits its reply, so no thread — the GTK main thread least of all —
 // blocks on engine work, and the queue publishes deltas and evaluation status.
-// The remaining commands never touch the engine, so they stay sync.
+// The remaining commands never touch the engine, so they stay sync — unless they
+// run compiler work, as create_new_file's template check does; those await a
+// large-stack thread (`large_stack::run_on_large_stack`).
 
 /// Run `call` against the engine as an ordered request that publishes nothing.
 async fn engine_call<T: Send + 'static>(
@@ -471,8 +473,8 @@ fn open_file(path: String) -> Result<reify_gui::types::FileData, String> {
 }
 
 #[tauri::command]
-fn create_new_file(path: String) -> Result<reify_gui::types::FileData, String> {
-    reify_gui::commands::create_new_file_impl(&path)
+async fn create_new_file(path: String) -> Result<reify_gui::types::FileData, String> {
+    reify_gui::commands::create_new_file_on_large_stack(path).await
 }
 
 /// The Recent list's store: `recent-files.json` in the app-data dir.
