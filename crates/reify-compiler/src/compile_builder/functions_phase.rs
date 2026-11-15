@@ -87,7 +87,7 @@ pub(crate) fn phase_fn_param_defaults(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut table = ResolutionTable::new(prelude);
+    let mut table = ResolutionTable::new(Vec::new(), prelude);
     let mut pending = PendingDefaults::default();
     for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
         let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
@@ -217,11 +217,11 @@ pub(crate) fn build_resolution_functions(
 
 /// [`build_resolution_functions`] over a user list that grows one fn at a time.
 ///
-/// After every [`Self::push_user`], [`Self::functions`] equals
-/// `build_resolution_functions(&users_pushed_so_far, prelude)`. A user fn that
-/// shadows no prelude winner's key is spliced in at the end of the user
-/// prefix; only one that does triggers a rebuild, so the prelude winners are
-/// cloned once rather than once per user fn.
+/// [`Self::functions`] always equals
+/// `build_resolution_functions(&(seed ++ users_pushed_so_far), prelude)`. A
+/// user fn that shadows no prelude winner's key is spliced in at the end of
+/// the user prefix; only one that does triggers a rebuild, so the prelude
+/// winners are cloned once rather than once per user fn.
 pub(crate) struct ResolutionTable<'p> {
     prelude: &'p [&'p CompiledModule],
     prelude_keys: HashSet<FunctionSignature<'p>>,
@@ -230,7 +230,7 @@ pub(crate) struct ResolutionTable<'p> {
 }
 
 impl<'p> ResolutionTable<'p> {
-    pub(crate) fn new(prelude: &'p [&'p CompiledModule]) -> Self {
+    pub(crate) fn new(users: Vec<CompiledFunction>, prelude: &'p [&'p CompiledModule]) -> Self {
         let prelude_keys = name_env::bind::<CompiledFunction, _>(&[], prelude.iter().copied())
             .winners()
             .map(Definition::key)
@@ -238,8 +238,8 @@ impl<'p> ResolutionTable<'p> {
         ResolutionTable {
             prelude,
             prelude_keys,
-            functions: build_resolution_functions(&[], prelude),
-            user_len: 0,
+            functions: build_resolution_functions(&users, prelude),
+            user_len: users.len(),
         }
     }
 
@@ -259,6 +259,11 @@ impl<'p> ResolutionTable<'p> {
     }
 
     pub(crate) fn into_functions(self) -> Vec<CompiledFunction> {
+        self.functions
+    }
+
+    pub(crate) fn into_user_functions(mut self) -> Vec<CompiledFunction> {
+        self.functions.truncate(self.user_len);
         self.functions
     }
 }
