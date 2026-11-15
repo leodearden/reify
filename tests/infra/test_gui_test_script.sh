@@ -19,6 +19,11 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 GUI_TEST="$REPO_ROOT/scripts/gui-test.sh"
 
+# Suite-private scratch root. test_helpers.sh installs no EXIT trap, so this one
+# clobbers nothing.
+FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/reify-guitest.XXXXXX")"
+trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+
 echo "=== gui-test.sh checkpoint-runner tests ==="
 
 # -- Test 1: file exists + is executable -------------------------------------
@@ -61,23 +66,79 @@ echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
 # text alone (task 9893).
 NPM_CI_INVOCATION_RE='^[[:space:]]*npm ci[[:space:]]'
 
+# Each check judges the script whose path it is given, so the sensitivity pins
+# below can aim the same check at an impostor.
+script_runs_npm_ci() {
+    grep -qE "$NPM_CI_INVOCATION_RE" "$1"
+}
+
+script_npm_ci_prefers_offline() {
+    grep -qE "${NPM_CI_INVOCATION_RE}.*--prefer-offline" "$1"
+}
+
+script_runs_runner() {
+    grep -q 'gui-vitest-run.sh' "$1"
+}
+
+script_runs_npm_ci_before_runner() {
+    local ci_line test_line
+    ci_line=$(awk -v re="$NPM_CI_INVOCATION_RE" '$0 ~ re {print NR; exit}' "$1")
+    # test_line skips comment lines so header prose that mentions the runner
+    # can't spoof the order.
+    test_line=$(awk '/^[[:space:]]*#/{next} /gui-vitest-run\.sh/{print NR; exit}' "$1")
+    [ -n "$ci_line" ] && [ -n "$test_line" ] && [ "$ci_line" -lt "$test_line" ]
+}
+
 assert "scripts/gui-test.sh runs 'npm ci'" \
-    grep -qE "$NPM_CI_INVOCATION_RE" "$GUI_TEST"
+    script_runs_npm_ci "$GUI_TEST"
 
 assert "scripts/gui-test.sh uses '--prefer-offline' (warm ~/.npm cache, offline-fast)" \
-    grep -qE "${NPM_CI_INVOCATION_RE}.*--prefer-offline" "$GUI_TEST"
+    script_npm_ci_prefers_offline "$GUI_TEST"
 
 assert "scripts/gui-test.sh runs vitest via the shared scripts/gui-vitest-run.sh" \
-    grep -q 'gui-vitest-run.sh' "$GUI_TEST"
+    script_runs_runner "$GUI_TEST"
 
 assert "scripts/gui-test.sh: 'npm ci' invocation precedes the vitest invocation" \
-    bash -c "
-        # test_line skips comment lines so header prose that mentions the runner
-        # can't spoof the order.
-        ci_line=\$(awk -v re='$NPM_CI_INVOCATION_RE' '\$0 ~ re {print NR; exit}' '$GUI_TEST')
-        test_line=\$(awk '/^[[:space:]]*#/{next} /gui-vitest-run\\.sh/{print NR; exit}' '$GUI_TEST')
-        [ -n \"\$ci_line\" ] && [ -n \"\$test_line\" ] && [ \"\$ci_line\" -lt \"\$test_line\" ]
-    "
+    script_runs_npm_ci_before_runner "$GUI_TEST"
+
+# Sensitivity pins (tests/infra/README.md "Assert behaviour, not source prose").
+# An impostor MENTIONS a step in an echo without performing it, and lacks exactly
+# the property one check guards. Each check must reject its impostor, or text
+# alone satisfies it.
+
+# impostor <name> <body>: write <body> as an executable script, print its path.
+impostor() {
+    local path="$FIXTURE_ROOT/$1.sh"
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n%s\n' "$2" >"$path" || return 1
+    chmod +x "$path" || return 1
+    printf '%s\n' "$path"
+}
+
+rejects() { ! "$@"; }
+
+IMPOSTOR_NO_RUNNER="$(impostor no-runner \
+    $'npm ci --prefer-offline --no-audit\necho "==> vitest run (via scripts/gui-vitest-run.sh)..."')"
+IMPOSTOR_CI_AFTER_RUNNER="$(impostor ci-after-runner \
+    $'"$(dirname "$0")/gui-vitest-run.sh"\nnpm ci --prefer-offline')"
+IMPOSTOR_NO_PREFER_OFFLINE="$(impostor no-prefer-offline \
+    $'echo "==> npm ci --prefer-offline"\nnpm ci --no-audit\n"$(dirname "$0")/gui-vitest-run.sh"')"
+IMPOSTOR_NO_NPM_CI="$(impostor no-npm-ci \
+    $'echo "==> npm ci --prefer-offline"\n"$(dirname "$0")/gui-vitest-run.sh"')"
+
+assert "sensitivity pin: runs-runner check rejects the no-runner impostor (its echo names the runner, nothing invokes it)" \
+    rejects script_runs_runner "$IMPOSTOR_NO_RUNNER"
+
+assert "sensitivity pin: npm-ci-before-runner check rejects the no-runner impostor (no runner invocation to order against)" \
+    rejects script_runs_npm_ci_before_runner "$IMPOSTOR_NO_RUNNER"
+
+assert "sensitivity pin: npm-ci-before-runner check rejects the ci-after-runner impostor (runner invoked first)" \
+    rejects script_runs_npm_ci_before_runner "$IMPOSTOR_CI_AFTER_RUNNER"
+
+assert "sensitivity pin: prefers-offline check rejects the no-prefer-offline impostor (its echo says --prefer-offline, its npm ci omits it)" \
+    rejects script_npm_ci_prefers_offline "$IMPOSTOR_NO_PREFER_OFFLINE"
+
+assert "sensitivity pin: runs-npm-ci check rejects the no-npm-ci impostor (its echo says npm ci, nothing runs it)" \
+    rejects script_runs_npm_ci "$IMPOSTOR_NO_NPM_CI"
 
 # -- Test 4: resolves gui/ from the script path (works from any cwd) ---------
 echo ""
