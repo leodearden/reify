@@ -246,7 +246,8 @@ fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
         &out,
         &[&[
             "HOST-UNION u",
-            "a -[build]-> u -> workspace-feature-union",
+            "a -[build]-> u -> workspace-feature-union \
+             resolves workspace-feature-union on the host side",
             "remove u's dependency on workspace-feature-union",
             &manifest,
         ]],
@@ -273,7 +274,8 @@ fn check_reds_when_a_build_dependency_member_reaches_the_union_through_a_covered
         &fixture.check(),
         &[&[
             "HOST-UNION u",
-            "a -[build]-> u -> core -> workspace-feature-union",
+            "a -[build]-> u -> core -> workspace-feature-union \
+             resolves workspace-feature-union on the host side",
             "remove u's dependency on core",
             &manifest,
         ]],
@@ -368,7 +370,8 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
         &fixture.check(),
         &[&[
             "HOST-UNION pm",
-            "pm (proc-macro) -> workspace-feature-union",
+            "pm (proc-macro) -> workspace-feature-union \
+             resolves workspace-feature-union on the host side",
             "remove pm's dependency on workspace-feature-union",
             &manifest,
         ]],
@@ -386,7 +389,8 @@ fn check_reds_when_a_covered_member_build_depends_on_the_union() {
         &fixture.check(),
         &[&[
             "HOST-UNION zz",
-            "zz -[build]-> workspace-feature-union",
+            "zz -[build]-> workspace-feature-union \
+             resolves workspace-feature-union on the host side",
             "remove zz's build-dependency on workspace-feature-union",
             &manifest,
         ]],
