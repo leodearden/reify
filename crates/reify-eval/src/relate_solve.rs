@@ -25,8 +25,8 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow, Twist,
-    comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
+    FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
+    Twist, comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
     solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
@@ -1799,33 +1799,46 @@ fn driving_relation_label(driving_position: usize, context: &FailureContext) -> 
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
 ///
-/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve within
-/// the scope's budget: the first pair whose own solve is CERTIFIED infeasible is
-/// returned as the minimal conflict set — a pair that merely ran out of budget or
-/// stalled proves nothing and is not blamed. If no pair is certified (a conflict
-/// that genuinely needs ≥3 relations), falls back to the whole driving set. Returns
-/// INSTANCE positions (into `built.instances`), the shape [`conflict_message`]
-/// expects. Bounded by the driving-set size, which is `≤ 6` for a single Frame
-/// unknown — the pairwise search is cheap.
+/// The smallest non-trivial conflict is a driving PAIR, re-solved within the
+/// scope's budget; [`first_certified_pair`] says which one counts. If no pair is
+/// certified (a conflict that genuinely needs ≥3 relations), falls back to the
+/// whole driving set. Returns INSTANCE positions (into `built.instances`), the
+/// shape [`conflict_message`] expects. Bounded by the driving-set size, which is
+/// `≤ 6` for a single Frame unknown — the pairwise search is cheap.
 fn minimal_infeasible_subset(context: &FailureContext) -> Vec<usize> {
     let instances = &context.built.instances;
-    let driving = &context.partition.driving;
+    let solve_pair = |i: usize, j: usize| {
+        solve_frame_outcome(
+            &[instances[i].clone(), instances[j].clone()],
+            context.unknown,
+            context.seed,
+            context.scaling,
+            context.budget,
+        )
+        .result
+    };
+    match first_certified_pair(&context.partition.driving, solve_pair) {
+        Some(pair) => pair.to_vec(),
+        None => context.partition.driving.clone(),
+    }
+}
+
+/// The first pair of `driving`'s values, in i-before-j order, whose solve is
+/// CERTIFIED infeasible. A pair that converged, ran out of budget, stalled or met
+/// a non-finite value proves nothing and is skipped. With no certified pair it
+/// returns `None`.
+fn first_certified_pair(
+    driving: &[usize],
+    mut solve_pair: impl FnMut(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+) -> Option<[usize; 2]> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
-            let pair = [instances[i].clone(), instances[j].clone()];
-            let outcome = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
-            if matches!(outcome.result, Err(SolveFailureCause::Infeasible(_))) {
-                return vec![i, j];
+            if matches!(solve_pair(i, j), Err(SolveFailureCause::Infeasible(_))) {
+                return Some([i, j]);
             }
         }
     }
-    driving.to_vec()
+    None
 }
 
 // ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
@@ -3147,24 +3160,26 @@ structure PerpendicularScope {
 #[cfg(test)]
 mod tests_driving_set_failure {
     //! Kernel-free unit tests of a failed driving-set solve's renderer
-    //! (`failure_diagnostic`) and conflict search (`minimal_infeasible_subset`).
+    //! (`failure_diagnostic`) and conflict search: `first_certified_pair`, driven
+    //! by injected pair outcomes, and `minimal_infeasible_subset` end to end.
     //!
     //! In-file because those functions, `FailureContext` and `RealizedDatums`'
     //! map are crate-private. The datums are hand-built via `super::test_fixtures`,
     //! so no geometry kernel is involved.
 
-    use reify_constraints::relate_solve::FrameSolveOutcome;
+    use reify_constraints::relate_solve::{FrameSolution, FrameSolveOutcome};
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
-        NonFiniteEntry, NonFiniteEvaluation, ResidualSource, SolveFailureCause, SolveStall,
+        BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+        ResidualSource, SolveFailureCause, SolveStall,
     };
 
     use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, RelationInstance,
         RelationPartition, SolveBudget, build_relation_instances, failure_diagnostic,
-        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
-        solve_relate_scope_within, solve_scaling,
+        first_certified_pair, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3276,6 +3291,67 @@ structure PairSearchScope {
         )
     }
 
+    // Hand-built pair-solve outcomes, one per way a solve can end.
+
+    fn certified() -> SolveFailureCause {
+        SolveFailureCause::Infeasible(InfeasibilityCertificate {
+            gradient_norm: 0.0,
+            range_cosine: 0.0,
+            max_scaled_residual: 2.0,
+            blame: vec![],
+        })
+    }
+
+    fn exhausted() -> SolveFailureCause {
+        SolveFailureCause::BudgetExhausted(BudgetExhaustion {
+            iterations: 0,
+            budget: 0,
+            step_norms: vec![],
+            max_scaled_residual: 2.0,
+        })
+    }
+
+    fn stalled() -> SolveFailureCause {
+        SolveFailureCause::Stalled(SolveStall {
+            iterations: 7,
+            step_norm: 1e-12,
+            range_cosine: 0.5,
+            max_scaled_residual: 40.0,
+        })
+    }
+
+    fn non_finite() -> SolveFailureCause {
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(0),
+            row: 0,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        })
+    }
+
+    fn converged() -> FrameSolution {
+        FrameSolution {
+            pose: Pose::identity(),
+            rank: 6,
+            null_space: vec![],
+        }
+    }
+
+    /// Run `first_certified_pair` over `driving`, answering each pair with
+    /// `outcome`: what it found, and the pairs it solved to get there, in order.
+    fn search(
+        driving: &[usize],
+        outcome: impl Fn(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+    ) -> (Option<[usize; 2]>, Vec<[usize; 2]>) {
+        let mut tried = Vec::new();
+        let found = first_certified_pair(driving, |i, j| {
+            tried.push([i, j]);
+            outcome(i, j)
+        });
+        (found, tried)
+    }
+
     /// `with_failure_context` hands its callers the context
     /// `solve_relate_scope_within` builds: production's driving-set solve fails
     /// with the same cause, and production renders it to the same single message.
@@ -3328,12 +3404,7 @@ structure PairSearchScope {
     /// never as a certified conflict.
     #[test]
     fn a_stalled_driving_set_is_coded_constraint_unsatisfiable() {
-        let cause = SolveFailureCause::Stalled(SolveStall {
-            iterations: 7,
-            step_norm: 1e-12,
-            range_cosine: 0.5,
-            max_scaled_residual: 40.0,
-        });
+        let cause = stalled();
         let diagnostic = with_failure_context(SolveBudget::default(), |context| {
             failure_diagnostic(&cause, context)
         });
@@ -3395,10 +3466,71 @@ structure PairSearchScope {
         assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
     }
 
-    /// A pair that merely ran out of budget proves nothing; only a pair whose own
-    /// solve is CERTIFIED infeasible is the minimal conflict.
+    /// The search walks the driving set's pairs i-before-j, in INSTANCE positions
+    /// (`[3, 5, 8]`, not `[0, 1, 2]`), and stops at the first certified one.
     #[test]
-    fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
+    fn the_conflict_is_the_first_certified_pair_in_pairwise_order() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 8] | [5, 8] => Err(certified()),
+            _ => Ok(converged()),
+        });
+        assert_eq!(conflict, Some([3, 8]));
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8]],
+            "the search stops at the first certified pair"
+        );
+    }
+
+    /// A pair that converged, ran out of budget, stalled or met a non-finite value
+    /// proves nothing: the search skips it and blames the next certified pair.
+    #[test]
+    fn only_a_certified_pair_is_the_conflict() {
+        let skipped = [
+            ("converged", Ok(converged())),
+            ("budget-exhausted", Err(exhausted())),
+            ("stalled", Err(stalled())),
+            ("non-finite", Err(non_finite())),
+        ];
+        for (label, first_pair) in skipped {
+            let (conflict, _) = search(&[3, 5, 8], |i, j| match [i, j] {
+                [3, 5] => first_pair.clone(),
+                _ => Err(certified()),
+            });
+            assert_eq!(
+                conflict,
+                Some([3, 8]),
+                "a {label} pair must be skipped, not blamed"
+            );
+        }
+    }
+
+    /// With no certified pair there is no pairwise conflict (the caller falls back
+    /// to the whole driving set); a lone driver has no pair to try.
+    #[test]
+    fn no_certified_pair_is_no_conflict() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 5] => Err(exhausted()),
+            [3, 8] => Err(stalled()),
+            _ => Err(non_finite()),
+        });
+        assert_eq!(conflict, None);
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8], [5, 8]],
+            "every pair is tried before the search gives up"
+        );
+
+        let (conflict, tried) = search(&[4], |_, _| Err(certified()));
+        assert_eq!(conflict, None);
+        assert!(tried.is_empty(), "a lone driver has no pair: {tried:?}");
+    }
+
+    /// Real pair solves, through the context production builds, blame the one
+    /// inconsistent pair, (0, 2). Which pair outcomes the search skips is pinned
+    /// with injected outcomes, in the `first_certified_pair` tests.
+    #[test]
+    fn the_conflict_search_blames_the_first_certified_pair_end_to_end() {
         with_failure_context(STARVED_BUDGET, |context| {
             assert_eq!(
                 context.partition.driving,
@@ -3407,24 +3539,11 @@ structure PairSearchScope {
                 context.partition
             );
 
-            let instances = &context.built.instances;
-            let full = solve_in_context(context, instances, context.budget);
+            let full = solve_in_context(context, &context.built.instances, context.budget);
             assert!(
                 matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
                 "the full driving set is certified under this budget, so production \
                  reaches the conflict search: {full:?}"
-            );
-
-            let pair = [instances[0].clone(), instances[1].clone()];
-            let starved = solve_in_context(context, &pair, context.budget);
-            assert!(
-                matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
-                "the first pair is out of budget, not infeasible: {starved:?}"
-            );
-            let funded = solve_in_context(context, &pair, SolveBudget::default());
-            assert!(
-                funded.result.is_ok(),
-                "the first pair has a root: {funded:?}"
             );
 
             assert_eq!(
