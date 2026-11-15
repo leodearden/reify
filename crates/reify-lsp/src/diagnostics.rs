@@ -908,7 +908,7 @@ mod multi_file_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decl_oracle::test_fixtures::test_uri;
+    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, test_uri};
     use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
@@ -965,42 +965,6 @@ mod tests {
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-}"#;
-
-    /// Inline FEA-bearing fixture (PRD `compute-fea-hardening.md` task C1,
-    /// INV-FEA-1). Mirrors the shape of
-    /// `crates/reify-cli/tests/fixtures/fea_cantilever_violated.ri` (same
-    /// solve setup: material / point load / fixed support / `solve_elastic_
-    /// static` / `let peak_stress = result.max_von_mises` / FEA-result
-    /// constraints) but omits that fixture's `let body = box(...)` geometry
-    /// realization — the LSP path attaches no geometry kernel and has no
-    /// STEP-file exit-code gate, and `solve_elastic_static` takes scalar
-    /// dims (not a `Solid`), so `box` is unnecessary here.
-    ///
-    /// Deliberately FEA-only: no geometry/dimensional constraint exists that
-    /// could be genuinely `Violated`, so a "zero Violated" assertion over
-    /// this fixture holds by construction, not by coincidence.
-    ///
-    /// Reused by `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
-    /// below, and intended for reuse by the follow-up hint-diagnostic task
-    /// (C2) — keep this fixture FEA-only if extending it.
-    const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
-    param length : Length = 1000mm
-    param width  : Length = 100mm
-    param height : Length = 100mm
-
-    let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
-
-    let result = solve_elastic_static(
-        material, length, width, height, [tip_load], [mount], ElasticOptions()
-    )
-
-    let peak_stress = result.max_von_mises
-
-    constraint peak_stress < 1MPa
-    constraint peak_stress < 100MPa
 }"#;
 
     #[test]
