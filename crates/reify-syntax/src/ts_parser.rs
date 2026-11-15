@@ -850,11 +850,11 @@ impl<'a> Lowering<'a> {
     /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
     ///
     /// D-7 defines the qualifier of a qualified reference as the import's
-    /// binding name — the alias if `as` was used, else the final path segment —
-    /// so exactly two of the five `ImportKind`s contribute:
-    ///
-    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
-    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
+    /// binding name — the alias if `as` was used, else the final path segment
+    /// (`import a.b as pp` binds `pp`, `import a.b` binds `b`). Whether an import
+    /// binds a namespace or entities, and each name it binds, come from
+    /// `ImportKind::binding` (reify-ast); this function applies D-7's qualifier
+    /// rule to the namespace case.
     ///
     /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
     /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
@@ -905,25 +905,20 @@ impl<'a> Lowering<'a> {
         let Some(import) = self.lower_import(node) else {
             return;
         };
-        let namespace_binding = match &import.kind {
-            ImportKind::Aliased { alias } => Some(alias.clone()),
-            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
-            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
-            ImportKind::Destructured(_) => None,
-        };
-        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
-            self.namespace_bindings.insert(binding);
-            return;
-        }
-
-        let entity_names: Vec<String> = match &import.kind {
-            ImportKind::Entity(entity) => vec![entity.clone()],
-            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
-            ImportKind::Destructured(names) => names.clone(),
-            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
-        };
-        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
-            self.entity_bindings.insert(name, import.kind.clone());
+        match import.kind.binding() {
+            ImportBinding::Namespace { alias } => {
+                let qualifier = alias.or_else(|| import.path.rsplit('.').next());
+                if let Some(qualifier) = qualifier.filter(|q| !q.is_empty()) {
+                    self.namespace_bindings.insert(qualifier.to_string());
+                }
+            }
+            ImportBinding::Entities(entities) => {
+                let local_names = entities.iter().map(EntityBinding::local_name);
+                for name in local_names.filter(|n| !n.is_empty()) {
+                    self.entity_bindings
+                        .insert(name.to_string(), import.kind.clone());
+                }
+            }
         }
     }
 
