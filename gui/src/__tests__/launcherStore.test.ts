@@ -13,11 +13,11 @@ const RECENT: RecentEntry[] = [
 ];
 
 describe('launcherStore', () => {
-  it('starts with no document error, no recent entries, and the assistant mode selected', () => {
+  it('starts with no document error, no recent entries, not pending, and the assistant mode selected', () => {
     const store = createLauncherStore();
 
     expect(store.state).toEqual({
-      document: { error: null, recent: [] },
+      document: { error: null, recent: [], pending: false },
       mode: { selected: 'assistant', debugPort: null, error: null },
     });
   });
@@ -63,6 +63,22 @@ describe('launcherStore', () => {
     expect(store.state.document.recent).toEqual(RECENT);
   });
 
+  it('setDocumentPending marks a document attempt in flight and clears it', () => {
+    const store = createLauncherStore();
+    store.setRecent(RECENT);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.setDocumentPending(true);
+    expect(store.state.document.pending).toBe(true);
+
+    store.setDocumentPending(false);
+    expect(store.state.document).toEqual({
+      error: { code: 'E_GUI_OPEN_FAILED', message: 'm' },
+      recent: RECENT,
+      pending: false,
+    });
+  });
+
   it('reset clears both errors and keeps the recent list and the mode', () => {
     const store = createLauncherStore();
     store.setRecent(RECENT);
@@ -73,9 +89,20 @@ describe('launcherStore', () => {
     store.reset();
 
     expect(store.state).toEqual({
-      document: { error: null, recent: RECENT },
+      document: { error: null, recent: RECENT, pending: false },
       mode: { selected: 'debug', debugPort: 4321, error: null },
     });
+  });
+
+  it('reset leaves an in-flight document attempt pending', () => {
+    const store = createLauncherStore();
+    store.setDocumentPending(true);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.reset();
+
+    expect(store.state.document.error).toBeNull();
+    expect(store.state.document.pending).toBe(true);
   });
 
   it('names exactly the three launch error codes, each spelled as its own key', () => {
