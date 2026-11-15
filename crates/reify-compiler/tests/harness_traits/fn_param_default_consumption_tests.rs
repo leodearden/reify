@@ -483,7 +483,7 @@ fn assert_no_errors(module: &reify_compiler::CompiledModule, what: &str) {
     );
 }
 
-fn let_expr<'m>(
+fn cell_expr<'m>(
     module: &'m reify_compiler::CompiledModule,
     template: &str,
     member: &str,
@@ -562,7 +562,7 @@ fn structure_above_fn_pads_omitted_template_free_default() {
     let source = format!("structure S {{ let v = scale(2.0) }}\n{SCALE_FN}");
     let module = compile_src(&source, "test_consume_pad_c");
     assert_no_errors(&module, "structure above fn");
-    assert_padded_call(let_expr(&module, "S", "v"), "scale", 2, "S.v");
+    assert_padded_call(cell_expr(&module, "S", "v"), "scale", 2, "S.v");
 }
 
 /// (d) An ambient default compiles before any free fn body, yet must pad.
@@ -602,7 +602,7 @@ fn ordered_template_dependent_default_pads_below_fn() {
     let source = format!("{OPTS_SOLVE}structure S {{ let v = solve(2.0) }}\n");
     let module = compile_src(&source, "test_consume_pad_f");
     assert_no_errors(&module, "ordered template-dependent default");
-    let v = let_expr(&module, "S", "v");
+    let v = cell_expr(&module, "S", "v");
     assert_padded_call(v, "solve", 2, "S.v");
     let CompiledExprKind::UserFunctionCall { args, .. } = &v.kind else {
         unreachable!()
@@ -751,7 +751,7 @@ fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
          structure S { let v = solve(2.0) }\n";
     let module = compile_src(source, "test_consume_pad_h");
     assert_no_errors(&module, "auto-arg ctor default");
-    assert_padded_call(let_expr(&module, "S", "v"), "solve", 2, "S.v");
+    assert_padded_call(cell_expr(&module, "S", "v"), "solve", 2, "S.v");
 }
 
 /// (i) an assoc-fn override in a structure declared above `fn solve` omitting
