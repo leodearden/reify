@@ -151,8 +151,8 @@ require_tree_sitter_cli() {
     # SKIPs (not fails) when the tree-sitter CLI is not on PATH. The CLI is
     # an optional dev dependency (cargo install tree-sitter-cli); tests that
     # need to invoke it directly must degrade gracefully rather than report
-    # a false FAIL for an environment gap. Shared by
-    # test_auto_generation_rebuilds_parser and test_generate_script_succeeds_normally.
+    # a false FAIL for an environment gap. Shared by every test that runs the
+    # CLI, directly or through a build script.
     if ! command -v tree-sitter >/dev/null 2>&1; then
         echo "  SKIP: tree-sitter CLI not on PATH (install via: cargo install tree-sitter-cli)"
         return 1
@@ -169,9 +169,8 @@ provision_fixture_parser_c() {
     # generate at plan line 16, this file's pole at line 31 on a task-scope
     # plan) — but a STANDALONE run of this file has no such guarantee, and a
     # bare `cp` of it then dies with `cp: cannot stat`. That is the same
-    # standalone-crash class task #6361 fixed for
-    # test_auto_generation_rebuilds_parser; this is its hermetic-fixture
-    # counterpart.
+    # standalone-crash class task #6361 fixed for a real-tree regeneration
+    # test; this is its hermetic-fixture counterpart.
     #
     # The callers below build a fixture tree that is only ever FINGERPRINTED —
     # hashed and mtime-stamped, never compiled — so parser.c's CONTENT is
@@ -530,23 +529,16 @@ ts_assert_outputs_manifest_matches_disk() {
     esac
 }
 
-# mk_ts_build_fixture <grammar-variant-file> [crate-subdir]
+# mk_ts_build_fixture <grammar-variant-file>
 #
 # A STANDALONE cargo crate that runs the REAL build.rs and build_support.rs
 # against a tiny throwaway grammar, so a genuine `cargo build` can be driven end
 # to end without touching the lane's tree or paying 5.8 MB of parser.c
 # compilation. Prints the crate root; registers its own cleanup.
 #
-# With [crate-subdir], the crate is placed at <tmp>/<crate-subdir> instead of at
-# <tmp> itself. Passing `tree-sitter-reify` reproduces the repo layout
-# scripts/tree-sitter-generate.sh resolves against (it derives TS_DIR as
-# "$SCRIPT_DIR/../tree-sitter-reify"), so a caller that also drops scripts/ in
-# beside it can drive BOTH halves of the stamp contract over one tree — see
-# test_shell_written_manifest_satisfies_build_rs.
-#
 # The grammar is deliberately NOT reify's. What is under test is build.rs's
-# staleness logic, which is grammar-agnostic — and a two-rule grammar compiles in
-# about a second where reify's takes a minute per build, with four builds here.
+# generation and staleness logic, which is grammar-agnostic, and a two-rule
+# grammar compiles in about a second where reify's takes a minute per build.
 # The real build.rs, the real build_support.rs, the real tree-sitter CLI, real
 # cargo and real mtimes are all in play; only the grammar's SIZE changes.
 #
@@ -554,18 +546,17 @@ ts_assert_outputs_manifest_matches_disk() {
 # --offline against the shared registry (cc is already vendored for the real
 # workspace).
 mk_ts_build_fixture() {
-    local variant="$1" subdir="${2:-}" root dir
-    root="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$root'")
-    dir="$root${subdir:+/$subdir}"
+    local variant="$1" dir
+    dir="$(mktemp -d)" || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
     mkdir -p "$dir/src" || return 1
     cp "$TS_DIR/build.rs" "$dir/build.rs" || return 1
     cp "$TS_DIR/build_support.rs" "$dir/build_support.rs" || return 1
     cp "$variant" "$dir/grammar.js" || return 1
-    # build.rs hands src/scanner.c to cc unconditionally. The fixture grammar
-    # declares no externals, so parser.c references no scanner symbols and an
-    # empty translation unit links fine.
-    printf '/* fixture: no external scanner */\n' > "$dir/src/scanner.c" || return 1
+    # The fixture grammar declares no externals, so parser.c references no
+    # scanner symbols. The scanner carries the real one's include line, so where
+    # that quote include resolves is part of what a build exercises.
+    printf '#include "tree_sitter/parser.h"\n' > "$dir/src/scanner.c" || return 1
     printf '//! tree-sitter build-pipeline fixture crate.\n' > "$dir/src/lib.rs" || return 1
     cat > "$dir/Cargo.toml" <<'TOML'
 [package]
@@ -580,6 +571,75 @@ cc = "1"
 [workspace]
 TOML
     printf '%s' "$dir"
+}
+
+# ts_cargo_build_fixture <fixture> <out_file>
+#
+# One offline `cargo build` of a mk_ts_build_fixture crate, through
+# run_guarded_cargo_check's tri-state: 0 built, 1 failed (diagnostic printed),
+# 2 SKIP (message printed). Callers map 2 to `return 0`.
+ts_cargo_build_fixture() {
+    run_guarded_cargo_check --skip-on-unresolved "$2" timeout 300 \
+        cargo build --offline --manifest-path "$1/Cargo.toml"
+}
+
+# ts_fixture_out_dir <fixture>
+#
+# The fixture's build-script OUT_DIR: the one
+# target/debug/build/tree-sitter-reify-*/out holding libtree_sitter_reify.a.
+# Fails naming the glob unless there is exactly one.
+ts_fixture_out_dir() {
+    local -a found=()
+    local a
+    for a in "$1"/target/debug/build/tree-sitter-reify-*/out/libtree_sitter_reify.a; do
+        [ -f "$a" ] && found+=("$(dirname "$a")")
+    done
+    if [ "${#found[@]}" -ne 1 ]; then
+        echo "" >&2
+        echo "  ASSERTION FAILED: expected exactly one $1/target/debug/build/tree-sitter-reify-*/out/libtree_sitter_reify.a, found ${#found[@]}" >&2
+        return 1
+    fi
+    printf '%s' "${found[0]}"
+}
+
+# ts_fixture_marker <fixture>
+#
+# `stat -c %y` of the build-script run dir's `output`, which cargo rewrites each
+# time it runs the script. Nanosecond precision, so two runs in one second
+# still differ.
+ts_fixture_marker() {
+    local out
+    out=$(ts_fixture_out_dir "$1") || return 1
+    stat -c %y "$(dirname "$out")/output"
+}
+
+# The files scripts/tree-sitter-generate.sh's CLI path leaves in
+# tree-sitter-reify/src, none of which the build may read or watch.
+TS_SRC_CLI_PATH_FILES=(
+    parser.c grammar.json node-types.json
+    tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h
+    .grammar_hash.stamp .generated_outputs.stamp
+)
+
+# ts_poison_src_cli_path_files <src_dir>
+#
+# Write every TS_SRC_CLI_PATH_FILES entry into <src_dir>, mtime now, as a line
+# that fails any compile that includes it.
+ts_poison_src_cli_path_files() {
+    local f
+    mkdir -p "$1/tree_sitter" || return 1
+    for f in "${TS_SRC_CLI_PATH_FILES[@]}"; do
+        printf '#error poisoned: the build read tree-sitter-reify/src\n' > "$1/$f" || return 1
+    done
+}
+
+# ts_remove_src_cli_path_files <src_dir> — what the acquire's git clean does.
+ts_remove_src_cli_path_files() {
+    local f
+    for f in "${TS_SRC_CLI_PATH_FILES[@]}"; do
+        rm -f "$1/$f"
+    done
+    rmdir "$1/tree_sitter" 2>/dev/null || true
 }
 
 # ts_write_grammar_variant <dest> <variant: a|b>
@@ -680,92 +740,6 @@ run_tests() {
 
 # --- Test Cases ---
 
-test_auto_generation_rebuilds_parser() {
-    # Validates that build.rs auto-regenerates parser.c when it is missing.
-    # This exercises the needs_generate -> run_tree_sitter_generate path.
-    local parser="$TS_DIR/src/parser.c"
-
-    # This test deletes parser.c below and relies on `cargo check` to
-    # regenerate it; build.rs's run_tree_sitter_generate() spawns the
-    # 'tree-sitter' binary directly and panics if it's missing, which
-    # run_guarded_cargo_check reports as a hard FAIL rather than a SKIP. That
-    # applies whether or not parser.c happens to exist right now (e.g. left
-    # over from a prior run), so check for the CLI first, unconditionally,
-    # rather than only in the self-provisioning branch below.
-    require_tree_sitter_cli || return 0
-
-    # parser.c is a gitignored generated artifact. In a freshly-seeded warm
-    # lane (tracked-files-only + git clean -xfd) it does not exist until
-    # something generates it — under scripts/verify.sh that's always the
-    # tree-sitter-generate.sh plan leaf running first, but a standalone
-    # invocation of this test file has no such guarantee. Self-provision it
-    # here rather than assume it, so the failure mode (if any) is a legible
-    # assertion instead of a bare `cp: cannot stat`.
-    if [ ! -f "$parser" ]; then
-        local gen_out
-        gen_out=$(mktemp)
-        CLEANUP_ACTIONS+=("rm -f '$gen_out'")
-        "$REPO_ROOT/scripts/tree-sitter-generate.sh" >"$gen_out" 2>&1 || true
-        if [ ! -f "$parser" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: parser.c does not exist and scripts/tree-sitter-generate.sh did not produce it"
-            echo "  --- captured output ---"
-            cat "$gen_out"
-            echo "  --- end output ---"
-            return 1
-        fi
-    fi
-
-    # The backup lives OUTSIDE the tracked source tree, for the same reason as
-    # test_freshness_detects_and_repairs_stale_archive. tree-sitter-reify/.gitignore
-    # covers src/parser.c but NOT src/*.bak (`git check-ignore -v
-    # tree-sitter-reify/src/parser.c.bak` exits 1), so an in-tree backup leaves
-    # `git status --short` reporting an untracked file for this test's whole
-    # duration. The lane cleanliness guards, the lane audit and scripts/land.sh all
-    # read that as a dirty worktree.
-    local bakdir backup
-    bakdir=$(mktemp -d) || return 1
-    backup="$bakdir/parser.c.orig"
-    # Registered BEFORE the copy so an interrupt in the gap leaks nothing, and
-    # AHEAD of the `rm -rf` since cleanup replays in insertion order. `mv -f` is
-    # atomic and self-consuming: a failed restore cannot go on to destroy the only
-    # copy (CLEANUP_ACTIONS entries run under `eval ... || true`).
-    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'")
-    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
-    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them
-    # as `if "$t"; then`), so an unchecked cp would fail silently and the `rm -f`
-    # below would then delete parser.c with no usable copy to restore from.
-    cp "$parser" "$backup" || return 1
-
-    # Delete parser.c to trigger auto-regeneration
-    rm -f "$parser"
-
-    # Remove any stamp files from target dirs so staleness check triggers
-    find "$REPO_ROOT/target" -name "grammar_hash.stamp" -delete 2>/dev/null || true
-
-    # Touch grammar.js to ensure cargo re-runs build.rs (it uses rerun-if-changed=grammar.js).
-    # Without this, cargo may skip build.rs entirely from cache even with parser.c missing.
-    touch "$TS_DIR/grammar.js"
-
-    # Run cargo check — build.rs should detect missing parser.c and regenerate.
-    # Bound to 300 s to avoid consuming the entire 20-min run_all.sh budget on a
-    # cold cache.  parser.c is ~5 MB; C compilation can take several minutes when
-    # sccache is cold.  On a warm cache this completes in seconds.  Skip
-    # gracefully on timeout (exit 124) so the rest of the suite still runs.
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-            --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi   # timed out — SKIP (message already printed)
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi    # hard fail — message already printed
-
-    # Verify parser.c was recreated
-    assert_file_exists "$parser" || return 1
-    assert_file_nonempty "$parser" || return 1
-}
-
 test_generate_script_exists_and_executable() {
     # Validates the generation script exists and has execute permission.
     assert_file_exists "$REPO_ROOT/scripts/tree-sitter-generate.sh" || return 1
@@ -781,11 +755,9 @@ test_generate_script_fails_without_grammar() {
     # grammar.js is missing, with a clear error message.
     local grammar="$TS_DIR/grammar.js"
 
-    # The backup lives OUTSIDE the tracked source tree, for the same reason as
-    # test_auto_generation_rebuilds_parser and
-    # test_freshness_detects_and_repairs_stale_archive. This site is the WORST of
-    # the three: grammar.js is TRACKED (unlike the gitignored src/parser.c), so
-    # while this test runs `git status --short` reported BOTH ` D
+    # The backup lives OUTSIDE the tracked source tree. grammar.js is TRACKED
+    # (unlike the gitignored src/parser.c), so with an in-tree backup, while
+    # this test ran `git status --short` reported BOTH ` D
     # tree-sitter-reify/grammar.js` — a tracked-file deletion — and an untracked
     # tree-sitter-reify/grammar.js.bak (`git check-ignore` exits 1 on it; the
     # .gitignore covers src/parser.c and *.o, not *.bak). The lane cleanliness
@@ -2359,11 +2331,12 @@ test_build_rs_watches_all_compiled_inputs() {
     # A source grep would pass on a directive that is written but never emitted;
     # this is the real runtime contract.
     #
-    # Measured on this lane before the fix: that file carried exactly ONE
-    # rerun-if-changed line, `grammar.js`. src/scanner.c and all three headers
-    # were watched by nothing, so an edit confined to them gave cargo no reason
-    # to re-run the build script — the archive was never recompiled and the
-    # change was never under test, while the gate reported GREEN.
+    # The watch set is EXACTLY the tracked inputs, build_support.rs (include!d,
+    # so cargo cannot infer it) and the resolved CLI, whose upgrade must rerun
+    # the script (#9896). Nothing the script writes may be in it: cargo stamps
+    # the script's `output` at invocation, so a watched output reruns the script
+    # on the next build, which is the tree-sitter cascade #9896 removes.
+    require_tree_sitter_cli || return 0
     touch "$TS_DIR/grammar.js"
 
     local cargo_out
@@ -2382,78 +2355,19 @@ test_build_rs_watches_all_compiled_inputs() {
         return 0
     fi
 
-    local directives
-    directives=$(cat "$run_dir/output")
-
-    # Unchanged behaviour: the generation input stays watched.
-    if [[ "$directives" != *"cargo:rerun-if-changed=grammar.js"* ]]; then
+    local watched expected missing extra
+    watched=$(sed -n -E 's/^cargo::?rerun-if-changed=//p' "$run_dir/output" | LC_ALL=C sort -u)
+    expected=$(printf '%s\n' grammar.js src/scanner.c build_support.rs \
+        "$(command -v tree-sitter)" | LC_ALL=C sort -u)
+    missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$watched"))
+    extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$watched"))
+    if [ -n "$missing" ] || [ -n "$extra" ]; then
         echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=grammar.js' in $run_dir/output"
-        return 1
-    fi
-
-    # The defect this task closes.
-    if [[ "$directives" != *"cargo:rerun-if-changed=src/scanner.c"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/scanner.c' in $run_dir/output"
-        echo "  build.rs compiles src/scanner.c (c_config.file(\"src/scanner.c\")) and the cc"
-        echo "  crate emits no rerun-if-changed directives of its own, so without this line"
-        echo "  a scanner.c-only edit is never recompiled and never under test."
-        return 1
-    fi
-
-    # Every header the build compiled, read from disk rather than hardcoded so a
-    # new header cannot silently escape the watch set.
-    local h rel n_headers=0
-    for h in "$TS_DIR"/src/tree_sitter/*.h; do
-        [ -f "$h" ] || continue
-        n_headers=$((n_headers + 1))
-        rel="src/tree_sitter/${h##*/}"
-        if [[ "$directives" != *"cargo:rerun-if-changed=$rel"* ]]; then
-            echo ""
-            echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=$rel' in $run_dir/output"
-            echo "  The header set must be enumerated by glob on both sides, not hardcoded."
-            return 1
-        fi
-    done
-    if [ "$n_headers" -eq 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: no src/tree_sitter/*.h after a successful cargo check —"
-        echo "  the build must have generated the headers parser.c includes."
-        return 1
-    fi
-
-    # src/parser.c MUST be watched, since task #6992 — the exact inverse of the
-    # pin this block used to carry. build.rs writes it, and the old exclusion
-    # cited "double execution"; that cost is bounded and convergent (one extra
-    # build-script run after a genuine regeneration, which then finds both shell
-    # stamps current and writes nothing). What the exclusion cost was the reverse
-    # direction: cargo narrows the watch set to EXACTLY the emitted list, so an
-    # unwatched parser.c could be deleted by the `git clean -xfd -e target` every
-    # lane acquire runs, or CoW-replaced from a different base, with grammar.js
-    # untouched — and cargo had no reason to re-run the build script at all. The
-    # stale libtree_sitter_reify.a stayed linked and the change was never tested.
-    if [[ "$directives" != *"cargo:rerun-if-changed=src/parser.c"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/parser.c' in $run_dir/output"
-        echo "  parser.c is compiled into the archive and is a build-script OUTPUT, so a"
-        echo "  deleted or CoW-mismatched copy must be able to re-trigger the build script."
-        return 1
-    fi
-
-    # build_support.rs, since #6992. It holds the staleness predicates and is
-    # include!d rather than depended on as a crate, so cargo does not learn about
-    # it from the module graph — this directive is the ONLY thing that makes an
-    # edit to `needs_generate` / `shell_stamp_is_current` re-run them. Asserted
-    # HERE, on cargo's verbatim capture, rather than by grepping build.rs: a
-    # source scan is satisfied by a comment or a commented-out line, so a
-    # refactor that deletes the println! but keeps the explanatory comment above
-    # it passes green (#6992 amendment pass).
-    if [[ "$directives" != *"cargo:rerun-if-changed=build_support.rs"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=build_support.rs' in $run_dir/output"
-        echo "  build_support.rs is include!d by build.rs, so cargo cannot infer the dependency."
-        echo "  Without this directive an edit to the staleness predicates never re-runs them."
+        echo "  ASSERTION FAILED: the build script's rerun-if-changed set is not exactly"
+        echo "  {grammar.js, src/scanner.c, build_support.rs, the tree-sitter CLI}"
+        echo "  (from $run_dir/output)"
+        [ -z "$missing" ] || { echo "  --- missing ---"; printf '%s\n' "$missing"; }
+        [ -z "$extra" ] || { echo "  --- extra ---"; printf '%s\n' "$extra"; }
         return 1
     fi
 
@@ -4009,86 +3923,6 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
     fi
 }
 
-test_shell_written_manifest_satisfies_build_rs() {
-    # CROSS-IMPLEMENTATION AGREEMENT (#6992 amendment pass). The generated-output
-    # manifest now has TWO independent renderers and TWO independent verifiers —
-    # `_render_outputs_manifest` in scripts/tree-sitter-generate.sh
-    # (`printf '%s  %s\n'` over $OUTPUTS) and `outputs_manifest_render` in
-    # build_support.rs — and until this case, nothing tested them against each
-    # other: the Rust tests round-trip Rust output, the shell tests re-hash shell
-    # output.
-    #
-    # A divergence (one space instead of two, unsorted order, CRLF, a trailing
-    # blank line) would fail NO test. It would not fail LOUDLY either: build.rs's
-    # shell_stamp_is_current would simply return false forever, so every cargo
-    # build of tree-sitter-reify would re-run `tree-sitter generate` — a silent
-    # ~60 s per-build regression on the merge gate, in the direction that looks
-    # like everything working.
-    #
-    # Asserted BEHAVIOURALLY rather than by comparing format strings: the shell
-    # script writes the manifest, then a real cargo build must take the fast path
-    # over it. parser.c's mtime is the signal — every file is stamped 2020-01-01
-    # first, so a regeneration necessarily bumps it to now, and an unchanged
-    # timestamp means build.rs read the shell's manifest and believed it.
-    require_tree_sitter_cli || return 0
-
-    local va
-    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
-    ts_write_grammar_variant "$va" a
-
-    # Repo-shaped layout: <root>/scripts + <root>/tree-sitter-reify, which is
-    # what tree-sitter-generate.sh resolves TS_DIR against.
-    local crate root
-    crate=$(mk_ts_build_fixture "$va" tree-sitter-reify) || return 1
-    root=$(dirname "$crate")
-    cp -r "$REPO_ROOT/scripts" "$root/scripts" || return 1
-
-    # The SHELL half writes both stamps and all three outputs.
-    if ! bash "$root/scripts/tree-sitter-generate.sh" --force >/dev/null 2>&1; then
-        echo ""
-        echo "  ASSERTION FAILED: scripts/tree-sitter-generate.sh --force failed in the fixture"
-        return 1
-    fi
-    assert_file_exists "$crate/src/parser.c" || return 1
-    assert_file_exists "$(ts_generate_outputs_stamp "$root")" || return 1
-
-    # Keep the SHELL-rendered bytes: a build that regenerates overwrites the
-    # manifest with the Rust-rendered one, so the diagnostic below would
-    # otherwise print the very bytes that are not in dispute.
-    local shell_manifest
-    shell_manifest=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$shell_manifest'")
-    cp "$(ts_generate_outputs_stamp "$root")" "$shell_manifest" || return 1
-
-    # Warm-lane mtimes: nothing after this point can be decided by "newer than".
-    ts_normalize_lane_mtimes "$root"
-    local before_mtime
-    before_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
-
-    local cargo_out guard_rc=0
-    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$crate/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    local after_mtime
-    after_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
-    if [ "$after_mtime" != "$before_mtime" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: build.rs regenerated over a manifest the shell script had"
-        echo "  just written, so the two implementations of the manifest format disagree."
-        echo "  --- shell-rendered manifest, as written by tree-sitter-generate.sh (cat -A) ---"
-        cat -A "$shell_manifest"
-        echo "  --- Rust-rendered manifest, as left by the regenerating build (cat -A) ---"
-        cat -A "$(ts_generate_outputs_stamp "$root")" 2>/dev/null || echo "  (absent)"
-        echo "  --- end ---"
-        echo "  Nothing else can explain it: the grammar hash matches, all three outputs"
-        echo "  exist, and every mtime was 2020-01-01, so only outputs_manifest_matches()"
-        echo "  can have returned false. Each build now pays a full tree-sitter generate."
-        return 1
-    fi
-}
-
 test_build_rs_restores_a_deleted_parser_c() {
     # HOLE E's companion. src/parser.c used to be excluded from the watch set on
     # a double-execution argument, and cargo narrows a build script's watch set
@@ -4213,6 +4047,131 @@ test_build_rs_restores_deleted_generated_headers() {
             return 1
         fi
     done
+}
+
+test_build_rs_generates_into_out_dir_and_leaves_src_untouched() {
+    # build.rs generates into $OUT_DIR/src and compiles from there (#9896), so
+    # the package's src/ holds only tracked files and the acquire's git clean
+    # has nothing of the build's to delete.
+    require_tree_sitter_cli || return 0
+
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mk_ts_build_fixture "$va") || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+
+    local out f
+    local -a missing=()
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    for f in parser.c grammar.json node-types.json \
+             tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h scanner.c; do
+        [ -f "$out/src/$f" ] || missing+=("$f")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: \$OUT_DIR/src lacks: ${missing[*]}"
+        echo "  OUT_DIR: $out"
+        return 1
+    fi
+    ts_assert_outputs_manifest_matches_disk "$out/src" || return 1
+
+    local listing
+    listing=$(cd "$fix/src" && find . -mindepth 1 | LC_ALL=C sort)
+    if [ "$listing" != $'./lib.rs\n./scanner.c' ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build wrote into the package's src/, which must hold"
+        echo "  exactly lib.rs and scanner.c"
+        echo "  --- find src ---"
+        printf '%s\n' "$listing"
+        return 1
+    fi
+}
+
+test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
+    # The cascade-free shape (#9896). The marker is the build-script run's
+    # `output`, which cargo rewrites on every run, so an unchanged marker means
+    # the script did not run. Nothing the CLI path leaves in src/, and nothing
+    # the acquire's git clean removes, may rerun it; and when something else
+    # does, src/ must not be what it compiles.
+    require_tree_sitter_cli || return 0
+
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mk_ts_build_fixture "$va") || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+
+    local out marker archive_mtime
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    marker=$(ts_fixture_marker "$fix") || return 1
+    archive_mtime=$(stat -c %y "$out/libtree_sitter_reify.a") || return 1
+
+    # 1. Nothing changed: a regeneration costs zero extra runs.
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ] \
+        || [ "$(stat -c %y "$out/libtree_sitter_reify.a")" != "$archive_mtime" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build after a regeneration reran the build script."
+        echo "  A watched build-script output is the 8-unit cascade #9896 removes."
+        echo "  marker before: $marker"
+        echo "  marker after:  $(ts_fixture_marker "$fix")"
+        return 1
+    fi
+
+    # 2. What tree-sitter-generate.sh's CLI path leaves in src/.
+    ts_poison_src_cli_path_files "$fix/src" || return 1
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: files the CLI path wrote into src/ reran the build script."
+        return 1
+    fi
+
+    # 3. The acquire's git clean removes them again.
+    ts_remove_src_cli_path_files "$fix/src"
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: deleting src/'s generated files reran the build script."
+        return 1
+    fi
+
+    # 4. Re-poison, then rerun the script with grammar.js's content unchanged. A
+    # successful build proves neither parser.c nor scanner.c's quote include
+    # resolved into src/.
+    ts_poison_src_cli_path_files "$fix/src" || return 1
+    local parser_mtime
+    parser_mtime=$(stat -c %y "$out/src/parser.c") || return 1
+    touch "$fix/grammar.js"
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+        echo "  (a build that compiles anything from the poisoned src/ fails with #error)"
+        return 1 ;;
+    esac
+    if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: touching grammar.js did not rerun the build script, so"
+        echo "  this step proved nothing about what a run compiles."
+        return 1
+    fi
+    if [ "$(stat -c %y "$out/src/parser.c")" != "$parser_mtime" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a rerun with an unchanged grammar and CLI regenerated"
+        echo "  \$OUT_DIR/src/parser.c; a current key must skip generation."
+        return 1
+    fi
 }
 
 # --- Main ---
