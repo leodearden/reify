@@ -245,3 +245,23 @@ fn swept_ri_paths_follows_the_classifier_it_is_given() {
          (notes/) leaves the listing, and a tree it does not mark (docs/) stays"
     );
 }
+
+/// A stand-in for the scope classifier that exits before reading stdin.
+const EARLY_EXIT_CLASSIFIER: &str = r#"import sys
+
+sys.stderr.write("zz-classifier-stderr-marker: exited before reading its paths\n")
+sys.exit(3)
+"#;
+
+/// About 2 MiB of paths: more than a pipe buffer holds, so the write to the
+/// classifier's stdin is certain to hit its exit rather than race it.
+#[test]
+#[should_panic(expected = "zz-classifier-stderr-marker")]
+fn a_classifier_that_exits_before_reading_is_reported_with_its_stderr() {
+    let classifier_dir = prefixed_tempdir("reify-early-exit-classifier-");
+    let script = classifier_dir.path().join("early_exit_classifier.py");
+    std::fs::write(&script, EARLY_EXIT_CLASSIFIER)
+        .unwrap_or_else(|e| panic!("cannot write {}: {e}", script.display()));
+    let paths = vec![format!("{}.ri", "z".repeat(4096)); 512];
+    partition_inert_by(&script, paths);
+}
