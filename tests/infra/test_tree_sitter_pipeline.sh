@@ -302,12 +302,10 @@ ts_mtime() {
 
 # ts_watched_files <ts_dir>
 #
-# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c.
-# The generate outputs (src/parser.c, src/tree_sitter/*.h) are deliberately
-# excluded although build.rs WATCHES them: this models what `ensure` may
-# force-TOUCH, which is a narrower set than what cargo watches (see
-# ts_watched_inputs in scripts/tree-sitter-freshness.sh for why a build-script
-# output must not enter a force set).
+# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c. Since
+# #9896 the force set equals the fingerprint's input set, and both are the
+# tracked files build.rs watches; nothing under src/ that tree-sitter-generate.sh
+# writes is in either.
 ts_watched_files() {
     printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
@@ -726,6 +724,23 @@ mk_verify_fixture() {
     printf '%s' "$dir"
 }
 
+# mk_ts_dir_with_cli_outputs <dir>
+#
+# A tree-sitter-reify-shaped dir for the freshness script: the real grammar.js
+# and src/scanner.c, plus the files tree-sitter-generate.sh's CLI path writes
+# into src/ (parser.c, grammar.json and four headers, one of them non-standard).
+# Only the first two are inputs; the rest are there to be ignored.
+mk_ts_dir_with_cli_outputs() {
+    local d="$1" f
+    mkdir -p "$d/src/tree_sitter" || return 1
+    cp "$TS_DIR/grammar.js" "$d/grammar.js" || return 1
+    cp "$TS_DIR/src/scanner.c" "$d/src/scanner.c" || return 1
+    for f in parser.c grammar.json tree_sitter/alloc.h tree_sitter/array.h \
+             tree_sitter/parser.h tree_sitter/zz_extra.h; do
+        printf '/* fixture: CLI-path output */\n' > "$d/src/$f" || return 1
+    done
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -1123,25 +1138,17 @@ test_freshness_script_exists_and_executable() {
 }
 
 test_freshness_script_lists_all_compiled_inputs() {
-    # `--list-inputs` is the single source of truth for the C-compilation input set
-    # (everything build.rs hands to cc::Build, plus the headers they include).
-    #
-    # The headers are untracked generate outputs since #9741, so the expectation
-    # comes from a hermetic TS dir whose header set is fixed by construction. Its
-    # non-standard zz_extra.h pins that the set is a GLOB, not a hardcoded list:
-    # a hardcoded list is how this defect class (src/scanner.c watched by
-    # nothing) came to exist in the first place.
+    # `--list-inputs` is the single source of truth for the fingerprint's input
+    # set: the tracked files whose bytes determine the archive, which build.rs
+    # watches (build_support.rs's ATTESTED_INPUTS). Since #9896 the generated
+    # sources live in $OUT_DIR/src, so the CLI-path files this TS dir also holds
+    # under src/ are not compiled inputs and must not be listed.
     assert_file_exists "$FRESHNESS_SCRIPT" || return 1
 
     local ts
     ts=$(mktemp -d) || return 1
     CLEANUP_ACTIONS+=("rm -rf '$ts'")
-    mkdir -p "$ts/src/tree_sitter" || return 1
-    local h
-    local -a headers=(alloc.h array.h parser.h zz_extra.h)   # LC_ALL=C order
-    for h in "${headers[@]}"; do
-        printf '/* fixture */\n' > "$ts/src/tree_sitter/$h" || return 1
-    done
+    mk_ts_dir_with_cli_outputs "$ts" || return 1
 
     # Run from a directory that is NOT the repo root: the script must resolve its
     # own paths from ${BASH_SOURCE[0]}, never from $PWD.  verify.sh invokes plan
@@ -1159,15 +1166,11 @@ test_freshness_script_lists_all_compiled_inputs() {
         return 1
     fi
 
-    # src/parser.c and the headers are generate outputs, but their bytes are
-    # compiled into the archive, so they belong in the fingerprint.
     local expected
-    expected=$(printf '%s\n' src/parser.c src/scanner.c \
-        "${headers[@]/#/src/tree_sitter/}")
-
+    expected=$(printf '%s\n' grammar.js src/scanner.c)
     if [ "$out" != "$expected" ]; then
         echo ""
-        echo "  ASSERTION FAILED: '--list-inputs' does not match the compiled input set"
+        echo "  ASSERTION FAILED: '--list-inputs' does not match the attested input set"
         echo "  --- expected ---"
         echo "$expected"
         echo "  --- actual ---"
@@ -1205,6 +1208,50 @@ test_freshness_script_lists_all_compiled_inputs() {
         echo ""
         echo "  ASSERTION FAILED: '--list-inputs' emitted duplicate paths ($total lines, $uniq unique)"
         echo "$out"
+        return 1
+    fi
+}
+
+test_freshness_ignores_src_generated_files() {
+    # The CLI path rewrites src/parser.c and the headers whenever
+    # tree-sitter-generate.sh runs. The build never reads them (#9896), so a
+    # fingerprint over them would call a correctly built archive STALE.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+    local ts="$tmp/ts"
+    mk_ts_dir_with_cli_outputs "$ts" || return 1
+    local fp
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint) || {
+        echo ""; echo "  ASSERTION FAILED: --print-fingerprint failed on the fixture"; return 1
+    }
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef0a" "$fp"
+
+    printf '/* regenerated by the CLI path */\n' > "$ts/src/parser.c" || return 1
+    printf '/* regenerated by the CLI path */\n' > "$ts/src/tree_sitter/parser.h" || return 1
+    run_ts_freshness check "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: rewriting src/parser.c and a header made check exit"
+        echo "  $TS_FRESHNESS_RC (expected 0, FRESH): they are not compiled inputs"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    printf 'x' >> "$ts/grammar.js" || return 1
+    run_ts_freshness check "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ] \
+        || [[ "$TS_FRESHNESS_OUT" != *"first differing input: grammar.js"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: a one-byte grammar.js change must read STALE naming"
+        echo "  'first differing input: grammar.js' (exit $TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
         return 1
     fi
 }
@@ -1630,11 +1677,9 @@ test_freshness_ensure_forces_and_is_idempotent() {
     CLEANUP_ACTIONS+=("rm -rf '$tmp'")
 
     local ts="$tmp/ts"
-    mkdir -p "$ts/src/tree_sitter"
+    mkdir -p "$ts/src"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    provision_fixture_headers "$ts/src/tree_sitter" || return 1
 
     # Model the warm-lane bulk stamp: seed-warm-lane.sh sets every non-target/,
     # non-.git file to 2020-01-01T00:00:00 (measured by task #5630), which is what
@@ -1644,7 +1689,6 @@ test_freshness_ensure_forces_and_is_idempotent() {
     stamp_at() {
         local d="$1" when="$2" x
         while IFS= read -r x; do touch -d "$when" "$x"; done < <(ts_watched_files "$d")
-        touch -d "$when" "$d/src/parser.c"
     }
     stamp_old() { stamp_at "$1" "$OLD"; }
     stamp_old "$ts"
@@ -2075,10 +2119,10 @@ test_freshness_ensure_forces_and_is_idempotent() {
 }
 
 test_freshness_ensure_never_touches_generate_outputs() {
-    # A force set must hold no build-script output (ts_watched_inputs): touching
-    # one risks a touch/regenerate loop and moves the ledger's mtime witness on
-    # every regeneration. src/parser.c and, since #9741, src/tree_sitter/*.h are
-    # outputs of the generate the build script runs.
+    # ensure may force-touch only the tracked inputs. src/parser.c and
+    # src/tree_sitter/*.h are tree-sitter-generate.sh's CLI-path outputs, which
+    # the build never reads (#9896); touching them would move the ledger's mtime
+    # witness for nothing.
     assert_file_exists "$FRESHNESS_SCRIPT" || return 1
 
     if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -3051,11 +3095,9 @@ test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
     CLEANUP_ACTIONS+=("chmod -R u+rw '$tmp' 2>/dev/null; rm -rf '$tmp'")
 
     local ts="$tmp/ts" target="$tmp/target"
-    mkdir -p "$ts/src/tree_sitter" "$target"
+    mkdir -p "$ts/src" "$target"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    provision_fixture_headers "$ts/src/tree_sitter" || return 1
 
     # scanner.c is the sharpest choice: it is the hand-written input whose
     # staleness this task exists to close, so a false verdict about it is the
