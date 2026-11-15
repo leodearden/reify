@@ -75,6 +75,84 @@ pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
     ),
 ];
 
+/// An FEA-bearing structure (PRD `compute-fea-hardening.md` task C1,
+/// INV-FEA-1) whose two constraints both read the `@optimized`
+/// `solve_elastic_static` result. Mirrors the shape of
+/// `crates/reify-cli/tests/fixtures/fea_cantilever_violated.ri` (same
+/// solve setup: material / point load / fixed support / `solve_elastic_
+/// static` / `let peak_stress = result.max_von_mises` / FEA-result
+/// constraints) but omits that fixture's `let body = box(...)` geometry
+/// realization — the LSP path attaches no geometry kernel and has no
+/// STEP-file exit-code gate, and `solve_elastic_static` takes scalar
+/// dims (not a `Solid`), so `box` is unnecessary here.
+///
+/// Deliberately FEA-only: no geometry/dimensional constraint exists that
+/// could be genuinely `Violated`, so a "zero Violated" assertion over
+/// this fixture holds by construction, not by coincidence — keep this
+/// fixture FEA-only if extending it.
+///
+/// Consumers:
+/// - `diagnostics::tests::fea_bearing_constraint_produces_no_false_violation_or_false_pass`
+/// - `diagnostics::tests::fea_indeterminate_constraint_emits_info_hint`
+/// - `diagnostics::tests::fea_hint_does_not_duplicate_as_freshness_diagnostic`
+/// - `diagnostics::tests::fea_hint_two_fea_constraints_each_get_distinct_span_hint` —
+///   locates the two constraints by their `< 1MPa` / `< 100MPa` text, so
+///   rewording either one breaks it
+/// - `diagnostics::fea_hint::tests::fea_hint_does_not_fire_when_compute_target_is_registered`
+///
+/// [`FEA_WITH_AUTO_PARAM_SRC`] does not read it but carries a verbatim copy of
+/// its FEA body.
+pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa
+    constraint peak_stress < 100MPa
+}"#;
+
+/// Two constraints that are both `Indeterminate` under the LSP's solver-free
+/// engine, for different reasons: one compound constraint that reads the
+/// `@optimized` `solve_elastic_static` result twice, and one over a
+/// genuinely-unresolved `auto` param. Only the first is FEA-dependent.
+///
+/// The FEA portion is copied verbatim from [`FEA_BEARING_SRC`]'s known-good
+/// body so it compiles; the `auto` constraint is the only one whose text
+/// contains `gap`, and consumers locate it by that.
+///
+/// Consumers:
+/// - `diagnostics::tests::fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
+/// - `diagnostics::fea_hint::tests::fea_hint_skips_non_fea_indeterminate_and_dedups_per_constraint`
+pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"structure FeaBearingMixed {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    param gap : Length = auto
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa && peak_stress < 100MPa
+    constraint gap > 1mm
+}"#;
+
 /// Byte offsets of every occurrence of `needle` in `source`, ascending.
 pub(crate) fn occurrences(source: &str, needle: &str) -> Vec<usize> {
     source.match_indices(needle).map(|(i, _)| i).collect()
