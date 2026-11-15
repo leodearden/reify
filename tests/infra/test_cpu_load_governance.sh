@@ -1452,6 +1452,27 @@ _row1_measurement_inactive() {
         'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
 }
 
+# _row1_measure_window <before_sample> <after_sample> <cores>
+#   Sample = a cgroup-usage-stamped line "<usage_usec> <stamp_us>" or "unavailable".
+#   Prints "<delta_usage_us> <window_us> <saturation>", the window being the interval
+#   MEASURED between the two stamps; a counter wrap clamps delta to 0.  Prints
+#   "unavailable" for a bad sample, non-positive cores, or a stamp that did not advance.
+_row1_measure_window() {
+    awk -v before="$1" -v after="$2" -v cores="$3" 'BEGIN {
+        stamped = "^[0-9]+ [0-9]+$"
+        split(before, b, " "); split(after, a, " ")
+        if (cores !~ /^[0-9]+$/ || cores + 0 <= 0 ||
+                before !~ stamped || after !~ stamped || a[2] + 0 <= b[2] + 0) {
+            print "unavailable"
+            exit
+        }
+        delta = a[1] - b[1]
+        if (delta < 0) delta = 0
+        window = a[2] - b[2]
+        printf "%d %d %.6f\n", delta, window, delta / (cores * window)
+    }'
+}
+
 # _row2_band_inconclusive <avg10> <threshold> <usage_fraction> <stall_before>
 #   <stall_after> <window_us>
 #   ROW2-1 band-decision predicate (task 4970, esc-4959-53): decides whether
@@ -1841,9 +1862,21 @@ _row1_window_vacuity7b="$(_row1_measure_window "abc 5000000" "6000000 8000000" 2
 assert "ROW1-1-WINDOW-VACUITY-7b: non-numeric field in a two-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7b}'); awk would otherwise coerce it to 0 and print a plausible number" \
     test "$_row1_window_vacuity7b" = "unavailable"
 
+_row1_window_vacuity7c="$(_row1_measure_window "1000000 5000000" "abc 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7c: non-numeric field in the AFTER sample => 'unavailable' (got '${_row1_window_vacuity7c}'); both samples are held to the same format" \
+    test "$_row1_window_vacuity7c" = "unavailable"
+
+_row1_window_vacuity7d="$(_row1_measure_window "1000000 5000000 9" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7d: three-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7d}'); a sample is exactly two fields" \
+    test "$_row1_window_vacuity7d" = "unavailable"
+
 _row1_window_vacuity8="$(_row1_measure_window "1000000 5000000" "7000000 8600000" x || true)"
 assert "ROW1-1-WINDOW-VACUITY-8: non-numeric cores => 'unavailable' (got '${_row1_window_vacuity8}')" \
     test "$_row1_window_vacuity8" = "unavailable"
+
+_row1_window_vacuity8c="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8c: cores with trailing garbage ('2x') => 'unavailable' (got '${_row1_window_vacuity8c}'); awk alone would coerce it to 2" \
+    test "$_row1_window_vacuity8c" = "unavailable"
 
 _row1_window_vacuity8b="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 0 || true)"
 assert "ROW1-1-WINDOW-VACUITY-8b: zero cores => 'unavailable' (got '${_row1_window_vacuity8b}'); never a divide-by-zero" \
