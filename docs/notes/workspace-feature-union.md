@@ -237,6 +237,7 @@ bash scripts/tree-sitter-generate.sh   # about 5 s: tree-sitter generate only, n
 mkdir /tmp/<id>-tsgen
 (cd tree-sitter-reify/src && git ls-files -z -oi --exclude-standard --directory . | xargs -0 cp -a -t /tmp/<id>-tsgen/)
 find /tmp/<id>-tsgen -mindepth 1 -exec touch -h -d 2020-01-01T00:00:00 {} +
+(cd /tmp/<id>-tsgen && find . ! -type d -printf '!! tree-sitter-reify/src/%P\n' | LC_ALL=C sort) > /tmp/<id>-tsgen.lst
 bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
 for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
 ```
@@ -249,9 +250,25 @@ pin. Arm B would then link bytes its sources do not describe. Probing at the
 base commit cures the first two. Remove `/tmp/<id>-tsgen`, run the base-commit
 block, then repeat this block. A DIFF that survives that points to the CLI, and
 then the copy cannot be proven identical to the base's inputs, so arm B is not
-valid in this lane. Before every arm B probe, the first included, put the copy
-in place of the `git clean` and `git status` lines above, since `--ignored`
-would list the copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+valid in this lane. Before every arm B probe, the first included, keep the
+`git clean` line above and replace only the `git status` line, which would list
+the copy:
+
+```bash
+cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/
+git status --porcelain --untracked-files=all --ignored -- tree-sitter-reify/src | LC_ALL=C sort | cmp - /tmp/<id>-tsgen.lst; echo "tsgen-matches rc=$?"   # must be 0 before probing
+```
+
+The clean empties the directory of ignored files first, so the copy is not laid
+over what an earlier arm A build left there, and the directory holds exactly the
+copy afterwards. The check compares `git status` with the file list recorded
+with the copy, so it passes only when the directory holds unmodified tracked
+files plus exactly the copy: any `??`, `M` or extra `!!` line breaks the match
+(the `git status` paragraph above says what each marker means).
+`--untracked-files=all` makes `git status` list each file in the ignored
+`tree_sitter/` directory, as the copy's list does, instead of the directory
+alone. Like `normal` in the arm A line, it also stops a
+`status.showUntrackedFiles=no` in user config from hiding the `??` lines.
 
 ## Measurements
 
