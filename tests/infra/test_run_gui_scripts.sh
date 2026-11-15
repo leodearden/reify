@@ -583,7 +583,8 @@ NPM_STUB
 
 # _rgs_stub_gui_binary <dir> <relpath> — a stand-in for the built reify-gui
 # that records the environment the launcher handed it, its argument count
-# (ARGC) and its first argument (ARGV1) into "$_RGS_ENV_DUMP" (one KEY=VALUE
+# (ARGC), its first argument (ARGV1) and whether that names a file from the
+# stub's OWN cwd (ARGV1_RESOLVES=yes|no) into "$_RGS_ENV_DUMP" (one KEY=VALUE
 # per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH ordering, the
 # vite port it was told to load and the file it was told to open without
 # launching anything real.
@@ -597,6 +598,7 @@ _rgs_stub_gui_binary() {
     printf 'REIFY_VITE_PORT=%s\n' "${REIFY_VITE_PORT:-}"
     printf 'ARGC=%s\n' "$#"
     printf 'ARGV1=%s\n' "${1:-}"
+    if [ -f "${1:-}" ]; then echo ARGV1_RESOLVES=yes; else echo ARGV1_RESOLVES=no; fi
 } > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
 exit 0
 GUI_STUB
@@ -1401,8 +1403,8 @@ assert "run-gui-dev.sh with a .ri file exits 0" \
 assert "run-gui-dev.sh with a .ri file hands reify-gui exactly one argument" \
     bash -c '[ "$1" = 1 ]' _ "$_t21b_argc"
 
-assert "run-gui-dev.sh hands reify-gui the .ri file it was given" \
-    bash -c '[ "$1" = "$2" ]' _ "$_t21b_argv1" "$_t21_tmpdir/test.ri"
+assert "run-gui-dev.sh hands reify-gui the absolute path of the .ri file it was given (got '$_t21b_argv1')" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t21b_argv1" "$(cd -P "$_t21_tmpdir" && pwd -P)/test.ri"
 
 # -- Test 9: behavioral — no file launches the Start view; a file is passed --
 echo ""
@@ -1455,8 +1457,8 @@ assert "run-gui.sh with a .ri file exits 0" \
 assert "run-gui.sh with a .ri file hands reify-gui exactly one argument" \
     bash -c '[ "$1" = 1 ]' _ "$_t9b_argc"
 
-assert "run-gui.sh hands reify-gui the .ri file it was given" \
-    bash -c '[ "$1" = "$2" ]' _ "$_t9b_argv1" "$_t9_tmpdir/test.ri"
+assert "run-gui.sh hands reify-gui the absolute path of the .ri file it was given (got '$_t9b_argv1')" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t9b_argv1" "$(cd -P "$_t9_tmpdir" && pwd -P)/test.ri"
 
 # The control for 9c's no-cargo assert: a call that is let through does record
 # one, so that file's absence there can only mean the launcher never got that far.
@@ -1854,6 +1856,86 @@ assert "gui_launch_resolve_file lnk/../a.ri: rc 0 and prints <real>/a.ri (rc $_t
 _t40_resolve "$_t40_caller/design.ri"
 assert "gui_launch_resolve_file <abs>: rc 0 and prints the same path (rc $_t40_rc, got '$_t40_out')" \
     test "$_t40_rc:$_t40_out" = "0:$_t40_caller/design.ri"
+
+# -- Test 41: structural — both launchers resolve FILE through the lib -------
+echo ""
+echo "--- Test 41: each launcher resolves its file argument through gui_launch_resolve_file ---"
+
+# Anchored on the executed assignment, so neither a comment nor a usage/echo
+# line naming the helper can satisfy it.
+for _t41_script in "$RUN_GUI_DEV" "$RUN_GUI"; do
+    _t41_name="$(basename "$_t41_script")"
+
+    assert "scripts/$_t41_name assigns FILE=\$(gui_launch_resolve_file ...)" \
+        grep -qE '^[[:space:]]*FILE=\$\(gui_launch_resolve_file[[:space:]]' "$_t41_script"
+done
+
+# -- Test 42: behavioral — a relative .ri from a foreign cwd still resolves ---
+echo ""
+echo "--- Test 42: a relative .ri from a cwd other than REPO_ROOT reaches reify-gui as a path that resolves ---"
+
+# Both launchers cd to REPO_ROOT before launching, so a relative path that was
+# checked from the caller's cwd names nothing for reify-gui unless it was made
+# absolute first. Each launcher runs from a foreign caller dir with
+# sub/design.ri; the stub reify-gui reports whether ARGV1 resolves from ITS cwd.
+
+_rgs_mktemp _t42_caller_raw
+mkdir -p "$_t42_caller_raw/sub"
+: > "$_t42_caller_raw/sub/design.ri"
+_t42_caller=$(cd -P "$_t42_caller_raw" && pwd -P)
+
+# _t42_check <launcher> <fixture> <rc> — what each launcher must hand reify-gui.
+_t42_check() {
+    local _name="$1" _dir="$2" _rc="$3" _argc _argv1 _resolves
+    _argc=$(_rgs_env_dump_get "$_dir/env-dump" ARGC)
+    _argv1=$(_rgs_env_dump_get "$_dir/env-dump" ARGV1)
+    _resolves=$(_rgs_env_dump_get "$_dir/env-dump" ARGV1_RESOLVES)
+
+    assert "control: $_name's REPO_ROOT has no sub/design.ri, so the relative spelling cannot resolve there by accident" \
+        bash -c '! [ -e "$1" ]' _ "$_dir/sub/design.ri"
+    assert "$_name from a foreign cwd with sub/design.ri exits 0 (rc $_rc)" \
+        test "$_rc" -eq 0
+    assert "$_name from a foreign cwd hands reify-gui exactly one argument (ARGC '$_argc')" \
+        test "$_argc" = 1
+    assert "$_name from a foreign cwd hands reify-gui a path that resolves from its cwd (ARGV1 '$_argv1')" \
+        test "$_resolves" = yes
+    assert "$_name from a foreign cwd hands reify-gui <caller>/sub/design.ri (got '$_argv1')" \
+        test "$_argv1" = "$_t42_caller/sub/design.ri"
+}
+
+# --- 42a: run-gui-dev.sh (Test 21's stubs and env) ---
+_rgs_mktemp _t42a_tmpdir
+_mk_rungui_dev_fixture "$_t42a_tmpdir"
+_rgs_stub_npm_serving "$_t42a_tmpdir"
+_rgs_stub_curl_stateful "$_t42a_tmpdir"
+_rgs_stub_cargo "$_t42a_tmpdir"
+_rgs_stub_gui_binary "$_t42a_tmpdir" target/debug/reify-gui
+
+_t42a_rc=0
+(cd "$_t42_caller_raw" && env -u REIFY_VITE_PORT \
+    DISPLAY=:99 \
+    _RGS_CURL_COUNTER="$_t42a_tmpdir/curl-count" \
+    _RGS_CURL_READY_FILE="$_t42a_tmpdir/npm-dev-args" \
+    _RGS_ENV_DUMP="$_t42a_tmpdir/env-dump" \
+    _RGS_NPM_DEV_ARGS="$_t42a_tmpdir/npm-dev-args" \
+    PATH="$_t42a_tmpdir/bin:$PATH" \
+    bash "$_t42a_tmpdir/scripts/run-gui-dev.sh" sub/design.ri) >/dev/null 2>&1 || _t42a_rc=$?
+_t42_check run-gui-dev.sh "$_t42a_tmpdir" "$_t42a_rc"
+
+# --- 42b: run-gui.sh (Test 9's stubs and env) ---
+_rgs_mktemp _t42b_tmpdir
+_mk_rungui_fixture "$_t42b_tmpdir"
+_rgs_stub_npm_serving "$_t42b_tmpdir"
+_rgs_stub_cargo "$_t42b_tmpdir"
+_rgs_stub_gui_binary "$_t42b_tmpdir" target/release/reify-gui
+
+_t42b_rc=0
+(cd "$_t42_caller_raw" && env DISPLAY=:99 \
+    _RGS_ENV_DUMP="$_t42b_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t42b_tmpdir/cargo-argv" \
+    PATH="$_t42b_tmpdir/bin:$PATH" \
+    bash "$_t42b_tmpdir/scripts/run-gui.sh" sub/design.ri) >/dev/null 2>&1 || _t42b_rc=$?
+_t42_check run-gui.sh "$_t42b_tmpdir" "$_t42b_rc"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
