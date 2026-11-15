@@ -375,3 +375,63 @@ describe('StartView mode buttons', () => {
     });
   });
 });
+
+describe('StartView pending document attempt', () => {
+  const DOCUMENT_ACTION_IDS = ['start-open-dialog', 'start-new-dialog', 'start-open-path', 'start-create-path'];
+  const MODE_IDS = ['start-mode-design', 'start-mode-assistant', 'start-mode-debug'];
+  const PENDING_RECENT = [
+    { path: '/designs/bracket.ri', opened_at: 2000 },
+    { path: '/designs/flange.ri', opened_at: 1000 },
+  ];
+
+  function isDisabled(control: HTMLElement): boolean {
+    return (control as HTMLButtonElement).disabled;
+  }
+
+  function documentControls(): HTMLElement[] {
+    return [
+      ...DOCUMENT_ACTION_IDS.map((id) => screen.getByTestId(id)),
+      ...screen.getAllByTestId('start-recent-item'),
+    ];
+  }
+
+  it('while an attempt is pending, the document actions and recent entries are disabled and the view says Opening…', () => {
+    store.setRecent(PENDING_RECENT);
+    store.setDocumentPending(true);
+    renderStartView();
+
+    expect(screen.getAllByTestId('start-recent-item')).toHaveLength(2);
+    for (const control of documentControls()) expect(isDisabled(control)).toBe(true);
+    const line = screen.getByTestId('start-document-pending');
+    expect(line.getAttribute('role')).toBe('status');
+    expect(line.textContent).toContain('Opening…');
+  });
+
+  it('the mode buttons stay enabled while an attempt is pending', () => {
+    store.setDocumentPending(true);
+    renderStartView();
+
+    for (const id of MODE_IDS) expect(isDisabled(screen.getByTestId(id))).toBe(false);
+  });
+
+  it('with no attempt pending, nothing is disabled and there is no Opening… line', () => {
+    store.setRecent(PENDING_RECENT);
+    renderStartView();
+
+    for (const control of documentControls()) expect(isDisabled(control)).toBe(false);
+    for (const id of MODE_IDS) expect(isDisabled(screen.getByTestId(id))).toBe(false);
+    expect(screen.queryByTestId('start-document-pending')).toBeNull();
+  });
+
+  it('the actions re-enable and Opening… goes once the attempt settles', () => {
+    store.setRecent(PENDING_RECENT);
+    store.setDocumentPending(true);
+    renderStartView();
+    expect(screen.getByTestId('start-document-pending')).toBeTruthy();
+
+    store.setDocumentPending(false);
+
+    for (const control of documentControls()) expect(isDisabled(control)).toBe(false);
+    expect(screen.queryByTestId('start-document-pending')).toBeNull();
+  });
+});
