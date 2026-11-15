@@ -25,8 +25,8 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow, Twist,
-    comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
+    FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
+    Twist, comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
     solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
@@ -1799,33 +1799,46 @@ fn driving_relation_label(driving_position: usize, context: &FailureContext) -> 
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
 ///
-/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve within
-/// the scope's budget: the first pair whose own solve is CERTIFIED infeasible is
-/// returned as the minimal conflict set — a pair that merely ran out of budget or
-/// stalled proves nothing and is not blamed. If no pair is certified (a conflict
-/// that genuinely needs ≥3 relations), falls back to the whole driving set. Returns
-/// INSTANCE positions (into `built.instances`), the shape [`conflict_message`]
-/// expects. Bounded by the driving-set size, which is `≤ 6` for a single Frame
-/// unknown — the pairwise search is cheap.
+/// The smallest non-trivial conflict is a driving PAIR, re-solved within the
+/// scope's budget; [`first_certified_pair`] says which one counts. If no pair is
+/// certified (a conflict that genuinely needs ≥3 relations), falls back to the
+/// whole driving set. Returns INSTANCE positions (into `built.instances`), the
+/// shape [`conflict_message`] expects. Bounded by the driving-set size, which is
+/// `≤ 6` for a single Frame unknown — the pairwise search is cheap.
 fn minimal_infeasible_subset(context: &FailureContext) -> Vec<usize> {
     let instances = &context.built.instances;
-    let driving = &context.partition.driving;
+    let solve_pair = |i: usize, j: usize| {
+        solve_frame_outcome(
+            &[instances[i].clone(), instances[j].clone()],
+            context.unknown,
+            context.seed,
+            context.scaling,
+            context.budget,
+        )
+        .result
+    };
+    match first_certified_pair(&context.partition.driving, solve_pair) {
+        Some(pair) => pair.to_vec(),
+        None => context.partition.driving.clone(),
+    }
+}
+
+/// The first pair of `driving`'s values, in i-before-j order, whose solve is
+/// CERTIFIED infeasible. A pair that converged, ran out of budget, stalled or met
+/// a non-finite value proves nothing and is skipped. With no certified pair it
+/// returns `None`.
+fn first_certified_pair(
+    driving: &[usize],
+    mut solve_pair: impl FnMut(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+) -> Option<[usize; 2]> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
-            let pair = [instances[i].clone(), instances[j].clone()];
-            let outcome = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
-            if matches!(outcome.result, Err(SolveFailureCause::Infeasible(_))) {
-                return vec![i, j];
+            if matches!(solve_pair(i, j), Err(SolveFailureCause::Infeasible(_))) {
+                return Some([i, j]);
             }
         }
     }
-    driving.to_vec()
+    None
 }
 
 // ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
