@@ -203,7 +203,7 @@ fn compile_program_single_file_matches_legacy_compile() {
     for (stem, source) in &inputs {
         let legacy = legacy_single_file(stem, source);
         let program = compile_entry(dir.path(), stem, source, &cfg);
-        let entry = &program.entry;
+        let entry = program.entry();
 
         assert_eq!(
             diag_shapes(entry),
@@ -250,9 +250,9 @@ fn compile_program_entry_compiles_from_buffer_not_disk() {
     let program = compile_entry(dir.path(), "main", buffer, &CfgSet::default());
 
     assert!(
-        template_names(&program.entry).contains(&"Cart"),
+        template_names(program.entry()).contains(&"Cart"),
         "entry must compile from the buffer, got templates {:?}",
-        template_names(&program.entry)
+        template_names(program.entry())
     );
     assert_eq!(
         program.sources.last(),
@@ -314,7 +314,7 @@ fn compile_program_reports_direct_imports_and_topological_sources() {
     assert_eq!(source_keys(&program), vec!["c", "a", "b", "main"]);
     assert_eq!(program.sources, expected_sources);
 
-    let entry_templates = template_names(&program.entry);
+    let entry_templates = template_names(program.entry());
     for name in ["Robot", "Arm", "Base"] {
         assert!(
             entry_templates.contains(&name),
@@ -351,7 +351,7 @@ fn compile_program_keeps_cross_import_collision_warning() {
     let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
 
     let collisions: Vec<&str> = program
-        .entry
+        .entry()
         .diagnostics
         .iter()
         .filter(|d| {
@@ -365,7 +365,7 @@ fn compile_program_keeps_cross_import_collision_warning() {
         collisions.len(),
         1,
         "expected one cross-import collision warning, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
 }
 
@@ -437,9 +437,9 @@ fn compile_program_import_units_see_the_stdlib() {
         "`param w : Length` must resolve to a Length quantity inside the import unit"
     );
     assert!(
-        errors(&program.entry).is_empty(),
+        errors(program.entry()).is_empty(),
         "the entry must compile cleanly, got {:?}",
-        errors(&program.entry)
+        errors(program.entry())
     );
 }
 
@@ -472,7 +472,7 @@ fn compile_program_never_walks_std_imports_at_any_depth() {
     let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
 
     let stdlib_root_text = stdlib_root.display().to_string();
-    for d in &program.entry.diagnostics {
+    for d in &program.entry().diagnostics {
         assert!(
             !d.message.contains("units.ri") && !d.message.contains(&stdlib_root_text),
             "no std.* import may be walked, but a diagnostic names the stdlib_root: {d:?}"
@@ -532,7 +532,7 @@ fn compile_program_cfg_gated_imports_are_inert() {
 
     let program = compile_entry(dir.path(), "main", main_src, &linux);
 
-    for message in errors(&program.entry) {
+    for message in errors(program.entry()) {
         for needle in ["ghost", "broken", "ghost2"] {
             assert!(
                 !message.contains(needle),
@@ -550,7 +550,7 @@ fn compile_program_cfg_gated_imports_are_inert() {
         );
     }
     assert!(
-        !template_names(&program.entry).contains(&"BrokenThing"),
+        !template_names(program.entry()).contains(&"BrokenThing"),
         "no template from a gated-out import may be merged"
     );
     assert_eq!(import_keys(&program), vec!["mid"]);
@@ -574,7 +574,7 @@ fn compile_with_healthy_sibling(
         write(dir, name, src);
     }
     let program = compile_entry(dir, "main", main_src, &CfgSet::default());
-    let names = template_names(&program.entry);
+    let names = template_names(program.entry());
     assert!(
         names.contains(&"Rig") && names.contains(&"Healthy"),
         "the entry must still compile despite a broken import, got templates {names:?}"
@@ -594,11 +594,11 @@ fn compile_program_missing_import_surfaces_error_naming_tried_path() {
     );
     let tried = dir.path().join("nowhere.ri").display().to_string();
     assert!(
-        errors(&program.entry)
+        errors(program.entry())
             .iter()
             .any(|m| m.contains("nowhere") && m.contains(&tried)),
         "expected an Error naming `nowhere` and {tried}, got {:?}",
-        errors(&program.entry)
+        errors(program.entry())
     );
 }
 
@@ -624,13 +624,13 @@ fn compile_program_import_parse_error_is_coded_and_file_attributed() {
     for line_col_message in &rendered {
         let located = format!("{broken_path}:{line_col_message}");
         assert!(
-            program.entry.diagnostics.iter().any(|d| {
+            program.entry().diagnostics.iter().any(|d| {
                 d.severity == Severity::Error
                     && d.code == Some(DiagnosticCode::ImportedModuleParseError)
                     && d.message.contains(&located)
             }),
             "expected a coded ImportedModuleParseError containing {located:?}, got {:?}",
-            program.entry.diagnostics
+            program.entry().diagnostics
         );
     }
     assert!(!import_keys(&program).contains(&"broken"));
@@ -748,7 +748,7 @@ fn compile_program_rehomes_transitive_import_errors_once() {
         leaf_errors.len(),
         1,
         "the leaf Error must reach the entry exactly once, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
     assert!(
         leaf_errors[0].message.contains(&leaf_path),
@@ -779,7 +779,7 @@ fn compile_program_healthy_import_contributes_no_diagnostics() {
         program.rehomed_from("healthy").count(),
         0,
         "a clean import must contribute nothing, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
 }
 
@@ -820,7 +820,7 @@ fn compile_program_reports_a_broken_diamond_leaf_once() {
     for line_col_message in &rendered {
         let located = format!("{leaf_path}:{line_col_message}");
         let reports = program
-            .entry
+            .entry()
             .diagnostics
             .iter()
             .filter(|d| {
@@ -829,9 +829,10 @@ fn compile_program_reports_a_broken_diamond_leaf_once() {
             })
             .count();
         assert_eq!(
-            reports, 1,
+            reports,
+            1,
             "the parse error at {located:?} must reach the entry exactly once, got {:?}",
-            program.entry.diagnostics
+            program.entry().diagnostics
         );
     }
 }
@@ -851,10 +852,136 @@ fn compile_program_rehomes_an_erroring_diamond_leaf_once() {
         .filter(|d| d.severity == Severity::Error && d.message.contains("Nope"))
         .count();
     assert_eq!(
-        leaf_errors, 1,
+        leaf_errors,
+        1,
         "the leaf Error must reach the entry exactly once, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
+}
+
+/// (h) The re-homed copies sit between entry-own diagnostics on both sides —
+/// the entry's own and missing-import Errors before them, the I5 merge's
+/// collision Warning after — and `entry_own_diagnostics` plus `rehomed_from`
+/// still partition the entry's diagnostics exactly, in order.
+#[test]
+fn compile_program_partitions_entry_diagnostics_around_the_rehomed_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[
+            (
+                "mid.ri",
+                "module mid\nimport leaf\npub structure def Mid {\n    param m : Real = 1\n}\n",
+            ),
+            (
+                "leaf.ri",
+                "module leaf\npub structure def Leaf {\n    param z : Nope\n}\n",
+            ),
+            (
+                "parts.ri",
+                "module parts\npub structure def Part {\n    param q : Frobnicate = zorp()\n}\n",
+            ),
+            (
+                "a.ri",
+                "module a\npub structure def Same {\n    param x : Real = 1\n}\n",
+            ),
+            (
+                "b.ri",
+                "module b\npub structure def Same {\n    param y : Real = 2\n}\n",
+            ),
+        ],
+        "module main\nimport nowhere\nimport mid\nimport parts\nimport a\nimport b\n\
+         import healthy\nstructure def Rig {\n    param bad : Bogus\n    sub h = Healthy()\n}\n",
+    );
+
+    let all = &program.entry().diagnostics;
+    let keys = source_keys(&program);
+    let rehomed: Vec<(&str, &reify_core::Diagnostic)> = keys
+        .iter()
+        .flat_map(|key| program.rehomed_from(key).map(move |copy| (*key, copy)))
+        .collect();
+    let own: Vec<&reify_core::Diagnostic> = program.entry_own_diagnostics().collect();
+    let is_rehomed = |d: &reify_core::Diagnostic| rehomed.iter().any(|(_, c)| std::ptr::eq(*c, d));
+    let is_own = |d: &reify_core::Diagnostic| own.iter().any(|o| std::ptr::eq(*o, d));
+    let index_of = |target: &reify_core::Diagnostic| {
+        all.iter()
+            .position(|d| std::ptr::eq(d, target))
+            .unwrap_or_else(|| panic!("{target:?} is not one of the entry's diagnostics"))
+    };
+    let find = |severity: Severity, needle: &str| {
+        all.iter()
+            .find(|d| d.severity == severity && d.message.contains(needle))
+            .unwrap_or_else(|| panic!("no {severity:?} mentioning {needle:?} in {all:?}"))
+    };
+
+    for key in ["leaf", "parts"] {
+        assert!(
+            program.rehomed_from(key).next().is_some(),
+            "precondition: {key} must re-home at least one diagnostic, got {all:?}"
+        );
+    }
+    let copy_indices: Vec<usize> = rehomed.iter().map(|(_, copy)| index_of(copy)).collect();
+    let first_copy = *copy_indices.iter().min().expect("re-homed copies exist");
+    let last_copy = *copy_indices.iter().max().expect("re-homed copies exist");
+    assert!(
+        all[..first_copy].iter().any(|d| !is_rehomed(d)),
+        "precondition: an entry-own diagnostic must precede the re-homed run, got {all:?}"
+    );
+    let collision = all
+        .iter()
+        .find(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("imported pub template 'Same'")
+                && d.message.contains("first-wins")
+        })
+        .unwrap_or_else(|| panic!("no cross-import collision Warning in {all:?}"));
+    assert!(
+        index_of(collision) > last_copy,
+        "precondition: the collision Warning must follow the re-homed run, got {all:?}"
+    );
+
+    for d in all {
+        let yielded = usize::from(is_own(d))
+            + rehomed
+                .iter()
+                .filter(|(_, copy)| std::ptr::eq(*copy, d))
+                .count();
+        assert_eq!(
+            yielded, 1,
+            "{d:?} must be yielded by exactly one of entry_own_diagnostics and rehomed_from"
+        );
+    }
+    let not_rehomed: Vec<&reify_core::Diagnostic> = all.iter().filter(|d| !is_rehomed(d)).collect();
+    assert!(
+        own.len() == not_rehomed.len()
+            && own
+                .iter()
+                .zip(&not_rehomed)
+                .all(|(o, n)| std::ptr::eq(*o, *n)),
+        "entry_own_diagnostics must be the non-re-homed diagnostics in order: \
+         own {own:?}, expected {not_rehomed:?}"
+    );
+    for (key, copy) in &rehomed {
+        let prefix = format!("in imported module '{key}' (");
+        assert!(
+            copy.message.starts_with(&prefix),
+            "a copy re-homed from {key} must start {prefix:?}: {copy:?}"
+        );
+    }
+    for (label, d) in [
+        ("collision Warning", collision),
+        ("missing-import Error", find(Severity::Error, "nowhere")),
+        ("entry's own Error", find(Severity::Error, "Bogus")),
+    ] {
+        assert!(is_own(d), "the {label} must be entry-own: {d:?}");
+    }
+    for key in ["main", "nowhere"] {
+        assert_eq!(
+            program.rehomed_from(key).count(),
+            0,
+            "{key} re-homes nothing"
+        );
+    }
 }
 
 // ─── task 5516 step-13: the caller-owned-parse seam ────────────────────────
@@ -901,13 +1028,13 @@ fn compile_program_with_parsed_entry_matches_compile_program() {
         let whole = compile_entry(dir.path(), stem, source, &CfgSet::default());
 
         assert_eq!(
-            diag_shapes(&seam.entry),
-            diag_shapes(&whole.entry),
+            diag_shapes(seam.entry()),
+            diag_shapes(whole.entry()),
             "{stem}: entry diagnostics"
         );
         assert_eq!(
-            template_names(&seam.entry),
-            template_names(&whole.entry),
+            template_names(seam.entry()),
+            template_names(whole.entry()),
             "{stem}: entry templates"
         );
         assert_eq!(import_keys(&seam), import_keys(&whole), "{stem}: imports");
@@ -931,9 +1058,9 @@ fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
     let program = compile_parsed_entry(dir.path(), "main", source, &parsed);
 
     assert!(
-        errors(&program.entry).is_empty(),
+        errors(program.entry()).is_empty(),
         "the caller's parse must compile cleanly, got {:?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
 }
 
@@ -1000,7 +1127,7 @@ fn compile_program_entry_declared_templates_exclude_merged_imports() {
         &CfgSet::default(),
     );
     assert_eq!(declared_names(&importing), vec!["Rig"]);
-    let merged = template_names(&importing.entry);
+    let merged = template_names(importing.entry());
     assert!(
         merged.contains(&"Rig") && merged.contains(&"Pulley"),
         "the entry's template list must still carry the merge, got {merged:?}"
@@ -1012,7 +1139,7 @@ fn compile_program_entry_declared_templates_exclude_merged_imports() {
         "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
         &CfgSet::default(),
     );
-    assert_eq!(declared_names(&solo), template_names(&solo.entry));
+    assert_eq!(declared_names(&solo), template_names(solo.entry()));
 
     let colliding = compile_entry(
         dir.path(),
@@ -1024,25 +1151,5 @@ fn compile_program_entry_declared_templates_exclude_merged_imports() {
     );
     let count = |names: Vec<&str>| names.into_iter().filter(|n| *n == "Pulley").count();
     assert_eq!(count(declared_names(&colliding)), 1);
-    assert_eq!(count(template_names(&colliding.entry)), 1);
-}
-
-/// A caller that shrinks `entry.templates` below the declared prefix gets a
-/// panic naming the invariant and both counts, not a bare slice-index panic.
-#[test]
-#[should_panic(
-    expected = "entry_declared_templates: the entry's compile produced 1 templates \
-                but `entry.templates` now holds 0"
-)]
-fn entry_declared_templates_names_a_shrunk_template_list() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut program = compile_entry(
-        dir.path(),
-        "main",
-        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
-        &CfgSet::default(),
-    );
-    program.entry.templates.clear();
-
-    let _ = program.entry_declared_templates();
+    assert_eq!(count(template_names(colliding.entry())), 1);
 }

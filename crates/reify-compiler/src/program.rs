@@ -379,4 +379,31 @@ mod tests {
         assert_eq!(rehomed.labels[0].span, SourceSpan::prelude());
         assert_eq!(rehomed.labels[0].message, "here");
     }
+
+    /// `module main` declaring one template, `Rig`, and importing nothing.
+    fn compile_one_template_entry() -> CompiledProgram {
+        let dir = tempfile::tempdir().expect("tempdir");
+        compile_program(
+            &dir.path().join("main.ri"),
+            "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+            &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+            &CfgSet::default(),
+            &reify_test_support::mocks::MockConstraintChecker::new()
+                .with_default(reify_ir::Satisfaction::Indeterminate),
+        )
+    }
+
+    /// A shrunk `entry.templates` below the declared prefix gets a panic naming
+    /// the invariant and both counts, not a bare slice-index panic.
+    #[test]
+    #[should_panic(
+        expected = "entry_declared_templates: the entry's compile produced 1 templates \
+                    but `entry.templates` now holds 0"
+    )]
+    fn entry_declared_templates_names_a_shrunk_template_list() {
+        let mut program = compile_one_template_entry();
+        program.entry.templates.clear();
+
+        let _ = program.entry_declared_templates();
+    }
 }
