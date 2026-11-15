@@ -136,7 +136,7 @@ mod tests {
         let mut i = 0usize;
         while out.len() < SAMPLE_SIZE {
             let mut v = [rng.symmetric(), rng.symmetric(), rng.symmetric()];
-            if i % 3 == 0 {
+            if i.is_multiple_of(3) {
                 let k = (rng.next_u64() % 21) as i32 - 10;
                 let scale = 10f64.powi(k);
                 v = v.map(|c| c * scale);
