@@ -367,17 +367,17 @@ structure BucklingDefaultsTest {
 /// (`= ModalOptions()`), AND a 4-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// GREEN; `= ModalOptions()` was added to modal_analysis_fns.ri in step-8
+/// GREEN; `= ModalOptions()` was added to modal_analysis.ri in step-8
 /// (same commit as this test).
 #[test]
 fn modal_analysis_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("ModalOptions") ──
     let modal_module = stdlib_loader::load_stdlib()
         .iter()
-        .find(|m| m.path.to_string() == "std/modal/analysis/fns")
+        .find(|m| m.path.to_string() == "std/modal/analysis")
         .unwrap_or_else(|| {
             panic!(
-                "stdlib must contain std/modal/analysis/fns; available paths: {:?}",
+                "stdlib must contain std/modal/analysis; available paths: {:?}",
                 stdlib_loader::load_stdlib()
                     .iter()
                     .map(|m| m.path.to_string())
@@ -390,7 +390,7 @@ fn modal_analysis_options_defaults_and_omittable() {
         .find(|f| f.name == "modal_analysis")
         .unwrap_or_else(|| {
             panic!(
-                "fn modal_analysis not found in std/modal/analysis/fns; \
+                "fn modal_analysis not found in std/modal/analysis; \
                  available functions: {:?}",
                 modal_module
                     .functions
@@ -412,7 +412,7 @@ fn modal_analysis_options_defaults_and_omittable() {
     let options_default = modal_fn.param_defaults[4].as_ref().expect(
         "modal_analysis's `options` param must carry a compiled default \
              (= ModalOptions()); None means the default is missing from \
-             modal_analysis_fns.ri",
+             modal_analysis.ri",
     );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {

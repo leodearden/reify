@@ -136,12 +136,11 @@ const FEA_STDLIB_MODULES: &[&str] = &[
 /// forcing-function defs already declare selector-typed fields
 /// (`structure def StepForce { param at : Selector … }` in `modal_analysis.ri`),
 /// so a ctor row against one of them is ordinary call-site work for γ, with no
-/// field-type flip to defer. The two `modal_*_fns` modules declare no
-/// `structure def` at all, so their placement is inert either way and is
+/// field-type flip to defer. `modal_mechanism_fns` declares no
+/// `structure def` at all, so its placement is inert either way and is
 /// recorded only to keep the shape sweep exhaustive.
 const DELIBERATELY_NOT_FEA_OWNED: &[&str] = &[
     "modal_analysis",
-    "modal_analysis_fns",
     "modal_mechanism_fns",
 ];
 

@@ -170,16 +170,6 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.modal.analysis",
             include_str!("../stdlib/modal_analysis.ri").to_owned(),
         ),
-        // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
-        // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
-        // which requires `ModalResult`/`Mode` to already be in the prelude
-        // template registry when the fn bodies compile. Same split +
-        // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
-        // (esc-3851-32).
-        (
-            "std.modal.analysis.fns",
-            include_str!("../stdlib/modal_analysis_fns.ri").to_owned(),
-        ),
         (
             "std.trajectory",
             include_str!("../stdlib/trajectory.ri").to_owned(),
@@ -322,15 +312,15 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // Ordering constraint: MUST follow BOTH:
         //   - `std.modal.analysis` — supplies ModalOptions/ModalResult/Mode
         //   - `std.kinematic` — supplies the Mechanism type
-        // The existing `std.modal.analysis.fns` loads BEFORE
-        // `std.kinematic`, so Mechanism is not yet in its prelude; placing
-        // `mechanism_modal_analysis` there would produce an unresolved-type error.
+        // `std.modal.analysis` loads BEFORE `std.kinematic`, so Mechanism is
+        // not yet in its prelude; placing `mechanism_modal_analysis` there
+        // would produce an unresolved-type error.
         // Tail placement after `std.dynamics` satisfies both constraints
         // directly: `std.modal.analysis` and `std.kinematic` both precede
         // this entry (`std.kinematic` is itself pulled in ahead of
         // `std.dynamics`).
-        // Same prelude-ordering rationale as the original std.modal.analysis /
-        // std.modal.analysis.fns split (esc-3851-32).
+        // Folding it into `std.modal.analysis` needs a declared
+        // `import std.kinematic` (stdlib-namespace θ).
         (
             "std.modal.mechanism.fns",
             include_str!("../stdlib/modal_mechanism_fns.ri").to_owned(),
