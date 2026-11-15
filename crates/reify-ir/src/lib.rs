@@ -59,6 +59,7 @@ pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_ann
 pub use color::Rgb8;
 pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
 pub use direction::{DirectionFault, UnitVec3};
+pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,

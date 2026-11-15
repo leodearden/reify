@@ -1,8 +1,93 @@
+//! The shared `&Value` readers for directions and frame bases
+//! (docs/prds/v0_6/direction-typing.md §5 C3/C8).
+
+use std::fmt;
+
+use reify_core::direction::DIRECTION_MIGRATION_HINT;
+
+use crate::direction::UnitVec3;
+use crate::value::Value;
+
+/// Why a value could not be read as a direction or a frame basis. `got` is the
+/// offending value's `kind_name()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeDirectionError {
+    NotADirection { got: &'static str },
+    NotAFrame { got: &'static str },
+    MalformedFrameBasis { got: &'static str },
+}
+
+impl fmt::Display for DecodeDirectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeDirectionError::NotADirection { got } => {
+                write!(
+                    f,
+                    "expected a Direction, got {got}; {DIRECTION_MIGRATION_HINT}"
+                )
+            }
+            DecodeDirectionError::NotAFrame { got } => write!(f, "expected a Frame, got {got}"),
+            DecodeDirectionError::MalformedFrameBasis { got } => write!(
+                f,
+                "Frame basis must be a finite, non-zero Orientation quaternion, got {got}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DecodeDirectionError {}
+
+/// Accepts only `Value::Direction`: a raw `Vector` is not a direction.
+pub fn decode_direction(v: &Value) -> Result<UnitVec3, DecodeDirectionError> {
+    match v {
+        Value::Direction(u) => Ok(*u),
+        other => Err(DecodeDirectionError::NotADirection {
+            got: other.kind_name(),
+        }),
+    }
+}
+
+/// The frame's x, y and z axes in world coordinates: row `i` is column `i` of
+/// the rotation matrix of the normalised basis quaternion (active `q·v·q*`).
+pub fn frame_basis(frame: &Value) -> Result<[[f64; 3]; 3], DecodeDirectionError> {
+    let Value::Frame { basis, .. } = frame else {
+        return Err(DecodeDirectionError::NotAFrame {
+            got: frame.kind_name(),
+        });
+    };
+    let malformed = DecodeDirectionError::MalformedFrameBasis {
+        got: basis.kind_name(),
+    };
+    let Value::Orientation { w, x, y, z } = **basis else {
+        return Err(malformed);
+    };
+    let n = (w * w + x * x + y * y + z * z).sqrt();
+    if !n.is_finite() || n < 1e-12 {
+        return Err(malformed);
+    }
+    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
+    Ok([
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y + w * z),
+            2.0 * (x * z - w * y),
+        ],
+        [
+            2.0 * (x * y - w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + w * x),
+        ],
+        [
+            2.0 * (x * z + w * y),
+            2.0 * (y * z - w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::direction::UnitVec3;
-    use crate::value::Value;
     use reify_core::direction::DIRECTION_MIGRATION_HINT;
     use std::f64::consts::FRAC_1_SQRT_2;
 
@@ -115,10 +200,16 @@ mod tests {
     #[test]
     fn frame_basis_rows_are_the_rotated_world_axes() {
         let about_111 = frame_basis(&frame(0.5, 0.5, 0.5, 0.5)).unwrap();
-        assert_rows_close(about_111, [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]);
+        assert_rows_close(
+            about_111,
+            [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+        );
 
         let about_z = frame_basis(&frame(FRAC_1_SQRT_2, 0.0, 0.0, FRAC_1_SQRT_2)).unwrap();
-        assert_rows_close(about_z, [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_rows_close(
+            about_z,
+            [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        );
     }
 
     #[test]
@@ -126,7 +217,12 @@ mod tests {
         let mut rng = SplitMix64(0x5EED_F2A3_E0BA_5150);
         let mut checked = 0usize;
         while checked < 1000 {
-            let q = [rng.symmetric(), rng.symmetric(), rng.symmetric(), rng.symmetric()];
+            let q = [
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+            ];
             if q.iter().map(|c| c * c).sum::<f64>().sqrt() < 1e-6 {
                 continue;
             }

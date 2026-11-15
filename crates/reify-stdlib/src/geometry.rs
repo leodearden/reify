@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
 use reify_ir::arg_acceptance::{Acceptance, ArgRejection, accept_arg, length_spec};
+use reify_ir::direction_decode::decode_direction;
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
@@ -1482,17 +1483,9 @@ fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
     // use case — not only a synthetic one.
     let n = match decompose_vec3(normal) {
         Some((n, _)) => n,
-        None => decode_direction(normal)?,
+        None => decode_direction(normal).ok()?.components(),
     };
     Some((o, o_dim, n))
-}
-
-/// Decode a `Value::Direction` into [x,y,z]; `None` for any other value.
-fn decode_direction(v: &Value) -> Option<[f64; 3]> {
-    match v {
-        Value::Direction(u) => Some(u.components()),
-        _ => None,
-    }
 }
 
 /// Why a construction-datum call cannot be built — the fault vocabulary of the
@@ -1705,8 +1698,12 @@ fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
         return Err(DatumFault::Shape);
     }
     let o = classify_datum_point("o", &args[0])?;
-    let x = decode_direction(&args[1]).ok_or(DatumFault::Shape)?;
-    let z = decode_direction(&args[2]).ok_or(DatumFault::Shape)?;
+    let x = decode_direction(&args[1])
+        .map_err(|_| DatumFault::Shape)?
+        .components();
+    let z = decode_direction(&args[2])
+        .map_err(|_| DatumFault::Shape)?
+        .components();
     Ok((o, x, z))
 }
 

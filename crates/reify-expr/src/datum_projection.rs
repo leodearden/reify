@@ -2,7 +2,7 @@
 //! typing table lives in `crates/reify-compiler/src/datum_projection.rs`.
 
 use reify_core::Type;
-use reify_ir::{UnitVec3, Value};
+use reify_ir::{UnitVec3, Value, frame_basis};
 
 /// Extract three finite numeric components from a 3-component `Point` or
 /// `Vector` value. Returns `None` for any other shape or a non-finite
@@ -60,13 +60,11 @@ fn quat_basis_axis(w: f64, x: f64, y: f64, z: f64, axis: usize) -> Option<[f64; 
 }
 
 /// Project a `Frame` basis axis (`.x`/`.y`/`.z`) to a unit `Direction`.
-fn frame_axis_direction(basis: &Value, axis: usize) -> Value {
-    match basis {
-        Value::Orientation { w, x, y, z } => quat_basis_axis(*w, *x, *y, *z, axis)
-            .and_then(|col| UnitVec3::from_vector(col).ok())
-            .map_or(Value::Undef, Value::Direction),
-        _ => Value::Undef,
-    }
+fn frame_axis_direction(frame: &Value, axis: usize) -> Value {
+    frame_basis(frame)
+        .ok()
+        .and_then(|rows| UnitVec3::from_vector(rows[axis]).ok())
+        .map_or(Value::Undef, Value::Direction)
 }
 
 /// Project a `Frame` to one of its principal planes: a `Plane` at the frame
@@ -115,9 +113,9 @@ pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> 
             _ => None,
         },
         Value::Frame { origin, basis } => match method {
-            "x" => Some(frame_axis_direction(basis, 0)),
-            "y" => Some(frame_axis_direction(basis, 1)),
-            "z" => Some(frame_axis_direction(basis, 2)),
+            "x" => Some(frame_axis_direction(obj, 0)),
+            "y" => Some(frame_axis_direction(obj, 1)),
+            "z" => Some(frame_axis_direction(obj, 2)),
             "origin" => Some((**origin).clone()),
             "xy_plane" => Some(frame_plane(origin, basis, 2)),
             "yz_plane" => Some(frame_plane(origin, basis, 0)),
