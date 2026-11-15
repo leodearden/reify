@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared launch-environment helpers for the reify-gui launchers (#7254).
+# Shared file-argument and launch-environment helpers for the reify-gui
+# launchers (#7254).
 # Designed to be sourced, not executed directly.
 #
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/lib_gui_launch.sh"
@@ -7,11 +8,11 @@
 #
 # Sourced by scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
 # (dev). The two launchers differ in build profile and in whether they run a
-# vite dev server, but they must agree EXACTLY on the environment they hand
-# the binary — and on the preflight that decides a launch is hopeless before
-# paying for a multi-minute build. Before this lib the inherited-
-# LD_LIBRARY_PATH snapshot, the display preflight and the oneTBB pin +
-# WebKit renderer default were duplicated near-verbatim across both files,
+# vite dev server, but they must agree EXACTLY on the file argument and the
+# environment they hand the binary — and on the preflight that decides a
+# launch is hopeless before paying for a multi-minute build. Before this lib
+# the inherited-LD_LIBRARY_PATH snapshot, the display preflight and the oneTBB
+# pin + WebKit renderer default were duplicated near-verbatim across both files,
 # down to byte-identical user-facing strings. That is the shape that lets two
 # copies drift silently: gui/test/visual/lib_e2e_smoke.sh's own header records
 # exactly that outcome for a six-way copy of the GUI-launch lifecycle (one
@@ -82,6 +83,35 @@ gui_launch_preflight_display() {
     fi
     echo "Error: no display: DISPLAY and WAYLAND_DISPLAY are both unset — reify-gui needs an X11/Wayland display; export DISPLAY=:0 (or set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass)" >&2
     return 1
+}
+
+# gui_launch_resolve_file <file>
+#
+# The launchers' optional [file.ri] argument. An empty <file> means the Start
+# view: prints nothing and returns 0. Otherwise <file> must end in .ri and
+# exist; a refusal prints ONE error line to stderr and returns 1, never exits.
+#
+# On success prints <file>'s absolute path, resolved against the CALLER's cwd,
+# so a launcher must call this before its `cd "$REPO_ROOT"`. The directory is
+# resolved physically with CDPATH cleared, so the printed path names the very
+# file the existence check saw (lnk/../x.ri included).
+gui_launch_resolve_file() {
+    local file="${1:-}" dir
+    [ -n "$file" ] || return 0
+    case "$file" in
+        *.ri) ;;
+        *) echo "Error: file must have .ri extension: $file" >&2; return 1 ;;
+    esac
+    [ -f "$file" ] || { echo "Error: file not found: $file" >&2; return 1; }
+    case "$file" in
+        */*) dir="${file%/*}" ;;
+        *) dir=. ;;
+    esac
+    dir=$(CDPATH= cd -P -- "${dir:-/}" && pwd -P) || {
+        echo "Error: cannot resolve the directory of $file" >&2
+        return 1
+    }
+    printf '%s\n' "${dir%/}/${file##*/}"
 }
 
 # _gui_launch_env_already_pinned
