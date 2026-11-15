@@ -148,20 +148,12 @@ pub(crate) fn phase_entities(
             .map(|t| (t.name.clone(), t))
             .collect();
 
-    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
-    // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
-    // already-compiled structure-defs. Occurrences are excluded — only
-    // structure-defs are constructible via the ctor path.
-    //
-    // DERIVED from the unfiltered map above rather than re-walking `prelude`:
-    // a prelude occurrence that wins a name under NS-P1 (`name_env`) must not
-    // let a lower-precedence `structure def` of that name into the ctor view.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
-        .iter()
-        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
+    // task 3540 (SIR-α): the prelude ctor view, so the expression-lowering site
+    // can recognise `Foo()` as a structure constructor (esc-3540-177 RULING 1);
+    // `compile_entity` merges in local already-compiled structure-defs. Rule:
+    // `name_env::prelude_ctor_view`.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::prelude_ctor_view(prelude);
 
     // One bundle for the entity-compile recursion, so the two same-typed maps
     // cannot be transposed at a call site (they are read by field name).

@@ -81,7 +81,7 @@ pub(crate) fn phase_fn_param_defaults(
     prelude: &[&CompiledModule],
     fn_refs: &[&FnDef],
 ) {
-    let prelude_ctor_view = name_env::ctor_template_registry(&[], prelude);
+    let prelude_ctor_view = name_env::prelude_ctor_view(prelude);
     let local_ctor_names = ctx.local_entity_names();
     let declared_callables = crate::functions::declared_callable_names(
         &ctx.declared_fn_names,

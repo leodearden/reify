@@ -331,22 +331,38 @@ impl<'a, D: Definition> Bindings<'a, D> {
 }
 
 /// The constructor view of the entity namespace: local templates of every
-/// kind, plus the prelude STRUCTURES that win their name. Derived from the
-/// unified binding, so a prelude occurrence that wins a name never lets a
-/// lower-precedence structure of that name through.
+/// kind, plus the prelude STRUCTURES that win their name. Templates are keyed
+/// by name alone, so this is the unified binding's ctor view.
 pub(crate) fn ctor_template_registry<'a>(
     local: &'a [TopologyTemplate],
     prelude: &[&'a CompiledModule],
 ) -> HashMap<String, &'a TopologyTemplate> {
-    bind(local, prelude.iter().copied())
-        .winning_candidates()
-        .iter()
-        .filter(|candidate| {
-            candidate.origin == Origin::Local
-                || candidate.definition.entity_kind == EntityKind::Structure
-        })
-        .map(|candidate| (candidate.definition.name.clone(), candidate.definition))
+    overlay_local_templates(&prelude_ctor_view(prelude), local)
+}
+
+/// The prelude STRUCTURES that win their name in the entity namespace, so a
+/// winning prelude occurrence hides a lower-precedence structure of its name.
+pub(crate) fn prelude_ctor_view<'a>(
+    prelude: &[&'a CompiledModule],
+) -> HashMap<String, &'a TopologyTemplate> {
+    bind::<TopologyTemplate, _>(&[], prelude.iter().copied())
+        .winners()
+        .filter(|template| template.entity_kind == EntityKind::Structure)
+        .map(|template| (template.name.clone(), template))
         .collect()
+}
+
+/// `prelude_view` with every `local` template, of any kind, in place of the
+/// prelude entry of its name; the first local of a name wins.
+pub(crate) fn overlay_local_templates<'a>(
+    prelude_view: &HashMap<String, &'a TopologyTemplate>,
+    local: &'a [TopologyTemplate],
+) -> HashMap<String, &'a TopologyTemplate> {
+    let mut view = prelude_view.clone();
+    for template in local.iter().rev() {
+        view.insert(template.name.clone(), template);
+    }
+    view
 }
 
 #[cfg(test)]
