@@ -50,7 +50,7 @@ fn stdlib_fn(name: &str) -> &'static reify_ir::CompiledFunction {
 // @optimized ComputeNode targets (the two trampolines)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Both `simulate_trajectory` (trajectory_fns.ri) and `input_shape`
+/// Both `simulate_trajectory` (trajectory.ri) and `input_shape`
 /// (trajectory.ri) must carry the `@optimized("trajectory::…")` target the
 /// engine reads to lower their call sites to a ComputeNode.
 ///

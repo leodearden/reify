@@ -73,23 +73,15 @@ crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:196
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:283
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:379
 crates/reify-compiler/src/compile_builder/specialization_scope_check.rs :: shadow_lint.rs:39
-crates/reify-compiler/src/compile_builder/traits_phase.rs :: ctx.rs:181
 crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:2131
 crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:53
 crates/reify-compiler/src/conformance/checker.rs :: expr.rs:388
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:3
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:66
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:81
-crates/reify-compiler/src/conformance/mod.rs :: crates/reify-core/src/ty.rs:120
-crates/reify-compiler/src/conformance/mod.rs :: examples/dynamics/pendulum_idyn.ri:24
 crates/reify-compiler/src/conformance/mod.rs :: examples/m6_result_recovery.ri:30
 crates/reify-compiler/src/conformance/mod.rs :: expr.rs:782
 crates/reify-compiler/src/conformance/mod.rs :: stdlib/trajectory.ri:103
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:163
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:232
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:334
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:83
-crates/reify-compiler/src/conformance/mod.rs :: type_resolution.rs:3134
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: crates/reify-eval/src/engine_eval.rs:55
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: engine_eval.rs:2283
 crates/reify-compiler/src/connect.rs :: entity.rs (~2145
@@ -108,23 +100,12 @@ crates/reify-compiler/src/entity.rs :: entity.rs ~2810
 crates/reify-compiler/src/entity.rs :: entity.rs:1109
 crates/reify-compiler/src/entity.rs :: entity.rs:1140
 crates/reify-compiler/src/entity.rs :: entity.rs:1331
-crates/reify-compiler/src/entity.rs :: entity.rs:1434
-crates/reify-compiler/src/entity.rs :: entity.rs:1457
 crates/reify-compiler/src/entity.rs :: entity.rs:2038
 crates/reify-compiler/src/entity.rs :: entity.rs:2170
 crates/reify-compiler/src/entity.rs :: entity.rs:2173
-crates/reify-compiler/src/entity.rs :: entity.rs:4129
 crates/reify-compiler/src/entity.rs :: entity.rs:594
-crates/reify-compiler/src/entity.rs :: entity.rs:623
-crates/reify-compiler/src/entity.rs :: entity.rs:822
-crates/reify-compiler/src/entity.rs :: entity.rs:853
-crates/reify-compiler/src/entity.rs :: entity.rs:857
 crates/reify-compiler/src/entity.rs :: entity.rs:882
 crates/reify-compiler/src/entity.rs :: entity.rs:984
-crates/reify-compiler/src/entity.rs :: entity.rs:~631
-crates/reify-compiler/src/entity.rs :: expr.rs:1070
-crates/reify-compiler/src/entity.rs :: expr.rs:1413
-crates/reify-compiler/src/entity.rs :: expr.rs:1425
 crates/reify-compiler/src/entity.rs :: expr.rs:2718
 crates/reify-compiler/src/entity.rs :: graph.rs:386
 crates/reify-compiler/src/entity.rs :: guards.rs ~469
@@ -179,7 +160,6 @@ crates/reify-compiler/src/math_signatures.rs :: reify-stdlib/src/geometry.rs:936
 crates/reify-compiler/src/math_signatures.rs :: trig.rs:20
 crates/reify-compiler/src/math_signatures.rs :: trig.rs:9
 crates/reify-compiler/src/member_path.rs :: expr.rs:843
-crates/reify-compiler/src/stdlib_loader.rs :: modal_analysis_fns.ri:6
 crates/reify-compiler/src/traits.rs :: decl.rs:818
 crates/reify-compiler/src/traits.rs :: traits.rs:295
 crates/reify-compiler/src/traits.rs :: traits.rs:399
@@ -322,7 +302,6 @@ crates/reify-eval/src/engine_admin.rs :: cache.rs:597
 crates/reify-eval/src/engine_admin.rs :: cache.rs:961
 crates/reify-eval/src/engine_admin.rs :: lib.rs:50
 crates/reify-eval/src/engine_build.rs :: crates/reify-compiler/src/types.rs:848
-crates/reify-eval/src/engine_build.rs :: crates/reify-eval/src/unfold.rs:292
 crates/reify-eval/src/engine_build.rs :: deps.rs:149
 crates/reify-eval/src/engine_build.rs :: deps.rs:2795
 crates/reify-eval/src/engine_build.rs :: engine_build.rs ~6693

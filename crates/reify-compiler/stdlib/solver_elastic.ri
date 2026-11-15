@@ -707,7 +707,7 @@ structure def ShellStress {
 // solve_elastic_static accepts ConstitutiveLaw directly (task γ/4441 supertrait
 // + task δ/4442 shim retirement). Do NOT widen FEAMaterialInput.material to
 // ConstitutiveLaw — that would break buckling (`solve_buckling` in
-// solver_buckling_fns.ri, param material:ElasticMaterial).
+// solver_buckling.ri, param material:ElasticMaterial).
 pub structure def FEAMaterialInput {
     param material : ElasticMaterial
 }

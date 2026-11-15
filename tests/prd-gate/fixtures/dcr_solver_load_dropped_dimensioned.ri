@@ -23,7 +23,7 @@ module dcr_solver_load_dropped_dimensioned
 // asserts the force is APPLIED, not merely that a diagnostic appeared (PRD §8
 // B1 negative-assertion mandate), and needs NO change to
 // ElasticResult/BucklingResult, both of which are deliberately frozen and store
-// no applied load (crates/reify-compiler/stdlib/solver_buckling_fns.ri:66-79).
+// no applied load (crates/reify-compiler/stdlib/solver_buckling.ri :: critical_load).
 // Since δ (#5306) that holds only ONCE THIS FILE COMPILES AGAIN: after γ1 alone
 // it still fails at compile time (see POST-δ below).
 //

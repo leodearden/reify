@@ -21,7 +21,7 @@
 // use; the gantry crossbeam's dominant resonance is transverse bending, which
 // a rectangular box faithfully represents for a resonance-budget reference.
 // (Documented in the "Signature deviation from PRD §1" note above
-// `pub fn modal_analysis` in crates/reify-compiler/stdlib/modal_analysis_fns.ri.)
+// `pub fn modal_analysis` in crates/reify-compiler/stdlib/modal_analysis.ri.)
 //
 // Boundary conditions — pin-pin realization:
 //   A gantry crossbeam RESTS ON two end mounts, so the mounts are pinned, not

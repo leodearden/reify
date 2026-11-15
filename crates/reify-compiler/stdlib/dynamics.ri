@@ -303,8 +303,8 @@ pub fn inverse_dynamics_at_snapshot(mechanism: Mechanism, snapshot: Snapshot, q_
 // cache + cooperative cancellation, reify-eval/src/dynamics_ops.rs) rather than
 // body-inlining. The `{ inverse_dynamics_lower(...) }` body stays as the
 // unregistered fallback: with no trampoline registered the engine inlines it
-// (bit-identical result), exactly the `modal_analysis()` (modal_analysis_fns.ri)
-// / `solve_buckling()` (solver_buckling_fns.ri) pattern.
+// (bit-identical result), exactly the `modal_analysis()` (modal_analysis.ri)
+// / `solve_buckling()` (solver_buckling.ri) pattern.
 @optimized("dynamics::inverse_dynamics")
 pub fn inverse_dynamics(mechanism: Mechanism, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
 

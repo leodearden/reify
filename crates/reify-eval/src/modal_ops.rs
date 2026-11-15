@@ -3172,7 +3172,7 @@ pub fn solve_transient_response_trampoline(
 /// modal trampolines this returns a non-struct value: a `Value::List` of
 /// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2) — Length, not a
 /// bare Real, since #6094; WHY the reconstruction is metres is derived at the
-/// declaration, `reify-compiler/stdlib/modal_analysis_fns.ri` ::
+/// declaration, `reify-compiler/stdlib/modal_analysis.ri` ::
 /// `displacement_at`. No warm state is donated (ι owns fn+dispatch; caching is
 /// λ's job).
 pub fn displacement_at_trampoline(
@@ -3228,7 +3228,7 @@ pub fn displacement_at_trampoline(
 /// carrying a `Value::List` of LENGTH-dimensioned `Value::Scalar`s in SI metres
 /// (PRD §5.2) — the non-struct result shape unique to `displacement_at`, and the
 /// runtime counterpart of the `-> List<Length>` declaration at
-/// `stdlib/modal_analysis_fns.ri` (#6094). No warm state / diagnostics (ι donates
+/// `stdlib/modal_analysis.ri` (#6094). No warm state / diagnostics (ι donates
 /// neither).
 fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
@@ -7336,7 +7336,7 @@ mod tests {
     ///
     /// Here the opposite is true and it is MEASURED, not assumed.
     /// `modal_analysis(material : ElasticMaterial, …)`
-    /// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does NOT require
+    /// (`crates/reify-compiler/stdlib/modal_analysis.ri`) does NOT require
     /// `Damped`, so a material with no `loss_factor` reaches the solver and the
     /// compiler cannot catch it — a probe `structure def PlainSteel :
     /// ElasticMaterial { … }` type-checks and evaluates clean today. The absence
@@ -10705,7 +10705,7 @@ mod tests {
     /// Every entry of the emitted series must be a LENGTH-dimensioned
     /// `Value::Scalar`, not a bare `Value::Real` (#6094) — the runtime half of
     /// the `-> List<Length>` declaration whose derivation lives at
-    /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
+    /// `reify-compiler/stdlib/modal_analysis.ri` :: `displacement_at`.
     ///
     /// Why this cannot be folded into the compile-side pin
     /// (`reify-compiler/tests/harness_mechanics/modal_analysis_fns_stdlib_compile.rs`): the `.ri`
@@ -10772,7 +10772,7 @@ mod tests {
             else {
                 panic!(
                     "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
-                     Real (#6094; derivation at stdlib/modal_analysis_fns.ri :: \
+                     Real (#6094; derivation at stdlib/modal_analysis.ri :: \
                      displacement_at); got {item:?}"
                 );
             };

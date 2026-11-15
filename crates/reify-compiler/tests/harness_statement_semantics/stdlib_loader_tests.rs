@@ -977,7 +977,7 @@ fn stdlib_build_with_injected_duplicate_structure_name_panics_naming_both_module
 /// The positive counterpart: the REAL stdlib must still build. This is what
 /// proves the gate is wired into the production path rather than only reachable
 /// from a synthetic test set — if the scan were too coarse (kind-agnostic, or
-/// keying functions by name alone), this test goes red on the live 47-file
+/// keying functions by name alone), this test goes red on the live
 /// corpus while the injected-duplicate test above stays green.
 #[test]
 fn real_stdlib_build_is_collision_free() {
@@ -1018,7 +1018,7 @@ fn real_stdlib_build_is_collision_free() {
 //       one; reading `CompiledModule.type_aliases` (module-level only) does not.
 //
 // Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
-// (modal_analysis_fns.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
+// (modal_analysis.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
 // `solve_load_cases` x2 (fea_multi_case.ri) are all same-module overloads, out
 // of a cross-module scan's reach by construction, and remain the business of
 // the per-module duplicate path (`record_or_report_duplicate` in ctx.rs).
