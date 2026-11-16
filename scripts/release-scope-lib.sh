@@ -42,9 +42,9 @@ RELEASE_SENSITIVE_CRATES_FILE="${RELEASE_SENSITIVE_CRATES_FILE:-$_RELEASE_SCOPE_
 # existence-guarded source of occt-scope-lib.sh; every library on this chain has a
 # source guard, so this is an idempotent no-op under verify.sh's dual sourcing and
 # under test_release_scoped_scope.sh (which also sources occt-scope-lib.sh directly).
-[ -f "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" ] || { echo "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh" >&2; return 1; }
+[ -f "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" ] || { echo "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh" >&2; return 2; }
 # shellcheck source=scripts/affected-crates-lib.sh
-source "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh"
+source "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" || return 2
 
 # release_declared_set — print the declared release-sensitive crate list, one crate
 # per line, with comment lines (^\s*#) and blank lines removed and surrounding
@@ -159,6 +159,10 @@ release_sensitive_set() {
 #                      from the release-sensitive set (or empty). The caller may
 #                      omit the release pass and emit the frozen plan marker
 #                      `RELEASE-PASS: skipped (delta-clean)` in its place.
+#
+#   Sourcing this lib returns 2 when a dependency fails to load: a status
+#   disjoint from rc 0/1, so a caller reading the predicate's status cannot
+#   mistake a load failure for SKIPPABLE.
 #
 # Affected-crate-set resolution (reuse chain — NO second closure, K8):
 #   - REIFY_AFFECTED_CRATES_OVERRIDE set & non-empty => used verbatim. This is the

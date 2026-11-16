@@ -46,8 +46,9 @@ def decide_release_delta(
     affected-crate override is the predicate's whole input; without one, the
     merge's changed files are, and a delta verify cannot derive keeps the pass
     without asking. Only the predicate's SKIPPABLE status skips: the lib is
-    fail-wide, so any other non-zero status (a fork that failed, a lib that
-    would not source, a crash) keeps the pass and warns.
+    fail-wide, so any other non-zero status (a fork that failed, the 2 the
+    lib reports for a dependency it could not load, a crash) keeps the pass
+    and warns.
     """
     if not (role_policy.release_delta_skip_eligible and knobs.resolve(knobs.RELEASE_DELTA_SKIP, planning).value):
         return False, ()
