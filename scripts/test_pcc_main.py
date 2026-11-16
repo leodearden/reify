@@ -35,12 +35,9 @@ from _pcc_test_support import (
     _ts_stub_hangs,
     _ts_stub_not_executable,
     make_fixture_repo,
-    make_git_fixture_repo,
     probe_context,
     recording_runner,
-    trust_environ,
-    write_bin_sidecar,
-    write_profile_binary,
+    trust_ctx,
 )
 from _schema_test_support import schema_errors
 
@@ -1443,27 +1440,14 @@ class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
 
     _RELEASE = "target/release/reify"
 
-    def _trust_ctx(self, binary=None, sidecar_for_head=lambda _head: None):
-        """(binary path or None, ctx) over a fixture git repo holding only `binary`.
-
-        `binary` is the repo-relative profile binary to build, or None for none;
-        `sidecar_for_head(head)` is the sidecar text to write, or None for none.
-        """
-        tmp = tempfile.TemporaryDirectory(prefix="pcc_trust_main_")
-        self.addCleanup(tmp.cleanup)
-        root = make_fixture_repo(tmp.name)
-        head = make_git_fixture_repo(root)
-        path = None if binary is None else write_profile_binary(root, binary)
-        sidecar = sidecar_for_head(head)
-        if sidecar is not None:
-            write_bin_sidecar(root, sidecar)
-        ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
-        return path, ctx
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_main_"))
 
     def test_an_unvouched_lone_binary_is_refused_before_any_probe_runs(self):
         for sidecar in (None, "0" * 40):
             with self.subTest(sidecar=sidecar):
-                release, ctx = self._trust_ctx(self._RELEASE, lambda _head: sidecar)
+                release, ctx = trust_ctx(self._fresh_root(), self._RELEASE,
+                                         lambda _head: sidecar)
                 runner, calls = recording_runner()
                 rc, _, err = self._run_main_capturing([_EXAMPLE_PROBE_SET],
                                                       runner=runner, ctx=ctx)
@@ -1473,7 +1457,7 @@ class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_a_vouched_lone_binary_runs_the_probes(self):
-        release, ctx = self._trust_ctx(self._RELEASE, lambda head: head + "\n")
+        release, ctx = trust_ctx(self._fresh_root(), self._RELEASE, lambda head: head + "\n")
         runner, calls = recording_runner()
         rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
         self.assertNotEqual(rc, 64, out + err)
@@ -1482,7 +1466,7 @@ class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
             self.assertEqual(probe_ctx.reify_bin, release)
 
     def test_nothing_built_is_refused_before_any_probe_runs(self):
-        _, ctx = self._trust_ctx()
+        _, ctx = trust_ctx(self._fresh_root())
         runner, calls = recording_runner()
         rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET],
                                                 runner=runner, ctx=ctx)

@@ -25,6 +25,7 @@ from _pcc_test_support import (
     make_fixture_repo,
     make_git_fixture_repo,
     probe_context,
+    trust_ctx,
     trust_environ,
     write_bin_sidecar,
     write_profile_binary,
@@ -262,11 +263,7 @@ class TestReifyBinaryTrust(unittest.TestCase):
         """The home answers in one stdout line; a root holding a newline makes it two."""
         with tempfile.TemporaryDirectory(prefix="pcc_trust_") as tmp:
             root = os.path.join(tmp, "two\nlines")
-            os.makedirs(root)
-            write_bin_sidecar(root, make_git_fixture_repo(root) + "\n")
-            write_profile_binary(root, "target/release/reify")
-            ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
-                                                    repo_root=root)
+            _, ctx = trust_ctx(root, "target/release/reify", lambda head: head + "\n")
             self.assertIsNone(ctx.reify_bin)
             self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
             self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
@@ -288,25 +285,14 @@ class TestReifyBinaryTrust(unittest.TestCase):
 
     _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
 
-    def _lone_binary_ctx(self, relpath, sidecar_for_head):
-        """(binary path, ctx) over a fresh git repo holding only `relpath`.
-
-        `sidecar_for_head(head)` is the sidecar text to write, or None for none.
-        """
-        with tempfile.TemporaryDirectory(prefix="pcc_trust_lone_") as root:
-            head = make_git_fixture_repo(root)
-            path = write_profile_binary(root, relpath)
-            sidecar = sidecar_for_head(head)
-            if sidecar is not None:
-                write_bin_sidecar(root, sidecar)
-            return path, pcc.ProbeContext.from_environment(environ=trust_environ(),
-                                                           repo_root=root)
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_lone_"))
 
     def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
         for relpath in self._PROFILE_BINARIES:
             for sidecar in (None, "0" * 40):
                 with self.subTest(binary=relpath, sidecar=sidecar):
-                    path, ctx = self._lone_binary_ctx(relpath, lambda _head: sidecar)
+                    path, ctx = trust_ctx(self._fresh_root(), relpath, lambda _head: sidecar)
                     self.assertIsNone(ctx.reify_bin)
                     self.assertIn(path, ctx.reify_bin_refusal)
                     self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
@@ -314,7 +300,7 @@ class TestReifyBinaryTrust(unittest.TestCase):
     def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
         for relpath in self._PROFILE_BINARIES:
             with self.subTest(binary=relpath):
-                path, ctx = self._lone_binary_ctx(relpath, lambda head: head + "\n")
+                path, ctx = trust_ctx(self._fresh_root(), relpath, lambda head: head + "\n")
                 self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
                 self.assertTrue(os.path.isabs(ctx.reify_bin))
                 self.assertIsNone(ctx.reify_bin_refusal)
