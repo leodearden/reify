@@ -167,10 +167,6 @@ fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<b
     let output = child
         .wait_with_output()
         .unwrap_or_else(|e| panic!("cannot wait for python3 {}: {e}", classifier.display()));
-    writer
-        .join()
-        .expect("the stdin writer thread does not panic")
-        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
     assert!(
         output.status.success(),
         "{} attribute failed ({}): {}",
@@ -178,6 +174,10 @@ fn classifier_inert_facts(classifier: &Path, paths: &[impl AsRef<str>]) -> Vec<b
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+    writer
+        .join()
+        .expect("the stdin writer thread does not panic")
+        .unwrap_or_else(|e| panic!("cannot write paths to {}: {e}", classifier.display()));
 
     // One record per input path, in order:
     // `<is_global>\t<inert>\t<tree>\t<seed_crates>\t<unioned_crates>\t<path>`.
@@ -244,4 +244,24 @@ fn swept_ri_paths_follows_the_classifier_it_is_given() {
         "the listing drops exactly what the classifier marks inert: a tree it newly marks \
          (notes/) leaves the listing, and a tree it does not mark (docs/) stays"
     );
+}
+
+/// A stand-in for the scope classifier that exits before reading stdin.
+const EARLY_EXIT_CLASSIFIER: &str = r#"import sys
+
+sys.stderr.write("zz-classifier-stderr-marker: exited before reading its paths\n")
+sys.exit(3)
+"#;
+
+/// About 2 MiB of paths: more than a pipe buffer holds, so the write to the
+/// classifier's stdin is certain to hit its exit rather than race it.
+#[test]
+#[should_panic(expected = "zz-classifier-stderr-marker")]
+fn a_classifier_that_exits_before_reading_is_reported_with_its_stderr() {
+    let classifier_dir = prefixed_tempdir("reify-early-exit-classifier-");
+    let script = classifier_dir.path().join("early_exit_classifier.py");
+    std::fs::write(&script, EARLY_EXIT_CLASSIFIER)
+        .unwrap_or_else(|e| panic!("cannot write {}: {e}", script.display()));
+    let paths = vec![format!("{}.ri", "z".repeat(4096)); 512];
+    partition_inert_by(&script, paths);
 }
