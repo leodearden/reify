@@ -9,7 +9,7 @@ use crate::dev::DEV_USAGE;
 
 pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
-pub(crate) const TEST_USAGE: &str = "Usage: reify test <file>";
+pub(crate) const TEST_USAGE: &str = "Usage: reify test [--cfg <key=value|flag>]... <file>";
 
 pub(crate) const BUILD_USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose] [--cfg <key=value|flag>]...\n  \
     With -o:    write a single file in that format (imperative).\n  \
@@ -19,15 +19,16 @@ pub(crate) const BUILD_USAGE: &str = "Usage: reify build <file.ri> [-o <output>]
 
 pub(crate) const EVAL_USAGE: &str = "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] [--cfg <key=value|flag>]... <file>";
 
-pub(crate) const REPORT_USAGE: &str = "Usage: reify report --bom <file>";
+pub(crate) const REPORT_USAGE: &str =
+    "Usage: reify report --bom [--cfg <key=value|flag>]... <file>";
 
-pub(crate) const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
+pub(crate) const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact] [--cfg <key=value|flag>]...\n       reify doc --stdlib --out <dir>";
 
 const LSP_USAGE: &str = "Usage: reify lsp";
 
 pub(crate) const GUI_USAGE: &str = "Usage: reify gui [--debug] <file>";
 
-pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain [--cfg <key=value|flag>]... <file>";
 
 pub(crate) const FIX_USAGE: &str = "Usage: reify fix --imports [--check] <file>...";
 
@@ -114,7 +115,7 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         synopsis: "test <file>",
         usage: TEST_USAGE,
         summary: "Run @test-annotated structures, resolving their `auto` parameters",
-        details: &[],
+        details: &[HelpSection::Flags(&[CFG_FLAG])],
     },
     SubcommandHelp {
         name: "build",
@@ -166,7 +167,13 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         synopsis: "report --bom <file>",
         usage: REPORT_USAGE,
         summary: "Roll up a BOM / cost / waste / provenance report",
-        details: &[],
+        details: &[HelpSection::Flags(&[
+            FlagHelp {
+                synopsis: "--bom",
+                summary: "Roll up the BOM / cost / waste / provenance report (required)",
+            },
+            CFG_FLAG,
+        ])],
     },
     SubcommandHelp {
         name: "lsp",
@@ -222,6 +229,7 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
                 synopsis: "--stdlib",
                 summary: "Document the standard library (html; needs --out)",
             },
+            CFG_FLAG,
         ])],
     },
     SubcommandHelp {
@@ -230,7 +238,7 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         synopsis: "explain <file>",
         usage: EXPLAIN_USAGE,
         summary: "Print per-cell objective provenance: which objective chose each `auto` value",
-        details: &[],
+        details: &[HelpSection::Flags(&[CFG_FLAG])],
     },
     SubcommandHelp {
         name: "fix",
