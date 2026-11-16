@@ -270,8 +270,9 @@ resolve_trusted_reify_bin() {
 # Executed form: `bash reify-bin-freshness.sh resolve [repo_root]`.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     if [ "$#" -ge 1 ] && [ "$#" -le 2 ] && [ "$1" = "resolve" ]; then
-        resolve_trusted_reify_bin "${2:-$PWD}"
-        verdict=$?
+        # The `||` keeps a caller's exported errexit from exiting before the line prints.
+        verdict="$REIFY_BIN_TRUSTED"
+        resolve_trusted_reify_bin "${2:-$PWD}" || verdict=$?
         if [ "$verdict" -eq "$REIFY_BIN_TRUSTED" ]; then
             printf '%s\n' "$REIFY_BIN_RESOLVED"
         else
