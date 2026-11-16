@@ -898,26 +898,6 @@ structure def S {
 // source set through the production entry point is the only way to observe the
 // gate fire.
 
-/// Drive `build_stdlib_modules` on `sources` and return the panic message.
-///
-/// Panics (failing the test) if the build did NOT panic, or if the payload is
-/// neither `String` nor `&'static str`. Downcast idiom mirrors
-/// `multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic`
-/// above.
-fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stdlib_loader::build_stdlib_modules(sources);
-    }));
-    let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
-    if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    }
-}
-
 /// Assert that building `sources` panics with the NS-P2 collision message, and
 /// that the message names the kind, the colliding name, and BOTH modules.
 ///
@@ -933,7 +913,7 @@ fn assert_collision_panic(
     module_a: &str,
     module_b: &str,
 ) {
-    let msg = stdlib_build_panic_message(sources);
+    let msg = crate::common::stdlib_build_panic_message(sources);
     for needle in [NS_P2_PANIC_ANCHOR, kind, name, module_a, module_b] {
         assert!(
             msg.contains(needle),
