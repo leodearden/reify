@@ -793,7 +793,7 @@ must not grow — the gate's own guard `skip_set_entries_exist_under_examples_di
 | B6 | **Author side.** `param t : Length = 1.0` | δ₁ landed | **exactly one** diagnostic, code `ParamDefaultTypeMismatch`, `Severity::Error`, `reify check` exit **1** |
 | B7 | **Author side.** `let t : Length = 1.0` | δ₁ landed | exactly one `LetAnnotationTypeMismatch`, Error, exit 1 |
 | B8 | **Author side.** `param t : Length = 5mm` and `param r : Real = 1.0` | δ₁ landed | zero diagnostics (no over-rejection) |
-| B9 | **Constraint side.** a constraint over a strictly-typed dimensioned field | γ + ε landed | the constraint reaches a definite Satisfied/Violated verdict — **not** Indeterminate-satisfied |
+| B9 | **Constraint side.** a constraint over a dimensioned param DEFAULT on the module's own `structure def` (`param magnitude : Force = …`, `constraint magnitude > 0N`) | δ₁ + ε landed | a positive default reaches a definite Satisfied; a negative one a definite Violated, exit 1 — **not** Indeterminate-satisfied; a bare-literal default is a compile Error. The ctor-arg and prelude-structure forms are task #5765's |
 | B10 | **Downstream side.** PRD 5's retyped `PointLoad(force: …)` | γ landed; PRD 5 retyping landed | a bare `5000` at a `Force` field is diagnosed; `5000N` is clean (today the polarity is *inverted* — §10.2) |
 
 ---
@@ -846,7 +846,7 @@ Against `docs/legibility/design-invariants.md`:
 | Invariant | Bearing |
 |---|---|
 | **INV-SF-3** `declared-intent-consumed-or-diagnosed` | **This PRD is a remediation of it.** ~25 stdlib params declare a dimension and enforce nothing; the declaration is design intent that no pass consumes. γ makes it consumed. |
-| **INV-SF-4** `indeterminate-attributable-transient` | **Confirmed violation, and this PRD is its remedy** — §10.3. γ makes the permanently-Indeterminate input class impossible at construction; ε pins the recovery and files the one residual defect (operand-kind `Undef` emitted at Warning) by name rather than leaving it silent. |
+| **INV-SF-4** `indeterminate-attributable-transient` | **Confirmed violation, and this PRD is its remedy** — §10.3. γ's gate-2 half plus δ₁ make the permanently-Indeterminate input class impossible at the declaration; ε pins the recovery and files the one residual defect (operand-kind `Undef` emitted at Warning) by name rather than leaving it silent. |
 | **INV-SF-5** `placeholders-owned-and-loud` | The trajectory bare-number call sites are acknowledged placeholders (`printer_print_envelope.ri` calls its own args *"(mm/s placeholder Real)"*); β makes them real. New placeholders are not introduced. |
 | **INV-SF-6** `diagnostics-carry-codes` | D4-8: every new/changed diagnostic carries a code; every assertion is on code identity. |
 | **INV-SF-2** `error-severity-exits-nonzero` | Respected and *relied upon* (§3.2). This PRD adds no per-code escalation and no Error-severity output on a healthy path. |
@@ -925,10 +925,10 @@ The brief asked this PRD to establish whether strict ctor conformance makes the
 independent constraint-evaluation defect remains. **Both questions are now answered**, by
 tracing the full path this session.
 
-**Verdict: the Indeterminate is a CONSEQUENCE. γ fixes it. There is no defect in
-order-comparison evaluation for well-typed operands.**
+**Verdict: the Indeterminate is a CONSEQUENCE. γ's gate-2 half plus δ₁ fix it. There is no
+defect in order-comparison evaluation for well-typed operands.**
 
-The causal chain is single-threaded and cut at the constructor:
+The causal chain is single-threaded and cut at the declaration:
 
 1. The **compile-time** comparison guard `emit_comparison_operand_diagnostics`
    (`crates/reify-compiler/src/expr.rs:476-583`, called from `compile_binop` at `:1627`/`:1952`)
@@ -936,10 +936,11 @@ The causal chain is single-threaded and cut at the constructor:
    (`type_compat.rs:1335-1366`, `DiagnosticCode::DimensionMismatch`). It adjudicates
    **declared** types, and `param magnitude : Force` vs `0N` is `Scalar{FORCE}` vs
    `Scalar{FORCE}` — clean. **The compiler is right given what it is told.**
-2. The only thing that makes the declaration a lie is the exclusion at
-   `conformance/mod.rs:1694` — i.e. gate 1.
-3. The ctor then persists the lie **verbatim**, with no dimension stamping
-   (`crates/reify-expr/src/lib.rs:1085-1087`).
+2. The only thing that makes the declaration a lie is the param-DEFAULT path's tolerance of a
+   bare literal — gate 2 (the conformance pass, riding the `conformance/mod.rs:1694`
+   predicate; closed by γ, #5627) and gate 3 (`check_param_default_type`'s literal
+   early-return; deleted by δ₁, #5646).
+3. The param default is then stored **verbatim**, with no dimension stamping.
 4. At eval, `eval_cmp` (`crates/reify-expr/src/lib.rs:5070-5110`) hits the
    Real-vs-dimensioned arm (`:5099-5103`) → `Value::Undef` → `Satisfaction::Indeterminate`
    (`crates/reify-constraints/src/lib.rs:183-215`) → treated as non-violating
@@ -965,7 +966,8 @@ dimensionless (the `HarmonicForce.phase : Angle = 0deg` note in `modal_analysis.
 same mechanism). That is the configuration the manifest's `probe:epsilon-recovery-target`
 observed — `param magnitude : Force = -10.0` → `INDETERMINATE`, "operator undefined for these
 operand kinds: Real" — and the one ε pins. The research doc's framing ("constraints are
-NOT a backstop") is **correct as stated**; the reason is the constructor, not the comparator.
+NOT a backstop") is **correct as stated**; the reason is the param-default declaration, not
+the comparator.
 
 **One genuinely independent defect survives, and one asymmetry.** Neither is fixed by this
 PRD; ε files both by name.
@@ -989,8 +991,8 @@ PRD; ε files both by name.
   `constraint magnitude > 0N` reports **INDETERMINATE** (silent, exit 0). Any
   "constraints as backstop" reasoning must not generalize across the two families.
 
-**INV-SF-4 assessment.** This *is* a violation as written — for the input class "`StepForce`
-constructed with a bare number", the constraint is Indeterminate in **every** run, and no
+**INV-SF-4 assessment.** This *is* a violation as written — for the input class "a `Force` param
+defaulted to a bare number", the constraint is Indeterminate in **every** run, and no
 runtime condition clears it. It is worse in kind than the invariant's own cited evidence
 (inert `frame_align` selectors): this constraint *looks* enforced, is asserted by a dedicated
 compiler test (`crates/reify-compiler/tests/modal_options_validation_tests.rs:1465-1505`
@@ -998,8 +1000,8 @@ compiler test (`crates/reify-compiler/tests/modal_options_validation_tests.rs:14
 reason a dimensioned zero was chosen — and disarms itself precisely on the inputs it exists
 to catch. **The correct INV-SF-4 remedy is not "make this constraint a compile error"** — the
 constraint text is well-formed and definite for every well-typed instance. It is *"make the
-input class that renders it permanently Indeterminate impossible at construction"* — i.e.
-exactly γ.
+input class that renders it permanently Indeterminate impossible at the declaration"* — i.e.
+γ's gate-2 half plus δ₁.
 
 ### 10.4 In-flight tasks
 
@@ -1021,8 +1023,8 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 ```
 ζ₀ ──┐
-     ├──► α ──► β ──► γ ──┬──► δ₁ ──► δ₂
-     │                    ├──► ε
+     ├──► α ──► β ──► γ ──┬──► δ₁ ──┬──► δ₂
+     │                    │         └──► ε
      │                    └──► ζ₁ ──► ζ₂ ──► ζ₃ ──► ζ₄
 ```
 
@@ -1224,7 +1226,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 ### ε — Constraint backstop: pin the recovered verdict; file the residual defect by name
 
-**The investigation this leaf was going to perform has been done at authoring time** (§10.4).
+**The investigation this leaf was going to perform has been done at authoring time** (§10.3).
 The verdict is settled, so ε is now a *pin-and-file* leaf, not an open investigation.
 
 - **Modules:** a constraint-outcome pin under `crates/reify-eval/tests/`; the follow-up is
@@ -1232,23 +1234,32 @@ The verdict is settled, so ε is now a *pin-and-file* leaf, not an open investig
 - **Work, part 1 — pin the recovery.** With a strictly-typed field, `constraint magnitude > 0N`
   takes the same-dimension arm of `eval_cmp` (`crates/reify-expr/src/lib.rs:5073-5088`) and
   returns a definite `Bool` → `Satisfaction::Satisfied` / `Violated`
-  (`crates/reify-constraints/src/lib.rs:171-183`). Pin it against the real stdlib structure:
-  `StepForce` (`crates/reify-compiler/stdlib/modal_analysis.ri`: `param magnitude : Force`
-  at `:486`, `constraint magnitude > 0N` at `:500`), whose live well-typed call site
-  is `examples/modal/transient_step_response.ri:102-107`. Assert a **definite** verdict for a
-  well-typed instance and a **`Violated`** verdict for a negative one — the pair, so a
-  future regression to Indeterminate cannot pass as "still Satisfied".
-- **Work, part 2 — file the residual defect (do NOT fix it here).** §10.4 identifies one
-  genuinely independent defect that survives strict construction, plus one asymmetry. Both
-  get a filed, cited follow-up task; ε's test doc comment records the id. **Silence is not
-  an option** (INV-SF-4).
-- **Signal:** `reify check examples/modal/transient_step_response.ri`-shaped fixture reports
-  its `StepForce` magnitude constraint as **satisfied-definitely**, and the
-  negative-magnitude sibling as **violated** with exit 1 — where a bare-number instance
-  previously produced `"No constraints violated (1 indeterminate)"` and **exit 0**. Plus: a
-  live task id for the residual defect, named in the test.
+  (`crates/reify-constraints/src/lib.rs:171-183`). **Realized pin:**
+  `crates/reify-eval/tests/harness_engine/dimensioned_param_default_constraint_verdicts.rs`
+  — a local `structure def StepForceShape` mirroring stdlib `StepForce`'s
+  `param magnitude : Force` + `constraint magnitude > 0N`, valued through its own param
+  DEFAULT and checked the way `reify check` does. Not `StepForce` and not a ctor arg:
+  ctor args and prelude template constraints never reach the constraint checker (task #5765),
+  so either form would be vacuous. It asserts a **definite** Satisfied for `10N` and a
+  **`Violated`** for `-10N` — the pair, so a future regression to Indeterminate cannot pass as
+  "still Satisfied" — plus the compile-gate rows: a bare-literal default is a
+  `ParamDefaultTypeMismatch` Error, and the §10.3 dimensionless-vs-`5mm` symmetry is a
+  `DimensionMismatch` Error.
+- **Work, part 2 — file the residual defect (do NOT fix it here).** §10.3 identifies one
+  genuinely independent defect that survives strict construction, plus one asymmetry. Filed:
+  R1 (operand-kind `Undef` silently green) + R2 (`==` vs `>`) → **task #10027**; R3 (ctor args
+  and prelude template constraints never checked) → **task #5765**. ε's test doc comment
+  records the ids. R1's measured blast radius is wider than §10.3 states: any `Undef` with all
+  leaves defined (e.g. `1.0 / x` at x = 0, `sqrt(y)` at y < 0) is reported as "operator
+  undefined for these operand kinds" — detail in #10027. **Silence is not an option**
+  (INV-SF-4).
+- **Signal:** the local `StepForceShape` fixture reports its magnitude constraint as
+  **satisfied-definitely** for a positive default, and the negative-default sibling as
+  **violated** with exit 1 — where a bare-number default once produced
+  `"No constraints violated (1 indeterminate)"` and **exit 0**, and is now a compile Error.
+  Plus: live task ids for the residuals, named in the test.
 - **δ-position:** pre-δ; asserts a **constraint outcome**, not a diagnostic severity.
-- **Prereqs:** γ.
+- **Prereqs:** δ₁ (task #5646).
 
 ### ζ₁ — Doc-chunk update, registry-verified *(docs-truth 1 of 4)*
 
@@ -1357,6 +1368,10 @@ needs a NEW test binary, its registration must land same-diff or as a hard upstr
    **Suggested resolution:** one follow-up task covering both — they share a file and a root
    framing ("the constraint layer's answer to a malformed comparison"). Split only if α's
    evidence shows independent blast radii. Decide during **ε**.
+   **Decided (ε, task #5763):** ONE follow-up, task #10027. They do not share a file (R1 is
+   `crates/reify-constraints/src/lib.rs`, R2 is `crates/reify-expr/src/lib.rs`), but the fixes
+   are coupled: R2's fix direction depends on R1 — returning `Undef` from `==` is only safe
+   once R1 makes that `Undef` loud.
 5. **Whether any fn-call-entry `Scalar` leaf is reachable** (§3.1). Expected zero.
    **Suggested resolution:** if α finds any, migrate them in β; they are Error-severity
    pre-δ, so they cannot be left. Decide during **α**.
