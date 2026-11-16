@@ -1263,7 +1263,7 @@ structure FeaCantileverDeterministic {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
     let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
@@ -1408,7 +1408,7 @@ structure FeaCantileverDivAccessor {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
     let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
@@ -1518,7 +1518,7 @@ structure FeaCantileverGradCurlAccessor {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
     let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
@@ -1701,7 +1701,7 @@ structure Gamma1PointLoad {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
     let mount    = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(

@@ -2062,7 +2062,7 @@ pub structure GantryFea {
     // Static: half-span cantilever, lateral end shear.
     let half_span = span / 2
     let mount = FixedSupport(target: face(beam, "root"))
-    let tip   = PointLoad(point: "tip", force: test_load)
+    let tip   = PointLoad(point: vertex(beam, "tip"), force: test_load)
     // ShellForce.Off: the equivalent-EI section is SQUARE (thickness/extent
     // 1.00), so the shell classifier's fallback warning fires on a cold
     // compute cache; forcing the tet path is what the hint asks for and is
@@ -2483,7 +2483,7 @@ pub structure AFrame {
     let mount = FixedSupport(target: face(body, "root"))
     let r_pil = solve_elastic_static(
         mat_pil, stub_l, pil_wx, pil_wy,
-        [PointLoad(point: "tip", force: test_load)], [mount],
+        [PointLoad(point: vertex(body, "tip"), force: test_load)], [mount],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_pil = max(r_pil.displacement)
     let k_pil_fea : Stiffness = test_load * 1N / defl_pil
@@ -2508,9 +2508,9 @@ pub structure AFrame {
     // ── GUI FEA case view: pillar under the rail-reaction cases ─────────────
     let stub_l2 = stub_l * 1.0
     let case_peak = LoadCase(name: "rail_x_peak",
-        loads: [PointLoad(point: "tip", force: rail_load_peak)], supports: [mount])
+        loads: [PointLoad(point: vertex(body, "tip"), force: rail_load_peak)], supports: [mount])
     let case_stretch = LoadCase(name: "rail_x_stretch",
-        loads: [PointLoad(point: "tip", force: rail_load_stretch)], supports: [mount])
+        loads: [PointLoad(point: vertex(body, "tip"), force: rail_load_stretch)], supports: [mount])
     let mc = solve_load_cases(
         mat_pil, stub_l2, pil_wx, pil_wy, [case_peak, case_stretch],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))

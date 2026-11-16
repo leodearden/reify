@@ -313,11 +313,17 @@ structure def MultiCaseResult {
 // once the dimensional type aliases land.
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
-// Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary
-// tests in `crates/reify-eval/tests/structure_instance_e2e.rs`); callers may
-// override either field at construction.
+//
+//   `point` — the loaded point, a REQUIRED typed `VertexSelector`, e.g.
+//             `vertex(body, "tip")` (task 5312;
+//             docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//             A bare String is a compile error. The solver does not read it
+//             yet: every PointLoad loads the cantilever's x_max face until
+//             Bmig2-consume (#5313, PRD D9) applies the force at the
+//             resolved vertex node set.
+//   `force` — applied force magnitude; defaults to 0.0.
 structure def PointLoad : Load {
-    param point : String = ""
+    param point : VertexSelector
     param force : Real = 0.0
     // Applied-force direction vector.  The total force contribution from this
     // load is `force * direction` component-wise (see elastic_static.rs
@@ -325,15 +331,15 @@ structure def PointLoad : Load {
     // `force` retains its physical magnitude meaning.  Non-unit vectors
     // silently scale the applied force by |direction| — e.g. vec3(0, 0, -2)
     // doubles the -Z force.  Default vec3(0, 0, -1) (−Z, the canonical
-    // bending/gravity direction) preserves backward compatibility — a bare
-    // PointLoad() contributes [0, 0, -force], byte-identical to the pre-4245
-    // hardcoded -Z path.
+    // bending/gravity direction) preserves backward compatibility — a
+    // PointLoad without `direction` contributes [0, 0, -force],
+    // byte-identical to the pre-4245 hardcoded -Z path.
     //
     // `direction` is declared LAST. Ctor args bind BY NAME (task 4522), and
-    // every call site in the corpus today is either zero-arg `PointLoad()` or
-    // fully labelled (`PointLoad(point: ..., force: ...)`), so none of them
-    // depends on where `direction` sits in the declaration — a directional
-    // caller just appends `direction: vec3(...)` (task 3015's non-colinear
+    // every call site in the corpus today is fully labelled
+    // (`PointLoad(point: ..., force: ...)`), so none of them depends on
+    // where `direction` sits in the declaration — a directional caller just
+    // appends `direction: vec3(...)` (task 3015's non-colinear
     // superposition) wherever it likes. Declaration order governs only
     // UNLABELLED args, which fill the remaining slots in order: promoting
     // `direction` ahead of `point`/`force` would silently rebind an

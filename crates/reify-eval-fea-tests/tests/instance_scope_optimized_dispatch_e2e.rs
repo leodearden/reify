@@ -59,7 +59,7 @@ fn beam_structure(name: &str, loads: BeamLoads) -> String {
 
             let material = Steel_AISI_1045()
             let body     = box(span, w, h)
-            let tip      = PointLoad(point: "tip", force: load)
+            let tip      = PointLoad(point: vertex(body, "tip"), force: load)
             let mount    = FixedSupport(target: face(body, "root"))
             {pressure_let}
 

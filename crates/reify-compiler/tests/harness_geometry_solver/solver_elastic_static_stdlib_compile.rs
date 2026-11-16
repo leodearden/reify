@@ -174,7 +174,7 @@ fn solve_elastic_static_direct_point_load_compiles_clean() {
 structure FEACantileverTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -273,7 +273,7 @@ structure FEAMultiCaseTest {
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [LoadCase(
             name: "c",
-            loads: [PointLoad(point: "tip", force: 1000.0)],
+            loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
             supports: [FixedSupport(target: face(body, "root"))]
         )],
         ElasticOptions()
@@ -349,7 +349,7 @@ fn constitutive_law_input_struct_is_retired() {
 structure DirectPassRegression {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -496,7 +496,7 @@ structure FEABodyCantilever {
     let result = solve_elastic_static(
         Steel_AISI_1045(),
         body,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -542,7 +542,7 @@ structure StressPredicateProbe {
     param yield_limit : Pressure = 250MPa
     let r = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -638,14 +638,21 @@ fn selector_field_errors(ctor: &str) -> Vec<reify_core::Diagnostic> {
 
 fn assert_no_errors(ctor: &str) {
     let errors = selector_field_errors(ctor);
-    assert!(errors.is_empty(), "`{ctor}` must compile clean, got {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "`{ctor}` must compile clean, got {errors:?}"
+    );
 }
 
 /// `ctor` yields exactly one Error, with `code`, whose message names every one
 /// of `fragments`.
 fn assert_single_error(ctor: &str, code: DiagnosticCode, fragments: &[&str]) {
     let errors = selector_field_errors(ctor);
-    assert_eq!(errors.len(), 1, "`{ctor}` must yield exactly one Error, got {errors:?}");
+    assert_eq!(
+        errors.len(),
+        1,
+        "`{ctor}` must yield exactly one Error, got {errors:?}"
+    );
     let error = &errors[0];
     assert_eq!(error.code, Some(code), "`{ctor}`: wrong code in {error:?}");
     for fragment in fragments {

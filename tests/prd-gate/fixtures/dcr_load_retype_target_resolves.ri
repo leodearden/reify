@@ -25,7 +25,7 @@ module dcr_load_retype_target_resolves
 //   file now also shows that the retyped shapes pass δ's Error-severity walk.
 
 structure def DcrRetypedPointLoad {
-    param point     : String     = ""
+    param point     : VertexSelector
     param force     : Force      = 0N
     param direction : Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)
 }
@@ -46,7 +46,7 @@ structure def DcrRetypedBodyForce {
 
 structure def DcrLoadRetypeTargetResolves {
     let body = box(1m, 0.1m, 0.1m)
-    let a = DcrRetypedPointLoad(point: "tip", force: 5000N)
+    let a = DcrRetypedPointLoad(point: vertex(body, "tip"), force: 5000N)
     let b = DcrRetypedPressureLoad(magnitude: 1000000Pa)
     let c = DcrRetypedTractionLoad(face: face(body, "top"), traction: 5000000Pa)
     let d = DcrRetypedBodyForce(body: solid_body(body, "all"), force_density: -77000N/m^3)

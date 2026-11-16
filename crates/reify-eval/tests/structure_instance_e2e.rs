@@ -95,7 +95,8 @@ fn structure_instance_is_constructible() {
 fn point_load_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
 structure def PointLoadFixture {
-    let load = PointLoad()
+    let body = box(1m, 0.1m, 0.1m)
+    let load = PointLoad(point: vertex(body, "tip"))
 }
 "#;
 
@@ -308,7 +309,8 @@ structure def BeamN {
 }
 
 structure def BadAsm {
-    sub b = BeamN(mat: PointLoad())
+    let body = box(1m, 0.1m, 0.1m)
+    sub b = BeamN(mat: PointLoad(point: vertex(body, "tip")))
 }
 "#;
     let compiled = compile_source_with_stdlib(SOURCE);
@@ -627,10 +629,11 @@ structure def NonPsdFixture {
 fn point_load_direction_field_default_and_override() {
     const SOURCE: &str = r#"
 structure def DirectionFixture {
-    let a = PointLoad()
+    let body = box(1m, 0.1m, 0.1m)
+    let a = PointLoad(point: vertex(body, "tip"))
     // `direction` is the LAST param (ctors bind positionally), so an explicit
     // override must also supply point/force in declaration order.
-    let b = PointLoad(point: "", force: 0.0, direction: vec3(0.0, -1.0, 0.0))
+    let b = PointLoad(point: vertex(body, "tip"), force: 0.0, direction: vec3(0.0, -1.0, 0.0))
 }
 "#;
 

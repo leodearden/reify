@@ -242,8 +242,8 @@ structure def PointLoadFixture {
                 data.fields
             );
         }
-        other => panic!(
-            "expected Value::StructureInstance for PointLoadFixture.load — got {other:?}"
-        ),
+        other => {
+            panic!("expected Value::StructureInstance for PointLoadFixture.load — got {other:?}")
+        }
     }
 }
