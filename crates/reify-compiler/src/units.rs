@@ -4589,4 +4589,25 @@ mod tests {
             Some(reify_core::Type::Frame(3)),
         );
     }
+
+    /// `dir` is a datum-family name typed `Direction` at every arity: arity
+    /// and argument kinds are judged at eval by reify-stdlib's classifier.
+    #[test]
+    fn dir_is_claimed_by_the_datum_resolver_as_direction() {
+        assert!(DATUM_CONSTRUCTOR_NAMES.contains(&"dir"));
+        for arity in [0, 1, 3] {
+            let probe_args = vec![
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Undef,
+                    reify_core::Type::dimensionless_scalar(),
+                );
+                arity
+            ];
+            assert_eq!(
+                datum_constructor_result_type("dir", &probe_args),
+                Some(reify_core::Type::Direction),
+                "dir at arity {arity} must type as Direction"
+            );
+        }
+    }
 }
