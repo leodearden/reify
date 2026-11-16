@@ -6,6 +6,7 @@
 
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -483,25 +484,6 @@ fn assert_no_errors(module: &reify_compiler::CompiledModule, what: &str) {
     );
 }
 
-fn cell_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    template: &str,
-    member: &str,
-) -> &'m reify_ir::CompiledExpr {
-    module
-        .templates
-        .iter()
-        .find(|t| t.name == template)
-        .unwrap_or_else(|| panic!("template {template} missing"))
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("{template}.{member} cell missing"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("{template}.{member} has no expression"))
-}
-
 fn assert_padded_call(expr: &reify_ir::CompiledExpr, callee: &str, arity: usize, what: &str) {
     match &expr.kind {
         CompiledExprKind::UserFunctionCall {
@@ -562,7 +544,7 @@ fn structure_above_fn_pads_omitted_template_free_default() {
     let source = format!("structure S {{ let v = scale(2.0) }}\n{SCALE_FN}");
     let module = compile_src(&source, "test_consume_pad_c");
     assert_no_errors(&module, "structure above fn");
-    assert_padded_call(cell_expr(&module, "S", "v"), "scale", 2, "S.v");
+    assert_padded_call(get_let_expr_in(&module, "S", "v"), "scale", 2, "S.v");
 }
 
 /// (d) An ambient default compiles before any free fn body, yet its value must pad
@@ -572,9 +554,9 @@ fn ambient_default_pads_omitted_template_free_default() {
     let source = "structure def Bracket : Physical { param geometry : Solid = box(10mm, 20mm, 30mm) }\n\
          fn dens(x : Real, k : Real = 1000.0) -> Real { x * k }\n\
          default Material = Material(name: \"steel\", density: dens(7.85) * 1kg/m^3, youngs_modulus: 200GPa)\n";
-    let module = reify_test_support::compile_source_with_stdlib(source);
+    let module = compile_source_with_stdlib(source);
     assert_no_errors(&module, "ambient default");
-    let material = cell_expr(&module, "Bracket", "material");
+    let material = get_let_expr_in(&module, "Bracket", "material");
     let CompiledExprKind::StructureInstanceCtor {
         type_name,
         ordered_args,
@@ -629,7 +611,7 @@ fn ordered_template_dependent_default_pads_below_fn() {
     let source = format!("{OPTS_SOLVE}structure S {{ let v = solve(2.0) }}\n");
     let module = compile_src(&source, "test_consume_pad_f");
     assert_no_errors(&module, "ordered template-dependent default");
-    let v = cell_expr(&module, "S", "v");
+    let v = get_let_expr_in(&module, "S", "v");
     assert_padded_call(v, "solve", 2, "S.v");
     let CompiledExprKind::UserFunctionCall { args, .. } = &v.kind else {
         unreachable!()
@@ -778,7 +760,7 @@ fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
          structure S { let v = solve(2.0) }\n";
     let module = compile_src(source, "test_consume_pad_h");
     assert_no_errors(&module, "auto-arg ctor default");
-    assert_padded_call(cell_expr(&module, "S", "v"), "solve", 2, "S.v");
+    assert_padded_call(get_let_expr_in(&module, "S", "v"), "solve", 2, "S.v");
 }
 
 /// (i) an assoc-fn override in a structure declared above `fn solve` omitting
