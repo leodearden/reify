@@ -14,10 +14,15 @@ trimmed from real output (`env -u LD_LIBRARY_PATH ldd target/release/reify` on
 the dev host, 2026-11-15) unless labelled DERIVED.
 """
 
+import contextlib
+import dataclasses
 import importlib.util
+import io
 import json
+import os
 import shlex
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -107,15 +112,61 @@ class ParseLdd(unittest.TestCase):
 
     def test_report_is_immutable(self):
         report = bc.parse_ldd(HOST_LDD)
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             report.missing = frozenset({"x"})
         with self.assertRaises(TypeError):
             report.resolved["x"] = "/y"
 
 
-def _report(missing=(), version_short=()):
+def _report(missing=(), version_short=(), resolved=None):
     return bc.LddReport(
-        resolved={}, missing=frozenset(missing), version_short=frozenset(version_short))
+        resolved=resolved or {}, missing=frozenset(missing),
+        version_short=frozenset(version_short))
+
+
+GUI = Path("/t/release/reify-gui")
+CLI = Path("/t/release/reify")
+
+
+class MergeHostReports(unittest.TestCase):
+
+    def test_both_binaries_sonames_are_merged(self):
+        merged = bc.merge_host_reports({
+            GUI: _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15"}),
+            CLI: _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
+                                   "libslvs.so.1": "/usr/lib/libslvs.so.1"}),
+        })
+        self.assertEqual(merged, {"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
+                                  "libslvs.so.1": "/usr/lib/libslvs.so.1"})
+
+    def test_one_soname_resolved_to_two_files_is_an_error_naming_both(self):
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.merge_host_reports({
+                GUI: _report(resolved={"libstdc++.so.6": "/opt/d/libstdc++.so.6"}),
+                CLI: _report(resolved={"libstdc++.so.6": "/usr/lib/libstdc++.so.6"}),
+            })
+        message = str(caught.exception)
+        for expected in ("libstdc++.so.6", "/opt/d/libstdc++.so.6",
+                         "/usr/lib/libstdc++.so.6", str(GUI), str(CLI)):
+            self.assertIn(expected, message)
+
+    def test_two_paths_to_one_file_are_the_same_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "libfoo.so.1"
+            real.write_bytes(b"")
+            alias_dir = Path(tmp) / "alias"
+            alias_dir.symlink_to(tmp)
+            merged = bc.merge_host_reports({
+                GUI: _report(resolved={"libfoo.so.1": str(real)}),
+                CLI: _report(resolved={"libfoo.so.1": str(alias_dir / "libfoo.so.1")}),
+            })
+        self.assertEqual(merged, {"libfoo.so.1": str(real)})
+
+    def test_a_binary_unresolved_on_the_host_is_an_error_naming_it(self):
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.merge_host_reports({CLI: _report(missing={"libfoo.so.1"})})
+        self.assertIn(str(CLI), str(caught.exception))
+        self.assertIn("libfoo.so.1", str(caught.exception))
 
 
 class FakeTarget:
@@ -174,6 +225,23 @@ class DeriveClosure(unittest.TestCase):
             bc.derive_closure(HOST, target)
         self.assertIn("libA.so.1", str(caught.exception))
 
+    def test_a_glibc_gap_is_an_immediate_error_naming_glibc(self):
+        host = {**HOST, "libc.so.6": "/lib/x86_64-linux-gnu/libc.so.6",
+                "ld-linux-x86-64.so.2": "/lib64/ld-linux-x86-64.so.2"}
+        for glibc_soname in ("libc.so.6", "ld-linux-x86-64.so.2"):
+            with self.subTest(glibc_soname):
+                calls = []
+
+                def target(staged, glibc_soname=glibc_soname):
+                    calls.append(staged)
+                    return _report(missing={"libA.so.1"}, version_short={glibc_soname})
+
+                with self.assertRaises(bc.ClosureError) as caught:
+                    bc.derive_closure(host, target)
+                self.assertIn("newer glibc", str(caught.exception))
+                self.assertIn(glibc_soname, str(caught.exception))
+                self.assertEqual(calls, [frozenset()])
+
 
 class TauriOverlay(unittest.TestCase):
 
@@ -181,7 +249,7 @@ class TauriOverlay(unittest.TestCase):
         self.overlay = bc.tauri_overlay(
             stage=Path("/stage"),
             product_name="Reify",
-            main_binary=("reify-gui", Path("/t/release/reify-gui")),
+            main_name="reify-gui",
             extra_binaries={"reify": Path("/t/release/reify")},
         )
 
@@ -240,6 +308,61 @@ class ReferenceImage(unittest.TestCase):
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS)),
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS + ["libfuse2t64"])))
 
+
+VALID_CONF = {"productName": "Reify", "bundle": {"linux": {"deb": {"depends": DEPENDS}}}}
+
+
+class CommandLineRefusals(unittest.TestCase):
+    """bc.main's refusals, each reached before any ldd or docker call."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.conf = self.tmp / "tauri.conf.json"
+        self.stage = self.tmp / "stage"
+        self.overlay = self.tmp / "overlay.json"
+
+    def _main(self, conf_text, *extra_args):
+        self.conf.write_text(conf_text, encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = bc.main([
+                "--tauri-conf", str(self.conf), "--stage", str(self.stage),
+                "--overlay", str(self.overlay),
+                "--main-binary", f"reify-gui={self.tmp / 'reify-gui'}", *extra_args])
+        return code, stderr.getvalue()
+
+    def test_a_non_empty_stage_is_refused_naming_it(self):
+        self.stage.mkdir()
+        (self.stage / "leftover").write_text("", encoding="utf-8")
+        code, stderr = self._main(json.dumps(VALID_CONF))
+        self.assertEqual(code, 1)
+        self.assertIn(f"stage dir {self.stage} is not empty", stderr)
+        self.assertFalse(self.overlay.exists())
+
+    def test_a_binary_argument_without_name_eq_path_is_a_usage_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._main(json.dumps(VALID_CONF), "--extra-binary", "reify")
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_a_conf_without_product_name_is_refused_naming_file_and_key(self):
+        conf = {key: value for key, value in VALID_CONF.items() if key != "productName"}
+        code, stderr = self._main(json.dumps(conf))
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.conf} has no productName", stderr)
+        self.assertFalse(self.stage.exists())
+
+    def test_a_conf_without_deb_depends_is_refused_naming_the_key_path(self):
+        conf = {"productName": "Reify", "bundle": {"linux": {"deb": {}}}}
+        code, stderr = self._main(json.dumps(conf))
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.conf} has no bundle.linux.deb.depends", stderr)
+
+    def test_a_conf_that_is_not_json_is_refused_naming_the_file(self):
+        code, stderr = self._main("{")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.conf} is not JSON", stderr)
 
 if __name__ == "__main__":
     unittest.main()

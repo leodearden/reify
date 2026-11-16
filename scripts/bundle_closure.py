@@ -49,11 +49,19 @@ from typing import Callable, Mapping
 BASE_IMAGE = "ubuntu:24.04"
 IMAGE_REPOSITORY = "reify-bundle-ref"
 LIBRARY_RUNPATH = "$ORIGIN"
+# glibc's own libraries must match the target's dynamic loader, so a copy from
+# the build host can never be bundled next to the target's ld.so.
+GLIBC_SONAMES = frozenset({
+    "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1",
+    "libresolv.so.2", "libutil.so.1",
+})
 
 
 class ClosureError(RuntimeError):
-    """The closure cannot be derived: a library no host file supplies, or a
-    round that staged nothing new while the target still reports a gap."""
+    """The closure cannot be derived: a library no host file supplies, a glibc
+    gap no bundle can close, a soname the shipped binaries resolve to different
+    host files, an invalid input, or a round that staged nothing new while the
+    target still reports a gap."""
 
 
 class CommandError(RuntimeError):
@@ -112,6 +120,10 @@ def parse_ldd(text: str) -> LddReport:
 Probe = Callable[[frozenset], LddReport]
 
 
+def is_glibc(soname: str) -> bool:
+    return soname in GLIBC_SONAMES or soname.startswith("ld-linux")
+
+
 def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[str]:
     """Stage sonames until the target reports none missing or version-short.
 
@@ -123,6 +135,13 @@ def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[
         gap = report.missing | report.version_short
         if not gap:
             return staged
+        glibc_gap = {soname for soname in gap if is_glibc(soname)}
+        if glibc_gap:
+            raise ClosureError(
+                f"the shipped binaries need a newer glibc than {BASE_IMAGE} provides "
+                f"(missing or version-short there: {', '.join(sorted(glibc_gap))}); "
+                "glibc cannot be bundled, so build on a host whose glibc is no newer "
+                "than the target's")
         unsupplied = gap - set(host_resolved)
         if unsupplied:
             raise ClosureError(
@@ -152,12 +171,11 @@ def staged_lib_dir(stage: Path, product_name: str) -> Path:
     return stage / installed_lib_dir(product_name).lstrip("/")
 
 
-def tauri_overlay(stage: Path, product_name: str, main_binary: tuple[str, Path],
+def tauri_overlay(stage: Path, product_name: str, main_name: str,
                   extra_binaries: Mapping[str, Path]) -> dict:
     """The tauri config merged over tauri.conf.json at bundle time: the deb
     ships the staged (RUNPATH-patched) tree, the AppImage only the unpatched
     extra binaries, since tauri already places its main binary there."""
-    main_name, _ = main_binary
     deb_files = {f"/usr/bin/{name}": str(staged_binary(stage, name))
                  for name in [main_name, *extra_binaries]}
     deb_files[installed_lib_dir(product_name)] = str(staged_lib_dir(stage, product_name))
@@ -196,20 +214,36 @@ def _run(argv: list[str], *, input_text: str | None = None,
     return proc.stdout
 
 
+def merge_host_reports(reports: Mapping[Path, LddReport]) -> dict[str, str]:
+    """soname -> host path over each shipped ELF's host ldd report. Every
+    shipped ELF loads from one bundled library dir, so two binaries resolving
+    one soname to different files is an error: one would get a library it was
+    never linked or tested against."""
+    resolved: dict[str, str] = {}
+    resolved_for: dict[str, Path] = {}
+    for binary, report in reports.items():
+        if report.missing or report.version_short:
+            raise ClosureError(
+                f"{binary} does not resolve on the build host itself: "
+                + ", ".join(sorted(report.missing | report.version_short)))
+        for soname, host_path in report.resolved.items():
+            prior = resolved.get(soname)
+            if prior is None:
+                resolved[soname] = host_path
+                resolved_for[soname] = binary
+            elif os.path.realpath(prior) != os.path.realpath(host_path):
+                raise ClosureError(
+                    f"{soname} resolves to {prior} for {resolved_for[soname]} but to "
+                    f"{host_path} for {binary}; the bundle has one library dir for both")
+    return resolved
+
+
 def host_resolution(binaries: Mapping[str, Path]) -> dict[str, str]:
     """soname -> host path over every shipped ELF, with LD_LIBRARY_PATH
     removed so only the binaries' own RUNPATHs and the system paths count."""
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
-    resolved: dict[str, str] = {}
-    for path in binaries.values():
-        report = parse_ldd(_run(["ldd", str(path)], env=env))
-        if report.missing or report.version_short:
-            raise ClosureError(
-                f"{path} does not resolve on the build host itself: "
-                + ", ".join(sorted(report.missing | report.version_short)))
-        for soname, host_path in report.resolved.items():
-            resolved.setdefault(soname, host_path)
-    return resolved
+    return merge_host_reports(
+        {path: parse_ldd(_run(["ldd", str(path)], env=env)) for path in binaries.values()})
 
 
 def ensure_reference_image(dockerfile_text: str) -> str:
@@ -282,10 +316,32 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _conf_value(conf: object, conf_path: Path, keys: tuple[str, ...]) -> object:
+    value = conf
+    for depth, key in enumerate(keys):
+        if not isinstance(value, dict) or key not in value:
+            raise ClosureError(f"{conf_path} has no {'.'.join(keys[:depth + 1])}")
+        value = value[key]
+    return value
+
+
+def read_tauri_conf(conf_path: Path) -> tuple[str, list[str]]:
+    """(productName, bundle.linux.deb.depends) from tauri.conf.json."""
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        raise ClosureError(f"{conf_path} is not JSON: {error}") from error
+    product_name = _conf_value(conf, conf_path, ("productName",))
+    if not isinstance(product_name, str) or not product_name:
+        raise ClosureError(f"{conf_path}: productName must be a non-empty string")
+    depends = _conf_value(conf, conf_path, ("bundle", "linux", "deb", "depends"))
+    if not isinstance(depends, list) or not all(isinstance(p, str) for p in depends):
+        raise ClosureError(f"{conf_path}: bundle.linux.deb.depends must be a list of strings")
+    return product_name, depends
+
+
 def _run_derivation(args: argparse.Namespace) -> None:
-    conf = json.loads(args.tauri_conf.read_text(encoding="utf-8"))
-    product_name = conf["productName"]
-    depends = list(conf["bundle"]["linux"]["deb"]["depends"])
+    product_name, depends = read_tauri_conf(args.tauri_conf)
     extras = dict(args.extra_binary)
     binaries = {args.main_binary[0]: args.main_binary[1], **extras}
     stage = args.stage.resolve()
@@ -301,7 +357,7 @@ def _run_derivation(args: argparse.Namespace) -> None:
         _log(f"bundled {soname} <- {host_resolved[soname]}")
     _log(f"closure: {len(closure)} libraries; staged at {stage}")
 
-    overlay = tauri_overlay(stage, product_name, args.main_binary, extras)
+    overlay = tauri_overlay(stage, product_name, args.main_binary[0], extras)
     args.overlay.parent.mkdir(parents=True, exist_ok=True)
     args.overlay.write_text(json.dumps(overlay, indent=2) + "\n", encoding="utf-8")
     _log(f"wrote tauri overlay {args.overlay}")
@@ -311,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         _run_derivation(args)
-    except (ClosureError, CommandError, ValueError, KeyError, OSError) as error:
+    except (ClosureError, CommandError, ValueError, OSError) as error:
         _log(f"error: {error}")
         return 1
     return 0
