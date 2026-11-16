@@ -3363,16 +3363,7 @@ fn analytic_surface_datum_to_value(
         Value::length(d.origin.z),
     ]);
     // Minted only inside the Plane/Axis arms: the Sphere arm's direction is zero.
-    let direction = || {
-        UnitVec3::from_vector([d.direction.x, d.direction.y, d.direction.z])
-            .map(Value::Direction)
-            .map_err(|fault| {
-                QueryError::QueryFailed(format!(
-                    "face_analytic_datum: kind {} datum has no unit direction: {fault}",
-                    d.kind
-                ))
-            })
-    };
+    let direction = || analytic_direction(&d.direction, d.kind, "face_analytic_datum");
     match d.kind {
         0 => Ok(Value::Plane {
             origin: Box::new(origin),
@@ -3407,26 +3398,38 @@ fn analytic_curve_datum_to_value(
         Value::length(d.origin.y),
         Value::length(d.origin.z),
     ]);
-    let direction = || {
-        UnitVec3::from_vector([d.direction.x, d.direction.y, d.direction.z])
-            .map(Value::Direction)
-            .map_err(|fault| {
-                QueryError::QueryFailed(format!(
-                    "edge_analytic_datum: kind {} datum has no unit direction: {fault}",
-                    d.kind
-                ))
-            })
-    };
     match d.kind {
         // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
         0..=2 => Ok(Value::Axis {
             origin: Box::new(origin),
-            direction: Box::new(direction()?),
+            direction: Box::new(analytic_direction(
+                &d.direction,
+                d.kind,
+                "edge_analytic_datum",
+            )?),
         }),
         other => Err(QueryError::QueryFailed(format!(
             "edge_analytic_datum: unknown curve-datum kind byte {other}"
         ))),
     }
+}
+
+/// The unit [`Value::Direction`] of an analytic datum record returned by the
+/// FFI `query`, or `QueryFailed` naming `query` and the `kind` byte when the
+/// direction is degenerate. Call it only for a kind that carries a direction.
+#[cfg(has_occt)]
+fn analytic_direction(
+    direction: &ffi::ffi::Point3,
+    kind: u8,
+    query: &str,
+) -> Result<Value, QueryError> {
+    UnitVec3::from_vector([direction.x, direction.y, direction.z])
+        .map(Value::Direction)
+        .map_err(|fault| {
+            QueryError::QueryFailed(format!(
+                "{query}: kind {kind} datum has no unit direction: {fault}"
+            ))
+        })
 }
 
 /// Stateless across warm starts: there is no state to capture or restore.
