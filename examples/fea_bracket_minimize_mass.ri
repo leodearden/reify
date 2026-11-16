@@ -17,7 +17,8 @@
 // inside the dependency graph, evaluated inside the solver's cost loop, not a
 // post-hoc report on an already-fixed design (wired by task 4880).
 //
-// The eval-layer convergence contract is pinned in
+// The eval-layer convergence contract and the post-solve verdict of the stress
+// constraint are pinned in
 // `crates/reify-eval/tests/harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs`;
 // the compile-surface contract in
 // `crates/reify-compiler/tests/harness_compilation_surface/fea_bracket_minimize_mass_example.rs`.
@@ -163,8 +164,9 @@ structure FeaBracketMinimizeMass {
     // the constraint solver has assigned `thickness` a numeric value — feeding
     // the trampoline an Undef dimension and panicking in `extract_scalar_si`.
     // Inlining keeps the call inside the constraint's compiled expression tree,
-    // which only the solver's cost loop evaluates, with a numeric trial
-    // thickness substituted on every candidate.
+    // which the solver's cost loop evaluates with a numeric trial thickness on
+    // every candidate, and the post-solve check evaluates once more at the
+    // resolved thickness, through the same compute registry.
     //
     // `ShellForce.Off` pins the tet/solid path. Under the default
     // `ShellForce.Auto` the thickness/in-plane ratio decides between the solid
