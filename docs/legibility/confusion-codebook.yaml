@@ -3835,6 +3835,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The foreground bounded-wait watcher-rearm died with exit 137 at turn 84 (timeout 3600 inside a 3660 Bash timeout), which is the exit-137 death this entry describes.
+  - date: '2026-11-15'
+    project: reify
+    session: 06820299-04d2-4c7b-8d7c-2de9f79617ef
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical foreground watcher-rearm call died with exit 137 at turn 71 and was retried unchanged rather than switched to a background wait. Only one 137 is visible, so this match is weaker than entry-cand-20260719-4.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -4894,6 +4900,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh Bash call with timeout 3600 was re-issued 20 times with an identical command string under run_in_background, instead of changing strategy after the bounded wait.
+  - date: '2026-11-15'
+    project: reify
+    session: ceed4297-9aa5-4e8a-8b47-ae0ce39edba6
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The watcher-rearm.sh bounded wait (--timeout 3600) hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and the same Bash command was issued three times in the Retry Loops section.'
+  - date: '2026-11-15'
+    project: reify
+    session: 06820299-04d2-4c7b-8d7c-2de9f79617ef
+    origin_phase: ops
+    manifested_phase: ops
+    note: The same bounded watcher-rearm command (--level 1 --timeout 3600) was re-issued identically at turn 71 after hitting its own CEILING (exit 124) at turn 59.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9250,6 +9268,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Bash call chaining `sleep 100` with a grep/tail check was blocked by the anti-chaining guard, which told the agent to use Monitor or run_in_background instead. The digest shows a single tool_error and no retry, so the recurrence is not evidenced.
+  - date: '2026-11-15'
+    project: reify
+    session: 757334dc-bf5f-49fc-b4b4-8061e8c8b06e
+    origin_phase: unknown
+    manifested_phase: review
+    note: Turn 92 Bash chained 'sleep 60; tail -5' to poll a background cargo test log, and the anti-chaining guard blocked it. The log name 'review-9901-cargo.log' supports the review phase. The digest does not show the origin phase.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -11750,6 +11774,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Path guesses under .worktrees/8363 and reify/crates/reify-audit/src returned not-found repeatedly (turns 35, 117, 121), while the real worktrees were at warm-lanes/worktrees/_lane-29 and reify-adhoc/8363. Partial match: the digest shows path guessing against an unexpected worktree layout, not the same nesting. Moderate confidence.'
+  - date: '2026-11-15'
+    project: reify
+    session: 8d951db3-d8dd-421c-a97d-015c71868843
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Digest shows 13 not_found errors in a warm-lane worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-3), including repo-root-relative probes such as gui/src-tauri/sidecar/ returning 'No such file or directory' (turn 437). This fits the nested-worktree path-guess pattern. Phase is not determinable from the digest.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
