@@ -259,15 +259,6 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx(BASH_ENV=bash_env)
         self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
 
-    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
-        """The home answers in one stdout line; a root holding a newline makes it two."""
-        with tempfile.TemporaryDirectory(prefix="pcc_trust_") as tmp:
-            root = os.path.join(tmp, "two\nlines")
-            _, ctx = trust_ctx(root, "target/release/reify", lambda head: head + "\n")
-            self.assertIsNone(ctx.reify_bin)
-            self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
-            self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
-
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
         write_profile_binary(self.root, "target/release/reify")
@@ -282,28 +273,6 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx(REIFY_BIN="/x/reify")
         self.assertEqual(ctx.reify_bin, "/x/reify")
         self.assertIsNone(ctx.reify_bin_refusal)
-
-    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
-
-    def _fresh_root(self):
-        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_lone_"))
-
-    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
-        for relpath in self._PROFILE_BINARIES:
-            for sidecar in (None, "0" * 40):
-                with self.subTest(binary=relpath, sidecar=sidecar):
-                    path, ctx = trust_ctx(self._fresh_root(), relpath, lambda _head: sidecar)
-                    self.assertIsNone(ctx.reify_bin)
-                    self.assertIn(path, ctx.reify_bin_refusal)
-                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
-
-    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
-        for relpath in self._PROFILE_BINARIES:
-            with self.subTest(binary=relpath):
-                path, ctx = trust_ctx(self._fresh_root(), relpath, lambda head: head + "\n")
-                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
-                self.assertTrue(os.path.isabs(ctx.reify_bin))
-                self.assertIsNone(ctx.reify_bin_refusal)
 
     def test_an_empty_reify_bin_falls_through_to_a_vouched_binary(self):
         debug = write_profile_binary(self.root, "target/debug/reify")
@@ -342,6 +311,52 @@ class TestReifyBinaryTrust(unittest.TestCase):
                     probe_context(**fields)
                 self.assertIn("reify_bin", str(cm.exception))
                 self.assertIn("reify_bin_refusal", str(cm.exception))
+
+
+class TestReifyBinaryTrustFreshRepo(unittest.TestCase):
+    """R14 M6 cases that each lay out their own fixture repo through trust_ctx().
+
+    The REAL trust home decides here too; these cases need no shared repo, so
+    the class has no setUp.
+    """
+
+    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
+
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_fresh_"))
+
+    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
+        for relpath in self._PROFILE_BINARIES:
+            for sidecar in (None, "0" * 40):
+                with self.subTest(binary=relpath, sidecar=sidecar):
+                    path, ctx = trust_ctx(self._fresh_root(), relpath, lambda _head: sidecar)
+                    self.assertIsNone(ctx.reify_bin)
+                    self.assertIn(path, ctx.reify_bin_refusal)
+                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
+        for relpath in self._PROFILE_BINARIES:
+            with self.subTest(binary=relpath):
+                path, ctx = trust_ctx(self._fresh_root(), relpath, lambda head: head + "\n")
+                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
+                self.assertTrue(os.path.isabs(ctx.reify_bin))
+                self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
+        """The home answers in one stdout line; a root holding a newline makes it two.
+
+        The one-line sibling is the control: the same vouched binary is trusted
+        there, so the newline alone turns trust into refusal.
+        """
+        tmp = self._fresh_root()
+        release, control = trust_ctx(os.path.join(tmp, "one-line"), "target/release/reify",
+                                     lambda head: head + "\n")
+        self.assertEqual(control.reify_bin, release, control.reify_bin_refusal)
+        _, ctx = trust_ctx(os.path.join(tmp, "two\nlines"), "target/release/reify",
+                           lambda head: head + "\n")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
 
 
 if __name__ == "__main__":

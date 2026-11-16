@@ -5,13 +5,13 @@ hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
 constants, the ProbeContext builders and the recording fake runner, the
 binary-trust fixtures (profile binaries, the sidecar, a hook-safe git repo, and
-the trust ctx built over them), the
-grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
-wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
-cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
-fixture only one partition uses lives in that partition.  It imports no test
-file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
-one partition at a time with `python3 scripts/test_pcc_<area>.py`.
+the trust ctx built over them), the grammar-e2e and reify-e2e skip-guards (with
+the un-memoized grammar status it wraps; the reify-e2e policy itself lives in
+_pdv_test_support), the measured cache-denial signature and the shared
+TREE_SITTER_BIN stub factories.  A fixture only one partition uses lives in that
+partition.  It imports no test file and defines no TestCase.  Run the suite
+through tests/infra/test_prd_capability_check.sh, or one partition at a time
+with `python3 scripts/test_pcc_<area>.py`.
 """
 
 import functools
@@ -131,6 +131,22 @@ def trust_environ(**extra):
     return dict(environ, **extra)
 
 
+def git(root, *args):
+    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
+    return subprocess.run(
+        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=without_git_vars(os.environ), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def make_git_fixture_repo(tmpdir: str) -> str:
+    """Make `tmpdir` a git repository with one empty commit; return its HEAD SHA."""
+    git(tmpdir, "init", "-q")
+    git(tmpdir, "commit", "-q", "--allow-empty", "-m", "x")
+    return git(tmpdir, "rev-parse", "HEAD")
+
+
 def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
     """(binary path or None, ctx) over a fixture git repo in `root` holding only `binary`.
 
@@ -147,22 +163,6 @@ def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
     if sidecar is not None:
         write_bin_sidecar(root, sidecar)
     return path, pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
-
-
-def git(root, *args):
-    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
-    return subprocess.run(
-        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
-         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
-        env=without_git_vars(os.environ), capture_output=True, text=True, check=True,
-    ).stdout.strip()
-
-
-def make_git_fixture_repo(tmpdir: str) -> str:
-    """Make `tmpdir` a git repository with one empty commit; return its HEAD SHA."""
-    git(tmpdir, "init", "-q")
-    git(tmpdir, "commit", "-q", "--allow-empty", "-m", "x")
-    return git(tmpdir, "rev-parse", "HEAD")
 
 
 def recording_runner(run=None):
