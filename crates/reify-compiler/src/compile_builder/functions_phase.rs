@@ -523,4 +523,101 @@ mod tests {
             "`below` is below S, so it constructs the local S"
         );
     }
+
+    /// One defaulted param, `spoiled`, whose default the unified env compiles
+    /// to the literal `1.0`.
+    const EARLY_PROBE: &str = "fn early_probe(spoiled : Real = 1.0) -> Real { spoiled }\n";
+
+    /// `source`'s one `fn` through [`SourceOrderFnEnv::compile_function_decl`],
+    /// told by `early` that the early pass already compiled its defaults.
+    ///
+    /// The unified env is empty (no prelude, no templates, no name sets), which
+    /// is what [`compile_src`] compiles a template-free module against.
+    fn decl_with_early_defaults(
+        source: &str,
+        early: Vec<Option<reify_ir::CompiledExpr>>,
+    ) -> Option<CompiledFunction> {
+        let parsed = parse_at("test", source);
+        let [reify_ast::Declaration::Function(fn_def)] = &parsed.declarations[..] else {
+            panic!(
+                "fixture must declare exactly one fn: {:?}",
+                parsed.declarations
+            );
+        };
+        let sig = resolve_fn_signature(
+            fn_def,
+            &[],
+            &crate::type_resolution::TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut Vec::new(),
+        );
+        let prelude_view = HashMap::new();
+        let local_structure_def_names = HashSet::new();
+        SourceOrderFnEnv::new(
+            &[],
+            &prelude_view,
+            HashSet::new(),
+            &local_structure_def_names,
+        )
+        .compile_function_decl(
+            fn_def,
+            &sig,
+            &FnParamDefaults::Compiled(early),
+            &ResolutionTable::new(Vec::new(), &[]),
+            &[],
+            &mut Vec::new(),
+        )
+    }
+
+    /// What the unified pass compiles `source`'s defaults to.
+    fn honest_defaults(source: &str) -> Vec<Option<reify_ir::CompiledExpr>> {
+        compile_src(source).functions[0].param_defaults.clone()
+    }
+
+    fn slot_identities(
+        defaults: &[Option<reify_ir::CompiledExpr>],
+    ) -> Vec<Option<(reify_core::ContentHash, reify_core::Type)>> {
+        defaults
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .map(|expr| (expr.content_hash, expr.result_type.clone()))
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "spoiled")]
+    fn a_compiled_default_whose_content_differs_from_the_unified_recompile_panics() {
+        let early = vec![Some(reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::dimensionless_scalar(),
+        ))];
+        decl_with_early_defaults(EARLY_PROBE, early);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "spoiled")]
+    fn a_compiled_default_whose_type_differs_from_the_unified_recompile_panics() {
+        // Only `result_type` is overwritten, so the `content_hash` still equals
+        // the unified recompile's: only the type comparison can fire.
+        let mut early = honest_defaults(EARLY_PROBE);
+        early[0]
+            .as_mut()
+            .expect("`spoiled` is defaulted")
+            .result_type = reify_core::Type::String;
+        decl_with_early_defaults(EARLY_PROBE, early);
+    }
+
+    #[test]
+    fn an_honest_compiled_default_is_reused_as_compiled() {
+        let honest = honest_defaults(EARLY_PROBE);
+        let reused = decl_with_early_defaults(EARLY_PROBE, honest.clone())
+            .expect("a well-formed fn compiles")
+            .param_defaults;
+        assert_eq!(slot_identities(&reused), slot_identities(&honest));
+    }
 }
