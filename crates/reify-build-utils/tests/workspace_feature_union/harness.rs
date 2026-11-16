@@ -237,18 +237,37 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// serves unit-graph-NAME.json, or the empty version-1 unit graph when that
 /// file is absent; every `test` call appends its RUSTC_BOOTSTRAP and
 /// CARGO_TARGET_DIR to cargo-env.log, then exits 3 when unit-graph-refuse
-/// exists.
+/// exists. The cargo cache is warm unless cold-cache exists: then `tree` and
+/// `test` fail with real cargo's `--frozen` download error until `fetch` has
+/// written fetched, and `fetch` fails as with no network when fetch-fail exists.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$*" >> "$here/cargo-argv.log"
+needs_fetch() {
+  if [ -e "$here/cold-cache" ] && [ ! -e "$here/fetched" ]; then
+    printf '%s\n' 'error: failed to download `ahash v0.8.12`' '' 'Caused by:' \
+      '  attempting to make an HTTP request, but --frozen was specified' >&2
+    exit 101
+  fi
+}
 case "${1:-}" in
   -vV)
     printf 'cargo 1.0.0 (stub)\nrelease: 1.0.0\nhost: x86_64-unknown-linux-gnu\n'
     exit 0 ;;
   metadata)
     exec cat "$here/metadata.json" ;;
+  fetch)
+    if [ -e "$here/fetch-fail" ]; then
+      printf '%s\n' 'error: failed to download from `https://static.crates.io/crates/ahash/0.8.12/download`' \
+        '' 'Caused by:' \
+        "  [6] Couldn't resolve host name (Could not resolve host: static.crates.io)" >&2
+      exit 101
+    fi
+    : > "$here/fetched"
+    exit 0 ;;
   tree)
+    needs_fetch
     if [ -e "$here/Cargo.lock" ] && [[ " $* " == *" --offline "* ]]; then
       printf 'resolved by: %s\n' "$*" >> "$here/Cargo.lock"
     fi
@@ -278,6 +297,7 @@ case "${1:-}" in
       prev="$arg"
     done ;;
   test)
+    needs_fetch
     printf 'RUSTC_BOOTSTRAP=%s CARGO_TARGET_DIR=%s\n' "${RUSTC_BOOTSTRAP:-}" "${CARGO_TARGET_DIR:-}" \
       >> "$here/cargo-env.log"
     if [ -e "$here/unit-graph-refuse" ]; then
@@ -348,6 +368,18 @@ impl Fixture {
     /// name for `-p <name>`, or "workspace" for `--workspace`.
     pub(crate) fn unit_graph(self, selection: &str, json: &str) -> Fixture {
         self.write(&format!("unit-graph-{selection}.json"), json);
+        self
+    }
+
+    /// Empties the cargo cache: no `tree` or `test` resolves before a `fetch`.
+    pub(crate) fn cold_cache(self) -> Fixture {
+        self.write("cold-cache", "");
+        self
+    }
+
+    /// Makes `fetch` fail the way real cargo does with no network.
+    pub(crate) fn unreachable_registry(self) -> Fixture {
+        self.write("fetch-fail", "");
         self
     }
 

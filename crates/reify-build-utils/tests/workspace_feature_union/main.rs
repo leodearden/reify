@@ -14,7 +14,7 @@ mod harness;
 mod profile_split;
 
 use harness::{
-    Fixture, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings, assert_green,
+    Fixture, HOST, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings, assert_green,
     assert_input_error, assert_pin, covered_a, describe, empty_union_manifest, finding_lines,
     member, member_split_fixture, parse_toml, real_check, run_script, stdout_of, workspace_of,
     write_file,
@@ -450,6 +450,51 @@ a v0.1.0 (/fixture/crates/a)|
             .check(),
         "a dev-dependency is not part of u's host build",
     );
+}
+
+// --- the cargo cache ---------------------------------------------------------
+
+#[test]
+fn check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets() {
+    let fixtures: [(&str, fn() -> Fixture); 2] = [
+        ("green", || {
+            Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION])).tree("a", TREE_A)
+        }),
+        ("SPLIT", || {
+            Fixture::new(&yy_and_zz_build_with_u(), WS_U_ROOTS_DIFFER_IN_LEAF_LOG)
+                .tree("yy", TREE_YY_LOG_MAX_LEVEL_DEBUG)
+                .tree("zz", TREE_ZZ_LOG_WITHOUT_FEATURES)
+        }),
+    ];
+    for (label, fixture) in fixtures {
+        let warm = fixture().check();
+        let cold_fixture = fixture().cold_cache();
+        let cold = cold_fixture.check();
+        let both = format!(
+            "--- warm ---\n{}\n--- cold ---\n{}",
+            describe(&warm),
+            describe(&cold)
+        );
+        assert_eq!(
+            cold.status.code(),
+            warm.status.code(),
+            "{label}: a cold cargo cache must not change check's exit code\n{both}"
+        );
+        assert_eq!(
+            finding_lines(&stdout_of(&cold)),
+            finding_lines(&stdout_of(&warm)),
+            "{label}: a cold cargo cache must not change check's findings\n{both}"
+        );
+        let log = cold_fixture.cargo_argv_log();
+        assert!(
+            log.lines().any(|line| line.starts_with("fetch")
+                && line.contains("--locked")
+                && line.contains(&format!("--target {HOST}"))),
+            "{label}: check must fetch the locked packages for the host, never writing \
+             Cargo.lock\n{log}\n{}",
+            describe(&cold)
+        );
+    }
 }
 
 // --- side attribution --------------------------------------------------------
