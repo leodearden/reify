@@ -18,9 +18,9 @@ use reify_ir::ConstraintChecker;
 
 use crate::CompiledModule;
 use crate::cfg::CfgSet;
+use crate::compile_builder::pre_pass::attach_module_path_diag;
 use crate::module_dag::{
-    ModuleDag, ModuleResolver, ModuleSource, attach_module_path_diag, entry_module_name,
-    merge_imported_pub_templates,
+    ModuleDag, ModuleResolver, ModuleSource, entry_module_name, merge_imported_pub_templates,
 };
 
 /// One direct import of a program's entry, compiled.

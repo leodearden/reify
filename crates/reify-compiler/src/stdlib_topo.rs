@@ -228,7 +228,7 @@ fn compile_against_imports(
         parsed.errors
     );
     let mut module = crate::compile_with_prelude_refs(&parsed, imports);
-    crate::module_dag::attach_module_path_diag(&mut module, &parsed);
+    crate::compile_builder::pre_pass::attach_module_path_diag(&mut module, &parsed);
     module
 }
 

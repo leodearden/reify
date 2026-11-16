@@ -302,23 +302,6 @@ fn partial_overlay_diag(
     }
 }
 
-/// Attach a module-path declaration diagnostic (§7.1/§7.2) to `compiled` if warranted.
-///
-/// Encapsulates the `check_module_path_decl` call and diagnostic push. Applies to
-/// every file-compiled module, std modules included; the embedded stdlib build
-/// (`stdlib_topo`) calls it too.
-pub(crate) fn attach_module_path_diag(
-    compiled: &mut CompiledModule,
-    parsed: &reify_ast::ParsedModule,
-) {
-    if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
-        parsed.declared_module_path.as_ref(),
-        &parsed.path,
-    ) {
-        compiled.diagnostics.push(diag);
-    }
-}
-
 impl Default for ModuleDag {
     fn default() -> Self {
         Self::new()
@@ -641,7 +624,7 @@ impl ModuleDag {
         // Enforce module-path declaration (spec §7.1/§7.2, task γ), std modules
         // included. Embedded stdlib modules are inserted above and never reach
         // here; the stdlib build checked their headers already.
-        attach_module_path_diag(&mut compiled, &parsed);
+        crate::compile_builder::pre_pass::attach_module_path_diag(&mut compiled, &parsed);
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
@@ -876,7 +859,7 @@ pub fn compile_project_with_entry_source_cfg(
     // parsed.path == ModulePath::single(entry_name) by construction (D-6).
     // Entry source is always a user module, so no stdlib exclusion needed.
     let mut compiled_entry = compiled_entry;
-    attach_module_path_diag(&mut compiled_entry, &parsed);
+    crate::compile_builder::pre_pass::attach_module_path_diag(&mut compiled_entry, &parsed);
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);

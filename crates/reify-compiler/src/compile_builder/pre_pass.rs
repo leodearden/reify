@@ -1,8 +1,8 @@
 //! Pre-pass helpers for [`crate::compile_with_prelude_refs`]: parse-error
-//! forwarding, module-pragma validation, and `#no_prelude` shadowing.
+//! forwarding, module-pragma validation, `#no_prelude` shadowing, and the
+//! top-of-file `module` declaration check.
 //!
-//! Each helper operates on `&mut CompilationCtx`, pushing diagnostics but
-//! otherwise performing no compilation work — that happens in the later
+//! None of the helpers performs compilation work — that happens in the later
 //! phase modules.
 
 use reify_ast::{
@@ -116,6 +116,14 @@ pub fn check_module_path_decl(
             module_declaration(expected)
         ))),
         Some(_) => None,
+    }
+}
+
+/// Push [`check_module_path_decl`]'s diagnostic for `parsed`'s declared module path, if
+/// any, onto `compiled`.
+pub(crate) fn attach_module_path_diag(compiled: &mut CompiledModule, parsed: &ParsedModule) {
+    if let Some(diag) = check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path) {
+        compiled.diagnostics.push(diag);
     }
 }
 
