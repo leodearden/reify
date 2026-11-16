@@ -18,7 +18,7 @@ use reify_ir::ConstraintChecker;
 
 use crate::CompiledModule;
 use crate::cfg::CfgSet;
-use crate::compile_builder::pre_pass::attach_module_path_diag;
+use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
 use crate::module_dag::{
     ModuleDag, ModuleResolver, ModuleSource, entry_module_name, merge_imported_pub_templates,
 };
@@ -201,7 +201,7 @@ pub fn compile_program_with_parsed_entry(
         compiled_imports.iter().map(|(_, module)| *module).collect();
     let mut entry = crate::compile_with_stdlib_and_imports_checked(parsed, &import_refs, checker);
 
-    attach_module_path_diag(&mut entry, parsed);
+    attach_module_path_diag(&mut entry, parsed, ExpectedPathOrigin::FileLocation);
     entry.diagnostics.extend(import_error_diags);
     let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
     let entry_origin = entry.path.0.join(".");

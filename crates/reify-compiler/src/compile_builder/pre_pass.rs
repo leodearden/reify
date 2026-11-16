@@ -88,6 +88,25 @@ pub(crate) fn effective_prelude<'a>(
     if has_no_prelude { &[] } else { prelude }
 }
 
+/// Where the path a module must declare comes from, so a mismatch names what fixes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExpectedPathOrigin {
+    /// Resolved from the file's location: user files and filesystem std modules.
+    FileLocation,
+    /// The name an embedded stdlib module is registered under in
+    /// `stdlib_loader::stdlib_sources()`.
+    StdlibRegistration,
+}
+
+impl ExpectedPathOrigin {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::FileLocation => "derived from file location",
+            Self::StdlibRegistration => "the name it is registered under in stdlib_sources()",
+        }
+    }
+}
+
 /// Check the top-of-file `module` declaration against the resolver-derived path.
 ///
 /// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
@@ -101,6 +120,14 @@ pub fn check_module_path_decl(
     declared: Option<&ModulePath>,
     expected: &ModulePath,
 ) -> Option<Diagnostic> {
+    module_path_decl_diag(declared, expected, ExpectedPathOrigin::FileLocation)
+}
+
+fn module_path_decl_diag(
+    declared: Option<&ModulePath>,
+    expected: &ModulePath,
+    origin: ExpectedPathOrigin,
+) -> Option<Diagnostic> {
     match declared {
         None => Some(Diagnostic::warning(format!(
             "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
@@ -109,20 +136,26 @@ pub fn check_module_path_decl(
         ))),
         Some(d) if d != expected => Some(Diagnostic::error(format!(
             "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' (derived from file location); declare `{}` instead \
-             (spec \u{00a7}7.1)",
+             expected path '{}' ({}); declare `{}` instead (spec \u{00a7}7.1)",
             d.0.join("."),
             expected.0.join("."),
+            origin.describe(),
             module_declaration(expected)
         ))),
         Some(_) => None,
     }
 }
 
-/// Push [`check_module_path_decl`]'s diagnostic for `parsed`'s declared module path, if
-/// any, onto `compiled`.
-pub(crate) fn attach_module_path_diag(compiled: &mut CompiledModule, parsed: &ParsedModule) {
-    if let Some(diag) = check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path) {
+/// Push the module-path diagnostic for `parsed`'s declared module path, if any, onto
+/// `compiled`; `origin` says where `parsed.path` came from.
+pub(crate) fn attach_module_path_diag(
+    compiled: &mut CompiledModule,
+    parsed: &ParsedModule,
+    origin: ExpectedPathOrigin,
+) {
+    if let Some(diag) =
+        module_path_decl_diag(parsed.declared_module_path.as_ref(), &parsed.path, origin)
+    {
         compiled.diagnostics.push(diag);
     }
 }
@@ -296,6 +329,11 @@ mod tests {
         assert!(
             diag.message.contains("module sub.dep"),
             "message should name the corrective declaration 'module sub.dep', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("derived from file location"),
+            "the public check names the file location as the expected path's source, got: {}",
             diag.message
         );
     }

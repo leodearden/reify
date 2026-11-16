@@ -12,6 +12,7 @@ use std::fmt;
 use reify_core::ModulePath;
 
 use crate::CompiledModule;
+use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
 
 /// Why a stdlib source set has no build order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +61,7 @@ impl<'s> ImportGraph<'s> {
         let imports = sources
             .iter()
             .zip(&paths)
-            .map(|((name, source), path)| declared_imports(name, source, path, &index_of))
+            .map(|((name, source), path)| import_indices(name, source, path, &index_of))
             .collect::<Result<_, _>>()?;
         Ok(Self {
             names,
@@ -96,7 +97,7 @@ impl<'s> ImportGraph<'s> {
 /// The set indices of the modules `source` imports, in declaration order.
 /// The source is parsed here prelude-agnostically, for its imports only;
 /// [`compile_against_imports`] parses it again with its imports' enum names.
-fn declared_imports(
+fn import_indices(
     name: &str,
     source: &str,
     path: &ModulePath,
@@ -171,9 +172,9 @@ impl TopoSorter<'_, '_> {
 /// declaration order (NS-P1 import precedence).
 ///
 /// Returns the modules in the canonical order of [`ImportGraph::canonical_order`],
-/// with their diagnostics attached, including the module-path check every
-/// file-compiled module gets. `Err` when the imports have no order: a cycle,
-/// or an import of a module outside the set.
+/// with their diagnostics attached, including the module-path check against
+/// each module's registered name. `Err` when the imports have no order: a
+/// cycle, or an import of a module outside the set.
 ///
 /// Never re-enters the stdlib cache (`parse_with_stdlib`, `load_stdlib_context`):
 /// this runs inside `load_stdlib`'s `OnceLock` initialiser, so that would deadlock.
@@ -228,7 +229,7 @@ fn compile_against_imports(
         parsed.errors
     );
     let mut module = crate::compile_with_prelude_refs(&parsed, imports);
-    crate::compile_builder::pre_pass::attach_module_path_diag(&mut module, &parsed);
+    attach_module_path_diag(&mut module, &parsed, ExpectedPathOrigin::StdlibRegistration);
     module
 }
 

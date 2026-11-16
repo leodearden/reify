@@ -111,9 +111,15 @@ fn deleting_one_declared_import_from_the_real_stdlib_fails_its_build() {
 
 #[test]
 fn a_stdlib_module_declaring_the_wrong_module_path_fails_the_stdlib_build() {
+    let sources = [("std.zz_right", "module std.zz_wrong\npub type T = Real\n")];
     assert_build_panics_naming(
-        &[("std.zz_right", "module std.zz_wrong\npub type T = Real\n")],
-        &["E_MODULE_PATH_MISMATCH", "std.zz_right"],
+        &sources,
+        &["E_MODULE_PATH_MISMATCH", "std.zz_right", "stdlib_sources()"],
+    );
+    let msg = stdlib_build_panic_message(&sources);
+    assert!(
+        !msg.contains("file location"),
+        "an embedded stdlib module's expected path is its registered name, not a file location; got:\n{msg}"
     );
 }
 
@@ -136,6 +142,7 @@ fn a_stdlib_import_of_a_module_outside_the_set_fails_the_stdlib_build() {
 struct ModuleFingerprint {
     path: String,
     content_hash: String,
+    declared_types: String,
     diagnostics: String,
 }
 
@@ -145,9 +152,55 @@ fn fingerprint(modules: &[CompiledModule]) -> Vec<ModuleFingerprint> {
         .map(|module| ModuleFingerprint {
             path: module.path.to_dotted(),
             content_hash: format!("{:?}", module.content_hash),
+            declared_types: declared_types(module),
             diagnostics: format!("{:?}", module.diagnostics),
         })
         .collect()
+}
+
+/// The types `module`'s definitions declare, as resolved: template value
+/// cells, trait type params and requirements, function signatures and type
+/// aliases. `content_hash` does not cover value-cell types, so a resolution
+/// that registration order could change would slip past it alone. Type
+/// aliases are a set keyed by name whose `Vec` order follows a `HashMap`, and
+/// so differs between any two builds; they are rendered sorted by name.
+fn declared_types(module: &CompiledModule) -> String {
+    let cells: Vec<_> = module
+        .templates
+        .iter()
+        .map(|t| {
+            let cells: Vec<_> = t
+                .value_cells
+                .iter()
+                .map(|cell| (&cell.id.member, &cell.cell_type))
+                .collect();
+            (&t.name, &t.type_params, cells)
+        })
+        .collect();
+    let traits: Vec<_> = module
+        .trait_defs
+        .iter()
+        .map(|t| {
+            let members: Vec<_> = t
+                .required_members
+                .iter()
+                .map(|member| (&member.name, &member.kind))
+                .collect();
+            (&t.name, &t.type_params, members)
+        })
+        .collect();
+    let functions: Vec<_> = module
+        .functions
+        .iter()
+        .map(|f| (&f.name, &f.params, &f.return_type))
+        .collect();
+    let mut aliases: Vec<_> = module
+        .type_aliases
+        .iter()
+        .map(|a| (&a.name, &a.type_params, &a.resolved_type))
+        .collect();
+    aliases.sort_by_key(|(name, _, _)| *name);
+    format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}")
 }
 
 fn build_permuted(permute: impl FnOnce(&mut Vec<(&'static str, String)>)) -> Vec<CompiledModule> {
@@ -186,6 +239,11 @@ fn first_difference(a: &[ModuleFingerprint], b: &[ModuleFingerprint]) -> Option<
             format!("module {} vs {}", x.path, y.path)
         } else if x.content_hash != y.content_hash {
             format!("content_hash of {}", x.path)
+        } else if x.declared_types != y.declared_types {
+            format!(
+                "declared types of {}:\n{}\nvs\n{}",
+                x.path, x.declared_types, y.declared_types
+            )
         } else {
             format!(
                 "diagnostics of {}: {} vs {}",
@@ -208,6 +266,18 @@ fn stdlib_build_output_is_identical_under_any_registration_order() {
             panic!("the {label} registration order changes the stdlib build at {difference}");
         }
     }
+}
+
+#[test]
+fn the_build_fingerprint_sees_a_change_in_a_declared_type_alone() {
+    let typed =
+        |ty: &str| format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n");
+    let (as_real, as_int) = (typed("Real"), typed("Int"));
+    let build = |source: &str| fingerprint(&build_stdlib_modules(&[("std.zz_typed", source)]));
+    assert!(
+        first_difference(&build(&as_real), &build(&as_int)).is_some(),
+        "two builds that differ only in a param's declared type must fingerprint differently"
+    );
 }
 
 #[test]

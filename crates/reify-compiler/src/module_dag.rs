@@ -12,6 +12,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePathParseErr
 
 use crate::CompiledModule;
 use crate::cfg::{CfgSet, cfg_satisfied};
+use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -624,7 +625,7 @@ impl ModuleDag {
         // Enforce module-path declaration (spec §7.1/§7.2, task γ), std modules
         // included. Embedded stdlib modules are inserted above and never reach
         // here; the stdlib build checked their headers already.
-        crate::compile_builder::pre_pass::attach_module_path_diag(&mut compiled, &parsed);
+        attach_module_path_diag(&mut compiled, &parsed, ExpectedPathOrigin::FileLocation);
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
@@ -859,7 +860,11 @@ pub fn compile_project_with_entry_source_cfg(
     // parsed.path == ModulePath::single(entry_name) by construction (D-6).
     // Entry source is always a user module, so no stdlib exclusion needed.
     let mut compiled_entry = compiled_entry;
-    crate::compile_builder::pre_pass::attach_module_path_diag(&mut compiled_entry, &parsed);
+    attach_module_path_diag(
+        &mut compiled_entry,
+        &parsed,
+        ExpectedPathOrigin::FileLocation,
+    );
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);
