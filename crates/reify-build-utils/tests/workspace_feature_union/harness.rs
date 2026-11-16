@@ -241,7 +241,8 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// CARGO_TARGET_DIR to cargo-env.log, then exits 3 when unit-graph-refuse
 /// exists. The cargo cache is warm unless cold-cache exists: then `tree` and
 /// `test` fail with real cargo's `--frozen` download error until `fetch` has
-/// written fetched, and `fetch` fails as with no network when fetch-fail exists.
+/// written fetched, and while it is cold, `fetch` fails as with no network
+/// when fetch-fail exists. A warm `fetch` makes no request, so it succeeds.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -260,7 +261,7 @@ case "${1:-}" in
   metadata)
     exec cat "$here/metadata.json" ;;
   fetch)
-    if [ -e "$here/fetch-fail" ]; then
+    if [ -e "$here/fetch-fail" ] && [ -e "$here/cold-cache" ] && [ ! -e "$here/fetched" ]; then
       printf '%s\n' 'error: failed to download from `https://static.crates.io/crates/ahash/0.8.12/download`' \
         '' 'Caused by:' \
         "  [6] Couldn't resolve host name (Could not resolve host: static.crates.io)" >&2
@@ -379,7 +380,8 @@ impl Fixture {
         self
     }
 
-    /// Makes `fetch` fail the way real cargo does with no network.
+    /// Takes the network away: like real cargo, `fetch` then fails on a cold
+    /// cache and succeeds on a warm one, which needs no request.
     pub(crate) fn unreachable_registry(self) -> Fixture {
         self.write("fetch-fail", "");
         self
