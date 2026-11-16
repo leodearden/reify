@@ -4,7 +4,8 @@ partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
 constants, the ProbeContext builders and the recording fake runner, the
-binary-trust fixtures (profile binaries, the sidecar, a hook-safe git repo), the
+binary-trust fixtures (profile binaries, the sidecar, a hook-safe git repo, and
+the trust ctx built over them), the
 grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
 wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
 cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
@@ -128,6 +129,24 @@ def trust_environ(**extra):
     environ = without_git_vars(os.environ)
     environ.pop("REIFY_BIN", None)
     return dict(environ, **extra)
+
+
+def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
+    """(binary path or None, ctx) over a fixture git repo in `root` holding only `binary`.
+
+    `binary` is the repo-relative profile binary to build, or None for none;
+    `sidecar_for_head(head)` is the sidecar text to write, or None for none.
+    The ctx comes from the public ProbeContext.from_environment(), so the REAL
+    trust home (scripts/reify-bin-freshness.sh) decides.  The caller owns
+    `root` and its lifetime.
+    """
+    root = make_fixture_repo(root)
+    head = make_git_fixture_repo(root)
+    path = None if binary is None else write_profile_binary(root, binary)
+    sidecar = sidecar_for_head(head)
+    if sidecar is not None:
+        write_bin_sidecar(root, sidecar)
+    return path, pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
 
 
 def git(root, *args):
