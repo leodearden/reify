@@ -5,8 +5,8 @@
 // Why this fixture exists (the defect it pins):
 //   `modal_ops::build_dirichlet_bcs` used to discriminate its BC realization on
 //   the support TARGET FACE NAMES ONLY and never read the support KIND, so
-//   `[FixedSupport("x_min"), FixedSupport("x_max")]` and
-//   `[PinnedSupport("x_min"), PinnedSupport("x_max")]` produced a BIT-IDENTICAL
+//   `[FixedSupport on x_min, FixedSupport on x_max]` and
+//   `[PinnedSupport on x_min, PinnedSupport on x_max]` produced a BIT-IDENTICAL
 //   Dirichlet set — both the pinned-pinned one. Measured in the dogfood round:
 //   both returned 391.049 Hz, against the clamped-clamped analytic 900.7 Hz.
 //
@@ -19,7 +19,7 @@
 //   clamped-pinned βL = 3.926602 → f₁ ≈ 620.70 Hz
 //   clamped-clamped βL = 4.730041 → f₁ ≈ 900.70 Hz     (ratio 2.267)
 //
-// The MIXED pair `[FixedSupport("x_min"), PinnedSupport("x_max")]` is the third
+// The MIXED pair `[FixedSupport on x_min, PinnedSupport on x_max]` is the third
 // solve here (task 6663's scope extension): honoring the kind PER FACE must make
 // it a genuine propped cantilever landing on its OWN analytic (λ² = 15.4182),
 // strictly between the pinned-pinned (9.8696) and clamped-clamped (22.3733)

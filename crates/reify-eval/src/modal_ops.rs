@@ -4435,7 +4435,7 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
 /// mere Warning:
 ///
-///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
+///   * `[PinnedSupport on x_min]` alone — a LONE support is the model's only
 ///     restraint, and a lone simple support is a mechanism by construction:
 ///     nothing restrains the X translation, the hinge rotation about the
 ///     face's own Y axis, or the rotation about the vertical axis through its
@@ -4443,7 +4443,7 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 ///     which is also what
 ///     `PinnedOnTetEquivalentToFixed` says a single pinned tet face means.
 ///     Clamping restores that.
-///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
+///   * `[PinnedSupport on y_min, PinnedSupport on y_max]` — neither face is a
 ///     beam end, so Z-pinning both leaves the beam free to slide axially.
 ///
 /// Both propped configurations the task cares about are unaffected: the
@@ -7657,7 +7657,7 @@ mod tests {
     ///         Z-only) — the defect this task fixes: this input used to return
     ///         the bit-identical pin-pin set;
     ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
-    ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
+    ///   (iv)  `[FixedSupport on x_min, PinnedSupport on x_max]` → a genuine
     ///         propped cantilever (x_min fully clamped, x_max a simple support:
     ///         Z on every node, no X, and Y only at its neutral-axis node).
     ///
@@ -8008,7 +8008,7 @@ mod tests {
     /// moved.
     ///
     /// Three realizations, three messages, and the pairing is what matters: the
-    /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
+    /// same declaration, a `PinnedSupport` on x_min, reports "clamps all 3
     /// translational DOFs" alone and a "transverse (Z) pin" plus a "lateral (Y)"
     /// anchor once a second face is named — and all three notes name that same
     /// simple-support realization. `FixedSupport` stays silent (its
@@ -8202,7 +8202,7 @@ mod tests {
     /// Amendment (review suggestion 1): a support DUPLICATING a face another
     /// support already names must not vote on that face's realization either.
     ///
-    /// `[PinnedSupport("x_min"), PinnedSupport("x_min")]` is the ordinary
+    /// `[PinnedSupport on x_min, PinnedSupport on x_min]` is the ordinary
     /// copy-paste authoring error, and it is the LAST input that could reach
     /// [`FaceRealization::PinTransverse`] as a mechanism. The count in
     /// [`build_dirichlet_bcs`] used to be over SUPPORTS, so the duplicate read as
