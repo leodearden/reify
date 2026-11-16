@@ -45,6 +45,8 @@ pub mod ri_literal;
 pub mod sampled;
 pub mod solve_termination;
 pub mod structure_registry;
+#[cfg(test)]
+mod test_rng;
 pub mod traits;
 pub mod value;
 pub mod warm;

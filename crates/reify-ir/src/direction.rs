@@ -83,6 +83,7 @@ fn canonical(v: [f64; 3]) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_rng::SplitMix64;
     use reify_core::direction::DIRECTION_DEGENERACY_FLOOR;
     use std::f64::consts::FRAC_1_SQRT_2;
 
@@ -107,35 +108,16 @@ mod tests {
         (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
     }
 
-    /// splitmix64: a fixed-seed generator so the sample is reproducible
-    /// without a dependency.
-    struct SplitMix64(u64);
-
-    impl SplitMix64 {
-        fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
-        }
-
-        /// Uniform in [-1, 1).
-        fn symmetric(&mut self) -> f64 {
-            let unit_interval = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-            2.0 * unit_interval - 1.0
-        }
-    }
-
     const SAMPLE_SIZE: usize = 200_000;
 
-    /// `SAMPLE_SIZE` non-degenerate vectors with components uniform in [-1, 1];
-    /// every third one is rescaled by 10^k, k in [-10, 10].
-    fn seeded_sample() -> Vec<[f64; 3]> {
+    /// The first `size` of one fixed sequence of non-degenerate vectors with
+    /// components uniform in [-1, 1]; every third one is rescaled by 10^k,
+    /// k in [-10, 10].
+    fn seeded_sample(size: usize) -> Vec<[f64; 3]> {
         let mut rng = SplitMix64(0x5EED_D1EC_7104_0001);
-        let mut out = Vec::with_capacity(SAMPLE_SIZE);
+        let mut out = Vec::with_capacity(size);
         let mut i = 0usize;
-        while out.len() < SAMPLE_SIZE {
+        while out.len() < size {
             let mut v = [rng.symmetric(), rng.symmetric(), rng.symmetric()];
             if i.is_multiple_of(3) {
                 let k = (rng.next_u64() % 21) as i32 - 10;
@@ -219,7 +201,7 @@ mod tests {
 
         let mut failures = 0usize;
         let mut first: Option<([f64; 3], [f64; 3], [f64; 3])> = None;
-        for v in seeded_sample() {
+        for v in seeded_sample(SAMPLE_SIZE) {
             let u = unit(v);
             let again = unit(u.components());
             if bits(again) != bits(u) {
@@ -236,7 +218,7 @@ mod tests {
 
     #[test]
     fn output_is_unit_to_four_ulp() {
-        for v in seeded_sample() {
+        for v in seeded_sample(SAMPLE_SIZE) {
             let c = unit(v).components();
             assert!(
                 (norm(c) - 1.0).abs() <= 4.0 * f64::EPSILON,
@@ -273,7 +255,7 @@ mod tests {
             [(-0.6f64).to_bits(), (-0.8f64).to_bits(), 0.0f64.to_bits()]
         );
 
-        for v in seeded_sample().into_iter().take(1000) {
+        for v in seeded_sample(1000) {
             let u = unit(v);
             assert_eq!(bits(u.negated().negated()), bits(u), "{v:?}");
             assert_eq!(
