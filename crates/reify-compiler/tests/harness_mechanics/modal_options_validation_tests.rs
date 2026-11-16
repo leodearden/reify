@@ -1226,9 +1226,10 @@ fn compile_modal_options_with_shift(shift_arg: &str) -> CompiledModule {
     compile_source_with_stdlib(&format!(
         r#"
 structure ShiftFrequencyCtorProbe {{
+    let beam = box(1000mm, 100mm, 100mm)
     let opts = ModalOptions(
         n_modes: 2,
-        boundary_conditions: [FixedSupport(target: "x_min")],
+        boundary_conditions: [FixedSupport(target: face(beam, "x_min"))],
         damping: NoDamping(),
         {shift_arg},
         tol: 0.000000001,

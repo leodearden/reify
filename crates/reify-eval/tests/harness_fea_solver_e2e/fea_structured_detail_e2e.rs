@@ -156,9 +156,10 @@ structure def MultiCaseUnsupportedFixture {
     let lc_fixed  = LoadCase(
         name:     "fixed",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_free, lc_fixed], ElasticOptions())
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

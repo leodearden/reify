@@ -18,7 +18,7 @@ structure def CaseSwitchDisplayRouting {
     param geometry : Solid = box(length, width, height)
     let material   = Steel_AISI_1045()
 
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(geometry, "root"))
 
     let lc_operating = LoadCase(
         name:     "operating",

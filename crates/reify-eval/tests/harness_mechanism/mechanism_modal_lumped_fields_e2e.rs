@@ -35,7 +35,8 @@ structure def MechanismLumpedFieldsProbe {
     let z_effective_stiffness = flexure_compliance(z_flexure).effective_stiffness
     let m0 = mechanism()
     let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
-    let base = FixedSupport(target: "base")
+    let ground = box(20mm, 10mm, 5mm)
+    let base = FixedSupport(target: face(ground, "base"))
     let opts = ModalOptions(n_modes: 1, boundary_conditions: [base], damping: NoDamping(),
         shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(1.0, 0.0, 0.0), element_order: ElementOrder.P1)

@@ -278,7 +278,7 @@ structure FeaStubbyCantileverAdaptiveRefinedVsSeed {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let refined = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
@@ -292,6 +292,7 @@ structure FeaStubbyCantileverAdaptiveRefinedVsSeed {
         material, length, width, height, [tip_load], [mount],
         ElasticOptions()
     )
+    let body = box(length, width, height)
 }
 "#;
 
