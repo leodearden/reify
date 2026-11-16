@@ -523,14 +523,19 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
     def test_stringified_non_array_is_one_whole_string_leaf(self):
         """A JSON string that parses to neither a leaf array nor an envelope is
         ONE mega-leaf: the whole string, as the logged warning says. It holds as
-        the args themselves and as an envelope's `leaves` (task #9845).
+        the args themselves and as an envelope's `leaves` (task #9845). A
+        stringified scalar is such a string too: the leaf batch rule reads the
+        args as given, never their parse, so "null" is not refused like null
+        (task #9946).
         """
-        solo = json.dumps({"signal": "solo"}, separators=(",", ":"))
-        for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
-            with self.subTest(args=args_js):
-                verdict, logs = self._run_fanout(args_js)
-                self.assertEqual([v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
-                self.assertIn("mega-leaf", " ".join(logs))
+        solo_object = json.dumps({"signal": "solo"}, separators=(",", ":"))
+        for solo in (solo_object, "null", "0", '""'):
+            for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
+                with self.subTest(args=args_js):
+                    verdict, logs = self._run_fanout(args_js)
+                    self.assertEqual(
+                        [v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
+                    self.assertIn("mega-leaf", " ".join(logs))
 
 
 # ---------------------------------------------------------------------------
@@ -2015,9 +2020,8 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
         ("true", "true"),
     )
 
-    @staticmethod
-    def _after_must_be(message):
-        return message.partition(" must be ")[2]
+    _ARGS_SUBJECT = "prd-decompose-verify args: args "
+    _LEAVES_SUBJECT = "prd-decompose-verify args: leaves "
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_args_that_are_no_leaf_batch_are_refused_before_any_agent_runs(self):
@@ -2025,15 +2029,16 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
             with self.subTest(args=args_js):
                 message, phases, logs = self._run_scenario_error(
                     args_js, self.VERIFIED_RESPONSES)
-                self.assertTrue(message.startswith("prd-decompose-verify args: args "),
-                                message)
+                self.assertTrue(message.startswith(self._ARGS_SUBJECT), message)
                 self.assertIn(f"got {rendered}", message)
                 self.assertEqual(phases, [])
                 self.assertNotIn("mega-leaf", " ".join(logs))
                 envelope_message, _, _ = self._run_scenario_error(
                     f"{{ leaves: {args_js} }}", self.VERIFIED_RESPONSES)
-                self.assertEqual(self._after_must_be(message),
-                                 self._after_must_be(envelope_message))
+                self.assertTrue(envelope_message.startswith(self._LEAVES_SUBJECT),
+                                envelope_message)
+                self.assertEqual(message.removeprefix(self._ARGS_SUBJECT),
+                                 envelope_message.removeprefix(self._LEAVES_SUBJECT))
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_an_explicit_empty_batch_is_still_the_empty_batch(self):
