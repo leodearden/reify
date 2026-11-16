@@ -95,6 +95,7 @@ LINT_ALL_INFRA = ["lint", "--scope", "all", "--include-infra", "--print-plan"]
 GUI_CRATE = Packages((narrowing.GUI_CRATE,))
 OVERRIDE_CONFIG = NextestConfig("/caller/nextest.toml", ConfigOrigin.OVERRIDE)
 RECORDING = ConfirmRecording("j.xml", ((Profile.DEBUG, ConfirmPaths("m.txt", "s.json")),))
+GENERATED_CONFIG_PREFIX = "reify-nextest-occt."
 
 
 def tearDownModule():
@@ -315,7 +316,7 @@ class TestNextestConfigPath(unittest.TestCase):
         self.tmpdir = Path(scratch.name)
 
     def config_files(self) -> set[Path]:
-        return set(self.tmpdir.glob("reify-nextest-occt.*"))
+        return set(self.tmpdir.glob(f"{GENERATED_CONFIG_PREFIX}*"))
 
     def generator_stderr(self, env, test_threads) -> list[str]:
         """What gen-nextest-config.sh itself prints on stderr under `env` and the CLI thread count."""
@@ -849,7 +850,6 @@ class TestCompositionFailureAfterTheRegion(InClone):
     that fails before any config exists cannot pass for want of one.
     """
 
-    GENERATED_PREFIX = "reify-nextest-occt."
     FAULT_EXIT = 7
 
     def setUp(self):
@@ -866,19 +866,23 @@ class TestCompositionFailureAfterTheRegion(InClone):
         listing = f"ls -1 -- {shlex.quote(str(self.tmpdir))} > {shlex.quote(str(self.listed_at_fault))}"
         self.clone.append(scrub.lib, f"\n{scrub.function}() {{ {listing}; return {self.FAULT_EXIT}; }}\n")
 
-    def generated_names(self, names) -> list[str]:
-        return [name for name in names if name.startswith(self.GENERATED_PREFIX)]
-
     def test_a_failure_after_the_region_removes_its_generated_config(self):
         self.clone.stage("scripts/verify.sh")
         self.plant_fault()
         env = base_env(TMPDIR=str(self.tmpdir), DF_VERIFY_ROLE="task")
         invocation = cli.parse_invocation(["test", "--scope", "staged"], env)
+        role_policy = policy.ROLE_TABLE[invocation.role]
         self.assertIsNone(invocation.plan_format, "premise: an execute-mode invocation")
         self.assertIs(
-            policy.ROLE_TABLE[invocation.role].infra_tier,
+            role_policy.infra_tier,
             policy.InfraTier.SELECTIVE,
             "premise: only a SELECTIVE role reads the scrub prefix",
+        )
+        planning = environment.build(invocation.role, role_policy, env, self.clone.root).planning
+        self.assertIsInstance(
+            environment.nextest_probe(planning, self.clone.root),
+            environment.NextestAvailable,
+            "premise: cargo-nextest runs under the clone's planning env, or the region generates no config",
         )
 
         with self.assertRaises(BashCallError) as raised:
@@ -887,9 +891,10 @@ class TestCompositionFailureAfterTheRegion(InClone):
         self.assertEqual(raised.exception.call, build.GIT_ENV_SCRUB_PREFIX)
         self.assertEqual(raised.exception.result.returncode, self.FAULT_EXIT)
         self.assertTrue(self.listed_at_fault.is_file(), "premise: the planted function ran")
-        at_fault = self.generated_names(self.listed_at_fault.read_text(encoding="utf-8").splitlines())
+        listed = self.listed_at_fault.read_text(encoding="utf-8").splitlines()
+        at_fault = [name for name in listed if name.startswith(GENERATED_CONFIG_PREFIX)]
         self.assertEqual(len(at_fault), 1, "premise: the region had generated its config when composing failed")
-        self.assertEqual(sorted(self.tmpdir.glob(f"{self.GENERATED_PREFIX}*")), [])
+        self.assertEqual(sorted(self.tmpdir.glob(f"{GENERATED_CONFIG_PREFIX}*")), [])
 
 
 if __name__ == "__main__":
