@@ -9994,11 +9994,13 @@ mod tests {
 
     #[test]
     fn extract_loads_keeps_dimensioned_pressure_and_gravity_magnitudes() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
         let pressure = structure(
             "PressureLoad",
             vec![
                 ("magnitude", scalar(5.0e6, DimensionVector::PRESSURE)),
-                ("face", Value::String("x_max".to_string())),
+                ("face", named_leaf_selector(SelectorKind::Face, "x_max")),
             ],
         );
         let gravity = structure(
@@ -10016,6 +10018,8 @@ mod tests {
     /// every site must surface the `fea_loads` rejection, never skip the load.
     #[test]
     fn extract_loads_surfaces_a_magnitude_rejection_at_each_load_position() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
         let cases = [
             ("PointLoad", "force", DimensionVector::LENGTH),
             ("PressureLoad", "magnitude", DimensionVector::FORCE),
@@ -10024,7 +10028,7 @@ mod tests {
         for (type_name, field, wrong) in cases {
             let mut fields = vec![(field, scalar(2.0, wrong))];
             if type_name == "PressureLoad" {
-                fields.push(("face", Value::String("x_max".to_string())));
+                fields.push(("face", named_leaf_selector(SelectorKind::Face, "x_max")));
             }
             let loads = Value::List(vec![structure(type_name, fields)]);
             let res = extract_loads(&loads, 7850.0);
