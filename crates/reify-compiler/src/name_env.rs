@@ -418,8 +418,10 @@ mod tests {
             Fixture { hi, lo, local }
         }
 
+        /// Lists `lo` first, so a view that took winners in slice order rather
+        /// than tier order binds `X` and `Q` differently.
         fn prelude(&self) -> [&CompiledModule; 2] {
-            [&self.hi, &self.lo]
+            [&self.lo, &self.hi]
         }
 
         /// The bindings of the prelude-only ctor view.
