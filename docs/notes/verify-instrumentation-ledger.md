@@ -77,14 +77,27 @@ the write-set excludes `<main checkout>/data/verify-logs`, the append raises
 `verify-ledger.py: finalize: ... (no ledger record written)` line on stderr
 instead of a record. The verify outcome and the commit are unaffected.
 
-**Runs inside a sandboxed agent stay unrecorded, by decision (task 9994).**
-No consumer listed at the top of this note reads their records. A docs-commit
-gate records role `task`, `scope: "staged"` and only `infra_selective` steps.
-The record has no cargo step, so it carries no `sccache` or `concurrency`
-sample, and its lane is the main checkout, which has no seed stamp, so
-`lane_seed` is `null`. The E1, E11, E12 and E13 recipes filter on role
+**The docs-commit gate run inside a sandboxed agent stays unrecorded, by
+decision (task 9994).** No consumer listed at the top of this note reads such
+a record. A docs-commit gate records role `task`, `scope: "staged"` and only
+`infra_selective` steps. The record has no cargo step, so it carries no
+`sccache` or `concurrency` sample, and its lane is the main checkout, which has
+no seed stamp, so `lane_seed` is `null`. The merge-gate recipes filter on role
 `merge`, E2 and D6 read `lane_seed`, and `sccache-report` reads cargo steps.
-The stderr line is the whole trace, and it is expected.
+For this gate the stderr line is the whole trace, and it is expected.
+
+Task 9994's ruling does not cover a verify the agent starts by hand in its
+lane. That run reads the seed stamp of the checkout it runs in
+(`REIFY_VERIFY_LEDGER_LANE_DIR` defaults to the running checkout), so in a
+seeded warm lane its record would carry a non-null `lane_seed`. When its scope
+builds Rust, the record would also carry cargo-bearing steps, with `sccache`
+and `concurrency` snapshots. The E2 / D6 recipe takes the first record per
+`seed_id`, and `sccache-report` reads every record's steps. Neither filters on
+role. If that verify would have been the first record for its seed, losing it
+moves the build into the `unattributed_writes` window of a later record, when
+one exists. An unattributed window is never zero agent cost (see Consumer
+rules → Seed → first build). The lost `sccache` samples never reach
+`sccache-report`.
 
 | Knob | Meaning |
 |---|---|
@@ -343,7 +356,11 @@ anything in it.
 - **A verify run inside a sandboxed agent** leaves no record (see Activation).
   Once sandboxed agents make docs commits on main, the ledger's
   `scope: "staged"` docs-commit records come only from unsandboxed committers
-  (human, steward), so their count is not a docs-commit count.
+  (human, steward), so their count is not a docs-commit count. A by-hand lane
+  verify's lost record takes its `lane_seed` and its cargo steps' `sccache`
+  samples with it. When it would have been the first record for its seed, E2
+  and D6 see that agent's build only inside a later record's
+  `unattributed_writes` window. `sccache-report` never sees the samples.
 - **The `infra_selective` step's `run_all` block** can describe a fixture
   run. That leaf removes only `REIFY_VERIFY_EVENT_LOG` from the
   `tests/infra/test_*.sh` members it spawns. A member that runs `run_all.sh`
