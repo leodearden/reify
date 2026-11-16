@@ -573,4 +573,64 @@ assert "CONTAINMENT: run_all.sh neutralizes REIFY_RELEASE_DELTA_SKIP for pool me
 assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling seam intact)" \
     grep -qE '^[[:space:]]*export DF_VERIFY_ROLE=task([[:space:]]|$)' "$ACT_RUN_ALL"
 
+# ===========================================================================
+# PORT block (task 10080): reify_verify.releasescope.decide_release_delta skips
+# ONLY on the predicate's SKIPPABLE status (rc 1).
+#   The Python port of the verify.sh decision above must keep the lib's two-value
+#   contract: rc0 REQUIRED, rc1 SKIPPABLE. Every other non-zero status (a fork
+#   that failed, a lib that will not source, a crash) is a failure, never an
+#   answer, and fails WIDE: the release pass stays and a stderr warning names the
+#   status. Driven in process against stub libs in a throwaway repo root, under
+#   the merge role with the knob armed and an affected-crates override (no git).
+# ===========================================================================
+echo ""
+echo "--- PORT (task 10080): decide_release_delta skips only on rc 1 ---"
+
+_PORT_DRIVER='
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from reify_verify import policy, releasescope
+
+skips, diagnostics = releasescope.decide_release_delta(
+    policy.ROLE_TABLE[policy.Role.MERGE],
+    Path(sys.argv[2]),
+    {"REIFY_RELEASE_DELTA_SKIP": "1", "REIFY_AFFECTED_CRATES_OVERRIDE": "reify-cli", "PATH": "/usr/bin:/bin"},
+)
+print(skips, "|".join(diagnostics))
+'
+
+# _port_decision <stub-lib-body> — prints "<skips> <diagnostics>" for a repo root
+# whose scripts/release-scope-lib.sh is the given body.
+_port_decision() {
+    local _root
+    _root="$(mktemp -d)"
+    _TMPDIRS+=("$_root")
+    mkdir -p "$_root/scripts"
+    printf '%s\n' "$1" > "$_root/scripts/release-scope-lib.sh"
+    python3 -I -c "$_PORT_DRIVER" "$REPO_ROOT/scripts" "$_root"
+}
+
+_port_skips() { [[ "$(_port_decision "$1")" == "True "* ]]; }
+_port_keeps() { [[ "$(_port_decision "$1")" == "False "* ]]; }
+_port_warns() { [[ "$(_port_decision "$1")" == *"exited $2, not 0 or 1"* ]]; }
+
+assert "PORT rc1 stub (SKIPPABLE) => release pass skipped" \
+    _port_skips 'release_delta_requires_pass() { return 1; }'
+assert "PORT rc0 stub (REQUIRED) => release pass kept" \
+    _port_keeps 'release_delta_requires_pass() { return 0; }'
+assert "PORT rc2 stub => release pass kept (fail-wide)" \
+    _port_keeps 'release_delta_requires_pass() { return 2; }'
+assert "PORT rc2 stub => warning names status 2" \
+    _port_warns 'release_delta_requires_pass() { return 2; }' 2
+assert "PORT rc126 stub (fork failure status) => release pass kept" \
+    _port_keeps 'release_delta_requires_pass() { return 126; }'
+assert "PORT rc141 stub (SIGPIPE status) => release pass kept" \
+    _port_keeps 'release_delta_requires_pass() { return 141; }'
+assert "PORT lib that fails to source (status 3) => release pass kept" \
+    _port_keeps 'return 3'
+assert "PORT lib that fails to source (status 3) => warning names status 3" \
+    _port_warns 'return 3' 3
+
 test_summary

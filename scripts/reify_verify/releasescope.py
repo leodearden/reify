@@ -6,6 +6,7 @@ is reimplemented here.
 """
 
 from collections.abc import Mapping
+from enum import IntEnum
 from pathlib import Path
 
 from reify_verify import bashcall, gitcall, knobs, scope
@@ -15,6 +16,13 @@ from reify_verify.policy import RolePolicy
 
 RELEASE_DECLARED_SET = BashCall("scripts/release-scope-lib.sh", "release_declared_set")
 RELEASE_DELTA_REQUIRES_PASS = BashCall("scripts/release-scope-lib.sh", "release_delta_requires_pass")
+
+
+class PredicateStatus(IntEnum):
+    """The two statuses release_delta_requires_pass answers with; any other is a failure, not an answer."""
+
+    REQUIRED = 0
+    SKIPPABLE = 1
 
 
 def release_declared(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | Refused:
@@ -37,7 +45,9 @@ def decide_release_delta(
     Only an eligible role with REIFY_RELEASE_DELTA_SKIP=1 asks. The caller's
     affected-crate override is the predicate's whole input; without one, the
     merge's changed files are, and a delta verify cannot derive keeps the pass
-    without asking. A non-zero answer skips.
+    without asking. Only the predicate's SKIPPABLE status skips: the lib is
+    fail-wide, so any other non-zero status (a fork that failed, a lib that
+    would not source, a crash) keeps the pass and warns.
     """
     if not (role_policy.release_delta_skip_eligible and knobs.resolve(knobs.RELEASE_DELTA_SKIP, planning).value):
         return False, ()
@@ -46,7 +56,10 @@ def decide_release_delta(
     if changed is None:
         return False, ()
     answer = bashcall.ask(RELEASE_DELTA_REQUIRES_PASS, changed, repo_root, planning)
-    return answer.returncode != 0, answer.stderr_lines
+    if answer.returncode in tuple(PredicateStatus):
+        return answer.returncode == PredicateStatus.SKIPPABLE, answer.stderr_lines
+    warning = f"warning: {RELEASE_DELTA_REQUIRES_PASS} exited {answer.returncode}, not 0 or 1: the release pass runs"
+    return False, (*answer.stderr_lines, warning)
 
 
 def _merge_delta(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | None:
