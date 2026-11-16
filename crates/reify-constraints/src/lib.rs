@@ -760,4 +760,96 @@ mod tests {
             assert_eq!(result.indeterminate_reason, None);
         }
     }
+
+    /// An `@optimized` function whose body is a bare `Undef` literal, so
+    /// body-eval (no dispatch) is Undef and only a dispatched result can decide
+    /// a constraint that calls it. Mirrors reify-expr's #4880 stub fixture.
+    fn optimized_stress_fn() -> reify_ir::CompiledFunction {
+        let params = vec![("load".to_string(), Type::dimensionless_scalar())];
+        reify_ir::CompiledFunction {
+            name: "stress".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: reify_ir::CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::dimensionless_scalar(),
+            body: reify_ir::CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+            },
+            content_hash: reify_core::ContentHash::of(b"checker_optimized_stress_stub"),
+            annotations: vec![],
+            optimized_target: Some("test::stress".to_string()),
+            type_params: vec![],
+        }
+    }
+
+    /// `stress(5.0) > bound`.
+    fn stress_gt(bound: f64) -> CompiledExpr {
+        let call = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(format!("stress_gt_{bound}").as_bytes()),
+            result_type: Type::dimensionless_scalar(),
+            kind: reify_ir::CompiledExprKind::UserFunctionCall {
+                function_name: "stress".to_string(),
+                args: vec![CompiledExpr::literal(
+                    Value::Real(5.0),
+                    Type::dimensionless_scalar(),
+                )],
+            },
+        };
+        let bound = CompiledExpr::literal(Value::Real(bound), Type::dimensionless_scalar());
+        CompiledExpr::binop(BinOp::Gt, call, bound, Type::Bool)
+    }
+
+    /// Resolves `"test::stress"` to a dimensionless 42 and defers everything else.
+    struct StressDispatch;
+
+    impl reify_ir::ComputeDispatch for StressDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
+            (target == "test::stress").then(|| Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
+        }
+    }
+
+    #[test]
+    fn check_with_dispatch_resolves_optimized_calls_inside_constraints() {
+        let functions = [optimized_stress_fn()];
+        let values = ValueMap::new();
+        let above_ten = stress_gt(10.0);
+        let above_hundred = stress_gt(100.0);
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![
+                (cnid("Probe", 0), &above_ten),
+                (cnid("Probe", 1), &above_hundred),
+            ]),
+            values: &values,
+            functions: &functions,
+            determinacy: None,
+        };
+
+        let unhooked = SimpleConstraintChecker.check(&input);
+        assert!(
+            unhooked
+                .iter()
+                .all(|r| r.satisfaction == Satisfaction::Indeterminate),
+            "without dispatch the @optimized body evaluates to Undef: {unhooked:?}"
+        );
+
+        let dispatched = SimpleConstraintChecker.check_with_dispatch(&input, Some(&StressDispatch));
+        assert_eq!(
+            dispatched[0].satisfaction,
+            Satisfaction::Satisfied,
+            "42 > 10: {:?}",
+            dispatched[0]
+        );
+        assert_eq!(dispatched[0].indeterminate_reason, None);
+        assert_eq!(
+            dispatched[1].satisfaction,
+            Satisfaction::Violated,
+            "42 > 100 is false: {:?}",
+            dispatched[1]
+        );
+    }
 }
