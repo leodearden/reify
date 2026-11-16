@@ -193,24 +193,28 @@ pub(crate) fn directions_parallel(a: [f64; 3], b: [f64; 3], lin_tol: f64) -> boo
 ///
 /// A plane's signed offset is the derived quantity `origin · normal`, computed
 /// on demand rather than stored as a redundant, drift-prone field.
+///
+/// Directions and normals are [`UnitVec3`], minted where a candidate enters the
+/// bundle: a degenerate one is no datum at all, never a carrier with an `Undef`
+/// direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Datum {
     /// Axis / line datum — cylinder, cone, revolute history, or a
     /// line / circle / ellipse edge.
     Axis {
         origin: [f64; 3],
-        direction: [f64; 3],
+        direction: UnitVec3,
         /// Analytic radius (cylinder / circle), retained as bundle metadata;
         /// not read by any projection in this task — see the type-level note.
         #[allow(dead_code)]
         radius: Option<f64>,
     },
     /// Plane datum — a planar face.
-    Plane { origin: [f64; 3], normal: [f64; 3] },
+    Plane { origin: [f64; 3], normal: UnitVec3 },
     /// Point datum — a sphere centre or vertex.
     Point { position: [f64; 3] },
     /// Direction datum — an extrusion direction.
-    Direction { direction: [f64; 3] },
+    Direction { direction: UnitVec3 },
 }
 
 impl Datum {
@@ -233,11 +237,11 @@ impl Datum {
             ) => axes_coaxial(
                 AxisGeom {
                     origin: *oa,
-                    direction: *da,
+                    direction: da.components(),
                 },
                 AxisGeom {
                     origin: *ob,
-                    direction: *db,
+                    direction: db.components(),
                 },
                 lin_tol,
             ),
@@ -253,11 +257,11 @@ impl Datum {
             ) => planes_coplanar(
                 PlaneGeom {
                     origin: *oa,
-                    normal: *na,
+                    normal: na.components(),
                 },
                 PlaneGeom {
                     origin: *ob,
-                    normal: *nb,
+                    normal: nb.components(),
                 },
                 lin_tol,
             ),
@@ -265,7 +269,7 @@ impl Datum {
                 points_coincident(*pa, *pb, lin_tol)
             }
             (Datum::Direction { direction: da }, Datum::Direction { direction: db }) => {
-                directions_parallel(*da, *db, lin_tol)
+                directions_parallel(da.components(), db.components(), lin_tol)
             }
             _ => false,
         }
@@ -423,10 +427,8 @@ pub fn feature_datum_bundle(
             }
         }
     }
-    // (2) Construction-history datum-traits (Revolve → Axis, Extrude → Direction).
-    if let Some(kind) = history {
-        candidates.extend(swept_kind_datum_traits(kind));
-    }
+    // (2) Construction-history datum-trait (Revolve → Axis, Extrude → Direction).
+    candidates.extend(history.and_then(swept_kind_datum_trait));
 
     // (3) Dedup (kind-partitioned by `dedup_datums`), then group by target.
     let mut bundle = FeatureDatumBundle::default();
@@ -511,14 +513,14 @@ fn datum_to_value(d: &Datum) -> Value {
             origin, direction, ..
         } => Value::Axis {
             origin: Box::new(point_value(*origin)),
-            direction: Box::new(direction_value(*direction)),
+            direction: Box::new(Value::Direction(*direction)),
         },
         Datum::Plane { origin, normal } => Value::Plane {
             origin: Box::new(point_value(*origin)),
-            normal: Box::new(direction_value(*normal)),
+            normal: Box::new(Value::Direction(*normal)),
         },
         Datum::Point { position } => point_value(*position),
-        Datum::Direction { direction } => direction_value(*direction),
+        Datum::Direction { direction } => Value::Direction(*direction),
     }
 }
 
@@ -531,34 +533,26 @@ fn point_value(p: [f64; 3]) -> Value {
     ])
 }
 
-/// A `Value::Direction` from `[f64; 3]` components, or `Undef` if they have no
-/// unit direction (the projection's degenerate→Undef convention).
-fn direction_value(d: [f64; 3]) -> Value {
-    UnitVec3::from_vector(d).map_or(Value::Undef, Value::Direction)
-}
-
 /// Convert a kernel-returned analytic-datum [`Value`] (as composed by the OCCT
 /// `FaceAnalyticDatum` / `EdgeAnalyticDatum` dispatch) into a [`Datum`]. Returns
-/// `None` for any value that is not a datum carrier or whose coordinates are not
-/// numeric — defensive, since the analytic dispatch always produces well-formed
-/// Axis / Plane / Point / Direction values.
+/// `None` for any value that is not a datum carrier, whose coordinates are not
+/// numeric, or whose direction is degenerate — defensive, since the analytic
+/// dispatch always produces well-formed Axis / Plane / Point / Direction values.
 fn datum_from_value(v: &Value) -> Option<Datum> {
     match v {
         Value::Axis { origin, direction } => Some(Datum::Axis {
             origin: point3_from_value(origin)?,
-            direction: vec3_from_value(direction)?,
+            direction: unit_from_value(direction)?,
             radius: None,
         }),
         Value::Plane { origin, normal } => Some(Datum::Plane {
             origin: point3_from_value(origin)?,
-            normal: vec3_from_value(normal)?,
+            normal: unit_from_value(normal)?,
         }),
         Value::Point(_) => Some(Datum::Point {
             position: point3_from_value(v)?,
         }),
-        Value::Direction(u) => Some(Datum::Direction {
-            direction: u.components(),
-        }),
+        Value::Direction(u) => Some(Datum::Direction { direction: *u }),
         _ => None,
     }
 }
@@ -574,35 +568,39 @@ fn point3_from_value(v: &Value) -> Option<[f64; 3]> {
     }
 }
 
-/// Extract `[f64; 3]` components from a `Value::Direction` or, defensively, a
-/// 3-component `Value::Vector` / `Value::Point`.
-fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
+/// The unit direction a `Value::Direction` carries or, defensively, the one a
+/// 3-component `Value::Vector` / `Value::Point` normalises to; `None` when that
+/// vector is non-numeric or degenerate.
+fn unit_from_value(v: &Value) -> Option<UnitVec3> {
     match v {
-        Value::Direction(u) => Some(u.components()),
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
-        }
-        _ => None,
+        Value::Direction(u) => Some(*u),
+        _ => UnitVec3::from_vector(point3_from_value(v)?).ok(),
     }
 }
 
-/// The construction-history datum-traits a recovered [`SweptKind`] contributes
-/// to the bundle: a `Revolve` yields its revolution **Axis**; an `Extrude`
+/// The construction-history datum-trait a recovered [`SweptKind`] contributes
+/// to the bundle, if any: a `Revolve` yields its revolution **Axis**; an `Extrude`
 /// yields its extrusion **Direction**. A linear sweep (and any future
-/// `#[non_exhaustive]` variant) contributes no first-class datum trait in ε.
-fn swept_kind_datum_traits(kind: &SweptKind) -> Vec<Datum> {
+/// `#[non_exhaustive]` variant) contributes no first-class datum trait in ε,
+/// and neither does a degenerate sweep direction: the projection then reports
+/// the missing datum as [`DiagnosticCode::FeatureDatumAmbiguous`].
+fn swept_kind_datum_trait(kind: &SweptKind) -> Option<Datum> {
     match kind {
         SweptKind::Revolve {
             axis_origin,
             axis_dir,
             ..
-        } => vec![Datum::Axis {
-            origin: *axis_origin,
-            direction: *axis_dir,
-            radius: None,
-        }],
-        SweptKind::Extrude { axis, .. } => vec![Datum::Direction { direction: *axis }],
-        _ => Vec::new(),
+        } => UnitVec3::from_vector(*axis_dir)
+            .ok()
+            .map(|direction| Datum::Axis {
+                origin: *axis_origin,
+                direction,
+                radius: None,
+            }),
+        SweptKind::Extrude { axis, .. } => UnitVec3::from_vector(*axis)
+            .ok()
+            .map(|direction| Datum::Direction { direction }),
+        _ => None,
     }
 }
 
@@ -765,16 +763,23 @@ mod dedup_tests {
 
     const TOL: f64 = 1e-6;
 
+    fn unit(v: [f64; 3]) -> UnitVec3 {
+        UnitVec3::from_vector(v).expect("test direction is non-degenerate")
+    }
+
     fn ax(origin: [f64; 3], direction: [f64; 3]) -> Datum {
         Datum::Axis {
             origin,
-            direction,
+            direction: unit(direction),
             radius: None,
         }
     }
 
     fn pl(origin: [f64; 3], normal: [f64; 3]) -> Datum {
-        Datum::Plane { origin, normal }
+        Datum::Plane {
+            origin,
+            normal: unit(normal),
+        }
     }
 
     fn count_axes(ds: &[Datum]) -> usize {
