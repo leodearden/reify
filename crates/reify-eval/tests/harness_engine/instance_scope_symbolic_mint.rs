@@ -459,6 +459,53 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
     assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.same");
 }
 
+/// `edit_param` on a template param re-evaluates the body of a sub whose own
+/// `len` overrides it, because the body's template-scoped trace reads
+/// `EditInner.len`. The instance mint's projection must still read the
+/// instance's own `len`, so the body stays minted over the override: equal to a
+/// cold eval's, and unequal to the template's edited handle.
+#[test]
+fn edit_param_on_a_template_param_keeps_an_overridden_instance_minted_over_its_override() {
+    let source = r#"
+        structure EditInner {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+        }
+
+        structure EditOuter {
+            sub same = EditInner()
+            sub resized = EditInner(len: 20mm)
+        }
+    "#;
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        source,
+        &ValueCellId::new("EditInner", "len"),
+        Value::length(0.03),
+    );
+
+    assert_minted_at_eval(&before, "EditOuter.resized");
+    assert_eq!(
+        cell(&after_edit, "EditOuter.resized", "len"),
+        cell(&before, "EditOuter.resized", "len"),
+        "premise: the override must hold across the template param edit, or \
+         EditOuter.resized.len is not what its body is minted over"
+    );
+    assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.resized");
+    let template_body = cell(&after_edit, "EditInner", "body");
+    assert!(
+        matches!(template_body, Value::GeometryHandle { .. }),
+        "premise: the edited template's body must be a minted handle, or the \
+         comparison below is vacuous, got {template_body:?}"
+    );
+    assert_ne!(
+        cell(&after_edit, "EditOuter.resized", "body"),
+        template_body,
+        "EditOuter.resized.body must be minted over the instance's own 20mm: a \
+         mint that projected the template's edited 30mm instead would equal the \
+         template's edited handle"
+    );
+}
+
 /// A rack of two bolts whose count is static, so `eval()` stamps both slots.
 const BOLT_RACK: &str = r#"
     structure CBolt {
