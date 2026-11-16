@@ -2224,6 +2224,44 @@ fn test_inputs_stamp_is_removed_without_a_key_stamp() {
     );
 }
 
+#[test]
+#[cfg(unix)] // mode 000 makes the scanner copy unreadable only under Unix DAC
+fn test_inputs_stamp_is_removed_not_unavailable_when_the_scanner_will_not_hash() {
+    // A hasher on PATH that fails on THIS file is a per-file fact, not the
+    // host-wide no-hasher one, so it must remove the stamp and never mint the
+    // UNAVAILABLE sentinel (#5629).
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
+    if !hasher_available() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let out_dir = dir.path();
+    let key_stamp = out_dir.join(KEY_STAMP_NAME);
+    std::fs::write(
+        &key_stamp,
+        generation_key(&"0".repeat(64), FIXTURE_CLI_VERSION),
+    )
+    .unwrap();
+    let stamp = out_dir.join(INPUTS_STAMP_NAME);
+    std::fs::write(&stamp, "stale  grammar.js\n").unwrap();
+    let scanner_copy = out_dir.join(GENERATED_DIR).join("scanner.c");
+    std::fs::create_dir_all(scanner_copy.parent().unwrap()).unwrap();
+    std::fs::write(&scanner_copy, b"/* scanner fixture */\n").unwrap();
+    std::fs::set_permissions(&scanner_copy, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    write_inputs_stamp(out_dir, &key_stamp, &scanner_copy);
+
+    assert!(
+        !stamp.exists(),
+        "an unhashable scanner copy must remove the inputs stamp, found: {:?}",
+        std::fs::read_to_string(&stamp).ok()
+    );
+}
+
 /// Write `body` to `path` with mode 0755.
 #[cfg(unix)]
 fn write_executable(path: &Path, body: &str) {

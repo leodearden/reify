@@ -365,9 +365,7 @@ fn outputs_manifest_matches(manifest_path: &std::path::Path, src_dir: &std::path
 /// Write `contents` to `path` atomically: a sibling temp file, then a rename.
 ///
 /// The temp name carries this process's pid so two concurrent writers cannot
-/// collide on it, and it is prefixed `.tmp-` so the root `.gitignore` covers a
-/// leftover (a crash between write and rename) rather than leaving the lane
-/// reporting an untracked file. A failed rename removes the temp file.
+/// collide on it. A failed rename removes the temp file.
 ///
 /// Atomicity matters because these stamps are read by a DIFFERENT process than
 /// the one writing them (`build.rs` writes, `scripts/tree-sitter-freshness.sh`
@@ -412,7 +410,8 @@ const KEY_STAMP_NAME: &str = "generation_key.stamp";
 const INPUTS_STAMP_NAME: &str = "tree_sitter_inputs.stamp";
 
 /// The tracked files whose bytes determine the archive, package-root-relative
-/// and sorted. build.rs watches exactly these (plus itself and the CLI), and
+/// and sorted. build.rs watches exactly these (plus build_support.rs and the
+/// resolved CLI), and
 /// `scripts/tree-sitter-freshness.sh --list-inputs` prints exactly these.
 #[allow(dead_code)]
 const ATTESTED_INPUTS: [&str; 2] = ["grammar.js", "src/scanner.c"];
