@@ -1,7 +1,7 @@
 # hotspot-survey overlay — reify
 
 - **Memory identity**: `project_id="reify"`, `agent_id="claude-interactive"`.
-- **Task tracker**: fused-memory/Taskmaster at `project_root="/home/leo/src/reify"`. Mine it through fused-memory only: `search_tasks` for topic lookups, `find_tasks_by_metadata` for keyed lookups, and for a full pass a paged `get_tasks` scan in which every call passes `statuses`, `fields` and `page_size`.
+- **Task tracker**: fused-memory at `project_root="/home/leo/src/reify"`. Mine it through fused-memory only: `search_tasks` for topic lookups, `find_tasks_by_metadata` for keyed lookups, and for a full pass a paged `get_tasks` scan in which every call passes `statuses`, `fields` and `page_size`.
 - **Output**: `docs/notes/bug-hotspot-survey-<date>.md` + `-full-findings.json` — **committed** (the 2026-07-05 run left its report untracked; don't repeat that). The full-findings JSON is mandatory this time: the 07-05 run skipped it, which left no per-finding evidence trail for premise re-verification.
 - **Fix-commit vocabulary**: generic set; check recent `git log --oneline | head -50` for local marker conventions in Phase 0 before mining.
 - **History window**: full history (~48k commits in the 07-05 run) or `--since` per user scope.
