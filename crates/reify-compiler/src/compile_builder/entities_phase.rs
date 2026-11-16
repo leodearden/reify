@@ -38,7 +38,7 @@ use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
-use crate::compile_builder::functions_phase::ResolutionTable;
+use crate::compile_builder::functions_phase::{ResolutionTable, SourceOrderFnEnv};
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{
     ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
@@ -210,22 +210,22 @@ pub(crate) fn phase_entities(
     // Built at the first fn, so a module with none clones no prelude fn here;
     // from then on it owns the pass's user fns until the epilogue.
     let mut fn_body_calls: Option<ResolutionTable> = None;
-    // The module-local `structure def`s with no template yet, i.e. declared
-    // below the current declaration: what a fn's body may not use.
-    let mut later_declared_structures = ctx.local_structure_def_names.clone();
-    let mut templates_seen: usize = 0;
     // Declaration index of the next `Declaration::Function` — parallel to
     // `decl_refs.fn_refs` and hence to `ctx.fn_signatures`, because
     // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
     // order with no filtering.
     let mut fn_decl_index: usize = 0;
-    // The order-INDEPENDENT companion to the order-dependent call table each fn
-    // body resolves against (task #5371), merged ONCE for the whole pass and
-    // borrowed by every fn scope. It changes nothing about which overload
-    // resolves; see `CompilationScope::declared_callable_names` for what it is for.
-    let declared_callables = crate::functions::declared_callable_names(
-        &ctx.declared_fn_names,
-        &ctx.resolution_structure_names,
+    // What every fn body compiles against besides the fns and templates above
+    // it. Built once; its borrows of `ctx` fields are disjoint from the `&mut`
+    // field borrows the loop takes.
+    let fn_env = SourceOrderFnEnv::new(
+        &ctx.resolution_enums,
+        &prelude_template_registry,
+        crate::functions::declared_callable_names(
+            &ctx.declared_fn_names,
+            &ctx.resolution_structure_names,
+        ),
+        &ctx.local_structure_def_names,
     );
 
     for decl in &parsed.declarations {
@@ -310,16 +310,12 @@ pub(crate) fn phase_entities(
                 let calls_above = fn_body_calls.get_or_insert_with(|| {
                     ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude)
                 });
-                if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
+                if let Some(f) = fn_env.compile_function_decl(
                     fn_def,
                     sig,
                     defaults,
-                    &ctx.resolution_enums,
                     calls_above,
                     &ctx.templates,
-                    prelude_registries.ctor,
-                    &later_declared_structures,
-                    &declared_callables,
                     &mut ctx.diagnostics,
                 ) {
                     // Replace this fn's signature stub with the real
@@ -451,10 +447,6 @@ pub(crate) fn phase_entities(
                 );
             }
         }
-        for template in &ctx.templates[templates_seen..] {
-            later_declared_structures.remove(&template.name);
-        }
-        templates_seen = ctx.templates.len();
     }
 
     // ── Unified-pass epilogue (task 5494) ──
