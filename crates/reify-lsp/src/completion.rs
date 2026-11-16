@@ -791,6 +791,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "04-linalg",
     },
     BuiltinFunctionInfo {
+        name: "dir",
+        signature: "dir(x: Real, y: Real, z: Real) -> Direction | dir(v: Vector3<Dimensionless>) -> Direction",
+        doc: "Unit Direction from three dimensionless components (Int, Real or dimensionless Scalar) or a Vector3<Dimensionless>; a dimensioned component is rejected, and a zero or non-finite vector is an E_DegenerateDirection error.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
         name: "magnitude",
         signature: "magnitude(v: Vector) -> Real",
         doc: "Euclidean length of vector `v`.",
