@@ -362,16 +362,18 @@ pub enum DiagnosticCode {
     ///          (param-level argument type check, task 4546).
     ///
     /// Emitted when a constraint instantiation passes an argument whose
-    /// compile-time type is incompatible with the declared parameter type —
-    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
-    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
-    /// for `Length`) are deliberately tolerated at the binding site; dimensional
-    /// strictness within comparison predicates is enforced by task 4490's
-    /// `E_CmpOperandKind` guard.
+    /// compile-time type is incompatible with the declared parameter type: a
+    /// cross-category mismatch (e.g. `Bool` passed where a `Length` param is
+    /// declared), or a numeric pairing the binding check does not accept — a
+    /// scalar of another dimension (task 5762), an `Int` at a dimensioned
+    /// scalar param, or a scalar at an `Int` param (task 10029). An `Int` at a
+    /// dimensionless (`Real`) param widens, and a dimension-generic
+    /// `ScalarParam` is accepted. A rejection short-circuits the
+    /// instantiation, so no predicate-body comparison diagnostic doubles it.
     ///
     /// Canonical message form:
-    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
-    ///   of constraint '<def>' expects <expected>"`.
+    /// `"type mismatch: argument '<arg>' for constraint '<def>' has type \
+    ///   <actual> but parameter expects <expected>"`.
     ///
     /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
     ConstraintArgTypeMismatch,

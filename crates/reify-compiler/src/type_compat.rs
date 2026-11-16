@@ -1022,11 +1022,11 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// type.
 ///
 /// It rejects cross-category mismatches (Bool/String/Enum/aggregate vs
-/// numeric/Length etc.), two concrete scalars of different dimension
-/// (task 5762, δ₂), and an `Int` at a dimensioned scalar param (task 10029).
-/// It still tolerates a scalar at an `Int` param and a dimension-generic
-/// `ScalarParam` on either side; an `Int` at a dimensionless scalar param
-/// widens under Rule 3.
+/// numeric/Length etc.) and every numeric pairing Rule 3 does not accept: a
+/// scalar of another dimension (task 5762, δ₂), an `Int` at a dimensioned
+/// scalar param, and a scalar at an `Int` param (task 10029). Two numeric cases
+/// are still accepted: an `Int` at a dimensionless scalar param (Rule 3's
+/// widening), and a dimension-generic `ScalarParam` on either side (Rule 4).
 ///
 /// The restated Int-for-Length ruling lives at
 /// constraint_def_compile_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
@@ -1043,9 +1043,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// - **Same-type non-numeric params** (e.g. `param actual : Geometry` with a
 ///   `Geometry`-typed arg) exit at Rule 3 via `type_compatible`'s identity
 ///   short-circuit (`from == to`).
-/// - Rule 5 therefore fires only for genuinely cross-category pairs such as
-///   `Bool` or `String` passed where a numeric/`Geometry`/struct param is
-///   declared — those are real errors and correctly rejected.
+/// - For a non-numeric param, Rule 5 therefore fires only for genuinely
+///   cross-category pairs such as `Bool` or `String` passed where a
+///   `Geometry`/struct param is declared — those are real errors and correctly
+///   rejected.
 ///
 /// This invariant is validated by the reify-compiler test suite (including
 /// GD&T `Conforms` tolerancing fixtures that use trait-typed and
@@ -1063,14 +1064,15 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
 ///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
 ///    selector coercions — the common well-typed case).
-/// 4. A concrete `Type::Scalar{..}` param with a `Type::Scalar{..}` or
-///    `Type::Int` arg → **reject** (past Rule 3, a scalar arg differs in
-///    dimension, task 5762; an `Int` arg meets a dimensioned param, task 10029).
-///    Otherwise both sides numeric (`Type::Int | Type::Scalar{..} |
-///    Type::ScalarParam(_)`) → **accept** (a scalar at an `Int` param is still
-///    tolerated; `ScalarParam` is the D4-5 dimension-generic fence).
-/// 5. Otherwise → **reject** (cross-category mismatch, e.g. `Bool` vs `Length`,
-///    `String` vs `Length`, `Enum(X)` vs `Length`).
+/// 4. A `Type::ScalarParam(_)` on either side, with both sides numeric
+///    (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`) → **accept** (the
+///    D4-5 dimension-generic fence: the dimension-generic machinery resolves
+///    it, not this check).
+/// 5. Otherwise → **reject**: a cross-category mismatch (e.g. `Bool`, `String`
+///    or `Enum(X)` vs `Length`), or a numeric pairing outside both Rule 3's
+///    widening and the fence — a scalar of another dimension (task 5762, δ₂),
+///    an `Int` at a dimensioned scalar param, or a scalar at an `Int` param
+///    (task 10029).
 pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bool {
     // Rule 1: Anti-cascade guard — either side poisoned → accept.
     // Also prevents `type_compatible`'s debug_assert!(!param_ty.is_error()) from
@@ -1089,22 +1091,21 @@ pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bo
     if type_compatible(param_ty, arg_ty) {
         return true;
     }
-    // Rule 4: A concrete-scalar param reaching here rejects a scalar of another
-    // dimension (task 5762, δ₂) and an `Int` (task 10029); an `Int` at a
-    // dimensionless param was already accepted by Rule 3. A scalar at an `Int`
-    // param is still accepted by the numeric fallthrough; `ScalarParam` on
-    // either side is the D4-5 dimension-generic fence.
-    if matches!(
-        (param_ty, arg_ty),
-        (Type::Scalar { .. }, Type::Scalar { .. } | Type::Int)
-    ) {
-        return false;
-    }
+    // Rule 4: The D4-5 fence — a `ScalarParam` against any numeric type is
+    // accepted, because the dimension-generic machinery resolves it, not this
+    // check.
     let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
-    if is_numeric(param_ty) && is_numeric(arg_ty) {
+    let is_dimension_generic = |t: &Type| matches!(t, Type::ScalarParam(_));
+    if (is_dimension_generic(param_ty) || is_dimension_generic(arg_ty))
+        && is_numeric(param_ty)
+        && is_numeric(arg_ty)
+    {
         return true;
     }
-    // Rule 5: Cross-category mismatch (e.g. Bool vs Length, String vs Length).
+    // Rule 5: Everything else is a mismatch: a cross-category pair (e.g. Bool vs
+    // Length), or a numeric pair outside both Rule 3's widening and the fence —
+    // a scalar of another dimension (task 5762, δ₂), an `Int` at a dimensioned
+    // scalar param, or a scalar at an `Int` param (task 10029).
     false
 }
 
