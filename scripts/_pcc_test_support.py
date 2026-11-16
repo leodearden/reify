@@ -165,20 +165,29 @@ def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
     return path, pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
 
 
+def record_calls(runner):
+    """`runner` wrapped to record each call: (recorded, calls).
+
+    Each call appends (probe, ctx, timeout) to `calls`, so a test can assert
+    what was asked for, under which context and bound, as well as how often,
+    whatever `runner` answers.
+    """
+    calls = []
+
+    def recorded(probe, ctx, timeout=None):
+        calls.append((probe, ctx, timeout))
+        return runner(probe, ctx, timeout)
+    return recorded, calls
+
+
 def recording_runner(run=None):
     """A fake ProbeRunner answering every probe with `run`, and its call list.
 
-    `run` defaults to a clean ProbeRun(0, "", "").  Each call appends
-    (probe, ctx, timeout), so a test can assert what was asked for, under
-    which context and bound, as well as how often.
+    `run` defaults to a clean ProbeRun(0, "", "").  Calls are recorded as
+    record_calls does.
     """
     answer = pcc.ProbeRun(0, "", "") if run is None else run
-    calls = []
-
-    def runner(probe, ctx, timeout=None):
-        calls.append((probe, ctx, timeout))
-        return answer
-    return runner, calls
+    return record_calls(lambda _probe, _ctx, _timeout=None: answer)
 
 
 # ---------------------------------------------------------------------------
