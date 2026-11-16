@@ -4,7 +4,8 @@
 //! mutation (task 9988).
 
 use reify_ast::{Declaration, ParsedModule};
-use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, Severity, SourceSpan, Type};
+use reify_ir::CompiledFunction;
 
 use super::phase_entities;
 use crate::compile_builder::ctx::CompilationCtx;
@@ -15,6 +16,9 @@ use crate::compile_builder::pre_pass::collect_decl_refs;
 use crate::compile_builder::traits_phase::phase_traits;
 
 const TWO_FNS: &str = "fn a(x : Real) -> Real { x }\nfn b(x : Real) -> Real { x + 1.0 }\n";
+
+/// One corruption of the pass's per-fn tables, for a table of labelled cases.
+type Tamper = fn(&mut CompilationCtx);
 
 /// Run the real phases over [`TWO_FNS`] with an empty prelude, applying
 /// `tamper` to the context right before the unified pass.
@@ -99,6 +103,12 @@ fn slot_holds_real_fn(ctx: &CompilationCtx, idx: usize, name: &str) -> bool {
             .any(|real| real.name == name && real.content_hash == slot.content_hash)
 }
 
+/// What identifies a call-table entry: the name and params the slot guard
+/// matches on, and the hash that tells a signature stub from a compiled fn.
+fn slot_identity(slot: &CompiledFunction) -> (&str, &[(String, Type)], ContentHash) {
+    (&slot.name, &slot.params, slot.content_hash)
+}
+
 #[test]
 fn untampered_tables_draw_no_misalignment_and_slot_every_real_fn() {
     let (ctx, _parsed) = run_pass_after(|_| {});
@@ -144,7 +154,7 @@ fn a_signature_record_naming_another_fn_skips_only_that_body() {
 
 #[test]
 fn a_missing_per_fn_record_skips_only_that_body() {
-    let tampers: [(&str, fn(&mut CompilationCtx)); 2] = [
+    let tampers: [(&str, Tamper); 2] = [
         ("fn_signatures lost b's record", |ctx| {
             ctx.fn_signatures.pop();
         }),
@@ -167,6 +177,54 @@ fn a_missing_per_fn_record_skips_only_that_body() {
         assert!(
             slot_holds_real_fn(&ctx, 0, "a"),
             "{label}: slot 0 still holds a's signature stub"
+        );
+    }
+}
+
+/// The slot guard fires after the body compiled: the body still reaches the fns
+/// below it, but its slot keeps the tampered stub, so later declarations resolve
+/// against that stub.
+#[test]
+fn a_call_table_slot_not_matching_its_fn_keeps_the_stub_and_still_compiles_the_body() {
+    let tampers: [(&str, Tamper); 2] = [
+        ("slot 0 renamed", |ctx| {
+            ctx.resolution_functions[0].name = "stale".to_string();
+        }),
+        ("slot 0 gained a param", |ctx| {
+            ctx.resolution_functions[0]
+                .params
+                .push(("extra".to_string(), Type::dimensionless_scalar()));
+        }),
+    ];
+
+    for (label, tamper) in tampers {
+        let mut tampered_slot = None;
+        let (ctx, parsed) = run_pass_after(|ctx| {
+            tamper(ctx);
+            tampered_slot = Some(ctx.resolution_functions[0].clone());
+        });
+        let tampered_slot = tampered_slot.expect("run_pass_after applies the tamper");
+
+        assert_eq!(
+            misaligned_spans(&ctx),
+            [fn_span(&parsed, "a")],
+            "{label}: wrong FnDeclTablesMisaligned spans"
+        );
+        let errors = other_errors(&ctx);
+        assert!(errors.is_empty(), "{label}: unexpected errors: {errors:?}");
+        assert_eq!(
+            user_fn_names(&ctx),
+            ["a", "b"],
+            "{label}: wrong compiled fns"
+        );
+        assert_eq!(
+            slot_identity(&ctx.resolution_functions[0]),
+            slot_identity(&tampered_slot),
+            "{label}: the tampered stub in slot 0 was overwritten"
+        );
+        assert!(
+            slot_holds_real_fn(&ctx, 1, "b"),
+            "{label}: slot 1 still holds b's signature stub"
         );
     }
 }
