@@ -150,6 +150,7 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
+        Value::Direction(_) => "Direction",
         other => panic!("no .ri type name wired for {other:?}"),
     }
 }
@@ -277,6 +278,20 @@ fn assert_identical(original: &Value, got: &Value, literal: &str, i: usize, labe
                  read    si = {b:?}  bits = {:#018x}",
                 a.to_bits(),
                 b.to_bits()
+            );
+        }
+        // Stricter than the derived numeric `==`: every component's raw bits.
+        Value::Direction(a) => {
+            let Value::Direction(b) = got else {
+                unreachable!("discriminants compared equal above")
+            };
+            assert_eq!(
+                a.components().map(f64::to_bits),
+                b.components().map(f64::to_bits),
+                "case {i} [{label}]: literal {literal:?} did not round-trip exactly: \
+                 wrote {:?}, read back {:?}",
+                a.components(),
+                b.components()
             );
         }
         _ => assert_eq!(
@@ -1298,4 +1313,45 @@ fn unrepresentable_values_are_refused_rather_than_written() {
         "a brace-bearing string must be refused — it would divert the token \
          to interpolated_string, which treats {{expr}} as a hole"
     );
+}
+
+// ─── (f) directions (direction-typing β) ─────────────────────────────────────
+
+/// A `Direction` is written as `dir(x, y, z)` and re-parses with identical
+/// component bits. This rests on `UnitVec3::from_vector` being a bit-level
+/// fixed point (docs/prds/v0_6/direction-typing.md C2): re-normalising an
+/// already-unit vector changes nothing.
+#[test]
+fn directions_round_trip_with_identical_bits() {
+    use reify_ir::UnitVec3;
+
+    let direction = |v: [f64; 3]| Value::Direction(UnitVec3::from_vector(v).unwrap());
+    let mut cases = vec![
+        Case::new("+x", direction([1.0, 0.0, 0.0])).emitting("dir(1, 0, 0)"),
+        Case::new("-x", direction([-1.0, 0.0, 0.0])).emitting("dir(-1, 0, 0)"),
+        Case::new("+y", direction([0.0, 1.0, 0.0])).emitting("dir(0, 1, 0)"),
+        Case::new("-y", direction([0.0, -1.0, 0.0])).emitting("dir(0, -1, 0)"),
+        Case::new("+z", direction([0.0, 0.0, 1.0])).emitting("dir(0, 0, 1)"),
+        Case::new("-z", direction([0.0, 0.0, -1.0])).emitting("dir(0, 0, -1)"),
+        Case::new("3-4-5", direction([0.6, 0.8, 0.0])),
+        Case::new("1-2-3", direction([1.0, 2.0, 3.0])),
+        Case::new("wide range", direction([1e-3, -2.5, 7e5])),
+    ];
+
+    // A sweep of arbitrary triplets; a draw from_vector refuses is skipped.
+    const SWEEP: usize = 256;
+    let fixed = cases.len();
+    let mut rng = XorShift64Star(0xD1EC_7104_B0E7_A5EE);
+    while cases.len() < fixed + SWEEP {
+        let v = [
+            rng.arbitrary_f64(),
+            rng.arbitrary_f64(),
+            rng.arbitrary_f64(),
+        ];
+        if let Ok(u) = UnitVec3::from_vector(v) {
+            let label = format!("sweep #{}", cases.len() - fixed);
+            cases.push(Case::new(label, Value::Direction(u)));
+        }
+    }
+    assert_round_trips(&cases);
 }

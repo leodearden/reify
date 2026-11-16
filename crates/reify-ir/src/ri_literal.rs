@@ -755,7 +755,7 @@ mod tests {
     /// and must NOT embed a `{value:?}` dump (a `SampledField` payload could
     /// be enormous).
     ///
-    /// `Complex`, `Direction`, `Range` and `Orientation` are here deliberately:
+    /// `Complex`, `Range` and `Orientation` are here deliberately:
     /// they are the variants an earlier `_ => "Unsupported"` catch-all
     /// collapsed into one uninformative name, and a datum-ish param is exactly
     /// what an agent is most likely to try to edit. Covering only the variants
@@ -775,10 +775,6 @@ mod tests {
                     dimension: DimensionVector::DIMENSIONLESS,
                 },
                 "Complex",
-            ),
-            (
-                Value::Direction(crate::direction::UnitVec3::from_vector([0.0, 0.0, 1.0]).unwrap()),
-                "Direction",
             ),
             (
                 Value::Range {
@@ -908,6 +904,15 @@ mod tests {
 
     fn lit(v: &Value) -> String {
         value_to_ri_literal(v).unwrap_or_else(|e| panic!("expected Ok for {v:?}, got {e:?}"))
+    }
+
+    #[test]
+    fn direction_is_written_as_a_dir_call() {
+        let direction =
+            |v: [f64; 3]| Value::Direction(crate::direction::UnitVec3::from_vector(v).unwrap());
+        assert_eq!(lit(&direction([0.0, 0.0, 1.0])), "dir(0, 0, 1)");
+        assert_eq!(lit(&direction([0.0, 0.0, -1.0])), "dir(0, 0, -1)");
+        assert_eq!(lit(&direction([0.6, 0.8, 0.0])), "dir(0.6, 0.8, 0)");
     }
 
     #[test]
