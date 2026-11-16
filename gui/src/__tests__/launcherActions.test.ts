@@ -115,6 +115,17 @@ describe('openDocument', () => {
     expect(store.state.document.pending).toBe(false);
   });
 
+  it('a failed open does not shut the launcher: the next open loads', async () => {
+    deps.loadDocument.mockRejectedValueOnce('No such file: /designs/missing.ri');
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.openDocument('/designs/missing.ri'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri');
+    expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
+  });
+
   it('a second open while one is in flight rejects with E_GUI_OPEN_FAILED and loads nothing more', async () => {
     const held = deferred<void>();
     deps.loadDocument.mockReturnValueOnce(held.promise);
@@ -187,6 +198,26 @@ describe('createDocument', () => {
     const failure = await failureOf(actions.createDocument('/designs/created.ri'));
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+  });
+
+  it('a failed template write does not shut the launcher: the next open loads', async () => {
+    deps.createNewFile.mockRejectedValueOnce('File already exists: /designs/taken.ri');
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.createDocument('/designs/taken.ri'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri');
+  });
+
+  it('a failed load of the created file does not shut the launcher: the next open loads', async () => {
+    deps.loadDocument.mockRejectedValueOnce(new Error('engine refused'));
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.createDocument('/designs/created'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri');
   });
 
   it('is pending from the template write through the load', async () => {
