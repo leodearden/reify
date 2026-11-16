@@ -22,14 +22,9 @@
 //   - structure def TrajectorySample      (t, values, vels, accels)
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
-// Module placement: see the ordering notes on the `std.dynamics` entry in
-// `stdlib_loader.rs` (`std.kinematic` and `std.ports` must precede) —
-// encoding note 3 below covers the `Frame3`/`origin` half of that
-// constraint. The last-module slot belongs to `std.determinacy.purposes`,
-// pinned by crates/reify-compiler/tests/stdlib_loader_tests.rs::std_determinacy_purposes_is_last_stdlib_module.
-// Hard dependencies: all four are load-bearing — `std.units`, `std.trajectory`,
-// `std.kinematic`, and `std.ports` — see the same `std.dynamics` entry in
-// `stdlib_loader.rs` for what each supplies.
+// Dependencies: the `import` lines below — `std.kinematic` (Mechanism /
+// Snapshot), `std.ports` (Frame3, encoding note 3) and `std.trajectory`
+// (JointValue).
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures. This is
@@ -42,8 +37,7 @@
 //      typed `List<Real>`. Fixed-array syntax `[Real;N]` is not supported in
 //      the grammar. Per PRD §4.2, arity is shape-validated by the η dispatcher.
 //   3. `origin` is the real `Frame3` struct (declared in std.ports, shipped
-//      constructible by task 4254; std.ports precedes std.dynamics in the loader
-//      since task 4547 so Frame3 resolves in the growing prelude). `mechanism`
+//      constructible by task 4254, and imported below). `mechanism`
 //      (Mechanism) and `joint_id` (BodyId) still use `Real` placeholders with
 //      TODO(…-type) comments — same convention as trajectory.ri // ptodo:allow type-placeholder awaiting future type-system PRD
 //      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.

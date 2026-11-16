@@ -52,44 +52,14 @@ fn all_stdlib_modules_have_no_errors() {
 // contributor appending a module after std.determinacy.purposes is caught
 // immediately rather than by a silent golden drift.
 
-/// std.determinacy.purposes must be the last module compiled by load_stdlib().
-///
-/// If this fails it means a new stdlib module was appended AFTER
-/// std.determinacy.purposes in stdlib_loader.rs — move it before the
-/// determinacy module, or the sequential merge will leak standard purposes
-/// into that later module during intra-stdlib compilation.
-#[test]
-fn std_determinacy_purposes_is_last_stdlib_module() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        !modules.is_empty(),
-        "stdlib should have at least one module"
-    );
-    let last = modules.last().unwrap();
-    let path_str = format!("{}", last.path);
-    assert_eq!(
-        path_str,
-        "std/determinacy/purposes",
-        "std.determinacy.purposes must be the LAST stdlib module compiled \
-         (invariant: no later stdlib module may inherit its pub purposes \
-         via the sequential merge). \
-         Got last module: '{}'. \
-         Full order: {:?}",
-        path_str,
-        modules
-            .iter()
-            .map(|m| format!("{}", m.path))
-            .collect::<Vec<_>>()
-    );
-}
-
 /// No stdlib module other than std.determinacy.purposes may have a compiled
 /// purpose named "simulation_ready" or "design_review" in its compiled_purposes.
 ///
-/// If this fails it means a module compiled AFTER std.determinacy.purposes
-/// (or one that somehow directly declares these names) is inheriting/re-declaring
-/// the standard purposes, which would break the 'stdlib-internal counts stay
-/// stable' assumption and could cause golden test churn across the stdlib.
+/// A stdlib module inherits pub purposes only from the modules it imports, and
+/// no stdlib module imports std.determinacy.purposes: the standard purposes are
+/// a prelude for user modules, not for sibling stdlib modules. If this fails,
+/// a stdlib module imports std.determinacy.purposes or re-declares one of the
+/// standard purposes.
 #[test]
 fn no_stdlib_module_inherits_standard_purposes() {
     let modules = stdlib_loader::load_stdlib();
@@ -107,9 +77,8 @@ fn no_stdlib_module_inherits_standard_purposes() {
                 "stdlib module '{}' unexpectedly has a purpose named '{}' in \
                  its compiled_purposes. Standard purposes (simulation_ready, \
                  design_review) must only appear in std.determinacy.purposes \
-                 and in user modules compiled against the full stdlib. \
-                 Check that std.determinacy.purposes is still the LAST entry \
-                 in stdlib_loader.rs's sources vec.",
+                 and in user modules compiled against the full stdlib, so no \
+                 stdlib module may import std.determinacy.purposes.",
                 path_str,
                 purpose.name
             );
@@ -195,27 +164,6 @@ fn load_stdlib_is_cached() {
     assert!(
         std::ptr::eq(first, second),
         "load_stdlib() should return the same slice reference on repeated calls"
-    );
-}
-
-// ─── step-1b: std.units is the first stdlib module (bootstrap order) ─
-
-/// load_stdlib() returns std.units as the first module in the slice.
-/// This ensures units are available to all subsequent stdlib modules.
-#[test]
-fn std_units_is_first_module() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        modules.len() >= 2,
-        "expected at least 2 stdlib modules (units + materials), got {}",
-        modules.len()
-    );
-    let first = &modules[0];
-    let path_str = format!("{}", first.path);
-    assert!(
-        path_str.contains("units"),
-        "first stdlib module should be std.units, got path: {}",
-        path_str
     );
 }
 

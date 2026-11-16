@@ -1,236 +1,252 @@
-//! Topological sort for the embedded stdlib prelude.
+//! The embedded stdlib build: a closed set of `(module_name, source)` pairs,
+//! each module compiled against exactly the modules it declares as imports.
 //!
-//! Provides [`compile_modules_topo`] — an in-memory, stable topological sort
-//! over a set of `(module_name, source)` pairs, using `Declaration::Import`
-//! edges for ordering and a gray/black DFS for cycle detection.
+//! [`compile_modules_topo`] derives a canonical topological order from the
+//! `import` declarations alone, so the result does not depend on the order the
+//! pairs are given in (NS-M3), and a module sees builtins plus the pub surfaces
+//! of its own imports, never a sibling it does not import (NS-V3).
 
 use std::collections::HashMap;
+use std::fmt;
 
-use reify_core::{Diagnostic, ModulePath};
+use reify_core::ModulePath;
 
 use crate::CompiledModule;
 
-/// Extract intra-set import edges for one module source.
-///
-/// Returns the indices (into `name_to_idx`) of modules that this source imports.
-/// Import targets not present in `name_to_idx` are silently ignored — they
-/// represent external or stdlib imports that drive no ordering here.
-///
-/// Note: `source` is parsed here for edge extraction only.  The same source is
-/// parsed again in [`compile_modules_topo`] via `parse_with_prelude_enums`,
-/// which seeds enum names from already-compiled modules.  The double-parse is
-/// intentional: edge extraction is prelude-agnostic, while compilation needs
-/// the enum-name prelude for correct tokenisation.
-fn import_edges_for(
-    source: &str,
-    module_path: ModulePath,
-    name_to_idx: &HashMap<&str, usize>,
-) -> Vec<usize> {
-    let parsed = reify_syntax::parse(source, module_path);
-    parsed
-        .declarations
-        .iter()
-        .filter_map(|decl| {
-            if let reify_ast::Declaration::Import(import) = decl {
-                name_to_idx.get(import.path.as_str()).copied()
-            } else {
-                None
+/// Why a stdlib source set has no build order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StdlibGraphError {
+    /// An import cycle: the dotted module names along it, the first repeated
+    /// at the end to close it.
+    Cycle { chain: Vec<String> },
+    /// `importer` imports `target`, which is not a module of the set.
+    UnknownImport { importer: String, target: String },
+}
+
+impl fmt::Display for StdlibGraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cycle { chain } => {
+                write!(f, "circular dependency detected: {}", chain.join(" -> "))
             }
+            Self::UnknownImport { importer, target } => write!(
+                f,
+                "module '{importer}' imports '{target}', which is not a module of the stdlib"
+            ),
+        }
+    }
+}
+
+/// The modules of a source set and, per module, the set indices of its
+/// imports in declaration order.
+struct ImportGraph<'s> {
+    names: Vec<&'s str>,
+    paths: Vec<ModulePath>,
+    imports: Vec<Vec<usize>>,
+}
+
+impl<'s> ImportGraph<'s> {
+    fn of(sources: &[(&'s str, &str)]) -> Result<Self, StdlibGraphError> {
+        let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
+        let index_of: HashMap<&str, usize> =
+            names.iter().enumerate().map(|(i, &name)| (name, i)).collect();
+        let paths: Vec<ModulePath> = names
+            .iter()
+            .map(|name| ModulePath::from_dotted(name).expect("valid dotted module name"))
+            .collect();
+        let imports = sources
+            .iter()
+            .zip(&paths)
+            .map(|((name, source), path)| declared_imports(name, source, path, &index_of))
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            names,
+            paths,
+            imports,
         })
-        .collect()
+    }
+
+    /// Every module, each after all of its imports: a DFS post-order whose
+    /// roots are taken in ascending dotted name and whose edges are followed
+    /// in import-declaration order, so the order depends only on the set.
+    ///
+    /// The DFS is recursive; its depth is the longest import chain in the set.
+    /// Default thread stacks handle chains of several thousand modules; past a
+    /// few hundred in a constrained-stack context, convert [`TopoSorter::visit`]
+    /// to an explicit work stack.
+    fn canonical_order(&self) -> Result<Vec<usize>, StdlibGraphError> {
+        let mut roots: Vec<usize> = (0..self.names.len()).collect();
+        roots.sort_by_key(|&i| self.names[i]);
+        let mut sorter = TopoSorter {
+            graph: self,
+            color: vec![DfsColor::White; self.names.len()],
+            path: Vec::new(),
+            order: Vec::with_capacity(self.names.len()),
+        };
+        for root in roots {
+            sorter.visit(root)?;
+        }
+        Ok(sorter.order)
+    }
+}
+
+/// The set indices of the modules `source` imports, in declaration order.
+/// The source is parsed here prelude-agnostically, for its imports only;
+/// [`compile_against_imports`] parses it again with its imports' enum names.
+fn declared_imports(
+    name: &str,
+    source: &str,
+    path: &ModulePath,
+    index_of: &HashMap<&str, usize>,
+) -> Result<Vec<usize>, StdlibGraphError> {
+    let parsed = reify_syntax::parse(source, path.clone());
+    let mut imports: Vec<usize> = Vec::new();
+    for declaration in &parsed.declarations {
+        let reify_ast::Declaration::Import(import) = declaration else {
+            continue;
+        };
+        let target = index_of.get(import.path.as_str()).copied().ok_or_else(|| {
+            StdlibGraphError::UnknownImport {
+                importer: name.to_string(),
+                target: import.path.clone(),
+            }
+        })?;
+        if !imports.contains(&target) {
+            imports.push(target);
+        }
+    }
+    Ok(imports)
 }
 
 /// Three-color DFS state for cycle detection.
 #[derive(Clone, Copy, PartialEq)]
 enum DfsColor {
     White, // not yet visited
-    Gray,  // in the current DFS path (back-edge target → cycle)
+    Gray,  // on the current DFS path (reaching it again closes a cycle)
     Black, // fully processed
 }
 
-/// Helper that carries mutable DFS state across recursive calls.
-struct TopoSorter<'a> {
-    edges: &'a [Vec<usize>],
-    names: &'a [&'a str],
+struct TopoSorter<'g, 's> {
+    graph: &'g ImportGraph<'s>,
     color: Vec<DfsColor>,
-    stack: Vec<usize>, // current DFS path (for cycle chain reconstruction)
-    result: Vec<usize>,
+    path: Vec<usize>,
+    order: Vec<usize>,
 }
 
-impl<'a> TopoSorter<'a> {
-    fn dfs(&mut self, node: usize) -> Result<(), Diagnostic> {
+impl TopoSorter<'_, '_> {
+    fn visit(&mut self, node: usize) -> Result<(), StdlibGraphError> {
         match self.color[node] {
             DfsColor::Black => return Ok(()),
             DfsColor::Gray => {
-                // Back-edge: node is already in the current DFS path → cycle
-                let cycle_start = self.stack.iter().position(|&s| s == node).unwrap_or(0);
-                let chain: Vec<&str> = self.stack[cycle_start..]
+                let start = self
+                    .path
                     .iter()
-                    .map(|&i| self.names[i])
+                    .position(|&on_path| on_path == node)
+                    .expect("a gray node is on the DFS path");
+                let chain = self.path[start..]
+                    .iter()
+                    .chain(std::iter::once(&node))
+                    .map(|&i| self.graph.names[i].to_string())
                     .collect();
-                let mut arrow_chain = chain.join(" -> ");
-                arrow_chain.push_str(" -> ");
-                arrow_chain.push_str(self.names[node]);
-                return Err(Diagnostic::error(format!(
-                    "circular dependency detected: {}",
-                    arrow_chain
-                )));
+                return Err(StdlibGraphError::Cycle { chain });
             }
             DfsColor::White => {}
         }
-
         self.color[node] = DfsColor::Gray;
-        self.stack.push(node);
-
-        // Clone to avoid simultaneous borrow of self.edges and self (via dfs)
-        let deps: Vec<usize> = self.edges[node].clone();
-        for dep in deps {
-            self.dfs(dep)?;
+        self.path.push(node);
+        for &import in &self.graph.imports[node] {
+            self.visit(import)?;
         }
-
-        self.stack.pop();
+        self.path.pop();
         self.color[node] = DfsColor::Black;
-        self.result.push(node);
+        self.order.push(node);
         Ok(())
     }
 }
 
-/// Stable DFS post-order topological sort with cycle detection.
+/// Compile `sources`, each module against exactly its declared imports, in
+/// declaration order (NS-P1 import precedence).
 ///
-/// Returns a permutation of `0..sources.len()` such that every dependency
-/// appears before its dependents.  Independent modules retain their input order
-/// (DFS visits roots in input order; a node with no deps is appended
-/// immediately).
+/// Returns the modules in the canonical order of [`ImportGraph::canonical_order`],
+/// with their diagnostics attached, including the module-path check every
+/// file-compiled module gets. `Err` when the imports have no order: a cycle,
+/// or an import of a module outside the set.
 ///
-/// Returns `Err(Diagnostic)` if a cycle is detected, with the chain named in
-/// the message ("circular dependency detected: a -> b -> a").
-///
-/// # Stack depth
-///
-/// The internal DFS is recursive; call-stack depth equals the longest import
-/// chain in the input graph.  For the embedded stdlib (no module currently
-/// declares an `import`) the depth is **0** — every node is a root.  For
-/// manually constructed test fixtures the depth equals the chain length.
-/// Default Rust thread stacks (8 MiB) handle chains of several thousand
-/// modules before overflowing.  If ever called with chains longer than a few
-/// hundred nodes in a constrained-stack context, convert `TopoSorter::dfs` to
-/// an explicit work-stack iterative form.
-fn stable_topo_sort(sources: &[(&str, &str)]) -> Result<Vec<usize>, Diagnostic> {
-    let n = sources.len();
-    let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
-
-    // Build the name→index map once; import_edges_for reuses it for every module
-    // rather than constructing it O(n) times.
-    let name_to_idx: HashMap<&str, usize> =
-        names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
-
-    // Build dependency edge lists
-    let edges: Vec<Vec<usize>> = sources
-        .iter()
-        .map(|(name, source)| {
-            let path = ModulePath::from_dotted(name).expect("valid dotted module name");
-            import_edges_for(source, path, &name_to_idx)
-        })
-        .collect();
-
-    let mut sorter = TopoSorter {
-        edges: &edges,
-        names: &names,
-        color: vec![DfsColor::White; n],
-        stack: Vec::new(),
-        result: Vec::with_capacity(n),
-    };
-
-    for i in 0..n {
-        if sorter.color[i] == DfsColor::White {
-            sorter.dfs(i)?;
-        }
-    }
-
-    Ok(sorter.result)
-}
-
-/// Compile `sources` in topological order derived from their `import` declarations.
-///
-/// Each module is compiled against a growing prelude of all previously compiled
-/// modules (dependencies first), using the same `parse_with_prelude_enums` +
-/// `compile_with_prelude` loop as `load_stdlib`.
-///
-/// Returns `Ok(modules)` with per-module diagnostics attached. Modules are
-/// returned in the order they were compiled (topo order, not input order).
-///
-/// The only structural `Err` is a cycle in the import graph — step-4 adds that.
+/// Never re-enters the stdlib cache (`parse_with_stdlib`, `load_stdlib_context`):
+/// this runs inside `load_stdlib`'s `OnceLock` initialiser, so that would deadlock.
 pub(crate) fn compile_modules_topo(
     sources: &[(&str, &str)],
-) -> Result<Vec<CompiledModule>, Diagnostic> {
-    let topo_indices = stable_topo_sort(sources)?;
+) -> Result<Vec<CompiledModule>, StdlibGraphError> {
+    let graph = ImportGraph::of(sources)?;
+    let order = graph.canonical_order()?;
 
-    let mut compiled_so_far: Vec<CompiledModule> = Vec::with_capacity(sources.len());
-
-    for idx in topo_indices {
-        let (module_name, source) = &sources[idx];
-
-        let prelude_enum_names: Vec<&str> = compiled_so_far
-            .iter()
-            .flat_map(|m: &CompiledModule| m.enum_defs.iter().map(|e| e.name.as_str()))
-            .collect();
-
-        let parsed = reify_syntax::parse_with_prelude_enums(
-            source,
-            ModulePath::from_dotted(module_name).expect("valid dotted module name"),
-            &prelude_enum_names,
-        );
-
-        assert!(
-            parsed.errors.is_empty(),
-            "module '{}' has parse errors: {:?}",
-            module_name,
-            parsed.errors
-        );
-
-        let compiled = crate::compile_with_prelude(&parsed, &compiled_so_far);
-        compiled_so_far.push(compiled);
+    let mut compiled: Vec<Option<CompiledModule>> = sources.iter().map(|_| None).collect();
+    for &idx in &order {
+        let module = {
+            let imports: Vec<&CompiledModule> = graph.imports[idx]
+                .iter()
+                .map(|&import| {
+                    compiled[import]
+                        .as_ref()
+                        .expect("canonical order compiles every import first")
+                })
+                .collect();
+            compile_against_imports(graph.names[idx], sources[idx].1, &graph.paths[idx], &imports)
+        };
+        compiled[idx] = Some(module);
     }
 
-    Ok(compiled_so_far)
+    Ok(order
+        .into_iter()
+        .map(|idx| compiled[idx].take().expect("each module is compiled once"))
+        .collect())
+}
+
+fn compile_against_imports(
+    name: &str,
+    source: &str,
+    path: &ModulePath,
+    imports: &[&CompiledModule],
+) -> CompiledModule {
+    let import_enum_names: Vec<&str> = imports
+        .iter()
+        .flat_map(|module| module.enum_defs.iter().map(|e| e.name.as_str()))
+        .collect();
+    let parsed = reify_syntax::parse_with_prelude_enums(source, path.clone(), &import_enum_names);
+    assert!(
+        parsed.errors.is_empty(),
+        "module '{}' has parse errors: {:?}",
+        name,
+        parsed.errors
+    );
+    let mut module = crate::compile_with_prelude_refs(&parsed, imports);
+    crate::module_dag::attach_module_path_diag(&mut module, &parsed);
+    module
 }
 
 #[cfg(test)]
 mod tests {
-    use super::compile_modules_topo;
+    use super::{StdlibGraphError, compile_modules_topo};
     use crate::CompiledModule;
     use reify_core::{ModulePath, Severity};
 
-    /// SIGNAL #3: a cyclic import pair is rejected with a "circular dependency" error.
-    ///
-    /// RED until step-4 adds gray/black cycle detection to the topo sort.
+    /// SIGNAL #3: a cyclic import pair is rejected with a typed cycle naming
+    /// both modules.
     #[test]
-    fn signal_3_cyclic_import_pair_returns_err_with_circular_dependency_message() {
-        let a_src = "import b\n\npub type A = Real";
-        let b_src = "import a\n\npub type B = Real";
+    fn signal_3_cyclic_import_pair_returns_a_cycle_naming_both_modules() {
+        let set: &[(&str, &str)] = &[
+            ("a", "import b\n\npub type A = Real"),
+            ("b", "import a\n\npub type B = Real"),
+        ];
 
-        let set: &[(&str, &str)] = &[("a", a_src), ("b", b_src)];
-
-        let result = compile_modules_topo(set);
-        let diag =
-            result.expect_err("compile_modules_topo must return Err for a cyclic module set");
-
-        assert_eq!(
-            diag.severity,
-            reify_core::Severity::Error,
-            "cycle diagnostic must have Error severity"
-        );
+        let Err(StdlibGraphError::Cycle { chain }) = compile_modules_topo(set) else {
+            panic!("compile_modules_topo must return a Cycle for a cyclic module set");
+        };
         assert!(
-            diag.message.contains("circular dependency"),
-            "cycle diagnostic message must contain 'circular dependency', got: {:?}",
-            diag.message
+            chain.iter().any(|m| m == "a") && chain.iter().any(|m| m == "b"),
+            "the cycle chain must name both modules, got: {chain:?}"
         );
-        // Both module names must appear in the chain
-        assert!(
-            diag.message.contains('a') && diag.message.contains('b'),
-            "cycle diagnostic message must name both modules, got: {:?}",
-            diag.message
-        );
+        assert_eq!(chain.first(), chain.last(), "the chain closes the cycle");
     }
 
     /// SIGNAL #1: a shared surface type declared AFTER its consumers in input order

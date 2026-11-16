@@ -1210,8 +1210,6 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
     let resolver = ModuleResolver::new(&dir, &stdlib_root);
     let mut dag = ModuleDag::new();
 
-    // std.materials.mechanical is preceded by std.units and std.si_units in the
-    // embedded stdlib slice (topological order); they are its transitive deps.
     let result = dag.compile_module("std.materials.mechanical", &resolver);
     assert!(
         result.is_ok(),
@@ -1226,17 +1224,36 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
         "dag.modules must contain \"std.materials.mechanical\" after delegation"
     );
 
-    // Transitive dependencies that std.materials.mechanical was compiled against
-    // must also appear in both modules and topo_order.
-    for dep in &["std.units", "std.si_units"] {
+    // Its declared-import closure, read from the compiled embedded stdlib, must
+    // also appear in both modules and topo_order.
+    let stdlib = stdlib_loader::load_stdlib();
+    let mut closure: Vec<String> = Vec::new();
+    let mut pending = vec!["std.materials.mechanical".to_string()];
+    while let Some(current) = pending.pop() {
+        let module = stdlib
+            .iter()
+            .find(|m| m.path.to_dotted() == current)
+            .unwrap_or_else(|| panic!("{current} is an embedded stdlib module"));
+        for import in &module.imports {
+            if !closure.contains(&import.path) {
+                closure.push(import.path.clone());
+                pending.push(import.path.clone());
+            }
+        }
+    }
+    assert!(
+        !closure.is_empty(),
+        "std.materials.mechanical declares at least one stdlib import"
+    );
+    for dep in &closure {
         assert!(
-            dag.modules.contains_key(*dep),
+            dag.modules.contains_key(dep.as_str()),
             "dag.modules must contain transitive dep \"{}\" after delegating \
              embedded stdlib for std.materials.mechanical",
             dep
         );
         assert!(
-            dag.topo_order.contains(&dep.to_string()),
+            dag.topo_order.contains(dep),
             "topo_order must contain transitive dep \"{}\"",
             dep
         );

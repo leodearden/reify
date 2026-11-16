@@ -465,7 +465,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
 /// function returns findings".
 pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
     let modules = crate::stdlib_topo::compile_modules_topo(sources)
-        .unwrap_or_else(|cycle| panic!("stdlib import cycle: {}", cycle.message));
+        .unwrap_or_else(|e| panic!("stdlib import graph: {e}"));
 
     // Fail fast: Error-severity diagnostics in embedded stdlib are always
     // programming errors. Without this check, a broken module gets permanently
@@ -482,7 +482,7 @@ pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
         assert!(
             !has_errors,
             "stdlib module '{}' has Error-severity diagnostics: {:?}",
-            module.path,
+            module.path.to_dotted(),
             module
                 .diagnostics
                 .iter()
