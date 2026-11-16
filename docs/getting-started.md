@@ -1,12 +1,14 @@
 # Getting Started with Reify
 
-This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). Contributors building from source: use `./target/release/reify` wherever this guide says `reify`, and run it from a checkout so the `examples/` paths resolve.
+This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
 
 The examples live in the repository, not in the package. Fetch the one this guide uses into your current directory:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/leodearden/reify/main/examples/m5_geometry.ri
 ```
+
+`main` moves on after each release. If `reify check` rejects the file, or its output differs from section 1 below, put your release's tag (for example `v0.2-alpha`) in the URL in place of `main`.
 
 ## 1. Sanity check
 

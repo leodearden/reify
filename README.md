@@ -30,7 +30,7 @@ What does work, end-to-end:
 
 What's flaky or missing:
 
-- Some examples exercise features that are still under construction. If `reify check examples/<file>.ri` errors, try a different one; `examples/m5_geometry.ri` is the safest baseline.
+- Some [examples](https://github.com/leodearden/reify/tree/main/examples) exercise features that are still under construction. If `reify check` errors on one, try a different one; `m5_geometry.ri`, the file you fetched in [Install](#install), is the safest baseline.
 - Double-clicking a `.ri` file in your file manager does not open Reify yet (the package doesn't register the `.ri` file type). Open files from the Start view, or pass the path: `reify-gui file.ri`.
 
 ---
@@ -43,7 +43,7 @@ What's flaky or missing:
 
 ## Install
 
-1. Download `Reify_<version>_amd64.deb` from the [latest release](https://github.com/leodearden/reify/releases/latest).
+1. Download `Reify_<version>_amd64.deb` from the newest `v0.x-alpha` prerelease on the [releases page](https://github.com/leodearden/reify/releases).
 2. Install it (apt resolves the package's own dependencies):
 
    ```sh
@@ -56,6 +56,8 @@ What's flaky or missing:
    curl -fsSLO https://raw.githubusercontent.com/leodearden/reify/main/examples/m5_geometry.ri
    reify check m5_geometry.ri
    ```
+
+   `main` moves on after each release, so if `reify check` rejects the file, fetch the copy that matches your release by putting its tag (for example `v0.2-alpha`) in the URL in place of `main`.
 
 **AppImage instead.** Download `Reify_<version>_amd64.AppImage`, then:
 
@@ -127,9 +129,9 @@ scripts/setup-dev.sh
 cargo build --release
 ```
 
-The first build is slow: 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast. `setup-dev.sh` builds the elalish/manifold C++ libs once into `/opt/reify-deps/manifold/lib` (~5–10 min cold) via `scripts/build-manifold-deps.sh`; a `links`-override in `.cargo/config.toml` then links those prebuilt static libs, so `cargo build` never recompiles manifold from source.
+The first build is slow: 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast.
 
-`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, the GUI's npm packages, and a conda-forge env at `/opt/reify-deps` carrying gmsh 4.15.2 + openvdb 13.0.0 (via micromamba — installed automatically if no conda-family installer is on PATH). It also builds the manifold C++ libs once into `/opt/reify-deps/manifold/lib` (see `scripts/build-manifold-deps.sh`), which `.cargo/config.toml` links as prebuilt static libs instead of recompiling manifold per build. At the end it runs a smoke test against `examples/m5_geometry.ri`.
+`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, the GUI's npm packages, and a conda-forge env at `/opt/reify-deps` carrying gmsh 4.15.2 + openvdb 13.0.0 (via micromamba — installed automatically if no conda-family installer is on PATH). It also builds the manifold C++ libs once (~5–10 min cold) into `/opt/reify-deps/manifold/lib` (see `scripts/build-manifold-deps.sh`), which `.cargo/config.toml` links as prebuilt static libs instead of recompiling manifold per build. At the end it runs a smoke test against `examples/m5_geometry.ri`.
 
 From a checkout, the binary is `./target/release/reify`:
 
