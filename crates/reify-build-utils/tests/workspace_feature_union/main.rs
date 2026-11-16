@@ -497,6 +497,43 @@ fn check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets() {
     }
 }
 
+#[test]
+fn check_exits_2_naming_cargo_fetch_when_the_registry_is_unreachable() {
+    let out = Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION]))
+        .tree("a", TREE_A)
+        .cold_cache()
+        .unreachable_registry()
+        .check();
+    assert_input_error(
+        &out,
+        &["fetch --locked", "Couldn't resolve host name"],
+        "a host with no network and a cold cache is an input check could not obtain, \
+         never a finding",
+    );
+}
+
+/// HOST-UNION is read from `cargo metadata --no-deps` alone, which needs no
+/// registry, so it is reported even where a fetch would fail.
+#[test]
+fn check_reports_a_host_union_finding_without_fetching() {
+    let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
+    let fixture = Fixture::metadata_only(&members)
+        .cold_cache()
+        .unreachable_registry();
+    let out = fixture.check();
+    assert_findings(
+        &out,
+        &[&["HOST-UNION zz"]],
+        "an unreachable registry must not hide a HOST-UNION finding",
+    );
+    let log = fixture.cargo_argv_log();
+    assert!(
+        !log.lines().any(|line| line.starts_with("fetch")),
+        "check must not fetch while a HOST-UNION finding stands\n{log}\n{}",
+        describe(&out)
+    );
+}
+
 // --- side attribution --------------------------------------------------------
 
 /// Real cargo 1.96 output from a scratch workspace: u -> memchr, zz -> union
