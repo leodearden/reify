@@ -1487,60 +1487,6 @@ structure S {
     );
 }
 
-/// Guard: an Int literal passed where a Length param is declared is ACCEPTED at
-/// the binding site — no `ConstraintArgTypeMismatch`, and the instantiation
-/// emits `MinWall#0[0]`, which a rejected binding would not (task 5762's
-/// short-circuit drops it).
-///
-/// The Int-for-Length tolerance is a DELIBERATE DEFERRAL: task 5762 (δ₂) removed
-/// only the cross-dimension half of Rule 4 of `constraint_arg_type_conforms`, and
-/// this half is owned by #10029. In this masked fixture (`w > 0mm`) task 4490's
-/// comparison guard still rejects the substituted predicate, which is the one
-/// error asserted; the unmasked shape (`w > 0`) is silent, and that is the hole
-/// #10029 closes.
-///
-/// The rationale is restated rather than deleted per PRD
-/// docs/prds/v0_6/dimensioned-construction-strictness.md §0.3 and §13 Open
-/// question 1.
-#[test]
-fn int_literal_for_length_param_no_constraint_arg_type_mismatch() {
-    let source = r#"
-constraint def MinWall {
-    param w: Length
-    w > 0mm
-}
-structure S {
-    constraint MinWall(w: 3)
-}
-"#;
-    let (tmpl, diags) = compile_template(source, "S");
-    let mismatches = constraint_arg_type_mismatches(&diags);
-    assert!(
-        mismatches.is_empty(),
-        "expected zero ConstraintArgTypeMismatch diagnostics for an Int literal arg \
-         (Int-for-Length is deliberately deferred to #10029; task 5762 removed only \
-         the cross-dimension half of Rule 4), got: {:?}",
-        mismatches
-    );
-    let labels: Vec<&Option<String>> = tmpl.constraints.iter().map(|c| &c.label).collect();
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.as_deref() == Some("MinWall#0[0]")),
-        "the accepted binding must emit MinWall#0[0]; got labels: {:?}",
-        labels
-    );
-    let errors = error_diags(&diags);
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly 1 error, the substituted predicate's comparison rejection, \
-         got {}; diagnostics: {:?}",
-        errors.len(),
-        diags
-    );
-}
-
 // ── Task 5762 (δ₂): cross-dimension constraint args are rejected at the binding site ──
 
 /// Assert the binding-site rejection is the module's ONLY error: exactly one
@@ -1785,6 +1731,126 @@ structure S {
         "the where clause's unresolved name must still be reported; diagnostics: {:?}",
         module.diagnostics
     );
+}
+
+// ── Task 10029: Int↔Scalar constraint args are rejected at the binding site ──
+
+/// An Int literal at a Length param is rejected at the binding site (task 10029).
+///
+/// This REVERSES a deliberate ruling, restated here rather than deleted per PRD
+/// docs/prds/v0_6/dimensioned-construction-strictness.md §0.3 and §13 Open
+/// question 1. Rule 4 of `constraint_arg_type_conforms` once accepted any
+/// numeric pairing (task 4546). Task 5762 (δ₂) removed only its cross-dimension
+/// half and kept Int-for-Length tolerated, pinned by this test's predecessor
+/// `int_literal_for_length_param_no_constraint_arg_type_mismatch`. Task 10029
+/// rejects it too: δ₁ (task 5646) already made `param t : Length = 1` an error,
+/// and 5762 left `MinWall(w: 3.0)` rejected while `MinWall(w: 3)` was accepted.
+///
+/// In this masked fixture (`w > 0mm`) the predicate-body error `incompatible
+/// types in comparison: Int vs Scalar[m]` is REPLACED by the binding-site code,
+/// not doubled: the rejection short-circuits the instantiation (task 5762's
+/// REPLACE ruling), so no `MinWall#0[0]` is emitted.
+#[test]
+fn int_literal_for_length_param_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: 3)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+    assert_sole_error_is_constraint_arg_type_mismatch(&diags);
+    let labels: Vec<&Option<String>> = tmpl.constraints.iter().map(|c| &c.label).collect();
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label.as_deref() == Some("MinWall#0[0]")),
+        "the rejected binding must not emit MinWall#0[0]; got labels: {:?}",
+        labels
+    );
+}
+
+/// An Int literal at a Length param compared against a bare zero (`w > 0`,
+/// which adopts the arg's type) is rejected at the binding site.
+#[test]
+fn int_literal_for_length_param_at_bare_zero_comparison_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def Positive {
+    param w : Length
+    w > 0
+}
+structure S {
+    constraint Positive(w: 3)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// An Int cell at a Length param whose predicate does not compare dimensions
+/// (`determined(v)`) is rejected at the binding site. The arg is a cell
+/// because `determined` rejects a non-cell argument.
+#[test]
+fn int_cell_arg_at_determinacy_predicate_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def Determined {
+    param v : Length
+    determined(v)
+}
+structure S {
+    param k : Int = 3
+    constraint Determined(v: k)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// Vacuity guard and clean twin of the Int rejections above: an Int literal at
+/// an Int param, and at a dimensionless `Real` param (the Int widening), binds
+/// with no mismatch and no error, and both instantiations are emitted.
+#[test]
+fn int_literal_at_int_and_dimensionless_params_compiles_clean() {
+    let source = r#"
+constraint def AtLeastOne {
+    param n : Int
+    n > 0
+}
+constraint def PositiveRatio {
+    param r : Real
+    r > 0
+}
+structure S {
+    constraint AtLeastOne(n: 3)
+    constraint PositiveRatio(r: 3)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+    let mismatches = constraint_arg_type_mismatches(&diags);
+    assert!(
+        mismatches.is_empty(),
+        "expected zero ConstraintArgTypeMismatch for Int at Int and Real params, got: {:?}",
+        mismatches
+    );
+    let errors = error_diags(&diags);
+    assert!(
+        errors.is_empty(),
+        "expected zero errors for Int at Int and Real params, got: {:?}",
+        errors
+    );
+    let labels: Vec<&Option<String>> = tmpl.constraints.iter().map(|c| &c.label).collect();
+    for expected in ["AtLeastOne#0[0]", "PositiveRatio#0[0]"] {
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.as_deref() == Some(expected)),
+            "the accepted binding must emit {expected}; got labels: {:?}",
+            labels
+        );
+    }
 }
 
 // ── Task 6416: enum-typed constraint def params resolve to Type::Enum ────────

@@ -1905,6 +1905,62 @@ structure S {
     }
 }
 
+/// `forall v in [1, 2, 3]: constraint MinThreshold(value: v)` with
+/// `param value : Length` binds an Int element at a dimensioned param, which is
+/// rejected at the binding site (task 10029). Every error is a
+/// `ConstraintArgTypeMismatch`, and the rejection short-circuits each
+/// element's instantiation, so no forall-emitted constraint survives.
+///
+/// The error count is not pinned: the forall diagnostic sink collapses only
+/// field-identical repeats, and per-element diagnostics may differ.
+#[test]
+fn forall_constraint_inst_body_int_elements_at_length_param_are_rejected() {
+    use reify_core::DiagnosticCode;
+    let source = r#"
+constraint def MinThreshold {
+    param value : Length
+    value > 0
+}
+structure S {
+    forall v in [1, 2, 3]: constraint MinThreshold(value: v)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected the Int elements at a Length param to be rejected"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch)),
+        "expected every error to be ConstraintArgTypeMismatch, got: {:?}",
+        errors
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert!(
+        !template
+            .constraints
+            .iter()
+            .any(|c| c.label.as_deref().is_some_and(|l| l.contains(":forall@v["))),
+        "expected no forall-emitted constraint for rejected bindings. Labels present: {:?}",
+        template
+            .constraints
+            .iter()
+            .filter_map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `forall v in []: constraint v > 0` should emit zero CompiledConstraints
 /// and zero errors. Pins PRD criterion 6 (empty collection produces no
 /// decls, no diagnostic). The empty literal is a degenerate but legal

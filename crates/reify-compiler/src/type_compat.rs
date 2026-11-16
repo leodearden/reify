@@ -4647,7 +4647,7 @@ mod tests {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 
-    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂) ───────────────
+    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂; task 10029) ──
 
     /// (gap) Bool passed where Length expected → false.
     /// This is the primary gap this task closes.
@@ -4659,25 +4659,32 @@ mod tests {
         );
     }
 
-    /// (deferred leniency) Int passed where Length expected → true.
-    /// Still tolerated at the binding site: task 5762 removed only the
-    /// cross-dimension half of Rule 4, and removing this half is deferred to
-    /// #10029.
+    /// (Int-for-Length rejected, task 10029) Int passed where Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_int_for_length_is_true() {
+    fn constraint_arg_type_conforms_int_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::Int),
-            "Int passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &Type::Int),
+            "Int passed as Length param must be rejected"
         );
     }
 
-    /// (deferred leniency) Length passed where Int expected → true. The reverse
-    /// of the case above; its removal is likewise deferred to #10029.
+    /// (numeric leniency) Length passed where Int expected → true. The reverse
+    /// of the Int-for-Length case above, still tolerated at the binding site.
     #[test]
     fn constraint_arg_type_conforms_length_arg_for_int_param_is_true() {
         assert!(
             constraint_arg_type_conforms(&Type::Int, &length_ty()),
             "Length arg passed as Int param must be tolerated (numeric leniency)"
+        );
+    }
+
+    /// (Rule 3 widening kept) Int passed where a dimensionless Real param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_for_dimensionless_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::dimensionless_scalar(), &Type::Int),
+            "Int passed as dimensionless Real param must be accepted (Int widening)"
         );
     }
 
