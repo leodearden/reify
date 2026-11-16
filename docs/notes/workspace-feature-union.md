@@ -65,9 +65,11 @@ For every covered member, every external (name, version, side, features)
 variant that `-p <m>` compiles, as read from `cargo tree -p <m>`, is one that
 `--workspace` compiles. The gate
 `real_workspace_resolves_every_member_like_the_workspace` runs
-`python3 scripts/workspace-feature-union.py check` (resolve-only,
-`--frozen`; about 20 s, though 74–81 s on a heavily loaded host on 2026-11-07,
-of which parsing was 0.02 s). It runs on every
+`python3 scripts/workspace-feature-union.py check`. Check first runs
+`cargo fetch --locked --target <host>`, which makes no request on a warm cache
+and took about 26 s for 492 crates on a cold one (Cold cargo cache), and then
+resolves only, with `--frozen`: about 20 s, though 74–81 s on a heavily loaded
+host on 2026-11-07, of which parsing was 0.02 s. It runs on every
 `crates/*/Cargo.toml` edit, because it lives in reify-build-utils, the crate
 `scripts/reify_path_attribution.py` routes manifest edits to. Sides come from a
 walk over cargo's deduped tree, and a member printed twice as a root is placed
@@ -525,6 +527,72 @@ The union started at 174.05 s, when nalgebra's metadata became ready, behind
 serde_derive (a proc-macro, usable only once fully built), serde, num-complex
 and simba. The host was loaded, so walls and offsets are indicative only:
 serde_derive started 63 s after its last dependency finished.
+
+### Cold cargo cache (#10003)
+
+Measured on 2026-11-16 in lane `_lane-28` at base `a3d5da91ce`, with cargo
+1.96.0, before check fetched anything. Each run used an empty `CARGO_HOME` and,
+for the compiles, a scratch `CARGO_TARGET_DIR`:
+
+- A: `cargo metadata --frozen --no-deps` exited 0, so it needs no registry.
+  `cargo tree --frozen --workspace -e normal,build,dev -f '{p}|{f}' --charset ascii --target x86_64-unknown-linux-gnu`
+  exited 101 with "no matching package named `serde` found".
+- C: the narrowed, online
+  `cargo test -p reify-build-utils --test workspace_feature_union --no-run`
+  exited 0 in 2:27 and downloaded 26 crates (registry cache 5.7 MB; the index
+  took 46 MB, because resolving against `Cargo.lock` reads the whole
+  lockfile's index).
+- D: the gate,
+  `cargo test --frozen -p reify-build-utils --test workspace_feature_union real_workspace_resolves_every_member_like_the_workspace`,
+  then failed. The script exited 2 at its first resolution,
+  `cargo tree --frozen --workspace`, with "failed to download `ahash v0.8.12`",
+  caused by "attempting to make an HTTP request, but --frozen was specified".
+  The panic text blamed a member split.
+- E: `cargo fetch --locked --target x86_64-unknown-linux-gnu` exited 0 in
+  26.0 s, downloaded 492 crates (registry cache 47 MB) and left `Cargo.lock`
+  unchanged.
+- F: the same fetch again, with `CARGO_HTTP_PROXY` and `HTTPS_PROXY` pointed at
+  a dead port, exited 0 in 2.76 s. A warm fetch makes no request.
+- G: the gate then passed in 84.4 s, the full check including the
+  `--unit-graph` profile pass.
+
+`cargo tree` and `cargo test --unit-graph` need the `.crate` of every package
+reachable from the selection, not just its index entry. A narrowed verify
+(`--scope branch`, with `-p` on check, clippy and nextest) downloads only the
+selected crates' closure, so a lane's cache can be warm enough to compile the
+gate and too cold for the gate to resolve.
+
+Decision: check fetches first, with `cargo fetch --locked --target <host>`,
+after the HOST-UNION early return and before any `cargo tree` or unit graph.
+`--locked` keeps `Cargo.lock` unwritten. The host fetch also covers the
+target-less unit graphs, which are host builds (G). HOST-UNION is read from
+`cargo metadata --no-deps` alone (A), so an unreachable registry cannot hide
+it. A host with no network and a cold cache is exit 2 naming
+`cargo fetch --locked`, and the gate's failure text says that is not a
+finding; it is never skipped. `generate` does not fetch: it resolves
+`--offline` so that a manifest edit may update `Cargo.lock`, which
+`cargo fetch --locked` would refuse.
+
+The stub-cargo tests in `crates/reify-build-utils/tests/workspace_feature_union/main.rs`
+pin this with a cold-cache model copied from D:
+`check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets`,
+`check_exits_2_naming_cargo_fetch_when_the_registry_is_unreachable` and
+`check_reports_a_host_union_finding_without_fetching`.
+
+To re-run the real measurement, use a scratch directory of your own, never the
+lane's `target/` (another `CARGO_HOME` changes dependency metadata hashes and
+fills it with duplicate artifacts):
+
+```sh
+M=/tmp/<task-id>-cold-cache; rm -rf "$M"; mkdir -p "$M/cargo-home" "$M/target"
+export CARGO_HOME="$M/cargo-home" CARGO_TARGET_DIR="$M/target"
+cargo test -p reify-build-utils --test workspace_feature_union --no-run
+cargo test --frozen -p reify-build-utils --test workspace_feature_union \
+  real_workspace_resolves_every_member_like_the_workspace -- --exact
+rm -rf "$M"
+```
+
+The first command is online and took about 2.5 min (C). The second must pass.
 
 ## Member features (#9825)
 

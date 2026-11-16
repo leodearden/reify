@@ -27,12 +27,18 @@ use harness::{
 #[test]
 fn real_workspace_resolves_every_member_like_the_workspace() {
     let out = real_check();
-    assert!(
-        out.status.success(),
-        "a member resolves an external package unlike --workspace, or compiles a unit to \
-         another profile; docs/notes/workspace-feature-union.md explains the remedy\n{}",
-        describe(out)
-    );
+    let failure = match out.status.code() {
+        Some(2) => {
+            "check could not obtain or read an input, named on stderr: this is not a finding. \
+             A cold cargo cache is not a cause, since check fetches the locked packages first; \
+             a failed `cargo fetch` means the registry was unreachable."
+        }
+        _ => {
+            "a member resolves an external package unlike --workspace, or compiles a unit to \
+             another profile; docs/notes/workspace-feature-union.md explains the remedy"
+        }
+    };
+    assert!(out.status.success(), "{failure}\n{}", describe(out));
 }
 
 /// Every shipped binary builds these with serde, so no `-p` selection may

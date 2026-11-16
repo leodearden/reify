@@ -134,9 +134,11 @@ pub(crate) fn assert_input_error(out: &Output, needles: &[&str], context: &str) 
     );
 }
 
-/// One `check` of the real workspace (about 38 `cargo tree` runs and as many
-/// `cargo test --unit-graph` resolutions), resolved with the inherited
-/// environment so the verify env's CARGO and CARGO_HOME reach cargo. It is
+/// One `check` of the real workspace (one `cargo fetch`, then about 38
+/// `cargo tree` runs and as many `cargo test --unit-graph` resolutions),
+/// resolved with the inherited environment so the verify env's CARGO and
+/// CARGO_HOME reach cargo; since check fetches the locked packages first,
+/// what the inherited CARGO_HOME holds no longer decides the verdict. It is
 /// shared only within one test process: cargo-nextest runs each test in a
 /// process of its own, so there every real-workspace test runs its own check.
 pub(crate) fn real_check() -> &'static Output {
