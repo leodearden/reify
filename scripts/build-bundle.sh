@@ -21,7 +21,7 @@
 #
 # Runs unattended (the release gates run it from the orchestrator's systemd
 # user service), so nothing prompts. Needs: the native deps
-# (scripts/check-manifold-deps.sh), tauri-cli, docker, npm, dpkg-deb, readelf,
+# (scripts/check-manifold-deps.sh), tauri-cli, docker, npm, dpkg-deb, cmp,
 # python3; the first AppImage build downloads linuxdeploy into ~/.cache/tauri.
 set -euo pipefail
 
@@ -44,7 +44,7 @@ step "preflight"
 bash scripts/check-manifold-deps.sh || fail "native deps preflight failed (scripts/check-manifold-deps.sh)"
 cargo tauri --version >/dev/null 2>&1 || fail "cargo tauri (tauri-cli) is not on PATH"
 docker info >/dev/null 2>&1 || fail "docker is unusable; scripts/bundle_closure.py probes a reference container"
-for tool in npm python3 dpkg-deb readelf tar; do
+for tool in npm python3 dpkg-deb tar cmp; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 
@@ -63,9 +63,10 @@ step "reify-gui: cargo tauri build --no-bundle"
 # --ignore-version-mismatches: tauri-cli refuses the build because the npm
 # @tauri-apps/* packages trail the Rust crates by a minor release. That pairing
 # is what scripts/run-gui.sh builds and launches today (plain cargo, no check),
-# so the flag ships the same binary rather than a new combination.
+# so the flag ships the same binary rather than a new combination. `-- --locked`
+# reaches cargo build, so a stale Cargo.lock fails here instead of being rewritten.
 (cd gui/src-tauri && cargo tauri build --ci --no-bundle --ignore-version-mismatches \
-    --features embedded-frontend)
+    --features embedded-frontend -- --locked)
 step "reify CLI"
 cargo build --release --locked -p reify-cli --bin reify
 
@@ -108,48 +109,32 @@ APPIMAGE="${APPIMAGES[0]}"
 
 CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/build-bundle-check.XXXXXX")"
 trap 'rm -rf "$CHECK_DIR"' EXIT
-dpkg-deb --fsys-tarfile "$DEB" > "$CHECK_DIR/data.tar"
-DEB_LISTING="$(tar -tf "$CHECK_DIR/data.tar")"
-# The installed layout has one home, bundle_closure.py; ask it rather than restate it.
-LAYOUT="$(python3 -B - "$TAURI_CONF" <<'PY'
-import json, sys
-sys.path.insert(0, "scripts")
-import bundle_closure
-product = json.load(open(sys.argv[1]))["productName"]
-print(bundle_closure.installed_lib_dir(product))
-print(bundle_closure.executable_runpath(product))
-PY
-)"
-{ read -r PRODUCT_LIB_DIR; read -r EXPECTED_RUNPATH; } <<<"$LAYOUT"
-
-# deb_member <installed path, no leading /> -> the data.tar member naming it.
-# tauri's tar writes `usr/...`; dpkg-deb -b writes `./usr/...`; accept either.
-deb_member() {
-    local name
-    for name in "$1" "./$1"; do
-        if grep -qxF -- "$name" <<<"$DEB_LISTING"; then
-            printf '%s\n' "$name"
-            return 0
-        fi
-    done
-    fail "$DEB does not contain /$1"
-}
+DEB_ROOT="$CHECK_DIR/root"
+dpkg-deb --extract "$DEB" "$DEB_ROOT"
 
 for member in usr/bin/reify-gui usr/bin/reify usr/bin/reify-sidecar; do
-    deb_member "$member" >/dev/null
+    [ -f "$DEB_ROOT/$member" ] || fail "$DEB does not contain /$member"
 done
-LIB_COUNT="$(grep -cE "^(\./)?${PRODUCT_LIB_DIR#/}/[^/]+$" <<<"$DEB_LISTING" || true)"
-[ "$LIB_COUNT" -ge 1 ] || fail "$DEB ships no library under $PRODUCT_LIB_DIR"
 
-# The staged copies, not cargo's: tauri copies its main binary before deb.files.
-for member in usr/bin/reify-gui usr/bin/reify; do
-    tar -xOf "$CHECK_DIR/data.tar" "$(deb_member "$member")" > "$CHECK_DIR/elf"
-    DYNAMIC="$(readelf -d "$CHECK_DIR/elf")"
-    RUNPATH="$(sed -n 's/.*(RUNPATH).*Library runpath: \[\(.*\)\]$/\1/p' <<<"$DYNAMIC")"
-    [ "$RUNPATH" = "$EXPECTED_RUNPATH" ] \
-        || fail "/$member in $DEB has RUNPATH '$RUNPATH', expected '$EXPECTED_RUNPATH'"
-done
-step "deb ships $LIB_COUNT bundled libraries under $PRODUCT_LIB_DIR"
+# Every deb.files entry of the overlay ships as staged: the RUNPATH-patched
+# copies, not cargo's, which tauri copies first and deb.files must overwrite.
+DEB_FILES="$(python3 -c 'import json, sys; files = json.load(open(sys.argv[1]))["bundle"]["linux"]["deb"]["files"]; print("\n".join(f"{dest}\t{src}" for dest, src in files.items()))' "$OVERLAY")"
+LIB_COUNT=0
+shopt -s nullglob
+while IFS=$'\t' read -r dest src; do
+    if [ -d "$src" ]; then
+        for lib in "$src"/*; do
+            installed="$dest/${lib##*/}"
+            cmp -s "$lib" "$DEB_ROOT$installed" || fail "$installed in $DEB is not the staged $lib"
+            LIB_COUNT=$((LIB_COUNT + 1))
+        done
+    else
+        cmp -s "$src" "$DEB_ROOT$dest" || fail "$dest in $DEB is not the staged $src"
+    fi
+done <<<"$DEB_FILES"
+shopt -u nullglob
+[ "$LIB_COUNT" -ge 1 ] || fail "$DEB ships no bundled library"
+step "deb ships $LIB_COUNT bundled libraries, each byte-identical to its staged copy"
 
 # ---- 7. the contract ------------------------------------------------------------
 printf '%s\n' "$DEB" "$APPIMAGE" >&3
