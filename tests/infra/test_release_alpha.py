@@ -11,9 +11,17 @@ this file.
 Hermetic: each case runs a COPY of the real script inside a throwaway git repo
 whose push remote is a local bare repo under a `github.com/` path (so the
 script's remote filter matches and the push stays on disk), with a stub
-scripts/build-bundle.sh honouring its stdout contract and a stub `gh` first on
-PATH that serves auth, repo, release and issue calls from a state dir and logs
-every argv. Nothing reaches the network or the real repository.
+scripts/build-bundle.sh honouring its stdout contract, a stub
+tests/infra/test_bundle_clean_install.py that records its argv and proof knobs
+and exits with a fixture-controlled code, and a stub `gh` first on PATH that
+serves auth, repo, release and issue calls from a state dir and logs every
+argv. Nothing reaches the network or the real repository.
+
+The B7 proof gate (task 10079): the release runs the clean-container proof
+armed over exactly the one .deb and one .AppImage it publishes, and a red proof
+leaves no tag, release or closed issue, on a re-run too. RealTree drives the
+REAL proof with the same arm env and a failing stub docker, so a renamed arm
+variable reds instead of shipping behind an all-skipped green.
 """
 
 import json
