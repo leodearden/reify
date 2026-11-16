@@ -9,11 +9,12 @@
 //!   the unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`)
 //!   can resolve — and pad — calls to same-module fns.  Omitting a default that
 //!   constructs a same-module structure draws `FnDefaultNotYetAvailable` there.
-//! * [`compile_function_decl`] compiles one fn's body, plus any defaults the
-//!   early pass left pending.  It is driven by the unified source-order pass in
-//!   `entities_phase::phase_entities`, which interleaves fn bodies with entity
-//!   templates in declaration order, so a fn body constructs a same-module
-//!   structure against that structure's AUTHORITATIVE [`TopologyTemplate`].
+//! * [`SourceOrderFnEnv::compile_function_decl`] compiles one fn's body, plus
+//!   any defaults the early pass left pending.  It is driven by the unified
+//!   source-order pass in `entities_phase::phase_entities`, which interleaves
+//!   fn bodies with entity templates in declaration order, so a fn body
+//!   constructs a same-module structure against that structure's
+//!   AUTHORITATIVE [`TopologyTemplate`].
 //!
 //! A same-module structure declared BELOW the fn has no template yet; using it
 //! draws `DiagnosticCode::StructureDeclaredAfterFunction`.
@@ -134,67 +135,102 @@ pub(crate) fn phase_fn_param_defaults(
     ctx.resolution_functions = table.into_functions();
 }
 
-/// Compile ONE `fn` declaration's body, plus its param defaults when
-/// [`phase_fn_param_defaults`] left them pending.
-///
-/// Called from the `Declaration::Function` arm of
-/// `entities_phase::phase_entities`, in source order, so `calls_above` and
-/// `templates_so_far` hold only what is declared ABOVE this fn:
-///
-/// * constructors resolve against `prelude_ctor_view`, built once per pass,
-///   overlaid by `templates_so_far` ([`name_env::overlay_local_templates`]),
-///   so a fn body may construct a same-module structure declared above it and
-///   get that structure's authoritative template — the same
-///   no-forward-reference rule `compile_entity` obeys for entity → entity
-///   references;
-/// * calls resolve against `calls_above`: the real fns declared above plus
-///   every prelude fn they do not shadow, so forward references to sibling
-///   fns do not resolve.
-///
-/// `later_declared_structure_names` holds the module-local `structure def`s
-/// with no template in `templates_so_far` yet — those declared BELOW this fn;
-/// using one draws `StructureDeclaredAfterFunction` rather than a silent
-/// fallback.
-///
-/// The overlay is per fn because it borrows `templates_so_far`, which the
-/// caller pushes to between fns.
-///
-/// `declared_callables` is the module's order-independent callable vocabulary
-/// (task #5371), built once per pass by the caller.
-///
-/// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
-/// already emitted them exactly once — and neither are those of `Compiled`
-/// defaults, which are reused as compiled.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function_decl<'t>(
-    fn_def: &FnDef,
-    sig: &FnSignature,
-    defaults: &FnParamDefaults,
-    enum_defs: &[EnumDef],
-    calls_above: &ResolutionTable<'_>,
-    templates_so_far: &'t [TopologyTemplate],
-    prelude_ctor_view: &HashMap<String, &'t TopologyTemplate>,
-    later_declared_structure_names: &HashSet<String>,
-    declared_callables: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledFunction> {
-    let template_registry = name_env::overlay_local_templates(prelude_ctor_view, templates_so_far);
-    let env = FnCompileEnv {
-        enum_defs,
-        // Never holds a pending stub: fns above are real, fns below are #5371's
-        // forward references.
-        calls: CallTable::complete(calls_above.functions()),
-        template_registry: Some(&template_registry),
-        later_declared_structure_names: Some(later_declared_structure_names),
-        declared_callable_names: declared_callables,
-    };
-    let param_defaults = match defaults {
-        FnParamDefaults::Compiled(defaults) => defaults.clone(),
-        FnParamDefaults::NeedLocalTemplates => {
-            compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
+/// The pass-invariant inputs every fn body in the unified source-order pass
+/// compiles against, built once by `entities_phase::phase_entities` before its
+/// declaration loop.
+pub(crate) struct SourceOrderFnEnv<'a> {
+    enum_defs: &'a [EnumDef],
+    prelude_ctor_view: &'a HashMap<String, &'a TopologyTemplate>,
+    /// The module's order-INDEPENDENT callable vocabulary (task #5371): the
+    /// companion to the order-dependent `calls_above` each fn body resolves
+    /// against. It changes nothing about which overload resolves; see
+    /// `CompilationScope::declared_callable_names` for what it is for.
+    declared_callable_names: HashSet<String>,
+    local_structure_def_names: &'a HashSet<String>,
+}
+
+impl<'a> SourceOrderFnEnv<'a> {
+    pub(crate) fn new(
+        enum_defs: &'a [EnumDef],
+        prelude_ctor_view: &'a HashMap<String, &'a TopologyTemplate>,
+        declared_callable_names: HashSet<String>,
+        local_structure_def_names: &'a HashSet<String>,
+    ) -> Self {
+        Self {
+            enum_defs,
+            prelude_ctor_view,
+            declared_callable_names,
+            local_structure_def_names,
         }
-    };
-    compile_fn_body(fn_def, sig, param_defaults, &env, diagnostics)
+    }
+
+    /// Compile ONE `fn` declaration's body, plus its param defaults when
+    /// [`phase_fn_param_defaults`] left them pending.
+    ///
+    /// Called from the `Declaration::Function` arm of
+    /// `entities_phase::phase_entities`, in source order, so `calls_above` and
+    /// `templates_so_far` hold only what is declared ABOVE this fn:
+    ///
+    /// * constructors resolve against the prelude ctor view overlaid by
+    ///   `templates_so_far` ([`name_env::overlay_local_templates`]), so a fn
+    ///   body may construct a same-module structure declared above it and get
+    ///   that structure's authoritative template — the same
+    ///   no-forward-reference rule `compile_entity` obeys for entity → entity
+    ///   references;
+    /// * calls resolve against `calls_above`: the real fns declared above plus
+    ///   every prelude fn they do not shadow, so forward references to sibling
+    ///   fns do not resolve;
+    /// * the module-local `structure def`s with no template in
+    ///   `templates_so_far` — those declared BELOW this fn — draw
+    ///   `StructureDeclaredAfterFunction` rather than a silent fallback.
+    ///
+    /// The overlay and the declared-below set are per fn because both derive
+    /// from `templates_so_far`, which the caller pushes to between fns.
+    ///
+    /// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
+    /// already emitted them exactly once — and neither are those of `Compiled`
+    /// defaults, which are reused as compiled.
+    pub(crate) fn compile_function_decl(
+        &self,
+        fn_def: &FnDef,
+        sig: &FnSignature,
+        defaults: &FnParamDefaults,
+        calls_above: &ResolutionTable<'_>,
+        templates_so_far: &[TopologyTemplate],
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<CompiledFunction> {
+        let template_registry =
+            name_env::overlay_local_templates(self.prelude_ctor_view, templates_so_far);
+        let declared_below = self.structure_defs_declared_below(templates_so_far);
+        let env = FnCompileEnv {
+            enum_defs: self.enum_defs,
+            // Never holds a pending stub: fns above are real, fns below are
+            // #5371's forward references.
+            calls: CallTable::complete(calls_above.functions()),
+            template_registry: Some(&template_registry),
+            later_declared_structure_names: Some(&declared_below),
+            declared_callable_names: &self.declared_callable_names,
+        };
+        let param_defaults = match defaults {
+            FnParamDefaults::Compiled(defaults) => defaults.clone(),
+            FnParamDefaults::NeedLocalTemplates => {
+                compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
+            }
+        };
+        compile_fn_body(fn_def, sig, param_defaults, &env, diagnostics)
+    }
+
+    /// The module-local `structure def`s with no template in `templates_so_far`.
+    fn structure_defs_declared_below(
+        &self,
+        templates_so_far: &[TopologyTemplate],
+    ) -> HashSet<String> {
+        let mut declared_below = self.local_structure_def_names.clone();
+        for template in templates_so_far {
+            declared_below.remove(&template.name);
+        }
+        declared_below
+    }
 }
 
 /// The compile-time overload-dispatch table: every user function, then each
@@ -460,6 +496,31 @@ mod tests {
             ctor_default_names(&prelude_only, "mk"),
             ["from_prelude"],
             "with no local P, the fn constructs the prelude P"
+        );
+    }
+
+    #[test]
+    fn only_a_fn_above_a_local_structure_def_is_told_it_is_declared_after() {
+        const SRC: &str = "fn above() -> S { S() }\n\
+             structure def S { param a : Real = 1.0 }\n\
+             fn below() -> S { S() }\n";
+        let module = compile_src(SRC);
+        let def_start = SRC.find("structure def S").expect("fixture declares S") as u32;
+        let ordering_call_sites: Vec<u32> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction))
+            .flat_map(|d| d.labels.iter().map(|label| label.span.start))
+            .collect();
+        assert!(
+            matches!(ordering_call_sites[..], [call_site] if call_site < def_start),
+            "exactly one ordering error, at the call in `above`; got: {:#?}",
+            module.diagnostics
+        );
+        assert_eq!(
+            ctor_default_names(&module, "below"),
+            ["a"],
+            "`below` is below S, so it constructs the local S"
         );
     }
 }

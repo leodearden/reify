@@ -845,14 +845,7 @@ structure def Thing { param a : Real = 1.0 }
     );
 
     // Not a silent success: the body must NOT have lowered to a ctor.
-    if let Some(f) = module.functions.iter().find(|f| f.name == "make_it")
-        && let CompiledExprKind::StructureInstanceCtor { type_name, .. } = &f.body.result_expr.kind
-    {
-        panic!(
-            "`make_it` must not lower to StructureInstanceCtor{{{type_name}}} — \
-             `Thing`'s template does not exist yet at this point in the source"
-        );
-    }
+    assert_body_does_not_construct(&module, "make_it");
 }
 
 /// Diagnostics carrying the declaration-order code — or the ordering message,
@@ -1103,4 +1096,151 @@ structure App { let t = mk() }
         "App.t.a should be InP's default Real(1.0); got fields: {:?}",
         data.fields
     );
+}
+
+/// The `fn` named `name` in `module`, panicking with every fn name when absent.
+fn function_named<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    name: &str,
+) -> &'m CompiledFunction {
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "fn `{name}` missing from module.functions; present: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+fn assert_body_constructs(module: &reify_compiler::CompiledModule, fn_name: &str, ty: &str) {
+    let f = function_named(module, fn_name);
+    match &f.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => assert_eq!(
+            type_name, ty,
+            "`{fn_name}` must construct `{ty}`; got StructureInstanceCtor{{{type_name}}}"
+        ),
+        other => panic!(
+            "`{fn_name}` declared below `{ty}` must lower to \
+             StructureInstanceCtor{{{ty}}}; got {other:?}; diagnostics: {:#?}",
+            diag_lines(module)
+        ),
+    }
+}
+
+fn assert_body_does_not_construct(module: &reify_compiler::CompiledModule, fn_name: &str) {
+    if let CompiledExprKind::StructureInstanceCtor { type_name, .. } =
+        &function_named(module, fn_name).body.result_expr.kind
+    {
+        panic!(
+            "`{fn_name}` must not lower to StructureInstanceCtor{{{type_name}}} — \
+             `{type_name}`'s template does not exist yet at this point in the source"
+        );
+    }
+}
+
+/// Each fn body sees exactly the same-module structure defs declared ABOVE it,
+/// across several fns and structures interleaved in one module: the set of
+/// structures a fn may not use shrinks as each structure's template is built,
+/// never sooner and never later. A pending param default (one constructing a
+/// same-module structure) compiles in its fn's slot under the same rule.
+#[test]
+fn each_fn_body_sees_exactly_the_structure_defs_declared_above_it() {
+    let src = r#"
+module test.interleaved
+pub fn before_alpha() -> Alpha { Alpha() }
+structure def Alpha { param a : Real = 1.0 }
+pub fn after_alpha() -> Alpha { Alpha() }
+pub fn defaulted_after_alpha(o : Alpha = Alpha()) -> Real { o.a }
+pub fn before_beta() -> Beta { Beta() }
+structure def Beta { param b : Real = 2.0 }
+pub fn after_beta() -> Beta { Beta() }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    let ordering = ordering_diags(&module);
+    assert_eq!(
+        ordering.len(),
+        2,
+        "exactly `before_alpha` and `before_beta` construct a structure declared \
+         below them; all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+    for structure in ["Alpha", "Beta"] {
+        let needle = format!("structure '{structure}'");
+        assert_eq!(
+            ordering
+                .iter()
+                .filter(|d| d.message.contains(&needle))
+                .count(),
+            1,
+            "exactly one ordering diagnostic must name `{structure}`; all diagnostics: {:#?}",
+            diag_lines(&module)
+        );
+    }
+    let error_codes: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(
+        error_codes,
+        [Some(DiagnosticCode::StructureDeclaredAfterFunction); 2],
+        "the two ordering diagnostics must be the module's only Errors; \
+         all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+
+    match &function_named(&module, "defaulted_after_alpha").param_defaults[..] {
+        [
+            Some(CompiledExpr {
+                kind: CompiledExprKind::StructureInstanceCtor { type_name, .. },
+                ..
+            }),
+        ] => assert_eq!(type_name, "Alpha"),
+        other => panic!(
+            "`defaulted_after_alpha`'s pending default must compile in its fn's slot \
+             to StructureInstanceCtor{{Alpha}}; got {other:?}"
+        ),
+    }
+
+    assert_body_constructs(&module, "after_alpha", "Alpha");
+    assert_body_constructs(&module, "after_beta", "Beta");
+    assert_body_does_not_construct(&module, "before_alpha");
+    assert_body_does_not_construct(&module, "before_beta");
+}
+
+/// The declared-above rule per fn holds for a purpose-nested structure def too:
+/// the fn above it draws the ordering diagnostic, the fn below constructs it.
+#[test]
+fn fn_bodies_on_both_sides_of_a_purpose_nested_structure_def_see_it_only_from_below() {
+    let src = r#"
+module test.interleaved_purpose
+pub fn before_inp() -> InP { InP() }
+purpose Explore() {
+    structure def InP { param a : Real = 1.0 }
+}
+pub fn after_inp() -> InP { InP() }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    let ordering = ordering_diags(&module);
+    assert_eq!(
+        ordering.len(),
+        1,
+        "only `before_inp` constructs `InP` from above its declaration; \
+         all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+    assert!(
+        ordering[0].message.contains("structure 'InP'"),
+        "the ordering diagnostic must name `InP`; all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+
+    assert_body_constructs(&module, "after_inp", "InP");
+    assert_body_does_not_construct(&module, "before_inp");
 }
