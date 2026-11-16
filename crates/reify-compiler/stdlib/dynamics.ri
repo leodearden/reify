@@ -57,6 +57,12 @@
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
 
+module std.dynamics
+
+import std.kinematic
+import std.ports
+import std.trajectory
+
 // ── MassProperties ────────────────────────────────────────────────────────
 
 // MassProperties — rigid-body inertial data for a single body (PRD §3.1):

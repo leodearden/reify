@@ -32,6 +32,10 @@
 //      `#no_prelude` would break both the refinement resolution and the
 //      stdlib_loader_tests bidirectional invariant test.
 
+module std.ports.electrical
+
+import std.ports
+
 // ── Signal kind enumeration ───────────────────────────────────────────────────
 
 // Classification of the signal carried by a signal port.

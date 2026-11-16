@@ -34,19 +34,6 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// positions are preserved unchanged. `std.units` stays first,
 /// `std.determinacy.purposes` stays last.
 ///
-/// **Ordering footgun:** the hand-chosen positions encode implicit load-order
-/// constraints (e.g. `std.solver.buckling` after `std.fea.multi_case`,
-/// `std.determinacy.purposes` last) that are NOT expressed as `import` edges
-/// and are therefore NOT machine-checked by the topo-sort.  Adding any `import`
-/// declaration to a stdlib module causes `compile_modules_topo` to reorder it
-/// (pulling dependencies earlier), which may silently violate one of these
-/// implicit constraints.  Before adding an `import`, re-validate ALL ordering
-/// requirements against the new topo output.  The stability regression test
-/// `signal_2_real_stdlib_compiles_clean_and_order_is_stable` (in
-/// `stdlib_topo::tests`) acts as a permanent guard that the sort remains the
-/// identity when no imports are present; it will need updating if imports are
-/// intentionally introduced.
-///
 /// **What ordering can NO LONGER do (NS-P2, task 5496):** registration order is
 /// semantically inert for the name kinds covered by the duplicate-pub-name scan
 /// in [`build_stdlib_modules`].  Before that gate, two stdlib modules could
@@ -56,8 +43,8 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// different structures in different phases.  Reordering this list could
 /// therefore change program meaning.  It can't now: any cross-module duplicate
 /// fails the stdlib build outright, so the only thing position still controls
-/// is what is *resolvable* during the sequential prelude build (the footgun
-/// above), not what a resolvable name *means*.  That inertness is the §5
+/// is what is *resolvable* during the sequential prelude build, not what a
+/// resolvable name *means*.  That inertness is the §5
 /// precondition the ζ task consumes.
 ///
 /// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each

@@ -30,6 +30,10 @@
 //      break refinement resolution and the stdlib_loader_tests bidirectional
 //      invariant test.
 
+module std.ports.thermal
+
+import std.ports
+
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
 // Heat flux (W/m²): surface heat flow per unit area.

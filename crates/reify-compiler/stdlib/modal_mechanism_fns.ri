@@ -22,6 +22,11 @@
 //   declared `import std.kinematic` lets the fn fold into `std.modal.analysis`
 //   (stdlib-namespace θ, #5501).
 
+module std.modal.mechanism.fns
+
+import std.kinematic
+import std.modal.analysis
+
 // ── mechanism_modal_analysis ─────────────────────────────────────────────────
 
 // `@optimized("modal::mechanism_modal")` causes the engine to insert a

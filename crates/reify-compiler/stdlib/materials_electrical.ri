@@ -40,6 +40,12 @@
 // bound now either confirms a known-positive value or degrades gracefully to
 // Indeterminate when the value is absent.
 
+module std.materials.electrical
+
+import std.materials.mechanical
+import std.si_units
+import std.units
+
 // ── ElectricallyCharacterized ────────────────────────────────────────────────
 
 // Root electrical-material trait. `resistivity` is required at every conforming

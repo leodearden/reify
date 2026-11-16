@@ -1,3 +1,4 @@
+module std.fields
 #no_prelude
 // Stdlib: Field Differential Operators (packaging surface)
 //

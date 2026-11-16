@@ -26,6 +26,8 @@
 //   Load:    PointLoad, PressureLoad, TractionLoad, BodyForce
 //   Support: FixedSupport
 
+module std.fea.types
+
 // Empty-marker Load trait.  Each conforming structure def declares its own
 // natural field shapes; the trait provides only nominal-conformance identity,
 // not a shared field contract.

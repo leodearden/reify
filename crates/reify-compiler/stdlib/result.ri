@@ -1,3 +1,4 @@
+module std.result
 #no_prelude
 // Stdlib: Result<T, E> (task B-α #4035 — PRD docs/prds/v0_6/result-and-fallback.md
 // §4.3/§8.B)

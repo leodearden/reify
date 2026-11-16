@@ -14,6 +14,8 @@
 // only; the task's "let" scenario is exercised by inline-purpose CLI locks
 // (B3), not this module.
 
+module std.determinacy.purposes
+
 /// Checks that a structure is simulation-ready: all geometric params must be
 /// determined (have a concrete value, not auto/undetermined).
 ///

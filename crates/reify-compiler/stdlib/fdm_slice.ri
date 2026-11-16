@@ -23,6 +23,11 @@
 //   `fdm_slice_e2e.rs`'s `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime`
 //   is the guard that keeps this block honest — it fails if a field reverts to `Real`.
 
+module std.fdm.slice
+
+import std.fdm
+import std.units
+
 // ── BeadRole ────────────────────────────────────────────────────────────────
 //
 // Structural role of a deposited bead, distilled from PrusaSlicer's much larger

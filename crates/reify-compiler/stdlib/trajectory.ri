@@ -65,6 +65,12 @@
 //      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct from
 //      Real) and LocationId now carries its semantically correct type.
 
+module std.trajectory
+
+import std.modal.analysis
+import std.si_units
+import std.units
+
 // ── Type aliases ──────────────────────────────────────────────────────────
 
 // JointValue: per-joint scalar — position / velocity / acceleration depending

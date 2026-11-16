@@ -1,3 +1,4 @@
+module std.option_recovery
 #no_prelude
 // Stdlib: Option Recovery Combinators (task α — PRD docs/prds/v0_6/result-and-fallback.md §8 Phase 1)
 //

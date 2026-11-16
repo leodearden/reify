@@ -39,6 +39,13 @@
 //      `ElasticResult.stress` / `ElasticResult.frame`. The PRD §4 footnote
 //      about the placeholder workaround is stale.
 
+module std.solver.buckling
+
+import std.fea.multi_case
+import std.fea.types
+import std.materials.fea
+import std.solver.elastic
+
 // ── BucklingOptions ──────────────────────────────────────────────────────────
 
 // `BucklingOptions` is the configuration object passed to the v0.5 buckling

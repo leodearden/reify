@@ -57,6 +57,12 @@
 //     `Elastic`-is-narrower difference). New FEA-bound code should
 //     depend on `ElasticMaterial`.
 
+module std.materials.fea
+
+import std.materials.appearance
+import std.si_units
+import std.units
+
 // ── Provenance ───────────────────────────────────────────────────────────────
 
 // MaterialPropertyProvenance is the citation record attached to a single

@@ -81,6 +81,13 @@
 //      `BucklingOptions.mode` allowlist-deferral precedent
 //      (solver_buckling.ri).
 
+module std.modal.analysis
+
+import std.fea.types
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // ── DampingDescriptor (marker trait) ─────────────────────────────────────────
 
 // `DampingDescriptor` is the marker trait for every damping-strategy variant

@@ -8,6 +8,8 @@
 // The Plane / Axis / BoundingBox structures (with helpers like plane_xy) are
 // deferred to a follow-up task.
 
+module std.geometry.traits
+
 // ── §3.10 supertraits ───────────────────────────────────────────────────────
 
 // Marker for any shape that carries geometry (usable as a structure bound;

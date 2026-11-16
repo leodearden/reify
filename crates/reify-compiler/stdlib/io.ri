@@ -17,6 +17,10 @@
 //   3. Provenance is declared before all trait blocks so that `Input.provenance :
 //      Provenance` resolves through the structure-name set built in the pre-pass.
 
+module std.io
+
+import std.materials.appearance
+
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
 // Why a part was removed from the design scope.

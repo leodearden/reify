@@ -29,6 +29,11 @@
 //   - std.si_units      — 0N, mm², Pa, etc.
 //   - std.materials.fea — ElasticMaterial trait
 
+module std.tensegrity
+
+import std.materials.fea
+import std.si_units
+
 // ── Strut ─────────────────────────────────────────────────────────────────────
 //
 // A compression member in the tensegrity network. Carries the minimum

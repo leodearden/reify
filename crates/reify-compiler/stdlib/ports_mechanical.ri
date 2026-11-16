@@ -14,6 +14,10 @@
 //      refinement resolution and the stdlib_loader_tests bidirectional invariant
 //      test.
 
+module std.ports.mechanical
+
+import std.ports
+
 // ── Torque ────────────────────────────────────────────────────────────────────
 
 // Torque = Force · Length / Angle (N·m/rad), distinct from Energy (J = N·m)

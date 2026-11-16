@@ -37,6 +37,11 @@
 //   - `ElasticMaterial`            — from std.materials.fea
 //   - `ABS_Plastic`                — from std.materials.fea
 
+module std.fdm
+
+import std.materials.fea
+import std.trajectory
+
 // ── InfillPattern ─────────────────────────────────────────────────────────────
 
 // InfillPattern selects which internal geometry the slicer generates for a

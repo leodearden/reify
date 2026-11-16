@@ -48,6 +48,12 @@
 //   reserved-name namespacing keeps the cache key discoverable and out of
 //   user-namespace collision.
 
+module std.flexures
+
+import std.kinematic
+import std.si_units
+import std.units
+
 // ── Type aliases ──────────────────────────────────────────────────────────
 
 // RotationalStiffness — torsional spring constant relating angular

@@ -29,6 +29,11 @@
 //      `#no_prelude` would break both the refinement resolution and the
 //      stdlib_loader_tests bidirectional invariant test.
 
+module std.ports.fluid
+
+import std.ports
+import std.ports.mechanical
+
 // ── Volumetric flow rate type alias ──────────────────────────────────────────
 
 // VolumetricFlowRate = Volume / Time (m³/s).

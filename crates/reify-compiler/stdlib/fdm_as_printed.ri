@@ -20,6 +20,12 @@
 // field combinators in `std.fields` are all resolved in the growing sequential
 // prelude when this module compiles.
 
+module std.fdm.as_printed
+
+import std.constitutive
+import std.fdm
+import std.fdm.correlations
+
 // ── AsPrintedOptions ──────────────────────────────────────────────────────────
 //
 // AsPrintedOptions carries the consumer-side knobs the as-printed material

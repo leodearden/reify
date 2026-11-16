@@ -43,6 +43,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+module std.joints
+
 // ── revolute — 1 rotational DOF ──────────────────────────────────────────────
 //
 // A single-axis rotation joint: the two bodies share a common axis direction

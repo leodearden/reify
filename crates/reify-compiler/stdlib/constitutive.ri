@@ -23,6 +23,10 @@
 // concrete material with their measured/cited values and attach citations
 // per property so downstream FEA reports can reproduce the chain.
 
+module std.constitutive
+
+import std.materials.fea
+
 // ── Material frame ───────────────────────────────────────────────────────────
 
 // MaterialFrame is the local material-axis frame attached to each anisotropic

@@ -63,6 +63,10 @@
 //      likewise. The joint axis fields instantiate it at `Dimensionless` — see the
 //      direction-field ruling above the joint structures (task 5848).
 
+module std.kinematic
+
+import std.trajectory
+
 // ── Joint root marker trait ───────────────────────────────────────────────────
 
 // Joint — root marker trait for all joint kinds in the kinematic hierarchy.

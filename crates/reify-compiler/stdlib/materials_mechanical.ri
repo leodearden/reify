@@ -36,6 +36,10 @@
 // site; the mechanical replacement above resolves it.
 // ─────────────────────────────────────────────────────────────────────────────
 
+module std.materials.mechanical
+
+import std.materials.appearance
+
 // ── Trait Resolution Policy ──────────────────────────────────────────────────
 // FatigueRated, FractureTough, ImpactResistant, and Damping each refine
 // MaterialSpec; `density` and `name` are inherited transitively.  Consumer

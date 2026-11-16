@@ -12,6 +12,8 @@
 // Depends only on Length/Int (built-in dimension types) and the mm literal
 // (available via the sequential growing prelude from std.si_units).
 
+module std.stackup
+
 // ── Distribution of dimensional variation ─────────────────────────────────────
 
 // Statistical distribution assumed for a contributor's tolerance.

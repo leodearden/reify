@@ -32,6 +32,10 @@
 // compiles. It now also REQUIRES `std.units` to precede it (see the ordering
 // note on the `std.fea` entry in stdlib_loader.rs).
 
+module std.fea
+
+import std.units
+
 structure def StressInvariants {
     param i1 : Pressure
     param i2 : Pressure2

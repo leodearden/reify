@@ -18,6 +18,10 @@
 // established by the four §6.2 traits in materials_mechanical.ri (FatigueRated,
 // FractureTough, ImpactResistant, Damping all refine MaterialSpec).
 
+module std.materials.thermal
+
+import std.materials.mechanical
+
 // ── ThermallyCharacterized ───────────────────────────────────────────────────
 
 // Root thermal-material trait. Three scalar thermal properties are required;

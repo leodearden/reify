@@ -41,6 +41,10 @@
 //   - `MaterialPropertyProvenance` — from std.materials.fea
 //   - `InfillPattern`              — from std.fdm
 
+module std.fdm.correlations
+
+import std.materials.fea
+
 // ── FDMCorrelationDefaults ──────────────────────────────────────────────────
 
 // FDMCorrelationDefaults is the default-constants record for the β-phase

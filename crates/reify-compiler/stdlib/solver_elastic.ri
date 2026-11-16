@@ -38,6 +38,12 @@
 //      so the PRD's `1e-6` defaults to `0.000001` here.
 //   4. PRD's `Number` and `Integer` map to Reify's `Real` and `Int` builtins.
 
+module std.solver.elastic
+
+import std.constitutive
+import std.fea.types
+import std.materials.fea
+
 // ── ElementOrder enum ────────────────────────────────────────────────────────
 
 // `ElementOrder` selects between first-order (P1, linear) and second-order

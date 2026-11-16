@@ -37,6 +37,13 @@
 //      this stdlib (zero `method def` / `fn def` declarations across all
 //      stdlib `.ri` files).
 
+module std.fea.multi_case
+
+import std.fea.types
+import std.materials.fea
+import std.solver.elastic
+import std.units
+
 // ── LoadCase structure ────────────────────────────────────────────────────────
 
 // `LoadCase` is the multi-load-case FEA solver-input bundle.  Each instance
