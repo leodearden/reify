@@ -845,14 +845,7 @@ structure def Thing { param a : Real = 1.0 }
     );
 
     // Not a silent success: the body must NOT have lowered to a ctor.
-    if let Some(f) = module.functions.iter().find(|f| f.name == "make_it")
-        && let CompiledExprKind::StructureInstanceCtor { type_name, .. } = &f.body.result_expr.kind
-    {
-        panic!(
-            "`make_it` must not lower to StructureInstanceCtor{{{type_name}}} — \
-             `Thing`'s template does not exist yet at this point in the source"
-        );
-    }
+    assert_body_does_not_construct(&module, "make_it");
 }
 
 /// Diagnostics carrying the declaration-order code — or the ordering message,
@@ -1138,8 +1131,8 @@ fn assert_body_constructs(module: &reify_compiler::CompiledModule, fn_name: &str
 }
 
 fn assert_body_does_not_construct(module: &reify_compiler::CompiledModule, fn_name: &str) {
-    if let Some(f) = module.functions.iter().find(|f| f.name == fn_name)
-        && let CompiledExprKind::StructureInstanceCtor { type_name, .. } = &f.body.result_expr.kind
+    if let CompiledExprKind::StructureInstanceCtor { type_name, .. } =
+        &function_named(module, fn_name).body.result_expr.kind
     {
         panic!(
             "`{fn_name}` must not lower to StructureInstanceCtor{{{type_name}}} — \
@@ -1186,6 +1179,32 @@ pub fn after_beta() -> Beta { Beta() }
             "exactly one ordering diagnostic must name `{structure}`; all diagnostics: {:#?}",
             diag_lines(&module)
         );
+    }
+    let error_codes: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(
+        error_codes,
+        [Some(DiagnosticCode::StructureDeclaredAfterFunction); 2],
+        "the two ordering diagnostics must be the module's only Errors; \
+         all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+
+    match &function_named(&module, "defaulted_after_alpha").param_defaults[..] {
+        [
+            Some(CompiledExpr {
+                kind: CompiledExprKind::StructureInstanceCtor { type_name, .. },
+                ..
+            }),
+        ] => assert_eq!(type_name, "Alpha"),
+        other => panic!(
+            "`defaulted_after_alpha`'s pending default must compile in its fn's slot \
+             to StructureInstanceCtor{{Alpha}}; got {other:?}"
+        ),
     }
 
     assert_body_constructs(&module, "after_alpha", "Alpha");

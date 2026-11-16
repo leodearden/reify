@@ -498,4 +498,29 @@ mod tests {
             "with no local P, the fn constructs the prelude P"
         );
     }
+
+    #[test]
+    fn only_a_fn_above_a_local_structure_def_is_told_it_is_declared_after() {
+        const SRC: &str = "fn above() -> S { S() }\n\
+             structure def S { param a : Real = 1.0 }\n\
+             fn below() -> S { S() }\n";
+        let module = compile_src(SRC);
+        let def_start = SRC.find("structure def S").expect("fixture declares S") as u32;
+        let ordering_call_sites: Vec<u32> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction))
+            .flat_map(|d| d.labels.iter().map(|label| label.span.start))
+            .collect();
+        assert!(
+            matches!(ordering_call_sites[..], [call_site] if call_site < def_start),
+            "exactly one ordering error, at the call in `above`; got: {:#?}",
+            module.diagnostics
+        );
+        assert_eq!(
+            ctor_default_names(&module, "below"),
+            ["a"],
+            "`below` is below S, so it constructs the local S"
+        );
+    }
 }
