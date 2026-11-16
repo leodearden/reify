@@ -304,9 +304,9 @@ fn partial_overlay_diag(
 
 /// Attach a module-path declaration diagnostic (§7.1/§7.2) to `compiled` if warranted.
 ///
-/// Encapsulates the `check_module_path_decl` call and diagnostic push shared by the
-/// user-module entry points in this file. Call sites that can receive stdlib modules
-/// (i.e. `compile_module`) must guard with `!is_std_path` before calling this.
+/// Encapsulates the `check_module_path_decl` call and diagnostic push. Applies to
+/// every file-compiled module, std modules included; the embedded stdlib build
+/// (`stdlib_topo`) calls it too.
 pub(crate) fn attach_module_path_diag(
     compiled: &mut CompiledModule,
     parsed: &reify_ast::ParsedModule,
@@ -502,9 +502,10 @@ impl ModuleDag {
                         self.stdlib_mode = Some(StdlibMode::Embedded);
                     }
                     // Found in embedded stdlib. Insert all modules up to and including
-                    // the target in topological order. The stdlib slice is itself
-                    // topologically ordered: module at index i was compiled against
-                    // all modules at indices 0..i.
+                    // the target in topological order. The stdlib slice is
+                    // topologically ordered over declared imports, so the prefix
+                    // 0..=idx holds the target's whole import closure (plus
+                    // unrelated modules).
                     //
                     // Insert-prefix invariant: if stdlib[k] is present in self.modules,
                     // then stdlib[0..=k] are all present (because any prior fallback call
@@ -637,14 +638,10 @@ impl ModuleDag {
             self.stdlib_mode = Some(StdlibMode::FileSystem);
         }
 
-        // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-        // Skip stdlib modules: none of the stdlib .ri files declare `module`, so
-        // emitting W_MODULE_DECL_MISSING for every std.* import would be spurious
-        // noise under the FileSystem stdlib path. The embedded path is unaffected
-        // (stdlib modules are inserted directly; they never reach this branch).
-        if !is_std_path {
-            attach_module_path_diag(&mut compiled, &parsed);
-        }
+        // Enforce module-path declaration (spec §7.1/§7.2, task γ), std modules
+        // included. Embedded stdlib modules are inserted above and never reach
+        // here; the stdlib build checked their headers already.
+        attach_module_path_diag(&mut compiled, &parsed);
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
