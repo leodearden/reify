@@ -622,9 +622,11 @@ impl EvaluationGraph {
     /// element's handle: it is assembled by the list regroup and by
     /// `tessellate_snapshot`'s baseline mint.
     ///
-    /// A scalar geometry cell is linked by at most one realization, since
-    /// `from_templates` links it by name and realization names are unique
-    /// within an entity. Debug builds panic on a second link, naming both.
+    /// A scalar geometry cell can be linked twice today, by a top-level Solid
+    /// param and a guarded same-name override: the compiler names both
+    /// realizations after the member, and `from_templates` links by name. This
+    /// returns whichever link the map's iteration reaches first, which is
+    /// unspecified.
     pub(crate) fn scalar_geometry_cell_realization(
         &self,
         cell: &ValueCellId,
@@ -636,21 +638,9 @@ impl EvaluationGraph {
         {
             return None;
         }
-        let mut linking = self
-            .realizations
+        self.realizations
             .values()
-            .filter(|realization| realization.geometry_cell.as_ref() == Some(cell));
-        let realization = linking.next()?;
-        if cfg!(debug_assertions)
-            && let Some(other) = linking.next()
-        {
-            panic!(
-                "scalar geometry cell `{cell}` is linked by two realizations, \
-                 `{}` and `{}`; a scalar geometry cell holds one realization's handle",
-                realization.id, other.id
-            );
-        }
-        Some(realization)
+            .find(|realization| realization.geometry_cell.as_ref() == Some(cell))
     }
 
     /// Record that `entity`'s cells are stamped from `template`.

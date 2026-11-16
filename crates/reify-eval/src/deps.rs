@@ -278,13 +278,15 @@ impl ReverseDependencyIndex {
 /// index builder ([`ReverseDependencyIndex::build_from_graph_and_fields`]), and
 /// the cold/incremental eval-trace wiring in `engine_eval.rs` / `engine_edit.rs`.
 ///
-/// **Cardinality.** A geometry cell is backed by exactly one realization, OR —
-/// for a geometry-LIST cell (task #5385) — by one realization per element:
+/// **Cardinality.** A geometry cell is backed by one realization, OR — for a
+/// geometry-LIST cell (task #5385) — by one realization per element:
 /// `from_templates` links a single-geometry realization to the `Type::Geometry`
 /// cell whose `member == realization.name`, and links each `<list>#k` element
 /// realization to the one `Type::List(Box::new(Type::Geometry))` cell named by
-/// its `list_binding`. Realization names are unique within an entity, so the
-/// only fan-in is the list one, and it is N:1 by design.
+/// its `list_binding`. That list fan-in is N:1 by design. Realization names are
+/// not unique within an entity, though: a top-level Solid param and a guarded
+/// same-name override are both named after the member, so that scalar cell is
+/// linked twice.
 ///
 /// Callers that fold these links into a per-cell `realization_reads` list MUST
 /// therefore accumulate, never overwrite-last, so they stay consistent with the
