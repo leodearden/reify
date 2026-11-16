@@ -59,6 +59,17 @@
 //! A test that only asserted "thickness is a finite Scalar" would pass in the
 //! first two cases. Interiority is what makes it falsifiable.
 //!
+//! # The post-solve verdict (task 10033)
+//!
+//! Assertion (f) pins that the yield constraint reaches a definite `Satisfied`
+//! verdict. The checker evaluates the inlined `solve_elastic_static` once more,
+//! at the resolved thickness, through the same compute registry the cost loop
+//! used; before task 10033 it body-evaluated the call to `Undef` and reported
+//! `Indeterminate`. `Satisfied` rather than merely definite, because the solver
+//! accepts a point only at zero L1 residual and the FEA solve is deterministic,
+//! so the check reproduces the accepted stress. A `Violated` here is a finding
+//! to escalate, never an assertion to weaken.
+//!
 //! # Runtime
 //!
 //! A real Nelder-Mead-over-FEA loop, so it is evicted from the merge gate by its
@@ -66,9 +77,11 @@
 //! comment carries its measured cost.
 
 use crate::fea_design_loop_support::{
-    INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
+    INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine_with_checker,
 };
-use reify_core::ValueCellId;
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::{ConstraintNodeId, ValueCellId};
+use reify_ir::Satisfaction;
 use reify_test_support::{collect_errors, compile_source_with_stdlib, scalar_si};
 
 /// The shipped example under test, resolved from `CARGO_MANIFEST_DIR` so it works
@@ -113,15 +126,18 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         errors
     );
 
-    // ── Engine: real solver + real FEA trampolines ───────────────────────────
+    // ── Engine: real solver + real FEA trampolines + the real checker ────────
     //
     // Shared with the other FEA-in-the-loop tests rather than hand-wired here —
     // see `fea_design_loop_support::fea_loop_engine` for the INV-FEA-1
     // single-bundler rule it encodes and why nothing mechanical guards it under
     // `tests/`.
-    let mut engine = fea_loop_engine();
+    //
+    // ONE `check`, never an `eval` beside it: check opens with its own eval, so
+    // a second call would re-run the whole Nelder-Mead-over-FEA loop.
+    let mut engine = fea_loop_engine_with_checker(Box::new(SimpleConstraintChecker));
 
-    let result = engine.eval(&compiled);
+    let result = engine.check(&compiled);
 
     // Read a resolved `Scalar`'s SI magnitude out of the eval result, or panic
     // naming the cell. Used below for the example's own fixed dimensions, so the
@@ -228,5 +244,24 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
          {rel_err:.3e}. Every factor but the stdlib density is read back from the \
          design, so a mismatch means the objective is not the closed-form mass the \
          example documents — not that the bracket was resized."
+    );
+
+    // ── (f) The yield constraint is decided at the resolved design ───────────
+    //
+    // See the module doc's "post-solve verdict" section for why Satisfied, not
+    // merely definite.
+    let yield_id = ConstraintNodeId::new(TEMPLATE_NAME, 0);
+    let yield_entry = result
+        .constraint_results
+        .iter()
+        .find(|entry| entry.id == yield_id)
+        .unwrap_or_else(|| panic!("no verdict for {yield_id}: {:?}", result.constraint_results));
+    assert_eq!(
+        (yield_entry.satisfaction, &yield_entry.indeterminate_reason),
+        (Satisfaction::Satisfied, &None),
+        "{yield_id} (the von-Mises yield constraint) must be Satisfied at the resolved \
+         thickness {thickness_si:.6e} m. Indeterminate with \"operator undefined … \
+         StructureInstance\" means the checker body-evaluated solve_elastic_static \
+         instead of dispatching it (the pre-task-10033 state)."
     );
 }

@@ -50,8 +50,19 @@ pub const INTERIOR_UPPER_THRESHOLD_SI: f64 = 1.0;
 /// `SolverRegistry::production()` — see `fea_in_the_loop_producer`'s module doc
 /// for why that is the narrower and more faithful seam for these tests.
 pub fn fea_loop_engine() -> Engine {
-    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(DimensionalSolver));
+    fea_loop_engine_with_checker(Box::new(MockConstraintChecker::new()))
+}
+
+/// [`fea_loop_engine`] with `checker` in place of the mock, for a test that reads
+/// post-solve verdicts. The checker is consulted only when constraints are
+/// checked, never by the solve, so swapping it cannot move the resolved design.
+pub fn fea_loop_engine_with_checker(checker: Box<dyn reify_ir::ConstraintChecker>) -> Engine {
+    let mut engine = Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+        checker,
+        None,
+    )
+    .with_solver(Box::new(DimensionalSolver));
     engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
         reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); the FEA \
                  design-loop tests need only the FEA legs",
