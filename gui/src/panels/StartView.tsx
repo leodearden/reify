@@ -4,7 +4,7 @@
  * which keeps this view up with a coded error the debug MCP can observe; the
  * document error lasts until the next attempt or until the view is dismissed.
  * While a document attempt is pending its actions are disabled and the view
- * says so.
+ * names the path it is opening.
  */
 import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
@@ -116,7 +116,8 @@ export const StartView: Component<StartViewProps> = (props) => {
   }
 
   const state = () => props.launcher.state;
-  const pending = () => state().document.pending;
+  const pendingPath = () => state().document.pending;
+  const pending = () => pendingPath() !== null;
 
   return (
     <div class={styles.startView} data-testid="start-view">
@@ -213,7 +214,7 @@ export const StartView: Component<StartViewProps> = (props) => {
           </div>
           <Show when={pending()}>
             <p class={styles.note} role="status" data-testid="start-document-pending">
-              Opening…
+              Opening {pendingPath()}…
             </p>
           </Show>
           <Show when={state().document.error}>

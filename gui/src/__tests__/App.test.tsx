@@ -3480,7 +3480,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
-  it('a Start-view open the engine is still loading shows Opening… with the document actions disabled until it loads', async () => {
+  it('a Start-view open the engine is still loading shows Opening <path>… with the document actions disabled until it loads', async () => {
     vi.mocked(bridge.listRecent).mockResolvedValue([{ path: '/designs/flange.ri', opened_at: 1000 }]);
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
     const reply = deferred<PublishedState>();
@@ -3491,7 +3491,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     typeStartPath('/designs/bracket.ri');
     fireEvent.click(screen.getByTestId('start-open-path'));
 
-    await screen.findByTestId('start-document-pending');
+    expect((await screen.findByTestId('start-document-pending')).textContent).toBe('Opening /designs/bracket.ri…');
     for (const id of ['start-open-path', 'start-open-dialog', 'start-new-dialog', 'start-create-path', 'start-recent-item']) {
       expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
     }
@@ -3515,7 +3515,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
     await waitFor(() =>
       expect(
-        toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED') && t.includes('still opening')),
+        toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED') && t.includes('/designs/bracket.ri is still opening')),
       ).toBe(true),
     );
     expect(bridge.openFile).not.toHaveBeenCalledWith('/designs/flange.ri');

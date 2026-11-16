@@ -395,20 +395,20 @@ describe('StartView pending document attempt', () => {
     ];
   }
 
-  it('while an attempt is pending, the document actions and recent entries are disabled and the view says Opening…', () => {
+  it('while an attempt is pending, the document actions and recent entries are disabled and the view names the path it is opening', () => {
     store.setRecent(PENDING_RECENT);
-    store.setDocumentPending(true);
+    store.setDocumentPending('/designs/bracket.ri');
     renderStartView();
 
     expect(screen.getAllByTestId('start-recent-item')).toHaveLength(2);
     for (const control of documentControls()) expect(isDisabled(control)).toBe(true);
     const line = screen.getByTestId('start-document-pending');
     expect(line.getAttribute('role')).toBe('status');
-    expect(line.textContent).toContain('Opening…');
+    expect(line.textContent).toBe('Opening /designs/bracket.ri…');
   });
 
   it('the mode buttons stay enabled while an attempt is pending', () => {
-    store.setDocumentPending(true);
+    store.setDocumentPending('/designs/bracket.ri');
     renderStartView();
 
     for (const id of MODE_IDS) expect(isDisabled(screen.getByTestId(id))).toBe(false);
@@ -425,11 +425,11 @@ describe('StartView pending document attempt', () => {
 
   it('the actions re-enable and Opening… goes once the attempt settles', () => {
     store.setRecent(PENDING_RECENT);
-    store.setDocumentPending(true);
+    store.setDocumentPending('/designs/bracket.ri');
     renderStartView();
     expect(screen.getByTestId('start-document-pending')).toBeTruthy();
 
-    store.setDocumentPending(false);
+    store.setDocumentPending(null);
 
     for (const control of documentControls()) expect(isDisabled(control)).toBe(false);
     expect(screen.queryByTestId('start-document-pending')).toBeNull();

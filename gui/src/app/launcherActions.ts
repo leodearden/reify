@@ -7,8 +7,8 @@
  * stage reports its own failure through notify without rejecting:
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
- * a time: the store's document.pending marks it, and a second attempt is
- * refused with a LaunchFailure under its own code.
+ * a time: the store's document.pending holds its requested path, and a second
+ * attempt is refused with a LaunchFailure under its own code naming that path.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -73,27 +73,29 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  async function exclusiveDocumentAttempt<T>(
+  async function exclusiveDocumentAttempt(
     code: LaunchErrorCode,
-    attempt: () => Promise<T>,
-  ): Promise<T> {
-    if (store.state.document.pending) {
-      throw new LaunchFailure(code, 'another document is still opening');
+    path: string,
+    attempt: () => Promise<void>,
+  ): Promise<void> {
+    const inFlight = store.state.document.pending;
+    if (inFlight !== null) {
+      throw new LaunchFailure(code, `${inFlight} is still opening`);
     }
-    store.setDocumentPending(true);
+    store.setDocumentPending(path);
     try {
-      return await attempt();
+      await attempt();
     } finally {
-      store.setDocumentPending(false);
+      store.setDocumentPending(null);
     }
   }
 
   function openDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => loadAndRecord(path));
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, path, () => loadAndRecord(path));
   }
 
   function createDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, async () => {
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, path, async () => {
       const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
         deps.createNewFile(path),
       );

@@ -1,7 +1,7 @@
 /**
  * The Start view's state (alpha-spine β): the document-opening error, Recent
- * list and pending attempt, and the selected launch mode with the debug
- * server's live port.
+ * list and the path of the document attempt in flight (`pending`, null when
+ * none is), and the selected launch mode with the debug server's live port.
  */
 import { createStore } from 'solid-js/store';
 import type { InitialFileLoadFailure, LaunchMode, ModeState, RecentEntry } from '../types';
@@ -20,7 +20,7 @@ export interface LaunchErrorInfo {
 }
 
 export interface LauncherState {
-  document: { error: LaunchErrorInfo | null; recent: RecentEntry[]; pending: boolean };
+  document: { error: LaunchErrorInfo | null; recent: RecentEntry[]; pending: string | null };
   mode: { selected: LaunchMode; debugPort: number | null; error: LaunchErrorInfo | null };
 }
 
@@ -44,7 +44,7 @@ export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): Lau
 
 export function createLauncherStore() {
   const [state, setState] = createStore<LauncherState>({
-    document: { error: null, recent: [], pending: false },
+    document: { error: null, recent: [], pending: null },
     // The chat panel opens by default, so the initial selection is the assistant.
     mode: { selected: 'assistant', debugPort: null, error: null },
   });
@@ -69,8 +69,8 @@ export function createLauncherStore() {
     setState('document', 'recent', recent);
   }
 
-  function setDocumentPending(pending: boolean): void {
-    setState('document', 'pending', pending);
+  function setDocumentPending(path: string | null): void {
+    setState('document', 'pending', path);
   }
 
   /**
