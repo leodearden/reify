@@ -67,6 +67,9 @@
 #        changes no verdict: no repository at all still fails open (git's message
 #        counts wherever it sits in stderr), and a vouched checkout stays vouched
 #        (a warning beside a good answer never joins the SHA)
+#   28:  resolve — under a caller's exported strict mode (SHELLOPTS=errexit:
+#        nounset:pipefail, BASHOPTS=inherit_errexit) each refusal still prints
+#        its line
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
@@ -936,6 +939,38 @@ assert "resolve: a vouched checkout behind a noisy git → exit 0 (the warning d
 
 assert "resolve: a vouched checkout behind a noisy git → its binary" \
     test "$RUN_OUT" = "$D_RELEASE_BIN"
+
+# ==============================================================================
+# Check 28: a caller's exported strict mode does not swallow a refusal's line.
+#           bash turns on every option SHELLOPTS/BASHOPTS name before the
+#           script's first line, so the verdict capture must not trip -e.
+# ==============================================================================
+echo ""
+echo "--- Check 28: under an exported errexit each refusal still prints its line ---"
+
+run_captured env SHELLOPTS=errexit:nounset:pipefail BASHOPTS=inherit_errexit \
+    bash -c 'case $- in *e*) echo armed ;; esac'
+
+assert "control: an exported SHELLOPTS=errexit arms -e in a child bash" \
+    test "$RUN_OUT" = armed
+
+run_captured env SHELLOPTS=errexit:nounset:pipefail BASHOPTS=inherit_errexit \
+    bash "$FRESHNESS_LIB" resolve "$RESOLVE_REPO_F"
+
+assert "resolve under an exported errexit: a stale sidecar → exit 1" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve under an exported errexit: a stale sidecar → its reason line" \
+    text_contains "$RUN_OUT" 'stale'
+
+run_captured env SHELLOPTS=errexit:nounset:pipefail BASHOPTS=inherit_errexit \
+    bash "$FRESHNESS_LIB" resolve "$RESOLVE_EMPTY_REPO"
+
+assert "resolve under an exported errexit: nothing built → exit 2" \
+    test "$RUN_RC" -eq 2
+
+assert "resolve under an exported errexit: nothing built → its reason line" \
+    text_contains "$RUN_OUT" 'not built'
 
 # -- Summary ------------------------------------------------------------------
 test_summary
