@@ -597,10 +597,6 @@ crates/reify-shell-extract/src/mid_surface_naming.rs :: segmentation.rs:186
 crates/reify-shell-extract/src/mid_surface_naming.rs :: segmentation.rs:188
 crates/reify-shell-extract/src/pruning.rs :: mesher.rs:1121
 crates/reify-shell-extract/src/pruning.rs :: mesher.rs:258
-crates/reify-shell-extract/src/result.rs :: result.rs:559
-crates/reify-shell-extract/src/result.rs :: result.rs:573
-crates/reify-shell-extract/src/result.rs :: segmentation.rs:167
-crates/reify-shell-extract/src/result.rs :: segmentation.rs:181
 crates/reify-solver-elastic/src/adaptive.rs :: crates/reify-kernel-gmsh/tests/through_thickness_tests.rs:382
 crates/reify-solver-elastic/src/assembly/tet.rs :: crates/reify-solver-elastic/src/elements/tet_p2.rs:31
 crates/reify-solver-elastic/src/assembly/tet.rs :: lib.rs:19

@@ -324,7 +324,7 @@ struct RegionInfoOnDisk {
     mean_thickness_bits: u64,
     extent_bits: u64,
     /// `RegionInfo::thickness_extent_ratio` can be `f64::INFINITY` (per the
-    /// field docstring at `segmentation.rs:167`); the `u64`-bit-pattern
+    /// field rustdoc in `segmentation.rs`); the `u64`-bit-pattern
     /// encoding preserves that exactly.
     thickness_extent_ratio_bits: u64,
     classification: u8,
@@ -1056,7 +1056,7 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         }
 
         // Parallel-array invariants from SegmentationResult's docstring
-        // (`segmentation.rs:181-194`): `vertex_labels` is parallel to
+        // (the `SegmentationResult` rustdoc in `segmentation.rs`): `vertex_labels` is parallel to
         // `mesh.vertices`, `triangle_labels` is parallel to
         // `mesh.triangles`. Enforce at the deserialization boundary so a
         // tampered cache entry cannot produce a struct whose parallel
@@ -1328,7 +1328,8 @@ mod tests {
     /// `mod_history[].splitting_feature_id` string with
     /// `io::ErrorKind::InvalidData`.  Both cases observe P1 α's fallible
     /// `FeatureId::from_str` firing through the codec's `?`-propagation
-    /// (result.rs:559 and :573 respectively, landed in task 4806).
+    /// (the top-level and nested `?`-sites in `topology_attribute_from_disk`,
+    /// landed in task 4806).
     ///
     /// The complementary positive path — a valid `feature_id` with a non-empty
     /// `mod_history` of valid `splitting_feature_id`s decoding to the expected
@@ -1358,7 +1359,7 @@ mod tests {
 
         // Case 2: top-level feature_id is valid, but a nested
         // mod_history[].splitting_feature_id is corrupt — pins the nested
-        // ?-site at result.rs:573.
+        // `?`-site in `topology_attribute_from_disk`.
         let valid_feature_id = FeatureId::realization("Bracket", 0).to_string();
         let bad_nested = TopologyAttributeOnDisk {
             feature_id: valid_feature_id,
