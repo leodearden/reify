@@ -6,6 +6,7 @@
 
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -483,25 +484,6 @@ fn assert_no_errors(module: &reify_compiler::CompiledModule, what: &str) {
     );
 }
 
-fn let_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    template: &str,
-    member: &str,
-) -> &'m reify_ir::CompiledExpr {
-    module
-        .templates
-        .iter()
-        .find(|t| t.name == template)
-        .unwrap_or_else(|| panic!("template {template} missing"))
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("{template}.{member} cell missing"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("{template}.{member} has no expression"))
-}
-
 fn assert_padded_call(expr: &reify_ir::CompiledExpr, callee: &str, arity: usize, what: &str) {
     match &expr.kind {
         CompiledExprKind::UserFunctionCall {
@@ -533,7 +515,8 @@ fn trait_static_body_pads_omitted_template_free_default() {
     assert_padded_call(&make.body.result_expr, "scale", 2, "Sc::make body");
 }
 
-/// (b) A field lambda compiles before any free fn body, yet must pad.
+/// (b) A field lambda compiles before any free fn body, yet its body must be
+/// the padded 2-arg call.
 #[test]
 fn field_lambda_pads_omitted_template_free_default() {
     let source = format!(
@@ -541,6 +524,18 @@ fn field_lambda_pads_omitted_template_free_default() {
     );
     let module = compile_src(&source, "test_consume_pad_b");
     assert_no_errors(&module, "field lambda");
+    let f1 = module
+        .fields
+        .iter()
+        .find(|f| f.name == "f1")
+        .expect("field f1 must be compiled");
+    let reify_compiler::CompiledFieldSource::Analytical { expr } = &f1.source else {
+        panic!("f1 must be an analytical field; got {:?}", f1.source)
+    };
+    let CompiledExprKind::Lambda { body, .. } = &expr.kind else {
+        panic!("f1 source must be a lambda; got {:?}", expr.kind)
+    };
+    assert_padded_call(body, "scale", 2, "f1 lambda body");
 }
 
 /// (c) A structure declared ABOVE the fn must pad from its real defaults.
@@ -549,15 +544,42 @@ fn structure_above_fn_pads_omitted_template_free_default() {
     let source = format!("structure S {{ let v = scale(2.0) }}\n{SCALE_FN}");
     let module = compile_src(&source, "test_consume_pad_c");
     assert_no_errors(&module, "structure above fn");
-    assert_padded_call(let_expr(&module, "S", "v"), "scale", 2, "S.v");
+    assert_padded_call(get_let_expr_in(&module, "S", "v"), "scale", 2, "S.v");
 }
 
-/// (d) An ambient default compiles before any free fn body, yet must pad.
+/// (d) An ambient default compiles before any free fn body, yet its value must pad
+/// — in the file-scope pre-pass and when injected into a `Physical` conformer above the fn.
 #[test]
 fn ambient_default_pads_omitted_template_free_default() {
-    let source = format!("{SCALE_FN}default Real = scale(2.0)\n");
-    let module = compile_src(&source, "test_consume_pad_d");
+    let source = "structure def Bracket : Physical { param geometry : Solid = box(10mm, 20mm, 30mm) }\n\
+         fn dens(x : Real, k : Real = 1000.0) -> Real { x * k }\n\
+         default Material = Material(name: \"steel\", density: dens(7.85) * 1kg/m^3, youngs_modulus: 200GPa)\n";
+    let module = compile_source_with_stdlib(source);
     assert_no_errors(&module, "ambient default");
+    let material = get_let_expr_in(&module, "Bracket", "material");
+    let CompiledExprKind::StructureInstanceCtor {
+        type_name,
+        ordered_args,
+        ..
+    } = &material.kind
+    else {
+        panic!(
+            "Bracket.material must be the injected Material ctor; got {:?}",
+            material.kind
+        )
+    };
+    assert_eq!(type_name, "Material", "Bracket.material ctor type");
+    let (_, density) = ordered_args
+        .iter()
+        .find(|(name, _)| name == "density")
+        .expect("Material ctor must carry a density arg");
+    let CompiledExprKind::BinOp { left, .. } = &density.kind else {
+        panic!(
+            "Bracket.material density must be a product; got {:?}",
+            density.kind
+        )
+    };
+    assert_padded_call(left, "dens", 2, "Bracket.material density");
 }
 
 /// (e) Guard: a bad default is reported exactly ONCE, however many passes see
@@ -589,7 +611,7 @@ fn ordered_template_dependent_default_pads_below_fn() {
     let source = format!("{OPTS_SOLVE}structure S {{ let v = solve(2.0) }}\n");
     let module = compile_src(&source, "test_consume_pad_f");
     assert_no_errors(&module, "ordered template-dependent default");
-    let v = let_expr(&module, "S", "v");
+    let v = get_let_expr_in(&module, "S", "v");
     assert_padded_call(v, "solve", 2, "S.v");
     let CompiledExprKind::UserFunctionCall { args, .. } = &v.kind else {
         unreachable!()
@@ -738,7 +760,7 @@ fn auto_arg_ctor_default_with_structure_above_pads_below_fn() {
          structure S { let v = solve(2.0) }\n";
     let module = compile_src(source, "test_consume_pad_h");
     assert_no_errors(&module, "auto-arg ctor default");
-    assert_padded_call(let_expr(&module, "S", "v"), "solve", 2, "S.v");
+    assert_padded_call(get_let_expr_in(&module, "S", "v"), "solve", 2, "S.v");
 }
 
 /// (i) an assoc-fn override in a structure declared above `fn solve` omitting
