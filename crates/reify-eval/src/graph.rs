@@ -1,6 +1,7 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind,
@@ -213,6 +214,14 @@ pub struct CollectionSubInfo {
     pub child_value_cells: Vec<(String, ValueCellKind, Type, Option<CompiledExpr>)>,
 }
 
+impl CollectionSubInfo {
+    /// The scoped entity of this collection's `index`th instance slot,
+    /// `P.s[i]`.
+    pub(crate) fn slot_entity(&self, index: i64) -> String {
+        format!("{}.{}[{}]", self.parent_entity, self.sub_name, index)
+    }
+}
+
 /// Metadata for a keyed sub-component in the evaluation graph.
 ///
 /// A keyed sub (`sub vents : Keyed<Vent> { "intake" => {...} }`) uses
@@ -279,7 +288,7 @@ pub struct EvaluationGraph {
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
     /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
-    /// remove through [`Self::remove_sub_instance_cells`], so the registry and
+    /// remove through [`Self::remove_collection_slots`], so the registry and
     /// `value_cells` do not drift.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
@@ -661,22 +670,41 @@ impl EvaluationGraph {
         self.value_cells.insert(node.id.clone(), node);
     }
 
-    /// Remove sub instance `entity`'s `members` cells and forget the instance;
-    /// returns their ids, in `members` order, none of which remains in
-    /// `value_cells`.
-    pub(crate) fn remove_sub_instance_cells<'m>(
+    /// Remove `col_sub`'s instance slots `slots`, each holding a cell per
+    /// `child_value_cells` member, and forget them; returns those cells' ids,
+    /// slot by slot in member order, none of which remains in `value_cells`.
+    pub(crate) fn remove_collection_slots(
         &mut self,
-        entity: &str,
-        members: impl IntoIterator<Item = &'m str>,
+        col_sub: &CollectionSubInfo,
+        slots: Range<i64>,
     ) -> Vec<ValueCellId> {
-        let removed: Vec<ValueCellId> = members
-            .into_iter()
-            .map(|member| ValueCellId::new(entity, member))
+        let entities: Vec<String> = slots.map(|index| col_sub.slot_entity(index)).collect();
+        let removed: Vec<ValueCellId> = entities
+            .iter()
+            .flat_map(|entity| {
+                col_sub
+                    .child_value_cells
+                    .iter()
+                    .map(move |(member, ..)| ValueCellId::new(entity, member))
+            })
             .collect();
         for id in &removed {
             self.value_cells.remove(id);
         }
-        self.sub_instance_templates.remove(&entity.to_string());
+        for entity in &entities {
+            self.sub_instance_templates.remove(entity);
+        }
+        debug_assert!(
+            {
+                let forgotten: HashSet<&String> = entities.iter().collect();
+                self.value_cells
+                    .keys()
+                    .all(|id| !forgotten.contains(&id.entity))
+            },
+            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name",
+            col_sub.parent_entity,
+            col_sub.sub_name,
+        );
         removed
     }
 
