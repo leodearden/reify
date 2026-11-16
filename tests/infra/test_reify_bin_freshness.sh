@@ -63,6 +63,10 @@
 #   26:  resolve — judging repo_root's HEAD costs ONE git process, whatever git
 #        answers: a vouched checkout (control), an unborn HEAD (a reason naming
 #        git's own message), no repository at all (fail-open)
+#   27:  resolve — a line a git on PATH prints to stderr ahead of its own message
+#        changes no verdict: no repository at all still fails open (git's message
+#        counts wherever it sits in stderr), and a vouched checkout stays vouched
+#        (a warning beside a good answer never joins the SHA)
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
@@ -883,6 +887,53 @@ assert "resolve: no repository at all → the built binary" \
 
 assert "resolve: no repository at all → judged with ONE git invocation" \
     git_calls_were 1
+
+# ==============================================================================
+# Check 27: a line printed to stderr ahead of git's own message changes no
+#           verdict.  "No repository at all" is recognised by git's message
+#           wherever it sits in stderr, so a wrapper banner or a config warning
+#           ahead of it cannot turn the fail-open into a refusal; and a warning
+#           printed beside a good answer never joins the SHA, so a vouched
+#           checkout stays vouched.  The control comes first: the noise must
+#           really be the first stderr line of a bare git on this PATH, or the
+#           rows after it would test nothing.
+# ==============================================================================
+echo ""
+echo "--- Check 27: stderr noise ahead of git's own message changes no verdict ---"
+
+GIT_NOISE_DIR="$TMPDIR_BINFRESH/git-noise"
+NOISE_LINE="warning: noise printed ahead of git's own message"
+mkdir -p "$GIT_NOISE_DIR"
+cat > "$GIT_NOISE_DIR/git" <<SHIM
+#!/bin/sh
+echo "$NOISE_LINE" >&2
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod 755 "$GIT_NOISE_DIR/git"
+
+run_captured env PATH="$GIT_NOISE_DIR:$PATH" git -C "$NON_GIT_DIR" rev-parse --verify HEAD
+
+assert "control: a bare git on a plain dir prints the noise as its FIRST stderr line" \
+    test "${RUN_ERR%%$'\n'*}" = "$NOISE_LINE"
+
+assert "control: git's own no-repository message follows the noise" \
+    text_contains "$RUN_ERR" 'not a git repository'
+
+run_captured env PATH="$GIT_NOISE_DIR:$PATH" bash "$FRESHNESS_LIB" resolve "$NON_GIT_DIR"
+
+assert "resolve: no repository at all behind a noisy git → exit 0 (still fail-open)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: no repository at all behind a noisy git → the built binary" \
+    test "$RUN_OUT" = "$NON_GIT_BIN"
+
+run_captured env PATH="$GIT_NOISE_DIR:$PATH" bash "$FRESHNESS_LIB" resolve "$RESOLVE_REPO_D"
+
+assert "resolve: a vouched checkout behind a noisy git → exit 0 (the warning did not join the SHA)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: a vouched checkout behind a noisy git → its binary" \
+    test "$RUN_OUT" = "$D_RELEASE_BIN"
 
 # -- Summary ------------------------------------------------------------------
 test_summary

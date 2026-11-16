@@ -84,11 +84,25 @@ _reify_bin_git() {
     local repo_root="$1"
     shift
     (
-        for v in $(compgen -e GIT_); do
+        for v in "${!GIT_@}"; do
             [ "$v" = GIT_CEILING_DIRECTORIES ] || unset "$v"
         done
         LC_ALL=C git -C "$repo_root" "$@"
     )
+}
+
+# _reify_bin_read_head <repo_root>
+#
+# Asks git for repo_root's HEAD with ONE process. Prints the SHA and returns 0
+# when git reads it; otherwise prints git's error text and returns 1. The fd
+# swap keeps git's two streams apart: stdout (the SHA) goes straight out on
+# fd 3, stderr (the error) is captured, and a warning printed beside a good
+# answer is dropped rather than joining the SHA.
+_reify_bin_read_head() {
+    local git_error
+    { git_error=$(_reify_bin_git "$1" rev-parse --verify HEAD 2>&1 >&3 3>&-); } 3>&1 && return 0
+    printf '%s\n' "$git_error"
+    return 1
 }
 
 # reify_bin_head_sha [repo_root]
@@ -97,7 +111,10 @@ _reify_bin_git() {
 # string) when git cannot answer: repo_root is not a git repo, or its HEAD
 # cannot be read.
 reify_bin_head_sha() {
-    _reify_bin_git "${1:-$PWD}" rev-parse --verify HEAD 2>/dev/null || true
+    local head
+    if head=$(_reify_bin_read_head "${1:-$PWD}"); then
+        printf '%s\n' "$head"
+    fi
 }
 
 # What git prints, in the C locale, when discovery finds no repository at all:
@@ -132,16 +149,15 @@ reify_bin_unvouched_reason() {
     local repo_root="${1:-$PWD}"
     local sidecar="$repo_root/target/.reify-bin-sha"
 
-    local head git_error
-    head=$(reify_bin_head_sha "$repo_root")
-    if [ -z "$head" ]; then
-        git_error=$(_reify_bin_git "$repo_root" rev-parse --verify HEAD 2>&1 >/dev/null) || true
-        case "$git_error" in
+    local head_or_error
+    if ! head_or_error=$(_reify_bin_read_head "$repo_root"); then
+        case "$head_or_error" in
             *"$_REIFY_BIN_NO_REPOSITORY"*) return 0 ;;
         esac
-        printf "%s's HEAD is undeterminable (%s)\n" "$repo_root" "${git_error%%$'\n'*}"
+        printf "%s's HEAD is undeterminable (%s)\n" "$repo_root" "${head_or_error%%$'\n'*}"
         return 0
     fi
+    local head="$head_or_error"
 
     if [ ! -f "$sidecar" ]; then
         printf '%s is absent\n' "$sidecar"
