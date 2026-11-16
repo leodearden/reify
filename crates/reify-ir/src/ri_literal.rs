@@ -12,6 +12,11 @@
 //! There is no third outcome. A "close enough" literal would silently corrupt
 //! a user's design file, which is strictly worse than refusing to edit it.
 //!
+//! A `Value::Direction` is written as `dir(x, y, z)`; its same-bits guarantee
+//! rests on `UnitVec3::from_vector` being a bit-level fixed point
+//! (docs/prds/v0_6/direction-typing.md C2), so re-parsing re-normalises to
+//! the identical unit vector.
+//!
 //! # The three qualifications on that sentence
 //!
 //! All three are load-bearing for a caller deciding whether a splice is safe,
@@ -440,6 +445,13 @@ pub fn value_to_ri_literal_in_scope(
             Err(RiLiteralError::UnrepresentableDimension {
                 dimension: *dimension,
             })
+        }
+        // Every component is finite by `UnitVec3`'s invariant, and an integral
+        // one re-parses as an exact `Int`. A direction has no unit, so the
+        // scope and hint are irrelevant.
+        Value::Direction(u) => {
+            let [x, y, z] = u.components().map(|c| format_f64_shortest(c, false));
+            Ok(format!("dir({x}, {y}, {z})"))
         }
         other => Err(RiLiteralError::UnsupportedValueKind {
             kind: other.kind_name(),
