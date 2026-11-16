@@ -992,10 +992,11 @@ impl crate::Engine {
 /// Owned, `Send + Sync` [`reify_ir::ComputeDispatch`] adapter over a snapshot
 /// of an [`Engine`](crate::Engine)'s compute-fn registry (task #4880).
 ///
-/// Wires the `DimensionalSolver` cost loop (via `reify_expr::EvalContext`'s
-/// `compute_dispatch` hook) to the same `@optimized` trampolines the engine's
-/// own `ComputeNode` lowering dispatches to, so an `@optimized` function
-/// evaluated from inside a constraint-solve candidate (e.g.
+/// Wires the `DimensionalSolver` cost loop and the post-solve constraint
+/// checker (via `reify_expr::EvalContext`'s `compute_dispatch` hook) to the
+/// same `@optimized` trampolines the engine's own `ComputeNode` lowering
+/// dispatches to, so an `@optimized` function evaluated from inside a
+/// constraint-solve candidate or a checked constraint (e.g.
 /// `solve_elastic_static` under a `minimize .. where ..` auto-resolution)
 /// returns its real trampoline result instead of falling through to
 /// body-eval `Undef`.
@@ -1055,12 +1056,8 @@ impl OptimizedComputeDispatcher {
     /// Snapshot `engine`'s registered `@optimized` compute-fn map.
     ///
     /// `pub(crate)`: constructing one only makes sense from this crate's own
-    /// auto-resolution call sites — the four in engine_eval.rs (cold per-template,
-    /// warm per-template, merged-cluster ranked, warm merged-cluster) and the two
-    /// in engine_edit.rs (`edit_param`, `edit_source`) — which alone have both an
-    /// `&Engine` and the reason to bridge it into a [`reify_ir::ComputeDispatch`]
-    /// for the constraint solver. (An earlier draft of this list also named
-    /// `concurrent.rs`; that module no longer exists.)
+    /// constraint-solver and constraint-checker call sites, which alone have both
+    /// an `&Engine` and the reason to bridge it into a [`reify_ir::ComputeDispatch`].
     pub(crate) fn from_engine(engine: &crate::Engine) -> Self {
         Self::from_registry(&engine.compute_registry)
     }
