@@ -1809,8 +1809,42 @@ structure S {
     assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
 }
 
-/// Vacuity guard and clean twin of the Int rejections above: an Int literal at
-/// an Int param, and at a dimensionless `Real` param (the Int widening), binds
+/// A Length literal at an Int param is rejected at the binding site. The bare
+/// zero in `n > 0` adopts the arg's dimension, so nothing else catches it.
+#[test]
+fn length_arg_for_int_param_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def AtLeastOne {
+    param n : Int
+    n > 0
+}
+structure S {
+    constraint AtLeastOne(n: 5mm)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// A dimensionless literal at an Int param is rejected at the binding site:
+/// the Int→dimensionless widening is one-way.
+#[test]
+fn dimensionless_literal_arg_for_int_param_is_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def AtLeastOne {
+    param n : Int
+    n > 0
+}
+structure S {
+    constraint AtLeastOne(n: 2.5)
+}
+"#;
+    let module = compile_source(source);
+    assert_sole_error_is_constraint_arg_type_mismatch(&module.diagnostics);
+}
+
+/// Vacuity guard and clean twin of the rejections above: an Int literal at an
+/// Int param, and at a dimensionless `Real` param (the Int widening), binds
 /// with no mismatch and no error, and both instantiations are emitted.
 #[test]
 fn int_literal_at_int_and_dimensionless_params_compiles_clean() {

@@ -4667,13 +4667,22 @@ mod tests {
         );
     }
 
-    /// (numeric leniency) Length passed where Int expected → true. The reverse
-    /// of the Int-for-Length case above, still tolerated at the binding site.
+    /// (Scalar-at-Int rejected, task 10029) Length passed where Int expected → false.
     #[test]
-    fn constraint_arg_type_conforms_length_arg_for_int_param_is_true() {
+    fn constraint_arg_type_conforms_length_arg_for_int_param_is_false() {
         assert!(
-            constraint_arg_type_conforms(&Type::Int, &length_ty()),
-            "Length arg passed as Int param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&Type::Int, &length_ty()),
+            "Length arg passed as Int param must be rejected"
+        );
+    }
+
+    /// (Scalar-at-Int rejected, task 10029) dimensionless Real passed where Int
+    /// expected → false. Rule 3's Int→dimensionless widening is one-way.
+    #[test]
+    fn constraint_arg_type_conforms_dimensionless_arg_for_int_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::Int, &Type::dimensionless_scalar()),
+            "dimensionless Real arg passed as Int param must be rejected"
         );
     }
 
@@ -4743,6 +4752,17 @@ mod tests {
         assert!(
             constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Int),
             "Int arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Int is
+    /// declared → true. The fence accepts a `ScalarParam` on either side against
+    /// any numeric type.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_int_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Int, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Int param must be accepted (dimension-generic fence)"
         );
     }
 
