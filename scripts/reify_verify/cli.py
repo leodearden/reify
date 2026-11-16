@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from reify_verify import bashcall, build, knobs, queries, render
+from reify_verify.diagnostics import ERROR
 from reify_verify.invocation import Action, Invocation, PlanFormat, Query, Scope
-from reify_verify.plan import ERROR, Refused
+from reify_verify.plan import Refused
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64

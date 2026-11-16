@@ -18,10 +18,10 @@ from pathlib import Path
 
 from reify_verify import bashcall, knobs
 from reify_verify.bashcall import ScriptCall
+from reify_verify.diagnostics import ERROR
 from reify_verify.gatepaths import CrateGuard
 from reify_verify.plan import (
     CONFIRM_RECORDER,
-    ERROR,
     CargoTestRun,
     ConfirmRecorded,
     NextestFlags,

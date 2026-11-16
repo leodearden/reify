@@ -24,6 +24,7 @@ from typing import ClassVar
 from enum import Enum
 from types import MappingProxyType
 
+from reify_verify.diagnostics import ERROR
 from reify_verify.invocation import Action, Scope
 from reify_verify.narrowing import Narrowing
 from reify_verify.policy import HeavyPartition, Profile, ProfileSelection, Role
@@ -494,9 +495,6 @@ class Plan:
     heavy_partition: HeavyPartition | None
     environment: tuple[EnvLine, ...] = ()
     steps: tuple[Step, ...] = ()
-
-
-ERROR = "verify.sh: ERROR — "
 
 
 @dataclass(frozen=True)

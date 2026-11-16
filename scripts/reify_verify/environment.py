@@ -31,8 +31,8 @@ from types import MappingProxyType
 from reify_verify import bashcall, childproc, knobs
 from reify_verify.bashcall import BashCall, SourcedFile
 from reify_verify.childproc import CallResult
+from reify_verify.diagnostics import ERROR, WARNING
 from reify_verify.plan import (
-    ERROR,
     JOBSERVER_VAR,
     CargoEnvMissing,
     CargoEnvSourced,
@@ -123,7 +123,7 @@ def _jobserver(role_policy: RolePolicy, env: Mapping[str, str]) -> tuple[EnvLine
         probe = owner_liveness(fifo)
     if probe.liveness is Liveness.STALE:
         warning = (
-            f"verify.sh: WARNING — stale jobserver FIFO {fifo} (owner pid {probe.pid or '?'} "
+            f"{WARNING}stale jobserver FIFO {fifo} (owner pid {probe.pid or '?'} "
             "not alive / boot mismatch; balancer appears down) — falling back to plain cargo -j"
         )
         return JobserverUnset(UnsetCause.STALE, fifo), warning
