@@ -6,7 +6,12 @@
  * store, the File menu toasts it, App's env launch does both). A secondary
  * stage reports its own failure through notify without rejecting:
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
- * becomes the store's mode error.
+ * becomes the store's mode error. One document attempt (open or create) runs at
+ * a time: the store's document.pending holds its requested path, and a second
+ * attempt is refused with a LaunchFailure under its own code naming that path.
+ * Only the attempt's own settling clears pending (the store's reset does not),
+ * so a load that never settles leaves every document attempt refused until the
+ * app restarts.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -77,7 +82,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     return inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED, () => deps.ensureDebugBridge());
   }
 
-  async function openDocument(path: string): Promise<void> {
+  async function loadAndRecord(path: string): Promise<void> {
     await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path));
     try {
       store.setRecent(await deps.recordRecent(path));
@@ -86,11 +91,34 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  async function createDocument(path: string): Promise<void> {
-    const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
-      deps.createNewFile(path),
-    );
-    await openDocument(created.path);
+  async function exclusiveDocumentAttempt(
+    code: LaunchErrorCode,
+    path: string,
+    attempt: () => Promise<void>,
+  ): Promise<void> {
+    const inFlight = store.state.document.pending;
+    if (inFlight !== null) {
+      throw new LaunchFailure(code, `${inFlight} is still opening`);
+    }
+    store.setDocumentPending(path);
+    try {
+      await attempt();
+    } finally {
+      store.setDocumentPending(null);
+    }
+  }
+
+  function openDocument(path: string): Promise<void> {
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, path, () => loadAndRecord(path));
+  }
+
+  function createDocument(path: string): Promise<void> {
+    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, path, async () => {
+      const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
+        deps.createNewFile(path),
+      );
+      await loadAndRecord(created.path);
+    });
   }
 
   async function refreshRecent(): Promise<void> {

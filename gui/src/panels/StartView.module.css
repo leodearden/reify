@@ -60,10 +60,16 @@
   cursor: pointer;
 }
 
-.button:hover,
+.button:hover:not(:disabled),
 .modeButton:hover,
-.recentItem:hover {
+.recentItem:hover:not(:disabled) {
   background: var(--reify-surface-hover, #585b70);
+}
+
+.button:disabled,
+.recentItem:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .modeButton[aria-pressed='true'] {
