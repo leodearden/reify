@@ -13,6 +13,10 @@ use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Va
 
 pub mod cell_contributions;
 #[cfg(test)]
+pub(crate) mod geometry_cell_link_fixture;
+#[cfg(test)]
+mod scalar_geometry_cell_realization_tests;
+#[cfg(test)]
 mod value_cell_fold_tests;
 
 use cell_contributions::{ContributedCell, SubShape, contributed_cells};
@@ -608,6 +612,35 @@ impl EvaluationGraph {
     /// when `entity` is not a sub instance in this graph.
     pub(crate) fn sub_instance_template(&self, entity: &str) -> Option<&str> {
         self.sub_instance_templates.get(entity).map(String::as_str)
+    }
+
+    /// The realization whose handle the scalar geometry cell `cell` holds: the
+    /// one whose `geometry_cell` link, set by [`Self::from_templates`], names
+    /// it. `None` for any other cell. A geometry-list cell is linked N:1 (task
+    /// #5385), and for length 1 that is indistinguishable from 1:1 by link
+    /// count, so the cell's type decides. A list cell's value is never one
+    /// element's handle: it is assembled by the list regroup and by
+    /// `tessellate_snapshot`'s baseline mint.
+    ///
+    /// A scalar geometry cell can be linked twice today, by a top-level Solid
+    /// param and a guarded same-name override: the compiler names both
+    /// realizations after the member, and `from_templates` links by name. This
+    /// returns whichever link the map's iteration reaches first, which is
+    /// unspecified.
+    pub(crate) fn scalar_geometry_cell_realization(
+        &self,
+        cell: &ValueCellId,
+    ) -> Option<&RealizationNodeData> {
+        if !self
+            .value_cells
+            .get(cell)
+            .is_some_and(|node| node.cell_type == Type::Geometry)
+        {
+            return None;
+        }
+        self.realizations
+            .values()
+            .find(|realization| realization.geometry_cell.as_ref() == Some(cell))
     }
 
     /// Record that `entity`'s cells are stamped from `template`.
