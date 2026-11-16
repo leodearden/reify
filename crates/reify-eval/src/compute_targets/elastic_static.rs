@@ -7377,14 +7377,12 @@ mod tests {
     /// RED: PressureSpec and extract_pressure_loads don't exist yet.
     #[test]
     fn extract_pressure_loads_reads_pressure_and_ignores_point_load() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // Build a PressureLoad StructureInstance
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
-            ("face".to_string(), named_leaf_selector(SelectorKind::Face, "x_max")),
+            ("face".to_string(), named_face("x_max")),
             ("direction".to_string(), Value::String("normal".to_string())),
         ]
         .into_iter()
@@ -7444,13 +7442,11 @@ mod tests {
     /// and the pressure load is silently dropped (0 specs). GREENed by step-8.
     #[test]
     fn extract_loads_reads_selector_face_named_leaf() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // A symbolic (kernel_handle=None) Face selector naming "x_max" — exactly
         // the shape the named-leaf stand-in mints for `face(b, "x_max")` (step-2).
-        let face_val = named_leaf_selector(SelectorKind::Face, "x_max");
+        let face_val = named_face("x_max");
 
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
@@ -7522,15 +7518,9 @@ mod tests {
     ///   spurious empty-face load).
     #[test]
     fn extract_pressure_loads_handles_option_face_arms() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
-
         // (a) Value::Option(Some(Value::Selector(Named))) — the wrapped, migrated
         // production shape — must unwrap to exactly one spec naming the leaf.
-        let wrapped = Value::Option(Some(Box::new(named_leaf_selector(
-            SelectorKind::Face,
-            "x_max",
-        ))));
+        let wrapped = Value::Option(Some(Box::new(named_face("x_max"))));
         let specs =
             extract_pressure_loads(&pressure_load_list(wrapped)).expect("a bare magnitude reads");
         assert_eq!(
@@ -7558,8 +7548,6 @@ mod tests {
     /// the load.
     #[test]
     fn extract_pressure_loads_rejects_a_force_magnitude() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         let fields: PersistentMap<String, Value> = [
@@ -7570,10 +7558,7 @@ mod tests {
                     dimension: DimensionVector::FORCE,
                 },
             ),
-            (
-                "face".to_string(),
-                named_leaf_selector(SelectorKind::Face, "x_max"),
-            ),
+            ("face".to_string(), named_face("x_max")),
         ]
         .into_iter()
         .collect();
@@ -9994,13 +9979,11 @@ mod tests {
 
     #[test]
     fn extract_loads_keeps_dimensioned_pressure_and_gravity_magnitudes() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
         let pressure = structure(
             "PressureLoad",
             vec![
                 ("magnitude", scalar(5.0e6, DimensionVector::PRESSURE)),
-                ("face", named_leaf_selector(SelectorKind::Face, "x_max")),
+                ("face", named_face("x_max")),
             ],
         );
         let gravity = structure(
@@ -10018,8 +10001,6 @@ mod tests {
     /// every site must surface the `fea_loads` rejection, never skip the load.
     #[test]
     fn extract_loads_surfaces_a_magnitude_rejection_at_each_load_position() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
-        use reify_core::ty::SelectorKind;
         let cases = [
             ("PointLoad", "force", DimensionVector::LENGTH),
             ("PressureLoad", "magnitude", DimensionVector::FORCE),
@@ -10028,7 +10009,7 @@ mod tests {
         for (type_name, field, wrong) in cases {
             let mut fields = vec![(field, scalar(2.0, wrong))];
             if type_name == "PressureLoad" {
-                fields.push(("face", named_leaf_selector(SelectorKind::Face, "x_max")));
+                fields.push(("face", named_face("x_max")));
             }
             let loads = Value::List(vec![structure(type_name, fields)]);
             let res = extract_loads(&loads, 7850.0);

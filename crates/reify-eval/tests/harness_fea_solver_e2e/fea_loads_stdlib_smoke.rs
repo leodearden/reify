@@ -12,29 +12,14 @@
 
 use reify_core::ValueCellId;
 use reify_core::ty::SelectorKind;
-use reify_ir::value::{LeafQuery, SelectorNode};
+use reify_ir::value::LeafQuery;
 use reify_ir::{PersistentMap, Value};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_selector_leaf, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(&k.to_string())
-}
-
-/// Assert `v` is a `kind` selector whose single `Named` leaf is `name` — the
-/// value a named-leaf ctor such as `face(body, "top")` evaluates to.
-fn assert_named_leaf(v: Option<&Value>, kind: SelectorKind, name: &str) {
-    match v {
-        Some(Value::Selector(sv)) => {
-            assert_eq!(sv.kind, kind, "selector kind of {sv:?}");
-            assert!(
-                matches!(&sv.node, SelectorNode::Leaf { query: LeafQuery::Named(n), .. } if n == name),
-                "expected a Named({name:?}) leaf, got {sv:?}"
-            );
-        }
-        other => panic!("expected a {kind:?} Value::Selector named {name:?}, got {other:?}"),
-    }
 }
 
 // ── step-1 (RED) → step-2 (GREEN) : TractionLoad ────────────────────────────
@@ -108,7 +93,12 @@ structure def TractionLoadFixture2 {
 
     match load {
         Value::StructureInstance(data) => {
-            assert_named_leaf(field(&data.fields, "face"), SelectorKind::Face, "top");
+            assert_selector_leaf(
+                field(&data.fields, "face"),
+                "TractionLoad.face",
+                SelectorKind::Face,
+                |q| assert_eq!(q, &LeafQuery::Named("top".into())),
+            );
             assert_eq!(
                 field(&data.fields, "traction"),
                 Some(&Value::Real(5.0)),
@@ -194,7 +184,12 @@ structure def BodyForceFixture2 {
 
     match load {
         Value::StructureInstance(data) => {
-            assert_named_leaf(field(&data.fields, "body"), SelectorKind::Body, "all");
+            assert_selector_leaf(
+                field(&data.fields, "body"),
+                "BodyForce.body",
+                SelectorKind::Body,
+                |q| assert_eq!(q, &LeafQuery::Named("all".into())),
+            );
             assert_eq!(
                 field(&data.fields, "force_density"),
                 Some(&Value::Real(-77000.0)),
@@ -234,7 +229,12 @@ structure def PointLoadFixture {
 
     match load {
         Value::StructureInstance(data) => {
-            assert_named_leaf(field(&data.fields, "point"), SelectorKind::Vertex, "tip");
+            assert_selector_leaf(
+                field(&data.fields, "point"),
+                "PointLoad.point",
+                SelectorKind::Vertex,
+                |q| assert_eq!(q, &LeafQuery::Named("tip".into())),
+            );
             assert_eq!(
                 field(&data.fields, "force"),
                 Some(&Value::Real(1000.0)),

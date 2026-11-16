@@ -14,10 +14,11 @@
 
 use reify_core::ty::SelectorKind;
 use reify_core::{Severity, ValueCellId};
-use reify_ir::value::{LeafQuery, SelectorNode};
+use reify_ir::value::LeafQuery;
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
-    collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+    assert_selector_leaf, collect_errors, compile_source_with_stdlib, make_simple_engine,
+    parse_and_compile_with_stdlib,
 };
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
@@ -26,26 +27,12 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
-/// Assert `v` is the Face selector whose single `Named` leaf is `name` — what
-/// `face(body, "<name>")` evaluates to (task 5312: `target` is a typed selector).
-fn assert_named_face(v: Option<&Value>, name: &str) {
-    match v {
-        Some(Value::Selector(sv)) => {
-            assert_eq!(sv.kind, SelectorKind::Face, "selector kind of {sv:?}");
-            assert!(
-                matches!(&sv.node, SelectorNode::Leaf { query: LeafQuery::Named(n), .. } if n == name),
-                "expected a Named({name:?}) leaf, got {sv:?}"
-            );
-        }
-        other => panic!("expected a Face Value::Selector named {name:?}, got {other:?}"),
-    }
-}
-
 // ── SIR-β-sup step-1 (RED) → step-2 (GREEN) tests ───────────────────────────
 
 /// task 3546 step-1: a `PinnedSupport(target: face(body, ..))` constructor lowers
 /// to a `Value::StructureInstance` whose `type_name` is `"PinnedSupport"` and whose
-/// fields carry the single declared default: `target = ""`.
+/// `target` field carries the typed `face(body, "x_min")` selector it was given
+/// (task 5312: `target` is a required selector with no default).
 ///
 /// RED before step-2 declares `structure def PinnedSupport : Support { ... }`
 /// in `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level
@@ -78,7 +65,12 @@ structure def PinnedSupportFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            assert_named_face(field(&data.fields, "target"), "x_min");
+            assert_selector_leaf(
+                field(&data.fields, "target"),
+                "PinnedSupport.target",
+                SelectorKind::Face,
+                |q| assert_eq!(q, &LeafQuery::Named("x_min".into())),
+            );
         }
         other => panic!(
             "expected Value::StructureInstance for PinnedSupportFixture.support — \
@@ -110,7 +102,12 @@ structure def PinnedSupportAccess {
         .get(&id)
         .unwrap_or_else(|| panic!("PinnedSupportAccess.target cell missing from eval result"));
 
-    assert_named_face(Some(target), "x_min");
+    assert_selector_leaf(
+        Some(target),
+        "PinnedSupportAccess.target",
+        SelectorKind::Face,
+        |q| assert_eq!(q, &LeafQuery::Named("x_min".into())),
+    );
 }
 
 /// task 3546 amendment — explicit `target` field round-trips a non-default value.
@@ -147,7 +144,12 @@ structure def PinnedSupportExplicit {
                 "expected type_name=\"PinnedSupport\"; got {:?}",
                 data.type_name
             );
-            assert_named_face(field(&data.fields, "target"), "face_1");
+            assert_selector_leaf(
+                field(&data.fields, "target"),
+                "PinnedSupport.target",
+                SelectorKind::Face,
+                |q| assert_eq!(q, &LeafQuery::Named("face_1".into())),
+            );
         }
         other => panic!(
             "expected Value::StructureInstance for PinnedSupportExplicit.support — \
