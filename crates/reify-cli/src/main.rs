@@ -111,7 +111,7 @@ fn main() -> ExitCode {
 const PARSE_ERROR_LABEL: &str = "Parse error";
 
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
-/// gets, so both single-file entry points cannot drift apart on the prefix or the code.
+/// gets, so every program-compiling command writes the same prefix and exits the same way.
 /// The label in that prefix is `PARSE_ERROR_LABEL`, shared with `report_parse_errors_in`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
@@ -223,7 +223,8 @@ fn parse_and_compile_program(
 }
 
 /// The entry module of [`parse_and_compile_program`], for a command that needs
-/// nothing else of the program.
+/// nothing else of the program. Both apply `cfg`; they differ only in what they
+/// return.
 fn parse_and_compile_with_cfg(
     path: &str,
     cfg: &CfgSet,
