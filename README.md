@@ -39,7 +39,7 @@ What's flaky or missing:
 
 - Ubuntu 24.04 LTS, x86_64 (other distros not yet supported)
 - A desktop session for the GUI; the `reify` CLI needs none.
-- Node.js 20+ on your `PATH`: the GUI's Assistant mode needs it and, together with npm, so does building from source. The `reify` CLI and the GUI's other modes don't. Ubuntu 24.04's own `nodejs` package is Node 18, so install a newer one, for example via NodeSource or nvm.
+- Node.js on your `PATH`: 22.7+ (or 20.19+) for the GUI's Assistant mode, which runs a Node script, and 20+ with npm for building from source. The `reify` CLI and the GUI's other modes need none. Ubuntu 24.04's own `nodejs` package is Node 18, which is too old for both, so install a newer one, for example NodeSource's `nodejs` package.
 
 ## Install
 

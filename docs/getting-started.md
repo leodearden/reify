@@ -100,7 +100,7 @@ Every CLI command that evaluates a design, `check` (including `--strict`), `test
 
 Launch **Reify** from your desktop's application menu, or run `reify-gui` in a terminal (AppImage: run the downloaded file). With no file argument it opens on the **Start view**, which has three parts:
 
-- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js 20+ on your `PATH` (see the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
+- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js 22.7+ (or 20.19+) on your `PATH` (see the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
 - **Document** — **Open…** picks an existing `.ri` file; **New…** asks for a path and writes a minimal module template there, then opens it. You can also type a path and press Open or Create. A file that cannot be opened or created shows an error on the Start view instead of leaving it.
 - **Recent** — files you opened before; click one to reopen it.
 
