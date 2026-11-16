@@ -1,13 +1,95 @@
 //! The `dir(x, y, z)` / `dir(v)` builtin (docs/prds/v0_6/direction-typing.md C4/C11).
 
-use reify_ir::Value;
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
+use reify_ir::{DirectionFault, UnitVec3, Value};
 
-pub(crate) fn eval_direction(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+use crate::helpers::tensor_components_f64;
+
+/// Why a `dir` call yields no direction. Judged in order: shape, then
+/// dimension, then degeneracy.
+enum DirFault {
+    /// Wrong arity or argument kind; left undiagnosed so an upstream `undef`
+    /// is never misattributed to units or degeneracy.
+    Shape,
+    NotDimensionless(DimensionVector),
+    Unnormalisable(DirectionFault),
 }
 
-pub fn diagnose(_name: &str, _args: &[Value]) -> Option<reify_core::Diagnostic> {
-    None
+/// The one judgement both [`eval_direction`] and [`diagnose`] read, so the
+/// value gate and the diagnostic cannot drift.
+fn classify_dir_args(args: &[Value]) -> Result<UnitVec3, DirFault> {
+    match args {
+        [v] => classify_one(v),
+        [x, y, z] => classify_components(&[x, y, z]),
+        _ => Err(DirFault::Shape),
+    }
+}
+
+fn classify_one(v: &Value) -> Result<UnitVec3, DirFault> {
+    match v {
+        Value::Direction(u) => Ok(*u),
+        Value::Vector(_) | Value::Tensor(_) => {
+            let (comps, dim) = tensor_components_f64(v).ok_or(DirFault::Shape)?;
+            let [x, y, z] = <[f64; 3]>::try_from(comps).map_err(|_| DirFault::Shape)?;
+            if dim != DimensionVector::DIMENSIONLESS {
+                return Err(DirFault::NotDimensionless(dim));
+            }
+            unit(x, y, z)
+        }
+        _ => Err(DirFault::Shape),
+    }
+}
+
+/// Each component's dimension is judged on its own: a shared-dimension
+/// reading would turn `dir(1mm, 0, 0)` into a silent shape fault.
+fn classify_components(args: &[&Value; 3]) -> Result<UnitVec3, DirFault> {
+    let [x, y, z] = args.map(Value::as_f64);
+    let (Some(x), Some(y), Some(z)) = (x, y, z) else {
+        return Err(DirFault::Shape);
+    };
+    if let Some(dim) = args
+        .iter()
+        .map(|a| a.dimension())
+        .find(|d| *d != DimensionVector::DIMENSIONLESS)
+    {
+        return Err(DirFault::NotDimensionless(dim));
+    }
+    unit(x, y, z)
+}
+
+fn unit(x: f64, y: f64, z: f64) -> Result<UnitVec3, DirFault> {
+    UnitVec3::from_vector([x, y, z]).map_err(DirFault::Unnormalisable)
+}
+
+pub(crate) fn eval_direction(name: &str, args: &[Value]) -> Option<Value> {
+    if name != "dir" {
+        return None;
+    }
+    Some(classify_dir_args(args).map_or(Value::Undef, Value::Direction))
+}
+
+/// Post-`Value::Undef` classifier for `dir`, drained by reify-expr's
+/// `emit_undef_builtin_diagnostics`.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    if name != "dir" {
+        return None;
+    }
+    match classify_dir_args(args) {
+        Ok(_) | Err(DirFault::Shape) => None,
+        Err(DirFault::NotDimensionless(dim)) => Some(
+            Diagnostic::error(format!(
+                "dir: components must be dimensionless (Int, Real or a dimensionless \
+                 Scalar); got dimension {dim}"
+            ))
+            .with_code(DiagnosticCode::DimensionedArgRejected),
+        ),
+        Err(DirFault::Unnormalisable(fault)) => Some(
+            Diagnostic::error(format!(
+                "E_DegenerateDirection: dir: {fault}; give a non-zero, finite vector"
+            ))
+            .with_code(DiagnosticCode::DegenerateDirection),
+        ),
+    }
 }
 
 #[cfg(test)]
