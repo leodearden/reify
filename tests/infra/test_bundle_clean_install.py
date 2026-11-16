@@ -101,10 +101,12 @@ class Container:
         self.test = test
         self.name = f"reify-bundle-proof-{os.getpid()}-{secrets.token_hex(4)}"
         volumes = [arg for src, dest in mounts for arg in ("-v", f"{src}:{dest}:ro")]
+        # Cleanup first: `docker run -d` can create the container and still
+        # fail to start it, and `rm -f` of a name that never existed is harmless.
+        test.addCleanup(_docker, "rm", "-f", self.name)
         started = _docker("run", "-d", "--name", self.name, *volumes, BASE_IMAGE,
                           "sleep", "infinity")
         test.assertEqual(started.returncode, 0, started.stdout)
-        test.addCleanup(_docker, "rm", "-f", self.name)
 
     def run(self, script, env=None):
         env_args = [arg for k, v in (env or {}).items() for arg in ("-e", f"{k}={v}")]
