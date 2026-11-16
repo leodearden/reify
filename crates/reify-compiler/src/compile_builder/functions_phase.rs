@@ -81,13 +81,13 @@ pub(crate) fn phase_fn_param_defaults(
     prelude: &[&CompiledModule],
     fn_refs: &[&FnDef],
 ) {
-    let prelude_ctor_view = name_env::ctor_template_registry(&[], prelude);
+    let prelude_ctor_view = name_env::prelude_ctor_view(prelude);
     let local_ctor_names = ctx.local_entity_names();
     let declared_callables = crate::functions::declared_callable_names(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut table = ResolutionTable::new(prelude);
+    let mut table = ResolutionTable::new(Vec::new(), prelude);
     let mut pending = PendingDefaults::default();
     for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
         let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
@@ -138,25 +138,26 @@ pub(crate) fn phase_fn_param_defaults(
 /// [`phase_fn_param_defaults`] left them pending.
 ///
 /// Called from the `Declaration::Function` arm of
-/// `entities_phase::phase_entities`, in source order, so `user_fns_so_far` and
+/// `entities_phase::phase_entities`, in source order, so `calls_above` and
 /// `templates_so_far` hold only what is declared ABOVE this fn:
 ///
-/// * constructors resolve against [`name_env::ctor_template_registry`] over
-///   `templates_so_far`, so a fn body may construct a same-module structure
-///   declared above it and get that structure's authoritative template — the
-///   same no-forward-reference rule `compile_entity` obeys for entity → entity
+/// * constructors resolve against `prelude_ctor_view`, built once per pass,
+///   overlaid by `templates_so_far` ([`name_env::overlay_local_templates`]),
+///   so a fn body may construct a same-module structure declared above it and
+///   get that structure's authoritative template — the same
+///   no-forward-reference rule `compile_entity` obeys for entity → entity
 ///   references;
-/// * calls resolve against [`build_resolution_functions`] over
-///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
-///   references to sibling fns do not resolve.
+/// * calls resolve against `calls_above`: the real fns declared above plus
+///   every prelude fn they do not shadow, so forward references to sibling
+///   fns do not resolve.
 ///
 /// `later_declared_structure_names` holds the module-local `structure def`s
 /// with no template in `templates_so_far` yet — those declared BELOW this fn;
 /// using one draws `StructureDeclaredAfterFunction` rather than a silent
 /// fallback.
 ///
-/// The ctor view is rebuilt per fn: it borrows `templates_so_far`, which the
-/// caller's structure arms push to between fns.
+/// The overlay is per fn because it borrows `templates_so_far`, which the
+/// caller pushes to between fns.
 ///
 /// `declared_callables` is the module's order-independent callable vocabulary
 /// (task #5371), built once per pass by the caller.
@@ -165,26 +166,24 @@ pub(crate) fn phase_fn_param_defaults(
 /// already emitted them exactly once — and neither are those of `Compiled`
 /// defaults, which are reused as compiled.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function_decl(
+pub(crate) fn compile_function_decl<'t>(
     fn_def: &FnDef,
     sig: &FnSignature,
     defaults: &FnParamDefaults,
     enum_defs: &[EnumDef],
-    user_fns_so_far: &[CompiledFunction],
-    templates_so_far: &[TopologyTemplate],
-    prelude: &[&CompiledModule],
+    calls_above: &ResolutionTable<'_>,
+    templates_so_far: &'t [TopologyTemplate],
+    prelude_ctor_view: &HashMap<String, &'t TopologyTemplate>,
     later_declared_structure_names: &HashSet<String>,
     declared_callables: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let functions = build_resolution_functions(user_fns_so_far, prelude);
-    let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::ctor_template_registry(templates_so_far, prelude);
+    let template_registry = name_env::overlay_local_templates(prelude_ctor_view, templates_so_far);
     let env = FnCompileEnv {
         enum_defs,
         // Never holds a pending stub: fns above are real, fns below are #5371's
         // forward references.
-        calls: CallTable::complete(&functions),
+        calls: CallTable::complete(calls_above.functions()),
         template_registry: Some(&template_registry),
         later_declared_structure_names: Some(later_declared_structure_names),
         declared_callable_names: declared_callables,
@@ -206,22 +205,33 @@ pub(crate) fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {
-    let bindings = name_env::bind(user, prelude.iter().copied());
-    let prelude_winners = bindings
+    let mut functions = user.to_vec();
+    functions.extend(unshadowed_prelude_winners(user, prelude));
+    functions
+}
+
+/// The prelude tail of [`build_resolution_functions`]: each prelude function
+/// that wins its key under NS-P1 and shares no key with `user`.
+fn unshadowed_prelude_winners(
+    user: &[CompiledFunction],
+    prelude: &[&CompiledModule],
+) -> Vec<CompiledFunction> {
+    name_env::bind(user, prelude.iter().copied())
         .winning_candidates()
         .iter()
         .filter(|candidate| candidate.origin != Origin::Local)
-        .map(|candidate| candidate.definition.clone());
-    user.iter().cloned().chain(prelude_winners).collect()
+        .map(|candidate| candidate.definition.clone())
+        .collect()
 }
 
 /// [`build_resolution_functions`] over a user list that grows one fn at a time.
 ///
-/// After every [`Self::push_user`], [`Self::functions`] equals
-/// `build_resolution_functions(&users_pushed_so_far, prelude)`. A user fn that
-/// shadows no prelude winner's key is spliced in at the end of the user
-/// prefix; only one that does triggers a rebuild, so the prelude winners are
-/// cloned once rather than once per user fn.
+/// [`Self::functions`] always equals
+/// `build_resolution_functions(&(seed ++ users_pushed_so_far), prelude)`. A
+/// user fn that shadows no prelude winner's key is spliced in at the end of
+/// the user prefix; only one that does triggers a rebuild of the prelude tail,
+/// so the prelude winners are cloned once rather than once per user fn, and
+/// the user prefix is never re-cloned.
 pub(crate) struct ResolutionTable<'p> {
     prelude: &'p [&'p CompiledModule],
     prelude_keys: HashSet<FunctionSignature<'p>>,
@@ -230,7 +240,7 @@ pub(crate) struct ResolutionTable<'p> {
 }
 
 impl<'p> ResolutionTable<'p> {
-    pub(crate) fn new(prelude: &'p [&'p CompiledModule]) -> Self {
+    pub(crate) fn new(users: Vec<CompiledFunction>, prelude: &'p [&'p CompiledModule]) -> Self {
         let prelude_keys = name_env::bind::<CompiledFunction, _>(&[], prelude.iter().copied())
             .winners()
             .map(Definition::key)
@@ -238,8 +248,8 @@ impl<'p> ResolutionTable<'p> {
         ResolutionTable {
             prelude,
             prelude_keys,
-            functions: build_resolution_functions(&[], prelude),
-            user_len: 0,
+            functions: build_resolution_functions(&users, prelude),
+            user_len: users.len(),
         }
     }
 
@@ -251,7 +261,8 @@ impl<'p> ResolutionTable<'p> {
         if self.prelude_keys.contains(&user.key()) {
             self.functions.truncate(self.user_len);
             self.functions.push(user);
-            self.functions = build_resolution_functions(&self.functions, self.prelude);
+            let prelude_tail = unshadowed_prelude_winners(&self.functions, self.prelude);
+            self.functions.extend(prelude_tail);
         } else {
             self.functions.insert(self.user_len, user);
         }
@@ -259,6 +270,11 @@ impl<'p> ResolutionTable<'p> {
     }
 
     pub(crate) fn into_functions(self) -> Vec<CompiledFunction> {
+        self.functions
+    }
+
+    pub(crate) fn into_user_functions(mut self) -> Vec<CompiledFunction> {
+        self.functions.truncate(self.user_len);
         self.functions
     }
 }
@@ -269,14 +285,38 @@ mod tests {
 
     use super::*;
 
-    fn compile_src(source: &str) -> CompiledModule {
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    fn parse_at(module: &str, source: &str) -> reify_ast::ParsedModule {
+        let parsed = reify_syntax::parse(source, ModulePath::single(module));
         assert!(
             parsed.errors.is_empty(),
             "fixture must parse: {:?}",
             parsed.errors
         );
-        crate::compile(&parsed)
+        parsed
+    }
+
+    fn compile_src(source: &str) -> CompiledModule {
+        crate::compile(&parse_at("test", source))
+    }
+
+    /// `source` compiled as module `test` with module `p`, compiled from
+    /// `prelude_source`, as its prelude.
+    fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
+        let prelude = crate::compile(&parse_at("p", prelude_source));
+        crate::compile_with_prelude(&parse_at("test", source), &[prelude])
+    }
+
+    fn result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m reify_ir::CompiledExpr {
+        let found = module.functions.iter().find(|f| f.name == fn_name);
+        &found
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected `{fn_name}` in compiled module; found functions: {:?}",
+                    module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+                )
+            })
+            .body
+            .result_expr
     }
 
     fn codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
@@ -325,8 +365,9 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+    /// A prelude with fns `kept` and `shadowed`, and three users: `fresh`, a
+    /// `shadowed` that shadows the prelude's, and a `kept(String)` that does not.
+    fn prelude_and_users() -> (CompiledModule, Vec<CompiledFunction>) {
         let prelude =
             compile_src("fn kept(x : Real) -> Real { x }\nfn shadowed(x : Real) -> Real { x }\n");
         let users = compile_src(
@@ -334,8 +375,14 @@ mod tests {
              fn kept(x : String) -> Real { 1.0 }\n",
         )
         .functions;
+        (prelude, users)
+    }
+
+    #[test]
+    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+        let (prelude, users) = prelude_and_users();
         let prelude_refs = [&prelude];
-        let mut table = ResolutionTable::new(&prelude_refs);
+        let mut table = ResolutionTable::new(Vec::new(), &prelude_refs);
         for pushed in 1..=users.len() {
             table.push_user(users[pushed - 1].clone());
             assert_eq!(
@@ -344,5 +391,75 @@ mod tests {
                 "after pushing {pushed} user fn(s)"
             );
         }
+    }
+
+    #[test]
+    fn a_seeded_resolution_table_matches_build_resolution_functions_and_hands_back_its_users() {
+        let (prelude, users) = prelude_and_users();
+        let prelude_refs = [&prelude];
+        let mut table = ResolutionTable::new(users[..1].to_vec(), &prelude_refs);
+        assert_eq!(
+            signatures(table.functions()),
+            signatures(&build_resolution_functions(&users[..1], &prelude_refs)),
+            "straight after seeding with 1 user fn"
+        );
+        for held in 2..=users.len() {
+            table.push_user(users[held - 1].clone());
+            assert_eq!(
+                signatures(table.functions()),
+                signatures(&build_resolution_functions(&users[..held], &prelude_refs)),
+                "holding {held} user fn(s)"
+            );
+        }
+        assert_eq!(signatures(&table.into_user_functions()), signatures(&users));
+    }
+
+    #[test]
+    fn a_prelude_fn_stays_visible_to_fn_bodies_above_the_local_fn_that_shadows_it() {
+        let module = compile_against_prelude(
+            "fn f(x : Real) -> Real { x }\n",
+            "fn g() -> Real { f(1.0) }\n\
+             fn f(x : Real) -> String { \"s\" }\n\
+             fn h() -> String { f(1.0) }\n",
+        );
+        assert_eq!(
+            result_expr(&module, "g").result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "g is above the local f, so its call binds the prelude f"
+        );
+        assert_eq!(
+            result_expr(&module, "h").result_type,
+            reify_core::Type::String,
+            "h is below the local f, so its call binds the local f"
+        );
+    }
+
+    fn ctor_default_names(module: &CompiledModule, fn_name: &str) -> Vec<String> {
+        match &result_expr(module, fn_name).kind {
+            reify_ir::CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
+                defaults.iter().map(|(name, _)| name.clone()).collect()
+            }
+            other => panic!("`{fn_name}` should construct a structure; got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fn_bodys_ctor_view_is_the_prelude_view_overlaid_by_templates_above_it() {
+        const PRELUDE: &str = "structure def P { param from_prelude : Real = 1.0 }\n";
+        let local_above = compile_against_prelude(
+            PRELUDE,
+            "structure def P { param from_local : Real = 2.0 }\nfn mk() -> P { P() }\n",
+        );
+        assert_eq!(
+            ctor_default_names(&local_above, "mk"),
+            ["from_local"],
+            "a local P above the fn shadows the prelude P"
+        );
+        let prelude_only = compile_against_prelude(PRELUDE, "fn mk() -> P { P() }\n");
+        assert_eq!(
+            ctor_default_names(&prelude_only, "mk"),
+            ["from_prelude"],
+            "with no local P, the fn constructs the prelude P"
+        );
     }
 }
