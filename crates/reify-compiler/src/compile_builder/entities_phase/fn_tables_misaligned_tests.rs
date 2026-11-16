@@ -3,7 +3,7 @@
 //! the fn that table describes. The tests are green on arrival and pinned by
 //! mutation (task 9988).
 
-use reify_ast::ParsedModule;
+use reify_ast::{Declaration, ParsedModule};
 use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
 
 use super::phase_entities;
@@ -47,6 +47,18 @@ fn run_pass_after(tamper: impl FnOnce(&mut CompilationCtx)) -> (CompilationCtx, 
     tamper(&mut ctx);
     phase_entities(&mut ctx, &parsed, &trait_names, &[]);
     (ctx, parsed)
+}
+
+/// The span of the declaration of the fn `name`, which the guards label.
+fn fn_span(parsed: &ParsedModule, name: &str) -> SourceSpan {
+    parsed
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            Declaration::Function(fn_def) if fn_def.name == name => Some(fn_def.span),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("fixture declares no fn `{name}`"))
 }
 
 /// The span of every `FnDeclTablesMisaligned` diagnostic's label, in emission order.
@@ -110,4 +122,51 @@ fn untampered_tables_draw_no_misalignment_and_slot_every_real_fn() {
         slot_holds_real_fn(&ctx, 1, "b"),
         "slot 1 still holds b's signature stub"
     );
+}
+
+/// The records guard skips the body outright. `compile_fn_body` names its output
+/// from the signature record, so without the guard `a` would compile as "stale"
+/// and only the call-table slot guard would fire, drawing the same diagnostic at
+/// the same span: the user-fn list is what tells the two guards apart.
+#[test]
+fn a_signature_record_naming_another_fn_skips_only_that_body() {
+    let (ctx, parsed) = run_pass_after(|ctx| ctx.fn_signatures[0].name = "stale".to_string());
+
+    assert_eq!(misaligned_spans(&ctx), [fn_span(&parsed, "a")]);
+    let errors = other_errors(&ctx);
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert_eq!(user_fn_names(&ctx), ["b"]);
+    assert!(
+        slot_holds_real_fn(&ctx, 1, "b"),
+        "slot 1 still holds b's signature stub"
+    );
+}
+
+#[test]
+fn a_missing_per_fn_record_skips_only_that_body() {
+    let tampers: [(&str, fn(&mut CompilationCtx)); 2] = [
+        ("fn_signatures lost b's record", |ctx| {
+            ctx.fn_signatures.pop();
+        }),
+        ("fn_param_defaults lost b's record", |ctx| {
+            ctx.fn_param_defaults.pop();
+        }),
+    ];
+
+    for (label, tamper) in tampers {
+        let (ctx, parsed) = run_pass_after(tamper);
+
+        assert_eq!(
+            misaligned_spans(&ctx),
+            [fn_span(&parsed, "b")],
+            "{label}: wrong FnDeclTablesMisaligned spans"
+        );
+        let errors = other_errors(&ctx);
+        assert!(errors.is_empty(), "{label}: unexpected errors: {errors:?}");
+        assert_eq!(user_fn_names(&ctx), ["a"], "{label}: wrong compiled fns");
+        assert!(
+            slot_holds_real_fn(&ctx, 0, "a"),
+            "{label}: slot 0 still holds a's signature stub"
+        );
+    }
 }
