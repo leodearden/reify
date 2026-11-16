@@ -19,8 +19,8 @@ argv. Nothing reaches the network or the real repository.
 
 The B7 proof gate (task 10079): the release runs the clean-container proof
 armed over exactly the one .deb and one .AppImage it publishes, and a red proof
-leaves no tag, release or closed issue, on a re-run too. RealTree drives the
-REAL proof with the same arm env and a failing stub docker, so a renamed arm
+leaves no tag, release or closed issue, on a re-run too. ProofArmChain drives
+the REAL proof with the same arm env and a failing stub docker, so a renamed arm
 variable reds instead of shipping behind an all-skipped green.
 """
 
@@ -94,10 +94,11 @@ if group == "issue":
 sys.exit(99)
 '''
 
+BUILD_BUNDLE_BANNER = "build-bundle (stub): building"
 BUILD_BUNDLE_STUB = '''#!/usr/bin/env bash
-echo "build-bundle (stub): building" >&2
+echo "@BANNER@" >&2
 printf '%s\\n' "@DEB@" "@APPIMAGE@"
-'''
+'''.replace("@BANNER@", BUILD_BUNDLE_BANNER)
 
 PROOF_STUB = r'''#!@PYTHON@
 import json
@@ -112,6 +113,11 @@ with open(state / "calls.jsonl", "a", encoding="utf-8") as log:
 print("clean-install proof (stub): ran", file=sys.stderr)
 exit_file = state / "exit"
 sys.exit(int(exit_file.read_text(encoding="utf-8")) if exit_file.exists() else 0)
+'''
+
+DOCKER_STUB = '''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "@LOG@"
+exit 1
 '''
 
 
@@ -272,6 +278,17 @@ class Preflight(ReleaseCase):
         self.assert_refused(self.fx.run_release(), "test_bundle_clean_install.py missing")
         self.assertEqual(self.fx.proof_calls(), [])
 
+    def test_a_tag_not_at_head_is_refused_before_the_build_and_the_proof(self):
+        self.fx.git("tag", "-a", TAG, "-m", TAG)
+        self.fx.git("commit", "-q", "--allow-empty", "-m", "after the tag")
+        proc = self.fx.run_release()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn(f"tag {TAG} exists and does not point at HEAD", proc.stderr)
+        self.assertNotIn(BUILD_BUNDLE_BANNER, proc.stderr)
+        self.assertEqual(self.fx.proof_calls(), [])
+        self.assertIsNone(self.fx.remote_tag_type())
+        self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
+
 
 class Release(ReleaseCase):
 
@@ -362,12 +379,6 @@ class ProofGate(ReleaseCase):
         self.assertEqual(self.fx.proof_calls(), [])
 
 
-DOCKER_STUB = '''#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "@LOG@"
-exit 1
-'''
-
-
 class RealTree(unittest.TestCase):
     """The release gates (#9735, #9738) exec these two scripts directly."""
 
@@ -385,6 +396,10 @@ class RealTree(unittest.TestCase):
 
     def test_build_bundle_is_executable_bash(self):
         self.assert_executable_bash(BUILD_BUNDLE)
+
+
+class ProofArmChain(unittest.TestCase):
+    """The env the release sets arms the real B7 proof, not an all-skipped green."""
 
     def test_the_release_arm_env_arms_the_real_proof(self):
         """PROOF_ARM_ENV arms the real proof rather than an all-skipped green.
@@ -420,7 +435,7 @@ class RealTree(unittest.TestCase):
             )
 
         unarmed = run_proof({})
-        self.assertEqual(unarmed.returncode, 0, unarmed.stderr)
+        self.assertIn("skipped", unarmed.stderr)
         self.assertFalse(docker_log.exists(), "the unarmed proof called docker")
 
         armed = run_proof(PROOF_ARM_ENV)
