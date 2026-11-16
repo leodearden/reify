@@ -4479,9 +4479,12 @@ fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) 
 /// Collect the `(declared kind, target face name)` pairs from the options'
 /// `boundary_conditions` list. The face name is the `Named` leaf of the typed
 /// `target` selector (`face(beam, "x_min")` → `"x_min"`), read by
-/// [`named_leaf_target`]. Non-StructureInstance entries, entries without a
-/// target, and entries whose target is not a Named-leaf selector — a bare
-/// `Value::String` included (D8) — are skipped. Interim name read;
+/// [`named_leaf_target`]. Non-StructureInstance entries and entries without a
+/// target are skipped. An entry whose target is not a Named-leaf selector — a
+/// predicate or composed selector the kind-agnostic `Selector` field admits
+/// (`faces(beam)`, a union), or a bare `Value::String` (D8) — is skipped with a
+/// `tracing::warn!`, as `parse_pressure_spec` does for a dropped pressure load,
+/// because the solve then runs without that support. Interim name read;
 /// Bmig2-consume (#5313, PRD D9) replaces it with node-set resolution.
 ///
 /// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
@@ -4498,16 +4501,28 @@ fn support_targets(options: &Value) -> Vec<(DeclaredSupport, String)> {
         && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
     {
         for item in items {
-            if let Value::StructureInstance(support) = item
-                && let Some(target) = support.fields.get("target").and_then(named_leaf_target)
-            {
-                let kind = if support.type_name == "PinnedSupport" {
-                    DeclaredSupport::Pinned
-                } else {
-                    DeclaredSupport::Fixed
-                };
-                targets.push((kind, target.to_owned()));
-            }
+            let Value::StructureInstance(support) = item else {
+                continue;
+            };
+            let Some(target_val) = support.fields.get("target") else {
+                continue;
+            };
+            let Some(target) = named_leaf_target(target_val) else {
+                tracing::warn!(
+                    support = %support.type_name,
+                    target = ?target_val,
+                    "{}.target is not a single Named-leaf selector; the modal solve \
+                     does not realize this support",
+                    support.type_name,
+                );
+                continue;
+            };
+            let kind = if support.type_name == "PinnedSupport" {
+                DeclaredSupport::Pinned
+            } else {
+                DeclaredSupport::Fixed
+            };
+            targets.push((kind, target.to_owned()));
         }
     }
     targets
@@ -6892,6 +6907,44 @@ mod tests {
             "ModalOptions",
             vec![("boundary_conditions".to_string(), Value::List(supports))],
         )
+    }
+
+    /// A typed `target` the interim name read cannot realize — here the
+    /// all-faces leaf `faces(beam)` mints — drops the support with a warning
+    /// naming it, never silently; a Named-leaf target stays quiet.
+    #[test]
+    fn support_targets_warns_when_it_drops_a_non_named_target() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_test_support::warn_capturing_subscriber;
+
+        let beam = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestBody", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        let all_faces = Value::Selector(
+            SelectorValue::leaf(SelectorKind::Face, beam, LeafQuery::All)
+                .expect("LeafQuery::All accepts a Face kind"),
+        );
+        let unread = struct_instance("PinnedSupport", vec![("target".to_string(), all_faces)]);
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let targets = tracing::subscriber::with_default(subscriber, || {
+            support_targets(&modal_options_with_supports(vec![unread]))
+        });
+        assert!(
+            targets.is_empty(),
+            "a non-Named target is not read: {targets:?}"
+        );
+        capture.assert_count_and_any_message_contains(1, "PinnedSupport.target");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            support_targets(&modal_options_with_supports(vec![fixed_support("x_min")]))
+        });
+        capture.assert_count(0);
     }
 
     /// Task 5312 (D8): the retired `target: "x_min"` String form is never read;
