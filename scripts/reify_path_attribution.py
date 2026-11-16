@@ -13,7 +13,12 @@ Consumers:
     and reify_is_inert_path (verify.sh's decide_scope), via ``attribute``;
   - scripts/occt-scope-lib.sh — _reify_compile_closure (occt_touching_set and
     affected_crates' reverse closure), via ``closure``;
-  - scripts/reify_overlap_detector.py — imports ``attribute``.
+  - scripts/reify_overlap_detector.py — imports ``attribute``;
+  - scripts/reify_verify/scope.py — decide_scope's planner, imports
+    ``attribute``;
+  - crates/reify-syntax/tests/common/tracked_corpus.rs — swept_ri_paths drops
+    every tracked .ri this module marks ``inert``, so reify-syntax's repo-wide
+    .ri sweeps follow an ``_INERT_GLOBS`` edit, via ``attribute``.
 
 CLI, run once per consumer invocation over its whole input, never once per
 path:

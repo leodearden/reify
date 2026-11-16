@@ -34,7 +34,9 @@ pub fn plane(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
 
 /// A dimensionless `Value::Direction`.
 pub fn dir(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
+    Value::Direction(
+        reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+    )
 }
 
 /// A datum operand belonging to sub `sub` (so the partition transforms it by the

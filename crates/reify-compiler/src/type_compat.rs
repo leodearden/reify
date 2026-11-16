@@ -1021,15 +1021,18 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// constraint instantiation argument's type conforms to the declared parameter
 /// type.
 ///
-/// This is a **narrow cross-category conformance check** — it rejects only
-/// cross-category mismatches (Bool/String/Enum/aggregate vs numeric/Length
-/// etc.) while deliberately tolerating numeric-for-dimensioned at the binding
-/// site (e.g. `Int` passed where `Length` is declared). Dimensional strictness
-/// within comparison predicates is already enforced by task 4490's
-/// `emit_comparison_operand_diagnostics`; duplicating it here at the binding
-/// site would cause false-positive rejections for currently-valid
-/// instantiations such as `forall v in [1,2,3]: constraint MinThreshold(value: v)`
-/// where `param value: Length` and `v` is `Int`.
+/// It rejects cross-category mismatches (Bool/String/Enum/aggregate vs
+/// numeric/Length etc.) AND two concrete scalars of different dimension
+/// (task 5762, δ₂). It still tolerates an `Int` against a concrete scalar (e.g.
+/// `Int` passed where `Length` is declared) and a dimension-generic
+/// `ScalarParam` on either side.
+///
+/// The `Int` half is deferred to #10029: instantiations such as
+/// `forall v in [1,2,3]: constraint MinThreshold(value: v)` with
+/// `param value: Length` still bind, and task 4490's
+/// `emit_comparison_operand_diagnostics` guards a comparing predicate. The
+/// restated ruling lives at
+/// constraint_def_compile_tests.rs::int_literal_for_length_param_no_constraint_arg_type_mismatch.
 ///
 /// # Safety of non-numeric param types
 ///
@@ -1063,10 +1066,11 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
 ///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
 ///    selector coercions — the common well-typed case).
-/// 4. Both sides are numeric (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`)
-///    → **accept** (numeric leniency: tolerates `Int`-for-`Length` and
-///    cross-dimension scalars at the binding site; task 4490 guards
-///    dimensional correctness inside comparison predicates).
+/// 4. Both sides are concrete `Type::Scalar{..}` → **reject** (they reached
+///    here past Rule 3's identity, so their dimensions differ; task 5762).
+///    Otherwise both sides numeric (`Type::Int | Type::Scalar{..} |
+///    Type::ScalarParam(_)`) → **accept** (`Int` against a concrete scalar is
+///    deferred to #10029; `ScalarParam` is the D4-5 dimension-generic fence).
 /// 5. Otherwise → **reject** (cross-category mismatch, e.g. `Bool` vs `Length`,
 ///    `String` vs `Length`, `Enum(X)` vs `Length`).
 pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bool {
@@ -1087,9 +1091,16 @@ pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bo
     if type_compatible(param_ty, arg_ty) {
         return true;
     }
-    // Rule 4: Numeric leniency — both sides are some form of numeric scalar.
-    // Tolerates Int-for-Length and cross-dimension scalar-for-scalar at the
-    // binding site; dimensional strictness within predicates is task 4490's job.
+    // Rule 4: Two concrete scalars reaching here differ in dimension and are
+    // rejected (task 5762, δ₂). `Int` against a concrete scalar is still
+    // tolerated, deferred to #10029; `ScalarParam` on either side is the D4-5
+    // dimension-generic fence.
+    if matches!(
+        (param_ty, arg_ty),
+        (Type::Scalar { .. }, Type::Scalar { .. })
+    ) {
+        return false;
+    }
     let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
     if is_numeric(param_ty) && is_numeric(arg_ty) {
         return true;
@@ -4636,7 +4647,7 @@ mod tests {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 
-    // ── constraint_arg_type_conforms (task 4546) ──────────────────────────────
+    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂) ───────────────
 
     /// (gap) Bool passed where Length expected → false.
     /// This is the primary gap this task closes.
@@ -4648,8 +4659,10 @@ mod tests {
         );
     }
 
-    /// (numeric leniency) Int passed where Length expected → true.
-    /// Dimensional strictness within predicates is task 4490's job.
+    /// (deferred leniency) Int passed where Length expected → true.
+    /// Still tolerated at the binding site: task 5762 removed only the
+    /// cross-dimension half of Rule 4, and removing this half is deferred to
+    /// #10029.
     #[test]
     fn constraint_arg_type_conforms_int_for_length_is_true() {
         assert!(
@@ -4658,22 +4671,72 @@ mod tests {
         );
     }
 
-    /// (cross-dimension numeric tolerated) Mass passed where Length expected → true.
-    /// Both sides are Scalar — the numeric-leniency rule applies.
+    /// (deferred leniency) Length passed where Int expected → true. The reverse
+    /// of the case above; its removal is likewise deferred to #10029.
     #[test]
-    fn constraint_arg_type_conforms_mass_for_length_is_true() {
+    fn constraint_arg_type_conforms_length_arg_for_int_param_is_true() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &mass_ty()),
-            "Mass scalar passed as Length param must be tolerated (numeric leniency)"
+            constraint_arg_type_conforms(&Type::Int, &length_ty()),
+            "Length arg passed as Int param must be tolerated (numeric leniency)"
         );
     }
 
-    /// (dimensionless numeric tolerated) dimensionless Real passed where Length → true.
+    /// (cross-dimension rejected, task 5762) Mass passed where Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_dimensionless_for_length_is_true() {
+    fn constraint_arg_type_conforms_mass_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
-            "dimensionless Real scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &mass_ty()),
+            "Mass scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) dimensionless Real passed where
+    /// Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_dimensionless_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
+            "dimensionless Real scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Length passed where a dimensionless
+    /// Real param is declared → false. The reverse direction of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_length_for_dimensionless_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::dimensionless_scalar(), &length_ty()),
+            "Length scalar passed as dimensionless Real param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Length is
+    /// declared → true. Guards against over-removing Rule 4.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Length param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Length passed where a dimension-generic `ScalarParam` param
+    /// is declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_length_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &length_ty()),
+            "Length arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Int passed where a dimension-generic `ScalarParam` param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Int),
+            "Int arg passed as ScalarParam param must be accepted (dimension-generic fence)"
         );
     }
 

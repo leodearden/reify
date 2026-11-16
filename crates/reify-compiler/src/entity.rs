@@ -899,29 +899,13 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
-/// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
-/// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
-///
-/// Used by `check_param_default_type` to recognise the numeric-default idiom for
-/// dimensioned Scalar params (`param x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
-/// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
-fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp {
-            op: UnOp::Neg,
-            operand,
-        } => {
-            matches!(
-                operand.kind,
-                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
-            )
-        }
-        _ => false,
-    }
-}
-
 /// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// An explicitly annotated `Int` / `Scalar` param default must be `type_compatible`
+/// with the annotation, with no literal exemption: `param t : Length = 1.0` is
+/// rejected like any dimensionless initializer (reversal history: PRD
+/// dimensioned-construction-strictness §0.3). The conformance param-default entry
+/// defers to this check (see [`param_default_rejection_span`]).
 ///
 /// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
 /// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
@@ -973,33 +957,6 @@ fn check_param_default_type(
     let Some(default) = default_expr else {
         return;
     };
-    // `param x : Length = 1`, `= 0.5`, or `= -5.0` — whole-number, fractional, or
-    // negated numeric literal idiom.  A *numeric literal* (or negated literal) that is
-    // either an `Int` or a dimensionless scalar (a bare `Real`-typed literal, which under
-    // the real-dimensionless unification IS a dimensionless `Type::Scalar`) is accepted
-    // for any dimensioned Scalar param.
-    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
-    // provides, extended one dimension further (any dimensionless literal accepted for
-    // a dimensioned Scalar):
-    //   - `param x : Length = 0`    → Int literal, accepted (whole-number idiom).
-    //   - `param x : Length = 0.5`  → dimensionless literal, accepted (fractional idiom).
-    //   - `param x : Length = -5.0` → negated literal (`UnOp::Neg` + `Literal`), accepted.
-    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
-    // users routinely write fractional dimensionless defaults for dimensioned params.
-    //
-    // The guard is intentionally restricted to literal nodes (bare or negated; see
-    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
-    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
-    // Scalar) still fall through to `type_compatible` and are correctly flagged.
-    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
-    // a literal and is flagged regardless of this guard.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(default)
-        && (matches!(default.result_type, Type::Int)
-            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
-        return;
-    }
     if !type_compatible(declared, &default.result_type) {
         diagnostics.push(
             Diagnostic::error(format!(
@@ -1016,6 +973,16 @@ fn check_param_default_type(
     }
 }
 
+/// Recognises a diagnostic emitted by [`check_param_default_type`] and returns the
+/// param declaration span its first label carries, which is also that param's
+/// `ValueCellDecl.span` at both call sites.
+pub(crate) fn param_default_rejection_span(diagnostic: &Diagnostic) -> Option<SourceSpan> {
+    if diagnostic.code != Some(DiagnosticCode::ParamDefaultTypeMismatch) {
+        return None;
+    }
+    diagnostic.labels.first().map(|label| label.span)
+}
+
 /// Cross-check a structure `let` binding's declared type against its initializer's
 /// inferred type.
 ///
@@ -1027,8 +994,8 @@ fn check_param_default_type(
 /// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
 /// - `declared` is NOT `Type::Error` (anti-cascade)
 /// - `rhs_is_collection_literal` is false (β owns the literal path)
-/// - RHS is NOT a numeric literal for a dimensioned Scalar (numeric-idiom guard)
-/// - `type_compatible(declared, &rhs.result_type)` returns false
+/// - `type_compatible(declared, &rhs.result_type)` returns false, with no literal
+///   exemption (PRD dimensioned-construction-strictness §0.3)
 ///
 /// Called at the two unchecked structure let sites:
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
@@ -1069,18 +1036,6 @@ fn check_let_annotation_type(
     //   - `let a : Length = 5N`           (scalar declared, dimension mismatch)
     //   - `let a : Length = some_geo()`   (scalar declared, geometry RHS → false)
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
-        return;
-    }
-    // Numeric-literal idiom guard (mirrors check_param_default_type exactly):
-    // `let x : Length = 5`, `= 0.5`, or `= -5.0` — a bare/negated numeric literal
-    // that is an Int or a dimensionless scalar is accepted for any dimensioned Scalar
-    // declared type. Compound expressions (e.g. `ratio * 2.0`) are NOT literals and
-    // fall through to `type_compatible`.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(rhs)
-        && (matches!(rhs.result_type, Type::Int)
-            || matches!(&rhs.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
         return;
     }
     if !type_compatible(declared, &rhs.result_type) {
@@ -6556,6 +6511,8 @@ pub(crate) fn trait_satisfies(
 ///     emit a single error diagnostic and return.
 ///   * Validate named-argument set against the def's params (unknown args,
 ///     missing required args). Validation errors short-circuit emission.
+///   * Type-check each explicit arg (`constraint_arg_type_conforms`); a
+///     rejection also short-circuits emission.
 ///   * Allocate one shared `inst_idx` for this instantiation by bumping the
 ///     `constraint_inst_counts` entry for `ci.name`, so all predicates from
 ///     this call share the same inst_idx and differ only by `pred_idx`.
@@ -6648,20 +6605,6 @@ pub(crate) fn expand_constraint_inst(
         return;
     }
 
-    // Allocate this instantiation's inst_idx before the per-predicate loop
-    // so all predicates from one `constraint MinWall(...)` share the same
-    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
-    // split to avoid cloning `ci.name` on the common case where the entry
-    // already exists.
-    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
-        let idx = *entry;
-        *entry += 1;
-        idx
-    } else {
-        constraint_inst_counts.insert(ci.name.clone(), 1);
-        0
-    };
-
     // η/4480: capture the EXPLICIT call-site argument bindings, attached to
     // every CompiledConstraint emitted for this instantiation. The presence of
     // a binding (e.g. `"actual"`) is how the GD&T conformance pass detects a
@@ -6688,89 +6631,71 @@ pub(crate) fn expand_constraint_inst(
     // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
-    {
-        let mut throwaway_diag_sink = Vec::new();
-        for (name, expr) in &ci.args {
-            // Probe map for this single param — depends only on the param name,
-            // so it is built once per arg (not once per arg×predicate).
-            let mut probe = HashMap::new();
-            probe.insert(
-                name.clone(),
-                reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Undef,
-                    span: expr.span,
-                },
-            );
-            // If substituting this param changes a predicate, the param's arg
-            // expr is inlined into that predicate and compiled (with real
-            // diagnostics) below — so route this binding compile to the
-            // throwaway sink. Otherwise it is compiled ONLY here.
-            let referenced_by_predicate = def
-                .predicates
-                .iter()
-                .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
-            let compiled = if referenced_by_predicate {
-                compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
-            } else {
-                compile_expr(expr, scope, enum_defs, functions, diagnostics)
-            };
-            arg_bindings.push((name.clone(), compiled));
-        }
+    let mut throwaway_diag_sink = Vec::new();
+    for (name, expr) in &ci.args {
+        // Probe map for this single param — depends only on the param name,
+        // so it is built once per arg (not once per arg×predicate).
+        let mut probe = HashMap::new();
+        probe.insert(
+            name.clone(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Undef,
+                span: expr.span,
+            },
+        );
+        // If substituting this param changes a predicate, the param's arg
+        // expr is inlined into that predicate and compiled (with real
+        // diagnostics) below — so route this binding compile to the
+        // throwaway sink. Otherwise it is compiled ONLY here.
+        let referenced_by_predicate = def
+            .predicates
+            .iter()
+            .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
+        let compiled = if referenced_by_predicate {
+            compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
+        } else {
+            compile_expr(expr, scope, enum_defs, functions, diagnostics)
+        };
+        arg_bindings.push((name.clone(), compiled));
     }
 
     // Task 4546: param-level argument type conformance check.
     //
-    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // Run AFTER the arg_bindings loop (which compiles all explicit args into
     // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
     // std::mem::take's arg_bindings). This is the earliest point where both the
     // compiled arg types AND the declared param types (now stored on
     // CompiledConstraintParam.ty) are available simultaneously.
     //
-    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
-    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
-    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
-    // (dimensional strictness within predicates is task 4490's responsibility).
-    //
-    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
-    // task 4490's emit_comparison_operand_diagnostics also fires for the
-    // substituted predicate. Both diagnostics are accepted (they fire at
-    // distinct seams — binding site vs. predicate body).
-    {
-        // Build a name→arg-expr-span map so the diagnostic label can point at
-        // the argument expression, not the whole constraint instantiation.
-        let arg_spans: HashMap<&str, SourceSpan> = ci
-            .args
-            .iter()
-            .map(|(name, expr)| (name.as_str(), expr.span))
-            .collect();
-        for (arg_name, compiled_arg) in &arg_bindings {
-            // Look up the matching declared param.
-            // Unknown arg names are already diagnosed by the validation above;
-            // skip names that have no matching param to avoid double-reporting.
-            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
-                continue;
-            };
-            // Skip params with no resolved type (unannotated or resolution failed).
-            let Some(ref param_ty) = param.ty else {
-                continue;
-            };
-            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type mismatch: argument '{}' for constraint '{}' \
-                         has type {} but parameter expects {}",
-                        arg_name, ci.name, compiled_arg.result_type, param_ty,
-                    ))
-                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        arg_span,
-                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
-                    )),
-                );
-            }
+    // A rejected binding short-circuits emission like a missing argument, so the
+    // mistake is reported once, at the argument, instead of again from inside the
+    // def body. Predicate compilation and the guard group will no longer run, so
+    // the diagnostics they were going to report are reported here instead: the
+    // throwaway sink is flushed and the `where` condition is compiled for its
+    // diagnostics alone. Pinned by constraint_def_compile_tests.rs's
+    // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
+    // does_not_swallow siblings.
+    if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {
+        diagnostics.append(&mut throwaway_diag_sink);
+        if let Some(wc) = &ci.where_clause {
+            compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
         }
+        return;
     }
+
+    // Allocate this instantiation's inst_idx before the per-predicate loop
+    // so all predicates from one `constraint MinWall(...)` share the same
+    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
+    // split to avoid cloning `ci.name` on the common case where the entry
+    // already exists.
+    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+        let idx = *entry;
+        *entry += 1;
+        idx
+    } else {
+        constraint_inst_counts.insert(ci.name.clone(), 1);
+        0
+    };
 
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
@@ -6824,6 +6749,55 @@ pub(crate) fn expand_constraint_inst(
             constraints.push(cc);
         }
     }
+}
+
+/// Emit one `ConstraintArgTypeMismatch` per explicit arg whose compiled type
+/// does not conform (`constraint_arg_type_conforms`) to its declared param
+/// type; returns whether any was emitted.
+fn emit_constraint_arg_type_mismatches(
+    ci: &reify_ast::ConstraintInstDecl,
+    def: &CompiledConstraintDef,
+    arg_bindings: &[(String, CompiledExpr)],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    // Build a name→arg-expr-span map so the diagnostic label can point at
+    // the argument expression, not the whole constraint instantiation.
+    let arg_spans: HashMap<&str, SourceSpan> = ci
+        .args
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr.span))
+        .collect();
+    let mut any_emitted = false;
+    for (arg_name, compiled_arg) in arg_bindings {
+        // Look up the matching declared param.
+        // Unknown arg names are already diagnosed by `expand_constraint_inst`'s
+        // validation; skip names that have no matching param to avoid
+        // double-reporting.
+        let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+            continue;
+        };
+        // Skip params with no resolved type (unannotated or resolution failed).
+        let Some(ref param_ty) = param.ty else {
+            continue;
+        };
+        if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+            let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch: argument '{}' for constraint '{}' \
+                     has type {} but parameter expects {}",
+                    arg_name, ci.name, compiled_arg.result_type, param_ty,
+                ))
+                .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    arg_span,
+                    format!("expected {}, got {}", param_ty, compiled_arg.result_type),
+                )),
+            );
+            any_emitted = true;
+        }
+    }
+    any_emitted
 }
 
 #[cfg(test)]
@@ -7210,6 +7184,35 @@ structure def Manifold {
             "expected the wildcard-arm diagnostic, got: {:?}",
             diagnostics[0].message,
         );
+    }
+
+    /// `param_default_rejection_span` recovers exactly the span
+    /// `check_param_default_type` was given, and recognises nothing else.
+    #[test]
+    fn param_default_rejection_span_round_trips_the_emitted_span() {
+        let declaration = SourceSpan::new(10, 40);
+        let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        check_param_default_type(
+            "t",
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            true,
+            Some(&dimensionless),
+            declaration,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert_eq!(
+            param_default_rejection_span(&diagnostics[0]),
+            Some(declaration)
+        );
+
+        let other_code = Diagnostic::error("unrelated")
+            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
+            .with_label(DiagnosticLabel::new(declaration, "unrelated"));
+        assert_eq!(param_default_rejection_span(&other_code), None);
     }
 }
 

@@ -993,6 +993,8 @@ param outline : Shape = Rect { width: 20mm, height: 10mm }
 
 All declared fields must be supplied. Field names must be unique within a variant. Declaration order is canonical for pattern matching.
 
+Field values are arbitrary expressions of the declared field type: param references, arithmetic, function calls and negated literals, e.g. `Rect { width: w, height: w * 2.0 }`. A construction whose field values are all literals is a constant; any other construction is evaluated with the design, so its payload tracks the values it reads. An undef field value leaves the tag determined: `match` selects that variant's arm and the binder for that field is undef.
+
 ### 4.6 Unit Declarations
 
 Units are declared with the `unit` keyword, populating the unit namespace:

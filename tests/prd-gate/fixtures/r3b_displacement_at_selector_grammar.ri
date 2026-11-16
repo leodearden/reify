@@ -1,7 +1,7 @@
 // Fixture: R3b substrate-boundary probe. `displacement_at` is fed a FaceSelector
 // `location` (`top = faces_by_normal(part, dir, tol)`), which resolves the
 // `location : FaceSelector` overload in
-// crates/reify-compiler/stdlib/modal_analysis_fns.ri.
+// crates/reify-compiler/stdlib/modal_analysis.ri.
 //
 // MEASURED 2026-10-07, main 7d1e6ba692: `reify check` EXIT 0.
 //
@@ -34,9 +34,9 @@
 //
 // History: originally fed a TOPOLOGY SELECTOR where `displacement_at` accepted
 // only a String location, proving the eval-path selector->node resolver was
-// unbuilt; the R3b resolver landed and `modal_analysis_fns.ri` added the
-// `location : FaceSelector` overload the `top` argument below now resolves
-// against, sharing the String overload's trampoline.
+// unbuilt; the R3b resolver landed with a `location : FaceSelector` overload
+// (today at `modal_analysis.ri :: displacement_at`) that the `top` argument
+// below resolves against, sharing the String overload's trampoline.
 //
 // PRD: docs/prds/v0_6/value-eval-geometry-addressing.md (Leaf R3b — eval-path
 // selector->node resolver, the re-homed task 4122 deliverable).
@@ -106,7 +106,7 @@ structure CantileverSelectorQuery {
     let top  = faces_by_normal(part, dir, tol)
 
     // R3b: feed the FaceSelector `top` to displacement_at, exercising the
-    // FaceSelector overload (modal_analysis_fns.ri) added alongside the
+    // FaceSelector overload (modal_analysis.ri) added alongside the
     // original String-location form -> check exits 0.
     let tip = displacement_at(response, top, tip_push.direction)
 }

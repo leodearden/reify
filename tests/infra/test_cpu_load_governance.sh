@@ -8,7 +8,7 @@
 #
 # §8 boundary-table rows covered:
 #   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
-#           saturates confine-cores*measure_s budget, cpu.max == max
+#           saturates confine-cores*measured window, cpu.max == max
 #           (no quota throttle on the child scope)                    host-gated
 #   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD (in-band  host-gated
 #          avg10 SKIPs as inconclusive or hard FAILs — three-band note below)
@@ -115,11 +115,14 @@
 #                                       at any ceiling (ROW4-1-CORRIDOR-VACUITY-1,
 #                                       and -3/-3b pin that edge to one microsecond).
 #                                       ROW1/ROW2_3 do not read it
-#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
+#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling,
+#                                       counted from the burn reporting ready
 #                                       (default 1)
-#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
+#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3).
+#                                       Nominal: the saturation divides by the
+#                                       read-to-read window actually measured
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
-#                                       of the confine-cores*measure_s budget
+#                                       of confine-cores * the measured window
 #                                       (default 0.85; empirically calibrated, H5).
 #                                       Reused (read inverted) as the ROW2-1
 #                                       band's starvation floor (task 4970):
@@ -158,10 +161,11 @@
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4).
-#                                       ROW4 clamps it UP to the deadline-derived
-#                                       cap (ready-deadline + warmup + measure + 4),
-#                                       which is also its default when unset; ROW4
-#                                       stops its burns explicitly after the AFTER
+#                                       ROW1 and ROW4 clamp it UP to the deadline-
+#                                       derived cap (ready-deadline + warmup +
+#                                       measure + 2, and + 4 for ROW4), which is
+#                                       also their default when unset; both stop
+#                                       their burns explicitly after the AFTER
 #                                       sample, so the cap never lengthens a run
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp, counted from both
 #                                       burns reporting ready, before sampling
@@ -169,15 +173,16 @@
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
 #   REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S  ROW4 anti-hang bound on waiting for BOTH
 #                                       burns to report ready through the fixture's
-#                                       --ready-file (default 30; task 9698).
+#                                       --ready-file (default 30; task 9698).  ROW1-1
+#                                       waits on its one burn under the same bound.
 #                                       Technique T (docs/prds/infra-test-wallclock-
 #                                       deflake.md): it only keeps a burn that never
 #                                       reports from hanging the suite and NEVER
 #                                       discriminates pass from fail — when it
-#                                       expires ROW4-1 SKIPs, there being no window
-#                                       to measure.  Generous by an order of
+#                                       expires ROW1-1 / ROW4-1 SKIP, there being no
+#                                       window to measure.  Generous by an order of
 #                                       magnitude over a governed launch, and the
-#                                       base of the ROW4 burn cap above
+#                                       base of the ROW1 and ROW4 burn caps above
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -532,6 +537,39 @@ else
             out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
             [ "$out" = "unavailable" ]
         ' _ "$INSTRUMENT" "$_SELF6_MALFORMED_FIXTURE"
+
+    # SELF-7 (task 10023): cgroup-usage-stamped prints the cpu.stat usage_usec
+    # AND a CLOCK_MONOTONIC stamp taken in the SAME process right after the
+    # read, so ROW1-1 measures its window read-to-read instead of trusting
+    # the nominal sleep.  Contract: one stdout line "<usage_usec> <monotonic_usec>"
+    # or the literal "unavailable", exit 0 either way (same as cgroup-usage).
+    # The fixture path ends in cpu.stat, which read_cgroup_cpu_usage takes verbatim.
+    _SELF7_DIR="$(mktemp -d -p "$WORK" self7.XXXXXX)"
+    printf 'usage_usec 424242\nuser_usec 1\nsystem_usec 2\n' > "$_SELF7_DIR/cpu.stat"
+    assert "SELF-7a: cpu_gov_instrument.py cgroup-usage-stamped <synthetic cpu.stat usage_usec=424242> == '424242 <monotonic_usec>' (exactly two integer fields, exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$out" =~ ^424242\ [0-9]+$ ]]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
+
+    assert "SELF-7b: cpu_gov_instrument.py cgroup-usage-stamped <non-existent cpu.stat> == unavailable (exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [ "$out" = "unavailable" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/absent/cpu.stat"
+
+    # Ordering only, no elapsed bound: two successive calls cannot stamp the
+    # same instant, so a constant stamp (or the usage echoed back) fails here.
+    assert "SELF-7c: cpu_gov_instrument.py cgroup-usage-stamped stamps a clock that advances — the second call's stamp is greater than the first's" \
+        bash -c '
+            re="^[0-9]+ ([0-9]+)\$"
+            first=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            second=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$first" =~ $re ]] || exit 1
+            first_stamp="${BASH_REMATCH[1]}"
+            [[ "$second" =~ $re ]] || exit 1
+            [ "${BASH_REMATCH[1]}" -gt "$first_stamp" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
 fi
 
 # ============================================================================
@@ -761,10 +799,11 @@ _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
 # ----------------------------------------------------------------------------
 # Per-worker pinning + readiness machinery (task 9698), REUSED by the always-on
-# guards below and by Cycle ROW4.  ROW4-1's 3:1 split is only as good as the
-# placement of its spinners and the moment its window opens, so ROW4 pins each
-# WORKER to one CPU, opens the window on a readiness report from both burns
-# rather than on a launch-anchored sleep, and checks both on the live workers.
+# guards below and by Cycles ROW1 and ROW4.  ROW4-1's 3:1 split is only as good
+# as the placement of its spinners and the moment its window opens, so ROW4 pins
+# each WORKER to one CPU, opens the window on a readiness report from both burns
+# rather than on a launch-anchored sleep, and checks both on the live workers;
+# ROW1-1 shares the pinning and the readiness-anchored window.
 # ----------------------------------------------------------------------------
 
 # _row4_await_ready <deadline_s> <file>...
@@ -923,6 +962,37 @@ _row4_stop_burns() {
         wait "$pid" 2>/dev/null || true
     done
     _ROW4_BURN_PIDS=""
+}
+
+# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
+# wallclock-deflake.md).  Waiting for the burns to report ready is bounded
+# only so a burn that never reports cannot hang the suite; it never
+# discriminates pass from fail.  When it expires ROW1-1 / ROW4-1 SKIP as a
+# measurement-integrity failure: there is no window to measure.
+_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
+
+# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
+# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
+_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
+
+# _row4_sample_host_avg10 <proc_path>
+#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
+#   literal "unavailable" when the path is missing/unreadable/malformed
+#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
+#   SAME sampler ROW2_3 uses at its own bracket — which already prints
+#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
+#   covers python3 itself failing to launch.
+#
+#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
+#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
+#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
+#   a numeric 0 reads as a maximally quiet box for the same reason, but does
+#   so by ASSERTING quiet rather than by declining to measure, which is the
+#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
+_row4_sample_host_avg10() {
+    local proc_path="$1"
+    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
+        || echo "unavailable"
 }
 
 # ============================================================================
@@ -1301,7 +1371,6 @@ fi
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
-# QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
@@ -1353,7 +1422,11 @@ fi
 # ----------------------------------------------------------------------------
 _ROW1_CONFINE_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW1_WARMUP_S:-1}"
 _ROW1_CONFINE_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW1_MEASURE_S:-3}"
-_ROW1_CONFINE_BURN_MIN=$(( _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
+# The window opens on the burn's readiness report, which can come as late as
+# the ready deadline after launch, so the burn must outlast deadline + warm-up +
+# measure + a settle margin (as _ROW4_BURN_MIN does).  The burn is stopped
+# explicitly right after the AFTER sample, so the larger cap adds no wall time.
+_ROW1_CONFINE_BURN_MIN=$(( _ROW4_READY_DEADLINE_S + _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
 [ "$_ROW1_BURN_S" -lt "$_ROW1_CONFINE_BURN_MIN" ] && _ROW1_BURN_S="$_ROW1_CONFINE_BURN_MIN"
 # Empirically-calibrated floor (basis: a reference solo confined+pinned run,
@@ -1417,6 +1490,27 @@ _row1_measurement_inactive() {
     case "$stall_fraction" in unavailable) return 1 ;; esac
     awk -v u="$usage_fraction" -v s="$stall_fraction" -v f="$floor" \
         'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
+}
+
+# _row1_measure_window <before_sample> <after_sample> <cores>
+#   Sample = a cgroup-usage-stamped line "<usage_usec> <stamp_us>" or "unavailable".
+#   Prints "<delta_usage_us> <window_us> <saturation>", the window being the interval
+#   MEASURED between the two stamps; a counter wrap clamps delta to 0.  Prints
+#   "unavailable" for a bad sample, non-positive cores, or a stamp that did not advance.
+_row1_measure_window() {
+    awk -v before="$1" -v after="$2" -v cores="$3" 'BEGIN {
+        stamped = "^[0-9]+ [0-9]+$"
+        split(before, b, " "); split(after, a, " ")
+        if (cores !~ /^[0-9]+$/ || cores + 0 <= 0 ||
+                before !~ stamped || after !~ stamped || a[2] + 0 <= b[2] + 0) {
+            print "unavailable"
+            exit
+        }
+        delta = a[1] - b[1]
+        if (delta < 0) delta = 0
+        window = a[2] - b[2]
+        printf "%d %d %.6f\n", delta, window, delta / (cores * window)
+    }'
 }
 
 # _row2_band_inconclusive <avg10> <threshold> <usage_fraction> <stall_before>
@@ -1766,6 +1860,67 @@ _row1_inactive_vacuity4_rc=0
 _row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=$?
 assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
     test "$_row1_inactive_vacuity4_rc" -ne 0
+
+# ROW1-1-WINDOW-VACUITY (task 10023): ROW1-1 divides by the interval MEASURED
+# between its two cgroup-usage-stamped reads, never by the nominal MEASURE_S
+# sleep.  _row1_measure_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<delta_usage_us> <window_us> <saturation>", or "unavailable".  Pure awk, no
+# python3, no cgroup: always-on.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs, rather than
+# manufacture the sentinel a case expects.  Outputs compare by exact string.
+_row1_window_vacuity1="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 6.0 CPU-s over a MEASURED 3.6 s window on 2 cores => '6000000 3600000 0.833333' (got '${_row1_window_vacuity1}'); a nominal 3 s budget would have read 1.000000 and hidden the deficit" \
+    test "$_row1_window_vacuity1" = "6000000 3600000 0.833333"
+
+_row1_window_vacuity2="$(_row1_measure_window "0 0" "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-2: 6.0 CPU-s over a 3.0 s window on 2 cores => '6000000 3000000 1.000000' (got '${_row1_window_vacuity2}')" \
+    test "$_row1_window_vacuity2" = "6000000 3000000 1.000000"
+
+_row1_window_vacuity3="$(_row1_measure_window unavailable "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-3: unavailable BEFORE sample => 'unavailable' (got '${_row1_window_vacuity3}')" \
+    test "$_row1_window_vacuity3" = "unavailable"
+
+_row1_window_vacuity4="$(_row1_measure_window "0 0" unavailable 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-4: unavailable AFTER sample => 'unavailable' (got '${_row1_window_vacuity4}')" \
+    test "$_row1_window_vacuity4" = "unavailable"
+
+_row1_window_vacuity5="$(_row1_measure_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-5: non-advancing stamp (before=after=5000000) => 'unavailable' (got '${_row1_window_vacuity5}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row1_window_vacuity5" = "unavailable"
+
+_row1_window_vacuity6="$(_row1_measure_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-6: counter wrap (after usage < before usage) => '0 3000000 0.000000' (got '${_row1_window_vacuity6}'); delta clamps to 0 so the live chain's delta<=0 SKIP still fires" \
+    test "$_row1_window_vacuity6" = "0 3000000 0.000000"
+
+_row1_window_vacuity7="$(_row1_measure_window 123 "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7: malformed one-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7}')" \
+    test "$_row1_window_vacuity7" = "unavailable"
+
+_row1_window_vacuity7b="$(_row1_measure_window "abc 5000000" "6000000 8000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7b: non-numeric field in a two-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7b}'); awk would otherwise coerce it to 0 and print a plausible number" \
+    test "$_row1_window_vacuity7b" = "unavailable"
+
+_row1_window_vacuity7c="$(_row1_measure_window "1000000 5000000" "abc 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7c: non-numeric field in the AFTER sample => 'unavailable' (got '${_row1_window_vacuity7c}'); both samples are held to the same format" \
+    test "$_row1_window_vacuity7c" = "unavailable"
+
+_row1_window_vacuity7d="$(_row1_measure_window "1000000 5000000 9" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7d: three-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7d}'); a sample is exactly two fields" \
+    test "$_row1_window_vacuity7d" = "unavailable"
+
+_row1_window_vacuity8="$(_row1_measure_window "1000000 5000000" "7000000 8600000" x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8: non-numeric cores => 'unavailable' (got '${_row1_window_vacuity8}')" \
+    test "$_row1_window_vacuity8" = "unavailable"
+
+_row1_window_vacuity8c="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8c: cores with trailing garbage ('2x') => 'unavailable' (got '${_row1_window_vacuity8c}'); awk alone would coerce it to 2" \
+    test "$_row1_window_vacuity8c" = "unavailable"
+
+_row1_window_vacuity8b="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 0 || true)"
+assert "ROW1-1-WINDOW-VACUITY-8b: zero cores => 'unavailable' (got '${_row1_window_vacuity8b}'); never a divide-by-zero" \
+    test "$_row1_window_vacuity8b" = "unavailable"
 
 # Non-vacuity guard for the NEW ROW2-1 band-decision predicate (task 4970,
 # esc-4959-53/esc-4959-57): closes the 50-90 avg10 gap in Cycle ROW2_3's
@@ -2210,102 +2365,120 @@ else
         ' 2>/dev/null || echo ""
     )"
 
-    # Launch the lone-source confined+pinned burn: _ROW4_CONFINE_W workers
-    # (== confine-cores) pinned to _ROW4_CONFINE_CPUS, in the private task
-    # slice, for the full warmup+measure+margin window.
-    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role task -- \
-        bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW1_CONFINE_BG=$!
+    # Launch the lone-source confined+pinned burn in the private task slice:
+    # _ROW4_CONFINE_W workers (== confine-cores), each pinned to ONE of the
+    # _ROW4_CONFINE_CPUS (--pin-cpus, task 9698), reported through a ready file.
+    # A set-mask over the whole burn let the load balancer stack both workers on
+    # one CPU for part of the window.
+    _ROW1_READY_FILE="$WORK/row1-ready"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_ROW1_BURN_S" "$_ROW1_READY_FILE"
 
-    # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
-    # before sampling (mirrors ROW4's steady-state design).
-    sleep "$_ROW1_CONFINE_WARMUP_S"
-
-    _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-
-    # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
-    # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
-    # two bracket points as the usage_usec delta below — a windowed delta,
-    # not a single post-hoc decayed avg10 read, so it cannot under-report
-    # contention accrued mid-window.  A lone source pinned to its own
-    # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
-    # process (e.g. a concurrent pool run sharing the same
-    # deterministically-derived pin list, esc-4926-3) co-resides on the
-    # pinned CPUs, diluting this measurement.
+    # Everything the window fills in starts as the "unavailable" sentinel, so a
+    # window that never opens leaves the chain below with nothing to judge (it
+    # SKIPs) rather than with a coerced number.
+    _ROW1_SAMPLE_BEFORE="unavailable"
+    _ROW1_SAMPLE_AFTER="unavailable"
     _ROW1_STALL_BEFORE="unavailable"
-    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
-            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
-    fi
-
-    sleep "$_ROW1_CONFINE_MEASURE_S"
-
-    _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-
     _ROW1_STALL_AFTER="unavailable"
-    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
-            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    _ROW1_HOST_AVG10="unavailable"
+    _ROW1_WORKER_CPUS=""
+    _ROW1_READY=0
+
+    # Open the window on READINESS, not on launch: a governed launch makes
+    # several user-manager D-Bus round-trips before its fixture forks, so a
+    # launch-anchored sleep could open the window before both spinners burn and
+    # bank a deficit.  The deadline is an anti-hang bound only (technique T),
+    # never what discriminates; when it expires ROW1-1 SKIPs below.
+    if _row4_await_ready "$_ROW4_READY_DEADLINE_S" "$_ROW1_READY_FILE"; then
+        _ROW1_READY=1
+        _ROW1_WORKER_CPUS="$(_row4_worker_affinities "$_ROW1_READY_FILE" 2>/dev/null || true)"
+
+        # Warm-up, counted from readiness: let the spinners ramp before sampling.
+        sleep "$_ROW1_CONFINE_WARMUP_S"
+
+        # Each stamped read takes usage_usec AND the monotonic clock in one
+        # process, so the window is measured read-to-read and python startup
+        # latency cannot leak into it.
+        _ROW1_SAMPLE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$_ROW1_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+
+        # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
+        # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
+        # two bracket points as the usage_usec delta below — a windowed delta,
+        # not a single post-hoc decayed avg10 read, so it cannot under-report
+        # contention accrued mid-window.  A lone source pinned to its own
+        # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
+        # process (e.g. a concurrent pool run sharing the same
+        # deterministically-derived pin list, esc-4926-3) co-resides on the
+        # pinned CPUs, diluting this measurement.
+        if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+            _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
+                "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+        fi
+
+        sleep "$_ROW1_CONFINE_MEASURE_S"
+
+        _ROW1_SAMPLE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$_ROW1_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+
+        if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+            _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
+                "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+        fi
+
+        # Host-wide PSI at the instant the window closes.  Label-only: it lets a
+        # residual deficit be attributed to foreign load from the log alone.
+        _ROW1_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
     fi
-    _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
-    wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
+    # Stop the burn now that the AFTER sample is taken (or the window never opened).
+    _row4_stop_burns
 
-    _ROW1_USAGE_DELTA=0
-    if [ "$_ROW1_USAGE_BEFORE" != "unavailable" ] && \
-       [ "$_ROW1_USAGE_AFTER" != "unavailable" ]; then
-        _ROW1_USAGE_DELTA=$(( _ROW1_USAGE_AFTER - _ROW1_USAGE_BEFORE ))
-        [ "$_ROW1_USAGE_DELTA" -lt 0 ] && _ROW1_USAGE_DELTA=0  # guard counter wrap
-    fi
-    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
-
-    # Usage fraction (task 4967 follow-up / esc-4031-154 residual): feeds the
-    # INACTIVE SKIP predicate below, alongside the stall fraction — same
-    # degenerate-guard discipline as the final saturation calc (non-positive
-    # budget prints "0").
-    _ROW1_USAGE_FRACTION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" \
-        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
+    _ROW1_WINDOW="$(_row1_measure_window "$_ROW1_SAMPLE_BEFORE" "$_ROW1_SAMPLE_AFTER" "$_ROW4_CONFINE_CORES" || true)"
+    read -r _ROW1_USAGE_DELTA _ROW1_WINDOW_US _ROW1_SATURATION <<< "${_ROW1_WINDOW:-unavailable}"
 
     # Windowed stall fraction (display-only; the decision itself is made by
-    # _row1_stall_contended below) — same degenerate-guard discipline as the
-    # usage delta above: non-positive window or counter-wrap prints "0".
+    # _row1_stall_contended below) over the SAME measured window as the usage
+    # delta, so it exists only once that window does.  Non-positive window or
+    # counter-wrap prints "0".
     _ROW1_STALL_FRACTION="unavailable"
-    if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
-       [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
-        _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_STALL_WINDOW_US" \
-            'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
-    fi
-
     _ROW1_CONTENDED=0
-    if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
-        _ROW1_CONTENDED=1
+    if [[ "$_ROW1_WINDOW_US" =~ ^[0-9]+$ ]]; then
+        if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
+           [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
+            _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_WINDOW_US" \
+                'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
+        fi
+        if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_WINDOW_US"; then
+            _ROW1_CONTENDED=1
+        fi
     fi
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
-    # empty slice rel-path, non-positive delta, detected foreign contention
-    # on the pinned CPUs (esc-4926-3, a WINDOWED some.total stall-fraction
-    # delta bracketed over the measure window rather than a single post-hoc
-    # decayed avg10 read), or a never-joined-scope measurement artifact
-    # (esc-4031-154 residual, task 4967 follow-up: under extreme load the
-    # burn can fail to join its governed scope within warmup+measure at all,
-    # showing neither meaningful usage nor meaningful stall — the opposite
+    # a burn that never reported ready (no window to measure), empty slice
+    # rel-path, an unreadable stamped sample, non-positive delta, detected
+    # foreign contention on the pinned CPUs (esc-4926-3, a WINDOWED some.total
+    # stall-fraction delta bracketed over the measure window rather than a
+    # single post-hoc decayed avg10 read), or a never-joined-scope measurement
+    # artifact (esc-4031-154 residual, task 4967 follow-up: under extreme load
+    # the burn can fail to join its governed scope within warmup+measure at
+    # all, showing neither meaningful usage nor meaningful stall — the opposite
     # shape from contention, so distinct from the stall-SKIP above).
-    if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
+    if [ "$_ROW1_READY" -eq 0 ]; then
+        echo "  SKIP ROW1-1: burn did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+    elif [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
+    elif [ "$_ROW1_USAGE_DELTA" = "unavailable" ]; then
+        echo "  SKIP ROW1-1: a stamped cpu.stat sample was unreadable, or its stamp did not advance — measurement inconclusive"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice windowed stall_fraction=${_ROW1_STALL_FRACTION} >= threshold=${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}) — inconclusive, not a governance failure"
-    elif _row1_measurement_inactive "$_ROW1_USAGE_FRACTION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
-        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_USAGE_FRACTION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
+    elif _row1_measurement_inactive "$_ROW1_SATURATION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
+        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_SATURATION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
     else
-        _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
-        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
+        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR} of cores×measured window (Δusage=${_ROW1_USAGE_DELTA}usec, window=${_ROW1_WINDOW_US}usec, cores=${_ROW4_CONFINE_CORES}, saturation=${_ROW1_SATURATION}, stall_fraction=${_ROW1_STALL_FRACTION}, host_avg10=${_ROW1_HOST_AVG10}, worker_cpus=${_ROW1_WORKER_CPUS//$'\n'/,})" \
             bash -c '
                 awk -v s="$1" -v f="$2" "BEGIN{ exit !(s+0 >= f+0) }"
             ' _ "$_ROW1_SATURATION" "$_ROW1_SATURATION_FLOOR"
@@ -2719,12 +2892,6 @@ _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
 # ROW2_3 warm-up design + PRD §11 Q5.
 _ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
 _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
-# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
-# wallclock-deflake.md).  Waiting for both burns to report ready is bounded
-# only so a burn that never reports cannot hang the suite; it never
-# discriminates pass from fail.  When it expires ROW4-1 SKIPs as a
-# measurement-integrity failure, like the slice-discovery SKIP below.
-_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
 # Burn must outlast readiness wait + warm-up + measure window + a settle margin
 # so the AFTER sample lands while BOTH roles are still contending (never during
 # teardown).  Derived from the readiness deadline so that holds by construction:
@@ -2741,9 +2908,6 @@ _ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW4_BURN_MIN}"
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 # Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
 _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
-# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
-_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
 # _row4_share_inconclusive <merge_delta> <task_delta> <w_merge> <w_task> <tol>
 #                          <host_avg10> <ceiling>
@@ -2885,26 +3049,6 @@ else:
     # Share strictly inside the dilution corridor AND a hot box — the only
     # inconclusive quadrant.
     return 0
-}
-
-# _row4_sample_host_avg10 <proc_path>
-#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
-#   literal "unavailable" when the path is missing/unreadable/malformed
-#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
-#   SAME sampler ROW2_3 uses at its own bracket — which already prints
-#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
-#   covers python3 itself failing to launch.
-#
-#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
-#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
-#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
-#   a numeric 0 reads as a maximally quiet box for the same reason, but does
-#   so by ASSERTING quiet rather than by declining to measure, which is the
-#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
-_row4_sample_host_avg10() {
-    local proc_path="$1"
-    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
-        || echo "unavailable"
 }
 
 # _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper

@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ast::{Declaration, ImportKind, ParsedModule};
+use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportKind, ParsedModule};
 use reify_core::ModulePath;
 
 /// Every `import` `parsed` declares, in declaration order, with the module it
@@ -32,25 +32,6 @@ pub(crate) fn imports(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath
         })
 }
 
-/// The names of its module one `import` declaration binds.
-enum Binding<'p> {
-    WholeSurface,
-    Names(Vec<&'p str>),
-}
-
-/// The same namespace/entity split as reify-syntax's
-/// `collect_import_bindings` (`ts_parser.rs`); change the two together.
-fn binding(kind: &ImportKind) -> Binding<'_> {
-    match kind {
-        ImportKind::Module | ImportKind::Aliased { .. } => Binding::WholeSurface,
-        ImportKind::Entity(entity) => Binding::Names(vec![entity]),
-        ImportKind::Destructured(names) => {
-            Binding::Names(names.iter().map(String::as_str).collect())
-        }
-        ImportKind::EntityAliased { alias, .. } => Binding::Names(vec![alias]),
-    }
-}
-
 /// Which names of each imported module a module's imports, together, bind.
 pub(crate) struct ImportCoverage<'p> {
     by_module: HashMap<ModulePath, Coverage<'p>>,
@@ -65,16 +46,16 @@ impl<'p> ImportCoverage<'p> {
     pub(crate) fn of(parsed: &'p ParsedModule) -> Self {
         let mut by_module = HashMap::new();
         for (module, kind) in imports(parsed) {
-            match binding(kind) {
-                Binding::WholeSurface => {
+            match kind.binding() {
+                ImportBinding::Namespace { .. } => {
                     by_module.insert(module, Coverage::WholeSurface);
                 }
-                Binding::Names(names) => {
+                ImportBinding::Entities(entities) => {
                     if let Coverage::Names(covered) = by_module
                         .entry(module)
                         .or_insert_with(|| Coverage::Names(HashSet::new()))
                     {
-                        covered.extend(names);
+                        covered.extend(entities.iter().map(EntityBinding::local_name));
                     }
                 }
             }

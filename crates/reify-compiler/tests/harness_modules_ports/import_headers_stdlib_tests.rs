@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use reify_ast::ParsedModule;
 use reify_compiler::import_headers::{
-    ImportPlan, derive_std_imports, insert_imports, residual_diagnostics, stdlib_universe_excluding,
+    ImportPlan, derive_std_imports, insert_imports, stdlib_universe_excluding,
 };
 use reify_compiler::stdlib_loader::{build_stdlib_modules, stdlib_sources};
 use reify_core::ModulePath;
@@ -16,14 +16,14 @@ struct DerivedModule {
     name: &'static str,
     source: String,
     parsed: ParsedModule,
-    plan: ImportPlan,
+    plan: ImportPlan<'static>,
 }
 
 fn module_path(name: &str) -> ModulePath {
     ModulePath::from_dotted(name).expect("stdlib module names are dotted paths")
 }
 
-fn derive_for(name: &str, source: &str) -> (ParsedModule, ImportPlan) {
+fn derive_for(name: &str, source: &str) -> (ParsedModule, ImportPlan<'static>) {
     let path = module_path(name);
     let parsed = reify_compiler::parse_with_stdlib(source, path.clone());
     assert!(
@@ -76,8 +76,9 @@ fn every_stdlib_module_compiles_against_its_derived_imports_alone() {
     let offenders: Vec<String> = derived_stdlib()
         .iter()
         .filter_map(|module| {
-            let universe = stdlib_universe_excluding(&module_path(module.name));
-            let residual = residual_diagnostics(&module.parsed, &module.plan.modules(), &universe);
+            let residual = module
+                .plan
+                .residual_diagnostics(&module.parsed, &module.plan.modules());
             (!residual.is_empty()).then(|| {
                 let lines: Vec<String> = residual
                     .iter()

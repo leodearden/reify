@@ -33,21 +33,21 @@
 #
 # FAIL POLICY
 # ------------
-# A missing binary, a missing sidecar, or a sidecar/HEAD mismatch all mean the
-# binary's provenance relative to the CURRENT tree is unproven — treated as
-# STALE. Callers must map staleness to a clean SKIP (never a verdict), matching
-# the existing toolchain-not-built guard pattern. A repo_root in which git
-# finds no repository at all fails OPEN (treated as fresh) so
-# edge/CI/unit-test-fixture invocations that aren't inside a git checkout are
-# not incorrectly blocked — mirrors reify-audit-freshness.sh's fail-open
-# precedent. Inside a checkout, a HEAD git cannot read (unborn, corrupt ref,
-# lost worktree gitdir, dubious ownership, no git on PATH) is STALE too.
+# No profile binary built is REIFY_BIN_NOT_BUILT. A missing sidecar or a
+# sidecar/HEAD mismatch means the binary's provenance relative to the CURRENT
+# tree is unproven: REIFY_BIN_UNVOUCHED. Callers must map both to a clean SKIP
+# (never a verdict), matching the existing toolchain-not-built guard pattern.
+# A repo_root in which git finds no repository at all fails OPEN (the build is
+# trusted) so edge/CI/unit-test-fixture invocations that aren't inside a git
+# checkout are not incorrectly blocked — mirrors reify-audit-freshness.sh's
+# fail-open precedent. Inside a checkout, a HEAD git cannot read (unborn,
+# corrupt ref, lost worktree gitdir, dubious ownership, no git on PATH) is
+# REIFY_BIN_UNVOUCHED too.
 #
 # USAGE
 # -----
 #   source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
-#   if reify_bin_is_stale "$BIN" "$REPO_ROOT"; then ...treat as unproven... fi
-#   reify_bin_stamp "$REPO_ROOT"     # record build-time HEAD (called by verify.sh)
+#   reify_bin_stamp "$REPO_ROOT"     # record build-time HEAD (verify.sh stamps inline instead)
 #   resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
 #   # on success: $REIFY_BIN_RESOLVED is the vetted binary path
 #
@@ -84,11 +84,25 @@ _reify_bin_git() {
     local repo_root="$1"
     shift
     (
-        for v in $(compgen -e GIT_); do
+        for v in "${!GIT_@}"; do
             [ "$v" = GIT_CEILING_DIRECTORIES ] || unset "$v"
         done
         LC_ALL=C git -C "$repo_root" "$@"
     )
+}
+
+# _reify_bin_read_head <repo_root>
+#
+# Asks git for repo_root's HEAD with ONE process. Prints the SHA and returns 0
+# when git reads it; otherwise prints git's error text and returns 1. The fd
+# swap keeps git's two streams apart: stdout (the SHA) goes straight out on
+# fd 3, stderr (the error) is captured, and a warning printed beside a good
+# answer is dropped rather than joining the SHA.
+_reify_bin_read_head() {
+    local git_error
+    { git_error=$(_reify_bin_git "$1" rev-parse --verify HEAD 2>&1 >&3 3>&-); } 3>&1 && return 0
+    printf '%s\n' "$git_error"
+    return 1
 }
 
 # reify_bin_head_sha [repo_root]
@@ -97,7 +111,10 @@ _reify_bin_git() {
 # string) when git cannot answer: repo_root is not a git repo, or its HEAD
 # cannot be read.
 reify_bin_head_sha() {
-    _reify_bin_git "${1:-$PWD}" rev-parse --verify HEAD 2>/dev/null || true
+    local head
+    if head=$(_reify_bin_read_head "${1:-$PWD}"); then
+        printf '%s\n' "$head"
+    fi
 }
 
 # What git prints, in the C locale, when discovery finds no repository at all:
@@ -132,16 +149,15 @@ reify_bin_unvouched_reason() {
     local repo_root="${1:-$PWD}"
     local sidecar="$repo_root/target/.reify-bin-sha"
 
-    local head git_error
-    head=$(reify_bin_head_sha "$repo_root")
-    if [ -z "$head" ]; then
-        git_error=$(_reify_bin_git "$repo_root" rev-parse --verify HEAD 2>&1 >/dev/null) || true
-        case "$git_error" in
+    local head_or_error
+    if ! head_or_error=$(_reify_bin_read_head "$repo_root"); then
+        case "$head_or_error" in
             *"$_REIFY_BIN_NO_REPOSITORY"*) return 0 ;;
         esac
-        printf "%s's HEAD is undeterminable (%s)\n" "$repo_root" "${git_error%%$'\n'*}"
+        printf "%s's HEAD is undeterminable (%s)\n" "$repo_root" "${head_or_error%%$'\n'*}"
         return 0
     fi
+    local head="$head_or_error"
 
     if [ ! -f "$sidecar" ]; then
         printf '%s is absent\n' "$sidecar"
@@ -153,21 +169,6 @@ reify_bin_unvouched_reason() {
     if [ "$recorded" != "$head" ]; then
         printf "%s records '%s' but HEAD is '%s'\n" "$sidecar" "$recorded" "$head"
     fi
-}
-
-# reify_bin_is_stale <bin> [repo_root]
-#
-# Returns 0 (stale — provenance unproven) when the binary is missing or
-# reify_bin_unvouched_reason names a reason. Returns 1 (fresh) otherwise:
-# the sidecar names HEAD, or git finds no repository at all (fail-open).
-reify_bin_is_stale() {
-    local bin="$1"
-    local repo_root="${2:-$PWD}"
-
-    if [ ! -f "$bin" ]; then
-        return 0
-    fi
-    [ -n "$(reify_bin_unvouched_reason "$repo_root")" ]
 }
 
 # reify_bin_stamp [repo_root]
@@ -218,9 +219,10 @@ reify_bin_stamp() {
 #      the sidecar is kept.
 #
 # prd-capability-check.py consumes this rule through `resolve` and adds only
-# its own two layers: it takes a non-empty REIFY_BIN verbatim without asking
-# (a missing one is its launch error to report), and on REIFY_BIN_NOT_BUILT it
-# falls back to `reify` on PATH.
+# its own layer: it takes a non-empty REIFY_BIN verbatim without asking (a
+# missing one is its launch error to report); every verdict but
+# REIFY_BIN_TRUSTED, REIFY_BIN_NOT_BUILT included, is its refusal (exit 64) —
+# it never falls back to `reify` on PATH.
 #
 # Returns REIFY_BIN_TRUSTED, REIFY_BIN_UNVOUCHED (SKIP — never a verdict) or
 # REIFY_BIN_NOT_BUILT (SKIP); every non-zero verdict is a SKIP to a `||` caller.

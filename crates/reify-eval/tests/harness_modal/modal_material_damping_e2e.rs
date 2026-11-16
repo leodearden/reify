@@ -513,7 +513,7 @@ const NOT_DAMPED_CODE: &str = "E_ModalDampingMaterialNotDamped";
 /// NOT conform to `Damped`, and asking for `MaterialDamping` over it.
 ///
 /// This is reachable ONLY because `modal_analysis(material : ElasticMaterial, …)`
-/// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does not require
+/// (`crates/reify-compiler/stdlib/modal_analysis.ri`) does not require
 /// `Damped` — verified on this branch: this exact source compiles and evaluates
 /// CLEAN today, exit 0, f₁ = 418.01 Hz, ζ = 0. That is the silent-zero defect B8
 /// converts, and it is why the rejection has to be eval-time.

@@ -204,12 +204,11 @@ impl InstanceMintScope<'_> {
     ) -> Option<Value> {
         let template = self.graph.sub_instance_template(&instance_cell.entity)?;
         let template_cell = ValueCellId::new(template, &instance_cell.member);
-        if geometry_cell_realization(self.graph, &template_cell).is_none()
-            && !is_symbolic_eval_wired_selector_ctor(expr)
-        {
+        let realization = self.graph.scalar_geometry_cell_realization(&template_cell);
+        if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
             return Some(Value::Undef);
         }
-        let reads = instance_mint_reads(self.graph, &template_cell, expr);
+        let reads = instance_mint_reads(realization, expr);
         let Ok(instance_values) =
             project_instance_reads(self.values, &instance_cell.entity, template, &reads)
         else {
@@ -248,39 +247,19 @@ impl InstanceMintScope<'_> {
     }
 }
 
-/// The template-scoped cells an instance mint of `template_cell` reads: the
-/// expression's reads, plus, for a geometry cell, the reads of its
-/// realization's operations, which the handle's hash folds.
+/// The template-scoped cells an instance mint of a cell with expression `expr`
+/// reads: the expression's reads, plus, for a geometry cell, the reads of the
+/// operations of `realization`, the one its geometry mint names, which the
+/// handle's hash folds.
 fn instance_mint_reads(
-    graph: &EvaluationGraph,
-    template_cell: &ValueCellId,
+    realization: Option<&RealizationNodeData>,
     expr: &CompiledExpr,
 ) -> Vec<ValueCellId> {
     let mut reads = extract_dependency_trace(expr).reads;
-    if let Some(realization) = geometry_cell_realization(graph, template_cell) {
+    if let Some(realization) = realization {
         reads.extend(extract_realization_dependencies(&realization.operations).reads);
     }
     reads
-}
-
-/// The realization a scalar geometry cell's handle names, found as
-/// [`crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph`] finds
-/// it. `None` for any other cell, which only the selector mint can resolve.
-fn geometry_cell_realization<'g>(
-    graph: &'g EvaluationGraph,
-    template_cell: &ValueCellId,
-) -> Option<&'g RealizationNodeData> {
-    let is_geometry = graph
-        .value_cells
-        .get(template_cell)
-        .is_some_and(|cell| cell.cell_type == Type::Geometry);
-    if !is_geometry {
-        return None;
-    }
-    graph
-        .realizations
-        .values()
-        .find(|realization| realization.geometry_cell.as_ref() == Some(template_cell))
 }
 
 /// The order each slot of `col_sub` must commit its cells in, so no instance
@@ -297,7 +276,10 @@ pub(crate) fn slot_commit_order<'c>(
             let template_cell = ValueCellId::new(&col_sub.structure_name, member);
             let reads = default_expr
                 .as_ref()
-                .map(|expr| instance_mint_reads(graph, &template_cell, expr))
+                .map(|expr| {
+                    let realization = graph.scalar_geometry_cell_realization(&template_cell);
+                    instance_mint_reads(realization, expr)
+                })
                 .unwrap_or_default();
             let trace = DependencyTrace {
                 reads,
@@ -361,11 +343,19 @@ fn project_instance_reads(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use reify_compiler::ValueCellKind;
     use reify_core::ValueCellId;
     use reify_ir::{Value, ValueMap};
+    use reify_test_support::parse_and_compile;
 
-    use super::{SymbolicMintOrder, project_instance_reads};
+    use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads};
+    use crate::deps::extract_dependency_trace;
+    use crate::graph::EvaluationGraph;
+    use crate::graph::geometry_cell_link_fixture::{
+        GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
+    };
 
     fn id(entity: &str, member: &str) -> ValueCellId {
         ValueCellId::new(entity, member)
@@ -442,5 +432,110 @@ mod tests {
             SymbolicMintOrder::for_kind(ValueCellKind::Let),
             SymbolicMintOrder::SelectorFirst
         );
+    }
+
+    /// An instance cell mints as its template's cell (task #9846). For each
+    /// geometry let `m` of the fixture's `T`, the instance arm minting `P.s.m`
+    /// must answer what the graph mint answers for `T.m` over the instance's
+    /// values keyed at template scope. That pins both halves of the pairing: the
+    /// early-out (a list cell mints `Undef`), and the read projection (`b`'s hash
+    /// folds `P.s.w`, which only `b`'s realization reads, not its expression).
+    ///
+    /// Drives `InstanceMintScope` directly, as
+    /// `engine_build/geometry_cell_mint_from_graph_tests.rs` drives the graph
+    /// mint: the edit path never reaches it with a list cell, since a list
+    /// reevaluates to `List`, not `Undef`, so a public-seam test would pass
+    /// whether or not the two mints agree on list cells.
+    #[test]
+    fn the_instance_mint_of_a_sub_cell_pairs_with_the_graph_mint_of_its_template_cell() {
+        let graph = EvaluationGraph::from_templates(&parse_and_compile(SRC).templates);
+        let params = [
+            ("w", Value::length(0.01), Value::length(0.02)),
+            ("on", Value::Bool(true), Value::Bool(true)),
+        ];
+        let mut values = ValueMap::new();
+        let mut instance_values_at_template_scope = ValueMap::new();
+        for (member, template_value, instance_value) in params {
+            values.insert(id("T", member), template_value);
+            values.insert(id("P.s", member), instance_value.clone());
+            instance_values_at_template_scope.insert(id("T", member), instance_value);
+        }
+        let meta = HashMap::new();
+        let graph_mint = |cell: &ValueCellId, values: &ValueMap| {
+            crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                cell,
+                &graph,
+                values,
+                &[],
+                &meta,
+            )
+        };
+        let instance_cell_node = |member: &str| {
+            let cell = id("P.s", member);
+            let node = graph
+                .value_cells
+                .get(&cell)
+                .unwrap_or_else(|| panic!("precondition: `{cell}` must be stamped"));
+            let expr = node
+                .default_expr
+                .as_ref()
+                .unwrap_or_else(|| panic!("precondition: `{cell}` must have an expr"));
+            (cell, node.kind, expr)
+        };
+        let scope = InstanceMintScope {
+            graph: &graph,
+            values: &values,
+            functions: &[],
+            meta_map: &meta,
+        };
+        assert_eq!(graph.sub_instance_template("P.s"), Some("T"));
+        for member in SCALAR_GEOMETRY_MEMBERS {
+            assert!(
+                matches!(
+                    graph_mint(&id("T", member), &values),
+                    Some(Value::GeometryHandle {
+                        kernel_handle: None,
+                        ..
+                    })
+                ),
+                "control: the graph mint must answer the scalar geometry let `T.{member}`"
+            );
+        }
+        for member in GEOMETRY_LIST_MEMBERS {
+            assert_some_realization_links(&graph, &id("T", member));
+        }
+        let (_, _, b_expr) = instance_cell_node("b");
+        assert!(
+            !extract_dependency_trace(b_expr)
+                .reads
+                .contains(&id("T", "w")),
+            "precondition: `b`'s expression must not read `w`, so only the reads of \
+             `b`'s realization bring `w` into the instance's projection"
+        );
+        assert_ne!(
+            graph_mint(&id("T", "b"), &values),
+            graph_mint(&id("T", "b"), &instance_values_at_template_scope),
+            "control: `T.b`'s handle must fold `w`, or pairing `P.s.b` is vacuous \
+             on the read projection"
+        );
+
+        for member in SCALAR_GEOMETRY_MEMBERS
+            .into_iter()
+            .chain(GEOMETRY_LIST_MEMBERS)
+        {
+            let (instance_cell, kind, expr) = instance_cell_node(member);
+
+            assert_eq!(
+                scope.mint_undef_instance_cell(&instance_cell, kind, expr),
+                Some(
+                    graph_mint(&id("T", member), &instance_values_at_template_scope)
+                        .unwrap_or(Value::Undef)
+                ),
+                "the instance arm must mint `{instance_cell}` as the graph mint mints \
+                 `T.{member}` over the instance's values: an early-out to Undef where \
+                 the graph mint answers is the drift task #9846 retires, and a \
+                 projection missing a read of the realization the one #8102 fixed"
+            );
+        }
     }
 }

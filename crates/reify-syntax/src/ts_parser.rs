@@ -189,16 +189,15 @@ struct Lowering<'a> {
     known_enums: HashSet<&'a str>,
     /// Module-namespace bindings introduced by this file's `import`
     /// declarations, collected in the SAME order-independent first pass as
-    /// `known_enums` (task 5495 μ). Only `ImportKind::Aliased` (the alias) and
-    /// `ImportKind::Module` (the final path segment) contribute — see
-    /// `collect_import_bindings` for why the entity-binding kinds do not.
+    /// `known_enums` (task 5495 μ): one D-7 qualifier per import whose
+    /// `ImportKind::binding()` is `Namespace`. See `collect_import_bindings` for
+    /// why entity bindings do not qualify a call.
     /// Read by `lower_namespaced_call`'s qualifier gate.
     namespace_bindings: HashSet<String>,
-    /// The names this file's imports bind NON-namespace-wise, each mapped to the
-    /// `ImportKind` that bound it (task 5495 μ). Populated by the same
-    /// `collect_import_bindings` pass, from exactly the three kinds
-    /// `namespace_bindings` deliberately skips — `Entity`, `EntityAliased` and
-    /// `Destructured`.
+    /// The local names this file's imports bind as entities (the `Entities` arm
+    /// of `ImportKind::binding()`), each mapped to the `ImportKind` that bound
+    /// it so a diagnostic can be worded by the form written (task 5495 μ).
+    /// Populated by the same `collect_import_bindings` pass.
     ///
     /// This map is what lets `lower_namespaced_call` tell "this name is bound,
     /// but as an entity" from "this name is not bound at all". Both are
@@ -850,34 +849,33 @@ impl<'a> Lowering<'a> {
     /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
     ///
     /// D-7 defines the qualifier of a qualified reference as the import's
-    /// binding name — the alias if `as` was used, else the final path segment —
-    /// so exactly two of the five `ImportKind`s contribute:
+    /// binding name — the alias if `as` was used, else the final path segment
+    /// (`import a.b as pp` binds `pp`, `import a.b` binds `b`). Whether an import
+    /// binds a namespace or entities, and each name it binds, come from
+    /// `ImportKind::binding` (reify-ast); this function applies D-7's qualifier
+    /// rule to the namespace case.
     ///
-    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
-    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
-    ///
-    /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
-    /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
+    /// An import whose binding is `Entities` deliberately contributes NO
+    /// qualifier: it binds ENTITY names, not module namespaces. `Widget.mk()`
     /// (from `import a.b.Widget`) is a method call on an entity — syntax Reify
-    /// does not have, and a hard parse error before μ — so binding those kinds
-    /// would reopen a narrower version of the very hole this gate closes.
+    /// does not have, and a hard parse error before μ — so letting those names
+    /// qualify would reopen a narrower version of the very hole this gate closes.
     ///
-    /// Those three kinds are still recorded, in `entity_bindings`, mapped to the
-    /// `ImportKind` that bound them. They must not qualify a call, but they are
+    /// Those names are still recorded, in `entity_bindings`, each under its
+    /// `local_name()` (the name the AUTHOR WRITES) and mapped to the
+    /// `ImportKind` that bound it. They must not qualify a call, but they are
     /// not UNBOUND either, and the two cases need different remedies: only the
     /// wholly-unbound one is fixed by declaring an import. Both maps are filled
     /// from the same `lower_import` call, so a name can never be classified one
     /// way here and another way by the import system.
     ///
-    /// The name recorded is the one the AUTHOR WRITES, which for `EntityAliased`
-    /// is the alias (`import a.b.Widget as W` is used as `W`), not the entity.
-    ///
-    /// The classification is obtained by CALLING `lower_import` and matching the
-    /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
-    /// CST: the uppercase-final-segment heuristic then has exactly one
-    /// implementation and this gate cannot drift from what the import system
-    /// actually binds. The second call is pure — `lower_import` pushes no
-    /// diagnostic — so no error is duplicated by lowering the node twice.
+    /// The classification is obtained by CALLING `lower_import` and asking the
+    /// returned `ImportKind` for its `binding()`, rather than re-deriving
+    /// Module-vs-Entity from the CST: the uppercase-final-segment heuristic
+    /// then has exactly one implementation and this gate cannot drift from what
+    /// the import system actually binds. The second call is pure —
+    /// `lower_import` pushes no diagnostic — so no error is duplicated by
+    /// lowering the node twice.
     ///
     /// Called from `lower_source_file`'s FIRST pass, the same order-independent
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
@@ -905,25 +903,20 @@ impl<'a> Lowering<'a> {
         let Some(import) = self.lower_import(node) else {
             return;
         };
-        let namespace_binding = match &import.kind {
-            ImportKind::Aliased { alias } => Some(alias.clone()),
-            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
-            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
-            ImportKind::Destructured(_) => None,
-        };
-        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
-            self.namespace_bindings.insert(binding);
-            return;
-        }
-
-        let entity_names: Vec<String> = match &import.kind {
-            ImportKind::Entity(entity) => vec![entity.clone()],
-            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
-            ImportKind::Destructured(names) => names.clone(),
-            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
-        };
-        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
-            self.entity_bindings.insert(name, import.kind.clone());
+        match import.kind.binding() {
+            ImportBinding::Namespace { alias } => {
+                let qualifier = alias.or_else(|| import.path.rsplit('.').next());
+                if let Some(qualifier) = qualifier.filter(|q| !q.is_empty()) {
+                    self.namespace_bindings.insert(qualifier.to_string());
+                }
+            }
+            ImportBinding::Entities(entities) => {
+                let local_names = entities.iter().map(EntityBinding::local_name);
+                for name in local_names.filter(|n| !n.is_empty()) {
+                    self.entity_bindings
+                        .insert(name.to_string(), import.kind.clone());
+                }
+            }
         }
     }
 

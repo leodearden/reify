@@ -2005,6 +2005,51 @@ fn create_new_file_impl_errors_for_a_missing_directory() {
     );
 }
 
+// The `create_new_file` command's async seam (task 9878): the same create,
+// awaited on a large-stack thread so the template parse — possibly the
+// process's first stdlib compile — never runs on the GTK main thread.
+
+#[tokio::test]
+async fn create_new_file_on_large_stack_writes_the_template_and_returns_the_canonical_file() {
+    use crate::commands::create_new_file_on_large_stack;
+    use crate::new_file_template::new_file_template;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("flange_part.ri");
+
+    let created = create_new_file_on_large_stack(target.to_str().unwrap().to_owned())
+        .await
+        .expect("create should succeed");
+
+    let canonical = std::fs::canonicalize(&target).expect("the created file must exist");
+    assert_eq!(created.path, canonical.to_string_lossy());
+    assert_eq!(created.content, new_file_template("flange_part"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), created.content);
+}
+
+#[tokio::test]
+async fn create_new_file_on_large_stack_passes_the_refusal_through() {
+    use crate::commands::create_new_file_on_large_stack;
+
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("keep.ri");
+    std::fs::write(&existing, "// precious design\n").unwrap();
+
+    let err = create_new_file_on_large_stack(existing.to_str().unwrap().to_owned())
+        .await
+        .expect_err("an existing file must be refused");
+
+    assert!(
+        err.contains(existing.to_str().unwrap()),
+        "the refusal must reach the caller naming the path, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&existing).unwrap(),
+        "// precious design\n",
+        "the existing file must be left untouched"
+    );
+}
+
 // --- open_file_engine_impl canonicalisation tests (step-5) ---
 //
 // The plan's step 5 description states that GuiState.files[0].path should be

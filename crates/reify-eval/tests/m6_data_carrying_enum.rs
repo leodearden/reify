@@ -150,3 +150,77 @@ fn circle_undef_area_is_undef() {
         area_val
     );
 }
+
+// ── test 4: runtime (non-literal) payload — task 7456 ────────────────────────
+
+/// A payload that reads a sibling param is built at eval time, so the enum
+/// value and the area read back through `match` both track `w`.
+#[test]
+fn runtime_payload_param_default_tracks_sibling_param() {
+    let source = r#"
+module m6_test_runtime_payload
+
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure def Widget {
+    param w : Length = 20mm
+    param outline : Shape = Rect { width: w, height: w * 2.0 }
+
+    let area = match outline {
+        Circle { radius: r } => 3.14159 * r * r,
+        Rect { width: a, height: b } => a * b,
+        Point => 0mm * 0mm
+    }
+}
+"#;
+
+    let result = eval_source(source);
+
+    let area_val = result
+        .values
+        .get(&ValueCellId::new("Widget", "area"))
+        .unwrap_or_else(|| panic!("Widget.area not found in eval result"));
+    match area_val {
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.0008).abs() < 1e-12,
+            "expected Widget.area ≈ 0.0008 m² (20mm×40mm), got {si_value} m²"
+        ),
+        other => panic!("expected Value::Scalar for Widget.area, got {other:?}"),
+    }
+
+    let outline_val = result
+        .values
+        .get(&ValueCellId::new("Widget", "outline"))
+        .unwrap_or_else(|| panic!("Widget.outline not found in eval result"));
+    let Value::Enum {
+        type_name,
+        variant,
+        payload,
+    } = outline_val
+    else {
+        panic!("expected Enum for Widget.outline, got {outline_val:?}");
+    };
+    assert_eq!((type_name.as_str(), variant.as_str()), ("Shape", "Rect"));
+    let fields: Vec<(&str, f64)> = payload
+        .iter()
+        .map(|(name, v)| {
+            let si = v
+                .as_f64()
+                .unwrap_or_else(|| panic!("payload field {name} should be numeric, got {v:?}"));
+            (name.as_str(), si)
+        })
+        .collect();
+    assert_eq!(fields.len(), 2, "Rect payload: {fields:?}");
+    let expected = [("width", 0.02), ("height", 0.04)];
+    for ((name, si), (want_name, want_si)) in fields.iter().zip(expected) {
+        assert_eq!(*name, want_name, "payload is in declaration order");
+        assert!(
+            (si - want_si).abs() < 1e-12,
+            "{name}: expected {want_si}, got {si}"
+        );
+    }
+}

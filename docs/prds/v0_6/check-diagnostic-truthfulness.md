@@ -326,9 +326,9 @@ declared file set — that belongs to the driver-contract work, not to α.
 **RULED (Q3 — severity).** `Warning`, per INV-SF-1 ("conservative degradation must
 leave a trace"). Three regimes already coexist for this underlying condition and
 none is disturbed: `Error` at eval/dispatch, LSP `INFORMATION` for its *separate*
-`fea-not-evaluated` constraint hint (`crates/reify-lsp/src/diagnostics.rs`:~445-455,
-5 locks), and no diagnostic at all at the pure-expression layer
-(`crates/reify-expr/src/lib.rs`:~10292).
+`fea-not-evaluated` constraint hint (`fea_not_evaluated_hints` in
+`crates/reify-lsp/src/diagnostics/fea_hint.rs`, 5 locks), and no diagnostic at
+all at the pure-expression layer (`crates/reify-expr/src/lib.rs`:~10292).
 
 **RULED (Q4 — the signal must be flip-proof against #6693).** Leo's 2026-08-26
 driver-contract ruling 2 (`docs/notes/driver-contract-matrix-draft.md`) gives

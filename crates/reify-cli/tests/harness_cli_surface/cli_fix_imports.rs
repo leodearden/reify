@@ -238,6 +238,27 @@ fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
 }
 
 #[test]
+fn each_parse_error_line_names_the_file_it_is_in_when_several_are_fixed() {
+    let dir = tempdir().expect("tempdir");
+    let broken = write_ri(dir.path(), "broken.ri", BROKEN);
+    let plate = write_ri(dir.path(), "plate.ri", PLATE);
+
+    let output = run_reify(&["fix", "--imports", &broken, &plate]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parse_errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("Parse error"))
+        .collect();
+    assert!(!parse_errors.is_empty(), "{}", describe(&output));
+    let lead = format!("{broken}: Parse error: ");
+    assert!(
+        parse_errors.iter().all(|line| line.starts_with(&lead)),
+        "{}",
+        describe(&output)
+    );
+}
+
+#[test]
 fn an_entity_import_covers_only_the_name_it_imports() {
     let dir = tempdir().expect("tempdir");
     let source = format!("{ENTITY_HEADER}{PLATE}");

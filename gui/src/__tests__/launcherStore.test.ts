@@ -105,11 +105,13 @@ describe('launcherStore', () => {
     expect(store.state.document.pending).toBe('/designs/bracket.ri');
   });
 
-  it('names exactly the three launch error codes, each spelled as its own key', () => {
+  it('names exactly the five launch error codes, each spelled as its own key', () => {
     expect(Object.entries(LAUNCH_ERROR_CODES)).toEqual([
       ['E_GUI_OPEN_FAILED', 'E_GUI_OPEN_FAILED'],
       ['E_GUI_TEMPLATE_WRITE_FAILED', 'E_GUI_TEMPLATE_WRITE_FAILED'],
+      ['E_GUI_MODE_FAILED', 'E_GUI_MODE_FAILED'],
       ['E_GUI_DEBUG_LISTENER_FAILED', 'E_GUI_DEBUG_LISTENER_FAILED'],
+      ['E_GUI_DEBUG_BRIDGE_FAILED', 'E_GUI_DEBUG_BRIDGE_FAILED'],
     ]);
     expect(Object.isFrozen(LAUNCH_ERROR_CODES)).toBe(true);
   });
@@ -126,21 +128,18 @@ describe('isDocumentLoaded', () => {
 });
 
 describe('initialFileLoadFailureInfo', () => {
-  it('presents a read failure as E_GUI_OPEN_FAILED with its own error, which already names the file', () => {
-    const info = initialFileLoadFailureInfo({
-      path: '/designs/broken.ri',
-      error: 'Error reading /designs/broken.ri: No such file',
-    });
+  const LAUNCH_FILE = '/designs/broken.ri';
 
-    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
-    expect(info.message).toBe('Error reading /designs/broken.ri: No such file');
-  });
-
-  it('names the file even when the error does not', () => {
-    const info = initialFileLoadFailureInfo({ path: '/designs/broken.ri', error: 'panic in engine: boom' });
-
-    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
-    expect(info.message).toContain('/designs/broken.ri');
-    expect(info.message).toContain('panic in engine: boom');
-  });
+  it.each([
+    ['an error that does not mention the file', 'permission denied'],
+    ['an error that already mentions the file', `${LAUNCH_FILE}: permission denied`],
+  ])(
+    'always presents E_GUI_OPEN_FAILED naming the launch file ahead of the error, whatever the error says: %s',
+    (_label, error) => {
+      expect(initialFileLoadFailureInfo({ path: LAUNCH_FILE, error })).toEqual({
+        code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+        message: `Could not open ${LAUNCH_FILE}: ${error}`,
+      });
+    },
+  );
 });

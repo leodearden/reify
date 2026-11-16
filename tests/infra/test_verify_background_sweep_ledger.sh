@@ -375,10 +375,9 @@ REIFY_TS_FRESHNESS_TARGET_DIR="$STALE_TS_TARGET" run_verify background 0 "$LEDGE
 assert "G1: a passing background run still exits 0 when the inherited environment aims the tree-sitter freshness guard at a STALE archive — the suite's verdict must not depend on the lane's target/" \
     test "$RUN_RC" -eq 0
 
-# Non-vacuity, after G1's run: that run's tree-sitter-generate.sh leaf
-# guarantees the generated src/parser.c exists, and without it `check` also
-# exits 1 but for another reason ("input is missing"), so the guard's STALE
-# wording is asserted and not the exit code alone.
+# Non-vacuity, after G1's run: the fixture's stamp attests bytes no source on
+# disk has, so `check` reads it STALE. The STALE wording is asserted so that the
+# exit code alone, which any `check` failure produces, cannot satisfy G2.
 G2_OUT="$WORK/g2-freshness-check.out"
 G2_RC=0
 REIFY_TS_FRESHNESS_TARGET_DIR="$STALE_TS_TARGET" \

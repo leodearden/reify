@@ -32,6 +32,7 @@ import { Splitter } from './components/Splitter';
 import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
 import { createSubscriptionSet, type SubscriptionRow, type Unsubscribe } from './app/subscriptionSet';
 import { createLauncherActions, LaunchFailure } from './app/launcherActions';
+import { createDebugBridgeStarter } from './app/debugBridgeStarter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -1523,38 +1524,7 @@ const App: Component = () => {
     };
   }
 
-  let debugBridgeStart: Promise<void> | null = null;
-
-  /**
-   * Start the debug bridge unless it is live or starting, so one debug-request
-   * listener answers however many callers ask. Every caller awaits the one
-   * start and sees its failure. The handle joins the subscription set; a failed
-   * start, or disposing the handle, lets the next call start afresh.
-   */
-  function ensureDebugBridge(): Promise<void> {
-    debugBridgeStart ??= holdDebugBridge();
-    return debugBridgeStart;
-  }
-
-  async function holdDebugBridge(): Promise<void> {
-    const failures: unknown[] = [];
-    await subscriptions.subscribeAll([
-      {
-        subscribe: async () => {
-          const stop = await startDebugBridge();
-          return () => {
-            debugBridgeStart = null;
-            stop();
-          };
-        },
-        onFailure: (err) => failures.push(err),
-      },
-    ]);
-    if (failures.length > 0) {
-      debugBridgeStart = null;
-      throw failures[0];
-    }
-  }
+  const ensureDebugBridge = createDebugBridgeStarter({ subscriptions, start: startDebugBridge });
 
   const launcherActions = createLauncherActions(launcherStore, {
     loadDocument: loadPathIntoStores,

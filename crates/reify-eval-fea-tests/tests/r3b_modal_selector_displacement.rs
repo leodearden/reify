@@ -571,7 +571,7 @@ fn displacement_at_overload_errors(module: &reify_compiler::CompiledModule) -> V
 /// `Selector` / `AnySelector`: `resolve_function_overload` (type_compat.rs)
 /// matches params by EXACT equality, so an `AnySelector` param would reject the
 /// `FaceSelector` argument this test passes and reinstate the very
-/// no-matching-overload failure guarded here — `stdlib/modal_analysis_fns.ri`
+/// no-matching-overload failure guarded here — `stdlib/modal_analysis.ri`
 /// carries the same warning above the declaration. The kind-agnostic shape
 /// belongs one layer down, at runtime, where the shared trampoline branches on
 /// `value_inputs[1]`'s `Value::Selector`.

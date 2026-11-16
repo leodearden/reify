@@ -461,7 +461,7 @@ fn value_variant_name(v: &Value) -> &'static str {
         Value::Transform { .. } => "Transform",
         Value::Plane { .. } => "Plane",
         Value::Axis { .. } => "Axis",
-        Value::Direction { .. } => "Direction",
+        Value::Direction(_) => "Direction",
         Value::BoundingBox { .. } => "BoundingBox",
         Value::Range { .. } => "Range",
         Value::Matrix { .. } => "Matrix",

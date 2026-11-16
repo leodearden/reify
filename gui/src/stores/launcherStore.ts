@@ -9,7 +9,9 @@ import type { InitialFileLoadFailure, LaunchMode, ModeState, RecentEntry } from 
 export const LAUNCH_ERROR_CODES = Object.freeze({
   E_GUI_OPEN_FAILED: 'E_GUI_OPEN_FAILED',
   E_GUI_TEMPLATE_WRITE_FAILED: 'E_GUI_TEMPLATE_WRITE_FAILED',
+  E_GUI_MODE_FAILED: 'E_GUI_MODE_FAILED',
   E_GUI_DEBUG_LISTENER_FAILED: 'E_GUI_DEBUG_LISTENER_FAILED',
+  E_GUI_DEBUG_BRIDGE_FAILED: 'E_GUI_DEBUG_BRIDGE_FAILED',
 } as const);
 
 export type LaunchErrorCode = (typeof LAUNCH_ERROR_CODES)[keyof typeof LAUNCH_ERROR_CODES];
@@ -30,15 +32,14 @@ export function isDocumentLoaded(editor: { openFiles: readonly unknown[] }): boo
 }
 
 /**
- * The launch file's failure as a Start-view error naming the file. A read
- * failure's error already names it; a panic during the load, which leaves no
- * buffer open, does not.
+ * The launch file's failure as a Start-view error. The file came from the
+ * launch, not from the Start view, so the message names it ahead of the
+ * backend's error.
  */
 export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): LaunchErrorInfo {
-  const namesFile = failure.error.includes(failure.path);
   return {
     code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
-    message: namesFile ? failure.error : `Could not open ${failure.path}: ${failure.error}`,
+    message: `Could not open ${failure.path}: ${failure.error}`,
   };
 }
 

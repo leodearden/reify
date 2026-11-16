@@ -39,6 +39,8 @@ pub struct CompiledImportUnit {
 pub struct CompiledProgram {
     /// The entry module, with the direct imports' pub templates merged into its
     /// template list and every import failure attached to its diagnostics.
+    /// [`Self::entry_declared_templates`] is a prefix of `entry.templates`:
+    /// append to that list, never shrink or reorder it.
     pub entry: CompiledModule,
     /// The entry's followed, successfully compiled direct imports, in
     /// declaration order, one per distinct import path.
@@ -49,6 +51,9 @@ pub struct CompiledProgram {
     /// Which of `entry.diagnostics` are re-homed copies of a compiled user
     /// module's own diagnostics, in `entry.diagnostics` order.
     rehomed: Vec<RehomedDiagnostic>,
+    /// How many of `entry.templates`, from the front, the entry's own compile
+    /// produced.
+    declared_templates: usize,
 }
 
 /// One of the entry's diagnostics that is a re-homed copy.
@@ -64,7 +69,7 @@ struct RehomedDiagnostic {
 impl CompiledProgram {
     /// The entry's diagnostics re-homed from the user module `module_key` (a
     /// direct or transitive import), in the order they were raised.
-    // G-allow: P1 skeleton API for per-file diagnostics; consumers are LSP ζ #5520 and GUI ε #5519
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ε #5519
     pub fn rehomed_from(&self, module_key: &str) -> impl Iterator<Item = &Diagnostic> {
         self.rehomed
             .iter()
@@ -74,7 +79,7 @@ impl CompiledProgram {
 
     /// The entry's diagnostics that are not re-homed copies: those raised
     /// compiling the entry itself, and the failures of its imports.
-    // G-allow: P1 skeleton API for per-file diagnostics; consumers are LSP ζ #5520 and GUI ε #5519
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ε #5519
     pub fn entry_own_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
         self.entry
             .diagnostics
@@ -87,6 +92,22 @@ impl CompiledProgram {
                     .any(|rehomed| rehomed.entry_index == *index)
             })
             .map(|(_, diag)| diag)
+    }
+
+    /// The templates the entry's own compile produced, excluding the I5 interim
+    /// pub-template merge. Their spans index the entry's source, except an
+    /// `auto:` monomorph of a stdlib or imported generic, which keeps that
+    /// generic's spans.
+    pub fn entry_declared_templates(&self) -> &[crate::TopologyTemplate] {
+        let templates = &self.entry.templates;
+        assert!(
+            self.declared_templates <= templates.len(),
+            "entry_declared_templates: the entry's compile produced {} templates but \
+             `entry.templates` now holds {}; the I5 merge only appends, so a caller shrank it",
+            self.declared_templates,
+            templates.len(),
+        );
+        &templates[..self.declared_templates]
     }
 }
 
@@ -184,6 +205,7 @@ pub fn compile_program_with_parsed_entry(
     entry.diagnostics.extend(import_error_diags);
     let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
     let entry_origin = entry.path.0.join(".");
+    let declared_templates = entry.templates.len();
     merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
 
     let mut sources: Vec<ModuleSource> = dag
@@ -214,7 +236,15 @@ pub fn compile_program_with_parsed_entry(
         imports,
         sources,
         rehomed,
+        declared_templates,
     }
+}
+
+/// True iff compiling `parsed` as a program entry under `cfg` follows at least
+/// one import. An entry that follows none compiles as the single-file stdlib
+/// compile does, plus the module-header check (I1).
+pub fn entry_follows_imports(parsed: &reify_ast::ParsedModule, cfg: &CfgSet) -> bool {
+    !followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone())).is_empty()
 }
 
 /// Append each of `diags` that `reported` does not already hold.

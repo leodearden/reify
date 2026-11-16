@@ -69,7 +69,7 @@ fn assert_point(v: &Value, expected: [f64; 3], what: &str) {
 
 fn assert_direction(v: &Value, expected: [f64; 3], what: &str) {
     match v {
-        Value::Direction { x, y, z } => assert_close([*x, *y, *z], expected, what),
+        Value::Direction(u) => assert_close(u.components(), expected, what),
         other => panic!("{what}: expected a Direction, got {other:?}"),
     }
 }

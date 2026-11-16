@@ -814,3 +814,56 @@ fn edit_param_growing_a_collection_mints_a_body_over_a_guarded_geometry_let_like
         assert_edited_body_like_cold(&after_edit, &cold, slot);
     }
 }
+
+/// A Solid param with a guarded same-name override: the compiler links both
+/// realizations to the one cell `T.body`. An incremental edit over this valid
+/// compiler output must not crash, and `T.body` must stay a minted handle.
+/// Which of the two links the edit mints from is left to a follow-up.
+#[test]
+fn edit_param_over_a_solid_param_with_a_guarded_same_name_override_does_not_panic() {
+    let compiled = parse_and_compile_with_stdlib(
+        r#"
+        structure T {
+            param size : Length = 10mm
+            param on : Bool = true
+            param body : Solid = box(size, 10mm, 10mm)
+            where on {
+                param body : Solid = cylinder(5mm, size)
+            }
+        }
+        structure P {
+            sub s = T()
+        }
+    "#,
+    );
+    let body_realizations = compiled
+        .templates
+        .iter()
+        .flat_map(|t| &t.realizations)
+        .filter(|r| r.id.entity == "T" && r.name.as_deref() == Some("body"))
+        .count();
+    assert_eq!(
+        body_realizations, 2,
+        "premise: the compiler names both the top-level `T.body` param's and its \
+         guarded override's realizations `body`"
+    );
+    let mut engine = make_simple_engine();
+    let before = engine.eval(&compiled);
+    let minted_at_eval = cell(&before, "T", "body");
+    assert!(
+        matches!(minted_at_eval, Value::GeometryHandle { .. }),
+        "premise: eval() mints T.body, got {minted_at_eval:?}"
+    );
+
+    let after = engine
+        .edit_param(ValueCellId::new("T", "size"), Value::length(0.012))
+        .unwrap_or_else(|e| {
+            panic!("an incremental edit over valid compiler output must not fail: {e:?}")
+        });
+
+    let edited_body = cell(&after, "T", "body");
+    assert!(
+        matches!(edited_body, Value::GeometryHandle { .. }),
+        "T.body must stay a minted GeometryHandle after the edit, got {edited_body:?}"
+    );
+}

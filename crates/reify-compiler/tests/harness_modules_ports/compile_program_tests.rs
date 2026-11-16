@@ -936,3 +936,113 @@ fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
         program.entry.diagnostics
     );
 }
+
+// ─── task 5520: the routing predicate a driver asks before a program compile ─
+
+/// `entry_follows_imports` answers through the one import gate: only a
+/// cfg-satisfied, non-`std` import counts, whether or not it resolves.
+#[test]
+fn entry_follows_imports_only_for_a_followed_user_import() {
+    let cfg = CfgSet {
+        target: Some("linux".to_string()),
+        ..Default::default()
+    };
+    let body = "structure def Rod {\n    param r : Length = 2mm\n}\n";
+    let cases = [
+        ("import-free", format!("module main\n{body}"), false),
+        ("std-only", format!("module main\nimport std.units\n{body}"), false),
+        (
+            "cfg-gated-out user import",
+            format!("module main\n#cfg(target = \"wasm\")\nimport ghost\n{body}"),
+            false,
+        ),
+        ("user import", format!("module main\nimport parts\n{body}"), true),
+        (
+            "std plus user import",
+            format!("module main\nimport std.units\nimport parts\n{body}"),
+            true,
+        ),
+    ];
+    for (label, source, expected) in cases {
+        let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("main"));
+        assert_eq!(
+            reify_compiler::program::entry_follows_imports(&parsed, &cfg),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+fn declared_names(program: &CompiledProgram) -> Vec<&str> {
+    program
+        .entry_declared_templates()
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// `entry_declared_templates` is the entry's own template list: the I5 pub
+/// merge is excluded, and an entry template that collides with an imported
+/// one is the entry's copy (first-wins).
+#[test]
+fn compile_program_entry_declared_templates_exclude_merged_imports() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "parts.ri",
+        "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n",
+    );
+
+    let importing = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nimport parts\nstructure def Rig {\n    sub p = Pulley()\n}\n",
+        &CfgSet::default(),
+    );
+    assert_eq!(declared_names(&importing), vec!["Rig"]);
+    let merged = template_names(&importing.entry);
+    assert!(
+        merged.contains(&"Rig") && merged.contains(&"Pulley"),
+        "the entry's template list must still carry the merge, got {merged:?}"
+    );
+
+    let solo = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+        &CfgSet::default(),
+    );
+    assert_eq!(declared_names(&solo), template_names(&solo.entry));
+
+    let colliding = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nimport parts\n\
+         structure def Pulley {\n    param d : Length = 3mm\n}\n\
+         structure def Rig {\n    sub p = Pulley()\n}\n",
+        &CfgSet::default(),
+    );
+    let count = |names: Vec<&str>| names.into_iter().filter(|n| *n == "Pulley").count();
+    assert_eq!(count(declared_names(&colliding)), 1);
+    assert_eq!(count(template_names(&colliding.entry)), 1);
+}
+
+/// A caller that shrinks `entry.templates` below the declared prefix gets a
+/// panic naming the invariant and both counts, not a bare slice-index panic.
+#[test]
+#[should_panic(
+    expected = "entry_declared_templates: the entry's compile produced 1 templates \
+                but `entry.templates` now holds 0"
+)]
+fn entry_declared_templates_names_a_shrunk_template_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut program = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+        &CfgSet::default(),
+    );
+    program.entry.templates.clear();
+
+    let _ = program.entry_declared_templates();
+}

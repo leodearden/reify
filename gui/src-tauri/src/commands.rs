@@ -790,17 +790,29 @@ pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Before the file exists: this is the slow, panic-prone step, and a panic
+    // must not leave behind an empty file that refuses the retry.
+    let template = crate::new_file_template::new_file_template(&stem);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
         .map_err(|e| format!("Error creating {target}: {e}"))?;
-    if let Err(e) = file.write_all(crate::new_file_template::new_file_template(&stem).as_bytes()) {
+    if let Err(e) = file.write_all(template.as_bytes()) {
         // The file is ours (create_new): remove the partial write so a retry is not refused.
         let _ = std::fs::remove_file(&target);
         return Err(format!("Error creating {target}: {e}"));
     }
     open_file_impl(&target)
+}
+
+/// [`create_new_file_impl`], awaited on a large-stack thread: the template's
+/// parse can be the process's first stdlib compile, which must not run on the
+/// GTK main thread.
+pub async fn create_new_file_on_large_stack(path: String) -> Result<FileData, String> {
+    crate::large_stack::run_on_large_stack(move || create_new_file_impl(&path))
+        .await
+        .and_then(std::convert::identity)
 }
 
 /// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`

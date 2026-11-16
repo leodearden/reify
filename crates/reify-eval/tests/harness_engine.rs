@@ -193,3 +193,7 @@ mod def_env_skeleton;
 // what `unfold.rs` commits for geometry and selector cells.
 #[path = "harness_engine/instance_scope_symbolic_mint.rs"]
 mod instance_scope_symbolic_mint;
+// Task #5763's dimensioned-construction ε constraint-verdict pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/dimensioned_param_default_constraint_verdicts.rs"]
+mod dimensioned_param_default_constraint_verdicts;

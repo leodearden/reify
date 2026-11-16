@@ -13,14 +13,14 @@
 //
 // Boundary #4 (stdlib-internal blast radius): the two `BucklingResult`
 // accessors that reach through `modes[n]` — `critical_load`
-// (solver_buckling_fns.ri) and `mode_shape` — must still resolve and evaluate
+// (solver_buckling.ri) and `mode_shape` — must still resolve and evaluate
 // against the renamed element type.
 //
 // Values are deliberately concrete so the eval-side assertions in
 // crates/reify-compiler/tests/buckling_stdlib_compile.rs are non-vacuous:
 // `critical_load` is `modes[0].eigenvalue * reference_load`, so
 // 2.5 × 100 N == 250 N. `mode_shape` returns Undef per the tet-result
-// convention (solver_buckling_fns.ri), so only its RESOLUTION is asserted,
+// convention (solver_buckling.ri), so only its RESOLUTION is asserted,
 // never a value. `BucklingResult.pre_stress` is omitted: it has no default and
 // Undef is accepted, the same partial-construction shape the sibling
 // stdlib_ns_mode_member.ri probes rely on.

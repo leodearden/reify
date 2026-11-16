@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/infra/ts_outputs_manifest_lib.sh — the ONE test-side verifier for
-# tree-sitter-reify/src/.generated_outputs.stamp.
+# .generated_outputs.stamp, whichever dir it sits in: build.rs writes it into
+# $OUT_DIR/src, scripts/tree-sitter-generate.sh into tree-sitter-reify/src.
 #
 # Designed to be sourced, not executed directly.
 #
@@ -8,10 +9,9 @@
 # `<sha256>  <relpath>` lines sorted by relpath — has TWO independent WRITERS:
 # `_render_outputs_manifest` in scripts/tree-sitter-generate.sh and
 # `outputs_manifest_render` in tree-sitter-reify/build_support.rs.  Two writers
-# is deliberate, one per language, and test_shell_written_manifest_satisfies_build_rs
-# pins them against each other.  Two independent test-side VERIFIERS is not: each
-# would quietly accept whatever shape its own writer happens to emit, which is
-# exactly the drift the cross-check exists to catch.  So the verifier lives here
+# is deliberate, one per language and one per output dir.  Two independent
+# test-side VERIFIERS is not: each would quietly accept whatever shape its own
+# writer happens to emit, which is exactly the drift a shared check catches.  So the verifier lives here
 # once, and both scripts/test_tree_sitter_generate.sh and
 # tests/infra/test_tree_sitter_pipeline.sh source it.
 #

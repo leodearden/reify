@@ -63,7 +63,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
     };
     let parsed = reify_compiler::parse_with_stdlib(&source, crate::module_path_for_file(path));
     if !parsed.errors.is_empty() {
-        crate::report_parse_errors(parsed.render_errors(&source), &mut std::io::stderr());
+        crate::report_parse_errors_in(path, parsed.render_errors(&source), &mut std::io::stderr());
         return false;
     }
 
@@ -76,7 +76,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
 
     let mut imports_after_fix = import_headers::declared_imports(&parsed);
     imports_after_fix.extend(plan.modules());
-    let residual = import_headers::residual_diagnostics(&parsed, &imports_after_fix, &universe);
+    let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
         eprintln!(
             "{path}: the derived imports leave diagnostics the full standard library does not; \

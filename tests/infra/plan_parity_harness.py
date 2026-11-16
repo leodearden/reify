@@ -112,7 +112,7 @@ STDERR_HINTS = (
     (re.compile(r"retry refused|REIFY_VERIFY_RETRY_MAX_SUBSET"), "retry.py"),
     (re.compile(r"holds a (single|double) quote"), "testregion.py / nextest.py (the line: plan.py)"),
     (re.compile(r"gen-nextest-config"), "nextest.py"),
-    (re.compile(r"release-sensitive"), "testregion.py"),
+    (re.compile(r"release-sensitive"), "releasescope.py"),
     (re.compile(r"stale jobserver FIFO"), "environment.py"),
     (re.compile(r"cargo-nextest|cargo nextest"), "environment.py"),
     (re.compile(r"REIFY_VERIFY_[A-Z_]*TIMEOUT"), "knobs.py"),
@@ -123,8 +123,9 @@ STDERR_HINTS = (
 )
 COMMAND_HINTS = (
     (re.compile(r"cargo nextest run|cargo test"), "nextest.py (the pass text: render.py)"),
+    (re.compile(r"RELEASE-PASS"), "releasescope.py (whether the release pass skips) / testregion.py (its marker)"),
     (
-        re.compile(r"@@SEMAPHORE|test-run semaphore|psi-gate|RELEASE-PASS|reify-verify-attempt"),
+        re.compile(r"@@SEMAPHORE|test-run semaphore|psi-gate|reify-verify-attempt"),
         "testregion.py (the region's steps: render.py)",
     ),
 )

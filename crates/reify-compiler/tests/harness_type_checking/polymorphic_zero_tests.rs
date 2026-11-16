@@ -689,15 +689,13 @@ structure Insulator : NonDegenerate {
 /// CONTRAST CASE — a param DEFAULT is not rewritten the way a binop operand is.
 ///
 /// `coerce_zero_operand`'s sole call site is inside `compile_binop`, so the
-/// polymorphic-zero rewrite never reaches a param default. The param-default
-/// literal guard in `check_param_default_type` merely early-`return`s to
-/// SUPPRESS `ParamDefaultTypeMismatch`; it performs no rewrite. Consequence,
-/// measured here: `param x : Angle = 0` stores a DIMENSIONLESS default while
-/// `= 0deg` stores `Scalar[rad]`.
+/// polymorphic-zero rewrite never reaches a param default. The declaration-site
+/// check rejects `param x : Angle = 0` (`ParamDefaultTypeMismatch`) but performs
+/// no rewrite. Consequence, measured here: `= 0` stores a DIMENSIONLESS default
+/// while `= 0deg` stores `Scalar[rad]`.
 ///
-/// This is what the `HarmonicForce.phase : Angle = 0deg` note in
-/// modal_analysis.ri records — `0deg` is preferred because it dimensions the
-/// stored default, not merely because it reads better.
+/// This is why the `HarmonicForce.phase : Angle = 0deg` note in
+/// modal_analysis.ri requires `0deg`: only it dimensions the stored default.
 #[test]
 fn param_default_bare_zero_stays_dimensionless() {
     let compiled = compile_source_with_stdlib(
@@ -708,12 +706,12 @@ structure S {
 }
 "#,
     );
-    // δ (#5306) flipped CTOR_FIELD_CONFORMANCE_SEVERITY to Error, and a bare `0` at a
-    // dimensioned param default is PRD §7 row 10 (D8) — so this fixture now
-    // legitimately produces exactly one Error, for `phase_bare`. That is orthogonal
-    // to what this test pins, which is what the compiler STORES for the bare
-    // default; the diagnostic does not rewrite the value. Asserted rather than
-    // filtered away, so a SECOND Error here would still fail the test.
+    // The declaration-site check rejects the bare `0` at a dimensioned param
+    // default, so this fixture legitimately produces exactly one Error, for
+    // `phase_bare`. That is orthogonal to what this test pins, which is what the
+    // compiler STORES for the bare default; the diagnostic does not rewrite the
+    // value. Asserted rather than filtered away, so a SECOND Error here would
+    // still fail the test.
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -722,8 +720,14 @@ structure S {
     assert_eq!(
         errors.len(),
         1,
-        "expected exactly one Error — the D8 param-default conformance rejection of \
+        "expected exactly one Error — the declaration-site rejection of \
          `phase_bare : Angle = 0` — got: {errors:#?}"
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ParamDefaultTypeMismatch),
+        "the one Error must be the declaration-site rejection, got: {:?}",
+        errors[0]
     );
     assert!(
         errors[0].message.contains("phase_bare"),

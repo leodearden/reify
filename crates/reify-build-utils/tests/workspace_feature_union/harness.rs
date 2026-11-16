@@ -236,7 +236,8 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// `test --workspace` serves unit-graph-workspace.json and `test -p NAME`
 /// serves unit-graph-NAME.json, or the empty version-1 unit graph when that
 /// file is absent; every `test` call appends its RUSTC_BOOTSTRAP and
-/// CARGO_TARGET_DIR to cargo-env.log.
+/// CARGO_TARGET_DIR to cargo-env.log, then exits 3 when unit-graph-refuse
+/// exists.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -279,6 +280,10 @@ case "${1:-}" in
   test)
     printf 'RUSTC_BOOTSTRAP=%s CARGO_TARGET_DIR=%s\n' "${RUSTC_BOOTSTRAP:-}" "${CARGO_TARGET_DIR:-}" \
       >> "$here/cargo-env.log"
+    if [ -e "$here/unit-graph-refuse" ]; then
+      echo 'stub cargo: this fixture serves no unit graph' >&2
+      exit 3
+    fi
     prev=""
     for arg in "$@"; do
       graph=""
@@ -307,6 +312,21 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new(members: &[Member], workspace_tree: &str) -> Fixture {
+        let fixture = Fixture::serving_metadata(members);
+        fixture.write("tree-workspace.txt", workspace_tree);
+        fixture
+    }
+
+    /// Serves `members` as cargo metadata and nothing else, so a check or
+    /// generate that resolves any `cargo tree` or `cargo test --unit-graph`
+    /// exits 2.
+    pub(crate) fn metadata_only(members: &[Member]) -> Fixture {
+        let fixture = Fixture::serving_metadata(members);
+        fixture.write("unit-graph-refuse", "");
+        fixture
+    }
+
+    fn serving_metadata(members: &[Member]) -> Fixture {
         let fixture = Fixture {
             dir: tempfile::tempdir().expect("create workspace-feature-union fixture dir"),
         };
@@ -315,7 +335,6 @@ impl Fixture {
         fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
             .unwrap_or_else(|e| panic!("chmod {}: {e}", stub.display()));
         fixture.write("metadata.json", &metadata_json(fixture.dir.path(), members));
-        fixture.write("tree-workspace.txt", workspace_tree);
         fixture
     }
 
@@ -424,7 +443,7 @@ a v0.1.0 (/fixture/crates/a)|
 pub(crate) const TREE_UNION: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|\n";
 
-/// `--workspace` over roots `a` and the union crate.
+/// A `--workspace` tree printing each of `roots` as its own root, in order.
 pub(crate) fn workspace_of(roots: &[&str]) -> String {
     roots.join("\n")
 }
@@ -433,26 +452,8 @@ pub(crate) fn covered_a() -> Vec<Member> {
     vec![member("a", &[UNION]), member(UNION, &[])]
 }
 
-pub(crate) const UNION_NODE: &str =
+const UNION_NODE: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|";
-
-/// `--workspace` with `a` building with member `u`, whose subtree below its
-/// `[build-dependencies]` line is `u_children` (each line indented under u).
-pub(crate) fn workspace_building_a_with_u(u_children: &[&str]) -> String {
-    let below_u: String = u_children
-        .iter()
-        .map(|line| format!("    {line}\n"))
-        .collect();
-    let tree_a = format!(
-        "a v0.1.0 (/fixture/crates/a)|\n\
-         |-- {UNION_NODE}\n\
-         `-- memchr v2.0.0|std\n\
-         [build-dependencies]\n\
-         `-- u v0.1.0 (/fixture/crates/u)|\n\
-         {below_u}"
-    );
-    workspace_of(&[&tree_a, TREE_UNION])
-}
 
 /// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
 /// `-p d` resolve it without. Each of `uncovered` joins as a member that
