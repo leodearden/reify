@@ -31,6 +31,13 @@ def demo_row(construct, *paths, view=rcr.View.CODE, baseline=10, target=0,
 
 class Views(TempRoot):
 
+    def assert_starts_in_code_hits(self, expected_hits):
+        for construct, hits in expected_hits.items():
+            with self.subTest(construct):
+                result = self.evaluate_one(
+                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+                self.assertEqual(result.hits, hits)
+
     def test_code_view_counts_code_occurrences_only(self):
         self.write("src/a.rs", rust_fn(
             "    needle(1);",
@@ -88,11 +95,7 @@ class Views(TempRoot):
             "x'": (), "\"'": (), "y'": (), "';": (),
             "'x'": ("src/a.rs:2",), "'static": ("src/a.rs:5",),
         }
-        for construct, hits in expected_hits.items():
-            with self.subTest(construct):
-                result = self.evaluate_one(
-                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
-                self.assertEqual(result.hits, hits)
+        self.assert_starts_in_code_hits(expected_hits)
 
     def test_starts_in_code_view_counts_a_prefixed_literal_opener_whatever_its_content(self):
         self.write("src/a.rs", rust_fn(
@@ -115,11 +118,7 @@ class Views(TempRoot):
             '#"needle_': ("src/a.rs:2", "src/a.rs:4", "src/a.rs:5", "src/a.rs:6",
                           "src/a.rs:8", "src/a.rs:12", "src/a.rs:12"),
         }
-        for construct, hits in expected_hits.items():
-            with self.subTest(construct):
-                result = self.evaluate_one(
-                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
-                self.assertEqual(result.hits, hits)
+        self.assert_starts_in_code_hits(expected_hits)
 
     def test_starts_in_code_view_counts_an_opener_that_abuts_a_raw_literals_closing_hashes(self):
         self.write("src/a.rs", rust_fn(
@@ -130,11 +129,7 @@ class Views(TempRoot):
             '"needle_': ("src/a.rs:2", "src/a.rs:3"),
             '#"needle_': ("src/a.rs:3",),
         }
-        for construct, hits in expected_hits.items():
-            with self.subTest(construct):
-                result = self.evaluate_one(
-                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
-                self.assertEqual(result.hits, hits)
+        self.assert_starts_in_code_hits(expected_hits)
 
     def test_starts_in_code_view_counts_each_opener_on_a_line(self):
         self.write("src/a.rs", rust_fn('    f("needle_a", "needle_b"); // "needle_c"'))
