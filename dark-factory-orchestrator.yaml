@@ -1094,6 +1094,21 @@ verify_drift_check_every_n_lands: 10
 # dark_factory:4579 has since landed (done), which is why this is true again.
 verify_cross_check_remote_green: false
 
+# Remote task verifies ON (Leo, 2026-11-16, in the reify L2 watcher session). Task-role
+# verifies may now take a laptop turn and fall back to local otherwise; merge and task
+# verifies hold separate slots on each host (dark_factory 7977 decision 16). Before this,
+# the key was unset, so its default 'local' kept every task verify on the workstation's
+# single task-verify slot (27 strictly serial runs 2026-11-15 20:18Z to 11-16 04:24Z),
+# the binding constraint behind the 11-15/16 starvation alarms. Machinery: dark_factory
+# 6669/7977/6670 (all done). Parity check: every 10th remote verdict is re-run locally
+# with the local verdict authoritative, the same 1-in-10 rate as the merge drift check.
+# A task verify is not the merge gate, so a remote false green is still caught by the
+# merge verify. Green tier, read per dispatch; rollback is one edit to 'local' and
+# mcp__escalation__reload_config. Follow-up: the 2026-11-02 cut of max_concurrent_tasks
+# (24 -> 16) said to raise it again once remote task legs reach this project (red tier).
+verify_task_host_policy: remote_all
+verify_task_remote_cross_check_every_n: 10
+
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge
 # phase rebases the task branch onto main and runs a full task-role scoped
