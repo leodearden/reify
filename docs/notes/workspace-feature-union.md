@@ -229,6 +229,11 @@ is whatever the ignore rules match there, chiefly the root `.gitignore`'s
 `git clean -xfd -e target` deletes those same files. A new output of
 `tree-sitter generate` is covered as soon as that block lists it.
 
+For a base gen built after #9896, files under `tree-sitter-reify/src` do not
+affect the build, and its stamps attest only `grammar.js` and `src/scanner.c`.
+The reset line, arm B and its stamp check matter only for older gens; they stay
+here as the recipe behind the measurements below.
+
 The generated sources live outside `target/`, so restoring `target/` does not
 restore their absence, and the listing check does not see them. The
 `git status` line does. It prints nothing only when the directory holds nothing
@@ -375,6 +380,10 @@ reify-ast, reify-config, reify-ir or reify-stdlib, and it reaches reify-expr
 only under `-p reify-expr`, through that package's dev-dependencies. That is the
 reach by manifest edges. The next subsection measures it: a first build pays
 only for tree-sitter-reify itself, and the reach shows in the next invocation.
+Since #9896 this contributor is gone: `build.rs` generates into `$OUT_DIR/src`
+and watches only `grammar.js`, `src/scanner.c`, `build_support.rs` and the
+tree-sitter CLI, so the acquire's `git clean` no longer reaches the build
+(Limits, Tree-sitter regeneration).
 
 Hypothesis, not isolated by these probes: once tree-sitter regeneration is
 excluded (next subsection), the workspace units that remain are the union of
@@ -694,8 +703,9 @@ indicative only.
   #9884) still rebuilt reify-eval.
 - **Advisory MEMBER-SPLIT reporting: adopted.** Failing on the accepted
   splits would red the gate permanently.
-- **Next candidate** once #9896 lands (the build-script variants were fixed
-  by #9884): reify-stdlib `test-support`, behind the remaining 3 split-only
+- **Next candidate**, now that #9896 has removed the tree-sitter share (the
+  build-script variants were fixed by #9884): reify-stdlib `test-support`,
+  behind the remaining 3 split-only
   units (reify-stdlib, reify-expr and reify-constraints).
 
 Landing cost: the reify-core, reify-ast and reify-ir member variants change,
@@ -948,23 +958,33 @@ kernels' accepted member-feature splits (Member features) still make a plain
   members that carry them and their dependents. They are accepted, and `check`
   reports each as an advisory MEMBER-SPLIT line. Measurements and decision:
   Member features (#9825).
-- **Tree-sitter regeneration.** The generated sources are gitignored, so
-  the acquire deletes them, and `build.rs` watches them, so a fresh lane's first
-  build reruns the build script. Measured on `-p reify-eval` (Tree-sitter
-  share), with the other contributors present: the first build gains one unit,
-  tree-sitter-reify, a 4.34 s build-script run in the clippy pair's `--timings`;
-  the next invocation of the same test command compiles 8 workspace units again,
-  in 1:30.44 against 4.75 s with the sources present, so the second invocation
-  is most of the cost today.
-  Decision: accepted until a ruling. The fix that removes both costs is to
-  restore the content-attested generated sources at acquire, from a snapshot
-  carried in the base gen (#9896). It needs a ruling first, because the seed is
-  documented as source-tree-inert (CLAUDE.md, Warm lanes;
-  `tests/infra/test_seed_warm_lane.sh`, Block X). Not taken: unwatching the
-  outputs in `build.rs` reverses #5629 and #9741, generating into `OUT_DIR`
-  redesigns verify's tree-sitter leaves and the `src/` consumers, and
-  back-dating the outputs in `build.rs` leans on cargo's internal reference
-  time.
+- **Tree-sitter regeneration.** Removed by #9896 (option (e), esc-9896-3,
+  ruled by Leo 2026-11-14). Before it, the generated sources were gitignored,
+  so the acquire deleted them, and `build.rs` watched them, so a fresh lane's
+  first build reran the build script. Measured on `-p reify-eval` (Tree-sitter
+  share), with the other contributors present: the first build gained one unit,
+  tree-sitter-reify, a 4.34 s build-script run in the clippy pair's
+  `--timings`; the next invocation of the same test command compiled 8
+  workspace units again, in 1:30.44 against 4.75 s with the sources present.
+  Now `build.rs` runs `tree-sitter generate grammar.js --abi 14 -o
+  $OUT_DIR/src`, copies `src/scanner.c` beside the outputs and compiles from
+  there. It watches only `grammar.js`, `src/scanner.c`, `build_support.rs` and
+  the resolved CLI, and regenerates when a generation key (sha256 of
+  `grammar.js` plus the CLI's `--version`) or the outputs manifest in
+  `OUT_DIR` disagrees. Nothing it writes is watched, and nothing in
+  `tree-sitter-reify/src` is read. Elsewhere, `scripts/tree-sitter-freshness.sh`
+  now fingerprints only `grammar.js` and `src/scanner.c`, and
+  `scripts/verify.sh` changed only in its comments: its
+  `tree-sitter-generate.sh` leaf stays for the `tree-sitter parse` consumers of
+  `src/`. Measured in the #9896 task lane on 2026-11-15: one
+  `cargo test -p reify-eval --no-run` (22 units, 9:05) and then
+  `git clean -Xfd -- tree-sitter-reify/src`, which left only `lib.rs` and
+  `scanner.c`. Two further identical runs compiled 0 units (1.44 s and 0.78 s)
+  and restored no file under `src/`. After `scripts/tree-sitter-generate.sh`
+  rewrote `src/`, a fourth also compiled 0 units (2.19 s). This is an in-lane
+  approximation: `target/` was the lane's own, not a fresh reflink of a base
+  gen built after #9896. A re-probe in a freshly acquired lane and after
+  `_merge-verify`'s reset is filed as a follow-up of #9896.
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.

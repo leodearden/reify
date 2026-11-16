@@ -15,7 +15,7 @@
 //! replica.
 //!
 //! DO NOT ASSERT ON build.rs's OR build_support.rs's SOURCE TEXT HERE. A
-//! `contains("write_shell_stamps(")`-style scan is satisfied by a comment or a
+//! `contains("write_generation_stamps(")`-style scan is satisfied by a comment or a
 //! commented-out line — delete the real call, keep its explanation above it,
 //! and the test stays green — and its negative form pins one SPELLING, so
 //! `rel.ends_with("parser.c")` reintroduces a defect that
@@ -34,36 +34,6 @@
 include!("../build_support.rs");
 
 use std::path::Path;
-
-#[test]
-fn test_content_hash_deterministic() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("test.js");
-    std::fs::write(&file, b"module.exports = grammar({});").unwrap();
-
-    let hash1 = content_hash(&file);
-    let hash2 = content_hash(&file);
-    assert_eq!(
-        hash1, hash2,
-        "hashing identical content must produce same hash"
-    );
-}
-
-#[test]
-fn test_content_hash_changes_on_modification() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("grammar.js");
-    std::fs::write(&file, b"module.exports = grammar({name: 'v1'});").unwrap();
-    let hash1 = content_hash(&file);
-
-    std::fs::write(&file, b"module.exports = grammar({name: 'v2'});").unwrap();
-    let hash2 = content_hash(&file);
-
-    assert_ne!(
-        hash1, hash2,
-        "different content must produce different hashes"
-    );
-}
 
 /// Absolute path to this test file, resolved at compile time via CARGO_MANIFEST_DIR.
 /// Used by source-level regression tests that read this file's own contents.
@@ -86,153 +56,13 @@ fn read_self_source() -> String {
 /// leaves behind — all EXPECTED_OUTPUTS and all GENERATED_HEADERS — and returns
 /// the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
-    let src_dir = base.join("src");
+    let src_dir = base.join(GENERATED_DIR);
     for name in EXPECTED_OUTPUTS.iter().chain(GENERATED_HEADERS) {
         let path = src_dir.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"placeholder").unwrap();
     }
     src_dir
-}
-
-/// `make_populated_src_dir` plus the `.generated_outputs.stamp` attesting the
-/// bytes it just wrote — i.e. the state a COMPLETED generate leaves behind.
-///
-/// Since `#6992` a fixture that merely CREATES the outputs no longer reaches the
-/// "up to date" verdict: no stamp may vouch for a `src/` tree it has no content
-/// evidence for. Tests asserting the legitimate fast path therefore need this;
-/// tests asserting staleness deliberately do not.
-///
-/// Callers must gate on `hasher_available()` first — without a hasher there is
-/// no manifest to write, and the fast path is unreachable by construction.
-fn make_attested_src_dir(base: &Path) -> std::path::PathBuf {
-    let src_dir = make_populated_src_dir(base);
-    std::fs::write(
-        outputs_stamp_of(&src_dir),
-        render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
-    )
-    .unwrap();
-    src_dir
-}
-
-#[test]
-fn test_needs_generate_true_when_no_stamp() {
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let stamp = dir.path().join("stamp.hash");
-    // stamp does not exist
-    let src_dir = make_populated_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    let hash = content_hash(&grammar);
-    assert!(
-        needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "must regenerate when stamp file is missing"
-    );
-}
-
-#[test]
-fn test_needs_generate_false_when_stamp_matches() {
-    if !hasher_available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let stamp = dir.path().join("stamp.hash");
-    // Write matching hash to stamp file
-    let hash = content_hash(&grammar);
-    std::fs::write(&stamp, &hash).unwrap();
-    // Create all 3 output files, attested by the manifest a real generate leaves.
-    let src_dir = make_attested_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    // Step-3 case (c): the FULLY CONSISTENT state. The OUT_DIR stamp matches the
-    // grammar hash AND the outputs match the manifest minted from their own
-    // bytes, so the fast path must survive — a fix that always regenerates would
-    // be a different bug, not a cure.
-    assert!(
-        !needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "must NOT regenerate when the stamp matches and the outputs match their manifest"
-    );
-}
-
-#[test]
-fn test_needs_generate_true_when_stamp_stale() {
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'new'});").unwrap();
-    let stamp = dir.path().join("stamp.hash");
-    // Write a stale (old) hash to stamp file
-    std::fs::write(&stamp, "0000000000000000").unwrap();
-    // Create all 3 output files
-    let src_dir = make_populated_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    let hash = content_hash(&grammar);
-    assert!(
-        needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "must regenerate when stamp hash differs from current grammar hash"
-    );
-}
-
-#[test]
-fn test_needs_generate_true_when_output_missing() {
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let stamp = dir.path().join("stamp.hash");
-    // Write matching hash
-    let hash = content_hash(&grammar);
-    std::fs::write(&stamp, &hash).unwrap();
-    // Create all 3 output files, then remove grammar.json
-    let src_dir = make_populated_src_dir(dir.path());
-    std::fs::remove_file(src_dir.join("grammar.json")).unwrap();
-
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    assert!(
-        needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "must regenerate when any output file is missing"
-    );
-}
-
-#[test]
-fn test_needs_generate_true_when_a_generated_header_is_missing() {
-    // The transition state `#9741` creates: git deletes the formerly tracked
-    // headers on update while parser.c and every stamp survive and still attest.
-    if !hasher_available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let stamp = dir.path().join("stamp.hash");
-    let hash = content_hash(&grammar);
-    std::fs::write(&stamp, &hash).unwrap();
-    let src_dir = make_attested_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    assert!(
-        !needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "control: the fully consistent state must take the fast path"
-    );
-    for header in GENERATED_HEADERS {
-        let path = src_dir.join(header);
-        std::fs::remove_file(&path).unwrap();
-        assert!(
-            needs_generate(&hash, &stamp, &output_refs, &src_dir),
-            "must regenerate when the generated header {header} is missing, \
-             or scanner.c/parser.c fail to compile against it"
-        );
-        std::fs::write(&path, b"placeholder").unwrap();
-    }
 }
 
 #[test]
@@ -308,64 +138,6 @@ fn test_verify_outputs_names_a_missing_generated_header() {
             );
         }
         std::fs::write(&path, b"placeholder").unwrap();
-    }
-}
-
-#[test]
-fn test_gating_predicates_converge_after_one_regeneration() {
-    // Watching a file this build script WRITES costs one extra build-script run
-    // after each genuine regeneration: cargo sees parser.c newer than its
-    // recorded reference and re-runs. The old exclusion comment called that
-    // "double execution" as if it were a loop. It is not — the extra run finds
-    // both stamps current, writes nothing, and the run after it is clean.
-    //
-    // Pinned behaviourally so a bounded cost cannot silently become an unbounded
-    // one: evaluate the gating predicates twice in a row from a regenerated
-    // state and require the second evaluation to ask for no regeneration.
-    if !hasher_available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'converge'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
-    let out_dir = dir.path().join("out");
-    std::fs::create_dir_all(&out_dir).unwrap();
-    let out_stamp = out_dir.join("grammar_hash.stamp");
-    let output_paths = output_paths_of(&src_dir);
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-    let grammar_hash = content_hash(&grammar);
-
-    // Round 1: nothing is attested yet, so both predicates must ask for a
-    // generate. Non-vacuity guard for round 2.
-    assert!(
-        needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
-        "round 1 must want a regeneration, or round 2 proves nothing"
-    );
-    assert!(
-        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-        "round 1 must not report the shell stamps as current"
-    );
-
-    // The regeneration itself: outputs verified, then BOTH shell stamps and the
-    // OUT_DIR stamp written — exactly what build.rs's branch does.
-    let sha = sha256_of_path(&grammar).unwrap().unwrap();
-    write_shell_stamps(&src_dir, &sha);
-    write_out_dir_grammar_stamp(&out_stamp, &grammar_hash);
-
-    // Round 2: settled. And round 3, so "settled" is a fixed point rather than
-    // an alternation.
-    for round in 2..=3 {
-        assert!(
-            !needs_generate(&grammar_hash, &out_stamp, &output_refs, &src_dir),
-            "round {round}: the gating predicates must converge — watching a \
-             build-script output may cost ONE extra run, never a loop"
-        );
-        assert!(
-            shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-            "round {round}: the shell stamps written by the regeneration must \
-             read back as current"
-        );
     }
 }
 
@@ -515,164 +287,72 @@ fn test_run_with_timeout_reports_spawn_failure() {
 }
 
 #[test]
-#[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
-// on Windows the readonly attribute does NOT block creating files within the directory.
-fn test_out_dir_grammar_stamp_write_failure_does_not_panic() {
-    if is_root() {
-        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
-        return;
-    }
-    // A write failure on the OUT_DIR stamp warns instead of panicking.
-    let dir = tempfile::tempdir().unwrap();
-    let readonly_dir = dir.path().join("readonly");
-    std::fs::create_dir_all(&readonly_dir).unwrap();
-
-    // Make the directory read-only so file creation fails
-    let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&readonly_dir, perms).unwrap();
-
-    // Guard ensures cleanup even if assertions below panic
-    let _guard = ReadonlyGuard::new(readonly_dir.clone());
-
-    let stamp_path = readonly_dir.join("grammar_hash.stamp");
-
-    // Should not panic — just warn
-    write_out_dir_grammar_stamp(&stamp_path, "somehash");
-
-    // Verify the stamp was NOT written (write should have failed)
-    assert!(
-        !stamp_path.exists(),
-        "stamp should not exist in a read-only directory"
-    );
-}
-
-#[test]
-fn test_out_dir_grammar_stamp_exact_content() {
-    // Validates that the OUT_DIR stamp holds exact hash bytes with no trailing
-    // whitespace, newline, or other content corruption. Since needs_generate
-    // uses .trim() when reading, corruption would be silently masked without
-    // this direct content assertion.
-    let dir = tempfile::tempdir().unwrap();
-    let stamp_path = dir.path().join("grammar_hash.stamp");
-    let hash = "a1b2c3d4e5f60708";
-
-    write_out_dir_grammar_stamp(&stamp_path, hash);
-
-    let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
-    assert_eq!(
-        raw_content, hash,
-        "the OUT_DIR stamp must hold exact hash bytes — no trailing newline, whitespace, or BOM. \
-         Got {:?}, expected {:?}",
-        raw_content, hash
-    );
-}
-
-#[test]
 fn test_stamp_path_is_profile_independent() {
-    // Prove that staleness detection is purely hash-driven and works identically
-    // across different OUT_DIR paths (simulating debug vs release profiles).
+    // The verdict depends only on the OUT_DIR it is asked about, so two profiles
+    // holding the same generation agree on it, and both see a grammar change.
     if !hasher_available() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'test'});").unwrap();
-    let src_dir = make_attested_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    // Simulate two different cargo profile OUT_DIR paths
+    let key = fixture_key();
     let debug_out = dir.path().join("target/debug/build/out");
     let release_out = dir.path().join("target/release/build/out");
-    std::fs::create_dir_all(&debug_out).unwrap();
-    std::fs::create_dir_all(&release_out).unwrap();
+    let (debug_generated, debug_stamp) = make_current_out_dir(&debug_out, &key);
+    let (release_generated, release_stamp) = make_current_out_dir(&release_out, &key);
 
-    let hash = content_hash(&grammar);
-
-    // Write matching stamp to both profiles
-    let debug_stamp = debug_out.join("grammar_hash.stamp");
-    let release_stamp = release_out.join("grammar_hash.stamp");
-    write_out_dir_grammar_stamp(&debug_stamp, &hash);
-    assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
-    write_out_dir_grammar_stamp(&release_stamp, &hash);
-    assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
-
-    // Both profiles report no regeneration needed
     assert!(
-        !needs_generate(&hash, &debug_stamp, &output_refs, &src_dir),
-        "debug profile: must NOT regenerate when stamp matches"
+        !needs_generate(Some(&key), &debug_stamp, &debug_generated),
+        "debug profile: must NOT regenerate when its key stamp matches"
     );
     assert!(
-        !needs_generate(&hash, &release_stamp, &output_refs, &src_dir),
-        "release profile: must NOT regenerate when stamp matches"
+        !needs_generate(Some(&key), &release_stamp, &release_generated),
+        "release profile: must NOT regenerate when its key stamp matches"
     );
 
-    // Mutate grammar content — both profiles must now detect staleness
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'changed'});").unwrap();
-    let new_hash = content_hash(&grammar);
+    let changed = generation_key(&"b".repeat(64), FIXTURE_CLI_VERSION);
     assert!(
-        needs_generate(&new_hash, &debug_stamp, &output_refs, &src_dir),
-        "debug profile: must regenerate after grammar change"
+        needs_generate(Some(&changed), &debug_stamp, &debug_generated),
+        "debug profile: must regenerate after a grammar change"
     );
     assert!(
-        needs_generate(&new_hash, &release_stamp, &output_refs, &src_dir),
-        "release profile: must regenerate after grammar change"
+        needs_generate(Some(&changed), &release_stamp, &release_generated),
+        "release profile: must regenerate after a grammar change"
     );
 }
 
 #[test]
 fn test_stamp_shared_across_simulated_profiles() {
-    // Prove that identical hash content at any stamp location yields identical
-    // staleness decisions, and that stamp presence is per-location.
+    // Stamp presence is per-OUT_DIR: one profile's key stamp vouches for nothing
+    // in another's, until that profile writes its own.
     if !hasher_available() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
-    let src_dir = make_attested_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    let hash = content_hash(&grammar);
-
-    // Two separate OUT_DIR-like paths
+    let key = fixture_key();
     let out_dir_1 = dir.path().join("target/debug/build/out");
     let out_dir_2 = dir.path().join("target/release/build/out");
-    std::fs::create_dir_all(&out_dir_1).unwrap();
-    std::fs::create_dir_all(&out_dir_2).unwrap();
+    let (generated_1, stamp_1) = make_current_out_dir(&out_dir_1, &key);
+    let generated_2 = make_attested_generated_dir(&out_dir_2);
+    let stamp_2 = out_dir_2.join(KEY_STAMP_NAME);
 
-    let stamp_1 = out_dir_1.join("grammar_hash.stamp");
-    let stamp_2 = out_dir_2.join("grammar_hash.stamp");
-
-    // Write stamp to only OUT_DIR_1
-    write_out_dir_grammar_stamp(&stamp_1, &hash);
-    assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
-
-    // OUT_DIR_1 has matching stamp — no regeneration needed
     assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs, &src_dir),
-        "OUT_DIR_1: must NOT regenerate when stamp matches"
+        !needs_generate(Some(&key), &stamp_1, &generated_1),
+        "OUT_DIR_1: must NOT regenerate when its key stamp matches"
     );
-    // OUT_DIR_2 has no stamp — regeneration needed
     assert!(
-        needs_generate(&hash, &stamp_2, &output_refs, &src_dir),
-        "OUT_DIR_2: must regenerate when stamp is absent"
+        needs_generate(Some(&key), &stamp_2, &generated_2),
+        "OUT_DIR_2: must regenerate while it has no key stamp"
     );
 
-    // Now write the same stamp to OUT_DIR_2
-    write_out_dir_grammar_stamp(&stamp_2, &hash);
-    assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
+    write_generation_stamps(&generated_2, &stamp_2, &key);
 
-    // Both locations now report no regeneration needed
     assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs, &src_dir),
+        !needs_generate(Some(&key), &stamp_1, &generated_1),
         "OUT_DIR_1: still must NOT regenerate"
     );
     assert!(
-        !needs_generate(&hash, &stamp_2, &output_refs, &src_dir),
-        "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
+        !needs_generate(Some(&key), &stamp_2, &generated_2),
+        "OUT_DIR_2: must NOT regenerate once its own stamps are written"
     );
 }
 
@@ -1920,7 +1600,7 @@ fn outputs_stamp_of(src_dir: &Path) -> std::path::PathBuf {
 
 #[test]
 fn test_outputs_manifest_render_is_sorted_and_byte_shaped() {
-    // The format is REUSED from write_inputs_stamp (build.rs) verbatim:
+    // The format is REUSED from write_inputs_stamp (build_support.rs) verbatim:
     // "<hash>  <relpath>\n" lines, sorted by relpath, two spaces. Both the
     // Rust and the shell halves parse it, so the bytes are the contract.
     let rendered = outputs_manifest_render(&[
@@ -2106,275 +1786,595 @@ fn test_outputs_manifest_matches_false_on_empty_manifest() {
     );
 }
 
-// ── Hole D: the OUT_DIR stamp used to vouch by EXISTENCE alone (`#6992`) ─────
+// ── Generation into OUT_DIR (`#9896`) ────────────────────────────────────────
 //
-// `needs_generate` compared `$OUT_DIR/grammar_hash.stamp` against the grammar
-// hash and then required only that the three outputs EXIST. Two routine lane
-// operations break that inference:
-//
-//   * `git clean -xfd -e target` at lane acquire deletes the untracked
-//     `src/parser.c` while preserving `target/`;
-//   * CoW seeding can pair a `target/` cloned from one base with a `src/`
-//     checked out from another.
-//
-// In both cases the surviving OUT_DIR stamp attests a `src/` tree it never saw.
+// build.rs generates into `$OUT_DIR/src` and compiles from there, so every
+// generated source lives beside the archive it becomes. `needs_generate` is the
+// one predicate deciding whether that directory holds what this build script
+// would generate: its outputs, its headers, a parser at the pinned ABI, a
+// manifest matching those bytes, and a key stamp naming the grammar and CLI.
 
-#[test]
-fn test_needs_generate_true_when_outputs_disagree_with_their_manifest() {
-    // (a) The measured shape: grammar.js unchanged, OUT_DIR stamp matching it,
-    // all three outputs present — and parser.c's bytes belonging to a DIFFERENT
-    // generate. Existence is satisfied; content is not.
-    if !hasher_available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let src_dir = make_attested_src_dir(dir.path());
+/// A CLI version line for fixture keys.
+const FIXTURE_CLI_VERSION: &str = "tree-sitter 0.26.8 (fixture)";
 
-    // parser.c now holds bytes the manifest never recorded.
-    std::fs::write(src_dir.join("parser.c"), b"parser.c from another grammar").unwrap();
-
-    let stamp = dir.path().join("stamp.hash");
-    let hash = content_hash(&grammar);
-    std::fs::write(&stamp, &hash).unwrap();
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    assert!(
-        needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "the OUT_DIR stamp must not vouch for outputs whose bytes contradict their manifest"
-    );
+/// A key for a grammar whose sha256 is all `a`s, generated by the fixture CLI.
+fn fixture_key() -> String {
+    generation_key(&"a".repeat(64), FIXTURE_CLI_VERSION)
 }
 
-#[test]
-fn test_needs_generate_true_when_outputs_manifest_is_absent() {
-    // (b) A `src/` tree with no manifest is UNPROVEN — the CoW-seeded /
-    // git-cleaned shape. A fresh OUT_DIR stamp beside it is evidence about
-    // grammar.js, and about nothing else.
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
-
-    let stamp = dir.path().join("stamp.hash");
-    let hash = content_hash(&grammar);
-    std::fs::write(&stamp, &hash).unwrap();
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    assert!(
-        needs_generate(&hash, &stamp, &output_refs, &src_dir),
-        "an absent outputs manifest must force regeneration, not be read as freshness"
-    );
+/// A `parser.c` body declaring `abi` the way `tree-sitter generate` does.
+fn parser_c_declaring(abi: &str) -> String {
+    format!(
+        "#include \"tree_sitter/parser.h\"\n\n#define LANGUAGE_VERSION {abi}\n#define STATE_COUNT 1\n"
+    )
 }
 
-// ── Holes A and C: the shell stamp vouched by grammar-hash alone, and the
-//    mtime guard that was supposed to catch it is erased by warm lanes ────────
-//
-// `shell_stamp_is_current` returned "safe to skip generation" on four
-// conditions, of which only the first three were real:
-//
-//   1. every expected output EXISTS                     (existence, not content)
-//   2. `src/.grammar_hash.stamp` is non-empty
-//   3. `sha256sum grammar.js` equals it                 (about grammar.js only)
-//   4. no output file is NEWER than the stamp           (inert in a warm lane)
-//
-// Nothing in that chain looks at parser.c's bytes. Condition 4 was the only
-// intended guard, and `scripts/seed-warm-lane.sh` bulk-stamps every non-target/
-// file to 2020-01-01 — measured in this very lane, where `ls -la
-// tree-sitter-reify/src/` shows `Jan  1  2020` on every entry. With all mtimes
-// equal, `file_mtime > stamp_mtime` is universally false and condition 4 can
-// never fire.
-//
-// Every case below forces the mtimes explicitly rather than inheriting the
-// lane's, so the reproduction holds on a cold host too.
-
-/// Recursively collect every regular file under `root`, dotfiles included.
-fn collect_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, out);
-        } else {
-            out.push(path);
-        }
-    }
+/// An ABI the runtime is not pinned to: the one after it.
+fn unpinned_abi() -> String {
+    let pinned: u32 = GENERATED_PARSER_ABI.parse().unwrap();
+    (pinned + 1).to_string()
 }
 
-/// Stamp EVERY file under `root` to an identical 2020-01-01 mtime, reproducing
-/// what `scripts/seed-warm-lane.sh` does to a lane.
-///
-/// Returns false when `touch` is unavailable — an environment gap, so callers
-/// skip rather than fail. Deliberately not `#[cfg(unix)]`-gated: that attribute
-/// would pull the test into `test_unix_permission_tests_have_root_guard`'s set,
-/// which requires an `is_root()` guard these tests have no use for.
-fn normalize_mtimes_to_2020(root: &Path) -> bool {
-    let mut files = Vec::new();
-    collect_files(root, &mut files);
-    if files.is_empty() {
-        return false;
-    }
-    let mut cmd = std::process::Command::new("touch");
-    cmd.arg("-d").arg("2020-01-01 00:00:00");
-    for f in &files {
-        cmd.arg(f);
-    }
-    let ok = matches!(cmd.status(), Ok(st) if st.success());
-    if !ok {
-        return false;
-    }
-    // The reproduction is only meaningful if the mtimes really are identical —
-    // otherwise a future `touch` behaviour change would silently turn these
-    // tests back into the mtime-ordering world they exist to rule out.
-    let mut seen: Option<std::time::SystemTime> = None;
-    for f in &files {
-        let Ok(m) = std::fs::metadata(f).and_then(|m| m.modified()) else {
-            return false;
-        };
-        match seen {
-            None => seen = Some(m),
-            Some(first) => assert_eq!(
-                first, m,
-                "fixture precondition: every file must carry the SAME mtime, or the \
-                 warm-lane state is not reproduced"
-            ),
-        }
-    }
-    true
-}
-
-/// A package-root-shaped fixture: `grammar.js` beside a `src/` holding the three
-/// outputs, `.grammar_hash.stamp` carrying the REAL sha256 of grammar.js, and —
-/// when `attest` is set — `.generated_outputs.stamp` describing those outputs.
-///
-/// `None` when this host cannot hash; the assertions are vacuous there.
-fn make_shell_stamp_fixture(
-    attest: bool,
-) -> Option<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
-    if !hasher_available() {
-        return None;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'measured'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
-    let sha = sha256_of_path(&grammar).ok()??;
-    std::fs::write(src_dir.join(GRAMMAR_STAMP_NAME), &sha).unwrap();
-    if attest {
-        std::fs::write(
-            outputs_stamp_of(&src_dir),
-            render_manifest_for(&src_dir, EXPECTED_OUTPUTS),
-        )
-        .unwrap();
-    }
-    Some((dir, grammar, src_dir))
-}
-
-/// The three output paths inside `src_dir`, in `EXPECTED_OUTPUTS` order.
-fn output_paths_of(src_dir: &Path) -> Vec<std::path::PathBuf> {
-    EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect()
-}
-
-#[test]
-fn test_shell_stamp_not_current_when_parser_c_is_from_another_grammar() {
-    // (a) THE MEASURED STATE, and the direct regression for both measurements.
-    //
-    // build.rs can regenerate parser.c without ever touching
-    // src/.grammar_hash.stamp (it shells out to `tree-sitter generate` and stops
-    // there), so parser.c(B) can sit beside a stamp still reading sha256(A). A
-    // later merge that restores grammar.js == A makes the stamp match AGAIN —
-    // and it now actively vouches for the wrong parser. Every mtime is identical,
-    // so the old condition 4 sees nothing.
-    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
-        return;
-    };
+/// `make_populated_src_dir` with a parser.c at the pinned ABI, and no stamps.
+fn make_pinned_generated_dir(out_dir: &Path) -> std::path::PathBuf {
+    let generated = make_populated_src_dir(out_dir);
     std::fs::write(
-        src_dir.join("parser.c"),
-        b"parser.c generated from grammar B",
+        generated.join("parser.c"),
+        parser_c_declaring(GENERATED_PARSER_ABI),
     )
     .unwrap();
-    if !normalize_mtimes_to_2020(dir.path()) {
+    generated
+}
+
+/// `make_pinned_generated_dir` plus the `.generated_outputs.stamp` attesting its
+/// bytes: what a completed generate leaves, minus the key stamp.
+///
+/// Callers must gate on `hasher_available()` first, since the manifest needs a
+/// hasher.
+fn make_attested_generated_dir(out_dir: &Path) -> std::path::PathBuf {
+    let generated = make_pinned_generated_dir(out_dir);
+    std::fs::write(
+        outputs_stamp_of(&generated),
+        render_manifest_for(&generated, EXPECTED_OUTPUTS),
+    )
+    .unwrap();
+    generated
+}
+
+/// The fully consistent OUT_DIR: an attested generated dir, and a key stamp
+/// holding exactly `key`. Returns `(generated_dir, key_stamp)`.
+fn make_current_out_dir(out_dir: &Path, key: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let generated = make_attested_generated_dir(out_dir);
+    let key_stamp = out_dir.join(KEY_STAMP_NAME);
+    std::fs::write(&key_stamp, key).unwrap();
+    (generated, key_stamp)
+}
+
+#[test]
+fn test_needs_generate_false_in_the_fully_consistent_state() {
+    // A fix that always regenerates would be a different bug, not a cure.
+    if !hasher_available() {
         return;
     }
-
-    let output_paths = output_paths_of(&src_dir);
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    let dir = tempfile::tempdir().unwrap();
+    let key = fixture_key();
+    let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
     assert!(
-        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-        "a grammar-hash match must not vouch for a parser.c whose bytes contradict \
-         the generated-outputs manifest"
+        !needs_generate(Some(&key), &key_stamp, &generated),
+        "must NOT regenerate when the outputs, headers, ABI, manifest and key stamp all agree"
     );
 }
 
 #[test]
-fn test_shell_stamp_current_survives_identical_mtimes() {
-    // (b) The legitimate warm-lane fast path must SURVIVE. Content agrees on
-    // every axis and every mtime is 2020-01-01 — the ordinary state of a seeded
-    // lane. A fix that regenerated here would trade a false GREEN for a
-    // permanent `tree-sitter generate` on every build.
-    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
-        return;
-    };
-    if !normalize_mtimes_to_2020(dir.path()) {
+fn test_needs_generate_true_without_a_key() {
+    // No hasher or no CLI means the key is unknowable, and an unknowable key
+    // can vouch for nothing.
+    if !hasher_available() {
         return;
     }
-
-    let output_paths = output_paths_of(&src_dir);
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    let dir = tempfile::tempdir().unwrap();
+    let key = fixture_key();
+    let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
     assert!(
-        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-        "the fast path must survive when the grammar hash AND the output manifest \
-         both agree, whatever the mtimes say"
+        needs_generate(None, &key_stamp, &generated),
+        "an unknowable key must regenerate, even over a fully consistent dir"
     );
 }
 
 #[test]
-fn test_shell_stamp_not_current_without_an_outputs_manifest() {
-    // (c) A correct .grammar_hash.stamp beside outputs nothing has attested is
-    // exactly the shape a `git clean -xfd -e target` / CoW-seeded lane produces.
-    // Unproven must read as stale.
-    let Some((dir, grammar, src_dir)) = make_shell_stamp_fixture(false) else {
-        return;
-    };
-    if !normalize_mtimes_to_2020(dir.path()) {
+fn test_needs_generate_true_when_the_key_stamp_disagrees() {
+    if !hasher_available() {
         return;
     }
-
-    let output_paths = output_paths_of(&src_dir);
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-    assert!(
-        !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-        "an absent .generated_outputs.stamp must force regeneration"
-    );
-}
-
-#[test]
-fn test_shell_stamp_not_current_when_a_generated_header_is_missing() {
-    // Both shell stamps describe grammar.js and the grammar-derived outputs, so
-    // they survive git deleting the formerly tracked headers (`#9741`). They
-    // must not vouch for a `src/` tree that cannot compile.
-    let Some((_dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
-        return;
-    };
-    let output_paths = output_paths_of(&src_dir);
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    assert!(
-        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-        "control: the attested state must read as current"
-    );
-    for header in GENERATED_HEADERS {
-        let path = src_dir.join(header);
-        std::fs::remove_file(&path).unwrap();
+    let sha = "a".repeat(64);
+    let key = generation_key(&sha, FIXTURE_CLI_VERSION);
+    let cases: [(&str, Option<String>); 3] = [
+        ("an absent key stamp", None),
+        (
+            "a key stamp from another grammar",
+            Some(generation_key(&"b".repeat(64), FIXTURE_CLI_VERSION)),
+        ),
+        (
+            "a key stamp from another CLI version",
+            Some(generation_key(&sha, "tree-sitter 0.0.0 (other)")),
+        ),
+    ];
+    for (label, recorded) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
+        match recorded {
+            None => std::fs::remove_file(&key_stamp).unwrap(),
+            Some(text) => std::fs::write(&key_stamp, text).unwrap(),
+        }
         assert!(
-            !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
-            "the shell stamps must not read as current while the generated \
-             header {header} is missing"
+            needs_generate(Some(&key), &key_stamp, &generated),
+            "must regenerate over {label}"
         );
-        std::fs::write(&path, b"placeholder").unwrap();
     }
+}
+
+#[test]
+fn test_needs_generate_true_when_a_generated_file_is_missing() {
+    if !hasher_available() {
+        return;
+    }
+    let key = fixture_key();
+    for victim in EXPECTED_OUTPUTS.iter().chain(GENERATED_HEADERS) {
+        let dir = tempfile::tempdir().unwrap();
+        let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
+        std::fs::remove_file(generated.join(victim)).unwrap();
+        assert!(
+            needs_generate(Some(&key), &key_stamp, &generated),
+            "must regenerate when {victim} is missing"
+        );
+    }
+}
+
+#[test]
+fn test_needs_generate_true_when_an_output_contradicts_its_manifest() {
+    // The last byte, so parser.c's LANGUAGE_VERSION line stays intact and only
+    // the manifest can see the change.
+    if !hasher_available() {
+        return;
+    }
+    let key = fixture_key();
+    for victim in EXPECTED_OUTPUTS {
+        let dir = tempfile::tempdir().unwrap();
+        let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
+        let path = generated.join(victim);
+        let mut bytes = std::fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 0x01;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(
+            needs_generate(Some(&key), &key_stamp, &generated),
+            "must regenerate when {victim} differs from its manifest by one byte"
+        );
+    }
+}
+
+#[test]
+fn test_needs_generate_true_when_the_outputs_manifest_is_absent() {
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let key = fixture_key();
+    let (generated, key_stamp) = make_current_out_dir(dir.path(), &key);
+    std::fs::remove_file(outputs_stamp_of(&generated)).unwrap();
+    assert!(
+        needs_generate(Some(&key), &key_stamp, &generated),
+        "an absent outputs manifest must force regeneration"
+    );
+}
+
+#[test]
+fn test_needs_generate_true_for_a_consistent_parser_at_another_abi() {
+    // Task 9727's state: a parser generated before the ABI pin, behind a
+    // manifest and key stamp that match it. Only the ABI check can see it.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let key = fixture_key();
+    let generated = make_populated_src_dir(dir.path());
+    std::fs::write(
+        generated.join("parser.c"),
+        parser_c_declaring(&unpinned_abi()),
+    )
+    .unwrap();
+    let key_stamp = dir.path().join(KEY_STAMP_NAME);
+    write_generation_stamps(&generated, &key_stamp, &key);
+
+    assert!(
+        outputs_manifest_matches(&outputs_stamp_of(&generated), &generated),
+        "precondition: the manifest must match the unpinned parser"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&key_stamp).unwrap(),
+        key,
+        "precondition: the key stamp must hold the current key"
+    );
+    assert!(
+        needs_generate(Some(&key), &key_stamp, &generated),
+        "a parser at ABI {} must regenerate, the runtime loads only ABI {}",
+        unpinned_abi(),
+        GENERATED_PARSER_ABI
+    );
+}
+
+#[test]
+fn test_generation_key_names_both_the_grammar_and_the_cli() {
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    assert_ne!(
+        generation_key(&a, "tree-sitter 0.26.8"),
+        generation_key(&a, "tree-sitter 0.27.0"),
+        "a CLI upgrade alone must change the key"
+    );
+    assert_ne!(
+        generation_key(&a, FIXTURE_CLI_VERSION),
+        generation_key(&b, FIXTURE_CLI_VERSION),
+        "a grammar change alone must change the key"
+    );
+}
+
+#[test]
+fn test_attested_grammar_sha_round_trips_a_written_key() {
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let generated = make_attested_generated_dir(dir.path());
+    let key_stamp = dir.path().join(KEY_STAMP_NAME);
+    let sha = "0123456789abcdef".repeat(4);
+    write_generation_stamps(
+        &generated,
+        &key_stamp,
+        &generation_key(&sha, FIXTURE_CLI_VERSION),
+    );
+    assert_eq!(
+        attested_grammar_sha(&key_stamp),
+        Some(sha),
+        "the grammar sha must read back from a key stamp write_generation_stamps wrote"
+    );
+}
+
+#[test]
+fn test_attested_grammar_sha_is_none_for_an_absent_or_malformed_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_stamp = dir.path().join(KEY_STAMP_NAME);
+    assert_eq!(
+        attested_grammar_sha(&key_stamp),
+        None,
+        "an absent key stamp attests no grammar"
+    );
+    for malformed in [
+        String::new(),
+        format!("deadbeef\n{FIXTURE_CLI_VERSION}\n"),
+        format!("{}\n{FIXTURE_CLI_VERSION}\n", "a".repeat(63)),
+        format!("{}\n{FIXTURE_CLI_VERSION}\n", "a".repeat(65)),
+        format!("{}g\n{FIXTURE_CLI_VERSION}\n", "a".repeat(63)),
+        format!("{}\n{FIXTURE_CLI_VERSION}\n", "A".repeat(64)),
+    ] {
+        std::fs::write(&key_stamp, &malformed).unwrap();
+        assert_eq!(
+            attested_grammar_sha(&key_stamp),
+            None,
+            "a first line that is not 64 lowercase hex attests no grammar: {malformed:?}"
+        );
+    }
+}
+
+#[test]
+fn test_parser_has_pinned_abi_reads_the_language_version_define() {
+    let dir = tempfile::tempdir().unwrap();
+    let parser = dir.path().join("parser.c");
+
+    std::fs::write(&parser, parser_c_declaring(GENERATED_PARSER_ABI)).unwrap();
+    assert!(
+        parser_has_pinned_abi(&parser),
+        "a parser declaring LANGUAGE_VERSION {GENERATED_PARSER_ABI} is pinned"
+    );
+
+    std::fs::write(&parser, parser_c_declaring(&unpinned_abi())).unwrap();
+    assert!(
+        !parser_has_pinned_abi(&parser),
+        "a parser declaring LANGUAGE_VERSION {} is not pinned",
+        unpinned_abi()
+    );
+
+    std::fs::write(&parser, "#include \"tree_sitter/parser.h\"\n").unwrap();
+    assert!(
+        !parser_has_pinned_abi(&parser),
+        "a parser with no LANGUAGE_VERSION define is not pinned"
+    );
+
+    std::fs::remove_file(&parser).unwrap();
+    assert!(
+        !parser_has_pinned_abi(&parser),
+        "an absent parser is not pinned"
+    );
+}
+
+#[test]
+fn test_generation_stamps_converge_in_one_write() {
+    // Replaces the old "one bounded extra run" pin: build.rs watches nothing it
+    // writes, so the stamps one regeneration writes must settle the predicate.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let key = fixture_key();
+    let generated = make_pinned_generated_dir(dir.path());
+    let key_stamp = dir.path().join(KEY_STAMP_NAME);
+
+    assert!(
+        needs_generate(Some(&key), &key_stamp, &generated),
+        "round 1 must want a regeneration, or the rounds after it prove nothing"
+    );
+
+    write_generation_stamps(&generated, &key_stamp, &key);
+
+    assert!(
+        outputs_manifest_matches(&outputs_stamp_of(&generated), &generated),
+        "the written .generated_outputs.stamp must describe the outputs on disk"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&key_stamp).unwrap(),
+        key,
+        "the key stamp must hold exactly the key"
+    );
+    for round in 2..=3 {
+        assert!(
+            !needs_generate(Some(&key), &key_stamp, &generated),
+            "round {round}: the stamps one regeneration writes must settle the predicate"
+        );
+    }
+}
+
+#[test]
+fn test_generation_stamps_write_neither_stamp_when_an_output_will_not_hash() {
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let generated = make_pinned_generated_dir(dir.path());
+    std::fs::remove_file(generated.join("grammar.json")).unwrap();
+    let key_stamp = dir.path().join(KEY_STAMP_NAME);
+
+    write_generation_stamps(&generated, &key_stamp, &fixture_key());
+
+    assert!(
+        !key_stamp.exists(),
+        "no key stamp may vouch for outputs the manifest could not describe"
+    );
+    assert!(
+        !outputs_stamp_of(&generated).exists(),
+        "no partial manifest may be written"
+    );
+}
+
+#[test]
+fn test_inputs_stamp_attests_the_grammar_the_key_names() {
+    // The inputs stamp must describe the grammar that produced the compiled
+    // parser.c, which is the one the key stamp names, not whatever grammar.js
+    // holds when the stamp is written.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let out_dir = dir.path();
+    let generating_grammar = out_dir.join("generating-grammar.js");
+    std::fs::write(
+        &generating_grammar,
+        b"module.exports = grammar({name: 'generated_from'});",
+    )
+    .unwrap();
+    let recorded_sha = sha256_of_path(&generating_grammar).unwrap().unwrap();
+    let crate_grammar = Path::new(BUILD_RS).with_file_name("grammar.js");
+    assert_ne!(
+        Some(recorded_sha.clone()),
+        sha256_of_path(&crate_grammar).unwrap(),
+        "precondition: the recorded sha must differ from the grammar.js on disk"
+    );
+
+    let key_stamp = out_dir.join(KEY_STAMP_NAME);
+    std::fs::write(
+        &key_stamp,
+        generation_key(&recorded_sha, FIXTURE_CLI_VERSION),
+    )
+    .unwrap();
+    let scanner_copy = out_dir.join(GENERATED_DIR).join("scanner.c");
+    std::fs::create_dir_all(scanner_copy.parent().unwrap()).unwrap();
+    std::fs::write(&scanner_copy, b"/* scanner fixture */\n").unwrap();
+    let scanner_sha = sha256_of_path(&scanner_copy).unwrap().unwrap();
+
+    write_inputs_stamp(out_dir, &key_stamp, &scanner_copy);
+
+    assert_eq!(
+        std::fs::read_to_string(out_dir.join(INPUTS_STAMP_NAME)).unwrap(),
+        outputs_manifest_render(&[
+            (recorded_sha, "grammar.js".to_string()),
+            (scanner_sha, "src/scanner.c".to_string()),
+        ]),
+        "the inputs stamp must name the key stamp's grammar sha and the compiled scanner copy"
+    );
+}
+
+#[test]
+fn test_inputs_stamp_is_removed_without_a_key_stamp() {
+    // Without a key stamp the compiled sources are unproven, and a stamp left
+    // in place would attest bytes this build may not have compiled.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let out_dir = dir.path();
+    let stamp = out_dir.join(INPUTS_STAMP_NAME);
+    std::fs::write(&stamp, "stale  grammar.js\n").unwrap();
+    let scanner_copy = out_dir.join(GENERATED_DIR).join("scanner.c");
+    std::fs::create_dir_all(scanner_copy.parent().unwrap()).unwrap();
+    std::fs::write(&scanner_copy, b"/* scanner fixture */\n").unwrap();
+
+    write_inputs_stamp(out_dir, &out_dir.join(KEY_STAMP_NAME), &scanner_copy);
+
+    assert!(
+        !stamp.exists(),
+        "with no key stamp, no inputs stamp may remain"
+    );
+}
+
+#[test]
+#[cfg(unix)] // mode 000 makes the scanner copy unreadable only under Unix DAC
+fn test_inputs_stamp_is_removed_not_unavailable_when_the_scanner_will_not_hash() {
+    // A hasher on PATH that fails on THIS file is a per-file fact, not the
+    // host-wide no-hasher one, so it must remove the stamp and never mint the
+    // UNAVAILABLE sentinel (#5629).
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
+    if !hasher_available() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let out_dir = dir.path();
+    let key_stamp = out_dir.join(KEY_STAMP_NAME);
+    std::fs::write(
+        &key_stamp,
+        generation_key(&"0".repeat(64), FIXTURE_CLI_VERSION),
+    )
+    .unwrap();
+    let stamp = out_dir.join(INPUTS_STAMP_NAME);
+    std::fs::write(&stamp, "stale  grammar.js\n").unwrap();
+    let scanner_copy = out_dir.join(GENERATED_DIR).join("scanner.c");
+    std::fs::create_dir_all(scanner_copy.parent().unwrap()).unwrap();
+    std::fs::write(&scanner_copy, b"/* scanner fixture */\n").unwrap();
+    std::fs::set_permissions(&scanner_copy, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    write_inputs_stamp(out_dir, &key_stamp, &scanner_copy);
+
+    assert!(
+        !stamp.exists(),
+        "an unhashable scanner copy must remove the inputs stamp, found: {:?}",
+        std::fs::read_to_string(&stamp).ok()
+    );
+}
+
+/// Write `body` to `path` with mode 0755.
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Block until `path` can be exec'd.
+///
+/// A fork by another test thread while this one held the script open for
+/// writing makes the first exec fail with ETXTBSY. Once one exec gets past
+/// that, no writer descriptor remains anywhere.
+#[cfg(unix)]
+fn wait_until_executable(path: &Path) {
+    for _ in 0..100 {
+        match std::process::Command::new(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => return,
+        }
+    }
+    panic!("{} stayed busy (ETXTBSY)", path.display());
+}
+
+#[test]
+#[cfg(unix)] // the exec bit find_on_path requires is a Unix permission
+fn test_find_on_path_returns_the_first_executable_match() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let name = "tree-sitter-fixture";
+    let dirs: Vec<std::path::PathBuf> = ["empty", "not-executable", "first", "second"]
+        .iter()
+        .map(|d| dir.path().join(d))
+        .collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(dirs[1].join(name), "#!/bin/sh\n").unwrap();
+    write_executable(&dirs[2].join(name), "#!/bin/sh\n");
+    write_executable(&dirs[3].join(name), "#!/bin/sh\n");
+
+    let path_var = std::env::join_paths(&dirs).unwrap();
+    assert_eq!(
+        find_on_path(name, Some(path_var.as_os_str())),
+        Some(dirs[2].join(name)),
+        "the first executable match wins, past an empty dir and a non-executable file"
+    );
+
+    let only_non_executable = std::env::join_paths(&dirs[..2]).unwrap();
+    assert_eq!(
+        find_on_path(name, Some(only_non_executable.as_os_str())),
+        None,
+        "a same-named file without the exec bit is not a match"
+    );
+}
+
+#[test]
+fn test_find_on_path_is_none_when_the_name_is_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path_var = std::env::join_paths([dir.path()]).unwrap();
+    assert_eq!(
+        find_on_path("tree-sitter-fixture", Some(path_var.as_os_str())),
+        None,
+        "a name on no PATH dir is not found"
+    );
+    assert_eq!(
+        find_on_path("tree-sitter-fixture", None),
+        None,
+        "an unset PATH finds nothing"
+    );
+}
+
+#[test]
+#[cfg(unix)] // the fixture CLIs are shell scripts made executable by mode bits
+fn test_cli_version_returns_the_trimmed_version_line() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cli = dir.path().join("tree-sitter");
+    write_executable(&cli, "#!/bin/sh\necho 'tree-sitter 9.9.9-fixture'\n");
+    wait_until_executable(&cli);
+    assert_eq!(
+        cli_version(&cli),
+        Some("tree-sitter 9.9.9-fixture".to_string()),
+        "cli_version must return the CLI's trimmed --version stdout"
+    );
+
+    let failing = dir.path().join("failing");
+    write_executable(
+        &failing,
+        "#!/bin/sh\necho 'tree-sitter 9.9.9-fixture'\nexit 1\n",
+    );
+    wait_until_executable(&failing);
+    assert_eq!(
+        cli_version(&failing),
+        None,
+        "a CLI whose --version fails reports no version"
+    );
+
+    assert_eq!(
+        cli_version(&dir.path().join("absent")),
+        None,
+        "a nonexistent CLI reports no version"
+    );
 }
