@@ -161,7 +161,7 @@ use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_tr
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::geometry_ops::symbolic_cell_mint::{InstanceMintScope, slot_commit_order};
-use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::graph::{CollectionSubInfo, ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
@@ -1057,6 +1057,37 @@ fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
         }
     }
     out
+}
+
+/// Tear down `col_sub`'s instance slots `slots` before a collection resize
+/// re-stamps them: their cells leave the snapshot's graph and values, the
+/// walk's `values`, and the cache.
+///
+/// The cache invalidation is task 2086 Fix 1 (edit_source), mirrored by task
+/// 2184 (edit_param): a later edit that re-adds a cell at the same (parent,
+/// sub, index, member) key must evaluate freshly instead of returning a stale
+/// `CachedResult` from a prior incarnation. When a count shrinks from n to m,
+/// the surviving indices 0..m keep an identical content_hash (same scoped id,
+/// same child default_expr), so edit_source's Step (9) `diff_value_cells`
+/// classifies them UNCHANGED and does not invalidate them; the create loop
+/// re-inserts them without `cache.record_evaluation`. Without this, the stale
+/// entry survives and a later edit that re-expands the sub short-circuits via
+/// `basis_version` to wrong cached values (pinned by the grow→shrink→regrow
+/// regression tests). Only members of `col_sub`'s current (surviving) shape
+/// are torn down here; in edit_source a member absent from the new shape is
+/// absent from the new graph, so Step (9) invalidates it as `removed`.
+fn tear_down_collection_slots(
+    snapshot: &mut crate::snapshot::Snapshot,
+    values: &mut ValueMap,
+    cache: &mut CacheStore,
+    col_sub: &CollectionSubInfo,
+    slots: std::ops::Range<i64>,
+) {
+    for scoped_id in snapshot.graph.remove_collection_slots(col_sub, slots) {
+        snapshot.values.remove(&scoped_id);
+        values.remove(&scoped_id);
+        cache.invalidate(&NodeId::Value(scoped_id));
+    }
 }
 
 /// A value `edit_source`'s main walk commits for a cell, and whether it took
@@ -2493,22 +2524,13 @@ impl Engine {
                 if let Some(w) = old_warn {
                     diagnostics.push(w);
                 }
-                for i in 0..old_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
-                        new_snapshot.values.remove(&scoped_id);
-                        values.remove(&scoped_id);
-                        // Task 2184 (mirrors task 2086 Fix 1 in edit_source): invalidate cache
-                        // so a subsequent edit_param that re-grows this collection sub at the
-                        // same scoped index evaluates freshly instead of returning a stale
-                        // CachedResult from a prior incarnation.
-                        self.cache.invalidate(&NodeId::Value(scoped_id));
-                    }
-                }
+                tear_down_collection_slots(
+                    &mut new_snapshot,
+                    &mut values,
+                    &mut self.cache,
+                    col_sub,
+                    0..old_count,
+                );
 
                 // Create new instances based on new count
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
@@ -2526,8 +2548,7 @@ impl Engine {
                 }
                 let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    let scoped_entity = col_sub.slot_entity(i);
                     for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
@@ -4605,45 +4626,13 @@ impl Engine {
                 if let Some(w) = old_warn {
                     diagnostics.push(w);
                 }
-                for i in 0..old_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
-                        new_snapshot.values.remove(&scoped_id);
-                        values.remove(&scoped_id);
-                        // Task 2086 Fix 1: invalidate cache so a subsequent edit
-                        // that re-adds a scoped cell at the same (parent, sub,
-                        // index, member) key evaluates freshly instead of returning
-                        // a stale CachedResult from a prior incarnation.
-                        // Scope: this loop iterates `0..old_count` using the NEW
-                        // `col_sub.child_value_cells` (the surviving shape), so it
-                        // only covers members present in the new shape.  Scoped cells
-                        // for members absent from the new shape are invalidated by
-                        // Step (9)'s `diff_value_cells.removed` path (those cells are
-                        // absent from `new_snapshot.graph.value_cells` and therefore
-                        // classified as `removed` by `diff_value_cells`).
-                        // Why Phase 4 still needs this despite Step (9): Step (9)
-                        // catches index-count reductions (old index absent from new
-                        // graph) and entirely-removed subs via `diff_value_cells`.
-                        // This Fix 1 path catches same-index re-incarnation: when
-                        // count shrinks from n to m, the surviving indices 0..m have
-                        // an identical content_hash in both old and new snapshots
-                        // (same scoped_id string + same default_expr from unchanged
-                        // child template), so `diff_value_cells` classifies them as
-                        // UNCHANGED and Step (9) does NOT invalidate them.  Phase 4's
-                        // remove loop tears them down and its create loop re-inserts
-                        // them without calling cache.record_evaluation; without this
-                        // explicit invalidation the stale cache entry at V_A would
-                        // survive and a later edit_source that re-expands the sub
-                        // would short-circuit via `basis_version` and return wrong
-                        // cached values (pinned by the grow→shrink→regrow regression
-                        // test).
-                        self.cache.invalidate(&NodeId::Value(scoped_id));
-                    }
-                }
+                tear_down_collection_slots(
+                    &mut new_snapshot,
+                    &mut values,
+                    &mut self.cache,
+                    col_sub,
+                    0..old_count,
+                );
 
                 // Create new instances based on new count
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
@@ -4652,8 +4641,7 @@ impl Engine {
                 }
                 let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    let scoped_entity = col_sub.slot_entity(i);
                     for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));

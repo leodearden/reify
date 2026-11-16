@@ -1,6 +1,7 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind,
@@ -16,6 +17,8 @@ pub mod cell_contributions;
 pub(crate) mod geometry_cell_link_fixture;
 #[cfg(test)]
 mod scalar_geometry_cell_realization_tests;
+#[cfg(test)]
+mod sub_instance_registry_tests;
 #[cfg(test)]
 mod value_cell_fold_tests;
 
@@ -211,6 +214,14 @@ pub struct CollectionSubInfo {
     pub child_value_cells: Vec<(String, ValueCellKind, Type, Option<CompiledExpr>)>,
 }
 
+impl CollectionSubInfo {
+    /// The scoped entity of this collection's `index`th instance slot,
+    /// `P.s[i]`.
+    pub(crate) fn slot_entity(&self, index: i64) -> String {
+        format!("{}.{}[{}]", self.parent_entity, self.sub_name, index)
+    }
+}
+
 /// Metadata for a keyed sub-component in the evaluation graph.
 ///
 /// A keyed sub (`sub vents : Keyed<Vent> { "intake" => {...} }`) uses
@@ -276,8 +287,9 @@ pub struct EvaluationGraph {
     /// are stamped from. Read through [`Self::sub_instance_template`].
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
-    /// collection resizes stamp through [`Self::insert_sub_instance_cell`],
-    /// which records the slot as it inserts the cell, so the two do not drift.
+    /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
+    /// remove through [`Self::remove_collection_slots`], so the registry and
+    /// `value_cells` do not drift.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -648,19 +660,52 @@ impl EvaluationGraph {
         self.sub_instance_templates.insert(entity, template);
     }
 
-    /// Stamp `node`, a cell of sub instance `node.id.entity` whose cells come
-    /// from `template`, into `value_cells`, recording the instance if it is not
-    /// yet recorded.
+    /// Stamp `node`, a cell of sub instance `node.id.entity`, from `template`
+    /// into `value_cells`, recording (or correcting) the instance's template so
+    /// the registry always names the template its cells came from.
     pub(crate) fn insert_sub_instance_cell(&mut self, template: &str, node: ValueCellNode) {
-        if !self.sub_instance_templates.contains_key(&node.id.entity) {
+        if self.sub_instance_template(&node.id.entity) != Some(template) {
             self.record_sub_instance(node.id.entity.clone(), template.to_string());
         }
         self.value_cells.insert(node.id.clone(), node);
     }
 
-    /// Forget sub instance `entity`, whose cells have left `value_cells`.
-    pub(crate) fn forget_sub_instance(&mut self, entity: &str) {
-        self.sub_instance_templates.remove(&entity.to_string());
+    /// Remove `col_sub`'s instance slots `slots`, each holding a cell per
+    /// `child_value_cells` member, and forget them; returns those cells' ids,
+    /// slot by slot in member order, none of which remains in `value_cells`.
+    pub(crate) fn remove_collection_slots(
+        &mut self,
+        col_sub: &CollectionSubInfo,
+        slots: Range<i64>,
+    ) -> Vec<ValueCellId> {
+        let entities: Vec<String> = slots.map(|index| col_sub.slot_entity(index)).collect();
+        let removed: Vec<ValueCellId> = entities
+            .iter()
+            .flat_map(|entity| {
+                col_sub
+                    .child_value_cells
+                    .iter()
+                    .map(move |(member, ..)| ValueCellId::new(entity, member))
+            })
+            .collect();
+        for id in &removed {
+            self.value_cells.remove(id);
+        }
+        for entity in &entities {
+            self.sub_instance_templates.remove(entity);
+        }
+        debug_assert!(
+            {
+                let forgotten: HashSet<&String> = entities.iter().collect();
+                self.value_cells
+                    .keys()
+                    .all(|id| !forgotten.contains(&id.entity))
+            },
+            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name",
+            col_sub.parent_entity,
+            col_sub.sub_name,
+        );
+        removed
     }
 
     /// Determine which constraint IDs are active given the current values.
