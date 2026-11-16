@@ -28,9 +28,11 @@ structure def FlatPart {
 // `Beam`'s trait-typed params default to structure constructors, so a bare
 // `Beam()` yields a `Value::StructureInstance` whose `material` and `load`
 // fields are *themselves* nested `Value::StructureInstance` values
-// (step-18's nested-default recursion). `load` defaults to `Gravity()`, a
-// target-free Load: a `PointLoad` needs a typed `point` selector over
-// geometry, which a param default cannot reach.
+// (step-18's nested-default recursion). `load` defaults to the target-free
+// `Gravity()` because a let-constructed instance such as `let primary = Beam()`
+// evaluates a param default that reads a sibling `let` to undef: a
+// `PointLoad(point: vertex(body, "tip"))` default would print `point: undef`
+// there, until #10098 lands.
 structure def Beam {
     param material : ElasticMaterial = Steel_AISI_1045()
     param load     : Load            = Gravity()
