@@ -44,6 +44,11 @@ fn each_command_resolves_an_imported_structure() {
             "multi_file/tuned_rig.ri",
             "Rig.gap: objective=1 term(s)",
         ),
+        (
+            &["doc", "--format", "markdown"],
+            "multi_file/main.ri",
+            "structure Rig",
+        ),
     ];
     for &(cmd, fixture, expected) in rows {
         let out = run(cmd, None, fixture);
@@ -62,7 +67,12 @@ fn each_command_resolves_an_imported_structure() {
 
 #[test]
 fn each_command_follows_a_cfg_gated_import_only_when_selected() {
-    let commands: &[&[&str]] = &[&["test"], &["report", "--bom"], &["explain"]];
+    let commands: &[&[&str]] = &[
+        &["test"],
+        &["report", "--bom"],
+        &["explain"],
+        &["doc", "--format", "markdown"],
+    ];
     for &cmd in commands {
         for (cfg, resolves) in [("target=wasm", true), ("target=linux", false)] {
             let out = run(cmd, Some(cfg), "multi_file_cfg/wasm_only.ri");
@@ -76,4 +86,18 @@ fn each_command_follows_a_cfg_gated_import_only_when_selected() {
             );
         }
     }
+}
+
+#[test]
+fn doc_documents_only_the_entry_s_own_structures() {
+    let out = run(&["doc", "--format", "markdown"], None, "multi_file/main.ri");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success()
+            && stdout.contains("structure Rig")
+            && !stdout.contains("structure Pulley"),
+        "`reify doc` must document the entry's own Rig and not the imported Pulley \
+         (D-12, docs/prds/v0_6/resolution-unification.md)\n{}",
+        describe(&out)
+    );
 }
