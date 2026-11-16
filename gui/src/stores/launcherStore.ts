@@ -31,15 +31,14 @@ export function isDocumentLoaded(editor: { openFiles: readonly unknown[] }): boo
 }
 
 /**
- * The launch file's failure as a Start-view error naming the file. A read
- * failure's error already names it; a panic during the load, which leaves no
- * buffer open, does not.
+ * The launch file's failure as a Start-view error. The file came from the
+ * launch, not from the Start view, so the message names it ahead of the
+ * backend's error.
  */
 export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): LaunchErrorInfo {
-  const namesFile = failure.error.includes(failure.path);
   return {
     code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
-    message: namesFile ? failure.error : `Could not open ${failure.path}: ${failure.error}`,
+    message: `Could not open ${failure.path}: ${failure.error}`,
   };
 }
 
