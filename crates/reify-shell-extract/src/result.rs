@@ -1055,9 +1055,10 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
             ));
         }
 
-        // Parallel-array invariants from SegmentationResult's docstring
-        // (the `SegmentationResult` rustdoc in `segmentation.rs`): `vertex_labels` is parallel to
-        // `mesh.vertices`, `triangle_labels` is parallel to
+        // Parallel-array invariants from the field rustdocs of
+        // `SegmentationResult::vertex_labels` and `::triangle_labels`:
+        // `vertex_labels` is parallel to `mesh.vertices`,
+        // `triangle_labels` is parallel to
         // `mesh.triangles`. Enforce at the deserialization boundary so a
         // tampered cache entry cannot produce a struct whose parallel
         // arrays disagree — the invariant the producer-side
