@@ -462,7 +462,8 @@ a v0.1.0 (/fixture/crates/a)|
 
 #[test]
 fn check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets() {
-    let fixtures: [(&str, fn() -> Fixture); 2] = [
+    type BuildFixture = fn() -> Fixture;
+    let fixtures: [(&str, BuildFixture); 2] = [
         ("green", || {
             Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION])).tree("a", TREE_A)
         }),
