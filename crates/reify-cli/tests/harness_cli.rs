@@ -107,6 +107,8 @@ mod cli_eval_build_multi_file;
 mod cli_eval_data_carrying_enum;
 #[path = "harness_cli/cli_eval_datum_units.rs"]
 mod cli_eval_datum_units;
+#[path = "harness_cli/cli_eval_dir_builtin.rs"]
+mod cli_eval_dir_builtin;
 #[path = "harness_cli/cli_eval_direction_display.rs"]
 mod cli_eval_direction_display;
 #[path = "harness_cli/cli_eval_fallback_recovery.rs"]
