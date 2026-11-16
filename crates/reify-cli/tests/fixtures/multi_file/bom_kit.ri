@@ -1,0 +1,7 @@
+module bom_kit
+
+import fasteners
+
+structure def Kit {
+    sub bolt = Bolt()
+}
