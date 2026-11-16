@@ -36,6 +36,7 @@ from _pcc_test_support import (
     _ts_stub_not_executable,
     make_fixture_repo,
     probe_context,
+    record_calls,
     recording_runner,
     trust_ctx,
 )
@@ -1458,10 +1459,12 @@ class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
 
     def test_a_vouched_lone_binary_runs_the_probes(self):
         release, ctx = trust_ctx(self._fresh_root(), self._RELEASE, lambda head: head + "\n")
-        runner, calls = recording_runner()
+        runner, calls = record_calls(self._all_pass_runner())
         rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
-        self.assertNotEqual(rc, 64, out + err)
-        self.assertTrue(calls)
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            probes = pcc.load_probe_set(fh.read())
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(calls), len(probes), err)
         for _probe, probe_ctx, _timeout in calls:
             self.assertEqual(probe_ctx.reify_bin, release)
 
