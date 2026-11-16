@@ -60,6 +60,9 @@
 #        plain dir fails open under a ceiling) yet never hides a checkout's own
 #        root, and only "no repository at all" fails open: an unborn HEAD and a
 #        linked worktree whose gitdir was pruned are reasons
+#   26:  resolve — judging repo_root's HEAD costs ONE git process, whatever git
+#        answers: a vouched checkout (control), an unborn HEAD (a reason naming
+#        git's own message), no repository at all (fail-open)
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
@@ -799,6 +802,87 @@ assert "resolve: a linked worktree whose gitdir was pruned is not fail-open → 
 
 assert "resolve: a linked worktree whose gitdir was pruned → the line says HEAD is 'undeterminable'" \
     text_contains "$RUN_OUT" 'undeterminable'
+
+# ==============================================================================
+# Check 26: judging repo_root's HEAD costs ONE git process, whatever git answers.
+#           A PATH shim logs each git invocation and execs the real git, so the
+#           verdicts stay git's own and the count is observable without patching
+#           any private name.  The vouched checkout runs first as the control: a
+#           shim that never intercepted would log 0 calls and fail it, so the
+#           rows after it cannot pass vacuously.  The shim has its log path and
+#           the real git written into its body: the home unsets every GIT_*
+#           variable before it runs git, so no GIT_* name could carry them in.
+# ==============================================================================
+echo ""
+echo "--- Check 26: resolve judges repo_root's HEAD with one git process ---"
+
+GIT_COUNT_DIR="$TMPDIR_BINFRESH/git-count"
+GIT_COUNT_LOG="$TMPDIR_BINFRESH/git-count.log"
+REAL_GIT=$(command -v git)
+mkdir -p "$GIT_COUNT_DIR"
+cat > "$GIT_COUNT_DIR/git" <<SHIM
+#!/bin/sh
+printf '%s\n' "\$*" >> "$GIT_COUNT_LOG"
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod 755 "$GIT_COUNT_DIR/git"
+
+# run_resolve_counting_git <repo_root> — `resolve` with the shim first on PATH,
+# its log emptied beforehand, so the log holds this run's git calls alone.
+run_resolve_counting_git() {
+    : > "$GIT_COUNT_LOG"
+    run_captured env PATH="$GIT_COUNT_DIR:$PATH" bash "$FRESHNESS_LIB" resolve "$1"
+}
+
+# git_calls_were <n> — an assert command: succeeds when the shim logged exactly
+# n git invocations, and prints the expected and actual counts and the logged
+# argv lines when it did not (assert replays only what its command printed).
+git_calls_were() {
+    local calls call
+    mapfile -t calls < "$GIT_COUNT_LOG"
+    [ "${#calls[@]}" -eq "$1" ] && return 0
+    printf 'expected %s git invocation(s), saw %s:\n' "$1" "${#calls[@]}"
+    for call in "${calls[@]}"; do
+        printf '  git %s\n' "$call"
+    done
+    return 1
+}
+
+run_resolve_counting_git "$RESOLVE_REPO_D"
+
+assert "control: resolve on a vouched checkout → exit 0" \
+    test "$RUN_RC" -eq 0
+
+assert "control: resolve on a vouched checkout → its binary" \
+    test "$RUN_OUT" = "$D_RELEASE_BIN"
+
+assert "control: resolve on a vouched checkout → ONE git invocation (the shim sees the run)" \
+    git_calls_were 1
+
+run_resolve_counting_git "$UNBORN_REPO"
+
+assert "resolve: an unborn HEAD → exit 1 (REIFY_BIN_UNVOUCHED)" \
+    test "$RUN_RC" -eq 1
+
+assert "resolve: an unborn HEAD → the line says HEAD is 'undeterminable'" \
+    text_contains "$RUN_OUT" 'undeterminable'
+
+assert "resolve: an unborn HEAD → the line carries git's own first error line" \
+    text_contains "$RUN_OUT" 'Needed a single revision'
+
+assert "resolve: an unborn HEAD → judged with ONE git invocation" \
+    git_calls_were 1
+
+run_resolve_counting_git "$NON_GIT_DIR"
+
+assert "resolve: no repository at all → exit 0 (fail-open)" \
+    test "$RUN_RC" -eq 0
+
+assert "resolve: no repository at all → the built binary" \
+    test "$RUN_OUT" = "$NON_GIT_BIN"
+
+assert "resolve: no repository at all → judged with ONE git invocation" \
+    git_calls_were 1
 
 # -- Summary ------------------------------------------------------------------
 test_summary
