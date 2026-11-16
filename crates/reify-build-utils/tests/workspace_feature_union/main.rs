@@ -31,7 +31,8 @@ fn real_workspace_resolves_every_member_like_the_workspace() {
         Some(2) => {
             "check could not obtain or read an input, named on stderr: this is not a finding. \
              A cold cargo cache is not a cause, since check fetches the locked packages first; \
-             a failed `cargo fetch` means the registry was unreachable."
+             a failed `cargo fetch` (an unreachable registry, a full CARGO_HOME, a lockfile \
+             that needs updating) is named with cargo's message below."
         }
         _ => {
             "a member resolves an external package unlike --workspace, or compiles a unit to \
@@ -386,10 +387,13 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
     );
 }
 
+fn zz_build_depends_on_the_union() -> Vec<Member> {
+    vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])]
+}
+
 #[test]
 fn check_reds_when_a_covered_member_build_depends_on_the_union() {
-    let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
-    let fixture = Fixture::metadata_only(&members);
+    let fixture = Fixture::metadata_only(&zz_build_depends_on_the_union());
     let manifest = fixture.manifest("zz");
     assert_findings(
         &fixture.check(),
@@ -463,18 +467,19 @@ a v0.1.0 (/fixture/crates/a)|
 #[test]
 fn check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets() {
     type BuildFixture = fn() -> Fixture;
-    let fixtures: [(&str, BuildFixture); 2] = [
-        ("green", || {
+    let fixtures: [(&str, i32, BuildFixture); 2] = [
+        ("green", 0, || {
             Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION])).tree("a", TREE_A)
         }),
-        ("SPLIT", || {
+        ("SPLIT", 1, || {
             Fixture::new(&yy_and_zz_build_with_u(), WS_U_ROOTS_DIFFER_IN_LEAF_LOG)
                 .tree("yy", TREE_YY_LOG_MAX_LEVEL_DEBUG)
                 .tree("zz", TREE_ZZ_LOG_WITHOUT_FEATURES)
         }),
     ];
-    for (label, fixture) in fixtures {
+    for (label, warm_exit, fixture) in fixtures {
         let warm = fixture().check();
+        assert_exit(&warm, warm_exit, label);
         let cold_fixture = fixture().cold_cache();
         let cold = cold_fixture.check();
         let both = format!(
@@ -523,8 +528,7 @@ fn check_exits_2_naming_cargo_fetch_when_the_registry_is_unreachable() {
 /// registry, so it is reported even where a fetch would fail.
 #[test]
 fn check_reports_a_host_union_finding_without_fetching() {
-    let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
-    let fixture = Fixture::metadata_only(&members)
+    let fixture = Fixture::metadata_only(&zz_build_depends_on_the_union())
         .cold_cache()
         .unreachable_registry();
     let out = fixture.check();
