@@ -437,6 +437,38 @@ mod tests {
         )
     }
 
+    /// The params of the fixture's template `T` (10 mm) and of its sub instance
+    /// `P.s` (20 mm).
+    fn fixture_param_values() -> ValueMap {
+        let mut values = ValueMap::new();
+        for (entity, w) in [("T", 0.01), ("P.s", 0.02)] {
+            values.insert(id(entity, "w"), Value::length(w));
+            values.insert(id(entity, "on"), Value::Bool(true));
+        }
+        values
+    }
+
+    /// What the instance arm answers at `cell` for the kind and expression of
+    /// `P.s.b`, over `values`. Only `cell` varies between calls.
+    fn mint_instance_b_expression_at(
+        graph: &EvaluationGraph,
+        values: &ValueMap,
+        cell: &ValueCellId,
+    ) -> Option<Value> {
+        let instance_b = id("P.s", "b");
+        InstanceMintScope {
+            graph,
+            values,
+            functions: &[],
+            meta_map: &HashMap::new(),
+        }
+        .mint_undef_instance_cell(
+            cell,
+            node_of(graph, &instance_b).kind,
+            expr_of(graph, &instance_b),
+        )
+    }
+
     #[test]
     fn project_instance_reads_rekeys_the_instance_and_its_nested_subs_onto_the_template() {
         let mut values = ValueMap::new();
@@ -721,6 +753,59 @@ mod tests {
             ["w", "b"],
             "`b`'s realization reads `w`, so `w` must commit first or `b`'s handle \
              folds a `w` the slot has not evaluated"
+        );
+    }
+
+    /// The edit path asks the instance arm about every `Undef` cell, and takes
+    /// its own template-scope arm for the ones the instance arm declines.
+    #[test]
+    fn the_instance_mint_answers_none_for_a_cell_outside_every_sub_instance() {
+        let graph = fixture_graph();
+        let values = fixture_param_values();
+
+        assert_eq!(
+            mint_instance_b_expression_at(&graph, &values, &id("T", "b")),
+            None,
+            "`T` is a template, not a sub instance: the instance arm must decline \
+             `T.b` rather than mint it, so the caller's template-scope arm runs"
+        );
+        let minted = mint_instance_b_expression_at(&graph, &values, &id("P.s", "b"));
+        assert!(
+            matches!(minted, Some(Value::GeometryHandle { .. })),
+            "control: the same kind and expression at the sub instance's `P.s.b` \
+             must mint, so the None comes from the cell's entity and not its \
+             expression: {minted:?}"
+        );
+    }
+
+    /// `b`'s expression does not read `w`, only `b`'s realization does, so the
+    /// decline covers a realization's reads too.
+    #[test]
+    fn the_instance_mint_declines_to_undef_while_the_instance_lacks_a_read_its_template_holds() {
+        let graph = fixture_graph();
+        let with_instance_w = fixture_param_values();
+        let mut without_instance_w = with_instance_w.clone();
+        without_instance_w.remove(&id("P.s", "w"));
+        let instance_b = id("P.s", "b");
+
+        assert_eq!(
+            mint_instance_b_expression_at(&graph, &without_instance_w, &instance_b),
+            Some(Value::Undef),
+            "`T.w` is held but `P.s.w` is not committed yet: minting `P.s.b` over \
+             the instance's values would fold a `w` it has not evaluated, so the \
+             instance arm must decline to Undef"
+        );
+        let minted = mint_instance_b_expression_at(&graph, &with_instance_w, &instance_b);
+        assert!(
+            matches!(
+                minted,
+                Some(Value::GeometryHandle {
+                    kernel_handle: None,
+                    ..
+                })
+            ),
+            "control: once `P.s.w` is committed `P.s.b` must mint, so the decline \
+             comes from the missing read: {minted:?}"
         );
     }
 }
