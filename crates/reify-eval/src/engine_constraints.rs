@@ -501,8 +501,8 @@ impl Engine {
     /// language-level paths.  All results are woven back in caller (input)
     /// order via a slot vector so that neither path needs to know about the
     /// other.  The fast-path early-return (no registered impls, no
-    /// RepresentationWithin) is preserved so non-assertion modules incur zero
-    /// overhead (C2).
+    /// RepresentationWithin) is preserved so non-assertion modules skip the
+    /// interception pre-pass entirely (C2).
     ///
     /// ## Surfaces that do not measure (task-6169 ζ, C-SURFACE 1)
     ///
@@ -916,10 +916,22 @@ impl Engine {
     /// Run the language-level checker with the engine's `@optimized` compute
     /// registry attached, so a constraint that calls an `@optimized` function
     /// is decided from its trampoline result.
+    ///
+    /// Only a call to a function carrying an `optimized_target` can dispatch,
+    /// so a batch whose `functions` carry none is checked without snapshotting
+    /// the registry.
     fn check_language_level(&self, input: &ConstraintInput<'_>) -> Vec<ConstraintResult> {
-        let dispatcher = crate::OptimizedComputeDispatcher::from_registry(&self.compute_registry);
-        self.constraint_checker
-            .check_with_dispatch(input, Some(&dispatcher))
+        let dispatcher = input
+            .functions
+            .iter()
+            .any(|f| f.optimized_target.is_some())
+            .then(|| crate::OptimizedComputeDispatcher::from_engine(self));
+        self.constraint_checker.check_with_dispatch(
+            input,
+            dispatcher
+                .as_ref()
+                .map(|d| d as &dyn reify_ir::ComputeDispatch),
+        )
     }
 
     /// The engine facts that select [`unmeasured_reason`]'s remedy.
