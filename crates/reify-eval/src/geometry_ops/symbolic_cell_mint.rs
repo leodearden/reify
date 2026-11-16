@@ -264,7 +264,8 @@ fn instance_mint_reads(
 
 /// The order each slot of `col_sub` must commit its cells in, so no instance
 /// mint folds its hash over a sibling the slot has not yet evaluated. Cells in
-/// a dependency cycle come last, in declaration order.
+/// a dependency cycle, and cells stranded downstream of one, come last, in
+/// declaration order.
 pub(crate) fn slot_commit_order<'c>(
     graph: &EvaluationGraph,
     col_sub: &'c CollectionSubInfo,
@@ -355,6 +356,7 @@ mod tests {
         slot_commit_order,
     };
     use crate::deps::extract_dependency_trace;
+    use crate::geometry_ops::try_eval_symbolic_topology_selector;
     use crate::graph::geometry_cell_link_fixture::{
         GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
     };
@@ -366,9 +368,26 @@ mod tests {
 
     type SlotCell = (String, ValueCellKind, Type, Option<CompiledExpr>);
 
+    /// The structure the dependency-order tests stamp their hand-built slots
+    /// from, and whose siblings the cells of those slots read.
+    const ELEMENT: &str = "E";
+
     /// A slot of `Rack.items`, stamped from `structure_name`, declaring `cells`
-    /// in order.
+    /// in order. Every read of a cell must name `structure_name`: a read outside
+    /// it is never counted among the slot's cells, which would leave the order
+    /// to the scheduling core's tie-break, and a test of dependency order
+    /// passing or failing for the wrong reason.
     fn slot(structure_name: &str, cells: Vec<SlotCell>) -> CollectionSubInfo {
+        for (member, .., default_expr) in &cells {
+            let Some(expr) = default_expr else { continue };
+            for read in extract_dependency_trace(expr).reads {
+                assert_eq!(
+                    read.entity, structure_name,
+                    "precondition: `{member}` reads `{read}`, which is no cell of \
+                     `{structure_name}`"
+                );
+            }
+        }
         CollectionSubInfo {
             parent_entity: "Rack".to_string(),
             sub_name: "items".to_string(),
@@ -378,17 +397,17 @@ mod tests {
         }
     }
 
-    /// The let `member` of `E`, whose expression reads its sibling `E.read`.
+    /// The let `member` of `ELEMENT`, whose expression reads its sibling `read`.
     fn let_reading(member: &str, read: &str) -> SlotCell {
         (
             member.to_string(),
             ValueCellKind::Let,
             Type::Int,
-            Some(CompiledExpr::value_ref(id("E", read), Type::Int)),
+            Some(CompiledExpr::value_ref(id(ELEMENT, read), Type::Int)),
         )
     }
 
-    /// The param `member` of `E`, whose default reads nothing.
+    /// The param `member` of `ELEMENT`, whose default reads nothing.
     fn param_with_literal_default(member: &str) -> SlotCell {
         (
             member.to_string(),
@@ -406,10 +425,15 @@ mod tests {
             .collect()
     }
 
+    /// The evaluation graph of `src`, which must compile.
+    fn graph_of(src: &str) -> EvaluationGraph {
+        EvaluationGraph::from_templates(&parse_and_compile(src).templates)
+    }
+
     /// The graph of the shared geometry-cell fixture: template `T`, and `P`
     /// stamping it as the sub instance `P.s`.
     fn fixture_graph() -> EvaluationGraph {
-        EvaluationGraph::from_templates(&parse_and_compile(SRC).templates)
+        graph_of(SRC)
     }
 
     fn node_of<'g>(graph: &'g EvaluationGraph, cell: &ValueCellId) -> &'g ValueCellNode {
@@ -448,24 +472,87 @@ mod tests {
         values
     }
 
-    /// What the instance arm answers at `cell` for the kind and expression of
-    /// `P.s.b`, over `values`. Only `cell` varies between calls.
-    fn mint_instance_b_expression_at(
+    /// The cells `values` holds for the fixture's sub instance `P.s`, keyed as
+    /// the template `T`'s: what the graph mint of `T.m` must be given to answer
+    /// as the instance mint of `P.s.m` does.
+    fn instance_keyed_as_template(values: &ValueMap) -> ValueMap {
+        let mut keyed_as_template = ValueMap::new();
+        for (cell, value) in values.iter().filter(|(cell, _)| cell.entity == "P.s") {
+            keyed_as_template.insert(id("T", &cell.member), value.clone());
+        }
+        keyed_as_template
+    }
+
+    /// What the graph mint answers at the template cell `cell` over `values`,
+    /// which is keyed in the template's scope.
+    fn graph_mint(graph: &EvaluationGraph, cell: &ValueCellId, values: &ValueMap) -> Option<Value> {
+        crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+            cell,
+            graph,
+            values,
+            &[],
+            &HashMap::new(),
+        )
+    }
+
+    /// What the instance arm answers at `cell` over `values`, for the kind and
+    /// expression of `like`. Two calls whose answers are compared fix `like` and
+    /// vary `cell`, so the difference is the cell's and not the expression's.
+    fn mint_instance_at(
         graph: &EvaluationGraph,
         values: &ValueMap,
+        like: &ValueCellId,
         cell: &ValueCellId,
     ) -> Option<Value> {
-        let instance_b = id("P.s", "b");
         InstanceMintScope {
             graph,
             values,
             functions: &[],
             meta_map: &HashMap::new(),
         }
-        .mint_undef_instance_cell(
-            cell,
-            node_of(graph, &instance_b).kind,
-            expr_of(graph, &instance_b),
+        .mint_undef_instance_cell(cell, node_of(graph, like).kind, expr_of(graph, like))
+    }
+
+    /// A selector let over a scalar geometry let, which the shared fixture
+    /// lacks: `Block.side` is a `face` of `Block.body`, and `Shelf` stamps
+    /// `Block` as the sub instance `Shelf.block`.
+    const SELECTOR_SRC: &str = r#"structure Block {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+    let side = face(body, "x_max")
+}
+structure Shelf {
+    sub block = Block()
+}"#;
+
+    /// The graph of [`SELECTOR_SRC`], and the `body`, which `side` reads, that
+    /// `Block` (10 mm wide) and `Shelf.block` (20 mm wide) each commit.
+    fn selector_fixture() -> (EvaluationGraph, Value, Value) {
+        let graph = graph_of(SELECTOR_SRC);
+        let body_of_width = |w: f64| {
+            let mut params = ValueMap::new();
+            params.insert(id("Block", "w"), Value::length(w));
+            graph_mint(&graph, &id("Block", "body"), &params)
+                .unwrap_or_else(|| panic!("precondition: `Block.body` must mint at {w} m"))
+        };
+        let (template_body, instance_body) = (body_of_width(0.01), body_of_width(0.02));
+        assert_ne!(
+            template_body, instance_body,
+            "precondition: the two widths must mint unequal bodies, or a selector over \
+             the instance's body is indistinguishable from one over the template's"
+        );
+        (graph, template_body, instance_body)
+    }
+
+    /// The selector `Block.side`'s expression mints over `body`, as template
+    /// scope mints it.
+    fn side_selector_over(graph: &EvaluationGraph, body: &Value) -> Option<Value> {
+        let mut scope = ValueMap::new();
+        scope.insert(id("Block", "body"), body.clone());
+        try_eval_symbolic_topology_selector(
+            expr_of(graph, &id("Block", "side")),
+            &scope,
+            &mut Vec::new(),
         )
     }
 
@@ -556,51 +643,14 @@ mod tests {
     /// whether or not the two mints agree on list cells.
     #[test]
     fn the_instance_mint_of_a_sub_cell_pairs_with_the_graph_mint_of_its_template_cell() {
-        let graph = EvaluationGraph::from_templates(&parse_and_compile(SRC).templates);
-        let params = [
-            ("w", Value::length(0.01), Value::length(0.02)),
-            ("on", Value::Bool(true), Value::Bool(true)),
-        ];
-        let mut values = ValueMap::new();
-        let mut instance_values_at_template_scope = ValueMap::new();
-        for (member, template_value, instance_value) in params {
-            values.insert(id("T", member), template_value);
-            values.insert(id("P.s", member), instance_value.clone());
-            instance_values_at_template_scope.insert(id("T", member), instance_value);
-        }
-        let meta = HashMap::new();
-        let graph_mint = |cell: &ValueCellId, values: &ValueMap| {
-            crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
-                cell,
-                &graph,
-                values,
-                &[],
-                &meta,
-            )
-        };
-        let instance_cell_node = |member: &str| {
-            let cell = id("P.s", member);
-            let node = graph
-                .value_cells
-                .get(&cell)
-                .unwrap_or_else(|| panic!("precondition: `{cell}` must be stamped"));
-            let expr = node
-                .default_expr
-                .as_ref()
-                .unwrap_or_else(|| panic!("precondition: `{cell}` must have an expr"));
-            (cell, node.kind, expr)
-        };
-        let scope = InstanceMintScope {
-            graph: &graph,
-            values: &values,
-            functions: &[],
-            meta_map: &meta,
-        };
+        let graph = fixture_graph();
+        let values = fixture_param_values();
+        let instance_values_at_template_scope = instance_keyed_as_template(&values);
         assert_eq!(graph.sub_instance_template("P.s"), Some("T"));
         for member in SCALAR_GEOMETRY_MEMBERS {
             assert!(
                 matches!(
-                    graph_mint(&id("T", member), &values),
+                    graph_mint(&graph, &id("T", member), &values),
                     Some(Value::GeometryHandle {
                         kernel_handle: None,
                         ..
@@ -612,7 +662,7 @@ mod tests {
         for member in GEOMETRY_LIST_MEMBERS {
             assert_some_realization_links(&graph, &id("T", member));
         }
-        let (_, _, b_expr) = instance_cell_node("b");
+        let b_expr = expr_of(&graph, &id("P.s", "b"));
         assert!(
             !extract_dependency_trace(b_expr)
                 .reads
@@ -621,8 +671,8 @@ mod tests {
              `b`'s realization bring `w` into the instance's projection"
         );
         assert_ne!(
-            graph_mint(&id("T", "b"), &values),
-            graph_mint(&id("T", "b"), &instance_values_at_template_scope),
+            graph_mint(&graph, &id("T", "b"), &values),
+            graph_mint(&graph, &id("T", "b"), &instance_values_at_template_scope),
             "control: `T.b`'s handle must fold `w`, or pairing `P.s.b` is vacuous \
              on the read projection"
         );
@@ -631,12 +681,12 @@ mod tests {
             .into_iter()
             .chain(GEOMETRY_LIST_MEMBERS)
         {
-            let (instance_cell, kind, expr) = instance_cell_node(member);
+            let instance_cell = id("P.s", member);
 
             assert_eq!(
-                scope.mint_undef_instance_cell(&instance_cell, kind, expr),
+                mint_instance_at(&graph, &values, &instance_cell, &instance_cell),
                 Some(
-                    graph_mint(&id("T", member), &instance_values_at_template_scope)
+                    graph_mint(&graph, &id("T", member), &instance_values_at_template_scope)
                         .unwrap_or(Value::Undef)
                 ),
                 "the instance arm must mint `{instance_cell}` as the graph mint mints \
@@ -653,7 +703,7 @@ mod tests {
     #[test]
     fn a_slot_commits_a_cell_after_the_sibling_it_reads_whatever_its_declaration_order() {
         let col_sub = slot(
-            "E",
+            ELEMENT,
             vec![
                 let_reading("s", "body"),
                 let_reading("body", "len"),
@@ -669,14 +719,19 @@ mod tests {
     }
 
     /// `topological_sort` drops the members of a dependency cycle (its
-    /// cycle-drop contract), so `slot_commit_order` appends them itself. `y` is
+    /// cycle-drop contract), and with them each cell stranded behind one, which
+    /// reads a cycle member and never reaches in-degree 0 either, so
+    /// `slot_commit_order` appends them all itself, in declaration order. `y` is
     /// declared before `x` although the core's tie-break would order `x` first,
-    /// so only the append yields `y`, `x`.
+    /// so only the append yields `y`, `x`. `z` reads the cycle member `x`, so it
+    /// is stranded with the cycle, and commits ahead of the `x` it reads because
+    /// its declaration is first.
     #[test]
-    fn a_slot_commits_its_dependency_cycle_last_in_declaration_order() {
+    fn a_slot_commits_its_cycle_and_the_cells_stranded_behind_it_last_in_declaration_order() {
         let col_sub = slot(
-            "E",
+            ELEMENT,
             vec![
+                let_reading("z", "x"),
                 let_reading("y", "x"),
                 let_reading("x", "y"),
                 param_with_literal_default("len"),
@@ -685,8 +740,9 @@ mod tests {
 
         assert_eq!(
             commit_order(&EvaluationGraph::default(), &col_sub),
-            ["len", "y", "x"],
-            "the cycle `y` <-> `x` must commit after `len`, in declaration order"
+            ["len", "z", "y", "x"],
+            "the cycle `y` <-> `x`, and `z` stranded behind it, must commit after \
+             `len`, in declaration order"
         );
     }
 
@@ -762,14 +818,15 @@ mod tests {
     fn the_instance_mint_answers_none_for_a_cell_outside_every_sub_instance() {
         let graph = fixture_graph();
         let values = fixture_param_values();
+        let instance_b = id("P.s", "b");
 
         assert_eq!(
-            mint_instance_b_expression_at(&graph, &values, &id("T", "b")),
+            mint_instance_at(&graph, &values, &instance_b, &id("T", "b")),
             None,
             "`T` is a template, not a sub instance: the instance arm must decline \
              `T.b` rather than mint it, so the caller's template-scope arm runs"
         );
-        let minted = mint_instance_b_expression_at(&graph, &values, &id("P.s", "b"));
+        let minted = mint_instance_at(&graph, &values, &instance_b, &instance_b);
         assert!(
             matches!(minted, Some(Value::GeometryHandle { .. })),
             "control: the same kind and expression at the sub instance's `P.s.b` \
@@ -789,13 +846,13 @@ mod tests {
         let instance_b = id("P.s", "b");
 
         assert_eq!(
-            mint_instance_b_expression_at(&graph, &without_instance_w, &instance_b),
+            mint_instance_at(&graph, &without_instance_w, &instance_b, &instance_b),
             Some(Value::Undef),
             "`T.w` is held but `P.s.w` is not committed yet: minting `P.s.b` over \
              the instance's values would fold a `w` it has not evaluated, so the \
              instance arm must decline to Undef"
         );
-        let minted = mint_instance_b_expression_at(&graph, &with_instance_w, &instance_b);
+        let minted = mint_instance_at(&graph, &with_instance_w, &instance_b, &instance_b);
         assert!(
             matches!(
                 minted,
@@ -806,6 +863,64 @@ mod tests {
             ),
             "control: once `P.s.w` is committed `P.s.b` must mint, so the decline \
              comes from the missing read: {minted:?}"
+        );
+    }
+
+    /// A selector let has no realization, so the instance arm lets it past its
+    /// early-out only as a symbolic-eval-wired selector constructor. It then
+    /// selects over the instance's own `body`, which its expression reads, as
+    /// template scope mints `Block.side` over that `body`.
+    #[test]
+    fn the_instance_mint_of_a_selector_let_mints_it_over_the_instance_geometry() {
+        let (graph, template_body, instance_body) = selector_fixture();
+        let side = id("Shelf.block", "side");
+        let mut values = ValueMap::new();
+        values.insert(id("Block", "body"), template_body.clone());
+        values.insert(id("Shelf.block", "body"), instance_body.clone());
+
+        let minted = mint_instance_at(&graph, &values, &side, &side);
+
+        assert!(
+            matches!(minted, Some(Value::Selector(_))),
+            "a selector constructor must mint through the instance arm, not \
+             early-out to Undef for want of a realization: {minted:?}"
+        );
+        assert_eq!(
+            minted,
+            side_selector_over(&graph, &instance_body),
+            "`Shelf.block.side` must select over the instance's `body`"
+        );
+        assert_ne!(
+            minted,
+            side_selector_over(&graph, &template_body),
+            "control: a selector over the template's `body` must differ, or the \
+             instance's own `body` is not pinned"
+        );
+    }
+
+    /// `side`'s expression reads `body`: the template holds its `body` while the
+    /// instance has not committed one yet, so a mint would select over a `body`
+    /// the instance has not evaluated.
+    #[test]
+    fn the_instance_mint_declines_a_selector_while_the_geometry_it_reads_is_uncommitted() {
+        let (graph, template_body, instance_body) = selector_fixture();
+        let side = id("Shelf.block", "side");
+        let mut values = ValueMap::new();
+        values.insert(id("Block", "body"), template_body);
+
+        assert_eq!(
+            mint_instance_at(&graph, &values, &side, &side),
+            Some(Value::Undef),
+            "`Block.body` is held but `Shelf.block.body` is not committed yet: \
+             minting `Shelf.block.side` would select over a `body` the instance \
+             has not evaluated, so the instance arm must decline to Undef"
+        );
+        values.insert(id("Shelf.block", "body"), instance_body);
+        let minted = mint_instance_at(&graph, &values, &side, &side);
+        assert!(
+            matches!(minted, Some(Value::Selector(_))),
+            "control: once `Shelf.block.body` is committed `Shelf.block.side` must \
+             mint, so the decline comes from the missing read: {minted:?}"
         );
     }
 }
