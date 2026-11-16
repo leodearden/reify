@@ -523,14 +523,19 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
     def test_stringified_non_array_is_one_whole_string_leaf(self):
         """A JSON string that parses to neither a leaf array nor an envelope is
         ONE mega-leaf: the whole string, as the logged warning says. It holds as
-        the args themselves and as an envelope's `leaves` (task #9845).
+        the args themselves and as an envelope's `leaves` (task #9845). A
+        stringified scalar is such a string too: the leaf batch rule reads the
+        args as given, never their parse, so "null" is not refused like null
+        (task #9946).
         """
-        solo = json.dumps({"signal": "solo"}, separators=(",", ":"))
-        for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
-            with self.subTest(args=args_js):
-                verdict, logs = self._run_fanout(args_js)
-                self.assertEqual([v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
-                self.assertIn("mega-leaf", " ".join(logs))
+        solo_object = json.dumps({"signal": "solo"}, separators=(",", ":"))
+        for solo in (solo_object, "null", "0", '""'):
+            for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
+                with self.subTest(args=args_js):
+                    verdict, logs = self._run_fanout(args_js)
+                    self.assertEqual(
+                        [v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
+                    self.assertIn("mega-leaf", " ".join(logs))
 
 
 # ---------------------------------------------------------------------------
@@ -1281,7 +1286,8 @@ class _MjsScenarioMixin:
         return json.loads(call_lines[-1][len(_MJS_AGENT_CALLS_MARK):])
 
     def _run_scenario_error(self, leaves_js: str, responses_js: str):
-        """Run a scenario whose workflow body must THROW; return (message, phases).
+        """Run a scenario whose workflow body must THROW; return (message,
+        phases, logs), where logs are the log() lines written before the throw.
 
         Cached the same way as _run_scenario_logs (see its docstring).
         """
@@ -1290,11 +1296,14 @@ class _MjsScenarioMixin:
             rc, 1, f"the workflow did not throw; node exited {rc}; stdout: {out!r}")
         error_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_ERROR_MARK)]
         ph_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_PHASES_MARK)]
+        log_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_LOGS_MARK)]
         self.assertTrue(error_lines, f"no error marker; stdout: {out!r}; stderr: {err!r}")
         self.assertTrue(ph_lines, f"no phases marker; stdout: {out!r}")
+        self.assertTrue(log_lines, f"no logs marker; stdout: {out!r}")
         message = json.loads(error_lines[-1][len(_MJS_ERROR_MARK):])
         phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
-        return message, phases
+        logs = json.loads(log_lines[-1][len(_MJS_LOGS_MARK):])
+        return message, phases, logs
 
 
 # ---------------------------------------------------------------------------
@@ -1987,10 +1996,60 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
     def test_a_malformed_envelope_is_refused_before_any_agent_runs(self):
         for args_js, named in self._MALFORMED_ENVELOPES:
             with self.subTest(args=args_js):
-                message, phases = self._run_scenario_error(args_js, self.VERIFIED_RESPONSES)
+                message, phases, _logs = self._run_scenario_error(
+                    args_js, self.VERIFIED_RESPONSES)
                 for word in named:
                     self.assertIn(word, message)
                 self.assertEqual(phases, [])
+
+
+class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
+    """Top-level args that are not an envelope must be a leaf batch under the
+    rule an envelope's `leaves` follows (task #9946): an omitted, falsy, scalar
+    or blank args is refused before any agent runs, not run as a vacuous PASS."""
+
+    # Each args that is no leaf batch, and how its refusal renders it.
+    _NOT_A_LEAF_BATCH = (
+        ('""', '""'),
+        ('"   "', '"   "'),
+        ("undefined", "undefined"),
+        ("null", "null"),
+        ("0", "0"),
+        ("false", "false"),
+        ("7", "7"),
+        ("true", "true"),
+    )
+
+    _ARGS_SUBJECT = "prd-decompose-verify args: args "
+    _LEAVES_SUBJECT = "prd-decompose-verify args: leaves "
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_args_that_are_no_leaf_batch_are_refused_before_any_agent_runs(self):
+        for args_js, rendered in self._NOT_A_LEAF_BATCH:
+            with self.subTest(args=args_js):
+                message, phases, logs = self._run_scenario_error(
+                    args_js, self.VERIFIED_RESPONSES)
+                self.assertTrue(message.startswith(self._ARGS_SUBJECT), message)
+                self.assertIn(f"got {rendered}", message)
+                self.assertEqual(phases, [])
+                self.assertNotIn("mega-leaf", " ".join(logs))
+                envelope_message, _, _ = self._run_scenario_error(
+                    f"{{ leaves: {args_js} }}", self.VERIFIED_RESPONSES)
+                self.assertTrue(envelope_message.startswith(self._LEAVES_SUBJECT),
+                                envelope_message)
+                self.assertEqual(message.removeprefix(self._ARGS_SUBJECT),
+                                 envelope_message.removeprefix(self._LEAVES_SUBJECT))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_an_explicit_empty_batch_is_still_the_empty_batch(self):
+        verdict, phases = self._run_scenario("[]", self.VERIFIED_RESPONSES)
+        self.assertEqual(verdict["disposition"], "PASS")
+        self.assertEqual(verdict["leaves_total"], 0)
+        self.assertEqual(phases, [])
+        stringified_verdict, stringified_phases = self._run_scenario(
+            "JSON.stringify([])", self.VERIFIED_RESPONSES)
+        self.assertEqual(stringified_verdict, verdict)
+        self.assertEqual(stringified_phases, [])
 
 
 if __name__ == "__main__":
