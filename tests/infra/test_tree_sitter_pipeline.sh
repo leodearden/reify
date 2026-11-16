@@ -595,9 +595,12 @@ ts_reference_parser() {
 #
 # One offline `cargo build` of a mk_ts_build_fixture crate, through
 # run_guarded_cargo_check's tri-state: 0 built, 1 failed (diagnostic printed),
-# 2 SKIP (message printed). Callers map 2 to `return 0`.
+# 2 SKIP (message printed). Callers map 2 to `return 0`. CARGO_TARGET_DIR is
+# pinned to <fixture>/target, where ts_fixture_out_dir looks, so an ambient one
+# can neither hide the build nor make fixtures share a target dir.
 ts_cargo_build_fixture() {
     run_guarded_cargo_check --skip-on-unresolved "$2" timeout 300 \
+        env CARGO_TARGET_DIR="$1/target" \
         cargo build --offline --manifest-path "$1/Cargo.toml"
 }
 
@@ -3451,8 +3454,8 @@ test_generate_keeps_its_outputs_when_attestation_fails() {
     # are read as STALE by _stamp_is_current here and by build.rs's
     # needs_generate, so the next run regenerates unprompted. Deleting a good
     # parser.c buys nothing that leaving it unstamped does not already buy.
-    # build_support.rs's write_shell_stamps makes the identical call ("Never
-    # fatal") for the identical condition.
+    # build_support.rs's write_generation_stamps makes the identical call
+    # ("Never fatal") for the identical condition.
     require_tree_sitter_cli || return 0
 
     local fix
