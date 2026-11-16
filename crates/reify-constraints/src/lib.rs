@@ -52,7 +52,7 @@ pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
 use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
     IndeterminateReason, Satisfaction, TransientReason, Value,
 };
 
@@ -155,6 +155,14 @@ pub struct SimpleConstraintChecker;
 
 impl ConstraintChecker for SimpleConstraintChecker {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        self.check_with_dispatch(input, None)
+    }
+
+    fn check_with_dispatch(
+        &self,
+        input: &ConstraintInput,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> Vec<ConstraintResult> {
         input
             .constraints
             .iter()
@@ -164,6 +172,10 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     ctx.with_determinacy(det)
                 } else {
                     ctx
+                };
+                let ctx = match dispatch {
+                    Some(d) => ctx.with_compute_dispatch(d),
+                    None => ctx,
                 };
                 let value = reify_expr::eval_expr(expr, &ctx);
                 let (satisfaction, diagnostics, indeterminate_reason) = match value {
