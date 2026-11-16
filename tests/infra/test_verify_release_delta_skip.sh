@@ -578,10 +578,17 @@ assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling se
 # ONLY on the predicate's SKIPPABLE status (rc 1).
 #   The Python port of the verify.sh decision above must keep the lib's two-value
 #   contract: rc0 REQUIRED, rc1 SKIPPABLE. Every other non-zero status (a fork
-#   that failed, a lib that will not source, a crash) is a failure, never an
-#   answer, and fails WIDE: the release pass stays and a stderr warning names the
-#   status. Driven in process against stub libs in a throwaway repo root, under
-#   the merge role with the knob armed and an affected-crates override (no git).
+#   that failed, a lib whose dependency will not load, a crash) is a failure,
+#   never an answer, and fails WIDE: the release pass stays and a stderr warning
+#   names the status. Driven in process against a throwaway repo root, under the
+#   merge role with the knob armed and the non-sensitive crate as the affected
+#   override (no git). Two kinds of root:
+#     - stub roots, whose release-scope-lib.sh is a one-line predicate returning
+#       a chosen status;
+#     - real-lib roots, holding the real lib's load closure minus one file. The
+#       full closure is the CONTROL and must skip, so each failure root differs
+#       from a skipping run by exactly that one missing file. If the closure
+#       grows, the CONTROL reds instead of the failure roots passing vacuously.
 # ===========================================================================
 echo ""
 echo "--- PORT (task 10080): decide_release_delta skips only on rc 1 ---"
@@ -596,41 +603,103 @@ from reify_verify import policy, releasescope
 skips, diagnostics = releasescope.decide_release_delta(
     policy.ROLE_TABLE[policy.Role.MERGE],
     Path(sys.argv[2]),
-    {"REIFY_RELEASE_DELTA_SKIP": "1", "REIFY_AFFECTED_CRATES_OVERRIDE": "reify-cli", "PATH": "/usr/bin:/bin"},
+    {"REIFY_RELEASE_DELTA_SKIP": "1", "REIFY_AFFECTED_CRATES_OVERRIDE": sys.argv[3], "PATH": "/usr/bin:/bin"},
 )
 print(skips, "|".join(diagnostics))
 '
 
-# _port_decision <stub-lib-body> — prints "<skips> <diagnostics>" for a repo root
-# whose scripts/release-scope-lib.sh is the given body.
-_port_decision() {
-    local _root
-    _root="$(mktemp -d)"
-    _TMPDIRS+=("$_root")
-    mkdir -p "$_root/scripts"
-    printf '%s\n' "$1" > "$_root/scripts/release-scope-lib.sh"
-    python3 -I -c "$_PORT_DRIVER" "$REPO_ROOT/scripts" "$_root"
+# The files scripts/release-scope-lib.sh loads, itself included.
+_PORT_LIB_CLOSURE=(
+    release-scope-lib.sh
+    release-sensitive-crates.txt
+    affected-crates-lib.sh
+    occt-scope-lib.sh
+    occt-touching-crates.txt
+    reify_path_attribution.py
+)
+
+# _port_root VARNAME — sets VARNAME to a fresh repo root with an empty scripts/.
+_port_root() {
+    local _dir
+    _dir="$(mktemp -d)"
+    _TMPDIRS+=("$_dir")
+    mkdir -p "$_dir/scripts"
+    printf -v "$1" '%s' "$_dir"
 }
 
-_port_skips() { [[ "$(_port_decision "$1")" == "True "* ]]; }
-_port_keeps() { [[ "$(_port_decision "$1")" == "False "* ]]; }
-_port_warns() { [[ "$(_port_decision "$1")" == *"exited $2, not 0 or 1"* ]]; }
+# _port_stub_root VARNAME <lib-body> — a root whose scripts/release-scope-lib.sh is <lib-body>.
+_port_stub_root() {
+    _port_root "$1"
+    printf '%s\n' "$2" > "${!1}/scripts/release-scope-lib.sh"
+}
 
+# _port_real_lib_root VARNAME <omitted-basename> — a root holding the real lib's
+# load closure minus <omitted-basename>; an empty basename keeps the full closure.
+_port_real_lib_root() {
+    local _file
+    _port_root "$1"
+    for _file in "${_PORT_LIB_CLOSURE[@]}"; do
+        [ "$_file" = "$2" ] || cp "$REPO_ROOT/scripts/$_file" "${!1}/scripts/$_file"
+    done
+}
+
+# _port_decide VARNAME <root> — sets VARNAME to the "<skips> <diagnostics>" line
+# decide_release_delta answers for <root>. A driver crash leaves no True/False
+# prefix, so every assertion on the line fails.
+_port_decide() {
+    local _line
+    _line="$(python3 -I -c "$_PORT_DRIVER" "$REPO_ROOT/scripts" "$2" "$_NONSENSITIVE_CRATE")" || true
+    printf -v "$1" '%s' "$_line"
+}
+
+_port_skips() { [[ "$1" == "True "* ]]; }
+_port_keeps() { [[ "$1" == "False "* ]]; }
+_port_warns() { [[ "$1" == *"exited $2, not 0 or 1"* ]]; }
+
+_port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 1; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
 assert "PORT rc1 stub (SKIPPABLE) => release pass skipped" \
-    _port_skips 'release_delta_requires_pass() { return 1; }'
+    _port_skips "$_PORT_DECISION"
+
+_port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 0; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
 assert "PORT rc0 stub (REQUIRED) => release pass kept" \
-    _port_keeps 'release_delta_requires_pass() { return 0; }'
+    _port_keeps "$_PORT_DECISION"
+
+_port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 2; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
 assert "PORT rc2 stub => release pass kept (fail-wide)" \
-    _port_keeps 'release_delta_requires_pass() { return 2; }'
+    _port_keeps "$_PORT_DECISION"
 assert "PORT rc2 stub => warning names status 2" \
-    _port_warns 'release_delta_requires_pass() { return 2; }' 2
+    _port_warns "$_PORT_DECISION" 2
+
+_port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 126; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
 assert "PORT rc126 stub (fork failure status) => release pass kept" \
-    _port_keeps 'release_delta_requires_pass() { return 126; }'
+    _port_keeps "$_PORT_DECISION"
+
+_port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 141; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
 assert "PORT rc141 stub (SIGPIPE status) => release pass kept" \
-    _port_keeps 'release_delta_requires_pass() { return 141; }'
-assert "PORT lib that fails to source (status 3) => release pass kept" \
-    _port_keeps 'return 3'
-assert "PORT lib that fails to source (status 3) => warning names status 3" \
-    _port_warns 'return 3' 3
+    _port_keeps "$_PORT_DECISION"
+
+_port_real_lib_root _PORT_ROOT ''
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT CONTROL: real lib, full load closure => release pass skipped" \
+    _port_skips "$_PORT_DECISION"
+
+_port_real_lib_root _PORT_ROOT affected-crates-lib.sh
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT real lib without affected-crates-lib.sh => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT real lib without affected-crates-lib.sh => warning names status 2" \
+    _port_warns "$_PORT_DECISION" 2
+
+_port_real_lib_root _PORT_ROOT reify_path_attribution.py
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_attribution.py) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_attribution.py) => warning names status 2" \
+    _port_warns "$_PORT_DECISION" 2
 
 test_summary
