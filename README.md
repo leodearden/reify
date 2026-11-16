@@ -17,7 +17,7 @@ Reify is in active development. Two things to set expectations:
 
 What the release ships, from the [GitHub releases page](https://github.com/leodearden/reify/releases):
 
-- `Reify_<version>_amd64.deb` — **the headline asset.** One `apt install` gives you the `reify` CLI on your `PATH`, the `reify-gui` app, a desktop entry and a `.ri` file association. It brings its own copies of OpenCASCADE, gmsh, OpenVDB and oneTBB, so there is no PPA, conda or build step.
+- `Reify_<version>_amd64.deb` — **the headline asset.** One `apt install` gives you the `reify` CLI on your `PATH`, the `reify-gui` app and a desktop entry. It brings its own copies of OpenCASCADE, gmsh, OpenVDB and oneTBB, so there is no PPA, conda or build step.
 - `Reify_<version>_amd64.AppImage` — the same GUI as a single file, for when you don't want to install a package. It needs a desktop session (GTK 3 and the usual GL libraries, which a stock Ubuntu desktop has). It carries the `reify` CLI inside it too; see [Install](#install).
 
 What does work, end-to-end:
@@ -31,7 +31,7 @@ What does work, end-to-end:
 What's flaky or missing:
 
 - Some examples exercise features that are still under construction. If `reify check examples/<file>.ri` errors, try a different one; `examples/m5_geometry.ri` is the safest baseline.
-- The packages are for Ubuntu 24.04 only; the AppImage does not make other distros supported.
+- Double-clicking a `.ri` file in your file manager does not open Reify yet (the package doesn't register the `.ri` file type). Open files from the Start view, or pass the path: `reify-gui file.ri`.
 
 ---
 
@@ -39,6 +39,7 @@ What's flaky or missing:
 
 - Ubuntu 24.04 LTS, x86_64 (other distros not yet supported)
 - A desktop session for the GUI; the `reify` CLI needs none.
+- Node.js 20+ on your `PATH`: the GUI's Assistant mode needs it and, together with npm, so does building from source. The `reify` CLI and the GUI's other modes don't. Ubuntu 24.04's own `nodejs` package is Node 18, so install a newer one, for example via NodeSource or nvm.
 
 ## Install
 
@@ -75,7 +76,7 @@ reify build m5_geometry.ri -o /tmp/flange.step
 reify test  m5_geometry.ri
 ```
 
-GUI: launch **Reify** from your desktop's application menu, or run `reify-gui` (add a `.ri` path to skip the Start view and open that file). With no file, the Start view lets you Open…, create a New… file, reopen a Recent one, and pick a Mode. Double-clicking a `.ri` file in your file manager opens it in Reify.
+GUI: launch **Reify** from your desktop's application menu, or run `reify-gui` (add a `.ri` path to skip the Start view and open that file). With no file, the Start view lets you Open…, create a New… file, reopen a Recent one, and pick a Mode.
 
 For more, see [`docs/getting-started.md`](docs/getting-started.md).
 
@@ -117,7 +118,7 @@ scripts/                setup-dev.sh, run-gui.sh, run-gui-dev.sh
 
 ## For contributors (build from source)
 
-Building from source is for working on Reify itself, not for trying it. It is Ubuntu 24.04 only too, and needs `sudo` (apt installs during setup), ~10 GB of disk for the build cache, and Node.js 20+ on PATH (`apt install nodejs npm`).
+Building from source is for working on Reify itself, not for trying it. It is Ubuntu 24.04 only too, and needs `sudo` (apt installs during setup), ~10 GB of disk for the build cache, and Node.js 20+ with npm on your `PATH` (see [System requirements](#system-requirements)).
 
 ```sh
 git clone https://github.com/leodearden/reify.git

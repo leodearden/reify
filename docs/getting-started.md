@@ -98,7 +98,7 @@ Every CLI command that evaluates a design, `check` (including `--strict`), `test
 
 Launch **Reify** from your desktop's application menu, or run `reify-gui` in a terminal (AppImage: run the downloaded file). With no file argument it opens on the **Start view**, which has three parts:
 
-- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
+- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js 20+ on your `PATH` (see the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
 - **Document** — **Open…** picks an existing `.ri` file; **New…** asks for a path and writes a minimal module template there, then opens it. You can also type a path and press Open or Create. A file that cannot be opened or created shows an error on the Start view instead of leaving it.
 - **Recent** — files you opened before; click one to reopen it.
 
@@ -106,7 +106,7 @@ Choose **Open…** and pick `m5_geometry.ri`. The GUI shows a 3D viewer, an outl
 
 To see the model's edges, press the **Edges** button in the toolbar or the `E` key: every edge is drawn in black over the shaded mesh, whatever is selected. Press it again to turn it off. The setting is off by default.
 
-You can also skip the Start view by passing the file: `reify-gui m5_geometry.ri` (or `reify gui m5_geometry.ri`), and double-clicking a `.ri` file in your file manager opens it in Reify.
+You can also skip the Start view by passing the file: `reify-gui m5_geometry.ri` (or `reify gui m5_geometry.ri`).
 
 ### For contributors: running the GUI from a checkout
 
