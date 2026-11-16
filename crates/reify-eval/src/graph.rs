@@ -650,11 +650,11 @@ impl EvaluationGraph {
         self.sub_instance_templates.insert(entity, template);
     }
 
-    /// Stamp `node`, a cell of sub instance `node.id.entity` whose cells come
-    /// from `template`, into `value_cells`, recording the instance if it is not
-    /// yet recorded.
+    /// Stamp `node`, a cell of sub instance `node.id.entity`, from `template`
+    /// into `value_cells`, recording (or correcting) the instance's template so
+    /// the registry always names the template its cells came from.
     pub(crate) fn insert_sub_instance_cell(&mut self, template: &str, node: ValueCellNode) {
-        if !self.sub_instance_templates.contains_key(&node.id.entity) {
+        if self.sub_instance_template(&node.id.entity) != Some(template) {
             self.record_sub_instance(node.id.entity.clone(), template.to_string());
         }
         self.value_cells.insert(node.id.clone(), node);
