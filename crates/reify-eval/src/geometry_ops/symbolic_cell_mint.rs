@@ -350,12 +350,15 @@ mod tests {
     use reify_ir::{CompiledExpr, Value, ValueMap};
     use reify_test_support::parse_and_compile;
 
-    use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads, slot_commit_order};
+    use super::{
+        InstanceMintScope, SymbolicMintOrder, instance_mint_reads, project_instance_reads,
+        slot_commit_order,
+    };
     use crate::deps::extract_dependency_trace;
     use crate::graph::geometry_cell_link_fixture::{
         GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
     };
-    use crate::graph::{CollectionSubInfo, EvaluationGraph};
+    use crate::graph::{CollectionSubInfo, EvaluationGraph, ValueCellNode};
 
     fn id(entity: &str, member: &str) -> ValueCellId {
         ValueCellId::new(entity, member)
@@ -401,6 +404,37 @@ mod tests {
             .into_iter()
             .map(|(member, ..)| member.as_str())
             .collect()
+    }
+
+    /// The graph of the shared geometry-cell fixture: template `T`, and `P`
+    /// stamping it as the sub instance `P.s`.
+    fn fixture_graph() -> EvaluationGraph {
+        EvaluationGraph::from_templates(&parse_and_compile(SRC).templates)
+    }
+
+    fn node_of<'g>(graph: &'g EvaluationGraph, cell: &ValueCellId) -> &'g ValueCellNode {
+        graph
+            .value_cells
+            .get(cell)
+            .unwrap_or_else(|| panic!("precondition: `{cell}` must be stamped"))
+    }
+
+    fn expr_of<'g>(graph: &'g EvaluationGraph, cell: &ValueCellId) -> &'g CompiledExpr {
+        node_of(graph, cell)
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("precondition: `{cell}` must have an expr"))
+    }
+
+    /// The fixture's `T.member`, declared as a slot declares its cells.
+    fn slot_cell_of(graph: &EvaluationGraph, member: &str) -> SlotCell {
+        let node = node_of(graph, &id("T", member));
+        (
+            member.to_string(),
+            node.kind,
+            node.cell_type.clone(),
+            node.default_expr.clone(),
+        )
     }
 
     #[test]
@@ -621,6 +655,72 @@ mod tests {
             commit_order(&EvaluationGraph::default(), &col_sub),
             ["len", "y", "x"],
             "the cycle `y` <-> `x` must commit after `len`, in declaration order"
+        );
+    }
+
+    /// The compiler inlines the guarded `core` into `b`'s realization, so the
+    /// operations of `b`'s realization read `w` while `b`'s expression, which
+    /// reads `core`, does not. The handle's hash folds `w`.
+    #[test]
+    fn instance_mint_reads_adds_the_reads_of_the_realization_a_guarded_let_is_inlined_into() {
+        let graph = fixture_graph();
+        let (b, w) = (id("T", "b"), id("T", "w"));
+        let b_expr = expr_of(&graph, &b);
+        let expression_reads = extract_dependency_trace(b_expr).reads;
+        assert!(
+            !expression_reads.contains(&w),
+            "precondition: `b`'s expression must not read `w`, so only the reads of \
+             `b`'s realization can bring `w` in"
+        );
+
+        assert_eq!(
+            instance_mint_reads(None, b_expr),
+            expression_reads,
+            "with no realization, a cell's reads are its expression's alone"
+        );
+
+        let realization = graph.scalar_geometry_cell_realization(&b);
+        assert!(
+            realization.is_some(),
+            "precondition: `T.b` must resolve to its realization"
+        );
+        let reads = instance_mint_reads(realization, b_expr);
+        assert!(
+            reads.contains(&w),
+            "`b`'s realization reads `w` through the inlined `core`, so the instance \
+             mint must read it too: {reads:?}"
+        );
+        for read in &expression_reads {
+            assert!(
+                reads.contains(read),
+                "the realization's reads must extend the expression's, which lost \
+                 `{read}`: {reads:?}"
+            );
+        }
+    }
+
+    /// `b` is declared first and sorts first by name, and its expression's read
+    /// of `core` is outside the slot, so the slot orders `w` first only through
+    /// the read of `b`'s realization. The control is the same slot over a graph
+    /// with no realization, where nothing reads `w`.
+    #[test]
+    fn a_slot_commits_a_geometry_cell_after_a_sibling_only_its_realization_reads() {
+        let graph = fixture_graph();
+        let col_sub = slot(
+            "T",
+            vec![slot_cell_of(&graph, "b"), slot_cell_of(&graph, "w")],
+        );
+
+        assert_eq!(
+            commit_order(&EvaluationGraph::default(), &col_sub),
+            ["b", "w"],
+            "control: with no realization, `b` reads no sibling of its slot"
+        );
+        assert_eq!(
+            commit_order(&graph, &col_sub),
+            ["w", "b"],
+            "`b`'s realization reads `w`, so `w` must commit first or `b`'s handle \
+             folds a `w` the slot has not evaluated"
         );
     }
 }
