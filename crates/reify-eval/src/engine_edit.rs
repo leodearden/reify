@@ -2496,10 +2496,14 @@ impl Engine {
                 for i in 0..old_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
+                    let removed = new_snapshot.graph.remove_sub_instance_cells(
+                        &scoped_entity,
+                        col_sub
+                            .child_value_cells
+                            .iter()
+                            .map(|(member, ..)| member.as_str()),
+                    );
+                    for scoped_id in removed {
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
                         // Task 2184 (mirrors task 2086 Fix 1 in edit_source): invalidate cache
@@ -4608,10 +4612,14 @@ impl Engine {
                 for i in 0..old_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
+                    let removed = new_snapshot.graph.remove_sub_instance_cells(
+                        &scoped_entity,
+                        col_sub
+                            .child_value_cells
+                            .iter()
+                            .map(|(member, ..)| member.as_str()),
+                    );
+                    for scoped_id in removed {
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
                         // Task 2086 Fix 1: invalidate cache so a subsequent edit

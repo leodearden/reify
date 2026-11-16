@@ -278,8 +278,9 @@ pub struct EvaluationGraph {
     /// are stamped from. Read through [`Self::sub_instance_template`].
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
-    /// collection resizes stamp through [`Self::insert_sub_instance_cell`],
-    /// which records the slot as it inserts the cell, so the two do not drift.
+    /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
+    /// remove through [`Self::remove_sub_instance_cells`], so the registry and
+    /// `value_cells` do not drift.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -660,9 +661,23 @@ impl EvaluationGraph {
         self.value_cells.insert(node.id.clone(), node);
     }
 
-    /// Forget sub instance `entity`, whose cells have left `value_cells`.
-    pub(crate) fn forget_sub_instance(&mut self, entity: &str) {
+    /// Remove sub instance `entity`'s `members` cells and forget the instance;
+    /// returns their ids, in `members` order, none of which remains in
+    /// `value_cells`.
+    pub(crate) fn remove_sub_instance_cells<'m>(
+        &mut self,
+        entity: &str,
+        members: impl IntoIterator<Item = &'m str>,
+    ) -> Vec<ValueCellId> {
+        let removed: Vec<ValueCellId> = members
+            .into_iter()
+            .map(|member| ValueCellId::new(entity, member))
+            .collect();
+        for id in &removed {
+            self.value_cells.remove(id);
+        }
         self.sub_instance_templates.remove(&entity.to_string());
+        removed
     }
 
     /// Determine which constraint IDs are active given the current values.
