@@ -36,7 +36,7 @@ use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
 /// constant in the same commit; otherwise cache entries written under the
 /// previous version will silently decode as garbage. The same logic applies to
 /// any bump of `zstd` past the `0.13` pin (e.g. 0.13 → 0.14 or 0.x → 1.x).
-/// Cross-checked by `elastic_result_format_version_is_3_after_v3_bump`, which
+/// Cross-checked by `elastic_result_format_version_pinned`, which
 /// forces any FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even
 /// minor bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
 /// `Cargo.toml`.
@@ -2306,11 +2306,6 @@ mod tests {
             bytes_a, bytes_b,
             "re-serializing a decoded value must be byte-identical"
         );
-    }
-
-    #[test]
-    fn elastic_result_format_version_is_3_after_v3_bump() {
-        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
     }
 
     // ── task #4942: AposterioriEstimate probe-byte tail ──────────────────────
