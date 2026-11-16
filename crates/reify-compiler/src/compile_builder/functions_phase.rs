@@ -22,8 +22,8 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::FnDef;
-use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{CompiledFunction, EnumDef};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, Type};
+use reify_ir::{CompiledExpr, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
 use crate::call_table::{CallTable, PendingDefaults};
@@ -72,7 +72,8 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 ///   defaults are pending) — `NeedLocalTemplates`, and the scratch and its
 ///   result are DISCARDED; the unified pass compiles them in the fn's slot;
 /// * otherwise the result is exactly what the unified pass would compile —
-///   `Compiled`, and the scratch is emitted, once, here.
+///   `Compiled`, and the scratch is emitted, once, here.  Debug builds re-check
+///   that in [`SourceOrderFnEnv::compile_function_decl`].
 ///
 /// Seeds `ctx.resolution_functions` with the resulting stubs composed with the
 /// prelude as [`build_resolution_functions`] composes them, and records the
@@ -189,7 +190,8 @@ impl<'a> SourceOrderFnEnv<'a> {
     ///
     /// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
     /// already emitted them exactly once — and neither are those of `Compiled`
-    /// defaults, which are reused as compiled.
+    /// defaults, which are reused as compiled (debug builds recompile them only
+    /// to check that rule).
     pub(crate) fn compile_function_decl(
         &self,
         fn_def: &FnDef,
@@ -212,7 +214,12 @@ impl<'a> SourceOrderFnEnv<'a> {
             declared_callable_names: &self.declared_callable_names,
         };
         let param_defaults = match defaults {
-            FnParamDefaults::Compiled(defaults) => defaults.clone(),
+            FnParamDefaults::Compiled(defaults) => {
+                if cfg!(debug_assertions) {
+                    assert_early_defaults_match_unified(fn_def, sig, defaults, &env);
+                }
+                defaults.clone()
+            }
             FnParamDefaults::NeedLocalTemplates => {
                 compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
             }
@@ -230,6 +237,66 @@ impl<'a> SourceOrderFnEnv<'a> {
             declared_below.remove(&template.name);
         }
         declared_below
+    }
+}
+
+/// Each default slot's identity, for comparing two compilations of the same
+/// defaults: its `content_hash` (what the engine caches by) and its
+/// `result_type` (which a literal's hash leaves out).
+fn default_fingerprints(defaults: &[Option<CompiledExpr>]) -> Vec<Option<(ContentHash, Type)>> {
+    defaults
+        .iter()
+        .map(|slot| {
+            slot.as_ref()
+                .map(|expr| (expr.content_hash, expr.result_type.clone()))
+        })
+        .collect()
+}
+
+/// Debug-build recheck of the early-default commit rule (PRD
+/// `stdlib-namespace.md` D-8): panics unless recompiling `fn_def`'s defaults in
+/// the unified `env` gives `early`, the `Compiled` defaults that
+/// [`phase_fn_param_defaults`] committed.
+///
+/// The recompile's diagnostics are dropped: the early pass already emitted them
+/// once.
+fn assert_early_defaults_match_unified(
+    fn_def: &FnDef,
+    sig: &FnSignature,
+    early: &[Option<CompiledExpr>],
+    env: &FnCompileEnv<'_>,
+) {
+    let unified = compile_fn_param_defaults(fn_def, sig, env, &mut Vec::new());
+    let early_fingerprints = default_fingerprints(early);
+    let unified_fingerprints = default_fingerprints(&unified);
+    let slot_count = early_fingerprints.len().max(unified_fingerprints.len());
+    let Some(slot) =
+        (0..slot_count).find(|&i| early_fingerprints.get(i) != unified_fingerprints.get(i))
+    else {
+        return;
+    };
+    let param = match fn_def.params.get(slot) {
+        Some(param) => format!("param `{}`", param.name),
+        None => format!("slot {slot}, past the declared params"),
+    };
+    panic!(
+        "early-default commit rule violated (PRD stdlib-namespace D-8): the defaults \
+         `phase_fn_param_defaults` committed as `Compiled` for fn `{}` differ from the \
+         unified recompile at {param}\n  early:   {}\n  unified: {}\n\
+         Look for a `scope.template_registry` read in expr.rs that runs before \
+         `later_declared_structure_error`.",
+        fn_def.name,
+        describe_slot(early_fingerprints.get(slot)),
+        describe_slot(unified_fingerprints.get(slot)),
+    );
+}
+
+/// One entry of [`default_fingerprints`], as the divergence panic prints it.
+fn describe_slot(slot: Option<&Option<(ContentHash, Type)>>) -> String {
+    match slot {
+        None => "no slot".to_owned(),
+        Some(None) => "no default".to_owned(),
+        Some(Some((hash, ty))) => format!("`{ty}` {hash}"),
     }
 }
 
@@ -535,7 +602,7 @@ mod tests {
     /// is what [`compile_src`] compiles a template-free module against.
     fn decl_with_early_defaults(
         source: &str,
-        early: Vec<Option<reify_ir::CompiledExpr>>,
+        early: Vec<Option<CompiledExpr>>,
     ) -> Option<CompiledFunction> {
         let parsed = parse_at("test", source);
         let [reify_ast::Declaration::Function(fn_def)] = &parsed.declarations[..] else {
@@ -571,29 +638,17 @@ mod tests {
     }
 
     /// What the unified pass compiles `source`'s defaults to.
-    fn honest_defaults(source: &str) -> Vec<Option<reify_ir::CompiledExpr>> {
+    fn honest_defaults(source: &str) -> Vec<Option<CompiledExpr>> {
         compile_src(source).functions[0].param_defaults.clone()
-    }
-
-    fn slot_identities(
-        defaults: &[Option<reify_ir::CompiledExpr>],
-    ) -> Vec<Option<(reify_core::ContentHash, reify_core::Type)>> {
-        defaults
-            .iter()
-            .map(|slot| {
-                slot.as_ref()
-                    .map(|expr| (expr.content_hash, expr.result_type.clone()))
-            })
-            .collect()
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "spoiled")]
     fn a_compiled_default_whose_content_differs_from_the_unified_recompile_panics() {
-        let early = vec![Some(reify_ir::CompiledExpr::literal(
+        let early = vec![Some(CompiledExpr::literal(
             reify_ir::Value::Real(2.0),
-            reify_core::Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         ))];
         decl_with_early_defaults(EARLY_PROBE, early);
     }
@@ -608,7 +663,7 @@ mod tests {
         early[0]
             .as_mut()
             .expect("`spoiled` is defaulted")
-            .result_type = reify_core::Type::String;
+            .result_type = Type::String;
         decl_with_early_defaults(EARLY_PROBE, early);
     }
 
@@ -618,6 +673,6 @@ mod tests {
         let reused = decl_with_early_defaults(EARLY_PROBE, honest.clone())
             .expect("a well-formed fn compiles")
             .param_defaults;
-        assert_eq!(slot_identities(&reused), slot_identities(&honest));
+        assert_eq!(default_fingerprints(&reused), default_fingerprints(&honest));
     }
 }
