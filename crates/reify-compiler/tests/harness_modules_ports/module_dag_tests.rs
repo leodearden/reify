@@ -2034,3 +2034,46 @@ fn dag_absent_module_decl_emits_warning() {
         "W_MODULE_DECL_MISSING should be Warning severity"
     );
 }
+
+// ── task 5499 (stdlib-namespace ζ, NS-V3): std modules get the module-path check ──
+
+/// The diagnostics `compile_project` attaches to the filesystem std module
+/// `std.units`, for a stdlib dir holding only `units.ri` with `units_source`.
+fn fs_std_units_diagnostics(units_source: &str) -> Vec<reify_core::Diagnostic> {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(stdlib_dir.join("units.ri"), units_source).unwrap();
+    fs::write(dir.join("main.ri"), "module main\nimport std.units\n").unwrap();
+
+    let modules = reify_compiler::module_dag::compile_project(
+        &dir.join("main.ri"),
+        &ModuleResolver::new(&dir, &stdlib_dir),
+    )
+    .expect("compile_project returns Ok with per-module diagnostics");
+    modules
+        .into_iter()
+        .find(|m| m.path.to_dotted() == "std.units")
+        .expect("std.units is compiled from the filesystem stdlib")
+        .diagnostics
+}
+
+#[test]
+fn a_filesystem_std_module_with_the_wrong_module_path_is_diagnosed() {
+    let wrong = fs_std_units_diagnostics("module std.wrong\npub unit myunit : Length = 1.0\n");
+    assert!(
+        wrong.iter().any(|d| d.severity == Severity::Error
+            && d.message.contains("E_MODULE_PATH_MISMATCH")
+            && d.message.contains("std.units")),
+        "a std module declaring the wrong path must get E_MODULE_PATH_MISMATCH naming \
+         std.units, got: {wrong:?}"
+    );
+
+    let right = fs_std_units_diagnostics("module std.units\npub unit myunit : Length = 1.0\n");
+    assert!(
+        !right.iter().any(|d| d.message.contains("E_MODULE_PATH_MISMATCH")
+            || d.message.contains("W_MODULE_DECL_MISSING")),
+        "a std module declaring its own path gets no module-path diagnostic, got: {right:?}"
+    );
+}
