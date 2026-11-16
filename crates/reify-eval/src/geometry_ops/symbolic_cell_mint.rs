@@ -346,19 +346,61 @@ mod tests {
     use std::collections::HashMap;
 
     use reify_compiler::ValueCellKind;
-    use reify_core::ValueCellId;
-    use reify_ir::{Value, ValueMap};
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::{CompiledExpr, Value, ValueMap};
     use reify_test_support::parse_and_compile;
 
-    use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads};
+    use super::{InstanceMintScope, SymbolicMintOrder, project_instance_reads, slot_commit_order};
     use crate::deps::extract_dependency_trace;
-    use crate::graph::EvaluationGraph;
     use crate::graph::geometry_cell_link_fixture::{
         GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
     };
+    use crate::graph::{CollectionSubInfo, EvaluationGraph};
 
     fn id(entity: &str, member: &str) -> ValueCellId {
         ValueCellId::new(entity, member)
+    }
+
+    type SlotCell = (String, ValueCellKind, Type, Option<CompiledExpr>);
+
+    /// A slot of `Rack.items`, stamped from `structure_name`, declaring `cells`
+    /// in order.
+    fn slot(structure_name: &str, cells: Vec<SlotCell>) -> CollectionSubInfo {
+        CollectionSubInfo {
+            parent_entity: "Rack".to_string(),
+            sub_name: "items".to_string(),
+            structure_name: structure_name.to_string(),
+            count_cell: id("Rack", "__count_items"),
+            child_value_cells: cells,
+        }
+    }
+
+    /// The let `member` of `E`, whose expression reads its sibling `E.read`.
+    fn let_reading(member: &str, read: &str) -> SlotCell {
+        (
+            member.to_string(),
+            ValueCellKind::Let,
+            Type::Int,
+            Some(CompiledExpr::value_ref(id("E", read), Type::Int)),
+        )
+    }
+
+    /// The param `member` of `E`, whose default reads nothing.
+    fn param_with_literal_default(member: &str) -> SlotCell {
+        (
+            member.to_string(),
+            ValueCellKind::Param,
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+    }
+
+    /// The members of `col_sub` in the order a slot commits them.
+    fn commit_order<'c>(graph: &EvaluationGraph, col_sub: &'c CollectionSubInfo) -> Vec<&'c str> {
+        slot_commit_order(graph, col_sub)
+            .into_iter()
+            .map(|(member, ..)| member.as_str())
+            .collect()
     }
 
     #[test]
@@ -537,5 +579,48 @@ mod tests {
                  projection missing a read of the realization the one #8102 fixed"
             );
         }
+    }
+
+    /// The names are chosen so declaration order (`s`, `body`, `len`) and the
+    /// scheduling core's tie-break order (`body`, `len`, `s`) both differ from
+    /// the commit order: only the dependency order is `len`, `body`, `s`.
+    #[test]
+    fn a_slot_commits_a_cell_after_the_sibling_it_reads_whatever_its_declaration_order() {
+        let col_sub = slot(
+            "E",
+            vec![
+                let_reading("s", "body"),
+                let_reading("body", "len"),
+                param_with_literal_default("len"),
+            ],
+        );
+
+        assert_eq!(
+            commit_order(&EvaluationGraph::default(), &col_sub),
+            ["len", "body", "s"],
+            "each cell must commit after the sibling it reads"
+        );
+    }
+
+    /// `topological_sort` drops the members of a dependency cycle (its
+    /// cycle-drop contract), so `slot_commit_order` appends them itself. `y` is
+    /// declared before `x` although the core's tie-break would order `x` first,
+    /// so only the append yields `y`, `x`.
+    #[test]
+    fn a_slot_commits_its_dependency_cycle_last_in_declaration_order() {
+        let col_sub = slot(
+            "E",
+            vec![
+                let_reading("y", "x"),
+                let_reading("x", "y"),
+                param_with_literal_default("len"),
+            ],
+        );
+
+        assert_eq!(
+            commit_order(&EvaluationGraph::default(), &col_sub),
+            ["len", "y", "x"],
+            "the cycle `y` <-> `x` must commit after `len`, in declaration order"
+        );
     }
 }
