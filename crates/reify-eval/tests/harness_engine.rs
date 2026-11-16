@@ -197,3 +197,7 @@ mod instance_scope_symbolic_mint;
 // the same anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/dimensioned_param_default_constraint_verdicts.rs"]
 mod dimensioned_param_default_constraint_verdicts;
+// Task #10033's checker-side `@optimized` dispatch pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/constraint_check_optimized_dispatch.rs"]
+mod constraint_check_optimized_dispatch;
