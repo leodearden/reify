@@ -896,7 +896,9 @@ assert "resolve: no repository at all → judged with ONE git invocation" \
 #           printed beside a good answer never joins the SHA, so a vouched
 #           checkout stays vouched.  The control comes first: the noise must
 #           really be the first stderr line of a bare git on this PATH, or the
-#           rows after it would test nothing.
+#           rows after it would test nothing.  The control runs git in the C
+#           locale, as the home does, so a host whose LANG selects an installed
+#           git translation cannot redden it.
 # ==============================================================================
 echo ""
 echo "--- Check 27: stderr noise ahead of git's own message changes no verdict ---"
@@ -911,7 +913,7 @@ exec "$REAL_GIT" "\$@"
 SHIM
 chmod 755 "$GIT_NOISE_DIR/git"
 
-run_captured env PATH="$GIT_NOISE_DIR:$PATH" git -C "$NON_GIT_DIR" rev-parse --verify HEAD
+run_captured env LC_ALL=C PATH="$GIT_NOISE_DIR:$PATH" git -C "$NON_GIT_DIR" rev-parse --verify HEAD
 
 assert "control: a bare git on a plain dir prints the noise as its FIRST stderr line" \
     test "${RUN_ERR%%$'\n'*}" = "$NOISE_LINE"
