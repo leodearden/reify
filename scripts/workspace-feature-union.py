@@ -763,13 +763,14 @@ def unit_profiles(root: Path, selection: Sequence[str], scratch: Path) -> UnitPr
     """The profiles of the units `cargo test <selection>` would compile, read
     from its unit graph without compiling: RUSTC_BOOTSTRAP unlocks
     `--unit-graph` for this one subprocess, and the scratch target dir keeps
-    it off the checkout's target/ and its build lock. No `--target`, like verify's builds, so host
-    and runtime units are shared exactly as they are there."""
+    it off the checkout's target/ and its build lock. No `--target`, like
+    verify's builds, so host and runtime units are shared exactly as they are
+    there."""
     args = ["test", LockMode.FROZEN.value, *selection, "--no-run", "--unit-graph",
             "-Z", "unstable-options"]
     env = {"RUSTC_BOOTSTRAP": "1", "CARGO_TARGET_DIR": str(scratch)}
     return parse_unit_profiles(cargo(root, args, env),
-                            f"`cargo test --unit-graph {' '.join(selection)}`")
+                               f"`cargo test --unit-graph {' '.join(selection)}`")
 
 
 # --- findings ---------------------------------------------------------------
