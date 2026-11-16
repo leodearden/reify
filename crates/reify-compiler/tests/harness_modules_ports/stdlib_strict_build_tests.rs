@@ -33,7 +33,10 @@ fn assert_build_panics_naming(sources: &[(&str, &str)], needles: &[&str]) {
 
 #[test]
 fn a_stdlib_module_referencing_an_undeclared_sibling_fails_the_stdlib_build() {
-    let provider = ("std.zz_provider", "module std.zz_provider\npub type Widget = Real\n");
+    let provider = (
+        "std.zz_provider",
+        "module std.zz_provider\npub type Widget = Real\n",
+    );
     assert_build_panics_naming(
         &[
             provider,
@@ -52,7 +55,11 @@ fn a_stdlib_module_referencing_an_undeclared_sibling_fails_the_stdlib_build() {
             "module std.zz_consumer\nimport std.zz_provider\nstructure def C {\n    param w : Widget\n}\n",
         ),
     ]);
-    assert_eq!(built.len(), 2, "the declared import must make the build succeed");
+    assert_eq!(
+        built.len(),
+        2,
+        "the declared import must make the build succeed"
+    );
 }
 
 #[test]
@@ -180,7 +187,10 @@ fn first_difference(a: &[ModuleFingerprint], b: &[ModuleFingerprint]) -> Option<
         } else if x.content_hash != y.content_hash {
             format!("content_hash of {}", x.path)
         } else {
-            format!("diagnostics of {}: {} vs {}", x.path, x.diagnostics, y.diagnostics)
+            format!(
+                "diagnostics of {}: {} vs {}",
+                x.path, x.diagnostics, y.diagnostics
+            )
         };
         return Some(format!("index {index}: {what}"));
     }

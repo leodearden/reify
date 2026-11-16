@@ -48,8 +48,11 @@ struct ImportGraph<'s> {
 impl<'s> ImportGraph<'s> {
     fn of(sources: &[(&'s str, &str)]) -> Result<Self, StdlibGraphError> {
         let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
-        let index_of: HashMap<&str, usize> =
-            names.iter().enumerate().map(|(i, &name)| (name, i)).collect();
+        let index_of: HashMap<&str, usize> = names
+            .iter()
+            .enumerate()
+            .map(|(i, &name)| (name, i))
+            .collect();
         let paths: Vec<ModulePath> = names
             .iter()
             .map(|name| ModulePath::from_dotted(name).expect("valid dotted module name"))
@@ -191,7 +194,12 @@ pub(crate) fn compile_modules_topo(
                         .expect("canonical order compiles every import first")
                 })
                 .collect();
-            compile_against_imports(graph.names[idx], sources[idx].1, &graph.paths[idx], &imports)
+            compile_against_imports(
+                graph.names[idx],
+                sources[idx].1,
+                &graph.paths[idx],
+                &imports,
+            )
         };
         compiled[idx] = Some(module);
     }
