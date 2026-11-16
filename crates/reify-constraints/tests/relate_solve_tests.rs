@@ -28,10 +28,12 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, partition_driving_set, pose_from_frame, static_relation_residuals,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame_outcome,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
-use reify_ir::{SolveResult, Value};
+use reify_constraints::trust_region::SolveBudget;
+use reify_ir::{SolveFailureCause, SolveResult, Value};
 
 mod common;
 
@@ -554,6 +556,40 @@ fn angle_residual_normalizes_non_unit_direction_operands() {
         resid < 1e-9,
         "angle residual must be ≈0 at the true 45° angle even for a NON-unit operand \
          (normalized before the dot); got {resid}"
+    );
+}
+
+/// A Direction operand under a non-finite pose rotation must surface as a
+/// non-finite evaluation, exactly as an Axis/Plane/Vector operand does — never be
+/// left unrotated. An unrotated Direction reads the identity residual at every
+/// probe: zero here (the pair is seated), so the run would report a converged
+/// pose carrying the NaN seed rotation.
+#[test]
+fn a_direction_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    )];
+    let unknown = unknown("m", false);
+    let seed = Pose {
+        translation: [0.0; 3],
+        rotation: [f64::NAN, 0.0, 0.0],
+    };
+    let scaling = scaling_for(&relations, &unknown, &Pose::identity());
+    let outcome = solve_frame_outcome(
+        &relations,
+        &unknown,
+        &seed,
+        &scaling,
+        SolveBudget::default(),
+    );
+    assert!(
+        matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
+        "a NaN-rotated Direction must reach the NonFinite verdict: {outcome:?}"
     );
 }
 

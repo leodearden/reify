@@ -1322,10 +1322,13 @@ fn transform_datum(v: &Value, x: &Pose) -> Value {
                 _ => v.clone(),
             }
         }
-        // Err is reachable only from a non-finite pose rotation; it falls back like
-        // the sibling arms' cannot-transform case.
-        Value::Direction(u) => UnitVec3::from_vector(rotate(x.rotation, u.components()))
-            .map_or_else(|_| v.clone(), Value::Direction),
+        // Err is reachable only from a non-finite pose rotation. The raw rotated
+        // vector carries that NaN on, as the sibling arms' rotated values do, so the
+        // solver reports it as a NonFinite evaluation; `dir_of` reads a Vector too.
+        Value::Direction(u) => {
+            let r = rotate(x.rotation, u.components());
+            UnitVec3::from_vector(r).map_or_else(|_| vector_value(r), Value::Direction)
+        }
         // A raw `Vector` operand is used as a direction (`dir_of` resolves it), so it
         // ROTATES with the moving Frame and does NOT translate — mirroring the
         // `Direction` arm. Without this arm a moving `Vector` would fall through to the
