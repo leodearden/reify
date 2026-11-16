@@ -1,25 +1,23 @@
 // Stdlib: Buckling Eigensolver Options, Modes & Results  (`std.solver.buckling`)
 //
-// PRD: docs/prds/v0_5/buckling-eigensolver.md §4, §7, §13 task α.
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §4, §7, §13 tasks α, ε, η.
 //
-// Provides the named-type surface for the v0.5 linear-buckling eigensolver:
+// Provides the v0.5 linear-buckling eigensolver surface:
 //   - `BucklingOptions`         — solver-input knobs (n_modes, mode, sigma, tol,
 //                                  max_iters, auto_dense)
 //   - `BucklingMode`            — single eigenvalue/eigenvector pair
 //   - `BucklingResult`          — single-case solver-output container
 //   - `MultiCaseBucklingResult` — multi-load-case parallel sibling of MultiCaseResult
-//
-// NOTE: `solve_buckling` and the result-interpretation helpers (`critical_load`,
-// `safety_factor_buckling`, `mode_shape`) live in `solver_buckling_fns.ri`
-// (`std.solver.buckling.fns`), which is loaded AFTER this module.  This is the
-// same split used for `std.flexures.types` / `std.flexures` (esc-3851-32):
-// function bodies that access struct fields (`result.modes[0].eigenvalue`)
-// must be compiled AFTER the struct types they reference are in the prelude.
+//   - `solve_buckling`          — single-case eigensolve (`@optimized`)
+//   - `critical_load` / `safety_factor_buckling` / `mode_shape`
+//                               — result-interpretation helpers
+//   - `solve_buckling_load_cases` — multi-load-case eigensolve (`@optimized`)
 //
 // Module placement: `std.solver.buckling` is the sibling of `std.solver.elastic`.
-// Registered immediately after `std.solver.elastic` in `stdlib_loader.rs` so
-// `ElasticResult` is in scope when `BucklingResult.pre_stress : ElasticResult`
-// compiles.
+// Registered immediately after `std.fea.multi_case` in `stdlib_loader.rs`, which
+// supplies `LoadCase` for `solve_buckling_load_cases`; that slot is also after
+// `std.solver.elastic` (`ElasticResult` for `BucklingResult.pre_stress`,
+// `ElementOrder`) and `std.fea.types` (`Load` / `Support`).
 //
 // Encoding notes:
 //   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
@@ -276,4 +274,132 @@ structure def MultiCaseBucklingResult {
     // exclusively by `solve_buckling_load_cases` (PRD §13 task η).
     // BTreeMap iteration order is lexicographic on `Value::String` keys.
     param cases : Map<String, BucklingResult>
+}
+
+// ── solve_buckling ────────────────────────────────────────────────────────────
+
+// `@optimized("solver::buckling")` causes the engine to insert a ComputeNode
+// with target == "solver::buckling" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/compute_targets/buckling.rs.
+//
+// Signature deviation from PRD §4 `(body: Body, ...)`:
+//   `solve_buckling` predates the Body→trampoline geometry channel and does
+//   not use it: the @optimized trampoline receives flat value_inputs and
+//   reconstructs the column mesh from length/width/height rather than
+//   realizing a mesh from a `body` param. (The channel itself is live
+//   elsewhere — `Value::GeometryHandle` plus the `realization_inputs` path
+//   consumed by `solve_elastic_static`'s body-arg overload, task 4870,
+//   solver_elastic.ri — so this is a deviation from that later precedent,
+//   not evidence the channel doesn't exist.) This keeps solve_buckling
+//   uniform with its own multi-case sibling (`solve_buckling_load_cases`
+//   below), which also takes flat dims.
+//   See design decision DD-2 in .task/plan.json.
+//
+// Signature notes:
+//
+//   `loads : List<Load>` and `supports : List<Support>`:
+//     Tightened from `List<Real>` placeholders (task ζ/4444) to match
+//     `LoadCase.loads : List<Load>` and `LoadCase.supports : List<Support>`.
+//     Callers pass the values via `LoadCase.loads` / `LoadCase.supports`
+//     member access (or inline typed list literals).  Conformance is enforced
+//     at compile time for StructureInstanceCtor list elements.
+//
+//   `options : BucklingOptions = BucklingOptions()`:
+//     `BucklingOptions` is declared in this module, so the same-module ctor
+//     default resolves against its authoritative template (PRD
+//     stdlib-namespace D-8).
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `BucklingOptions(...)` to override specific fields.
+@optimized("solver::buckling")
+pub fn solve_buckling(
+    material  : ElasticMaterial,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : BucklingOptions = BucklingOptions()
+) -> BucklingResult {
+    BucklingResult()
+}
+
+// ── Result-interpretation helpers ────────────────────────────────────────────
+
+// `critical_load` — first-mode critical load (Force).
+//
+// Design decision DD-1 (non-blocking escalate_info at task 3454):
+//   The kernel returns a dimensionless multiplier λ where λ × F_applied = P_cr.
+//   PRD §4 originally declared `critical_load(result) -> Force` intending
+//   to derive F_ref from `pre_stress`. However BucklingResult is frozen to
+//   4 fields (task α compile-test), and ElasticResult stores no load — so
+//   a pure `critical_load(result)` cannot recover F_ref without unfreezing α.
+//   Resolution: take an explicit `reference_load: Force` param, symmetric
+//   with the PRD's own `safety_factor_buckling(result, applied_load)`.
+pub fn critical_load(
+    result         : BucklingResult,
+    reference_load : Force
+) -> Force {
+    result.modes[0].eigenvalue * reference_load
+}
+
+// `safety_factor_buckling` — dimensionless first-mode load multiplier.
+//
+// v0.5 semantics: trivially `result.modes[0].eigenvalue`.
+// The `applied_load` argument is retained for forward-compatibility
+// (future non-linear buckling may use it); it is informational here.
+pub fn safety_factor_buckling(
+    result       : BucklingResult,
+    applied_load : Force
+) -> Real {
+    result.modes[0].eigenvalue
+}
+
+// `mode_shape` — dimensionless mode-shape eigenvector field for mode n: a
+// DIRECTION field, not a displacement field (a buckling eigenvector is defined
+// only up to scalar multiplication — see the DIMENSIONALITY NOTE on
+// `BucklingMode.mode_shape` above).
+//
+// Returns `result.modes[n].mode_shape`. For task ε this is `Undef`
+// per the tet-result convention (Undef must remain accepted for Field
+// params; see the `ElasticResult.frame` Undef-for-absent-field convention in
+// solver_elastic.ri). Displaced-position population
+// is task ι/3458 (GUI animator).
+pub fn mode_shape(
+    result : BucklingResult,
+    n      : Int
+) -> Field<Point3<Length>, Vector3<Dimensionless>> {
+    result.modes[n].mode_shape
+}
+
+// ── solve_buckling_load_cases ─────────────────────────────────────────────────
+
+// `solve_buckling_load_cases` — multi-load-case buckling eigenvalue solve.
+//
+// @optimized("solver::buckling_multi_case") routes to the trampoline in
+// `crates/reify-eval/src/compute_targets/buckling_multi_case.rs`.
+//
+// Signature mirrors `solve_load_cases` (fea_multi_case.ri) but:
+//   - material : ElasticMaterial  (matches single-case `solve_buckling`)
+//   - options  : BucklingOptions  (shared across all cases; LoadCase.options
+//     carries ElasticOptions — wrong type for buckling, so it is ignored
+//     by the trampoline per design decision DD-4 in .task/plan.json)
+//   - returns  : MultiCaseBucklingResult
+//
+// The inline contract-body `MultiCaseBucklingResult(cases: map{})` is never
+// reached — the @optimized trampoline always intercepts.
+//
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
+@optimized("solver::buckling_multi_case")
+pub fn solve_buckling_load_cases(
+    material : ElasticMaterial,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    cases    : List<LoadCase>,
+    options  : BucklingOptions = BucklingOptions()
+) -> MultiCaseBucklingResult {
+    // Inline contract-body — never reached; @optimized intercepts at the
+    // call site and routes to the `solver::buckling_multi_case` trampoline
+    // (crates/reify-eval/src/compute_targets/buckling_multi_case.rs).
+    MultiCaseBucklingResult(cases: map{})
 }

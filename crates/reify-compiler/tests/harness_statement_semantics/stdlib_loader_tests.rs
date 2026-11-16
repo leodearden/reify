@@ -1,5 +1,7 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
+use std::collections::BTreeSet;
+
 use reify_ast::Pragma;
 use reify_compiler::stdlib_loader;
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
@@ -975,7 +977,7 @@ fn stdlib_build_with_injected_duplicate_structure_name_panics_naming_both_module
 /// The positive counterpart: the REAL stdlib must still build. This is what
 /// proves the gate is wired into the production path rather than only reachable
 /// from a synthetic test set — if the scan were too coarse (kind-agnostic, or
-/// keying functions by name alone), this test goes red on the live 47-file
+/// keying functions by name alone), this test goes red on the live
 /// corpus while the injected-duplicate test above stays green.
 #[test]
 fn real_stdlib_build_is_collision_free() {
@@ -1016,7 +1018,7 @@ fn real_stdlib_build_is_collision_free() {
 //       one; reading `CompiledModule.type_aliases` (module-level only) does not.
 //
 // Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
-// (modal_analysis_fns.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
+// (modal_analysis.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
 // `solve_load_cases` x2 (fea_multi_case.ri) are all same-module overloads, out
 // of a cross-module scan's reach by construction, and remain the business of
 // the per-module duplicate path (`record_or_report_duplicate` in ctx.rs).
@@ -1198,4 +1200,156 @@ fn associated_types_are_not_module_level_type_aliases() {
         "the same ASSOCIATED type name declared inside two different traits \
          (live: MotionValue in kinematic.ri HasMotion/Prismatic/Revolute/Coupling)",
     );
+}
+
+// ─── task 5498 (stdlib-namespace δ): boundary #6 — vestigial *_fns folds ───
+//
+// Each folded fn is declared by its parent module, with the expected overload
+// count and `@optimized` dispatch target, and by no `*/fns` module. Asserted
+// over the compiled stdlib, so it pins where the fn resolves from without
+// naming the file or module it used to live in. A same-name overload in some
+// other module is legal stdlib and is deliberately not an offender here.
+
+struct FoldedFn {
+    parent: &'static str,
+    name: &'static str,
+    overloads: usize,
+    optimized_target: Option<&'static str>,
+}
+
+const FOLDED_FNS: &[FoldedFn] = &[
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "solve_buckling",
+        overloads: 1,
+        optimized_target: Some("solver::buckling"),
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "critical_load",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "safety_factor_buckling",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "mode_shape",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "solve_buckling_load_cases",
+        overloads: 1,
+        optimized_target: Some("solver::buckling_multi_case"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "modal_analysis",
+        overloads: 1,
+        optimized_target: Some("modal::free_vibration"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "first_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "mode_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "transient_response",
+        overloads: 1,
+        optimized_target: Some("modal::transient_response"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "displacement_at",
+        overloads: 2,
+        optimized_target: Some("modal::displacement_at"),
+    },
+    FoldedFn {
+        parent: "std/trajectory",
+        name: "simulate_trajectory",
+        overloads: 1,
+        optimized_target: Some("trajectory::simulate"),
+    },
+];
+
+fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| {
+            m.functions
+                .iter()
+                .filter(move |f| f.name == fn_name)
+                .map(move |f| (m.path.to_string(), f.optimized_target.clone()))
+        })
+        .collect()
+}
+
+#[test]
+fn folded_fns_are_declared_by_their_parent_module_and_no_fns_module() {
+    let offenders: Vec<String> = FOLDED_FNS
+        .iter()
+        .filter_map(|row| {
+            let declarations = stdlib_declarations_of(row.name);
+            let in_parent: Vec<&Option<String>> = declarations
+                .iter()
+                .filter(|(path, _)| path == row.parent)
+                .map(|(_, target)| target)
+                .collect();
+            let parent_matches = in_parent.len() == row.overloads
+                && in_parent
+                    .iter()
+                    .all(|target| target.as_deref() == row.optimized_target);
+            let in_fns_module = declarations.iter().any(|(path, _)| path.ends_with("/fns"));
+            (!parent_matches || in_fns_module).then(|| {
+                format!(
+                    "fn {}: expected {} overload(s) in {} with optimized_target {:?} and \
+                     none in a */fns module; found (module, optimized_target) = {:?}",
+                    row.name, row.overloads, row.parent, row.optimized_target, declarations
+                )
+            })
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "folded stdlib fns must be declared by their parent module, with their \
+         @optimized target intact, and by no */fns module (a legitimate same-name \
+         overload in another module is allowed and is not what this reports):\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn no_fns_sibling_is_loaded_beside_a_folded_parent() {
+    let loaded: BTreeSet<String> = stdlib_loader::load_stdlib()
+        .iter()
+        .map(|m| m.path.to_string())
+        .collect();
+    let parents: BTreeSet<&str> = FOLDED_FNS.iter().map(|row| row.parent).collect();
+    let offenders: Vec<String> = parents
+        .into_iter()
+        .flat_map(|parent| {
+            let sibling = format!("{parent}/fns");
+            let missing_parent =
+                (!loaded.contains(parent)).then(|| format!("{parent} is not in the loaded stdlib"));
+            let stale_sibling = loaded
+                .contains(&sibling)
+                .then(|| format!("{sibling} is still loaded beside its folded parent"));
+            missing_parent.into_iter().chain(stale_sibling)
+        })
+        .collect();
+    assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }

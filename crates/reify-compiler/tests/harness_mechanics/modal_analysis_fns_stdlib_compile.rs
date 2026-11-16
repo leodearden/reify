@@ -1,9 +1,9 @@
-//! Compile-side type pins for the `std.modal.analysis.fns` module
-//! (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`).
+//! Compile-side type pins for the `displacement_at` fns of the
+//! `std.modal.analysis` module (`crates/reify-compiler/stdlib/modal_analysis.ri`).
 //!
 //! Scope (#6094): `displacement_at` returns `List<Length>`, not `List<Real>`.
 //! Why the reconstruction Φ·ξ is plain metres is derived at the declaration:
-//! `crates/reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
+//! `crates/reify-compiler/stdlib/modal_analysis.ri` :: `displacement_at`.
 //!
 //! Two independent signals:
 //!   (a) both `displacement_at` overloads declare `List<Length>`;
@@ -17,7 +17,7 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-/// Return the `std/modal/analysis/fns` CompiledModule from the production
+/// Return the `std/modal/analysis` CompiledModule from the production
 /// stdlib loader. Exercises the same embedded + sequential-prelude compilation
 /// path as production.
 ///
@@ -27,10 +27,10 @@ fn load_stdlib_module() -> &'static CompiledModule {
     let stdlib = stdlib_loader::load_stdlib();
     stdlib
         .iter()
-        .find(|m| m.path.to_string() == "std/modal/analysis/fns")
+        .find(|m| m.path.to_string() == "std/modal/analysis")
         .unwrap_or_else(|| {
             panic!(
-                "stdlib should contain std/modal/analysis/fns module; available paths: {:?}",
+                "stdlib should contain std/modal/analysis module; available paths: {:?}",
                 stdlib
                     .iter()
                     .map(|m| m.path.to_string())
@@ -39,7 +39,7 @@ fn load_stdlib_module() -> &'static CompiledModule {
         })
 }
 
-/// Collect every compiled function named `name` in `std/modal/analysis/fns`.
+/// Collect every compiled function named `name` in `std/modal/analysis`.
 /// `displacement_at` has two overloads (String and FaceSelector `location`), so
 /// a `.find()` would leave one of them unpinned.
 fn find_overloads(name: &str) -> Vec<&'static CompiledFunction> {
@@ -69,7 +69,7 @@ fn displacement_at_overloads_return_list_of_length() {
     assert_eq!(
         overloads.len(),
         2,
-        "expected exactly 2 `displacement_at` overloads in std/modal/analysis/fns \
+        "expected exactly 2 `displacement_at` overloads in std/modal/analysis \
          (String `location` and FaceSelector `location`, sharing one trampoline); \
          got {} with param lists: {:?}",
         overloads.len(),

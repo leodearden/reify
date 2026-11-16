@@ -19,7 +19,7 @@
 //!
 //! Both tests are **RED** until step-2 adds:
 //!   1. `@optimized("solver::buckling_multi_case")` to `solve_buckling_load_cases`
-//!      in `solver_buckling_fns.ri`;
+//!      (now at `solver_buckling.ri :: solve_buckling_load_cases`);
 //!   2. `crates/reify-eval/src/compute_targets/buckling_multi_case.rs` with
 //!      `pub fn solve_buckling_multi_case_trampoline(...)`;
 //!   3. Registration in `compute_targets::register_compute_fns`.

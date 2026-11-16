@@ -5,23 +5,22 @@
 // into a `.ri`-callable compute target that returns the first-mode frequency
 // √(k_flexure/m_load)/(2π) of a flexure-jointed mechanism.
 //
-// WHY this is a separate module (prelude-ordering constraint — same root cause
-// as esc-3851-32 / the std.modal.analysis / std.modal.analysis.fns split):
+// WHY this is a separate module (prelude-ordering constraint):
 //   This function takes a `mechanism : Mechanism` parameter. `Mechanism` is
 //   declared in `std.kinematic` (its entry in `stdlib_sources()`,
-//   stdlib_loader.rs). The existing `std.modal.analysis.fns`
-//   (modal_analysis_fns.ri) is registered BEFORE the `std.kinematic` entry
+//   stdlib_loader.rs). `std.modal.analysis` (modal_analysis.ri), which holds
+//   `modal_analysis`, is registered BEFORE the `std.kinematic` entry
 //   there, so `Mechanism` is not yet in the growing sequential
-//   prelude when modal_analysis_fns.ri compiles. Adding `mechanism_modal_analysis`
+//   prelude when modal_analysis.ri compiles. Adding `mechanism_modal_analysis`
 //   there would produce an unresolved-type error on `mechanism : Mechanism`.
 //
 //   Tail placement after the `std.dynamics` entry puts BOTH required types in
 //   the prelude:
 //     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis`
 //     - `Mechanism` from `std.kinematic`
-//   This is the canonical fix for the prelude-ordering constraint; it exactly
-//   mirrors the rationale that forced the `std.modal.analysis` /
-//   `std.modal.analysis.fns` split in the first place.
+//   This is the canonical fix for the prelude-ordering constraint until a
+//   declared `import std.kinematic` lets the fn fold into `std.modal.analysis`
+//   (stdlib-namespace θ, #5501).
 
 // ── mechanism_modal_analysis ─────────────────────────────────────────────────
 
@@ -42,7 +41,7 @@
 //   @optimized("dynamics::inverse_dynamics")
 //   pub fn inverse_dynamics(mechanism: Mechanism, ...) -> ...
 // and the placeholder-ctor body pattern from `modal_analysis` in
-// modal_analysis_fns.ri:
+// modal_analysis.ri:
 //   ModalResult() placeholder body — dispatch replaces the body once the
 //   trampoline is registered (task 4271 step-6), so ModalResult() is never
 //   evaluated from a body-inline path.

@@ -35,7 +35,7 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// `std.determinacy.purposes` stays last.
 ///
 /// **Ordering footgun:** the hand-chosen positions encode implicit load-order
-/// constraints (e.g. `std.solver.buckling.fns` after `std.solver.buckling`,
+/// constraints (e.g. `std.solver.buckling` after `std.fea.multi_case`,
 /// `std.determinacy.purposes` last) that are NOT expressed as `import` edges
 /// and are therefore NOT machine-checked by the topo-sort.  Adding any `import`
 /// declaration to a stdlib module causes `compile_modules_topo` to reorder it
@@ -125,26 +125,16 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             include_str!("../stdlib/solver_elastic.ri").to_owned(),
         ),
         (
-            "std.solver.buckling",
-            include_str!("../stdlib/solver_buckling.ri").to_owned(),
-        ),
-        (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
-        // `std.fea.multi_case`:
-        //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
-        //     `BucklingOptions`/
-        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
-        //     them in the prelude registry when the fn bodies compile — esc-3851-32).
-        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
-        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
-        //     type-checker must resolve).
-        // Same split + rationale as `std.flexures.types` / `std.flexures`.
+        // `std.solver.buckling` MUST follow `std.fea.multi_case` (`LoadCase`,
+        // consumed by `solve_buckling_load_cases`) and `std.solver.elastic`
+        // (`ElasticResult` / `ElementOrder`). `std.fea.multi_case` references
+        // no buckling name, so loading buckling after it hides nothing.
         (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
+            "std.solver.buckling",
+            include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
         (
             "std.analysis",
@@ -180,32 +170,9 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.modal.analysis",
             include_str!("../stdlib/modal_analysis.ri").to_owned(),
         ),
-        // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
-        // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
-        // which requires `ModalResult`/`Mode` to already be in the prelude
-        // template registry when the fn bodies compile. Same split +
-        // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
-        // (esc-3851-32).
-        (
-            "std.modal.analysis.fns",
-            include_str!("../stdlib/modal_analysis_fns.ri").to_owned(),
-        ),
         (
             "std.trajectory",
             include_str!("../stdlib/trajectory.ri").to_owned(),
-        ),
-        // `std.trajectory.fns` MUST follow `std.trajectory` — the
-        // `@optimized simulate_trajectory` body constructs `EndEffectorTrack()`
-        // (a no-arg ctor — like `ModalResult()`, which also has no per-field
-        // defaults), which requires `EndEffectorTrack` to already be in the
-        // prelude template registry when
-        // the fn body compiles. Same split + rationale as `std.modal.analysis`
-        // / `std.modal.analysis.fns` (modal_analysis_fns.ri:6-20). Placed before
-        // the later `std.dynamics` / `std.kinematic`, which themselves depend on
-        // `std.trajectory`, so order is safe (task π, prereq-2).
-        (
-            "std.trajectory.fns",
-            include_str!("../stdlib/trajectory_fns.ri").to_owned(),
         ),
         ("std.fdm", include_str!("../stdlib/fdm.ri").to_owned()),
         // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
@@ -332,15 +299,15 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // Ordering constraint: MUST follow BOTH:
         //   - `std.modal.analysis` — supplies ModalOptions/ModalResult/Mode
         //   - `std.kinematic` — supplies the Mechanism type
-        // The existing `std.modal.analysis.fns` loads BEFORE
-        // `std.kinematic`, so Mechanism is not yet in its prelude; placing
-        // `mechanism_modal_analysis` there would produce an unresolved-type error.
+        // `std.modal.analysis` loads BEFORE `std.kinematic`, so Mechanism is
+        // not yet in its prelude; placing `mechanism_modal_analysis` there
+        // would produce an unresolved-type error.
         // Tail placement after `std.dynamics` satisfies both constraints
         // directly: `std.modal.analysis` and `std.kinematic` both precede
         // this entry (`std.kinematic` is itself pulled in ahead of
         // `std.dynamics`).
-        // Same prelude-ordering rationale as the original std.modal.analysis /
-        // std.modal.analysis.fns split (esc-3851-32).
+        // Folding it into `std.modal.analysis` needs a declared
+        // `import std.kinematic` (stdlib-namespace θ, #5501).
         (
             "std.modal.mechanism.fns",
             include_str!("../stdlib/modal_mechanism_fns.ri").to_owned(),

@@ -19,6 +19,12 @@
 //   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
 //                            shift_frequency, tol, max_iters,
 //                            reference_direction, element_order)
+//   - `modal_analysis`     — free-vibration eigensolve (`@optimized`)
+//   - `first_frequency` / `mode_frequency`
+//                          — result-interpretation helpers
+//   - `transient_response` — modal-superposition transient solve (`@optimized`)
+//   - `displacement_at`    — single-location displacement series, String and
+//                            FaceSelector overloads (`@optimized`)
 //
 // Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
 // `std.trajectory`'s header — "registered last … ready for the planned
@@ -240,7 +246,7 @@ structure def RayleighDamping : DampingDescriptor {
 // descriptor reads is `Damped` / `DampedMaterial`, never `Damping`.)
 //
 // FAILURE CONTRACT — LOUD, NEVER A SILENT ζ = 0. `modal_analysis` takes
-// `material : ElasticMaterial` (modal_analysis_fns.ri), which does NOT imply
+// `material : ElasticMaterial` (`modal_analysis` below), which does NOT imply
 // `Damped`, so a material with no `loss_factor` reaches the solver and the
 // compiler cannot catch it. A `MaterialDamping` solve over such a material is
 // an eval-time ERROR that names the offending material and the fix
@@ -982,4 +988,196 @@ structure def DisplacementTimeHistory {
     //                                 by the transient_response trampoline
     //                                 (task ι), mirroring the ModalResult.modes
     //                                 discipline (`ModalResult.modes` above).
+}
+
+// ── modal_analysis ────────────────────────────────────────────────────────────
+
+// `@optimized("modal::free_vibration")` causes the engine to insert a
+// ComputeNode with target == "modal::free_vibration" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/modal_ops.rs.
+//
+// Signature deviation from PRD §1 `(part, opts)`:
+//   There is no Part→trampoline geometry channel: `Part` (see `structure def
+//   Part` above, task 4578, per
+//   `docs/prds/v0_6/stdlib-surface-type-substrate.md` §12 open-question-3)
+//   carries no geometry for the trampoline to reconstruct a mesh from — see
+//   that declaration for the opaque-marker rationale. So — exactly like
+//   `solve_buckling` — the @optimized trampoline receives flat value_inputs
+//   and reconstructs the beam mesh from length/width/height.
+//   `boundary_conditions`, `damping`, `n_modes`, `tol`, `max_iters`,
+//   `shift_frequency`, and `reference_direction` are read from the single
+//   `options : ModalOptions` StructureInstance (matching the PRD §1 example,
+//   which bundles the BCs inside ModalOptions). See plan design-decision-1.
+//
+// Signature notes:
+//   `material : ElasticMaterial` (the trait from std.materials.fea):
+//     Callers wrap a concrete material via `FEAMaterialInput(material: mat)`
+//     and pass `mi.material` (compile-time type `ElasticMaterial`) — the same
+//     coercion shim `solve_buckling` uses (solver_buckling.ri) via
+//     `FEAMaterialInput` (solver_elastic.ri). The trampoline reads `youngs_modulus`,
+//     `poisson_ratio`, and `density` off the runtime StructureInstance.
+//
+//   `options : ModalOptions = ModalOptions()`:
+//     `ModalOptions` is declared in this module; the same-module ctor default
+//     resolves against its authoritative template (PRD stdlib-namespace D-8).
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `ModalOptions(...)` to override specific fields.
+@optimized("modal::free_vibration")
+pub fn modal_analysis(
+    material : ElasticMaterial,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    options  : ModalOptions = ModalOptions()
+) -> ModalResult {
+    ModalResult()
+}
+
+// ── Result-interpretation helpers ────────────────────────────────────────────
+
+// `first_frequency` — natural frequency of the fundamental (lowest) mode, in Hz.
+//
+// `ModalResult.modes` is ordered ascending by frequency (producer-enforced by
+// the trampoline), so `modes[0]` is the fundamental mode. `Mode.frequency` is a
+// dimensioned `Frequency` (= s⁻¹; modal_analysis.ri Mode, tightened in task
+// 4548), so this returns `Frequency`. This is the task's headline
+// user-observable signal (PRD §1).
+pub fn first_frequency(result : ModalResult) -> Frequency {
+    result.modes[0].frequency
+}
+
+// `mode_frequency` — natural frequency of mode `n` (0-based), in Hz.
+//
+// Returns `result.modes[n].frequency`. Mirrors buckling's `mode_shape(result, n)`
+// dynamic-index accessor (solver_buckling.ri).
+pub fn mode_frequency(
+    result : ModalResult,
+    n      : Int
+) -> Frequency {
+    result.modes[n].frequency
+}
+
+// ── transient_response ────────────────────────────────────────────────────────
+
+// `@optimized("modal::transient_response")` causes the engine to insert a
+// ComputeNode with target == "modal::transient_response" rather than
+// body-inlining. The trampoline lives at crates/reify-eval/src/modal_ops.rs
+// (task ι): ι owns fn + dispatch; the future task λ adds warm-state caching.
+//
+// Signature deviation from PRD §5.2 `transient_response(modal_result, forcing,
+// t_range : Range<Time>, dt)`:
+//   `Range<T>` is NOT a surface type in Reify .ri yet (kinematic.ri's
+//   "not yet surface types (Range<T>, ...)" note), so a typed
+//   `t_range : Range<Time>` param would not resolve. A uniform time grid is
+//   fully specified by (t_start, t_end, dt), so the single `t_range` is split
+//   into two scalar params `t_start : Time, t_end : Time` (plus the existing
+//   `dt : Time`) — a documented signature deviation, exactly the pattern
+//   `modal_analysis` itself uses (its signature-deviation note above) and
+//   `solve_elastic_static` (List placeholders for loads/supports). See plan
+//   design-decision-2.
+//
+// Returns a `DisplacementTimeHistory` (declared above) carrying the per-mode
+// modal-coordinate series; query a physical location/direction with
+// `displacement_at` below. An empty
+// `forcing.sources` yields a degenerate empty history plus an
+// `E_TransientForcingMissing` Error from the trampoline (ForcingTimeHistory's
+// `sources.count > 0` ctor constraint catches the common case at construction).
+//
+// Placeholder body: dispatch replaces the body once the trampoline is
+// registered (task ι step-10), so the `DisplacementTimeHistory()` ctor call is
+// never evaluated — the same body-placeholder pattern `modal_analysis` uses with
+// `ModalResult()` (the `modal_analysis` body above).
+@optimized("modal::transient_response")
+pub fn transient_response(
+    modal_result : ModalResult,
+    forcing      : ForcingTimeHistory,
+    t_start      : Time,
+    t_end        : Time,
+    dt           : Time
+) -> DisplacementTimeHistory {
+    DisplacementTimeHistory()
+}
+
+// ── displacement_at ─────────────────────────────────────────────────────────────
+
+// `@optimized("modal::displacement_at")` is the lazy single-location modal-
+// superposition reconstruction (PRD §5.2 / task ι). The trampoline (modal_ops.rs)
+// resolves `location` to a node (a numeric string parses as an explicit node
+// index; any other string resolves to the fundamental-mode antinode), computes
+// the per-mode projection coefficient Φ_i[node]·direction, and returns the
+// physical displacement time series
+// u(t_j) = Σ_i (Φ_i[node]·direction)·mode_coords[i][j] — expanding ONLY the
+// queried node, never the full n_nodes × n_times matrix.
+//
+// Returns `List<Length>` (PRD §5.2) — the physical displacement projected onto
+// `direction` at each timestep, in metres. This is the first `@optimized` fn
+// returning a non-struct value; the ComputeOutcome carries a `Value::List`.
+//
+// Unit algebra (#6094): the mass-normalized mode shapes Φ carry kg^-1/2 and the
+// conjugate modal coordinates ξ carry kg^1/2·m, so the √mass factors CANCEL and
+// the product Φ·ξ is plain metres. Each FACTOR alone stays unrepresentable in
+// Reify's dimension grammar (no SI-root extension), so the intermediate
+// `DisplacementTimeHistory.mode_coords` (ξ) and `Mode.shape` (Φ) deliberately
+// stay `Real`/`Dimensionless` — see their own notes above. Do not
+// generalise the dimensioning here to them.
+//
+// Nothing in the pipeline compares a declared return type against the Value a
+// trampoline emits, so this declaration and the trampoline's emitted series are
+// pinned by two independent tests — retyping one means retyping the other.
+//
+// NOTE: invoked as a FREE function `displacement_at(history, location, direction)`
+// — method-call syntax is not UFCS in Reify, so `history.displacement_at(...)`
+// would not resolve.
+//
+// Placeholder body `[]`: dispatch replaces it once the trampoline is registered
+// (task ι step-10); the empty-list literal infers `List<Length>` against the
+// declared return type.
+@optimized("modal::displacement_at")
+pub fn displacement_at(
+    history   : DisplacementTimeHistory,
+    location  : String,
+    direction : Vector3<Dimensionless>
+) -> List<Length> {
+    []
+}
+
+// Selector overload (task 4122 / R3b): a symbolic topology selector `location`
+// (e.g. `faces_by_normal(part, dir, tol)`) resolves to a mesh node against the
+// carried result topology baked into the `ModalResult` (kernel-free — eval path
+// in modal_ops.rs + topology_selectors.rs), picking the representative
+// (peak-response) node WITHIN the selector-resolved node-set. This is the
+// capability flip over task 3823's global-antinode fallback.
+//
+// Param type is `FaceSelector` (the exact type `faces_by_normal` yields), NOT the
+// kind-agnostic `Selector` (`AnySelector`): `resolve_function_overload`
+// (type_compat.rs) matches params by EXACT equality, and the
+// `type_compatible(AnySelector, Selector(k))` widening (task 4369/A2) is applied
+// only at struct-field binding, not during overload selection — so an
+// `AnySelector` param would reject a `FaceSelector` arg with "no matching
+// overload". `FaceSelector` is also the semantically correct surface: the R3b
+// eval resolution is face→node (boundary `OnFace`), so a face selector is exactly
+// what reduces to a representative node.
+//
+// Both overloads share the ONE Rust-registered trampoline: the
+// `@optimized("modal::displacement_at")` annotation is dispatch metadata, so two
+// `.ri` fns naming the same target do not collide — the same two-overload /
+// one-trampoline pattern as `solver::elastic_static` (the
+// `solve_elastic_static` overloads in solver_elastic.ri).
+// Exact-type `resolve_function_overload` routes the call site to the matching
+// declaration (a `String` arg → the String overload, a `FaceSelector` arg → this
+// one), and the trampoline (`displacement_at_trampoline`, modal_ops.rs) branches
+// on `value_inputs[1]`'s runtime Value shape: `Value::String` → the task-3823
+// numeric-index / fundamental-antinode resolver; `Value::Selector` → the
+// carried-topology resolution. Same arity (3) and no defaults, so there is no
+// `try_default_padding` ambiguity between the two declarations.
+//
+// Body discipline: same as the String overload — `[]` is the inline placeholder;
+// the trampoline is always registered and the body never runs.
+@optimized("modal::displacement_at")
+pub fn displacement_at(
+    history   : DisplacementTimeHistory,
+    location  : FaceSelector,
+    direction : Vector3<Dimensionless>
+) -> List<Length> {
+    []
 }
