@@ -30,7 +30,8 @@ pub enum ImportBinding<'a> {
 pub struct EntityBinding<'a> {
     /// The entity's name in the imported (home) module.
     pub entity: &'a str,
-    /// The `as` name, if written.
+    /// The `as` name, if written — even when it equals `entity`
+    /// (`import m.W as W` is still aliased).
     pub alias: Option<&'a str>,
 }
 
@@ -42,8 +43,11 @@ impl<'a> EntityBinding<'a> {
 }
 
 impl ImportKind {
-    /// The one statement of what this import binds; consumers derive their
-    /// answers from it rather than matching `ImportKind`'s variants.
+    /// The one statement of what this import binds. Every question about its
+    /// bindings (local names, the home entity behind each, aliasing) derives
+    /// from this. Matching the variants is for choices made by the written
+    /// form, such as diagnostic wording or where a cursor on the import
+    /// navigates.
     pub fn binding(&self) -> ImportBinding<'_> {
         match self {
             ImportKind::Module => ImportBinding::Namespace { alias: None },

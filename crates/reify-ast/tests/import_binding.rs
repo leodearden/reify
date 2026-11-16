@@ -67,3 +67,18 @@ fn aliased_entity_import_binds_the_home_entity_under_its_alias() {
     assert_eq!(kind.binding(), ImportBinding::Entities(vec![binding]));
     assert_eq!(binding.local_name(), "StdBolt");
 }
+
+#[test]
+fn an_entity_aliased_to_its_own_name_is_still_aliased() {
+    let kind = ImportKind::EntityAliased {
+        entity: "W".into(),
+        alias: "W".into(),
+    };
+    assert_eq!(
+        kind.binding(),
+        ImportBinding::Entities(vec![EntityBinding {
+            entity: "W",
+            alias: Some("W"),
+        }])
+    );
+}
