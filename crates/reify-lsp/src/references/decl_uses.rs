@@ -5,8 +5,8 @@
 
 use reify_ast::{
     ConstraintInstDecl, Declaration, DefaultDecl, Expr, ExprKind, FieldSource, FnDef,
-    ForallConstraintBody, ImportKind, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule,
-    TraitBoundRef, TypeExpr, TypeExprKind, TypeParamDecl, VariantPayload,
+    ForallConstraintBody, ImportBinding, ImportKind, MAX_MEMBER_NESTING_DEPTH, MemberDecl,
+    ParsedModule, TraitBoundRef, TypeExpr, TypeExprKind, TypeParamDecl, VariantPayload,
 };
 use reify_core::SourceSpan;
 
@@ -576,13 +576,15 @@ fn references_decl_name(written: &str, name: &str) -> bool {
 /// Whether import `kind` brings an entity named `name` into local scope under
 /// that SAME name — the non-aliased forms (`import m.Name`, `import m.{Name,…}`).
 /// Aliased imports (`import m.Name as Other`) bind a DISTINCT local name and are
-/// handled separately (κ step-6), so they return `false` here.
+/// handled separately (κ step-6), so they return `false` here. That includes
+/// `import m.Name as Name`: renaming `Name` rewrites only its entity token, and
+/// the unchanged alias keeps its uses bound.
 pub(super) fn import_exposes_entity(kind: &ImportKind, name: &str) -> bool {
-    match kind {
-        ImportKind::Entity(n) => n == name,
-        ImportKind::Destructured(names) => names.iter().any(|n| n == name),
-        ImportKind::EntityAliased { .. } | ImportKind::Module | ImportKind::Aliased { .. } => false,
-    }
+    matches!(
+        kind.binding(),
+        ImportBinding::Entities(entities)
+            if entities.iter().any(|b| b.alias.is_none() && b.entity == name)
+    )
 }
 
 #[cfg(test)]
