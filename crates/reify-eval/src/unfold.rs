@@ -14,11 +14,11 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
-use crate::journal::{EventJournal, TraceSource};
-use crate::snapshot::Snapshot;
 use crate::geometry_ops::symbolic_cell_mint::{
     RealizationSource, SymbolicMintScope, mint_template_keyed_instance_cell,
 };
+use crate::journal::{EventJournal, TraceSource};
+use crate::snapshot::Snapshot;
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
 /// the gate, its decline report, and the shape probe they share (task #6662).

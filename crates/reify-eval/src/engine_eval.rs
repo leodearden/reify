@@ -32,11 +32,11 @@ use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_tr
 use crate::dirty::topological_sort;
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
-use crate::snapshot::Snapshot;
 use crate::geometry_ops::symbolic_cell_mint::{
     RealizationSource, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
 };
+use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
+use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
