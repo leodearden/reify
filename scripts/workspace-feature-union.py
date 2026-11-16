@@ -45,7 +45,8 @@ Reading the output:
                                 as <path> shows; remove the dependency the
                                 line names from the named manifest. While
                                 such a finding stands, check reports it
-                                without resolving cargo tree or a unit graph.
+                                without fetching or resolving cargo tree or
+                                a unit graph.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -75,13 +76,15 @@ Reading the output:
 pin no member needs any more passes it. `generate` starts from an empty
 region, so it is what sheds a stale pin.
 
-`check` resolves with `--frozen`: it never writes Cargo.lock and never touches
-the network. Profiles come from `cargo test --unit-graph`, a cargo-unstable
-JSON format: check sets RUSTC_BOOTSTRAP=1 on that compile-free subprocess
-only, points it at a scratch CARGO_TARGET_DIR so it never touches the
-checkout's target/ or its build lock, and passes no `--target`, as verify's
-builds pass none; a format version other than 1 is exit 2. `generate`
-pins features only, never profiles. It rewrites the marked region of
+`check` first runs `cargo fetch --locked --target <host>`, so a cold cargo
+cache cannot change its verdict and a warm one makes no request, then
+resolves with `--frozen`; it never writes Cargo.lock. Profiles come from
+`cargo test --unit-graph`, a cargo-unstable JSON format: check sets
+RUSTC_BOOTSTRAP=1 on that compile-free subprocess only, points it at a
+scratch CARGO_TARGET_DIR so it never touches the checkout's target/ or its
+build lock, and passes no `--target`, as verify's builds pass none; a format
+version other than 1 is exit 2. `generate` pins features only, never
+profiles. It rewrites the marked region of
 crates/workspace-feature-union/Cargo.toml to a fixpoint and resolves with
 `--offline`, so the rewrite may update Cargo.lock; if an input fails part-way
 it puts both files back as it found them.
@@ -91,9 +94,9 @@ The gate runs from crates/reify-build-utils/tests/workspace_feature_union/
 limits and the probe procedure: docs/notes/workspace-feature-union.md.
 
 Exit codes: 0 every member resolves like the workspace; 1 a finding above;
-2 an input (cargo metadata, cargo tree, cargo test --unit-graph, the union
-manifest) could not be trusted, including a cargo tree output whose sides
-cannot be read.
+2 an input (cargo metadata, cargo fetch, cargo tree, cargo test --unit-graph,
+the union manifest) could not be obtained or trusted, including a cargo tree
+output whose sides cannot be read.
 """
 
 from __future__ import annotations
@@ -195,6 +198,14 @@ def host_triple(root: Path) -> str:
         if line.startswith("host: "):
             return line.removeprefix("host: ").strip()
     raise InputError("`cargo -vV` printed no `host:` line")
+
+
+def fetch_locked(root: Path, host: str) -> None:
+    """Downloads every locked package a build for `host` can read, so the
+    `--frozen` reads after it see the lockfile's packages whatever the
+    cargo cache holds; on a warm cache it makes no request. `--locked`:
+    Cargo.lock is never written."""
+    cargo(root, ["fetch", "--locked", "--target", host])
 
 
 # --- cargo tree -------------------------------------------------------------
@@ -1065,7 +1076,9 @@ def run_check(root: Path) -> Verdict:
     host_union = host_union_findings(ws)
     if host_union:
         return fail([*coverage, *host_union], HOST_UNION_TRAILER)
-    resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
+    host = host_triple(root)
+    fetch_locked(root, host)
+    resolution = resolve_splits(root, LockMode.FROZEN, host, ws)
     advisories = resolution.member_splits
     for advisory in advisories:
         print(advisory)

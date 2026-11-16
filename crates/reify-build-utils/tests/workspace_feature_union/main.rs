@@ -14,7 +14,7 @@ mod harness;
 mod profile_split;
 
 use harness::{
-    Fixture, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings, assert_green,
+    Fixture, HOST, Member, TREE_A, TREE_UNION, UNION, assert_exit, assert_findings, assert_green,
     assert_input_error, assert_pin, covered_a, describe, empty_union_manifest, finding_lines,
     member, member_split_fixture, parse_toml, real_check, run_script, stdout_of, workspace_of,
     write_file,
@@ -27,12 +27,19 @@ use harness::{
 #[test]
 fn real_workspace_resolves_every_member_like_the_workspace() {
     let out = real_check();
-    assert!(
-        out.status.success(),
-        "a member resolves an external package unlike --workspace, or compiles a unit to \
-         another profile; docs/notes/workspace-feature-union.md explains the remedy\n{}",
-        describe(out)
-    );
+    let failure = match out.status.code() {
+        Some(2) => {
+            "check could not obtain or read an input, named on stderr: this is not a finding. \
+             A cold cargo cache is not a cause, since check fetches the locked packages first; \
+             a failed `cargo fetch` (an unreachable registry, a full CARGO_HOME, a lockfile \
+             that needs updating) is named with cargo's message below."
+        }
+        _ => {
+            "a member resolves an external package unlike --workspace, or compiles a unit to \
+             another profile; docs/notes/workspace-feature-union.md explains the remedy"
+        }
+    };
+    assert!(out.status.success(), "{failure}\n{}", describe(out));
 }
 
 /// Every shipped binary builds these with serde, so no `-p` selection may
@@ -380,10 +387,13 @@ fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
     );
 }
 
+fn zz_build_depends_on_the_union() -> Vec<Member> {
+    vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])]
+}
+
 #[test]
 fn check_reds_when_a_covered_member_build_depends_on_the_union() {
-    let members = vec![member("zz", &[UNION]).build_dep(UNION), member(UNION, &[])];
-    let fixture = Fixture::metadata_only(&members);
+    let fixture = Fixture::metadata_only(&zz_build_depends_on_the_union());
     let manifest = fixture.manifest("zz");
     assert_findings(
         &fixture.check(),
@@ -449,6 +459,89 @@ a v0.1.0 (/fixture/crates/a)|
             .tree("core", TREE_CORE)
             .check(),
         "a dev-dependency is not part of u's host build",
+    );
+}
+
+// --- the cargo cache ---------------------------------------------------------
+
+#[test]
+fn check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets() {
+    type BuildFixture = fn() -> Fixture;
+    let fixtures: [(&str, i32, BuildFixture); 2] = [
+        ("green", 0, || {
+            Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION])).tree("a", TREE_A)
+        }),
+        ("SPLIT", 1, || {
+            Fixture::new(&yy_and_zz_build_with_u(), WS_U_ROOTS_DIFFER_IN_LEAF_LOG)
+                .tree("yy", TREE_YY_LOG_MAX_LEVEL_DEBUG)
+                .tree("zz", TREE_ZZ_LOG_WITHOUT_FEATURES)
+        }),
+    ];
+    for (label, warm_exit, fixture) in fixtures {
+        let warm = fixture().check();
+        assert_exit(&warm, warm_exit, label);
+        let cold_fixture = fixture().cold_cache();
+        let cold = cold_fixture.check();
+        let both = format!(
+            "--- warm ---\n{}\n--- cold ---\n{}",
+            describe(&warm),
+            describe(&cold)
+        );
+        assert_eq!(
+            cold.status.code(),
+            warm.status.code(),
+            "{label}: a cold cargo cache must not change check's exit code\n{both}"
+        );
+        assert_eq!(
+            finding_lines(&stdout_of(&cold)),
+            finding_lines(&stdout_of(&warm)),
+            "{label}: a cold cargo cache must not change check's findings\n{both}"
+        );
+        let log = cold_fixture.cargo_argv_log();
+        assert!(
+            log.lines().any(|line| line.starts_with("fetch")
+                && line.contains("--locked")
+                && line.contains(&format!("--target {HOST}"))),
+            "{label}: check must fetch the locked packages for the host, never writing \
+             Cargo.lock\n{log}\n{}",
+            describe(&cold)
+        );
+    }
+}
+
+#[test]
+fn check_exits_2_naming_cargo_fetch_when_the_registry_is_unreachable() {
+    let out = Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION]))
+        .tree("a", TREE_A)
+        .cold_cache()
+        .unreachable_registry()
+        .check();
+    assert_input_error(
+        &out,
+        &["fetch --locked", "Couldn't resolve host name"],
+        "a host with no network and a cold cache is an input check could not obtain, \
+         never a finding",
+    );
+}
+
+/// HOST-UNION is read from `cargo metadata --no-deps` alone, which needs no
+/// registry, so it is reported even where a fetch would fail.
+#[test]
+fn check_reports_a_host_union_finding_without_fetching() {
+    let fixture = Fixture::metadata_only(&zz_build_depends_on_the_union())
+        .cold_cache()
+        .unreachable_registry();
+    let out = fixture.check();
+    assert_findings(
+        &out,
+        &[&["HOST-UNION zz"]],
+        "an unreachable registry must not hide a HOST-UNION finding",
+    );
+    let log = fixture.cargo_argv_log();
+    assert!(
+        !log.lines().any(|line| line.starts_with("fetch")),
+        "check must not fetch while a HOST-UNION finding stands\n{log}\n{}",
+        describe(&out)
     );
 }
 
