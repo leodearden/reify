@@ -20,7 +20,7 @@
 //!   * Chain body shape (pairwise per element).
 //!   * Non-iterable collection diagnostic.
 
-use reify_core::ModulePath;
+use reify_core::{DimensionVector, ModulePath};
 use reify_ir::{BinOp, CompiledExprKind, Value};
 use reify_test_support::{compile_source, errors_only};
 
@@ -1780,15 +1780,15 @@ structure S {
     }
 }
 
-/// `forall v in [1, 2, 3]: constraint MinThreshold(value: v)` over a
+/// `forall v in [1m, 2m, 3m]: constraint MinThreshold(value: v)` over a
 /// single-predicate `constraint def` should emit exactly 3
 /// CompiledConstraints, one per element. Each label combines the
 /// existing constraint-inst provenance (`<inst_name>#<inst_idx>[<pred_idx>]`)
 /// with the forall element-index suffix (`:forall@<var>[<i>]`), so a
 /// per-element diagnostic can cite both the originating constraint def
 /// and the element that triggered the failure. The substituted `value`
-/// arg is the per-element literal — verified by walking the predicate's
-/// CompiledExpr.
+/// arg is the per-element length literal — verified by walking the
+/// predicate's CompiledExpr.
 #[test]
 fn forall_constraint_inst_body_emits_per_element_inst_predicates() {
     let source = r#"
@@ -1797,7 +1797,7 @@ constraint def MinThreshold {
     value > 0
 }
 structure S {
-    forall v in [1, 2, 3]: constraint MinThreshold(value: v)
+    forall v in [1m, 2m, 3m]: constraint MinThreshold(value: v)
 }
 "#;
     let module = compile_source(source);
@@ -1851,8 +1851,8 @@ structure S {
     }
 
     // Body verification: each emitted constraint substitutes `value` with
-    // the per-element literal. So `value > 0` becomes `<i+1> > 0` — a
-    // BinOp::Gt whose left is Literal(Int(<i+1>)) and right is Literal(Int(0)).
+    // the per-element literal. So `value > 0` becomes `<i+1>m > 0` — a
+    // BinOp::Gt whose left is a LENGTH Literal(Scalar) of SI value <i+1>.
     for (i, c) in forall_inst.iter().enumerate() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
@@ -1863,22 +1863,39 @@ structure S {
                     i,
                     op
                 );
-                let expected = (i as i64) + 1;
+                let expected = (i as f64) + 1.0;
                 match &left.kind {
-                    CompiledExprKind::Literal(Value::Int(n)) => assert_eq!(
-                        *n, expected,
-                        "expected substituted literal {} on left of element {}, got {}",
-                        expected, i, n
-                    ),
+                    CompiledExprKind::Literal(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) => {
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "expected substituted literal {}m on left of element {}, got {}",
+                            expected,
+                            i,
+                            si_value
+                        );
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "expected a LENGTH literal on left of element {}",
+                            i
+                        );
+                    }
                     other => panic!(
-                        "expected Literal(Int({})) on left of element {}, got {:?}",
+                        "expected a {}m LENGTH Literal(Scalar) on left of element {}, got {:?}",
                         expected, i, other
                     ),
                 }
+                // The bare `0` takes the syntactic-zero rewrite (task 4485): it adopts LENGTH.
                 match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => {}
+                    CompiledExprKind::Literal(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *si_value == 0.0 && *dimension == DimensionVector::LENGTH => {}
                     other => panic!(
-                        "expected Literal(Int(0)) on right of element {}, got {:?}",
+                        "expected a zero LENGTH Literal(Scalar) on right of element {}, got {:?}",
                         i, other
                     ),
                 }
@@ -3383,13 +3400,13 @@ constraint def Bounded {
     lo < hi
 }
 structure S {
-    forall v in [1, 2, 3]: constraint NoSuchDef(value: v)
+    forall v in [1m, 2m, 3m]: constraint NoSuchDef(value: v)
 }
 structure U {
-    forall w in [1, 2, 3]: constraint MinThreshold(value: w, bogus: w)
+    forall w in [1m, 2m, 3m]: constraint MinThreshold(value: w, bogus: w)
 }
 structure V {
-    forall x in [1, 2, 3]: constraint Bounded(lo: x)
+    forall x in [1m, 2m, 3m]: constraint Bounded(lo: x)
 }
 "#;
     let module = compile_source(source);
