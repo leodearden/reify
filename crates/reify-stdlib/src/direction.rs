@@ -1,0 +1,193 @@
+//! The `dir(x, y, z)` / `dir(v)` builtin (docs/prds/v0_6/direction-typing.md C4/C11).
+
+use reify_ir::Value;
+
+pub(crate) fn eval_direction(_name: &str, _args: &[Value]) -> Option<Value> {
+    None
+}
+
+pub fn diagnose(_name: &str, _args: &[Value]) -> Option<reify_core::Diagnostic> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity};
+    use reify_ir::{UnitVec3, Value};
+
+    fn mm(x: f64) -> Value {
+        Value::Scalar {
+            si_value: x * 1e-3,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    fn dimensionless(x: f64) -> Value {
+        Value::Scalar {
+            si_value: x,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
+    fn real_vec3(c: [f64; 3]) -> Value {
+        Value::Vector(c.iter().map(|x| Value::Real(*x)).collect())
+    }
+
+    fn reals(c: [f64; 3]) -> Vec<Value> {
+        c.iter().map(|x| Value::Real(*x)).collect()
+    }
+
+    fn ints(c: [i64; 3]) -> Vec<Value> {
+        c.iter().map(|x| Value::Int(*x)).collect()
+    }
+
+    fn eval_dir(args: &[Value]) -> Value {
+        crate::eval_builtin("dir", args)
+    }
+
+    fn components(v: &Value) -> [f64; 3] {
+        match v {
+            Value::Direction(u) => u.components(),
+            other => panic!("expected a Direction, got {other:?}"),
+        }
+    }
+
+    fn assert_direction_bits(args: &[Value], want: [f64; 3]) {
+        let got = components(&eval_dir(args));
+        assert_eq!(
+            got.map(f64::to_bits),
+            want.map(f64::to_bits),
+            "dir({args:?}): got {got:?}, want {want:?}"
+        );
+    }
+
+    fn assert_direction_close(args: &[Value], want: [f64; 3]) {
+        let got = components(&eval_dir(args));
+        for i in 0..3 {
+            assert!(
+                (got[i] - want[i]).abs() <= 1e-15,
+                "dir({args:?}) component {i}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    fn fault_diagnostic(args: &[Value]) -> Diagnostic {
+        assert_eq!(eval_dir(args), Value::Undef, "dir({args:?}) must be undef");
+        let diag = crate::direction_diagnose("dir", args)
+            .unwrap_or_else(|| panic!("dir({args:?}) must be diagnosed"));
+        assert_eq!(diag.severity, Severity::Error, "dir({args:?})");
+        diag
+    }
+
+    fn assert_degenerate(args: &[Value]) -> Diagnostic {
+        let diag = fault_diagnostic(args);
+        assert_eq!(diag.code, Some(DiagnosticCode::DegenerateDirection));
+        assert!(
+            diag.message.starts_with("E_DegenerateDirection: dir:"),
+            "dir({args:?}) message: {}",
+            diag.message
+        );
+        diag
+    }
+
+    fn assert_dimensioned(args: &[Value]) {
+        let diag = fault_diagnostic(args);
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::DimensionedArgRejected),
+            "dir({args:?}): {}",
+            diag.message
+        );
+        assert!(diag.message.contains("dir"), "{}", diag.message);
+        assert!(
+            !diag.message.contains("E_DegenerateDirection"),
+            "dir({args:?}) must not be blamed on degeneracy: {}",
+            diag.message
+        );
+    }
+
+    fn assert_silent_undef(args: &[Value]) {
+        assert_eq!(eval_dir(args), Value::Undef, "dir({args:?}) must be undef");
+        assert!(
+            crate::direction_diagnose("dir", args).is_none(),
+            "a shape fault must stay undiagnosed: dir({args:?})"
+        );
+    }
+
+    #[test]
+    fn three_components_normalise_to_a_unit_direction() {
+        assert_direction_bits(&ints([0, 1, 0]), [0.0, 1.0, 0.0]);
+        assert_direction_bits(&reals([0.0, 2.0, 0.0]), [0.0, 1.0, 0.0]);
+        assert_direction_close(
+            &[dimensionless(3.0), Value::Real(0.0), Value::Real(4.0)],
+            [0.6, 0.0, 0.8],
+        );
+        assert_direction_bits(&reals([2e-12, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn one_vector_normalises_and_a_direction_is_identity() {
+        assert_direction_bits(
+            &[Value::Vector(vec![
+                Value::Int(0),
+                Value::Int(0),
+                Value::Int(3),
+            ])],
+            [0.0, 0.0, 1.0],
+        );
+        assert_direction_close(&[real_vec3([3.0, 4.0, 0.0])], [0.6, 0.8, 0.0]);
+        let u = UnitVec3::from_vector([0.6, 0.8, 0.0]).unwrap();
+        assert_direction_bits(&[Value::Direction(u)], u.components());
+    }
+
+    #[test]
+    fn zero_and_sub_floor_vectors_are_degenerate() {
+        assert_degenerate(&ints([0, 0, 0]));
+        assert_degenerate(&reals([1e-13, 0.0, 0.0]));
+        assert_degenerate(&[real_vec3([0.0, 0.0, 0.0])]);
+    }
+
+    #[test]
+    fn non_finite_components_are_degenerate_and_named_non_finite() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let diag = assert_degenerate(&reals([bad, 0.0, 0.0]));
+            assert!(diag.message.contains("non-finite"), "{}", diag.message);
+        }
+    }
+
+    #[test]
+    fn dimensioned_components_are_rejected_before_degeneracy() {
+        let zero = Value::Real(0.0);
+        assert_dimensioned(&[mm(1.0), zero.clone(), zero.clone()]);
+        assert_dimensioned(&[zero.clone(), zero.clone(), mm(1.0)]);
+        assert_dimensioned(&[mm(1.0), mm(0.0), mm(0.0)]);
+        assert_dimensioned(&[mm(0.0), mm(0.0), mm(0.0)]);
+        assert_dimensioned(&[Value::Vector(vec![mm(1.0), mm(0.0), mm(0.0)])]);
+        let angle = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::ANGLE,
+        };
+        assert_dimensioned(&[angle, zero.clone(), zero]);
+    }
+
+    #[test]
+    fn shape_faults_stay_undiagnosed_undef() {
+        let zero = Value::Real(0.0);
+        assert_silent_undef(&[]);
+        assert_silent_undef(&[zero.clone(), zero.clone()]);
+        assert_silent_undef(&[zero.clone(), zero.clone(), zero.clone(), zero.clone()]);
+        assert_silent_undef(&[Value::String("up".into())]);
+        assert_silent_undef(&[Value::Bool(true), zero.clone(), zero.clone()]);
+        assert_silent_undef(&[Value::String("x".into()), zero.clone(), zero.clone()]);
+        assert_silent_undef(&[Value::Point(reals([0.0, 1.0, 0.0]))]);
+        assert_silent_undef(&[Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)])]);
+        assert_silent_undef(&[Value::Vector(vec![mm(1.0), zero.clone(), zero])]);
+        assert_silent_undef(&[Value::List(reals([0.0, 1.0, 0.0]))]);
+    }
+
+    #[test]
+    fn valid_calls_and_other_names_are_not_diagnosed() {
+        assert!(crate::direction_diagnose("dir", &ints([0, 1, 0])).is_none());
+        assert!(crate::direction_diagnose("normalize", &[real_vec3([0.0, 0.0, 0.0])]).is_none());
+    }
+}
