@@ -614,12 +614,6 @@ fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_
     assert_edited_selector_like_cold(&after_edit, &cold, "EditOuter.same");
 }
 
-/// An outer cell reading an override-free sub's minted cells must follow
-/// them through `edit_source`, as a cold eval's does. The walk can commit the
-/// instance cell unchanged before its re-mint, so a consumer it cut off early
-/// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
-/// `self.same.*`, which names the instance cells; a bare `same.*` reads the
-/// sub's `__self` alias instead, which `edit_source` does not rebuild.
 /// `edit_source` ADDING a geometry let and a selector over it to an
 /// override-free sub's template. The names put the selector (`a_sel`) ahead of
 /// the geometry (`z_body`), so the walk can reach the instance selector before
@@ -678,6 +672,12 @@ fn edit_source_adding_a_selector_over_a_new_geometry_let_settles_the_instance_li
     );
 }
 
+/// An outer cell reading an override-free sub's minted cells must follow
+/// them through `edit_source`, as a cold eval's does. The walk can commit the
+/// instance cell unchanged before its re-mint, so a consumer it cut off early
+/// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
+/// `self.same.*`, which names the instance cells; a bare `same.*` reads the
+/// sub's `__self` alias instead, which `edit_source` does not rebuild.
 #[test]
 fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_consumers() {
     let source = r#"
