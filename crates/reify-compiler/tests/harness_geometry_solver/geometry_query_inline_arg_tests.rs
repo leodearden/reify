@@ -392,15 +392,9 @@ fn binder_opacity_does_not_suppress_top_level_hoist() {
 // permanently Indeterminate. The RHS avoids `mm^3` per the HARNESS NOTE above.
 // ---------------------------------------------------------------------------
 
-/// The inline `box(..)` in a constraint hoists into one query-only realization,
-/// the constraint's query reads it by `ValueRef`, and the synthetic let does
-/// not shift constraint numbering.
-#[test]
-fn constraint_inline_query_arg_hoists_into_query_only_realization() {
-    let source = r#"structure def Part2 {
-    param w : Length = 10mm
-    constraint volume(box(w, w, w)) > w * w * w * 0.5
-}"#;
+/// Compile `source`, asserting it parses and compiles with no error-severity
+/// diagnostic.
+fn compile_clean(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(
         source,
         reify_core::ModulePath::single("test_geoq_constraint"),
@@ -417,15 +411,48 @@ fn constraint_inline_query_arg_hoists_into_query_only_realization() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    compiled
+}
 
-    let template = &compiled.templates[0];
-    let realizations: Vec<(Option<&str>, bool)> = template
+/// `(name, is_query_only)` of every top-level realization of `template`.
+fn realization_names(template: &reify_compiler::TopologyTemplate) -> Vec<(Option<&str>, bool)> {
+    template
         .realizations
         .iter()
         .map(|r| (r.name.as_deref(), r.is_query_only))
-        .collect();
+        .collect()
+}
+
+/// Whether `expr` is `volume(<ValueRef>) <op> ..` — a whole-handle query that
+/// reads a hoisted let rather than an inline geometry call.
+fn is_volume_of_value_ref(expr: &reify_ir::CompiledExpr) -> bool {
+    let CompiledExprKind::BinOp { left, .. } = &expr.kind else {
+        return false;
+    };
+    let CompiledExprKind::FunctionCall { function, args } = &left.kind else {
+        return false;
+    };
+    function.name == "volume"
+        && matches!(args.as_slice(), [arg] if matches!(arg.kind, CompiledExprKind::ValueRef(_)))
+}
+
+/// The inline `box(..)` in a constraint hoists into one query-only realization,
+/// the constraint's query reads it by `ValueRef`, and the synthetic let does
+/// not shift source-order constraint numbering: the hoisted constraint keeps
+/// index 1 between its plain neighbours 0 and 2.
+#[test]
+fn constraint_inline_query_arg_hoists_into_query_only_realization() {
+    let compiled = compile_clean(
+        r#"structure def Part2 {
+    param w : Length = 10mm
+    constraint w > 1mm
+    constraint volume(box(w, w, w)) > w * w * w * 0.5
+    constraint w < 100mm
+}"#,
+    );
+    let template = &compiled.templates[0];
     assert_eq!(
-        realizations,
+        realization_names(template),
         [(Some("__geoq_0"), true)],
         "expected exactly the query-only synthetic realization"
     );
@@ -444,21 +471,58 @@ fn constraint_inline_query_arg_hoists_into_query_only_realization() {
         template.realizations[0].operations
     );
 
-    let constraint = &template.constraints[0];
-    assert_eq!(constraint.id, ConstraintNodeId::new("Part2", 0));
-    let CompiledExprKind::BinOp { left, .. } = &constraint.expr.kind else {
-        panic!(
-            "constraint should be a comparison, got {:?}",
-            constraint.expr.kind
-        );
-    };
-    let CompiledExprKind::FunctionCall { function, args } = &left.kind else {
-        panic!("comparison LHS should be volume(..), got {:?}", left.kind);
-    };
-    assert_eq!(function.name, "volume");
+    let numbered: Vec<(ConstraintNodeId, bool)> = template
+        .constraints
+        .iter()
+        .map(|c| (c.id.clone(), is_volume_of_value_ref(&c.expr)))
+        .collect();
+    assert_eq!(
+        numbered,
+        [
+            (ConstraintNodeId::new("Part2", 0), false),
+            (ConstraintNodeId::new("Part2", 1), true),
+            (ConstraintNodeId::new("Part2", 2), false),
+        ],
+        "only the hoisted constraint reads `volume(<ValueRef>)`, at its source index"
+    );
+}
+
+/// A `where` guard gates the constraint, not the geometry its query hoists: the
+/// guarded constraint lands in a guarded group while `__geoq_0` stays a
+/// top-level, unconditional realization, as it does for a guarded geometry
+/// `let`. So a guard-off design still realizes the hoisted geometry, and
+/// invalid dimensions there surface as a geometry error rather than an
+/// inactive check.
+#[test]
+fn constraint_where_guard_does_not_gate_its_hoisted_realization() {
+    let compiled = compile_clean(
+        r#"structure def Guarded {
+    param w : Length = 10mm
+    param h : Length = 0mm
+    constraint volume(box(w, w, h)) > w * w * h * 0.5 where h > 0mm
+}"#,
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(
+        realization_names(template),
+        [(Some("__geoq_0"), true)],
+        "the hoisted realization is top-level whatever the constraint's guard"
+    );
     assert!(
-        matches!(args.as_slice(), [arg] if matches!(arg.kind, CompiledExprKind::ValueRef(_))),
-        "volume() must read the hoisted let by ValueRef, not an inline box(..): {args:?}"
+        template.constraints.is_empty(),
+        "the guarded constraint must not be unconditional: {:?}",
+        template.constraints
+    );
+    let guarded: Vec<bool> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| &g.constraints)
+        .map(|c| is_volume_of_value_ref(&c.expr))
+        .collect();
+    assert_eq!(
+        guarded,
+        [true],
+        "the guarded group holds the constraint, reading the hoisted let"
     );
 }
 

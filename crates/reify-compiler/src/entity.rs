@@ -733,12 +733,23 @@ fn make_synthetic_geometry_let(
 
 /// The expression of `member` the inline geometry-query hoist descends (`Let`
 /// value / `Param` default / `Constraint` predicate), or `None` for any other
-/// member.
+/// member. [`hoist_scan_expr_mut`] is its mutable twin: the two name the same
+/// members.
 fn hoist_scan_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
     match member {
         reify_ast::MemberDecl::Let(l) => Some(&l.value),
         reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
         reify_ast::MemberDecl::Constraint(c) => Some(&c.expr),
+        _ => None,
+    }
+}
+
+/// Mutable twin of [`hoist_scan_expr`].
+fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&mut l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_mut(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&mut c.expr),
         _ => None,
     }
 }
@@ -784,47 +795,13 @@ fn desugar_inline_geometry_query_args(
     let mut minted: HashSet<String> = HashSet::new();
     let mut counter: usize = 0;
     for member in members {
-        match member {
-            reify_ast::MemberDecl::Let(let_decl)
-                if expr_has_hoistable_query(&let_decl.value, functions) =>
-            {
-                let mut new_let = let_decl.clone();
-                hoist_queries_in_expr(
-                    &mut new_let.value,
-                    &mut counter,
-                    functions,
-                    &mut out,
-                    &mut minted,
-                );
-                out.push(reify_ast::MemberDecl::Let(new_let));
-            }
-            reify_ast::MemberDecl::Param(param)
-                if param
-                    .default
-                    .as_ref()
-                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
-            {
-                let mut new_param = param.clone();
-                if let Some(def) = new_param.default.as_mut() {
-                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
-                }
-                out.push(reify_ast::MemberDecl::Param(new_param));
-            }
-            reify_ast::MemberDecl::Constraint(constraint)
-                if expr_has_hoistable_query(&constraint.expr, functions) =>
-            {
-                let mut new_c = constraint.clone();
-                hoist_queries_in_expr(
-                    &mut new_c.expr,
-                    &mut counter,
-                    functions,
-                    &mut out,
-                    &mut minted,
-                );
-                out.push(reify_ast::MemberDecl::Constraint(new_c));
-            }
-            other => out.push(other.clone()),
+        let mut member = member.clone();
+        if let Some(expr) = hoist_scan_expr_mut(&mut member)
+            && expr_has_hoistable_query(expr, functions)
+        {
+            hoist_queries_in_expr(expr, &mut counter, functions, &mut out, &mut minted);
         }
+        out.push(member);
     }
     Some((out, minted))
 }
