@@ -2,9 +2,6 @@
 //! (`union`/`intersect`/`difference`) — the E_SELECTOR_KIND_MISMATCH diagnostic
 //! (BT1) and same-kind composition result type (Type::Selector(k)).
 //!
-//! RED until step-4 wires the `selector_composition_result_type` arm in
-//! `crates/reify-compiler/src/expr.rs`.
-//!
 //! Two test groups:
 //!   (a) Mixed-kind composition: `union`/`intersect`/`difference` over Face and
 //!       Edge selectors each produce EXACTLY ONE `E_SELECTOR_KIND_MISMATCH`
@@ -249,16 +246,14 @@ fn difference_same_kind_compiles_clean_with_face_selector_type() {
 }
 
 // ── (c) Named-leaf constructors: face/edge/solid_body ────────────────────────
-// RED until step-8 adds face/edge/solid_body to GEOMETRY_TOPOLOGY_SELECTOR_NAMES
-// and topology_selector_result_type in crates/reify-compiler/src/units.rs.
 //
 // Design note: the BodySelector ctor is `solid_body(g, name)`, NOT `body(g, name)`.
 // `body` is the RBD mechanism constructor (joint_signatures.rs → StructureRef("Mechanism")).
 // The existing family-disjointness tests in units.rs guard against `body` entering
-// GEOMETRY_TOPOLOGY_SELECTOR_NAMES.  The step-8 impl unit test additionally asserts
+// GEOMETRY_TOPOLOGY_SELECTOR_NAMES.  A units.rs unit test additionally asserts
 // `!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"body")` directly.
 
-/// `face(b, "top")` source — compiles to `Type::Selector(Face)` after step-8.
+/// `face(b, "top")` source — compiles to `Type::Selector(Face)`.
 const SOURCE_FACE_NAMED: &str = r#"
 structure def FaceNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -266,7 +261,7 @@ structure def FaceNamed {
 }
 "#;
 
-/// `edge(b, "rim")` source — compiles to `Type::Selector(Edge)` after step-8.
+/// `edge(b, "rim")` source — compiles to `Type::Selector(Edge)`.
 const SOURCE_EDGE_NAMED: &str = r#"
 structure def EdgeNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -274,7 +269,7 @@ structure def EdgeNamed {
 }
 "#;
 
-/// `solid_body(b, "core")` source — compiles to `Type::Selector(Body)` after step-8.
+/// `solid_body(b, "core")` source — compiles to `Type::Selector(Body)`.
 const SOURCE_SOLID_BODY_NAMED: &str = r#"
 structure def SolidBodyNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -283,7 +278,6 @@ structure def SolidBodyNamed {
 "#;
 
 /// `face(b, "top")` must compile without errors and infer `Type::Selector(Face)`.
-/// RED until step-8 adds `face` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 #[test]
 fn face_named_ctor_types_as_face_selector() {
     let compiled = compile_source_with_stdlib(SOURCE_FACE_NAMED);
@@ -302,7 +296,6 @@ fn face_named_ctor_types_as_face_selector() {
 }
 
 /// `edge(b, "rim")` must compile without errors and infer `Type::Selector(Edge)`.
-/// RED until step-8 adds `edge` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 #[test]
 fn edge_named_ctor_types_as_edge_selector() {
     let compiled = compile_source_with_stdlib(SOURCE_EDGE_NAMED);
@@ -321,7 +314,6 @@ fn edge_named_ctor_types_as_edge_selector() {
 }
 
 /// `solid_body(b, "core")` must compile without errors and infer `Type::Selector(Body)`.
-/// RED until step-8 adds `solid_body` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 /// Closes the `solid_body` vs `body` naming decision (PRD §11.1):
 /// `body` stays as the RBD mechanism constructor → `StructureRef("Mechanism")`.
 #[test]
