@@ -2,9 +2,8 @@
 // Provides core trait definitions for engineering material characterization.
 //
 // No #no_prelude pragma: task β (#4761) adds `structure def Material : Visual`,
-// which requires Appearance and Visual from std.materials.appearance (registered
-// immediately before this module in stdlib_loader.rs). Removing #no_prelude
-// exposes those types via the growing prelude. Unit dimensions (Density,
+// which requires Appearance and Visual from std.materials.appearance, imported
+// below (`#no_prelude` would hide every import). Unit dimensions (Density,
 // Pressure, K, etc.) resolve through the built-in SI unit mechanism regardless
 // of the prelude flag, so this change is safe for all existing dimensional params.
 //

@@ -10,7 +10,7 @@
 // Value::Enum{type_name:"Distribution", variant:"Normal"|"Uniform"|"Triangular"}.
 //
 // Depends only on Length/Int (built-in dimension types) and the mm literal
-// (available via the sequential growing prelude from std.si_units).
+// (a built-in unit symbol), so it declares no import.
 
 module std.stackup
 

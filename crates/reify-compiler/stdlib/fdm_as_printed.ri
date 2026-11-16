@@ -14,11 +14,9 @@
 //   - `as_printed_material` — `@optimized("fdm::as_printed_material_r_fast")`
 //                            ComputeNode producing the material field
 //
-// Load order (stdlib_loader.rs): this module loads AFTER `std.fdm.correlations`
-// so that `AnisotropicMaterial` / `MaterialFrame` (std.constitutive),
-// `FDMProcess` (std.fdm), `FDMCouponOverride` (std.fdm.correlations), and the
-// field combinators in `std.fields` are all resolved in the growing sequential
-// prelude when this module compiles.
+// Dependencies, imported below: `AnisotropicMaterial` / `MaterialFrame`
+// (std.constitutive), `FDMProcess` (std.fdm) and `FDMCouponOverride`
+// (std.fdm.correlations).
 
 module std.fdm.as_printed
 

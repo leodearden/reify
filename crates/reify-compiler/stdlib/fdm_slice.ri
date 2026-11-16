@@ -7,9 +7,7 @@
 //
 // PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task η.
 //
-// Load order (stdlib_loader.rs): this module loads AFTER `std.fdm.as_printed`
-// so that `FDMProcess` (std.fdm) and the surrounding FDM surface are resolved in
-// the growing sequential prelude when this module compiles.
+// Dependencies, imported below: `FDMProcess` (std.fdm).
 //
 // Field-type ↔ marshalling contract:
 //   The Toolpath / Bead / Layer / BeadRole shapes below MUST stay aligned with

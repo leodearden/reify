@@ -28,8 +28,7 @@
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
 //   - fn simulate_trajectory            (forward-pass simulator, π; PRD §6.1)
 //
-// Module placement: `std.trajectory` must follow `std.modal.analysis` in
-// `stdlib_loader.rs` — it consumes that module's `ModalResult` / `Mode`
+// Dependencies: it imports `std.modal.analysis` for `ModalResult` / `Mode`
 // (`EndEffectorTrack.modal_result`, the TOTS shapers' `modes`, and
 // `simulate_trajectory`'s `modal`). Every other type it references is a
 // primitive, a builtin type, the `Time` dimension from `std.units`, or a name
@@ -716,10 +715,7 @@ structure def RevoluteJointLimit : ActuatorLimit {
 //
 // Fields:
 //   - modes              : List<Mode>        — vibration modes resolved via
-//                                              the growing-prelude cross-module
-//                                              mechanism (std.modal.analysis
-//                                              loaded before std.trajectory per
-//                                              `stdlib_loader::stdlib_sources`).
+//                                              `import std.modal.analysis`.
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
 //   - velocity_limit     : Scalar<Velocity>  — RESOLVED(velocity-scalar): tightened

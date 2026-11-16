@@ -105,9 +105,9 @@ structure def MaterialPropertyProvenance {
 //
 // Declared here (above ElasticMaterial) rather than in constitutive.ri so
 // that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
-// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
+// (std.constitutive imports this module, not the reverse — PRD §4.2 γ).
 // constitutive.ri retains a pointer comment; Orthotropic/TransverseIsotropic
-// still refine ConstitutiveLaw via the growing prelude.
+// there refine ConstitutiveLaw through that import.
 trait ConstitutiveLaw { }
 
 // ── ElasticMaterial trait ────────────────────────────────────────────────────

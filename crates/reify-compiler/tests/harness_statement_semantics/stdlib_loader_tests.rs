@@ -39,18 +39,14 @@ fn all_stdlib_modules_have_no_errors() {
     }
 }
 
-// ─── task-4016 ζ: determinacy_purposes load-order invariant ─────────
+// ─── task-4016 ζ: the standard purposes stay out of sibling stdlib modules ─
 //
-// std.determinacy.purposes MUST be the last entry in the stdlib module list.
-// The sequential prelude build runs merge_prelude_purposes for every compile
-// including each intra-stdlib module compile, but no-ops because
-// std.determinacy.purposes is the only module with pub purposes and it is
-// registered last — no later stdlib module sees it as a prelude during
-// load_stdlib(), keeping stdlib-internal count/hash goldens byte-stable.
-//
-// These two tests make the prose invariant machine-checkable so that a future
-// contributor appending a module after std.determinacy.purposes is caught
-// immediately rather than by a silent golden drift.
+// merge_prelude_purposes runs for every compile, intra-stdlib ones included,
+// but a stdlib module's prelude is only what it imports. No stdlib module
+// imports std.determinacy.purposes, so none inherits its pub purposes and the
+// stdlib-internal count/hash goldens stay byte-stable. Registration order plays
+// no part: harness_modules_ports/stdlib_strict_build_tests pins the same fact
+// with std.determinacy.purposes registered first.
 
 /// No stdlib module other than std.determinacy.purposes may have a compiled
 /// purpose named "simulation_ready" or "design_review" in its compiled_purposes.

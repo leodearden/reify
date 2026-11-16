@@ -35,10 +35,8 @@
 //   - structure def Snapshot           (free_values, is_singular)
 //   - structure def SweepDim           (joint, range, steps)
 //
-// Module placement: registered last in `stdlib_loader.rs` after `std.stackup`.
-// Hard dependencies:
-//   - `std.trajectory` (for the `Vec3` and `JointValue` aliases — trajectory.ri)
-//   - `std.units` (Bool, Int, Real)
+// Dependencies, imported below: `std.trajectory` (the `Vec3` and `JointValue`
+// aliases).
 //
 // Encoding notes:
 //   1. `Joint` is an empty root marker trait. `DrivingJoint` refines it

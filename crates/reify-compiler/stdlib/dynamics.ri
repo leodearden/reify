@@ -73,9 +73,8 @@ import std.trajectory
 //   origin  : Frame3                — body-frame origin pose. Retargeted (task
 //                                    4547) from the old `Real` placeholder to the
 //                                    real `Frame3` struct declared in std.ports
-//                                    (shipped constructible by task 4254). std.ports
-//                                    now precedes std.dynamics in the loader so
-//                                    Frame3 resolves in the growing prelude.
+//                                    (shipped constructible by task 4254), which
+//                                    this module imports.
 //
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α

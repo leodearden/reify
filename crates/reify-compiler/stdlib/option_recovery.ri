@@ -24,10 +24,8 @@ module std.option_recovery
 // map_or intercept in reify-expr, since applying `f` needs the EvalContext that
 // the pure eval_combinator path deliberately lacks.
 //
-// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
-// immediately before std.determinacy.purposes (which must remain LAST) and
-// after std.fields.  No import edges → compile_modules_topo keeps order
-// unchanged (identity permutation).  PreludeContext::from_slice(load_stdlib())
+// Registration: declares no `import` (`#no_prelude`, builtins only).
+// PreludeContext::from_slice(load_stdlib())
 // includes all modules, so these functions are callable from any .ri file
 // without an explicit import.
 

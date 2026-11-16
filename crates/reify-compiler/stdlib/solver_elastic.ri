@@ -765,9 +765,8 @@ pub structure def FEAMaterialInput {
 //     resolver prefers over this ConstitutiveLaw wildcard for a Field arg.
 //
 //   `loads : List<Load>` and `supports : List<Support>`:
-//     The `Load` and `Support` marker traits are declared in `std.fea.types`
-//     (loaded immediately before this module in `stdlib_loader.rs`), so they
-//     are in the growing prelude when this function compiles.
+//     The `Load` and `Support` marker traits are declared in `std.fea.types`,
+//     which this module imports.
 //     The overload resolver treats a `List<Trait>` param as a WILDCARD (matches
 //     any list argument regardless of element type), then a post-resolution
 //     conformance pass (`phase_fn_arg_conformance` → conformance/mod.rs) checks

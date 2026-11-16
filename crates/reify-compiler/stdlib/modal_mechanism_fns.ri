@@ -5,22 +5,8 @@
 // into a `.ri`-callable compute target that returns the first-mode frequency
 // √(k_flexure/m_load)/(2π) of a flexure-jointed mechanism.
 //
-// WHY this is a separate module (prelude-ordering constraint):
-//   This function takes a `mechanism : Mechanism` parameter. `Mechanism` is
-//   declared in `std.kinematic` (its entry in `stdlib_sources()`,
-//   stdlib_loader.rs). `std.modal.analysis` (modal_analysis.ri), which holds
-//   `modal_analysis`, is registered BEFORE the `std.kinematic` entry
-//   there, so `Mechanism` is not yet in the growing sequential
-//   prelude when modal_analysis.ri compiles. Adding `mechanism_modal_analysis`
-//   there would produce an unresolved-type error on `mechanism : Mechanism`.
-//
-//   Tail placement after the `std.dynamics` entry puts BOTH required types in
-//   the prelude:
-//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis`
-//     - `Mechanism` from `std.kinematic`
-//   This is the canonical fix for the prelude-ordering constraint until a
-//   declared `import std.kinematic` lets the fn fold into `std.modal.analysis`
-//   (stdlib-namespace θ, #5501).
+// Its imports state its dependencies; folding it into `std.modal.analysis`
+// is stdlib-namespace θ (#5501).
 
 module std.modal.mechanism.fns
 

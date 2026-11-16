@@ -18,15 +18,12 @@ module std.result
 // γ #4031's `compile_variant_construct`, threaded via `ctx.resolution_enums` =
 // prelude ++ local) — this module adds no Rust logic of its own.
 //
-// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
-// adjacent to std.option_recovery and BEFORE std.determinacy.purposes (which
-// must remain LAST). No `import` edges → compile_modules_topo keeps the
-// identity order.
+// Registration: declares no `import` (`#no_prelude`, builtins only).
 //
 // result-fallback Layer-B γ (task #4037): six generic recovery combinators
 // declared below, co-located with the enum so `Result<T,E>` resolves as a
-// same-module LOCAL enum type (std.option_recovery loads BEFORE std.result,
-// so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
+// same-module LOCAL enum type (std.option_recovery does not import
+// std.result, so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
 // result_type is derived from generic-signature substitution at the call
 // site (expr.rs resolve_function_overload → type_compat::unify →
 // substitute_type_params), independent of the body, exactly as in

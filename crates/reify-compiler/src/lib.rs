@@ -499,15 +499,11 @@ pub fn merge_prelude_functions(
 /// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
 /// their declaring module.
 ///
-/// `std.determinacy.purposes` is registered LAST in `stdlib_loader::load_stdlib`.
-/// `merge_prelude_purposes` runs for every compile including each intra-stdlib
-/// module compile, but no-ops for all earlier stdlib modules because none of them
-/// declare pub purposes. `std.determinacy.purposes` is the only stdlib module with
-/// pub purposes, and being last it has no successor during `load_stdlib()` — so no
-/// other stdlib module ever sees it as a prelude and inherits its standard purposes.
-/// Stdlib-internal `compiled_purposes` counts and content hashes therefore stay
-/// byte-stable. Only user modules (compiled against the full stdlib) gain the
-/// standard purposes. (task-4016 ζ)
+/// A stdlib module inherits pub purposes only from the modules it imports, and
+/// no stdlib module imports `std.determinacy.purposes`, the only stdlib module
+/// with pub purposes. So only user modules (compiled against the full stdlib)
+/// gain the standard purposes: a prelude for users, not for sibling stdlib
+/// modules. (task-4016 ζ)
 ///
 /// **Hash contract:** the merged purposes are included in `compute_module_hash`,
 /// so a user module's `content_hash` incorporates the full set of available

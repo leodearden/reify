@@ -11,9 +11,8 @@
 //
 // Module placement: `std.fea.multi_case` leaves room for future `std.fea.*`
 // siblings (e.g. `std.fea.modal`, `std.fea.thermal_coupling`) without
-// renaming. Registered immediately after `std.solver.elastic` in
-// `crates/reify-compiler/src/stdlib_loader.rs` so the growing prelude carries
-// `ElasticOptions` and `ElasticResult` in scope when this file compiles.
+// renaming. It imports `std.solver.elastic` for `ElasticOptions` and
+// `ElasticResult`.
 //
 // Encoding deviations from the PRD:
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
@@ -308,10 +307,8 @@ structure def MultiCaseResult {
 // consumers).
 //
 // Trait surface — `Load` and `Support` are empty marker traits declared in
-// the earlier module `std.fea.types` (loaded before `std.solver.elastic`
-// in `stdlib_loader.rs`).  Conforming structure defs in THIS file get their
-// trait bindings from the growing prelude which carries `std.fea.types` by
-// the time `std.fea.multi_case` compiles.  `Real`/`String` placeholders in
+// `std.fea.types`, which this module imports for the trait bindings of its
+// conforming structure defs.  `Real`/`String` placeholders in
 // the structure defs are dimension-typed slots that tighten in follow-up waves
 // once the dimensional type aliases land.
 
