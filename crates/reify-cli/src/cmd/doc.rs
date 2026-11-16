@@ -26,6 +26,7 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
+    let cfg_given = rest.len() != args.len();
     let args = rest.as_slice();
     // Mirrors `cmd_gui`'s explicit-flag pattern: walk args, accept the
     // documented flags, and reject any other `--`-prefixed token with a
@@ -97,6 +98,9 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
         }
         if compact {
             return doc_usage_error("--compact is not valid with --stdlib");
+        }
+        if cfg_given {
+            return doc_usage_error("--cfg is not valid with --stdlib");
         }
         if !matches!(format.as_deref(), None | Some("html")) {
             return doc_usage_error("--stdlib only supports --format html (the default)");
