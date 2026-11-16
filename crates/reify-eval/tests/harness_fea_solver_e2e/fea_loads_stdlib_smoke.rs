@@ -1,10 +1,12 @@
-//! FEA-2 (task 2881) — `TractionLoad` and `BodyForce` structure-def smoke tests.
+//! FEA-2 (task 2881) — `TractionLoad` and `BodyForce` structure-def smoke tests,
+//! plus the typed `PointLoad.point` round trip (task 5312).
 //!
 //! Pins the wave-3 migration of `traction_load` and `body_force` from
 //! name-dispatched builtins to stdlib `structure def`s declared in
 //! `crates/reify-compiler/stdlib/fea_multi_case.ri`.  Each test verifies that a
-//! source-level `TractionLoad(…)` / `BodyForce(…)` constructor lowers to a
-//! `Value::StructureInstance` with the expected `type_name` and field values.
+//! source-level `TractionLoad(…)` / `BodyForce(…)` / `PointLoad(…)` constructor
+//! lowers to a `Value::StructureInstance` with the expected `type_name` and
+//! field values.
 
 #![allow(clippy::mutable_key_type)]
 
@@ -203,6 +205,45 @@ structure def BodyForceFixture2 {
         other => panic!(
             "expected Value::StructureInstance for BodyForceFixture2.load — \
              got {other:?}"
+        ),
+    }
+}
+
+// ── task 5312 step-9 (RED) → step-10 (GREEN) : PointLoad.point ──────────────
+
+/// `PointLoad(point: vertex(body, "tip"), force: 1000.0)` round-trips through
+/// the structure instance; `point` is a typed Vertex selector naming "tip".
+#[test]
+fn point_load_ctor_point_round_trips_as_a_vertex_selector() {
+    const SOURCE: &str = r#"
+structure def PointLoadFixture {
+    let body = box(1m, 0.1m, 0.1m)
+    let load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("PointLoadFixture", "load");
+    let load = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("PointLoadFixture.load cell missing from eval result"));
+
+    match load {
+        Value::StructureInstance(data) => {
+            assert_named_leaf(field(&data.fields, "point"), SelectorKind::Vertex, "tip");
+            assert_eq!(
+                field(&data.fields, "force"),
+                Some(&Value::Real(1000.0)),
+                "PointLoad.force override must be 1000.0; fields: {:?}",
+                data.fields
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for PointLoadFixture.load — got {other:?}"
         ),
     }
 }

@@ -712,3 +712,18 @@ fn fixed_and_pinned_support_target_is_kind_agnostic() {
         );
     }
 }
+
+#[test]
+fn point_load_point_is_a_vertex_selector() {
+    assert_no_errors(r#"PointLoad(point: vertex(body, "tip"), force: 1000.0)"#);
+    assert_single_error(
+        r#"PointLoad(point: "tip", force: 1000.0)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["point", "VertexSelector", "String"],
+    );
+    assert_single_error(
+        r#"PointLoad(point: faces(body), force: 1000.0)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["VertexSelector", "FaceSelector"],
+    );
+}
