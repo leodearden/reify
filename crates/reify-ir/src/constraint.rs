@@ -439,6 +439,25 @@ pub trait ConstraintChecker: Send + Sync {
     /// place of any guess) and **MUST NOT** set it on a definite one.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 
+    /// `check`, but with a compute-dispatch hook available to the evaluator for
+    /// `@optimized` function calls reached inside a checked constraint (task 10033).
+    ///
+    /// # Default implementation
+    ///
+    /// Checkers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::check`] — back-compat for every existing
+    /// `ConstraintChecker` implementation and mock (`MockConstraintChecker`,
+    /// `CompileTimeIndeterminateChecker`, test checkers). Only an overriding checker
+    /// (e.g. `SimpleConstraintChecker`) threads `dispatch` down into its evaluator.
+    fn check_with_dispatch(
+        &self,
+        input: &ConstraintInput,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> Vec<ConstraintResult> {
+        let _ = dispatch;
+        self.check(input)
+    }
+
     /// Returns `true` if this checker is the compile-time indeterminate stub
     /// (`CompileTimeIndeterminateChecker` in `reify-compiler`), `false` for all
     /// real or test-injected checkers.
@@ -522,7 +541,8 @@ pub trait OptimizedImpl: Send + Sync {
 
 /// Callback for dispatching an `@optimized`-annotated function call to its
 /// registered ComputeNode implementation from *inside* the constraint solver's
-/// cost/constraint/objective evaluator (task #4880).
+/// cost/constraint/objective evaluator (task #4880) or the constraint checker's
+/// evaluator (task 10033).
 ///
 /// Lives in reify-ir (alongside [`ConstraintSolver`]) for the same dependency-inversion
 /// reason as [`OptimizedImpl`]: reify-constraints' `DimensionalSolver` threads an
@@ -536,7 +556,9 @@ pub trait OptimizedImpl: Send + Sync {
 /// Distinct from [`OptimizedImpl`], which dispatches *checker*-path `constraint def`
 /// constraints. `ComputeDispatch` dispatches *function-call* expressions (i.e.
 /// `CompiledFunction::optimized_target`) reached while evaluating a constraint,
-/// objective, or bound expression inside the solver's per-candidate cost loop.
+/// objective, or bound expression inside the solver's per-candidate cost loop, or
+/// a constraint expression inside the checker's post-solve verdict
+/// ([`ConstraintChecker::check_with_dispatch`]).
 pub trait ComputeDispatch: Send + Sync {
     /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
     /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,

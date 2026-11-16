@@ -143,8 +143,8 @@ pub struct EvalContext<'a> {
     /// unchanged — preserving legacy behaviour for every caller that does not attach a
     /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
     ///
-    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
-    /// call sites that invoke the constraint solver.
+    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` wherever it
+    /// invokes the constraint solver or the constraint checker.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
     /// Optional kernel-free selector-ctor capability (task #7875); see
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the

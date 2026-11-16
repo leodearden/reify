@@ -300,7 +300,8 @@ fn rewrite_free_idents<'e>(
 //
 // A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
 // whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
-// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// with no intermediate geometry let, or the same query in a `constraint`
+// predicate (task 10033) — evaluates to `Value::Undef`: eval's
 // `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
 // let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
 // arg. This desugar rewrites the entity member list ONCE, upstream of every
@@ -665,7 +666,7 @@ fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunctio
 /// member list where a lambda param / quantifier variable / match-pattern binder
 /// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
 /// the two in lockstep. Note this is scoped at BOTH levels: only top-level
-/// `Let`/`Param` members are descended (see
+/// `Let` values, `Param` defaults and `Constraint` predicates are descended (see
 /// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
 /// sub-expressions.
 fn hoist_queries_in_expr(
@@ -730,21 +731,34 @@ fn make_synthetic_geometry_let(
     })
 }
 
-/// The value/default expression of a value-cell member (`Let` value / `Param`
-/// default), or `None` for non-value members.
-fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+/// The expression of `member` the inline geometry-query hoist descends (`Let`
+/// value / `Param` default / `Constraint` predicate), or `None` for any other
+/// member. [`hoist_scan_expr_mut`] is its mutable twin: the two name the same
+/// members.
+fn hoist_scan_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
     match member {
         reify_ast::MemberDecl::Let(l) => Some(&l.value),
         reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&c.expr),
+        _ => None,
+    }
+}
+
+/// Mutable twin of [`hoist_scan_expr`].
+fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&mut l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_mut(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&mut c.expr),
         _ => None,
     }
 }
 
 /// Desugar inline geometry-query arguments into synthetic geometry lets
-/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
-/// default) whose expression contains a hoistable whole-handle query, mint the
-/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
-/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// (task 5345). For each top-level member whose [`hoist_scan_expr`] (`Let`
+/// value / `Param` default / `Constraint` predicate) contains a hoistable
+/// whole-handle query, mint the `__geoq_<N>` geometry let(s) immediately BEFORE
+/// the consuming member and rewrite the query arg[0] to reference them. Synthetic names are minted from
 /// a single structure-scoped counter in source+post-order.
 ///
 /// Returns `None` — and allocates nothing — when no member carries an inline
@@ -756,9 +770,10 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 /// keeps ordinary product-geometry semantics.
 ///
 /// The rewritten member list becomes the single source consumed by all downstream
-/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
-/// members are descended (guarded-group / match-cluster members are out of
-/// scope, consistent with the whole-handle-query acceptance surface).
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`/
+/// `Constraint` members are descended (guarded-group / match-cluster members are
+/// out of scope, consistent with the whole-handle-query acceptance surface). A
+/// `where` guard is not consulted, for a `Constraint` as for a `Let`.
 ///
 /// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
 /// verbatim to the STRUCTURE member list: at the member level as above, and
@@ -771,7 +786,7 @@ fn desugar_inline_geometry_query_args(
 ) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
     let has_any = members
         .iter()
-        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+        .any(|m| hoist_scan_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
     if !has_any {
         return None;
     }
@@ -780,34 +795,13 @@ fn desugar_inline_geometry_query_args(
     let mut minted: HashSet<String> = HashSet::new();
     let mut counter: usize = 0;
     for member in members {
-        match member {
-            reify_ast::MemberDecl::Let(let_decl)
-                if expr_has_hoistable_query(&let_decl.value, functions) =>
-            {
-                let mut new_let = let_decl.clone();
-                hoist_queries_in_expr(
-                    &mut new_let.value,
-                    &mut counter,
-                    functions,
-                    &mut out,
-                    &mut minted,
-                );
-                out.push(reify_ast::MemberDecl::Let(new_let));
-            }
-            reify_ast::MemberDecl::Param(param)
-                if param
-                    .default
-                    .as_ref()
-                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
-            {
-                let mut new_param = param.clone();
-                if let Some(def) = new_param.default.as_mut() {
-                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
-                }
-                out.push(reify_ast::MemberDecl::Param(new_param));
-            }
-            other => out.push(other.clone()),
+        let mut member = member.clone();
+        if let Some(expr) = hoist_scan_expr_mut(&mut member)
+            && expr_has_hoistable_query(expr, functions)
+        {
+            hoist_queries_in_expr(expr, &mut counter, functions, &mut out, &mut minted);
         }
+        out.push(member);
     }
     Some((out, minted))
 }
