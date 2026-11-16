@@ -90,14 +90,19 @@ fn main() {
     }
 
     // Compiled from OUT_DIR alone, so scanner.c's quote include resolves to the
-    // generated header beside it and never to tree-sitter-reify/src.
+    // generated header beside it and never to tree-sitter-reify/src. Removed,
+    // then written as bytes rather than fs::copy'd, so a read-only checkout's
+    // mode never reaches the copy and blocks the next run from replacing it.
     let scanner_copy = generated.join("scanner.c");
-    std::fs::copy("src/scanner.c", &scanner_copy).unwrap_or_else(|e| {
-        panic!(
-            "failed to copy src/scanner.c to {}: {e}",
-            scanner_copy.display()
-        )
-    });
+    remove_if_present(&scanner_copy);
+    std::fs::read("src/scanner.c")
+        .and_then(|bytes| std::fs::write(&scanner_copy, bytes))
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to copy src/scanner.c to {}: {e}",
+                scanner_copy.display()
+            )
+        });
     cc::Build::new()
         .include(&generated)
         .flag_if_supported("-Wno-unused-parameter")
