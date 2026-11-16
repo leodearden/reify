@@ -205,13 +205,23 @@ pub(crate) fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {
-    let bindings = name_env::bind(user, prelude.iter().copied());
-    let prelude_winners = bindings
+    let mut functions = user.to_vec();
+    functions.extend(unshadowed_prelude_winners(user, prelude));
+    functions
+}
+
+/// The prelude tail of [`build_resolution_functions`]: each prelude function
+/// that wins its key under NS-P1 and shares no key with `user`.
+fn unshadowed_prelude_winners(
+    user: &[CompiledFunction],
+    prelude: &[&CompiledModule],
+) -> Vec<CompiledFunction> {
+    name_env::bind(user, prelude.iter().copied())
         .winning_candidates()
         .iter()
         .filter(|candidate| candidate.origin != Origin::Local)
-        .map(|candidate| candidate.definition.clone());
-    user.iter().cloned().chain(prelude_winners).collect()
+        .map(|candidate| candidate.definition.clone())
+        .collect()
 }
 
 /// [`build_resolution_functions`] over a user list that grows one fn at a time.
@@ -219,8 +229,9 @@ pub(crate) fn build_resolution_functions(
 /// [`Self::functions`] always equals
 /// `build_resolution_functions(&(seed ++ users_pushed_so_far), prelude)`. A
 /// user fn that shadows no prelude winner's key is spliced in at the end of
-/// the user prefix; only one that does triggers a rebuild, so the prelude
-/// winners are cloned once rather than once per user fn.
+/// the user prefix; only one that does triggers a rebuild of the prelude tail,
+/// so the prelude winners are cloned once rather than once per user fn, and
+/// the user prefix is never re-cloned.
 pub(crate) struct ResolutionTable<'p> {
     prelude: &'p [&'p CompiledModule],
     prelude_keys: HashSet<FunctionSignature<'p>>,
@@ -250,7 +261,8 @@ impl<'p> ResolutionTable<'p> {
         if self.prelude_keys.contains(&user.key()) {
             self.functions.truncate(self.user_len);
             self.functions.push(user);
-            self.functions = build_resolution_functions(&self.functions, self.prelude);
+            let prelude_tail = unshadowed_prelude_winners(&self.functions, self.prelude);
+            self.functions.extend(prelude_tail);
         } else {
             self.functions.insert(self.user_len, user);
         }

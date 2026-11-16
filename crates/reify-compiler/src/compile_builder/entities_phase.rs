@@ -206,9 +206,10 @@ pub(crate) fn phase_entities(
     let mut resolution_functions: Vec<CompiledFunction> =
         std::mem::take(&mut ctx.resolution_functions);
     let mut pending = std::mem::take(&mut ctx.fns_with_pending_defaults);
-    // What fn BODIES resolve against: the fns above plus the prelude. It owns
-    // the pass's user fns until the epilogue.
-    let mut fn_bodies = ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude);
+    // What fn BODIES' calls resolve against: the fns above plus the prelude.
+    // Built at the first fn, so a module with none clones no prelude fn here;
+    // from then on it owns the pass's user fns until the epilogue.
+    let mut fn_body_calls: Option<ResolutionTable> = None;
     // The module-local `structure def`s with no template yet, i.e. declared
     // below the current declaration: what a fn's body may not use.
     let mut later_declared_structures = ctx.local_structure_def_names.clone();
@@ -306,12 +307,15 @@ pub(crate) fn phase_entities(
                     ));
                     continue;
                 };
+                let calls_above = fn_body_calls.get_or_insert_with(|| {
+                    ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude)
+                });
                 if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
                     fn_def,
                     sig,
                     defaults,
                     &ctx.resolution_enums,
-                    &fn_bodies,
+                    calls_above,
                     &ctx.templates,
                     prelude_registries.ctor,
                     &later_declared_structures,
@@ -333,7 +337,7 @@ pub(crate) fn phase_entities(
                             "its call-table slot; later declarations resolve against its stub",
                         )),
                     }
-                    fn_bodies.push_user(f);
+                    calls_above.push_user(f);
                 }
             }
             reify_ast::Declaration::Trait(_) => {
@@ -460,7 +464,9 @@ pub(crate) fn phase_entities(
     // trait-static fns …]` that `compute_module_hash` folds and
     // `CompiledModule::functions` first-match dispatch depends on.
     let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
-    ctx.functions = fn_bodies.into_user_functions();
+    if let Some(table) = fn_body_calls {
+        ctx.functions = table.into_user_functions();
+    }
     ctx.functions.append(&mut trait_static_fns);
 
     // Publish the pass-local table (real `CompiledFunction`s in place of the
