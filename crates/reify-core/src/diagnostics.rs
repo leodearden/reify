@@ -362,14 +362,11 @@ pub enum DiagnosticCode {
     ///          (param-level argument type check, task 4546).
     ///
     /// Emitted when a constraint instantiation passes an argument whose
-    /// compile-time type is incompatible with the declared parameter type: a
-    /// cross-category mismatch (e.g. `Bool` passed where a `Length` param is
-    /// declared), or a numeric pairing the binding check does not accept — a
-    /// scalar of another dimension (task 5762), an `Int` at a dimensioned
-    /// scalar param, or a scalar at an `Int` param (task 10029). An `Int` at a
-    /// dimensionless (`Real`) param widens, and a dimension-generic
-    /// `ScalarParam` is accepted. A rejection short-circuits the
-    /// instantiation, so no predicate-body comparison diagnostic doubles it.
+    /// compile-time type does not conform to the declared parameter type. The
+    /// acceptance policy is the Rules list of
+    /// `crates/reify-compiler/src/type_compat.rs::constraint_arg_type_conforms`.
+    /// A rejection short-circuits the instantiation, so no predicate-body
+    /// comparison diagnostic doubles it.
     ///
     /// Canonical message form:
     /// `"type mismatch: argument '<arg>' for constraint '<def>' has type \

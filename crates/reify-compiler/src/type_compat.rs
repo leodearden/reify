@@ -1019,14 +1019,7 @@ pub(crate) fn flatten_comparison_chain<'a>(
 
 /// Predicate used by `expand_constraint_inst` (entity.rs) to validate that a
 /// constraint instantiation argument's type conforms to the declared parameter
-/// type.
-///
-/// It rejects cross-category mismatches (Bool/String/Enum/aggregate vs
-/// numeric/Length etc.) and every numeric pairing Rule 3 does not accept: a
-/// scalar of another dimension (task 5762, δ₂), an `Int` at a dimensioned
-/// scalar param, and a scalar at an `Int` param (task 10029). Two numeric cases
-/// are still accepted: an `Int` at a dimensionless scalar param (Rule 3's
-/// widening), and a dimension-generic `ScalarParam` on either side (Rule 4).
+/// type. It rejects every pairing Rules 1–4 below do not accept.
 ///
 /// The restated Int-for-Length ruling lives at
 /// constraint_def_compile_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
@@ -1064,10 +1057,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
 ///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
 ///    selector coercions — the common well-typed case).
-/// 4. A `Type::ScalarParam(_)` on either side, with both sides numeric
-///    (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`) → **accept** (the
-///    D4-5 dimension-generic fence: the dimension-generic machinery resolves
-///    it, not this check).
+/// 4. A `Type::ScalarParam(_)` on either side, with the other side a scalar
+///    kind (`is_orderable_scalar`: `Type::Int | Type::Scalar{..} |
+///    Type::ScalarParam(_)`) → **accept** (the D4-5 dimension-generic fence:
+///    the dimension-generic machinery resolves it, not this check).
 /// 5. Otherwise → **reject**: a cross-category mismatch (e.g. `Bool`, `String`
 ///    or `Enum(X)` vs `Length`), or a numeric pairing outside both Rule 3's
 ///    widening and the fence — a scalar of another dimension (task 5762, δ₂),
@@ -1091,21 +1084,18 @@ pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bo
     if type_compatible(param_ty, arg_ty) {
         return true;
     }
-    // Rule 4: The D4-5 fence — a `ScalarParam` against any numeric type is
+    // Rule 4: The D4-5 fence — a `ScalarParam` against any scalar kind is
     // accepted, because the dimension-generic machinery resolves it, not this
     // check.
-    let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
-    let is_dimension_generic = |t: &Type| matches!(t, Type::ScalarParam(_));
-    if (is_dimension_generic(param_ty) || is_dimension_generic(arg_ty))
-        && is_numeric(param_ty)
-        && is_numeric(arg_ty)
+    let dimension_generic_meets_scalar = |generic: &Type, other: &Type| {
+        matches!(generic, Type::ScalarParam(_)) && is_orderable_scalar(other)
+    };
+    if dimension_generic_meets_scalar(param_ty, arg_ty)
+        || dimension_generic_meets_scalar(arg_ty, param_ty)
     {
         return true;
     }
-    // Rule 5: Everything else is a mismatch: a cross-category pair (e.g. Bool vs
-    // Length), or a numeric pair outside both Rule 3's widening and the fence —
-    // a scalar of another dimension (task 5762, δ₂), an `Int` at a dimensioned
-    // scalar param, or a scalar at an `Int` param (task 10029).
+    // Rule 5: Everything else is a mismatch (see Rules, item 5).
     false
 }
 
@@ -4758,12 +4748,33 @@ mod tests {
 
     /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Int is
     /// declared → true. The fence accepts a `ScalarParam` on either side against
-    /// any numeric type.
+    /// any scalar kind.
     #[test]
     fn constraint_arg_type_conforms_scalar_param_arg_for_int_param_is_true() {
         assert!(
             constraint_arg_type_conforms(&Type::Int, &Type::ScalarParam("Q".into())),
             "ScalarParam arg passed as Int param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) Bool arg passed where a dimension-generic
+    /// `ScalarParam` is declared → false. The fence needs a scalar kind on the
+    /// other side; a `ScalarParam` alone does not accept.
+    #[test]
+    fn constraint_arg_type_conforms_bool_arg_for_scalar_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Bool),
+            "Bool arg passed as ScalarParam param must be rejected"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) a dimension-generic `ScalarParam` arg passed
+    /// where Bool is declared → false. The reverse of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_bool_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::Bool, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Bool param must be rejected"
         );
     }
 
