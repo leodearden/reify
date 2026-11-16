@@ -401,12 +401,12 @@ structure def LoadHolder {
     );
 }
 
-/// task 4439 step-1: `[Gravity()]` and `[Gravity(), PointLoad()]` fill a
+/// task 4439 step-1: `[Gravity()]` and `[Gravity(), PointLoad(point: ..)]` fill a
 /// `List<Load>` ctor-arg slot without Error diagnostics — the literal
 /// `[g] : List<Load>` user-observable signal.
 ///
 /// Tests both homogeneous (`[Gravity()]`) and heterogeneous
-/// (`[Gravity(), PointLoad()]`) list forms.
+/// (`[Gravity(), PointLoad(point: vertex(body, "tip"))]`) list forms.
 ///
 /// RED: same unresolved-constructor path as above.
 #[test]

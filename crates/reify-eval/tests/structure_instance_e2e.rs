@@ -87,8 +87,9 @@ fn structure_instance_is_constructible() {
 
 /// task 3540 step-19: end-to-end check of the wave-1 stdlib swap.
 ///
-/// Compiles a tiny structure that calls `PointLoad()` (the structure-def
-/// constructor landed in step-20 in `crates/reify-compiler/stdlib/fea_multi_case.ri`).
+/// Compiles a tiny structure that calls `PointLoad(point: vertex(body, "tip"))`
+/// (the structure-def constructor landed in step-20 in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri`).
 /// Asserts the bound cell value is a `Value::StructureInstance` whose
 /// `type_name` is `"PointLoad"`.
 #[test]
@@ -329,7 +330,7 @@ structure def BadAsm {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("ElasticMaterial")),
-        "passing a non-conforming `PointLoad()` to an ElasticMaterial-typed param \
+        "passing a non-conforming `PointLoad(..)` to an ElasticMaterial-typed param \
          must produce a trait-conformance error; got: {errors:?}"
     );
 }
@@ -615,7 +616,7 @@ structure def NonPsdFixture {
 /// task 4245 step-1 RED — `PointLoad.direction` field default and round-trip.
 ///
 /// Compiles two `PointLoad` instances:
-///   (a) default constructor — `direction` must carry the default `vec3(0.0, 0.0, -1.0)`.
+///   (a) `direction` omitted — it must carry the default `vec3(0.0, 0.0, -1.0)`.
 ///   (b) explicit override  — `direction: vec3(0.0, -1.0, 0.0)` must round-trip.
 ///
 /// task 5905 retyped the param from `List<Real>` to `Vector3<Dimensionless>`
@@ -652,27 +653,27 @@ structure def DirectionFixture {
                 assert_eq!(
                     items.len(),
                     3,
-                    "PointLoad().direction must have 3 elements; got {:?}",
+                    "defaulted PointLoad.direction must have 3 elements; got {:?}",
                     items
                 );
                 assert_eq!(
                     items[0],
                     Value::Real(0.0),
-                    "PointLoad().direction[0] must be 0.0 (default -Z)"
+                    "defaulted PointLoad.direction[0] must be 0.0 (default -Z)"
                 );
                 assert_eq!(
                     items[1],
                     Value::Real(0.0),
-                    "PointLoad().direction[1] must be 0.0 (default -Z)"
+                    "defaulted PointLoad.direction[1] must be 0.0 (default -Z)"
                 );
                 assert_eq!(
                     items[2],
                     Value::Real(-1.0),
-                    "PointLoad().direction[2] must be -1.0 (default -Z)"
+                    "defaulted PointLoad.direction[2] must be -1.0 (default -Z)"
                 );
             }
             other => panic!(
-                "expected Value::Vector for PointLoad().direction, got {:?}",
+                "expected Value::Vector for the defaulted PointLoad.direction, got {:?}",
                 other
             ),
         },

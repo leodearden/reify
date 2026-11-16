@@ -465,11 +465,11 @@ fn assert_solver_visible_instance_fea_cell_survives(source: &str) -> CheckResult
     result
 }
 
-/// The reuse gate's cross-scope preconditions for a typed selector target: the
+/// The reuse gate's cross-scope preconditions for the typed pressure face: the
 /// instance's geometry let and the load struct carrying the selector over it
 /// must EQUAL the template's. Either one differing makes the `@optimized` solve
 /// decline reuse and body-inline the `ElasticResult()` shell.
-fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str, instance: &str) {
+fn assert_pressure_face_cells_equal_template(result: &CheckResult, template: &str, instance: &str) {
     let cell = |entity: &str, member: &str| {
         result
             .values
@@ -510,21 +510,21 @@ fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str
     );
 }
 
-/// The acceptance check above with the typed selector target: the instance's
+/// The acceptance check above with the typed pressure face: the instance's
 /// solve must reuse the template's solved value through `press.face`.
 #[test]
-fn instance_scope_fea_cells_equal_template_solved_values_with_typed_selector_target() {
+fn instance_scope_fea_cells_equal_template_solved_values_with_typed_pressure_face() {
     let result = assert_instance_fea_cells_equal_template(&instance_scope_fea_source(
         BeamLoads::WithTypedPressureFace,
     ));
-    assert_typed_target_cells_equal_template(&result, "Beam", "Asm.beam");
+    assert_pressure_face_cells_equal_template(&result, "Beam", "Asm.beam");
 }
 
-/// The solver-visible guard above with the typed selector target.
+/// The solver-visible guard above with the typed pressure face.
 #[test]
-fn solver_visible_instance_scope_fea_cell_with_typed_selector_target_is_not_clobbered() {
+fn solver_visible_instance_scope_fea_cell_with_typed_pressure_face_is_not_clobbered() {
     let result = assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
         BeamLoads::WithTypedPressureFace,
     ));
-    assert_typed_target_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
+    assert_pressure_face_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
 }
