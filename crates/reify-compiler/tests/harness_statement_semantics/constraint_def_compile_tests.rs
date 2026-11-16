@@ -27,6 +27,35 @@ fn constraint_arg_type_mismatches(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Assert the binding-site rejection is the module's ONLY error: exactly one
+/// `ConstraintArgTypeMismatch`, at Error severity, and no other Error. The
+/// sole-error clause also proves the fixture is otherwise well-formed.
+fn assert_sole_error_is_constraint_arg_type_mismatch(diags: &[Diagnostic]) {
+    let mismatches = constraint_arg_type_mismatches(diags);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "expected exactly 1 ConstraintArgTypeMismatch, got {}; diagnostics: {:?}",
+        mismatches.len(),
+        diags
+    );
+    assert_eq!(
+        mismatches[0].severity,
+        Severity::Error,
+        "ConstraintArgTypeMismatch must be Error severity; diagnostics: {:?}",
+        diags
+    );
+    let errors = error_diags(diags);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the binding-site ConstraintArgTypeMismatch must be the only error, got {}; \
+         diagnostics: {:?}",
+        errors.len(),
+        diags
+    );
+}
+
 /// Collect only the `unknown type '...'` diagnostics — the message the
 /// constraint-def param resolver emits for a name it cannot resolve.
 ///
@@ -1488,35 +1517,6 @@ structure S {
 }
 
 // ── Task 5762 (δ₂): cross-dimension constraint args are rejected at the binding site ──
-
-/// Assert the binding-site rejection is the module's ONLY error: exactly one
-/// `ConstraintArgTypeMismatch`, at Error severity, and no other Error. The
-/// sole-error clause also proves the fixture is otherwise well-formed.
-fn assert_sole_error_is_constraint_arg_type_mismatch(diags: &[Diagnostic]) {
-    let mismatches = constraint_arg_type_mismatches(diags);
-    assert_eq!(
-        mismatches.len(),
-        1,
-        "expected exactly 1 ConstraintArgTypeMismatch, got {}; diagnostics: {:?}",
-        mismatches.len(),
-        diags
-    );
-    assert_eq!(
-        mismatches[0].severity,
-        Severity::Error,
-        "ConstraintArgTypeMismatch must be Error severity; diagnostics: {:?}",
-        diags
-    );
-    let errors = error_diags(diags);
-    assert_eq!(
-        errors.len(),
-        1,
-        "the binding-site ConstraintArgTypeMismatch must be the only error, got {}; \
-         diagnostics: {:?}",
-        errors.len(),
-        diags
-    );
-}
 
 /// A Mass arg at a Length param whose predicate does not compare dimensions
 /// (`determined(v)`) is rejected at the binding site — no predicate-side guard
