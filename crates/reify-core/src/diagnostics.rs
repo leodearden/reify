@@ -4602,6 +4602,15 @@ pub enum DiagnosticCode {
     /// one-variant addition that serde round-trips automatically (same
     /// non-breaking argument as `ExpressionNestingTooDeep` above).
     DimensionedArgRejected,
+    /// Origin: the `dir(...)` builtin (docs/prds/v0_6/direction-typing.md
+    /// C4/C11) when `reify_ir::direction::UnitVec3::from_vector` returns a
+    /// `DirectionFault` — a zero, sub-floor or non-finite vector has no unit
+    /// Direction.
+    ///
+    /// Runtime `Severity::Error`; the message embeds the
+    /// `E_DegenerateDirection` mnemonic because the CLI does not print codes.
+    /// Distinct from `DimensionedArgRejected` (the wrong-units fault).
+    DegenerateDirection,
     /// Origin:
     /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
     /// — the single shared refusal builder, emitted from BOTH export surfaces:
@@ -5609,6 +5618,15 @@ mod tests {
     fn dimensioned_arg_rejected_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
         assert_eq!(s, "\"DimensionedArgRejected\"");
+    }
+
+    // --- DegenerateDirection tests (direction-typing α) ---
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn degenerate_direction_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DegenerateDirection).unwrap();
+        assert_eq!(s, "\"DegenerateDirection\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---

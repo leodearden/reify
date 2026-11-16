@@ -336,7 +336,7 @@ fn value_kind_name(value: &Value) -> &'static str {
         Value::String(_) => "String",
         Value::Point(_) => "Point",
         Value::Vector(_) => "Vector",
-        Value::Direction { .. } => "Direction",
+        Value::Direction(_) => "Direction",
         Value::Frame { .. } => "Frame",
         Value::Complex { .. } => "Complex",
         Value::Matrix { .. } => "Matrix",

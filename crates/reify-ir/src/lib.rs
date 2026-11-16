@@ -28,6 +28,8 @@ pub mod color;
 pub mod completeness;
 pub mod constraint;
 pub mod dense_sdf;
+pub mod direction;
+pub mod direction_decode;
 pub mod expr;
 pub mod geometry;
 mod geometry_id;
@@ -43,6 +45,8 @@ pub mod ri_literal;
 pub mod sampled;
 pub mod solve_termination;
 pub mod structure_registry;
+#[cfg(test)]
+mod test_rng;
 pub mod traits;
 pub mod value;
 pub mod warm;
@@ -56,6 +60,8 @@ pub mod warm_registry;
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use color::Rgb8;
 pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
+pub use direction::{DirectionFault, UnitVec3};
+pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,

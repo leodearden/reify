@@ -28,10 +28,12 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, partition_driving_set, pose_from_frame, static_relation_residuals,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame_outcome,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
-use reify_ir::{SolveResult, Value};
+use reify_constraints::trust_region::SolveBudget;
+use reify_ir::{SolveFailureCause, SolveResult, Value};
 
 mod common;
 
@@ -526,17 +528,20 @@ fn solve_frame_seed_biases_residual_dof() {
 
 /// `angle(a, b, θ)` must normalize its direction operands before comparing the dot
 /// product against `cos θ` — a NON-unit operand otherwise reads the residual zero at
-/// the wrong angle. Moving operand: a magnitude-2 `+x` direction; anchor: a unit 45°
-/// direction. The true angle is 45°, so an `angle(.., 45°)` relation is satisfied
-/// (residual ≈ 0) ONLY if the magnitude-2 operand is normalized first — a raw
-/// `dot(da, db) − cos 45°` would leave a spurious `2·cos45° − cos45° = cos45° ≈ 0.707`.
+/// the wrong angle. Moving operand: a magnitude-2 `+x` raw `Value::Vector`; anchor: a
+/// unit 45° direction. A non-unit `Direction` is unrepresentable (its only
+/// constructor normalises), but `dir_of` still admits a raw Vector, so the angle
+/// residual's own normalisation stays under test here. The true angle is 45°, so an
+/// `angle(.., 45°)` relation is satisfied (residual ≈ 0) ONLY if the magnitude-2
+/// operand is normalized first — a raw `dot(da, db) − cos 45°` would leave a spurious
+/// `2·cos45° − cos45° = cos45° ≈ 0.707`.
 #[test]
 fn angle_residual_normalizes_non_unit_direction_operands() {
     let s = 1.0 / 2.0_f64.sqrt();
     let rel = RelationInstance {
         name: "angle".to_string(),
         operands: vec![
-            datum("m", dir(2.0, 0.0, 0.0)),
+            datum("m", vec3(2.0, 0.0, 0.0)),
             datum("anchor", dir(s, s, 0.0)),
             Operand {
                 sub: None,
@@ -551,6 +556,40 @@ fn angle_residual_normalizes_non_unit_direction_operands() {
         resid < 1e-9,
         "angle residual must be ≈0 at the true 45° angle even for a NON-unit operand \
          (normalized before the dot); got {resid}"
+    );
+}
+
+/// A Direction operand under a non-finite pose rotation must surface as a
+/// non-finite evaluation, exactly as an Axis/Plane/Vector operand does — never be
+/// left unrotated. An unrotated Direction reads the identity residual at every
+/// probe: zero here (the pair is seated), so the run would report a converged
+/// pose carrying the NaN seed rotation.
+#[test]
+fn a_direction_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    )];
+    let unknown = unknown("m", false);
+    let seed = Pose {
+        translation: [0.0; 3],
+        rotation: [f64::NAN, 0.0, 0.0],
+    };
+    let scaling = scaling_for(&relations, &unknown, &Pose::identity());
+    let outcome = solve_frame_outcome(
+        &relations,
+        &unknown,
+        &seed,
+        &scaling,
+        SolveBudget::default(),
+    );
+    assert!(
+        matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
+        "a NaN-rotated Direction must reach the NonFinite verdict: {outcome:?}"
     );
 }
 

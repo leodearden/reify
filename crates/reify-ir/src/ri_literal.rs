@@ -777,11 +777,7 @@ mod tests {
                 "Complex",
             ),
             (
-                Value::Direction {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
+                Value::Direction(crate::direction::UnitVec3::from_vector([0.0, 0.0, 1.0]).unwrap()),
                 "Direction",
             ),
             (

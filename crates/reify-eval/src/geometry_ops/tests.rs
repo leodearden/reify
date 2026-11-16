@@ -5,6 +5,13 @@
     };
     use reify_ir::GeometryHandleId;
 
+    /// A `Value::Direction` built through its only constructor.
+    fn unit_dir(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Direction(
+            reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+        )
+    }
+
     /// Helper: build a CompiledExpr literal from a constant f64.
     fn literal_f64(v: f64) -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(
@@ -23542,7 +23549,7 @@
                     other => panic!("axis origin must be a 3-component Point; got {other:?}"),
                 };
                 let d = match direction.as_ref() {
-                    reify_ir::Value::Direction { x, y, z } => [*x, *y, *z],
+                    reify_ir::Value::Direction(u) => u.components(),
                     other => panic!("axis direction must be a Direction; got {other:?}"),
                 };
                 assert!(
@@ -23567,11 +23574,7 @@
                 reify_ir::Value::length(0.0),
                 reify_ir::Value::length(z_origin),
             ])),
-            direction: Box::new(reify_ir::Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            }),
+            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
         }
     }
 
@@ -23772,11 +23775,7 @@
                 reify_ir::Value::length(0.0),
                 reify_ir::Value::length(0.0),
             ])),
-            direction: Box::new(reify_ir::Value::Direction {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            }),
+            direction: Box::new(unit_dir(1.0, 0.0, 0.0)),
         };
 
         let mut kernel = MockGeometryKernel::new()
@@ -25917,11 +25916,7 @@
             (
                 plane_of(
                     length_point3(0.0, 0.0, 0.0),
-                    reify_ir::Value::Direction {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 1.0,
-                    },
+                    unit_dir(0.0, 0.0, 1.0),
                 ),
                 PLANE_NORMAL_SHAPE_ERR.to_string(),
             ),
@@ -26105,7 +26100,7 @@
         }
     }
 
-    /// A `Value::Direction { x, y, z }` direction paired with a LENGTH origin
+    /// A `Value::Direction` direction paired with a LENGTH origin
     /// behaves EXACTLY as it did pre-δ: `Direction` is not a `Point`/`Vector`, so
     /// it still fails `point3_components` with the unchanged shape message.
     ///
@@ -26119,11 +26114,7 @@
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let axis = axis_of(
             length_point3(0.0, 0.0, 0.01),
-            reify_ir::Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            unit_dir(0.0, 0.0, 1.0),
         );
         assert_eq!(
             decode_axis(&axis, "circular_pattern", &mut diagnostics),

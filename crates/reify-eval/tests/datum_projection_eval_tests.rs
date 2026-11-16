@@ -36,12 +36,15 @@ fn project(receiver: Value, receiver_ty: Type, member: &str, result_ty: Type) ->
 /// Assert `v` is a `Value::Direction` with components close to `expected`.
 fn assert_direction(v: &Value, expected: [f64; 3]) {
     match v {
-        Value::Direction { x, y, z } => assert!(
-            (x - expected[0]).abs() < EPS
-                && (y - expected[1]).abs() < EPS
-                && (z - expected[2]).abs() < EPS,
-            "expected Direction {expected:?}, got Direction {{ {x}, {y}, {z} }}",
-        ),
+        Value::Direction(u) => {
+            let [x, y, z] = u.components();
+            assert!(
+                (x - expected[0]).abs() < EPS
+                    && (y - expected[1]).abs() < EPS
+                    && (z - expected[2]).abs() < EPS,
+                "expected Direction {expected:?}, got Direction {{ {x}, {y}, {z} }}",
+            )
+        }
         other => panic!("expected Value::Direction, got {other:?}"),
     }
 }
@@ -176,11 +179,7 @@ fn direction_x_projects_to_real_component() {
     // A Direction's `.x/.y/.z` yield dimensionless `Real` components. This pins
     // the interaction with `eval_method_call`'s existing `"x"|"y"|"z"` arm,
     // which only handles `Value::Tensor` today and would otherwise return Undef.
-    let dir = Value::Direction {
-        x: 1.0,
-        y: 0.0,
-        z: 0.0,
-    };
+    let dir = Value::Direction(reify_ir::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap());
     let result = project(dir, Type::Direction, "x", Type::dimensionless_scalar());
     match result {
         Value::Real(c) => assert!((c - 1.0).abs() < EPS, "expected Real(1.0), got Real({c})"),
