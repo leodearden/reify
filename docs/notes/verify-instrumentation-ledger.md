@@ -63,10 +63,28 @@ can carry goes to verify.sh's stderr as a `verify-ledger.py:` line instead.
 That covers a failed finalize: an unwritable ledger, a crash composing the
 record, or a missing `meta.json` after a failed run-begin. verify.sh deletes
 the journal right after finalize, so a failed finalize reports there along
-with the journal errors its unwritten record would have carried. A verify
-that a sandboxed agent starts by hand runs inside the agent's landlock
-write-set. Where that set excludes the main checkout, the append fails and the
-run leaves that stderr line instead of a record.
+with the journal errors its unwritten record would have carried.
+
+Any verify started in a sandboxed agent's process tree runs inside the agent's
+landlock write-set. That covers two routes: a verify the agent starts by hand
+in its lane, and the `hooks/pre-commit` gate of a hook-gated direct-main docs
+commit that the agent makes (a route found while planning dark-factory task
+4627). The hook runs `hooks/project-checks`, which execs
+`scripts/verify.sh all --profile debug --scope staged --include-infra`. Where
+the write-set excludes `<main checkout>/data/verify-logs`, the append raises
+`PermissionError`: on creating the directory when it is absent, or on opening
+`verify-runs.jsonl.lock` when the directory exists. The run leaves a
+`verify-ledger.py: finalize: ... (no ledger record written)` line on stderr
+instead of a record. The verify outcome and the commit are unaffected.
+
+**Runs inside a sandboxed agent stay unrecorded, by decision (task 9994).**
+No consumer listed at the top of this note reads their records. A docs-commit
+gate records role `task`, `scope: "staged"` and only `infra_selective` steps.
+The record has no cargo step, so it carries no `sccache` or `concurrency`
+sample, and its lane is the main checkout, which has no seed stamp, so
+`lane_seed` is `null`. The E1, E11, E12 and E13 recipes filter on role
+`merge`, E2 and D6 read `lane_seed`, and `sccache-report` reads cargo steps.
+The stderr line is the whole trace, and it is expected.
 
 | Knob | Meaning |
 |---|---|
@@ -322,6 +340,10 @@ anything in it.
   Phase 3), so neither appears in the block.
 - **A run killed with SIGKILL** (or any kill that skips the traps) leaves no
   record.
+- **A verify run inside a sandboxed agent** leaves no record (see Activation).
+  Once sandboxed agents make docs commits on main, the ledger's
+  `scope: "staged"` docs-commit records come only from unsandboxed committers
+  (human, steward), so their count is not a docs-commit count.
 - **The `infra_selective` step's `run_all` block** can describe a fixture
   run. That leaf removes only `REIFY_VERIFY_EVENT_LOG` from the
   `tests/infra/test_*.sh` members it spawns. A member that runs `run_all.sh`
