@@ -5,25 +5,13 @@
 //! eval must produce a `Value::StructureInstance` carrying the structure_def's real
 //! defaults.
 //!
-//! Originally the acceptance gate for task 3895, which delivered this by fabricating
-//! a transient mirror template for every `structure_def` ahead of the fn pass. Task
-//! 5494 deleted that mirror: fn param defaults and fn bodies are now compiled by the
-//! unified source-order pass in `entities_phase::phase_entities`, interleaved with
-//! entity templates in declaration order, so a fn body reads the ONE AUTHORITATIVE
-//! `TopologyTemplate` — the same object external access reads.
+//! Fn param defaults and fn bodies compile in one source-order pass interleaved with
+//! entity templates (`entities_phase::phase_entities`), so a fn body constructs a
+//! same-module structure from its authoritative `TopologyTemplate`. Declaration order
+//! is load-bearing: constructing a structure declared BELOW the fn is an ordering
+//! error (see `fn_body_ctor_of_later_declared_structure_reports_ordering_error`).
 //!
-//! Two consequences this file pins:
-//!
-//!   * There is no second, diverging lowering of a `structure_def` to drift against,
-//!     so the mirror's two silent-divergence hazards (defaults compiled in a neutral
-//!     scope with their diagnostics discarded; nested `Inner()` in a `let` lowering
-//!     to a generic `FunctionCall` because no template registry was installed) are
-//!     unrepresentable rather than merely fixed.
-//!   * Declaration order is load-bearing: a fn body may construct a same-module
-//!     structure declared ABOVE it; one declared BELOW is an ordering ERROR (see
-//!     `fn_body_ctor_of_later_declared_structure_reports_ordering_error`), matching
-//!     the no-forward-reference rule `compile_entity` already obeys for entity →
-//!     entity references.
+//! Rationale: docs/prds/v0_6/stdlib-namespace.md, decision D-8.
 
 use reify_core::*;
 use reify_ir::*;
@@ -51,14 +39,6 @@ fn load_widget_module() -> reify_compiler::CompiledModule {
 }
 
 /// Compile `source` with the stdlib/prelude in scope and evaluate it end-to-end.
-///
-/// Same 4-line idiom as `crates/reify-eval/tests/parse_length_e2e.rs` — there is
-/// no shared `eval_source_with_stdlib` in `reify-test-support`, and the prelude
-/// must be in scope for structure/fn resolution.  Pair with
-/// [`reify_test_support::cell_value`] to read a concrete cell value and with
-/// [`reify_test_support::assert_no_eval_errors`] to reject eval-phase errors:
-/// together they assert the *value*, which is strictly stronger than the
-/// `!matches!(v, Value::Undef)` non-poison idiom used elsewhere in this file.
 fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
     let mut engine = reify_eval::Engine::new(
@@ -255,24 +235,12 @@ fn eval_make_widget_partial_covers_first_param() {
 /// must keep that default's real value when the structure is built through a
 /// fn-returned ctor.
 ///
-/// This test was `sibling_param_default_accepted_limitation_body_is_ctor` — the
-/// task-3895 pin for design decision #3, which recorded sibling-param defaults as
-/// unresolvable in the mirror's neutral scope and deferred the eval assertion ("If
-/// a future task implements sibling-param resolution, this test must be updated to
-/// assert the correct eval result for `y`").  Task 5494 is that task, and closing
-/// it took BOTH halves:
+/// Two halves are pinned:
 ///
-///   * compile — the authoritative template is what the fn body sees, so `x + 1.0`
-///     lowers to a real `ValueRef(ValueCellId{Point, x})` instead of the poison the
-///     mirror's neutral scope produced (with its diagnostic discarded);
-///   * eval — `eval_structure_instance_ctor` evaluated defaults in the OUTER
-///     context, where a `Point`-stamped cell does not exist on the fn-returned
-///     path, so the field silently became `Undef`. Defaults are now evaluated
-///     against a child scope keyed by `ValueCellId::new(type_name, member)`, the
-///     same mechanism `materialize_template_lets` already used for lets.
-///
-/// The zero-errors and `StructureInstanceCtor{Point}` assertions are carried over
-/// unchanged.
+///   * compile — the fn body lowers `x + 1.0` to a real
+///     `ValueRef(ValueCellId{Point, x})`;
+///   * eval — defaults are resolved against a child scope keyed by
+///     `ValueCellId::new(type_name, member)`.
 #[test]
 fn sibling_param_default_in_fn_returned_ctor_evaluates_correctly() {
     let src = r#"
@@ -315,8 +283,8 @@ structure App {
         ),
     }
 
-    // The deferred assertion: `y`'s sibling-referencing default must carry its
-    // real value (`x + 1.0` == 2.0) through the fn-returned ctor, not a poison.
+    // `y`'s sibling-referencing default must carry its real value
+    // (`x + 1.0` == 2.0) through the fn-returned ctor, not a poison.
     let result = eval_source_with_stdlib(src);
     reify_test_support::assert_no_eval_errors(&result);
     let py = reify_test_support::cell_value(&result, "App", "py");
@@ -412,13 +380,8 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
 /// A structure with both an unguarded `let` and a per-decl-guarded `let … where cond`
 /// in a same-module fn-returned position.
 ///
-/// The mirror's second pass pushed every non-geometry let into value_cells
-/// unconditionally — including guarded lets — so the ctor-lets collection (expr.rs)
-/// harvested `guarded_limit` alongside `plain_limit`, which the sub path never did.
-///
-/// There is now only ONE lowering: `where_clause.is_some()` lets are routed to
-/// `guarded_groups`, never to the ctor's `lets` — so a fn-returned ctor and a `sub`
-/// agree by construction rather than by two implementations staying in step.
+/// Per-decl-guarded lets (`where_clause.is_some()`) are routed to `guarded_groups`,
+/// never to the ctor's `lets`, so a fn-returned ctor and a `sub` agree.
 const GUARDED_LET_SRC: &str = r#"
 module test.guarded
 
@@ -497,14 +460,8 @@ fn fn_returned_struct_ctor_excludes_guarded_lets() {
 /// geometry let (`shifted = base`), and a scalar derived let, in a fn-returned
 /// position.
 ///
-/// Regression for the path-consistency divergence flagged in esc-4342-21, where a
-/// mirror lowering built `known_geometry_lets` differently from the authoritative
-/// one: `is_geometry_let` could not recognize `shifted` as an alias of the geometry
-/// let `base`, so `shifted` compiled against a scope where `base` was never
-/// registered as geometry and a poison/Undef expr leaked into the ctor `lets` — a
-/// field the sub path never produces.  Task 5494 removed the second lowering
-/// entirely, so `known_geometry_lets` is built once: both `base` and `shifted` are
-/// routed out of value_cells, while the scalar `scaled` survives.
+/// Both `base` and its Ident alias `shifted` are routed out of the ctor `lets`; the
+/// scalar `scaled` survives.
 const GEOMETRY_ALIAS_SRC: &str = r#"
 module test.geomalias
 
@@ -518,19 +475,6 @@ structure def H {
 
 pub fn make_h() -> H { H(1mm, 2.0) }
 "#;
-
-// C6 MIGRATION (task 5750): `w` was `Real = 1.0` and fed all three `box`
-// dimensions, which now carry compile-layer LENGTH slots — so assertion (a)
-// ("zero errors") started failing on a fixture that has nothing to do with
-// units. Dimensioning `w` restores it while preserving everything this test
-// exists for: `base`/`shifted` are still routed out of the ctor `lets`, and
-// `scaled = w * factor` still survives as a non-poison scalar (now
-// `Scalar{LENGTH}` rather than `Real`, which assertion (e) does not constrain —
-// it asserts only that the type is not `Type::Error`). `factor` stays `Real`:
-// it is a dimensionless multiplier, not a length.
-//
-// NOT in this leaf's plan-time measured migration list; surfaced by the full
-// `cargo test -p reify-compiler` rerun that step-7 mandates.
 
 #[test]
 fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
@@ -575,8 +519,7 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
                 let_names
             );
 
-            // (d) The Ident-alias of the geometry let is ALSO routed out — this is
-            //     the divergence esc-4342-21 fixed.
+            // (d) The Ident alias of the geometry let is also routed out.
             assert!(
                 !let_names.contains(&"shifted"),
                 "ctor `lets` must NOT contain \"shifted\" (alias of geometry let \
@@ -604,7 +547,7 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
     }
 }
 
-// ─── task-5494 step-1: boundary #5, hazard 1 (poison default in a fn-body ctor) ─
+// ─── fn-call param default through a fn-returned ctor ─────────────────────────
 
 /// A structure-def param default that calls a SAME-MODULE fn, consumed through a
 /// fn-returned ctor, must evaluate to the fn's real value.
@@ -613,14 +556,6 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
 /// declared before `Widget` (which calls it in a param default), and `Widget` is
 /// declared before `make_widget` (which constructs it).  Every edge points
 /// backwards, so a strict source-order compilation satisfies all of them.
-///
-/// Hazard 1, now unrepresentable: the mirror was built BEFORE any user fn was
-/// compiled, so it was handed an EMPTY function table.  `tol()` could not resolve
-/// in its neutral scope, `compile_expr` returned a poison expr, that expr's
-/// diagnostic went to a throwaway buffer, and the poison was baked verbatim into
-/// `StructureInstanceCtor.defaults` at the `Widget()` lowering site.  The failure
-/// was therefore SILENT — a wrong/`Undef` value with no diagnostic — which is
-/// precisely the divergence boundary #5 forbids.
 #[test]
 fn fn_returned_ctor_default_referencing_same_module_fn_evaluates_correctly() {
     let src = r#"
@@ -655,33 +590,26 @@ structure App {
         errors
     );
 
-    // (b) No eval-time errors, and (c) the ctor default carries `tol()`'s REAL
-    //     value — not a poison/Undef baked in by a neutral-scope mirror.
+    // (b) No eval-time errors, and (c) the ctor default carries `tol()`'s REAL value.
     let result = eval_source_with_stdlib(src);
     reify_test_support::assert_no_eval_errors(&result);
     let s = reify_test_support::cell_value(&result, "App", "s");
     assert_eq!(
         s,
         Value::Real(0.25),
-        "App.s must be tol()'s real value 0.25 — a `Value::Undef`/wrong number \
-         here is the silent divergence hazard 1 describes; got: {:?}",
+        "App.s must be tol()'s real value 0.25; got: {:?}",
         s
     );
 }
 
-// ─── task-5494 step-2: boundary #5, hazard 2 (nested-ctor-in-let lowering) ─────
+// ─── nested ctor in a let through a fn-returned ctor ──────────────────────────
 
 /// A `let` inside a same-module structure that itself constructs another
 /// same-module structure must lower to a nested `StructureInstanceCtor` on the
 /// fn-returned path — not to a generic function call — and must carry the inner
 /// structure's own `lets` so `o.h.b` resolves at eval.
 ///
-/// Hazard 2, now unrepresentable: the mirror deliberately never had a template
-/// registry installed on its scope, so `let h = Inner()` compiled to a generic
-/// FunctionCall and did not carry Inner's lets — "a narrow sub-consistency gap for
-/// nested-ctor-in-let cases on the fn-returned path … latent but untested".  The
-/// authoritative registry is complete, so the nested ctor lowers as a ctor; this
-/// test asserts both the IR shape and the value.
+/// Asserts both the IR shape and the value.
 #[test]
 fn fn_returned_ctor_nested_ctor_in_let_carries_inner_lets() {
     let src = r#"
@@ -755,8 +683,7 @@ structure App {
                 }
                 other => panic!(
                     "`let h = Inner()` must lower to a nested StructureInstanceCtor, \
-                     not a generic call — this is hazard 2 (entity.rs:5972-5984); \
-                     got: {:?}",
+                     not a generic call; got: {:?}",
                     other
                 ),
             }
@@ -784,21 +711,8 @@ structure App {
 /// Constructing a same-module `structure def` declared BELOW the function is an
 /// ordering ERROR that names the structure and the remedy.
 ///
-/// This is the one capability the deleted mirror provided that source-order
-/// interleaving removes: the mirror fabricated a template for every
-/// `structure_def` regardless of declaration position, so a fn body could
-/// construct a structure declared anywhere in the file. The unified pass gives a
-/// fn body only the templates built ABOVE it — the same no-forward-reference rule
-/// `compile_entity` already obeys for entity → entity references.
-///
-/// Before task 5494's step-9 the fallback was SILENT (measured): the module
-/// compiled with zero errors, `Thing()` lowered to a generic
-/// `FunctionCall{std::Thing}`, and the only diagnostic was a Warning — "cannot
-/// infer return type of zero-arg function 'Thing', defaulting to Real" — so
-/// `make_it` claimed to return `Thing` while actually yielding a `Real`. That is
-/// exactly the silent divergence PRD boundary #5 forbids ("correct value at eval
-/// OR a loud diagnostic — never silent divergence"); this test pins the loud
-/// half.
+/// A fn body sees only the templates built above it — the same no-forward-reference
+/// rule `compile_entity` obeys for entity → entity references.
 #[test]
 fn fn_body_ctor_of_later_declared_structure_reports_ordering_error() {
     let src = r#"
