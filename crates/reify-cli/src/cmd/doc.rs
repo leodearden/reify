@@ -2,10 +2,12 @@
 
 use std::process::ExitCode;
 
+use reify_compiler::CompiledModule;
 use reify_core::Severity;
 
-use crate::args::doc_usage_error;
-use crate::parse_and_compile;
+use crate::args::{doc_usage_error, split_cfg_args_or_usage};
+use crate::help::DOC_USAGE;
+use crate::parse_and_compile_program;
 
 /// Output format for `reify doc`.
 ///
@@ -20,6 +22,11 @@ enum Format {
 }
 
 pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, DOC_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let args = rest.as_slice();
     // Mirrors `cmd_gui`'s explicit-flag pattern: walk args, accept the
     // documented flags, and reject any other `--`-prefixed token with a
     // usage error.  The first non-flag positional is the input path; a
@@ -152,18 +159,19 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
     }
 
     // `--split` requires `-o <dir>` so we know where to write the per-item
-    // files.  Hoisted above `parse_and_compile` so usage errors don't pay for parsing.
+    // files.  Hoisted above `parse_and_compile_program` so usage errors don't pay for parsing.
     // Reachable only when format == Markdown thanks to the guard above.
     if split && output.is_none() {
         return doc_usage_error("--split requires -o <directory>");
     }
 
-    let compiled = match parse_and_compile(input) {
-        Ok(c) => c,
+    let program = match parse_and_compile_program(input, &cfg) {
+        Ok(p) => p,
         Err(code) => return code,
     };
 
-    if compiled
+    if program
+        .entry
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -173,7 +181,7 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
 
     // Read the source file so build_doc_model can slice SourceSpan offsets
     // into the source string for constraint expr_repr and line numbers.
-    // parse_and_compile already read and validated the file, so a second
+    // parse_and_compile_program already read and validated the file, so a second
     // read error is unexpected but handled consistently with the existing
     // `Error reading {path}: {e}` convention.
     let source = match std::fs::read_to_string(input) {
@@ -184,8 +192,15 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
         }
     };
 
-    let model = reify_doc_build::build_doc_model(&compiled, &source);
-    let xrefs = reify_doc_build::cross_refs::build_cross_refs(&compiled.templates);
+    // The entry's own defs only (D-12): the I5-merged import templates carry
+    // spans into other files.
+    let templates = program.entry_declared_templates().to_vec();
+    let declared = CompiledModule {
+        templates,
+        ..program.entry
+    };
+    let model = reify_doc_build::build_doc_model(&declared, &source);
+    let xrefs = reify_doc_build::cross_refs::build_cross_refs(&declared.templates);
 
     match format {
         Format::Json => {

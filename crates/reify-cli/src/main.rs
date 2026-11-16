@@ -156,41 +156,6 @@ pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
     ModulePath::single(module_name)
 }
 
-fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path, e);
-            return Err(ExitCode::FAILURE);
-        }
-    };
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, module_path_for_file(path));
-
-    if !parsed.errors.is_empty() {
-        return Err(report_parse_errors(
-            parsed.render_errors(&source),
-            &mut std::io::stderr(),
-        ));
-    }
-
-    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-
-    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-    // parsed.path == module_path_for_file(path) by construction (PRD D-6).
-    if let Some(diag) =
-        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
-    {
-        compiled.diagnostics.push(diag);
-    }
-
-    for diag in &compiled.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
-
-    Ok(compiled)
-}
-
 /// The program compile that program-aware subcommands share: the entry plus
 /// its `#cfg(...)`-satisfied user-import DAG under the active [`CfgSet`], via
 /// [`reify_compiler::program::compile_program_with_parsed_entry`].
@@ -201,13 +166,12 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 /// `--cfg target=...` selects which platform modules resolve.
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
-/// *inside* the program compile (via `attach_module_path_diag`), so — unlike
-/// [`parse_and_compile`] — this function must NOT re-run it, else the
-/// diagnostic would be emitted twice.
-fn parse_and_compile_with_cfg(
+/// *inside* the program compile (via `attach_module_path_diag`), so this
+/// function must NOT re-run it, else the diagnostic would be emitted twice.
+fn parse_and_compile_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<reify_compiler::CompiledModule, ExitCode> {
+) -> Result<reify_compiler::program::CompiledProgram, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -242,21 +206,29 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled = reify_compiler::program::compile_program_with_parsed_entry(
+    let program = reify_compiler::program::compile_program_with_parsed_entry(
         std::path::Path::new(path),
         &source,
         &parsed,
         &resolver,
         cfg,
         &SimpleConstraintChecker,
-    )
-    .entry;
+    );
 
-    for diag in &compiled.diagnostics {
+    for diag in &program.entry.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    Ok(compiled)
+    Ok(program)
+}
+
+/// The entry module of [`parse_and_compile_program`], for a command that needs
+/// nothing else of the program.
+fn parse_and_compile_with_cfg(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    parse_and_compile_program(path, cfg).map(|program| program.entry)
 }
 
 /// CLI-local alias for
