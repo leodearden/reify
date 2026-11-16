@@ -57,10 +57,16 @@ def decide_release_delta(
     if changed is None:
         return False, ()
     answer = bashcall.ask(RELEASE_DELTA_REQUIRES_PASS, changed, repo_root, planning)
-    if answer.returncode in tuple(PredicateStatus):
-        return answer.returncode == PredicateStatus.SKIPPABLE, answer.stderr_lines
-    warning = f"warning: {RELEASE_DELTA_REQUIRES_PASS} exited {answer.returncode}, not 0 or 1: the release pass runs"
-    return False, (*answer.stderr_lines, warning)
+    try:
+        status = PredicateStatus(answer.returncode)
+    except ValueError:
+        answers = " or ".join(str(int(known)) for known in PredicateStatus)
+        warning = (
+            f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} exited {answer.returncode}, "
+            f"not {answers}: the release pass runs"
+        )
+        return False, (*answer.stderr_lines, warning)
+    return status is PredicateStatus.SKIPPABLE, answer.stderr_lines
 
 
 def _merge_delta(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | None:

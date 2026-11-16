@@ -17,10 +17,12 @@
 #     - ALL sentinel (C4 global / C5 unmappable)   => rc0  (fail-wide)
 #     - empty / whitespace-only override           => rc1  (empty set, skip)
 #     - mixed set containing one sensitive crate   => rc0  (required)
+#     - a membership grep that fails (2, 126)      => rc0  (fail-wide)
 #   The sensitive crate name is read from release_declared_set (the single source
 #   of truth), never hard-coded, so this test cannot drift from
 #   scripts/release-sensitive-crates.txt.
 #   SIGPIPE regression sub-block (task 9911): 1 MiB payloads pin both here-string arms.
+#   grep-failure sub-block (task 10080): a PATH-shimmed grep pins both arms fail-wide.
 #
 # SCENARIO block (step-3): five hermetic `verify.sh --print-plan` scenarios that
 # assert the plan marker `RELEASE-PASS: skipped (delta-clean)` and the presence /
@@ -96,8 +98,12 @@ _run_predicate() {  # <override> [declared_file]
         release_delta_requires_pass
     )
 }
-_predicate_requires() { _run_predicate "$@"; }    # asserts rc0 — release pass REQUIRED
-_predicate_skips()    { ! _run_predicate "$@"; }  # asserts rc1 — SKIPPABLE (negated for assert)
+_predicate_requires() { _run_predicate "$@"; }  # asserts rc0 — release pass REQUIRED
+_predicate_skips() {                            # asserts exactly rc1 — SKIPPABLE, never another failure
+    local _rc=0
+    _run_predicate "$@" || _rc=$?
+    [ "$_rc" -eq 1 ]
+}
 
 # Clean RED signal in step-1: the predicate does not exist until step-2.
 assert "release_delta_requires_pass is defined" \
@@ -150,6 +156,55 @@ assert "SIGPIPE intersect arm: $_SIGPIPE_PROBE_CRATE on line 1 of a 1 MiB declar
 
 assert "SIGPIPE intersect arm control: a crate absent from the 1 MiB declared set => SKIPPABLE (rc1)" \
     _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
+
+echo ""
+echo "--- UNIT: a membership test grep cannot answer fails wide (task 10080) ---"
+
+# A grep that fails (its status 2, or 126/127 when the exec itself fails under host
+# pressure) gives no answer, so the predicate must not read it as "absent" and skip.
+# The shim fails only the `grep -qxF -- <word>` membership tests whose <word> matches a
+# glob, and runs the real grep for everything else, release_declared_set's filters
+# included. Every failing case expects REQUIRED, which every fail-wide path also returns,
+# so each is paired with a control whose shim answers a clean no-match (1) for the same
+# words: that run must skip, which proves the shim was reached and nothing else failed.
+_REAL_GREP="$(type -P grep)"
+
+# _grep_shim VARNAME <word-glob> <status> — sets VARNAME to a dir holding a grep that
+# exits <status> for a membership test of a word matching <word-glob>.
+_grep_shim() {
+    local _dir
+    _dir="$(mktemp -d)"
+    _TMPDIRS+=("$_dir")
+    cat > "$_dir/grep" <<SHIM
+#!/bin/sh
+if [ "\$1" = -qxF ] && [ "\$2" = -- ]; then
+    case "\$3" in $2) exit $3 ;; esac
+fi
+exec "$_REAL_GREP" "\$@"
+SHIM
+    chmod +x "$_dir/grep"
+    printf -v "$1" '%s' "$_dir"
+}
+
+# _shimmed CHECK <shim-dir> <arg>... — runs CHECK with <shim-dir> first on PATH.
+_shimmed() { ( _check="$1"; PATH="$2:$PATH"; shift 2; "$_check" "$@" ); }
+
+_grep_shim _SHIM_ALL_ARM '*' 2
+assert "grep exits 2 on the ALL test => REQUIRED (rc0, fail-wide)" \
+    _shimmed _predicate_requires "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
+_grep_shim _SHIM_ALL_ARM '*' 1
+assert "grep answers no-match on the ALL test (control) => SKIPPABLE (rc1)" \
+    _shimmed _predicate_skips "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
+
+_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 2
+assert "grep exits 2 on the $_NONSENSITIVE_CRATE intersect test => REQUIRED (rc0, fail-wide)" \
+    _shimmed _predicate_requires "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
+_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 126
+assert "grep exec fails (126) on the $_NONSENSITIVE_CRATE intersect test => REQUIRED (rc0, fail-wide)" \
+    _shimmed _predicate_requires "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
+_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 1
+assert "grep answers no-match on the $_NONSENSITIVE_CRATE intersect test (control) => SKIPPABLE (rc1)" \
+    _shimmed _predicate_skips "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
 
 # ===========================================================================
 # SCENARIO block: five hermetic verify.sh --print-plan scenarios (§5.2).
@@ -654,7 +709,7 @@ _port_decide() {
 
 _port_skips() { [[ "$1" == "True "* ]]; }
 _port_keeps() { [[ "$1" == "False "* ]]; }
-_port_warns() { [[ "$1" == *"exited $2, not 0 or 1"* ]]; }
+_port_warns() { [[ "$1" =~ exited\ "$2"([^0-9]|$) ]]; }
 
 _port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 1; }'
 _port_decide _PORT_DECISION "$_PORT_ROOT"

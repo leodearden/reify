@@ -147,6 +147,16 @@ release_sensitive_set() {
     done | sort -u
 }
 
+# _release_scope_absent <word> <lines> — status 0 only when grep answers that
+# <word> is not a line of <lines> (its status 1). A match, or a grep that failed
+# (its status 2, or 126/127 when the exec itself failed), returns 1, so a caller
+# that fails wide on a non-zero status never reads a broken grep as "absent".
+_release_scope_absent() {
+    local _rc=0
+    grep -qxF -- "$1" <<<"$2" || _rc=$?
+    [ "$_rc" -eq 1 ]
+}
+
 # release_delta_requires_pass <changed-file>... — decide whether the merge-gate
 # RELEASE nextest pass must RUN for a given merge delta, or may be SKIPPED because
 # the delta touches no release-sensitive crate.
@@ -175,13 +185,13 @@ release_sensitive_set() {
 #     primitive. Called with no args it returns the empty set (no cargo), so an
 #     empty override / empty delta is hermetically delta-clean.
 #
-# Fail-wide/fail-open ladder (§5.1): the ALL sentinel (C4 global / C5 unmappable)
-# and an unreadable declared set both resolve to REQUIRED; only a provably
-# delta-clean affected set returns SKIPPABLE. Safe under `set -euo pipefail`:
-# affected_crates always returns 0, grep non-matches are consumed by `if`, and no
-# condition tests a `producer | grep -q` pipeline — each grep reads a captured
-# string through a here-string, so its status is its own answer and never a
-# producer's SIGPIPE.
+# Fail-wide/fail-open ladder (§5.1): the ALL sentinel (C4 global / C5 unmappable),
+# an unreadable declared set and a membership test grep could not answer all
+# resolve to REQUIRED; only a provably delta-clean affected set returns
+# SKIPPABLE. Safe under `set -euo pipefail`: affected_crates always returns 0,
+# and no membership test reads a `producer | grep -q` pipeline — each grep reads
+# a captured string through a here-string, so its status is its own answer and
+# never a producer's SIGPIPE.
 release_delta_requires_pass() {
     local affected
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
@@ -196,9 +206,7 @@ release_delta_requires_pass() {
     local _words
     # shellcheck disable=SC2086
     _words="$(printf '%s\n' $affected)"
-    if grep -qxF -- ALL <<<"$_words"; then
-        return 0
-    fi
+    _release_scope_absent ALL "$_words" || return 0
 
     # Read the declared release-sensitive set once (single source of truth,
     # scripts/release-sensitive-crates.txt); fail-wide to RUN on any read failure.
@@ -209,9 +217,7 @@ release_delta_requires_pass() {
     local _c
     # shellcheck disable=SC2086
     for _c in $affected; do
-        if grep -qxF -- "$_c" <<<"$declared"; then
-            return 0
-        fi
+        _release_scope_absent "$_c" "$declared" || return 0
     done
 
     # No release-sensitive crate affected (or empty affected set) => delta-clean => SKIP.
