@@ -189,10 +189,10 @@ SHIM
 # _shimmed CHECK <shim-dir> <arg>... — runs CHECK with <shim-dir> first on PATH.
 _shimmed() { ( _check="$1"; PATH="$2:$PATH"; shift 2; "$_check" "$@" ); }
 
-_grep_shim _SHIM_ALL_ARM '*' 2
+_grep_shim _SHIM_ALL_ARM ALL 2
 assert "grep exits 2 on the ALL test => REQUIRED (rc0, fail-wide)" \
     _shimmed _predicate_requires "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
-_grep_shim _SHIM_ALL_ARM '*' 1
+_grep_shim _SHIM_ALL_ARM ALL 1
 assert "grep answers no-match on the ALL test (control) => SKIPPABLE (rc1)" \
     _shimmed _predicate_skips "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
 
