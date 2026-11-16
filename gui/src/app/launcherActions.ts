@@ -9,6 +9,9 @@
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
  * attempt is refused with a LaunchFailure under its own code naming that path.
+ * Only the attempt's own settling clears pending (the store's reset does not),
+ * so a load that never settles leaves every document attempt refused until the
+ * app restarts.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
