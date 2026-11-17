@@ -2667,6 +2667,28 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
     /// (severity convention: `E_*` → Error).
     ExponentOutOfRange,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `BinOp::Mul`/`BinOp::Div`
+    /// arm), via `type_compat::infer_mul_div_result` returning
+    /// `MulDivRefusal::DimensionOverflow`.
+    ///
+    /// Emitted as a `Severity::Error` when the combined dimension of a
+    /// value-level `*` or `/` has an exponent that does not fit `Rational`
+    /// (`i16/i16`). Example: `1m^1/31 * 1m^1/37 * 1m^1/41`, whose Length
+    /// exponent needs denominator 47027.
+    ///
+    /// Canonical message form:
+    ///   `"the combined dimension of `<left>` <op> `<right>` has an exponent out of range"`
+    /// with a label `"combined dimension out of range"` on the operator node.
+    ///
+    /// The result type is poisoned to `Type::Error` (anti-cascade); the runtime
+    /// `eval_mul`/`eval_div` arm yields `Undef`.
+    ///
+    /// Distinct from [`ExponentOutOfRange`], which is a WRITTEN `^` literal
+    /// outside `i8`; this code is a COMPUTED exponent outside `Rational`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSION_EXPONENT_OVERFLOW`
+    /// (severity convention: `E_*` → Error).
+    DimensionExponentOverflow,
     /// Origin: `crates/reify-compiler/src/expr.rs`
     /// (`ExprKind::FunctionCall` arm — semantic gate for VALUE-position `auto`).
     ///

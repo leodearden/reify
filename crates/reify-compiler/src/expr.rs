@@ -56,6 +56,7 @@ use crate::datum_projection::{
     DATUM_PROJECTION_MEMBERS,
 };
 use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
+use crate::type_compat::MulDivRefusal;
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -194,6 +195,29 @@ fn poison_arith_operand_kind(
         ))
         .with_code(DiagnosticCode::ArithOperandKind)
         .with_label(DiagnosticLabel::new(span, "unsupported operand kinds")),
+    )
+}
+
+/// Emit the `DimensionExponentOverflow` diagnostic for a `*`/`/` whose
+/// combined dimension has an exponent that does not fit `Rational`, labeled on
+/// the operator node, via [`make_poison_type`], poisoning to `Type::Error`.
+fn poison_dimension_overflow(
+    diagnostics: &mut Vec<Diagnostic>,
+    op: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: reify_core::SourceSpan,
+) -> Type {
+    make_poison_type(
+        diagnostics,
+        Diagnostic::error(format!(
+            "the combined dimension of `{left_ty}` {op} `{right_ty}` has an exponent out of range",
+        ))
+        .with_code(DiagnosticCode::DimensionExponentOverflow)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "combined dimension out of range",
+        )),
     )
 }
 
@@ -1815,16 +1839,15 @@ fn compile_expr_guarded_with_expected_inner(
                     }
 
                     // Mul/Div (task compiler-type-hygiene β2 amendment round 3): compute
-                    // `infer_mul_div_result` exactly ONCE here and reuse the `Option` both
+                    // `infer_mul_div_result` exactly ONCE here and reuse the `Result` both
                     // for `result_type` (via `type_compat::mul_div_result_or_placeholder`,
                     // the same fallback `infer_binop_type`'s own Mul/Div arm delegates to)
-                    // and for the operand-kind guard's poison decision further below.
-                    // Previously each site called `infer_mul_div_result` independently, so
-                    // the guard's `is_none()` check and this placeholder fallback had to be
-                    // kept in lockstep only by convention. `mul_div_inferred` is `Some(_)`
-                    // (outer) exactly when `bin_op` is `Mul`/`Div`; the guard's `if let
-                    // Some(None) = &mul_div_inferred` below relies on that to stay a no-op
-                    // for every other operator.
+                    // and for the guards' poison decisions further below. Previously each
+                    // site called `infer_mul_div_result` independently, so the guard's
+                    // refusal check and this placeholder fallback had to be kept in
+                    // lockstep only by convention. `mul_div_inferred` is `Some(_)` (outer)
+                    // exactly when `bin_op` is `Mul`/`Div`; the guards' `Some(Err(..))`
+                    // matches below rely on that to stay a no-op for every other operator.
                     let mul_div_inferred = matches!(bin_op, BinOp::Mul | BinOp::Div).then(|| {
                         type_compat::infer_mul_div_result(
                             bin_op,
@@ -2128,13 +2151,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // INV-COMP-3, `E_ArithOperandKind`).
                     //
                     // `infer_binop_type`'s `Mul`/`Div` arm delegates to
-                    // `infer_mul_div_result`, which returns `None` for any operand-kind
-                    // pairing the runtime evaluator (`eval_mul`/`eval_div`) has no
-                    // intentional arm for — a structural, kind-level `Value::Undef`. See
-                    // `infer_mul_div_result`'s doc for the full supported/unsupported
-                    // partition, pinned against the β1 runtime truth table. The `None`
-                    // itself was already computed once, above, into `mul_div_inferred` —
-                    // reused here instead of calling `infer_mul_div_result` a second time.
+                    // `infer_mul_div_result`, which returns `Err(OperandKinds)` for any
+                    // operand-kind pairing the runtime evaluator (`eval_mul`/`eval_div`)
+                    // has no intentional arm for — a structural, kind-level
+                    // `Value::Undef`. See `infer_mul_div_result`'s doc for the full
+                    // supported/unsupported partition, pinned against the β1 runtime
+                    // truth table. The refusal itself was already computed once, above,
+                    // into `mul_div_inferred` — reused here instead of calling
+                    // `infer_mul_div_result` a second time.
                     //
                     // Gradualism: skip (no poison, no diagnostic) when either operand
                     // matches `type_compat::is_mul_div_gradualism_skip` — mirrors the
@@ -2152,11 +2176,24 @@ fn compile_expr_guarded_with_expected_inner(
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
                     // Diagnostic emission is shared with the Add/Sub dimensioned-Complex
                     // guard above via `poison_arith_operand_kind`.
-                    if let Some(None) = &mul_div_inferred
+                    //
+                    // A supported pairing whose combined dimension overflows `Rational`
+                    // (`Err(DimensionOverflow)`) is poisoned with its own code,
+                    // `E_DIMENSION_EXPONENT_OVERFLOW`; no operand of that pairing is a
+                    // gradualism skip, since only concrete dimensions can overflow.
+                    if let Some(Err(MulDivRefusal::OperandKinds)) = &mul_div_inferred
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_left.result_type)
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_right.result_type)
                     {
                         result_type = poison_arith_operand_kind(
+                            diagnostics,
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
+                        );
+                    } else if let Some(Err(MulDivRefusal::DimensionOverflow)) = &mul_div_inferred {
+                        result_type = poison_dimension_overflow(
                             diagnostics,
                             op,
                             &compiled_left.result_type,

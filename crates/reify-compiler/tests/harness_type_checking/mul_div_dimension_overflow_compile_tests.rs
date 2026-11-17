@@ -4,12 +4,12 @@
 //! located, coded error, never a compiler panic.
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// Compile `structure def P { <body> }`; return the source and its errors.
 fn compile_errors(body: &str) -> (String, Vec<Diagnostic>) {
     let source = format!("structure def P {{ {body} }}");
-    let module = compile_source(&source);
+    let module = compile_source_with_stdlib(&source);
     let errors = errors_only(&module).into_iter().cloned().collect();
     (source, errors)
 }
