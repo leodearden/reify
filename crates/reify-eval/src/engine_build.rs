@@ -658,6 +658,24 @@ fn template_build_steps(
     steps
 }
 
+/// The realizations a build walk executes, in execution order.
+#[cfg(debug_assertions)]
+fn realization_exec_order(
+    templates: &[reify_compiler::TopologyTemplate],
+    template_steps: &[Vec<BuildStep>],
+) -> Vec<RealizationNodeId> {
+    templates
+        .iter()
+        .zip(template_steps)
+        .flat_map(|(template, steps)| {
+            steps.iter().filter_map(move |step| match step {
+                BuildStep::Realize(r_idx) => Some(template.realizations[*r_idx].id.clone()),
+                BuildStep::HydrateCell(_) => None,
+            })
+        })
+        .collect()
+}
+
 /// Everything [`Engine::hydrate_value_cell_in_loop`] reads to resolve one value
 /// cell of `template` at its `HydrateCell` step; each build walk fills it from
 /// its own sources.
@@ -4387,19 +4405,6 @@ impl Engine {
         // build until the per-realization op loop, so the dispatch reset here
         // is byte-identical to the prior pre-`check()` placement.
         self.reset_per_build_state(BuildSurface::Build);
-        // Task 4355 β: capture declaration-order execution order for the
-        // assert_dag_complete gate.  Realizations are visited in the same
-        // order as the build loop below (templates × realizations in
-        // declaration order, which compile_builder/entities_phase guarantees
-        // is topological for non-recursive structures).  Captured here, once,
-        // before any kernel work, so the assert can fire even when the
-        // geometry block is skipped (no kernel registered).
-        #[cfg(debug_assertions)]
-        let exec_order: Vec<RealizationNodeId> = module
-            .templates
-            .iter()
-            .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
-            .collect();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -4546,6 +4551,46 @@ impl Engine {
         // LegacyMultiPass → (None, None), byte-unchanged.
         let (unified_pass, demand_seed_build) = self.demand_scoped_unified_pass(&HashSet::new());
 
+        // β (task 4738) amend: pre-extract demanded realization IDs as
+        // references to avoid a per-iteration `RealizationNodeId` clone in
+        // the uncovered-realization fallback.  Under build() full_scope is
+        // always true → `demand_seed_build` is None → `demanded_rids_build`
+        // is None → the fallback short-circuits via `is_none_or` and appends
+        // all (byte-identical, step-3(b) guard preserved).  The defensive
+        // selective branch is still covered without per-iteration alloc.
+        let demanded_rids_build: Option<HashSet<&RealizationNodeId>> =
+            demand_seed_build.as_ref().map(|seed| {
+                seed.iter()
+                    .filter_map(|n| {
+                        if let NodeId::Realization(r) = n {
+                            Some(r)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            });
+
+        // Each template's build walk (see `template_build_steps`), index-aligned
+        // with `module.templates`. Computed once so the realization loop below and
+        // the debug assert_dag_complete gate are driven by the SAME order.
+        let template_steps: Vec<Vec<BuildStep>> = module
+            .templates
+            .iter()
+            .map(|template| {
+                template_build_steps(
+                    template,
+                    unified_pass.as_ref().map(|p| p.schedule.as_slice()),
+                    demanded_rids_build.as_ref(),
+                )
+            })
+            .collect();
+        // Task 4355 β: the assert_dag_complete gate checks the walk the loop below
+        // performs; computed outside the geometry block so it still fires with no
+        // kernel registered.
+        #[cfg(debug_assertions)]
+        let exec_order = realization_exec_order(&module.templates, &template_steps);
+
         // Task 4358 ε: the value cells read by ANY realization (the union of every
         // realization trace's `reads`). A selector cell in this set is consumed as
         // a curated fillet/chamfer/draft edge/face list, so
@@ -4624,26 +4669,6 @@ impl Engine {
             // (task 4358 ε step-8) so it survives to the post-geometry Constraint
             // re-check; it is still populated here by `snapshot_named_steps`.
 
-            // β (task 4738) amend: pre-extract demanded realization IDs as
-            // references to avoid a per-iteration `RealizationNodeId` clone in
-            // the uncovered-realization fallback.  Under build() full_scope is
-            // always true → `demand_seed_build` is None → `demanded_rids_build`
-            // is None → the fallback short-circuits via `is_none_or` and appends
-            // all (byte-identical, step-3(b) guard preserved).  The defensive
-            // selective branch is still covered without per-iteration alloc.
-            let demanded_rids_build: Option<HashSet<&RealizationNodeId>> =
-                demand_seed_build.as_ref().map(|seed| {
-                    seed.iter()
-                        .filter_map(|n| {
-                            if let NodeId::Realization(r) = n {
-                                Some(r)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                });
-
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
@@ -4703,15 +4728,11 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
-                // Task 4358 ε: order this template's realizations + selector/query
-                // value-cells for the build walk (see `template_build_steps`).
+                // Task 4358 ε: this template's realizations + selector/query
+                // value-cells in build-walk order (see `template_build_steps`).
                 // Under build() full_scope is always true → demanded_rids_build
                 // is None → every uncovered realization is appended.
-                let build_steps = template_build_steps(
-                    template,
-                    unified_pass.as_ref().map(|p| p.schedule.as_slice()),
-                    demanded_rids_build.as_ref(),
-                );
+                let build_steps = &template_steps[t_idx];
                 // Fail-closed region gate (task #4812, P0β): build the repr
                 // snapshot once before the step loop. Reprs from bodies in PRIOR
                 // templates are already in eval_state at this point. Reprs
@@ -4723,7 +4744,7 @@ impl Engine {
                 // O(cells × realizations) per-HydrateCell rebuild.
                 let realized_reprs_for_hydration =
                     Engine::realized_reprs_snapshot(&self.eval_state);
-                for build_step in &build_steps {
+                for build_step in build_steps {
                     let (r_idx, realization) = match build_step {
                         BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                         BuildStep::HydrateCell(cell_id) => {
