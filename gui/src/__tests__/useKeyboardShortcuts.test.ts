@@ -930,6 +930,13 @@ describe('paletteCommands', () => {
     const cmds = paletteCommands();
     expect(cmds.some((c) => c.id === 'fitToView')).toBe(false);
   });
+
+  it('lists exactly the wired shortcuts whose def does not set hiddenFromPalette, in registry order', () => {
+    const expected = SHORTCUTS.filter((s) => hasCallbackWiring(s.id) && !s.hiddenFromPalette).map(
+      (s) => s.id,
+    );
+    expect(paletteCommands().map((c) => c.id)).toEqual(expected);
+  });
 });
 
 describe('runCommand', () => {
