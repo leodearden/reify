@@ -5,7 +5,8 @@
 //! `Engine::mint_symbolic_geometry_handle_for_cell_from_graph` and the instance
 //! mint `InstanceMintScope`.
 
-use reify_core::ValueCellId;
+use reify_compiler::CompiledModule;
+use reify_core::{RealizationNodeId, ValueCellId};
 
 use super::EvaluationGraph;
 
@@ -29,11 +30,31 @@ structure P {
     sub s = T()
 }"#;
 
+/// The structure of [`SRC`] holding the geometry lets: the entity of every cell
+/// the two member lists below name.
+pub(crate) const TEMPLATE: &str = "T";
+
 /// The members of `T` in [`SRC`] that are scalar geometry lets.
 pub(crate) const SCALAR_GEOMETRY_MEMBERS: [&str; 2] = ["a", "b"];
 
 /// The members of `T` in [`SRC`] that are geometry-list lets.
 pub(crate) const GEOMETRY_LIST_MEMBERS: [&str; 2] = ["one", "holes"];
+
+/// The id of the realization named `member` in `module`, the compiled [`SRC`].
+/// It reads the compiled module and not the graph's cell link, so it is an
+/// oracle for that link and not a restatement of it.
+pub(crate) fn compiled_realization_named(
+    module: &CompiledModule,
+    member: &str,
+) -> RealizationNodeId {
+    module
+        .templates
+        .iter()
+        .flat_map(|template| &template.realizations)
+        .find(|realization| realization.name.as_deref() == Some(member))
+        .map(|realization| realization.id.clone())
+        .unwrap_or_else(|| panic!("SRC must compile a realization named `{member}`"))
+}
 
 /// Panics unless some realization of `graph` links `cell`. A geometry-list cell
 /// is linked N:1 (task #5385), and a claim that it resolves to no realization

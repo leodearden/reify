@@ -21,7 +21,8 @@ use reify_test_support::parse_and_compile;
 use super::Engine;
 use crate::graph::EvaluationGraph;
 use crate::graph::geometry_cell_link_fixture::{
-    GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
+    GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, TEMPLATE, assert_some_realization_links,
+    compiled_realization_named,
 };
 
 fn mint_from_graph(cell: &ValueCellId, graph: &EvaluationGraph) -> Option<Value> {
@@ -40,7 +41,7 @@ fn from_graph_mint_never_writes_a_scalar_handle_into_a_geometry_list_cell() {
     let graph = EvaluationGraph::from_templates(&module.templates);
 
     for member in GEOMETRY_LIST_MEMBERS {
-        let cell = ValueCellId::new("T", member);
+        let cell = ValueCellId::new(TEMPLATE, member);
         assert_some_realization_links(&graph, &cell);
         assert_eq!(
             mint_from_graph(&cell, &graph),
@@ -51,14 +52,8 @@ fn from_graph_mint_never_writes_a_scalar_handle_into_a_geometry_list_cell() {
     }
 
     for member in SCALAR_GEOMETRY_MEMBERS {
-        let cell = ValueCellId::new("T", member);
-        let own_realization = module
-            .templates
-            .iter()
-            .flat_map(|t| &t.realizations)
-            .find(|r| r.name.as_deref() == Some(member))
-            .map(|r| r.id.clone())
-            .unwrap_or_else(|| panic!("SRC must compile a realization named `{member}`"));
+        let cell = ValueCellId::new(TEMPLATE, member);
+        let own_realization = compiled_realization_named(&module, member);
         match mint_from_graph(&cell, &graph) {
             Some(Value::GeometryHandle {
                 realization_ref,
