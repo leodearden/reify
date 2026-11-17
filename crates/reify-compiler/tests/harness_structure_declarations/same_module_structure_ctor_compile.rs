@@ -941,6 +941,16 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
              the absence check above proves nothing; all diagnostics: {:#?}",
             diag_lines(&module)
         );
+        assert!(
+            !module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
+            "{what}: the call must resolve to its callee. An UnresolvedFunction Warning \
+             means it reaches nothing, so this case no longer exercises the path; all \
+             diagnostics: {:#?}",
+            diag_lines(&module)
+        );
         let call = fn_body_let(&module, "f", "x");
         callee.assert_matches_label(&module, call, what);
     }
