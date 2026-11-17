@@ -391,6 +391,7 @@ class TestReifyBinaryTrustFreshRepo(unittest.TestCase):
         self.assertIsNone(ctx.reify_bin)
         self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
         self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+        self.assertIn("no readable verdict", ctx.reify_bin_refusal)
 
 
 if __name__ == "__main__":
