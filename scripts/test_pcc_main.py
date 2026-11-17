@@ -34,6 +34,7 @@ from _pcc_test_support import (
     _ts_stub_clean,
     _ts_stub_hangs,
     _ts_stub_not_executable,
+    example_probes,
     make_fixture_repo,
     probe_context,
     record_calls,
@@ -338,8 +339,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         set passed alongside contributes none of its probes, whatever the
         substrate answers.
         """
-        with open(_EXAMPLE_PROBE_SET) as fh:
-            probe_set_capabilities = {p.capability for p in pcc.load_probe_set(fh.read())}
+        probe_set_capabilities = {p.capability for p in example_probes()}
         for label, run, want_rc in (("clean", pcc.ProbeRun(0, "", ""), 0),
                                     ("cache denied", self._grammar_run(_CACHE_DENIED_STDERR), 75)):
             with self.subTest(run=label):
@@ -1205,9 +1205,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         self.assertTrue(value_rows[0].startswith(f"[{pcc.Verdict.PASS}]"), value_rows[0])
 
     def test_committed_example_value_row_points_at_the_fixture(self):
-        with open(_EXAMPLE_PROBE_SET) as fh:
-            probes = pcc.load_probe_set(fh.read())
-        value_probes = [p for p in probes if p.probe_kind == "value"]
+        value_probes = [p for p in example_probes() if p.probe_kind == "value"]
         self.assertEqual(len(value_probes), 1)
         self.assertEqual(value_probes[0].fixture, _VALUE_CELLS_FIXTURE)
         self.assertEqual(value_probes[0].expected["observation"], "present")
@@ -1351,9 +1349,7 @@ class TestMainRunnerSeam(_MainHarness, unittest.TestCase):
         _, out, err = self._run_main_capturing(
             ["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx
         )
-        with open(_EXAMPLE_PROBE_SET) as fh:
-            probes = pcc.load_probe_set(fh.read())
-        self.assertEqual(len(calls), len(probes), err)
+        self.assertEqual(len(calls), len(example_probes()), err)
         for ctx_arg, _ in calls:
             self.assertIs(ctx_arg, ctx)
         records = json.loads(out)["results"]
@@ -1461,10 +1457,8 @@ class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
         release, ctx = trust_ctx(self._fresh_root(), self._RELEASE, lambda head: head + "\n")
         runner, calls = record_calls(self._all_pass_runner())
         rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
-        with open(_EXAMPLE_PROBE_SET) as fh:
-            probes = pcc.load_probe_set(fh.read())
         self.assertEqual(rc, 0, out + err)
-        self.assertEqual(len(calls), len(probes), err)
+        self.assertEqual(len(calls), len(example_probes()), err)
         for _probe, probe_ctx, _timeout in calls:
             self.assertEqual(probe_ctx.reify_bin, release)
 

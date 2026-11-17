@@ -3,15 +3,16 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the ProbeContext builders and the recording fake runner, the
-binary-trust fixtures (profile binaries, the sidecar, a hook-safe git repo, and
-the trust ctx built over them), the grammar-e2e and reify-e2e skip-guards (with
-the un-memoized grammar status it wraps; the reify-e2e policy itself lives in
-_pdv_test_support), the measured cache-denial signature and the shared
-TREE_SITTER_BIN stub factories.  A fixture only one partition uses lives in that
-partition.  It imports no test file and defines no TestCase.  Run the suite
-through tests/infra/test_prd_capability_check.sh, or one partition at a time
-with `python3 scripts/test_pcc_<area>.py`.
+constants, the committed example probe set parsed, the ProbeContext builders and
+the recording fake runner, the binary-trust fixtures (profile binaries, the
+sidecar, a hook-safe git repo, and the trust ctx built over them), the
+grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
+wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
+cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
+fixture only one partition uses lives in that partition.  It imports no test
+file and defines no TestCase.  Run the suite through
+tests/infra/test_prd_capability_check.sh, or one partition at a time with
+`python3 scripts/test_pcc_<area>.py`.
 """
 
 import functools
@@ -41,7 +42,7 @@ _spec.loader.exec_module(pcc)
 
 
 # ---------------------------------------------------------------------------
-# Locate the repo root for resolving committed probe-set paths
+# Repo root and the committed example probe set
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
@@ -57,6 +58,12 @@ _VALUE_CELLS_STDOUT = (
     "ValueCleanEvalCells.degenerate_ratio = 0\n"
     "ValueCleanEvalCells.undef_ratio = undef\n"
 )
+
+
+def example_probes():
+    """The committed example probe set, parsed by pcc.load_probe_set."""
+    with open(_EXAMPLE_PROBE_SET) as fh:
+        return pcc.load_probe_set(fh.read())
 
 
 # ---------------------------------------------------------------------------
