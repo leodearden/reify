@@ -2,7 +2,10 @@
 //! synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
 //! these run in a stub-mode build.
 
-use super::{check_gating_error, has_error_diagnostic};
+use super::{
+    CheckErrorAllowlistDisposition, CheckErrorAllowlistMatcher, CheckErrorExitAllowance,
+    check_gating_error, first_unexcused_error, has_error_diagnostic,
+};
 use reify_core::{Diagnostic, DiagnosticCode};
 
 /// The SOFT missing-trampoline message, verbatim as
@@ -281,4 +284,145 @@ fn relate_family_errors_are_never_excused() {
              CHECK_ERROR_EXIT_ALLOWLIST is the regression this test forbids"
         );
     }
+}
+
+// -------------------------------------------------------------------
+// first_unexcused_error — the matching core, over SYNTHETIC rows, so its
+// semantics stay executable whatever the production table holds
+// -------------------------------------------------------------------
+
+/// A fixture row.  The neutral cite `#1` marks it as test data rather than a
+/// burn-down claim; the gate never reads `disposition` or `cite`.
+fn row(matcher: CheckErrorAllowlistMatcher) -> CheckErrorExitAllowance {
+    CheckErrorExitAllowance {
+        matcher,
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#1",
+    }
+}
+
+#[test]
+fn an_empty_table_gates_the_first_error() {
+    let diagnostics = [
+        Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+        Diagnostic::info("note: nothing to see"),
+        Diagnostic::error("first error"),
+        Diagnostic::error("second error"),
+    ];
+    let gating =
+        first_unexcused_error(&diagnostics, &[]).expect("with no rows, the first Error gates");
+    assert_eq!(gating.message, "first error");
+
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::warning("W_DFM_DRAFT: 0.5° below the 1° minimum")],
+            &[]
+        )
+        .is_none(),
+        "a Warning-only set never gates"
+    );
+}
+
+#[test]
+fn a_code_row_excuses_only_its_code() {
+    const VIOLATION: &str =
+        "constraint BoltFlange#constraint[1] violated: clearance 0.4mm below minimum 0.5mm";
+    let rows = [row(CheckErrorAllowlistMatcher::Code(
+        DiagnosticCode::ConstraintViolated,
+    ))];
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::error(VIOLATION).with_code(DiagnosticCode::ConstraintViolated)],
+            &rows
+        )
+        .is_none(),
+        "a Code row excuses an Error carrying that code"
+    );
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::error(VIOLATION).with_code(DiagnosticCode::ConstraintIndeterminate)],
+            &rows
+        )
+        .is_some(),
+        "a Code row does not excuse an Error carrying a different code"
+    );
+    assert!(
+        first_unexcused_error(&[Diagnostic::error(VIOLATION)], &rows).is_some(),
+        "a Code row keys on the code, never on the message text"
+    );
+}
+
+/// The executable form of the 2026-08-26 ruling that codes minted after the
+/// gate can never be excused: once an emission is coded — #6608's replacement
+/// of the code-less "per-instance re-realization compile error … is unresolved
+/// (Undef)" family in particular — no legacy substring row may keep excusing
+/// it.  The code attached below is arbitrary.
+#[test]
+fn a_substring_row_excuses_only_code_less_diagnostics() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "is unresolved (Undef)",
+    ))];
+    assert!(
+        first_unexcused_error(&[undef_argument_error()], &rows).is_none(),
+        "a MessageContains row excuses the code-less message"
+    );
+    assert!(
+        first_unexcused_error(
+            &[undef_argument_error().with_code(DiagnosticCode::ArgTypeMismatch)],
+            &rows
+        )
+        .is_some(),
+        "a CODED Error must not be excused by a legacy substring"
+    );
+}
+
+/// The load-bearing composition: an excused Error must neither invent a gate
+/// nor mask a co-resident one.
+#[test]
+fn an_excused_row_neither_gates_nor_masks() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "is unresolved (Undef)",
+    ))];
+    assert!(
+        first_unexcused_error(
+            &[
+                undef_argument_error(),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ],
+            &rows
+        )
+        .is_none(),
+        "an excused Error beside a Warning must not gate"
+    );
+
+    let mixed = [
+        undef_argument_error(),
+        Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
+    ];
+    let gating = first_unexcused_error(&mixed, &rows)
+        .expect("a co-resident unexcused Error must still gate");
+    assert!(
+        gating.message.contains("E_DFM_OVERHANG"),
+        "the gate must return the diagnostic that actually gates, not the \
+         excused one it scanned past; got {:?}",
+        gating.message
+    );
+}
+
+/// A Code row must not be over-broad: `TRAMPOLINE_CANCELLED` shares the
+/// `@optimized target "solver::elastic_static": ` prefix with the coded
+/// missing-trampoline message and is a genuine failure.
+#[test]
+fn a_code_row_never_swallows_the_prefix_sibling() {
+    let rows = [row(CheckErrorAllowlistMatcher::Code(
+        DiagnosticCode::NoRegisteredComputeTrampoline,
+    ))];
+    assert!(
+        first_unexcused_error(&[trampoline_error()], &rows).is_none(),
+        "a Code row excuses the coded missing-trampoline Error"
+    );
+    assert!(
+        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)], &rows).is_some(),
+        "a cancelled trampoline is a real failure"
+    );
 }
