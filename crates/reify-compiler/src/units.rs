@@ -683,7 +683,8 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], [`TOLERANCING_MARKER_NAMES`]).
 ///
 /// These are pure kernel-free value-algebra constructors evaluated in
-/// `reify_stdlib::geometry::eval_geometry`:
+/// reify-stdlib's `eval_builtin` chain (`geometry::eval_geometry`;
+/// `direction::eval_direction` for `dir`):
 ///
 /// ```text
 /// fn midplane(a: Plane, b: Plane)                  -> Plane
@@ -767,14 +768,15 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// ladder places the relation arm BEFORE this one, so arity-3 `offset` claims
 /// `Relation` first and arity-2 `offset` falls through to here. This arg-aware
 /// shape (mirroring [`affine_map_algebra_result_type`]) exists solely for
-/// `offset`'s arity gate; the other four names are arity-blind.
+/// `offset`'s arity gate; every other name is arity-blind.
 ///
 /// **Arity validation deferred to eval (by design).** Apart from `offset`'s
 /// gate, these constructors do NOT check argument count here: a wrong-arity
 /// `axis_through(p)` or `frame_at(o)` still types as its codomain (`Axis` /
-/// `Frame(3)`), and the arity error surfaces at eval in
-/// `reify_stdlib::geometry::eval_geometry` (which returns `Value::Undef` on bad
-/// args). This mirrors the sibling affine-map constructor family, which is
+/// `Frame(3)`), and the arity error surfaces at eval, where the name's eval
+/// home (`reify_stdlib::geometry::eval_geometry`, or
+/// `reify_stdlib::direction::eval_direction` for `dir`) returns `Value::Undef`
+/// on bad args. This mirrors the sibling affine-map constructor family, which is
 /// likewise arity-blind at the type level. Pinned by
 /// `datum_constructor_tests::wrong_arity_constructor_still_types_as_codomain`.
 /// The six axis-aligned neighbours inherit that contract unchanged: a

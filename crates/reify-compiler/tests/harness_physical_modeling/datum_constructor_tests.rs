@@ -193,6 +193,18 @@ fn assert_no_unresolved_function(module: &reify_compiler::CompiledModule) {
     );
 }
 
+fn assert_no_check_time_error(module: &reify_compiler::CompiledModule) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "dir must draw no check-time error; got: {errors:#?}"
+    );
+}
+
 /// `dir(x, y, z)` and `dir(v)` both type as `Direction`, whatever the
 /// component spelling.
 #[test]
@@ -201,6 +213,7 @@ fn dir_types_as_direction_at_both_arities() {
         "    param ax : Axis\n    let a = dir(0, 1, 0)\n    let b = dir(0.0, 2.0, 0.0)\n    \
          let c = dir(vec3(0, 0, 3))\n    let d = dir(ax.dir)\n",
     );
+    assert_no_check_time_error(&module);
     for name in ["a", "b", "c", "d"] {
         assert_eq!(
             get_let_expr(&module, name).result_type,
@@ -220,15 +233,7 @@ fn dir_draws_no_check_time_error_for_int_or_dimensioned_args() {
         "    let i = dir(0, 1, 0)\n    let m = dir(1mm, 0, 0)\n    \
          let v = dir(vec3(1mm, 0mm, 0mm))\n",
     );
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "dir must draw no check-time error; got: {errors:#?}"
-    );
+    assert_no_check_time_error(&module);
 }
 
 /// Arity-blind like its datum siblings: a wrong-arity `dir()` still types as
