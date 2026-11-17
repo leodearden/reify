@@ -901,7 +901,7 @@ fn is_std_import_path(path: &str) -> bool {
 /// Its one caller is the program compile
 /// ([`crate::program::compile_program_with_parsed_entry`]), which the CLI's
 /// `reify check` and the GUI's file-backed reload enter through; PRD
-/// resolution-unification κ deletes it with the interim merge.
+/// resolution-unification κ #5524 deletes it with the interim merge.
 ///
 /// - `entry_origin` is the entry module's own path/name, used only to label
 ///   entry-vs-import collisions in the warning message.

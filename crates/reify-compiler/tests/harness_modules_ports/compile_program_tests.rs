@@ -1019,6 +1019,31 @@ fn followed_imports_lists_exactly_what_compile_program_follows() {
     assert_eq!(follows, !followed.is_empty());
 }
 
+/// `entry_dir_resolver` resolves an entry's user imports from the entry file's
+/// own directory.
+#[test]
+fn entry_dir_resolver_resolves_imports_beside_the_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "healthy.ri", HEALTHY_SRC);
+    let main_src = "module main\nimport healthy\nstructure def Rig {\n    sub h = Healthy()\n}\n";
+    let main = write(dir.path(), "main.ri", main_src);
+
+    let program = compile_program(
+        &main,
+        main_src,
+        &reify_compiler::program::entry_dir_resolver(&main),
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+
+    assert_eq!(import_keys(&program), vec!["healthy"]);
+    assert!(
+        errors(&program.entry).is_empty(),
+        "the sibling import must resolve, got {:?}",
+        errors(&program.entry)
+    );
+}
+
 fn declared_names(program: &CompiledProgram) -> Vec<&str> {
     program
         .entry_declared_templates()

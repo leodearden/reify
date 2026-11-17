@@ -261,6 +261,15 @@ pub fn followed_imports<'p>(
     followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone()))
 }
 
+/// The resolver a program compile of the entry file `entry_path` takes: user
+/// imports resolve from the entry's directory. Its stdlib root,
+/// `<dir>/crates/reify-compiler/stdlib`, is never read, because a program
+/// compile never walks `std.*` (I4).
+pub fn entry_dir_resolver(entry_path: &Path) -> ModuleResolver {
+    let dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+    ModuleResolver::new(dir, dir.join("crates/reify-compiler/stdlib"))
+}
+
 /// Append each of `diags` that `reported` does not already hold.
 ///
 /// A DAG does not remember a module that failed (a retry re-reads it), so a
