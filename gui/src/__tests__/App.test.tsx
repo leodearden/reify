@@ -118,7 +118,7 @@ const oneFileState = (): GuiState => makeGuiState({ files: [{ path: '/project/br
 // restore below load-bearing rather than cosmetic. Deliberately not restated
 // here: unlike the key sets, prose has nothing to detect it going stale.
 vi.mock('../bridge', () => ({
-  getInitialState: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
+  getInitialState: vi.fn(),
   getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   previewParameter: vi.fn().mockResolvedValue(undefined),
@@ -132,7 +132,7 @@ vi.mock('../bridge', () => ({
   listRecent: vi.fn().mockResolvedValue([]),
   recordRecent: vi.fn().mockResolvedValue([]),
   takeInitialFileLoadFailure: vi.fn().mockResolvedValue(null),
-  openFileEngine: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
+  openFileEngine: vi.fn(),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -174,7 +174,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
+  getDefPreview: vi.fn(),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
@@ -295,6 +295,7 @@ beforeEach(() => {
   vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
   vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
   vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
+  vi.mocked(bridge.getDefPreview).mockResolvedValue(makeGuiState());
   vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
