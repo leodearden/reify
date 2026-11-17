@@ -98,14 +98,15 @@ Steps:
 2. Run "git log --oneline -50" to see recent changes. Skim commits that look like they might affect documented behavior (CLI changes, new features, removed examples, build-system changes).
 3. Know which documented commands can run here. The docs are binary-first:
    - A command that runs a bare "reify" or "reify-gui" from PATH, or names a bare "m5_geometry.ri" fetched by curl into the current directory, documents the INSTALLED release package. The README "Install" and "Try it" sections and docs/getting-started.md sections 1-4 (except the "For contributors" subsection of section 4) are written that way.
-   - Those commands cannot run from this checkout as written: it has no m5_geometry.ri at its root, and the binary under audit is ./target/release/reify, not one on PATH. The installed package is exercised by the release clean-container install proof (tests/infra/test_bundle_clean_install.sh), not by you. Never rewrite those commands into checkout forms ("./target/release/reify", "examples/...", "cargo build", "scripts/..."): a mismatch with this checkout is NOT drift.
-   - Only the README "For contributors (build from source)" section and the "For contributors" subsection of docs/getting-started.md are runnable from this checkout as written. The opening paragraph of docs/getting-started.md states the checkout equivalents.
+   - Those commands cannot run from this checkout as written: it has no m5_geometry.ri at its root, and the binary under audit is ./target/release/reify, not one on PATH. The release clean-container install proof (tests/infra/test_bundle_clean_install.sh) installs and runs the package in containers; do not run it. Never rewrite those commands into checkout forms ("./target/release/reify", "examples/...", "cargo build", "scripts/..."): a difference in binary path or file location alone is NOT drift.
+   - The commands runnable from this checkout as written are the checkout forms, chiefly in the README "For contributors (build from source)" section and the "For contributors" subsection of docs/getting-started.md.
+   - The exemption for installed-package commands covers their form, never their behavior. A subcommand, flag, exit code or output that the checkout binary contradicts IS drift in an installed-package command too: fix the claim and keep the command in its installed-package form. The opening paragraph of docs/getting-started.md states the checkout equivalents to run for that check.
 4. Build and run the CLI from this checkout to verify documented behavior:
    - "cargo build --release -p reify-cli" if target/release/reify is missing.
    - "./target/release/reify --help" — confirm the README "CLI commands" list matches.
    - "./target/release/reify --version" — confirm it works.
    - "./target/release/reify check examples/m5_geometry.ri" — confirm the contributor smoke test works; its output should also match what docs/getting-started.md section 1 shows for the installed "reify check m5_geometry.ri".
-5. Verify scripts/setup-dev.sh, scripts/run-gui.sh, scripts/run-gui-dev.sh, scripts/build-bundle.sh and scripts/release-alpha.sh still exist and roughly match what the docs claim they do.
+5. Verify by reading (do not run them) that scripts/setup-dev.sh, scripts/run-gui.sh, scripts/run-gui-dev.sh, scripts/build-bundle.sh and scripts/release-alpha.sh still exist and roughly match what the docs claim they do.
 6. Update README.md or docs/getting-started.md to fix any drift you find. Edit in place; do not create new files. Do not touch any other files.
 7. If everything is current, change nothing and exit. Conservatism wins.
 
