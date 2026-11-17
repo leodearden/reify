@@ -16,7 +16,8 @@ use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 use reify_test_support::{
-    compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
+    compile_source, compile_source_named, compile_source_with_stdlib, errors_only, get_function_in,
+    get_let_expr_in, warnings_only,
 };
 
 // ── Step-1 producer tests — registered eagerly by traits_phase step 4 ───────
@@ -500,30 +501,14 @@ structure def Assembly {
 /// `source` compiled as module `test` with module `p`, compiled from
 /// `prelude_source`, as its prelude.
 fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
-    let parse_at = |module: &str, src: &str| {
-        let parsed = reify_syntax::parse(src, ModulePath::single(module));
-        assert!(
-            parsed.errors.is_empty(),
-            "fixture `{module}` must parse: {:?}",
-            parsed.errors
-        );
-        parsed
-    };
-    let prelude = reify_compiler::compile(&parse_at("p", prelude_source));
-    reify_compiler::compile_with_prelude(&parse_at("test", source), &[prelude])
-}
-
-fn fn_result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m CompiledExpr {
-    let found = module.functions.iter().find(|f| f.name == fn_name);
-    &found
-        .unwrap_or_else(|| {
-            panic!(
-                "expected `{fn_name}` in compiled module; found functions: {:?}",
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-            )
-        })
-        .body
-        .result_expr
+    let prelude = compile_source_named(prelude_source, "p");
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile_with_prelude(&parsed, &[prelude])
 }
 
 fn assert_calls_user_fn(expr: &CompiledExpr, expected: &str) {
@@ -547,7 +532,10 @@ fn a_later_trait_static_fn_body_calls_an_earlier_one() {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
 
-    assert_calls_user_fn(fn_result_expr(&module, "B::read"), "A::make");
+    assert_calls_user_fn(
+        &get_function_in(&module, "B::read").body.result_expr,
+        "A::make",
+    );
     assert_calls_user_fn(get_let_expr_in(&module, "S", "v"), "B::read");
 }
 
@@ -590,7 +578,8 @@ fn a_local_trait_static_fn_shadows_the_preludes_same_key_static_fn() {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
 
-    assert_eq!(fn_result_expr(&module, "U::read").result_type, Type::String);
+    let read = get_function_in(&module, "U::read");
+    assert_eq!(read.body.result_expr.result_type, Type::String);
     assert_eq!(get_let_expr_in(&module, "S", "v").result_type, Type::String);
 }
 
@@ -604,5 +593,8 @@ fn a_trait_static_fn_body_binds_a_prelude_fn() {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
 
-    assert_calls_user_fn(fn_result_expr(&module, "T::make"), "twice");
+    assert_calls_user_fn(
+        &get_function_in(&module, "T::make").body.result_expr,
+        "twice",
+    );
 }
