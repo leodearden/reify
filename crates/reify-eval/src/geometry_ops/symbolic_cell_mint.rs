@@ -182,9 +182,23 @@ pub(crate) struct InstanceMintScope<'a> {
     pub(crate) meta_map: &'a HashMap<String, HashMap<String, String>>,
 }
 
+/// The outcome of [`InstanceMintScope::mint_undef_instance_cell`].
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub(crate) enum InstanceMint {
+    /// The cell is not a sub-instance cell of the graph, so its mint is the
+    /// caller's.
+    NotAnInstanceCell,
+    /// The value the cell takes in its instance's scope: the minted value, or
+    /// `Undef` when nothing mints or the mint declines over a read the
+    /// instance has not committed yet.
+    InstanceCell(Value),
+}
+
 impl InstanceMintScope<'_> {
-    /// The value an `Undef` cell takes when `instance_cell`, an INSTANCE-scoped
-    /// id such as `P.s.body`, is a sub-instance cell of `self.graph`; `None`
+    /// [`InstanceMint::InstanceCell`] with the value an `Undef` cell takes when
+    /// `instance_cell`, an INSTANCE-scoped id such as `P.s.body`, is a
+    /// sub-instance cell of `self.graph`; [`InstanceMint::NotAnInstanceCell`]
     /// when it is not one. `kind` and `expr` are the cell's.
     ///
     /// It mints as `unfold` mints it at `eval()`. An instance cell's expression
@@ -194,27 +208,30 @@ impl InstanceMintScope<'_> {
     /// reads: the expression's reads, plus, for a geometry cell, the reads of
     /// its realization's operations, which the handle's hash folds. The two
     /// sets differ when the compiler inlines a guarded geometry let into the
-    /// operations. `Undef` when nothing mints, and when the template holds a
-    /// read the instance has not committed yet, which declines the mint.
+    /// operations. `InstanceCell(Undef)` when nothing mints, and when the
+    /// template holds a read the instance has not committed yet, which declines
+    /// the mint.
     pub(crate) fn mint_undef_instance_cell(
         &self,
         instance_cell: &ValueCellId,
         kind: ValueCellKind,
         expr: &CompiledExpr,
-    ) -> Option<Value> {
-        let template = self.graph.sub_instance_template(&instance_cell.entity)?;
+    ) -> InstanceMint {
+        let Some(template) = self.graph.sub_instance_template(&instance_cell.entity) else {
+            return InstanceMint::NotAnInstanceCell;
+        };
         let template_cell = ValueCellId::new(template, &instance_cell.member);
         let realization = self.graph.scalar_geometry_cell_realization(&template_cell);
         if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
-            return Some(Value::Undef);
+            return InstanceMint::InstanceCell(Value::Undef);
         }
         let reads = instance_mint_reads(realization, expr);
         let Ok(instance_values) =
             project_instance_reads(self.values, &instance_cell.entity, template, &reads)
         else {
-            return Some(Value::Undef);
+            return InstanceMint::InstanceCell(Value::Undef);
         };
-        Some(mint_template_keyed_instance_cell(
+        InstanceMint::InstanceCell(mint_template_keyed_instance_cell(
             Value::Undef,
             kind,
             &template_cell,
@@ -239,9 +256,10 @@ impl InstanceMintScope<'_> {
         expr: &CompiledExpr,
     ) -> Value {
         match evaluated {
-            Value::Undef => self
-                .mint_undef_instance_cell(instance_cell, kind, expr)
-                .unwrap_or(Value::Undef),
+            Value::Undef => match self.mint_undef_instance_cell(instance_cell, kind, expr) {
+                InstanceMint::InstanceCell(value) => value,
+                InstanceMint::NotAnInstanceCell => Value::Undef,
+            },
             evaluated => evaluated,
         }
     }
