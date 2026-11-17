@@ -1860,7 +1860,7 @@ mod tests_mounted_joint_cell {
     //!   (d) `mounted_joint_cell("DoesNotExist", "link", &module) == None` — unknown scope → None
 
     use reify_core::ValueCellId;
-    use reify_test_support::compile_source_with_stdlib;
+    use reify_test_support::parse_and_compile_with_stdlib;
 
     use super::mounted_joint_cell;
 
@@ -1893,14 +1893,7 @@ structure Mech {
 "#;
 
     fn compiled_module() -> reify_compiler::CompiledModule {
-        let module = compile_source_with_stdlib(SOURCE);
-        // Sanity: must compile without errors.
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "test fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
-        module
+        parse_and_compile_with_stdlib(SOURCE)
     }
 
     /// (a) RED test — mounted_joint_cell returns the joint cell that references the
@@ -1969,12 +1962,7 @@ structure Mech2 {
     let j2 = revolute(link.hub_point, 0rad..2rad)
 }
 "#;
-        let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "multi-joint fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
+        let module = parse_and_compile_with_stdlib(MULTI_JOINT_SOURCE);
         let j_id = ValueCellId::new("Mech2", "j");
         let result = mounted_joint_cell("Mech2", "link", &module);
         assert_eq!(
@@ -2101,12 +2089,7 @@ structure {mech_name} {{
 }}
 "#
             );
-            let module = compile_source_with_stdlib(&source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixture for {kind_label} must compile without Error diagnostics; got: {:#?}",
-                module.diagnostics
-            );
+            let module = parse_and_compile_with_stdlib(&source);
             let j_id = ValueCellId::new(&mech_name, "j");
             let result = mounted_joint_cell(&mech_name, "link", &module);
             assert_eq!(
@@ -2148,11 +2131,7 @@ structure MechFixed {
     let j = fixed()
 }
 "#;
-            let module = compile_source_with_stdlib(source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixed() fixture must compile without Error diagnostics"
-            );
+            let module = parse_and_compile_with_stdlib(source);
             let result = mounted_joint_cell("MechFixed", "link", &module);
             assert_eq!(
                 result,
