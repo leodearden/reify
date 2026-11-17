@@ -3428,7 +3428,7 @@ mod parametric_alias_population_regression {
     /// Each is asserted against a direct-spelling ORACLE that stdlib already
     /// provides, not a frozen `Type` literal:
     ///   * `Rate<Length>` (stdlib/units.ri:132)      vs `Velocity`
-    ///   * `Vec3<Length>` (stdlib/trajectory.ri:118) vs `Vector3<Length>`
+    ///   * `Vec3<Length>` (trajectory.ri :: Vec3) vs `Vector3<Length>`
     ///
     /// This uses the REAL stdlib across the real prelude boundary. The
     /// synthetic `parametric_prelude_dimensional_alias_resolves_cross_module`
@@ -3441,7 +3441,7 @@ mod parametric_alias_population_regression {
         for (label, alias_body, oracle_body) in [
             ("Rate<Length> (stdlib/units.ri:132)", "Rate<Length>", "Velocity"),
             (
-                "Vec3<Length> (stdlib/trajectory.ri:118)",
+                "Vec3<Length> (trajectory.ri :: Vec3)",
                 "Vec3<Length>",
                 "Vector3<Length>",
             ),

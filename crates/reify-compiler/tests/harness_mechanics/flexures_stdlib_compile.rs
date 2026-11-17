@@ -516,7 +516,7 @@ fn flexure_compliance_params_have_literal_defaults() {
 /// ("the contract in production code is made explicit rather than relying
 /// solely on test coverage") and mirrors the same shape that
 /// `BucklingOptions.n_modes > 0` (solver_buckling.ri:87) and
-/// `PiecewisePolynomialProfile.waypoints.count > 0` (trajectory.ri:230)
+/// `PiecewisePolynomialProfile.waypoints.count > 0` (`trajectory.ri :: PiecewisePolynomialProfile`)
 /// already use as upper-bound / lower-bound structure-level invariants.
 ///
 /// SIR-α's `check_constraints_against_templates` machinery (task 3540,

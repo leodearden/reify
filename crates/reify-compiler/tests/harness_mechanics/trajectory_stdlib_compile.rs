@@ -2153,7 +2153,7 @@ structure def TotsKinematicLimitReadProbe {{
 /// (modal_options_validation_tests.rs:1296-1348) and the TOTSShaper
 /// trait-bounds + param-shape assertion style (step-35).
 ///
-/// Landed alongside the structure_def in trajectory.ri:513-518.
+/// Landed alongside the structure_def in `trajectory.ri :: ZVShaper`.
 #[test]
 fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-41
@@ -2301,7 +2301,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///
 /// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
 ///
-/// Landed alongside the structure_def in trajectory.ri:536-541.
+/// Landed alongside the structure_def in `trajectory.ri :: ZVDShaper`.
 #[test]
 fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-43
@@ -2437,7 +2437,7 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
 /// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
 /// (same discipline as TOTSShaper, step-39 at line 1391-1477).
 ///
-/// Landed alongside the structure_def in trajectory.ri:570-578.
+/// Landed alongside the structure_def in `trajectory.ri :: EIShaper`.
 #[test]
 fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     // step-45
@@ -2633,7 +2633,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
 /// `Type::List(TraitObject(...))` assertion shape
 /// (modal_options_validation_tests.rs).
 ///
-/// Landed alongside the structure_def in trajectory.ri:600-602.
+/// Landed alongside the structure_def in `trajectory.ri :: CascadedShaper`.
 #[test]
 fn cascaded_shaper_struct_has_correct_param_shape() {
     // step-47
