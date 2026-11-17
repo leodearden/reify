@@ -1,10 +1,10 @@
 /**
  * The launcher's Start view (alpha-spine β): shown over the layout while no
- * document is open. Every action failure is written to the launcher store,
- * which keeps this view up with a coded error the debug MCP can observe; the
- * document error lasts until the next attempt or until the view is dismissed.
- * While a document attempt is pending its actions are disabled and the view
- * names the path it is opening.
+ * document is open. A document or mode attempt that fails while the view is
+ * up is written to the launcher store, where the view shows it as a coded
+ * error the debug MCP can also observe; the document error lasts until the
+ * next attempt or until the view is dismissed. While a document attempt is
+ * pending its actions are disabled and the view names the path it is opening.
  */
 import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
