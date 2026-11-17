@@ -1241,8 +1241,9 @@ const App: Component = () => {
   }
 
   async function handleOpen() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending('open');
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickOpenPath();
       if (!path) return;
       await launcherActions.openDocument(path);
@@ -1254,8 +1255,9 @@ const App: Component = () => {
   }
 
   async function handleNew() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending('create');
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
       // A load failure after a successful create leaves the starter file on
