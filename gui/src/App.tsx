@@ -1183,14 +1183,18 @@ const App: Component = () => {
    * it (the Start view stays up until the editor write dismisses it). Keeping
    * this in one place also ensures the batch() ordering invariant is never
    * accidentally diverged between callers — the subtle race it prevents is
-   * documented in the batch() block below.
+   * documented in the batch() block below. An aborted `signal` (an abandoned
+   * launcher attempt) stops it before its next engine request or its first
+   * store write, so an abandoned document never lands.
    */
-  async function loadPathIntoStores(requestedPath: string): Promise<void> {
+  async function loadPathIntoStores(requestedPath: string, signal: AbortSignal): Promise<void> {
     const fileData = await bridgeOpenFile(requestedPath);
+    signal.throwIfAborted();
     // The canonical document key, not the spelling the user typed, keys the
     // engine, the editor tab, view persistence and the save path alike.
     const path = fileData.path;
     const published = await bridgeOpenFileEngine(path);
+    signal.throwIfAborted();
     editorStore.openFile(fileData);
     engineStore.applyPublishedState(published);
 
