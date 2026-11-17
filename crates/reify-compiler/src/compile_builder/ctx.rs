@@ -224,12 +224,16 @@ impl CompilationCtx {
     /// Every module-local name that can win a ctor-view slot: the module's own
     /// structures (top-level and purpose-nested) and occurrences —
     /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
-    pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+    pub(crate) fn local_entity_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.seen_entity_names
             .iter()
             .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-            .map(|(name, _)| name.clone())
-            .collect()
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Owned collect of [`Self::local_entity_name_iter`].
+    pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+        self.local_entity_name_iter().map(str::to_owned).collect()
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
