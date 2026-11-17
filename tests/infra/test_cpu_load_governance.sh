@@ -2638,6 +2638,36 @@ _row23_stop_mix() {
     return 0
 }
 
+# _row23_sample_window <deadline_s> <warmup_s> <usage_source> <pressure_path> <ready_file>...
+#   Sets _ROW23_READY (0|1), _ROW23_SAMPLE_BEFORE/_AFTER (stamped usage), _ROW23_STALL_BEFORE/_AFTER,
+#   _ROW23_AVG10 and _ROW23_AVG10_RC; returns 0.  Order: await ready, BEFORE, warm-up, avg10, AFTER.
+#   Not ready within <deadline_s>: only avg10 is read, every other sample stays "unavailable".
+_row23_sample_window() {
+    local deadline="$1" warmup="$2" usage_source="$3" pressure_path="$4"
+    shift 4
+    _ROW23_READY=0
+    _ROW23_SAMPLE_BEFORE=unavailable
+    _ROW23_SAMPLE_AFTER=unavailable
+    _ROW23_STALL_BEFORE=unavailable
+    _ROW23_STALL_AFTER=unavailable
+    if _row4_await_ready "$deadline" "$@"; then
+        _ROW23_READY=1
+        _ROW23_SAMPLE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+        sleep "$warmup"
+    fi
+    _ROW23_AVG10_RC=0
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$pressure_path" 2>/dev/null)" || _ROW23_AVG10_RC=$?
+    if [ "$_ROW23_AVG10_RC" -ne 0 ]; then
+        _ROW23_AVG10=99
+    fi
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _ROW23_SAMPLE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+    fi
+    return 0
+}
+
 # ROW23-STUB-VACUITY (task 10025): the mix stub's ready-file seam and
 # _row23_stop_mix.  ROW2_3 opens its window once every mix source has reported
 # ready through its own fixture --ready-file, and ends the mix by TERMing the
@@ -2874,14 +2904,16 @@ else
     assert "ROW23-WINDOW-VACUITY-W3e: both usage samples stay stamped (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}')" \
         _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
 
-    # (W4) python3 ITSELF fails: the avg10 read is rescued to '99' on its RC,
-    # which is carried, so ROW3-1's foreign-load hedge can tell a defaulted 99
-    # from a real one; every other read falls back to 'unavailable'.
+    # (W4) python3 ITSELF fails: the avg10 read is rescued to '99' on its RC, not
+    # on emptiness (the stub prints a plausible 0.0 BEFORE failing, which must
+    # not be kept), and the RC is carried so ROW3-1's foreign-load hedge can tell
+    # a defaulted 99 from a real one.  Every other read falls back to
+    # 'unavailable'.
     _row23_win4_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
     _row23_window_fixture "$_row23_win4_dir" 5000
     printf '4242\n' > "$_row23_win4_dir/ready"
     mkdir "$_row23_win4_dir/fakebin"
-    printf '#!/bin/sh\nexit 3\n' > "$_row23_win4_dir/fakebin/python3"
+    printf '#!/bin/sh\n[ "$2" = psi-avg10 ] && echo 0.0\nexit 3\n' > "$_row23_win4_dir/fakebin/python3"
     chmod +x "$_row23_win4_dir/fakebin/python3"
     _row23_window_poison
     _row23_win4_rc=0
