@@ -128,27 +128,29 @@ pub(crate) fn phase_traits(
 /// [`trait_static_fn_symbol`] into `ctx.trait_static_fns`, which the unified
 /// pass appends after the user fns.
 ///
-/// Each body resolves against the signature stubs, the static fns compiled
-/// before it, and the prelude. That table is built at the first such fn, so a
-/// module with none clones no prelude fn. It is then written back to
-/// `ctx.resolution_functions` for the unified pass, with the stubs still at
-/// `0..fn_signatures.len()`, where that pass replaces stub `i` by declaration
-/// index.
+/// Each body resolves against one table of the signature stubs, the static fns
+/// compiled before it, and the prelude. A module with no such fn returns
+/// before building anything, so it clones no prelude fn. Otherwise the table is
+/// written back to `ctx.resolution_functions` for the unified pass, with the
+/// stubs still at `0..fn_signatures.len()`, where that pass replaces stub `i`
+/// by declaration index.
 fn register_trait_static_fns(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
     trait_names: &HashSet<String>,
 ) {
+    let mut static_fns = body_carrying_static_fns(&ctx.trait_defs).peekable();
+    if static_fns.peek().is_none() {
+        return;
+    }
     let declared_callables = crate::functions::declared_callable_names(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut static_fn_calls: Option<ResolutionTable> = None;
-    for (trait_name, fn_def) in body_carrying_static_fns(&ctx.trait_defs) {
+    let mut calls_above = ResolutionTable::new(ctx.fn_signature_stubs(), prelude);
+    for (trait_name, fn_def) in static_fns {
         let mut namespaced_fn = fn_def.clone();
         namespaced_fn.name = trait_static_fn_symbol(trait_name, &fn_def.name);
-        let calls_above = static_fn_calls
-            .get_or_insert_with(|| ResolutionTable::new(ctx.fn_signature_stubs(), prelude));
         if let Some(f) = compile_function(
             &namespaced_fn,
             &ctx.resolution_enums,
@@ -164,9 +166,7 @@ fn register_trait_static_fns(
             ctx.trait_static_fns.push(f);
         }
     }
-    if let Some(calls) = static_fn_calls {
-        ctx.resolution_functions = calls.into_functions();
-    }
+    ctx.resolution_functions = calls_above.into_functions();
 }
 
 /// Each trait's static (no-`self`) fn default that carries a body, with its
