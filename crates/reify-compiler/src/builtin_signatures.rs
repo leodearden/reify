@@ -1520,6 +1520,7 @@ mod tests {
         GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES, GEOMETRY_QUERY_NAMES,
         GEOMETRY_TOPOLOGY_SELECTOR_NAMES, TOLERANCING_MARKER_NAMES,
     };
+    use reify_core::direction::DIRECTION_MIGRATION_HINT;
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
     use std::collections::{BTreeMap, BTreeSet};
@@ -3118,6 +3119,104 @@ mod tests {
             diags.is_empty(),
             "absent count arg → no diagnostic, got: {:?}",
             diags
+        );
+    }
+
+    // ── frame_at Direction slots (direction-typing σ) ────────────────────────
+
+    fn direction_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Direction,
+        }
+    }
+
+    fn frame_at_args(x: Type, z: Type) -> Vec<CompiledExpr> {
+        let origin = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        vec![arg_expr(origin), arg_expr(x), arg_expr(z)]
+    }
+
+    fn frame_at_diagnostics(x: Type, z: Type) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        check_builtin_arg_types("frame_at", &frame_at_args(x, z), dummy_span(), &mut diags);
+        diags
+    }
+
+    #[test]
+    fn frame_at_slots_x_and_z_as_direction_but_never_the_origin() {
+        assert_slots_at_every_arity(
+            "frame_at",
+            &[direction_slot(1, "x"), direction_slot(2, "z")],
+        );
+    }
+
+    #[test]
+    fn direction_slot_accepts_direction_and_defers_error_and_type_param() {
+        for (x, z) in [
+            (Type::Direction, Type::Direction),
+            (Type::Error, Type::TypeParam("T".to_string())),
+        ] {
+            let diags = frame_at_diagnostics(x.clone(), z.clone());
+            assert!(
+                diags.is_empty(),
+                "({x}, {z}) must pass silently, got: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direction_slot_rejects_non_vector_kinds_without_hint() {
+        for ty in [
+            Type::String,
+            Type::Int,
+            Type::length(),
+            Type::ScalarParam("Q".into()),
+            Type::Axis,
+            Type::Plane,
+        ] {
+            let diags = frame_at_diagnostics(ty.clone(), Type::Direction);
+            assert_eq!(
+                diags.len(),
+                1,
+                "{ty} at x: expected 1 diagnostic, got: {diags:?}"
+            );
+            assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+            assert_eq!(diags[0].severity, Severity::Error);
+            assert_eq!(
+                diags[0].message,
+                format!("frame_at: x argument expects Direction, got {ty}")
+            );
+        }
+    }
+
+    #[test]
+    fn direction_slot_rejects_vector3_with_dir_hint() {
+        let int_vector = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Int),
+        };
+        let length_vector = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        let diags = frame_at_diagnostics(int_vector, length_vector.clone());
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                format!(
+                    "frame_at: x argument expects Direction, got Vector3<Int>; \
+                     {DIRECTION_MIGRATION_HINT}"
+                ),
+                format!(
+                    "frame_at: z argument expects Direction, got {length_vector}; \
+                     {DIRECTION_MIGRATION_HINT}"
+                ),
+            ]
         );
     }
 
