@@ -31,11 +31,14 @@ const CHECK_FLAGS: &[&str] = &["--strict", "--verbose", "--purpose", "--cfg"];
 /// The subcommands whose help prints a `Flags:` table. A floor, not the full set: the layout
 /// test reads every subcommand's table, and this only keeps it from passing on tables it
 /// failed to find.
-const COMMANDS_WITH_FLAG_TABLES: &[&str] = &["check", "build", "eval", "gui", "doc", "fix"];
+const COMMANDS_WITH_FLAG_TABLES: &[&str] = &[
+    "check", "build", "eval", "gui", "doc", "fix", "test", "report", "explain",
+];
 
 /// The subcommands that accept `--cfg`. A floor for the same reason: the description guard
 /// reads every subcommand's `--cfg` row, so a command that gains the flag joins it unasked.
-const COMMANDS_TAKING_CFG: &[&str] = &["check", "build", "eval"];
+const COMMANDS_TAKING_CFG: &[&str] =
+    &["check", "build", "eval", "test", "report", "explain", "doc"];
 
 /// The widest line a `Flags:` table may print, in characters.
 const HELP_WIDTH: usize = 80;
