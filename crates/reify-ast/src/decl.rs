@@ -41,10 +41,9 @@ impl ParsedModule {
     /// Render every parse error against `source` as `line:col: message`, in parse order.
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
-    /// The two production surfaces that print parse errors — the two loops in
-    /// `reify-cli/src/main.rs` — both want exactly this, and
-    /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
-    /// its own way.
+    /// The production surfaces that print parse errors — the CLI's single-file report in
+    /// `reify-cli/src/main.rs` among them — want exactly this, and this is where they get it,
+    /// so no caller has to rebuild the loop or re-derive positions its own way.
     ///
     /// `source` must be the string the spans index (the one handed to the parser); a different
     /// string yields wrong positions, never a panic. Batched via
@@ -60,6 +59,24 @@ impl ParsedModule {
     /// deletion would hand that sweep a breakage. Method resolution needs no crate path.
     pub fn render_errors(&self, source: &str) -> Vec<String> {
         ParseError::render_all(&self.errors, source)
+    }
+
+    /// Render every parse error against `source` as `path:line:col: label: message`, in parse
+    /// order — the GNU shape a multi-file report gives every located line.
+    ///
+    /// Task #10040. Positions follow the same rule as [`render_errors`](Self::render_errors),
+    /// degenerate inputs included, from one newline table for the whole list. The caller
+    /// supplies `label`, so the CLI keeps a single label for both of its parse-error line
+    /// shapes.
+    pub fn render_errors_in(&self, path: &str, label: &str, source: &str) -> Vec<String> {
+        let line_offsets = reify_core::build_line_offsets(source);
+        self.errors
+            .iter()
+            .map(|e| {
+                let (line, col) = e.line_col_with_offsets(source, &line_offsets);
+                format!("{path}:{line}:{col}: {label}: {}", e.message)
+            })
+            .collect()
     }
 }
 
@@ -1896,16 +1913,15 @@ impl ParseError {
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
     /// a parse error a user cannot locate is only marginally better than silence. `SourceSpan`
-    /// carries byte offsets only, and this — together with
-    /// [`render_with_offsets`](Self::render_with_offsets), which it delegates to — is the
-    /// single place that converts them for human output, so every caller reports positions the
-    /// same way.
+    /// carries byte offsets only, and this — like every parse-error renderer here — converts
+    /// them through `line_col_with_offsets`, the single home of that rule, so every caller
+    /// reports positions the same way.
     ///
     /// Degrades rather than aborting on a span that does not index `source`: the prelude
     /// sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) becomes the canonical
     /// "no user-file location" fallback `1:1`, and any other out-of-range offset (a stale
     /// span, or one belonging to a different file) is clamped to `source.len()`. See
-    /// [`render_with_offsets`](Self::render_with_offsets) for why each is handled that way.
+    /// `line_col_with_offsets` for why each is handled that way.
     ///
     /// This builds a newline table to serve ONE lookup, which is the same O(len(source)) it
     /// would cost to scan; rendering a whole list should go through
@@ -1946,8 +1962,16 @@ impl ParseError {
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
     /// `line_offsets` must be [`reify_core::build_line_offsets`] of the SAME `source`; passing
-    /// another file's table yields a wrong position, never a panic. O(log M) to find the line
-    /// plus O(column) to count the codepoints on it, against
+    /// another file's table yields a wrong position, never a panic. The position comes from
+    /// `line_col_with_offsets`, which documents the rule and its degenerate inputs.
+    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
+        let (line, col) = self.line_col_with_offsets(source, line_offsets);
+        format!("{line}:{col}: {}", self.message)
+    }
+
+    /// The 1-based `(line, col)` of this error's span start, against a pre-built newline table.
+    ///
+    /// O(log M) to find the line plus O(column) to count the codepoints on it, against
     /// [`reify_core::byte_offset_to_line_col`]'s O(len(source)) scan from byte 0.
     ///
     /// Deliberately reproduces that function's semantics exactly, including its two degenerate
@@ -1972,16 +1996,16 @@ impl ParseError {
     /// equivalence test — exists only to hold the two in lockstep. The conversion belongs in
     /// `reify_core` beside [`reify_core::build_line_offsets`] and its table-based INVERSE
     /// `line_col_to_byte_offset_with_offsets`, as the missing forward sibling of that pair,
-    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then be
-    /// a formatting wrapper and that test would collapse to a couple of unit cases. Only the
+    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then
+    /// reduce to a call to it and that test would collapse to a couple of unit cases. Only the
     /// PARSE-ERROR formatting has a reason to live here — `reify-cli` cannot name
     /// `reify_ast::ParseError` — and that reason does not extend to the line/col algorithm,
     /// since `reify-cli` depends on `reify-core` directly. Not done here: `reify-core` is
     /// outside task #5392's lock set.
-    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
+    fn line_col_with_offsets(&self, source: &str, line_offsets: &[usize]) -> (usize, usize) {
         let offset = self.span.start as usize;
         if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
-            return format!("1:1: {}", self.message);
+            return (1, 1);
         }
         let offset = offset.min(source.len());
 
@@ -1997,7 +2021,7 @@ impl ParseError {
             .take_while(|(i, _)| line_start + i < offset)
             .count()
             + 1;
-        format!("{line}:{col}: {}", self.message)
+        (line, col)
     }
 }
 
