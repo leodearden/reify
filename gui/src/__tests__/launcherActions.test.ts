@@ -126,7 +126,7 @@ describe('openDocument', () => {
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
   });
 
-  it('a second open while one is in flight rejects with E_GUI_OPEN_FAILED and loads nothing more', async () => {
+  it('a second open while one is in flight rejects with E_GUI_DOCUMENT_BUSY and loads nothing more', async () => {
     const held = deferred<void>();
     deps.loadDocument.mockReturnValueOnce(held.promise);
     const actions = createLauncherActions(store, deps);
@@ -134,7 +134,7 @@ describe('openDocument', () => {
 
     const failure = await failureOf(actions.openDocument('/designs/flange.ri'));
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
     expect(failure.message).toBe('/designs/bracket.ri is still opening');
     expect(deps.loadDocument).toHaveBeenCalledTimes(1);
     expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri');
@@ -240,7 +240,7 @@ describe('createDocument', () => {
     expect(store.state.document.pending).toBeNull();
   });
 
-  it('a create while an open is in flight rejects with E_GUI_TEMPLATE_WRITE_FAILED and writes no template', async () => {
+  it('a create while an open is in flight rejects with E_GUI_DOCUMENT_BUSY, not a template-write failure, and writes no template', async () => {
     const held = deferred<void>();
     deps.loadDocument.mockReturnValueOnce(held.promise);
     const actions = createLauncherActions(store, deps);
@@ -248,7 +248,8 @@ describe('createDocument', () => {
 
     const failure = await failureOf(actions.createDocument('/designs/created'));
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.code).not.toBe(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED);
     expect(failure.message).toBe('/designs/bracket.ri is still opening');
     expect(deps.createNewFile).not.toHaveBeenCalled();
 
@@ -256,7 +257,7 @@ describe('createDocument', () => {
     await opening;
   });
 
-  it('an open while a create is in flight rejects with E_GUI_OPEN_FAILED naming the path being created', async () => {
+  it('an open while a create is in flight rejects with E_GUI_DOCUMENT_BUSY naming the path being created', async () => {
     const written = deferred<FileData>();
     deps.createNewFile.mockReturnValueOnce(written.promise);
     const actions = createLauncherActions(store, deps);
@@ -264,7 +265,7 @@ describe('createDocument', () => {
 
     const failure = await failureOf(actions.openDocument('/designs/bracket.ri'));
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
     expect(failure.message).toBe('/designs/created is still opening');
     expect(deps.loadDocument).not.toHaveBeenCalled();
 

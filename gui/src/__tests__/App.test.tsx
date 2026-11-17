@@ -3499,7 +3499,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
-  it('a Ctrl+O while a Start-view open is still loading toasts E_GUI_OPEN_FAILED and starts no second load', async () => {
+  it('a Ctrl+O while a Start-view open is still loading toasts E_GUI_DOCUMENT_BUSY and starts no second load', async () => {
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
     const reply = deferred<PublishedState>();
     vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
@@ -3514,7 +3514,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
     await waitFor(() =>
       expect(
-        toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED') && t.includes('/designs/bracket.ri is still opening')),
+        toastTexts().some((t) => t.includes('Open file failed: E_GUI_DOCUMENT_BUSY') && t.includes('/designs/bracket.ri is still opening')),
       ).toBe(true),
     );
     expect(bridge.openFile).not.toHaveBeenCalledWith('/designs/flange.ri');
