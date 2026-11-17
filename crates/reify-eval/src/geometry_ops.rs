@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use reify_core::Diagnostic;
 use reify_ir::{
     CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
+    decode_direction,
 };
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
@@ -2121,6 +2122,11 @@ pub(crate) fn decode_plane(
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
+    if let reify_ir::Value::Direction(_) = normal_val {
+        let unit_normal = decode_direction(normal_val)
+            .map_err(|e| labelled(kind_label, format_args!("Plane normal: {e}")))?;
+        return Ok((origin_arr, unit_normal.components()));
+    }
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
         labelled(
             kind_label,
@@ -2216,6 +2222,11 @@ pub(crate) fn decode_axis(
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
+    if let reify_ir::Value::Direction(_) = dir_val {
+        let unit_dir = decode_direction(dir_val)
+            .map_err(|e| labelled(kind_label, format_args!("Axis direction: {e}")))?;
+        return Ok((origin_arr, unit_dir.components()));
+    }
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
         labelled(
             kind_label,

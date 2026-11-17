@@ -2,7 +2,7 @@
 //! typing table lives in `crates/reify-compiler/src/datum_projection.rs`.
 
 use reify_core::Type;
-use reify_ir::{UnitVec3, Value, frame_basis};
+use reify_ir::{UnitVec3, Value, decode_direction, frame_basis};
 
 /// Extract three finite numeric components from a 3-component `Point` or
 /// `Vector` value. Returns `None` for any other shape or a non-finite
@@ -103,12 +103,18 @@ fn frame_plane(origin: &Value, basis: &Value, normal_axis: usize) -> Value {
 pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
     match obj {
         Value::Axis { origin, direction } => match method {
-            "dir" => Some(vec3_to_direction(direction)),
+            "dir" => Some(
+                decode_direction(direction)
+                    .map_or_else(|_| vec3_to_direction(direction), Value::Direction),
+            ),
             "origin" => Some((**origin).clone()),
             _ => None,
         },
         Value::Plane { origin, normal } => match method {
-            "normal" => Some(vec3_to_direction(normal)),
+            "normal" => Some(
+                decode_direction(normal)
+                    .map_or_else(|_| vec3_to_direction(normal), Value::Direction),
+            ),
             "origin" => Some((**origin).clone()),
             _ => None,
         },
