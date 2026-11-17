@@ -2,10 +2,12 @@
 //!
 //! The installed sidecar is a `#!/usr/bin/env node` script. When `node` is
 //! missing, the spawn still succeeds and the sidecar dies with nothing but an
-//! uncoded "exited unexpectedly". So the host repeats `env`'s lookup on the PATH
-//! the sidecar inherits, and refuses with a coded error when it would fail.
+//! uncoded "exited unexpectedly". So the host looks `node` up on the PATH the
+//! sidecar inherits, much as `env` does, and refuses with a coded error before
+//! spawning when none is found.
 
 use std::ffi::OsStr;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 /// The program named by the shebang line build-sidecar.sh writes.
@@ -14,10 +16,23 @@ pub const SIDECAR_INTERPRETER: &str = "node";
 /// Refusal code when no executable [`SIDECAR_INTERPRETER`] is on PATH.
 pub const E_GUI_SIDECAR_NODE_MISSING: &str = "E_GUI_SIDECAR_NODE_MISSING";
 
-/// The first executable [`SIDECAR_INTERPRETER`] in `path_var`'s directory
-/// order, which is the file `/usr/bin/env node` would run. Empty PATH
-/// components are skipped, so the interpreter never resolves against the
-/// current directory.
+/// Awaits `spawn` only when [`require_sidecar_interpreter`] finds the
+/// interpreter on `path_var`. Otherwise returns its refusal, and `spawn` is
+/// never polled.
+pub async fn spawn_if_interpreter_found<T>(
+    path_var: Option<&OsStr>,
+    spawn: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    require_sidecar_interpreter(path_var)?;
+    spawn.await
+}
+
+/// The first [`SIDECAR_INTERPRETER`] in `path_var`'s directory order that is a
+/// regular file with an execute bit set. This approximates the lookup
+/// `/usr/bin/env node` makes, with two differences. Any execute bit counts,
+/// even one the current user does not hold, and `env` would then exit 126.
+/// Empty PATH components are skipped on purpose, where `env` would resolve
+/// them against the current directory.
 pub fn require_sidecar_interpreter(path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     path_var
         .into_iter()

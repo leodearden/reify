@@ -1,6 +1,6 @@
-//! Tests for `crate::sidecar_runtime::require_sidecar_interpreter`: the host
-//! finds the interpreter the sidecar's `#!/usr/bin/env node` line names on the
-//! PATH it hands the sidecar, the way `env` does, or refuses with a coded error.
+//! Tests for `crate::sidecar_runtime`: the host finds the interpreter the
+//! sidecar's `#!/usr/bin/env node` line names on the PATH it hands the sidecar,
+//! much as `env` does, or refuses with a coded error before spawning.
 
 #![cfg(unix)]
 
@@ -8,12 +8,21 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use tempfile::TempDir;
+use tokio::io::{BufReader, DuplexStream};
+use tokio::sync::Mutex;
 
+use crate::claude_bridge::{SidecarHandle, SidecarState, ensure_sidecar_ready};
 use crate::sidecar_runtime::{
     E_GUI_SIDECAR_NODE_MISSING, SIDECAR_INTERPRETER, require_sidecar_interpreter,
+    spawn_if_interpreter_found,
 };
+
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn interpreter_file(dir: &Path, mode: u32) -> PathBuf {
     let interpreter = dir.join(SIDECAR_INTERPRETER);
@@ -90,5 +99,93 @@ fn an_unset_path_is_refused() {
     assert!(
         refusal.starts_with(E_GUI_SIDECAR_NODE_MISSING),
         "refusal must start with its code: {refusal}"
+    );
+}
+
+/// A sidecar handle already in `Ready`. The returned stream is the sidecar's
+/// stdout: hold it, because dropping it is EOF and turns the handle `Crashed`.
+fn ready_sidecar() -> (SidecarHandle, DuplexStream) {
+    let (stdout_writer, stdout_reader) = tokio::io::duplex(64);
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(64);
+    let handle = SidecarHandle::from_parts(
+        stdin_writer,
+        BufReader::new(stdout_reader),
+        Arc::new(Mutex::new(SidecarState::Ready)),
+    );
+    (handle, stdout_writer)
+}
+
+#[tokio::test]
+async fn a_missing_interpreter_is_refused_before_the_sidecar_is_spawned() {
+    let without_node = temp_dir();
+    let path = path_var(&[&without_node]);
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let spawned = AtomicBool::new(false);
+
+    let refusal = ensure_sidecar_ready(
+        &sidecar,
+        || {
+            spawn_if_interpreter_found(Some(path.as_os_str()), async {
+                spawned.store(true, Ordering::SeqCst);
+                Err::<SidecarHandle, String>("the sidecar was spawned".to_string())
+            })
+        },
+        READY_TIMEOUT,
+    )
+    .await
+    .expect_err("no node on PATH");
+
+    assert!(
+        refusal.starts_with(E_GUI_SIDECAR_NODE_MISSING),
+        "refusal must start with its code: {refusal}"
+    );
+    assert!(
+        !spawned.load(Ordering::SeqCst),
+        "the sidecar must not be spawned without its interpreter"
+    );
+    assert!(
+        sidecar.lock().await.is_none(),
+        "a refusal must leave the sidecar slot empty"
+    );
+}
+
+#[tokio::test]
+async fn a_resend_after_node_is_installed_spawns_the_sidecar() {
+    let bin = temp_dir();
+    let path = path_var(&[&bin]);
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let spawned_stdouts = std::sync::Mutex::new(Vec::new());
+    let send = || {
+        ensure_sidecar_ready(
+            &sidecar,
+            || {
+                spawn_if_interpreter_found(Some(path.as_os_str()), async {
+                    let (handle, stdout) = ready_sidecar();
+                    spawned_stdouts.lock().expect("stdouts lock").push(stdout);
+                    Ok(handle)
+                })
+            },
+            READY_TIMEOUT,
+        )
+    };
+    let spawn_count = || spawned_stdouts.lock().expect("stdouts lock").len();
+
+    let first = send().await;
+    assert!(
+        first
+            .as_ref()
+            .is_err_and(|refusal| refusal.starts_with(E_GUI_SIDECAR_NODE_MISSING)),
+        "the first message, sent before node is installed, must be refused: {first:?}"
+    );
+    assert_eq!(spawn_count(), 0, "a refused message must spawn nothing");
+
+    interpreter_file(bin.path(), 0o755);
+    let resend = send().await;
+
+    assert_eq!(resend, Ok(()));
+    assert_eq!(spawn_count(), 1, "the resend must spawn the sidecar once");
+    assert!(
+        sidecar.lock().await.is_some(),
+        "the resend must leave the spawned sidecar in the slot"
     );
 }
