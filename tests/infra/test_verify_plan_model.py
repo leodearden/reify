@@ -604,7 +604,7 @@ class TestPassInvariants(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
         message = str(raised.exception)
-        for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
+        for part in ("PassSpec", f"claimed by {CONFIRM_RECORDER}", guard.setup.path):
             self.assertIn(part, message)
         PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
 
@@ -615,7 +615,7 @@ class TestPassInvariants(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             nextest.emit_pass(spec, recording_runner())
         message = str(raised.exception)
-        for part in ("emit_pass", CONFIRM_RECORDER, guard.setup.path):
+        for part in ("emit_pass", f"claimed by {CONFIRM_RECORDER}", guard.setup.path):
             self.assertIn(part, message)
 
     def test_only_a_profile_pass_records(self):
