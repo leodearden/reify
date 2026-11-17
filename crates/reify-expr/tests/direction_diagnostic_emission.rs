@@ -1,7 +1,7 @@
 //! Pins that `eval_expr`'s post-Undef builtin hook drains reify-stdlib's `dir`
-//! classifier: a degenerate `dir` emits `E_DegenerateDirection`, a dimensioned
-//! one `DimensionedArgRejected` (also recorded as the cell's undef cause), and a
-//! valid one nothing.
+//! classifier: a degenerate `dir` emits `E_DegenerateDirection` (keeping only
+//! the generic undef cause), a dimensioned one `DimensionedArgRejected` (also
+//! recorded as the cell's undef cause), and a valid one nothing.
 
 use std::cell::RefCell;
 
@@ -61,16 +61,15 @@ fn op_contract_codes(causes: &[UndefCause]) -> Vec<DiagnosticCode> {
         .collect()
 }
 
+/// Degeneracy is not a dimension fault, so the hook records no specific cause:
+/// the cell keeps only the generic `OpContractViolation` every Undef builtin
+/// result carries.
 #[test]
-fn degenerate_dir_emits_e_degenerate_direction_into_the_sink() {
+fn degenerate_dir_emits_e_degenerate_direction_and_keeps_the_generic_cause() {
     let expr = dir_call(vec![Value::Int(0), Value::Int(0), Value::Int(0)]);
-    let values = ValueMap::new();
-    let sink = RefCell::new(Vec::new());
-    let ctx = EvalContext::new(&values, &[]).with_runtime_diagnostics(&sink);
+    let (value, diags, causes) = eval_with_sinks(&expr);
 
-    assert_eq!(eval_expr(&expr, &ctx), Value::Undef);
-
-    let diags = sink.borrow();
+    assert_eq!(value, Value::Undef);
     assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
     assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(diags[0].code, Some(DiagnosticCode::DegenerateDirection));
@@ -79,17 +78,10 @@ fn degenerate_dir_emits_e_degenerate_direction_into_the_sink() {
         "{}",
         diags[0].message
     );
-}
-
-#[test]
-fn degenerate_dir_cell_carries_an_undef_cause() {
-    let expr = dir_call(vec![Value::Int(0), Value::Int(0), Value::Int(0)]);
-    let (value, _, causes) = eval_with_sinks(&expr);
-
-    assert_eq!(value, Value::Undef);
-    assert!(
-        !op_contract_codes(&causes).is_empty(),
-        "a degenerate dir cell must carry an OpContractFailed cause; got {causes:?}"
+    assert_eq!(
+        op_contract_codes(&causes),
+        vec![DiagnosticCode::OpContractViolation],
+        "a degenerate dir cell must carry only the generic cause; got {causes:?}"
     );
 }
 
