@@ -1,14 +1,17 @@
-//! `reify fix --imports [--check] <file>...`: add the `import std.X` lines
-//! each file needs, as derived by `reify_compiler::import_headers`.
+//! `reify fix --imports [--check] [--cfg <key=value|flag>]... <file>...`: add
+//! the `import std.X` lines each file needs, as derived by
+//! `reify_compiler::import_headers`.
 
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
+use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{self, RequiredImport};
 use reify_core::ModulePath;
 
+use crate::args::split_cfg_args_or_usage;
 use crate::diagnostic_line::render_diagnostic_line;
 use crate::help::FIX_USAGE;
 
@@ -34,13 +37,17 @@ fn parse_args(args: &[String]) -> Option<FixArgs<'_>> {
 }
 
 pub(crate) fn cmd_fix(args: &[String]) -> ExitCode {
-    let Some(fix) = parse_args(args) else {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, FIX_USAGE) {
+        Ok(split) => split,
+        Err(code) => return code,
+    };
+    let Some(fix) = parse_args(&rest) else {
         eprintln!("{FIX_USAGE}");
         return ExitCode::FAILURE;
     };
     let mut all_complete = true;
     for file in &fix.files {
-        all_complete &= fix_imports(file, fix.check_only);
+        all_complete &= fix_imports(file, fix.check_only, &cfg);
     }
     if all_complete {
         ExitCode::SUCCESS
@@ -49,11 +56,11 @@ pub(crate) fn cmd_fix(args: &[String]) -> ExitCode {
     }
 }
 
-/// Whether `path` ends up importing every std module it needs: true once the
-/// missing imports are written, false when they are only reported, when the
-/// derived imports would leave a new diagnostic, or on any read, parse or
-/// write failure.
-fn fix_imports(path: &str, check_only: bool) -> bool {
+/// Whether `path` ends up importing every std module it needs, a `#cfg`-gated
+/// import counting only when `cfg` satisfies it: true once the missing imports
+/// are written, false when they are only reported, when the derived imports
+/// would leave a new diagnostic, or on any read, parse or write failure.
+fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(e) => {
@@ -74,7 +81,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
     let universe = import_headers::stdlib_universe_excluding(&own_module);
     let plan = import_headers::derive_std_imports(&parsed, &universe);
 
-    let mut imports_after_fix = import_headers::declared_imports(&parsed);
+    let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
@@ -88,13 +95,14 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         return false;
     }
 
-    let missing = plan.missing_from(&parsed);
+    let missing = plan.missing_from(&parsed, cfg);
     if missing.is_empty() {
         return true;
     }
+    let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
     if check_only {
         for required in &missing {
-            println!("{path}: missing import {}", describe(required));
+            println!("{path}: missing import {}", describe(required, &gated_off));
         }
         return false;
     }
@@ -102,13 +110,13 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = import_headers::insert_imports(&source, &parsed, &modules);
+    let fixed = import_headers::insert_imports(&source, &parsed, cfg, &modules);
     if let Err(e) = replace_atomically(Path::new(path), &fixed) {
         eprintln!("Error writing {path}: {e}");
         return false;
     }
     for required in &missing {
-        println!("{path}: added import {}", describe(required));
+        println!("{path}: added import {}", describe(required, &gated_off));
     }
     true
 }
@@ -160,13 +168,23 @@ fn refuse_other_hard_links(target: &Path, metadata: &std::fs::Metadata) -> std::
     )))
 }
 
-/// `std.x.y (A, B)`: the module and the names that need it.
-fn describe(required: &RequiredImport) -> String {
+/// `std.x.y (A, B)`: the module and the names that need it, plus a note when the module is one
+/// of `gated_off`, the modules of the file's imports the active cfg leaves out of effect.
+fn describe(required: &RequiredImport, gated_off: &[ModulePath]) -> String {
     let names: BTreeSet<&str> = required
         .names
         .iter()
         .map(|name_use| name_use.name.as_str())
         .collect();
     let names: Vec<&str> = names.into_iter().collect();
-    format!("{} ({})", required.module.to_dotted(), names.join(", "))
+    let note = if gated_off.contains(&required.module) {
+        "; a #cfg-gated import of it is not in effect under the active cfg"
+    } else {
+        ""
+    };
+    format!(
+        "{} ({}){note}",
+        required.module.to_dotted(),
+        names.join(", ")
+    )
 }

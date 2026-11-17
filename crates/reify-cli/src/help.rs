@@ -30,7 +30,8 @@ pub(crate) const GUI_USAGE: &str = "Usage: reify gui [--debug] <file>";
 
 pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain [--cfg <key=value|flag>]... <file>";
 
-pub(crate) const FIX_USAGE: &str = "Usage: reify fix --imports [--check] <file>...";
+pub(crate) const FIX_USAGE: &str =
+    "Usage: reify fix --imports [--check] [--cfg <key=value|flag>]... <file>...";
 
 /// What `main` runs for a subcommand. Only a [`SUBCOMMANDS`] entry constructs one, so a
 /// command with no help entry is a never-constructed variant rather than a silent gap.
@@ -249,7 +250,8 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         details: &[
             HelpSection::Prose(
                 "Refuses to write a file whose derived imports would leave a diagnostic the\n\
-                full standard library does not.",
+                full standard library does not. A `#cfg`-gated import counts only when the\n\
+                active cfg satisfies it.",
             ),
             HelpSection::Flags(&[
                 FlagHelp {
@@ -260,6 +262,7 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
                     synopsis: "--check",
                     summary: "Report missing imports without writing; fail if any are missing",
                 },
+                CFG_FLAG,
             ]),
         ],
     },

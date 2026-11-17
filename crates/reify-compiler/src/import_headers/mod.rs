@@ -6,7 +6,8 @@
 //! and the position it writes it in; [`attribution`] ranks the definitions of
 //! each name through `name_env`, so only names whose winning definition lives
 //! in a std module need an import. [`coverage`] decides which of those names
-//! a module's own `import` declarations already make visible.
+//! a module's own `import` declarations, those in effect under the active
+//! cfg, already make visible.
 
 mod attribution;
 mod coverage;
@@ -20,6 +21,7 @@ use reify_core::{Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
 
+use crate::cfg::CfgSet;
 use crate::types::CompiledModule;
 
 /// One std module a module needs, with the written names that need it.
@@ -49,14 +51,14 @@ impl<'u> ImportPlan<'u> {
     }
 
     /// The required imports `parsed` does not yet satisfy, each narrowed to
-    /// the names its declared imports leave uncovered.
+    /// the names its imports in effect under `cfg` leave uncovered.
     ///
     /// # Panics
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
-    pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<RequiredImport> {
-        let coverage = coverage::ImportCoverage::of(parsed);
+    pub fn missing_from(&self, parsed: &ParsedModule, cfg: &CfgSet) -> Vec<RequiredImport> {
+        let coverage = coverage::ImportCoverage::of(parsed, cfg);
         self.required
             .iter()
             .filter_map(|required| {
@@ -169,16 +171,29 @@ pub fn derive_std_imports<'u>(
     }
 }
 
-/// The module path of every `import` `parsed` declares, in any form.
+/// The module path of every `import` `parsed` declares whose `#cfg`
+/// predicates `cfg` satisfies, in any form.
 ///
 /// # Panics
 ///
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
-pub fn declared_imports(parsed: &ParsedModule) -> Vec<ModulePath> {
-    coverage::imports(parsed)
+pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
+    coverage::imports(parsed, cfg)
         .map(|(module, _)| module)
         .collect()
+}
+
+/// The module path of every `import` `parsed` declares whose `#cfg`
+/// predicates `cfg` does not satisfy, in any form: the imports
+/// [`cfg_satisfied_imports`] leaves out, which cover nothing under `cfg`.
+///
+/// # Panics
+///
+/// If `parsed` declares an import whose path is not a module path, which
+/// only a module with parse errors can.
+pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
+    coverage::gated_off(parsed, cfg).collect()
 }
 
 /// Every compiled stdlib module except `module`, in load order: the universe
@@ -195,15 +210,21 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 }
 
 /// `source` with an `import` line added for every module of `modules` it
-/// does not already import whole, through a namespace import (an entity
-/// import of the module does not count), in the order given: after the last
-/// import, else after the `module` declaration, else after the leading module
-/// pragmas, else after the leading comment block's last blank line.
+/// does not already import whole under `cfg`, through a namespace import (an
+/// entity import, or a gated import `cfg` does not satisfy, does not count),
+/// in the order given: after the last import, else after the `module`
+/// declaration, else after the leading module pragmas, else after the leading
+/// comment block's last blank line.
 ///
 /// # Panics
 ///
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
-pub fn insert_imports(source: &str, parsed: &ParsedModule, modules: &[ModulePath]) -> String {
-    header_edit::insert_imports(source, parsed, modules)
+pub fn insert_imports(
+    source: &str,
+    parsed: &ParsedModule,
+    cfg: &CfgSet,
+    modules: &[ModulePath],
+) -> String {
+    header_edit::insert_imports(source, parsed, cfg, modules)
 }

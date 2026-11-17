@@ -1,17 +1,43 @@
 //! What a module's `import` declarations make visible, per imported module.
 //! A namespace import (`import std.x`, `import std.x as m`) covers the
 //! module's whole pub surface; an entity import covers exactly the names it
-//! binds (`docs/prds/v0_6/resolution-unification.md` D-8).
+//! binds (`docs/prds/v0_6/resolution-unification.md` D-8). An import whose
+//! `#cfg(...)` predicates the active cfg does not satisfy makes nothing
+//! visible (`docs/prds/v0_6/conditional-compilation.md` D-3;
+//! `docs/prds/v0_6/stdlib-namespace.md` boundary #14).
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportKind, ParsedModule};
+use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportDecl, ImportKind, ParsedModule};
 use reify_core::ModulePath;
+
+use crate::cfg::CfgSet;
+use crate::module_dag::import_cfg_satisfied;
+
+/// Every `import` `parsed` declares whose `#cfg` predicates `cfg` satisfies,
+/// in declaration order, with the module it names.
+pub(crate) fn imports<'p>(
+    parsed: &'p ParsedModule,
+    cfg: &CfgSet,
+) -> impl Iterator<Item = (ModulePath, &'p ImportKind)> {
+    declared(parsed)
+        .filter(|(_, import)| import_cfg_satisfied(import, cfg))
+        .map(|(module, import)| (module, &import.kind))
+}
+
+/// The module of every `import` `parsed` declares whose `#cfg` predicates
+/// `cfg` does not satisfy, in declaration order: the imports [`imports`]
+/// leaves out.
+pub(crate) fn gated_off(parsed: &ParsedModule, cfg: &CfgSet) -> impl Iterator<Item = ModulePath> {
+    declared(parsed)
+        .filter(|(_, import)| !import_cfg_satisfied(import, cfg))
+        .map(|(module, _)| module)
+}
 
 /// Every `import` `parsed` declares, in declaration order, with the module it
 /// names. Panics on an import path that is not a module path, which a
-/// parse-clean module never has.
-pub(crate) fn imports(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath, &ImportKind)> {
+/// parse-clean module never has, whatever its `#cfg` predicates.
+fn declared(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath, &ImportDecl)> {
     parsed
         .declarations
         .iter()
@@ -28,11 +54,12 @@ pub(crate) fn imports(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath
                     import.path
                 )
             });
-            (module, &import.kind)
+            (module, import)
         })
 }
 
-/// Which names of each imported module a module's imports, together, bind.
+/// Which names of each imported module a module's imports in effect under
+/// the active cfg, together, bind.
 pub(crate) struct ImportCoverage<'p> {
     by_module: HashMap<ModulePath, Coverage<'p>>,
 }
@@ -43,9 +70,9 @@ enum Coverage<'p> {
 }
 
 impl<'p> ImportCoverage<'p> {
-    pub(crate) fn of(parsed: &'p ParsedModule) -> Self {
+    pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
         let mut by_module = HashMap::new();
-        for (module, kind) in imports(parsed) {
+        for (module, kind) in imports(parsed, cfg) {
             match kind.binding() {
                 ImportBinding::Namespace { .. } => {
                     by_module.insert(module, Coverage::WholeSurface);

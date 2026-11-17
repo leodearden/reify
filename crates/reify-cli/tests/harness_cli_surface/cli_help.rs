@@ -37,8 +37,9 @@ const COMMANDS_WITH_FLAG_TABLES: &[&str] = &[
 
 /// The subcommands that accept `--cfg`. A floor for the same reason: the description guard
 /// reads every subcommand's `--cfg` row, so a command that gains the flag joins it unasked.
-const COMMANDS_TAKING_CFG: &[&str] =
-    &["check", "build", "eval", "test", "report", "explain", "doc"];
+const COMMANDS_TAKING_CFG: &[&str] = &[
+    "check", "build", "eval", "test", "report", "explain", "doc", "fix",
+];
 
 /// The widest line a `Flags:` table may print, in characters.
 const HELP_WIDTH: usize = 80;
