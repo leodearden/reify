@@ -839,6 +839,58 @@ structure def GuardHost {
     }
 }
 
+/// The callee a fn-body call is meant to reach, by kind, carrying its name.
+///
+/// An unknown name draws no ordering diagnostic either (only an
+/// `UnresolvedFunction` Warning, lowered like an occurrence call), so the absence
+/// check cannot tell a deleted callee from a surviving one. Each variant
+/// witnesses its own kind instead.
+enum Callee {
+    /// An `occurrence def` of this name in the module under test.
+    SameModuleOccurrence(&'static str),
+    /// An `occurrence def` of this name in the stdlib prelude.
+    PreludeOccurrence(&'static str),
+    /// A `structure def` of this name in the stdlib prelude.
+    PreludeStructure(&'static str),
+}
+
+impl Callee {
+    /// Panics unless the callee is still what the case label `what` says it is.
+    /// `call` is the compiled call expression.
+    fn assert_matches_label(
+        &self,
+        module: &reify_compiler::CompiledModule,
+        call: &CompiledExpr,
+        what: &str,
+    ) {
+        match *self {
+            Callee::SameModuleOccurrence(name) => assert_eq!(
+                reify_compiler::find_template(&module.templates, name).map(|t| t.entity_kind),
+                Some(reify_compiler::EntityKind::Occurrence),
+                "{what}: `{name}` must be an occurrence def of this module; \
+                 all diagnostics: {:#?}",
+                diag_lines(module)
+            ),
+            Callee::PreludeOccurrence(name) => assert_eq!(
+                reify_test_support::stdlib_prelude::template(name).entity_kind,
+                reify_compiler::EntityKind::Occurrence,
+                "{what}: prelude `{name}` must be an occurrence def; all diagnostics: {:#?}",
+                diag_lines(module)
+            ),
+            Callee::PreludeStructure(name) => assert!(
+                matches!(
+                    &call.kind,
+                    CompiledExprKind::StructureInstanceCtor { type_name, .. } if type_name == name
+                ),
+                "{what}: `{name}()` must lower to StructureInstanceCtor{{{name}}}; got {:?}; \
+                 all diagnostics: {:#?}",
+                call.kind,
+                diag_lines(module)
+            ),
+        }
+    }
+}
+
 /// The ordering rule is about module-local `structure def`s only. A same-module
 /// OCCURRENCE and a prelude occurrence or structure never enter the ctor view
 /// the way a local structure does, so calling one from a fn body must not draw a
@@ -847,28 +899,32 @@ structure def GuardHost {
 /// whatever else these calls produce is not this rule's business.
 #[test]
 fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
-    for (what, src) in [
+    for (what, src, callee) in [
         (
             "same-module occurrence declared below the fn",
             "module t.occ_below\n\
-             pub fn f() -> Real { let o = Op(); 1.0 }\n\
+             pub fn f() -> Real { let x = Op(); 1.0 }\n\
              occurrence def Op { param p : Real = 0 }\n",
+            Callee::SameModuleOccurrence("Op"),
         ),
         (
             "same-module occurrence declared above the fn",
             "module t.occ_above\n\
              occurrence def Op { param p : Real = 0 }\n\
-             pub fn f() -> Real { let o = Op(); 1.0 }\n",
+             pub fn f() -> Real { let x = Op(); 1.0 }\n",
+            Callee::SameModuleOccurrence("Op"),
         ),
         (
             "prelude occurrence",
             "module t.prelude_occ\n\
-             pub fn g() -> Real { let x = STLOutput(); 1.0 }\n",
+             pub fn f() -> Real { let x = STLOutput(); 1.0 }\n",
+            Callee::PreludeOccurrence("STLOutput"),
         ),
         (
             "prelude structure",
             "module t.prelude_struct\n\
-             pub fn g() -> Real { let x = MaterialFrame(); 1.0 }\n",
+             pub fn f() -> Real { let x = MaterialFrame(); 1.0 }\n",
+            Callee::PreludeStructure("MaterialFrame"),
         ),
     ] {
         let module = reify_test_support::helpers::compile_source_with_stdlib(src);
@@ -877,6 +933,14 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
             "{what}: must draw no declaration-order diagnostic; all diagnostics: {:#?}",
             diag_lines(&module)
         );
+        assert!(
+            reify_test_support::helpers::errors_only(&module).is_empty(),
+            "{what}: a new Error means the fixture no longer compiles to a clean call, so \
+             the absence check above proves nothing; all diagnostics: {:#?}",
+            diag_lines(&module)
+        );
+        let call = fn_body_let(&module, "f", "x");
+        callee.assert_matches_label(&module, call, what);
     }
 }
 
@@ -1020,6 +1084,27 @@ fn function_named<'m>(
             panic!(
                 "fn `{name}` missing from module.functions; present: {:?}",
                 module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// The compiled expression `fn_name`'s body binds to `let let_name`, panicking
+/// with the lets that ARE present (and the module's diagnostics) when absent.
+fn fn_body_let<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    fn_name: &str,
+    let_name: &str,
+) -> &'m CompiledExpr {
+    let lets = &function_named(module, fn_name).body.let_bindings;
+    lets.iter()
+        .find(|(name, _)| name == let_name)
+        .map(|(_, expr)| expr)
+        .unwrap_or_else(|| {
+            panic!(
+                "`let {let_name}` missing from `{fn_name}`'s body; present: {:?}; \
+                 all diagnostics: {:#?}",
+                lets.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                diag_lines(module)
             )
         })
 }
