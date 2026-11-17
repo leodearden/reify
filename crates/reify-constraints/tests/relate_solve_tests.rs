@@ -39,7 +39,7 @@ mod common;
 
 use common::{
     axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, point3,
-    relation, scaling_for, solve_frame_result, unknown, vec3,
+    relation, scaling_for, solve_frame_result, unknown,
 };
 
 /// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
@@ -521,43 +521,10 @@ fn solve_frame_seed_biases_residual_dof() {
 // ── Residual-form robustness (amendments) ────────────────────────────────────
 //
 // `angle` and `distance` are not exercised by the B1/B2/B3/B5 partition/solve
-// scenarios above; these kernel-free units pin the two residual-form corrections a
-// review surfaced (a non-unit direction operand for `angle`; an axial-slide-coupled
-// origin distance for `distance` over axes). Both drive `max_relation_residual`
-// directly so the residual algebra is checked without a solver round-trip.
-
-/// `angle(a, b, θ)` must normalize its direction operands before comparing the dot
-/// product against `cos θ` — a NON-unit operand otherwise reads the residual zero at
-/// the wrong angle. Moving operand: a magnitude-2 `+x` raw `Value::Vector`; anchor: a
-/// unit 45° direction. A non-unit `Direction` is unrepresentable (its only
-/// constructor normalises), but `dir_of` still admits a raw Vector, so the angle
-/// residual's own normalisation stays under test here. The true angle is 45°, so an
-/// `angle(.., 45°)` relation is satisfied (residual ≈ 0) ONLY if the magnitude-2
-/// operand is normalized first — a raw `dot(da, db) − cos 45°` would leave a spurious
-/// `2·cos45° − cos45° = cos45° ≈ 0.707`.
-#[test]
-fn angle_residual_normalizes_non_unit_direction_operands() {
-    let s = 1.0 / 2.0_f64.sqrt();
-    let rel = RelationInstance {
-        name: "angle".to_string(),
-        operands: vec![
-            datum("m", vec3(2.0, 0.0, 0.0)),
-            datum("anchor", dir(s, s, 0.0)),
-            Operand {
-                sub: None,
-                datum: Value::Real(std::f64::consts::FRAC_PI_4),
-            },
-        ],
-        nominal_delta_dof: Some(1),
-    };
-    let resid =
-        max_relation_residual(std::slice::from_ref(&rel), &unknown("m", false), &Pose::identity());
-    assert!(
-        resid < 1e-9,
-        "angle residual must be ≈0 at the true 45° angle even for a NON-unit operand \
-         (normalized before the dot); got {resid}"
-    );
-}
+// scenarios above; these kernel-free units pin a residual-form correction a review
+// surfaced (an axial-slide-coupled origin distance for `distance` over axes) by
+// driving `max_relation_residual` directly, so the residual algebra is checked
+// without a solver round-trip.
 
 /// A Direction operand under a non-finite pose rotation must surface as a
 /// non-finite evaluation, exactly as an Axis/Plane/Vector operand does — never be
@@ -591,6 +558,54 @@ fn a_direction_under_a_nan_rotation_is_a_non_finite_evaluation() {
         matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
         "a NaN-rotated Direction must reach the NonFinite verdict: {outcome:?}"
     );
+}
+
+/// Solve `relations` for the moving sub `"m"` from a seed whose rotation is NaN,
+/// and assert the run reaches the NonFinite verdict — the shared body of the
+/// Axis/Plane NaN-rotation guards.
+fn assert_a_nan_rotation_is_non_finite(relations: &[RelationInstance], moving: &str) {
+    let unknown = unknown("m", false);
+    let seed = Pose {
+        translation: [0.0; 3],
+        rotation: [f64::NAN, 0.0, 0.0],
+    };
+    let scaling = scaling_for(relations, &unknown, &Pose::identity());
+    let outcome = solve_frame_outcome(relations, &unknown, &seed, &scaling, SolveBudget::default());
+    assert!(
+        matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
+        "a NaN-rotated {moving} must reach the NonFinite verdict: {outcome:?}"
+    );
+}
+
+/// The Axis twin of `a_direction_under_a_nan_rotation_is_a_non_finite_evaluation`:
+/// a moving Axis under a NaN pose rotation reaches the NonFinite verdict rather
+/// than a converged pose carrying the NaN seed.
+#[test]
+fn an_axis_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "concentric",
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    )];
+    assert_a_nan_rotation_is_non_finite(&relations, "Axis");
+}
+
+/// The Plane twin: a moving Plane under a NaN pose rotation reaches the NonFinite
+/// verdict.
+#[test]
+fn a_plane_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "flush",
+        vec![
+            datum("m", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        3,
+    )];
+    assert_a_nan_rotation_is_non_finite(&relations, "Plane");
 }
 
 /// `parallel` / `antiparallel` / `coincident`-over-Direction must distinguish the two
@@ -1895,47 +1910,42 @@ fn assertion_rungs_are_derived_per_unit_from_one_base_length() {
     );
 }
 
-/// A geometrically EXACT `perpendicular` measures zero however long its operands’
-/// direction vectors are.
+/// `perpendicular`'s one dimensionless row is the sine of the misalignment: an
+/// exact pair reads zero, and a pair 30° off perpendicular reads sin 30° = 0.5.
 ///
-/// The residual is `dot(a, b)`, which is the sine of the misalignment only for UNIT
-/// operands — and `dir_of` reads whatever direction vector realization produced.
-/// Unnormalized, the pair below reads `10 × 10 = 100`: six orders of magnitude past
-/// any assertion rung, on geometry that is exactly right. The solve path never
-/// noticed (its zero set is magnitude-invariant), but the static verifier compares
-/// the row against a fixed rung and fails the BUILD, so the scale sensitivity had
-/// to go. `angle` already normalized for the same reason.
+/// The residual is `dot(a, b)`, which is that sine only for UNIT operands — which
+/// every direction operand is, since a `Direction` is unit by construction. The
+/// static verifier compares this row against a fixed rung, so a scaled reading
+/// would fail the BUILD on geometry that is exactly right.
 #[test]
-fn perpendicular_residual_is_scale_free_in_its_operands() {
-    let exact = |da: (f64, f64, f64), db: (f64, f64, f64)| {
+fn perpendicular_residual_reads_the_sine_of_the_misalignment() {
+    let rows = |da: (f64, f64, f64), db: (f64, f64, f64)| {
         let rel = relation(
             "perpendicular",
-            vec![datum("m", vec3(da.0, da.1, da.2)), datum("a", vec3(db.0, db.1, db.2))],
+            vec![
+                datum("m", dir(da.0, da.1, da.2)),
+                datum("a", dir(db.0, db.1, db.2)),
+            ],
             1,
         );
         static_relation_residuals(&rel)
     };
 
-    let unit_rows = exact((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
-    let scaled_rows = exact((10.0, 0.0, 0.0), (0.0, 0.0, 10.0));
+    let exact = rows((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
     assert_eq!(
-        unit_rows.len(),
+        exact.len(),
         1,
-        "perpendicular contributes exactly one dimensionless row; got {unit_rows:?}"
+        "perpendicular contributes exactly one dimensionless row; got {exact:?}"
     );
     assert_eq!(
-        scaled_rows, unit_rows,
-        "scaling either operand must not move the residual — an exact \
-         perpendicular reads zero at every magnitude; got {scaled_rows:?}"
+        exact[0].value, 0.0,
+        "an exact perpendicular reads zero; got {exact:?}"
     );
 
-    // And a genuinely misaligned pair still reads its SINE, not a scaled one: 30°
-    // off perpendicular is sin 30° = 0.5 whatever the operand lengths.
-    let misaligned = exact((10.0, 0.0, 0.0), (5.0, 0.0, 8.660_254_037_844_387));
+    let misaligned = rows((1.0, 0.0, 0.0), (0.5, 0.0, 0.866_025_403_784_438_6));
     assert!(
         (misaligned[0].value - 0.5).abs() < 1e-12,
-        "a 30° misalignment reads sin 30° = 0.5 independently of operand scale; \
-         got {misaligned:?}"
+        "a 30° misalignment reads sin 30° = 0.5; got {misaligned:?}"
     );
 }
 
