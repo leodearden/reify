@@ -15,6 +15,8 @@
 #      script that writes tree-sitter-reify/src for the `tree-sitter parse` CLI.
 #   4. Infrastructure checks — .gitignore, git tracking, orchestrator config,
 #      hooks, routing, and install guidance.
+#   5. The suite's own fixture helpers — each fills the empty dir its caller
+#      made and registered for cleanup, and allocates nothing of its own (#10044).
 #
 # Assert helpers capture full stdout/stderr on failure for diagnostics.
 # File state is managed via backup/restore with trap-based cleanup.
@@ -409,14 +411,13 @@ run_ts_freshness() {
     fi
 }
 
-# ts_masked_path_dir <name-to-mask>
+# ts_masked_path_dir <dir> <name-to-mask>
 #
-# Print a shim directory holding symlinks to every executable currently
-# resolvable on PATH EXCEPT <name-to-mask>, so `PATH=$shim` reproduces this
-# host minus exactly one binary. PATH dirs are walked in order and the first
-# occurrence of a basename wins (`[ -e "$shim/$b" ] && continue`), so
-# resolution order is preserved exactly. Registers its own cleanup through
-# CLEANUP_ACTIONS.
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with symlinks to every executable currently resolvable on PATH EXCEPT
+# <name-to-mask>, so `PATH=<dir>` reproduces this host minus exactly one binary.
+# PATH dirs are walked in order and the first occurrence of a basename wins
+# (`[ -e "$shim/$b" ] && continue`), so resolution order is preserved exactly.
 #
 # MASKING BY OMISSION, NOT BY SHADOWING — load-bearing. The obvious shim
 # (a `sha256sum` stub that exits 1, placed first on PATH) drives a DIFFERENT
@@ -443,14 +444,11 @@ run_ts_freshness() {
 #
 # Deliberately NOT named test_* (see the block header above).
 ts_masked_path_dir() {
-    local mask="${1:-}"
-    if [ -z "$mask" ]; then
-        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <name-to-mask>" >&2
+    local shim="${1:-}" mask="${2:-}"
+    if [ -z "$shim" ] || [ -z "$mask" ]; then
+        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <dir> <name-to-mask>" >&2
         return 1
     fi
-    local shim
-    shim=$(mktemp -d) || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$shim'")
 
     local -a dirs=()
     IFS=':' read -r -a dirs <<< "$PATH"
@@ -474,8 +472,7 @@ ts_masked_path_dir() {
         done
     done
     [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-
-    printf '%s' "$shim"
+    return 0
 }
 
 # mk_ts_generate_fixture <dir>
@@ -2547,7 +2544,9 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     fi
 
     local mask
-    mask=$(ts_masked_path_dir sha256sum) || return 1
+    mask=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$mask'")
+    ts_masked_path_dir "$mask" sha256sum || return 1
 
     # POSITIVELY assert the mask took effect before concluding anything from the
     # run. Without this the test degrades into exactly the vacuity it replaces:
