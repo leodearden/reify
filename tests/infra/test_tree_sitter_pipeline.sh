@@ -478,25 +478,25 @@ ts_masked_path_dir() {
     printf '%s' "$shim"
 }
 
-# mk_ts_generate_fixture
+# mk_ts_generate_fixture <dir>
 #
-# A throwaway root holding a copy of scripts/ and a minimal tree-sitter-reify/,
-# so the REAL scripts/tree-sitter-generate.sh can be driven end to end without
-# ever mutating the lane's own tree. The script resolves its target as
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a copy of scripts/ and a minimal tree-sitter-reify/, so the REAL
+# scripts/tree-sitter-generate.sh can be driven end to end without ever mutating
+# the lane's own tree. The script resolves its target as
 # "$SCRIPT_DIR/../tree-sitter-reify", so the two must be copied together.
 #
 # Only grammar.js and package.json are copied in: `tree-sitter generate` needs
 # nothing else, and everything under src/ is an OUTPUT this fixture exists to
-# observe. Prints the root; registers its own cleanup.
+# observe.
 mk_ts_generate_fixture() {
-    local dir
-    dir="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
     mkdir -p "$dir/tree-sitter-reify/src" || return 1
     cp "$TS_DIR/grammar.js" "$dir/tree-sitter-reify/grammar.js" || return 1
-    [ -f "$TS_DIR/package.json" ] && cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/"
-    printf '%s' "$dir"
+    if [ -f "$TS_DIR/package.json" ]; then
+        cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/" || return 1
+    fi
 }
 
 # ts_generate_outputs_stamp <fixture-root> — path to the new sibling stamp.
@@ -905,7 +905,9 @@ test_generate_outputs_are_untracked_and_ignored() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3231,7 +3233,9 @@ test_generate_writes_a_content_manifest_for_its_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3250,7 +3254,9 @@ test_generate_keeps_the_grammar_stamp_format_intact() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3287,7 +3293,9 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3340,7 +3348,9 @@ test_generate_regenerates_when_a_header_is_missing() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3391,7 +3401,9 @@ test_generate_refuses_to_stamp_when_the_cli_writes_no_header() {
     # would leave. Stamping that tree would report success and then regenerate
     # on every later run, since the headers stay missing.
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
 
     local stubdir
     stubdir=$(mktemp -d) || return 1
@@ -3436,7 +3448,9 @@ test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
     assert_file_exists "$(ts_generate_grammar_stamp "$fix")" || return 1
@@ -3497,7 +3511,9 @@ test_generate_keeps_its_outputs_when_attestation_fails() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
 
     # A sha256sum that fails for parser.c ONLY, delegating every other file to
     # the real binary. Scoping it to one file is load-bearing: a hasher that
