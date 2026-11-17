@@ -357,8 +357,9 @@ verify_admission_order: arrival
 # frontend-only task skips the Rust pipeline, etc.
 #
 # The merge path (DF_VERIFY_ROLE=merge) keeps full scope: hooks/pre-merge-commit
-# uses --scope all explicitly, and the orchestrator merge pipeline does not
-# invoke test_command / lint_command below.
+# uses --scope all explicitly, and the orchestrator merge pipeline runs
+# test_command / lint_command below with DF_VERIFY_ROLE=merge, under which
+# verify.sh forces --scope all (contract C2).
 #
 # No --profile here: verify.sh derives the profile from DF_VERIFY_ROLE (task 4078).
 # Per-task verifies run with DF_VERIFY_ROLE=task => profile=debug (fast feedback).
@@ -402,6 +403,12 @@ lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # Acceptable: clippy is the stricter signal and catches everything cargo check does.
 # verify.sh's `typecheck` action remains a valid standalone/manual entry point unchanged.
 type_check_command: "true"
+# The merge role runs the three commands above verbatim (force_workspace), not
+# file-scoped: DF's fallback otherwise drops test_command for a diff touching a
+# non-test .py (DF task 7041; incident 9761). Red tier: restart-only, inert until
+# the next orchestrator restart. See docs/notes/verify-pipeline-knobs.md; guard:
+# tests/infra/test_merge_verify_workspace_seam.sh.
+merge_verify_workspace: true
 
 # Run test/lint/type sequentially in one verify invocation.
 # Rust workspaces take an advisory lock on target/.cargo-lock, so the three
