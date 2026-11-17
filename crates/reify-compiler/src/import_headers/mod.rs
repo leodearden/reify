@@ -184,6 +184,18 @@ pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModuleP
         .collect()
 }
 
+/// The module path of every `import` `parsed` declares whose `#cfg`
+/// predicates `cfg` does not satisfy, in any form: the imports
+/// [`cfg_satisfied_imports`] leaves out, which cover nothing under `cfg`.
+///
+/// # Panics
+///
+/// If `parsed` declares an import whose path is not a module path, which
+/// only a module with parse errors can.
+pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
+    coverage::gated_off(parsed, cfg).collect()
+}
+
 /// Every compiled stdlib module except `module`, in load order: the universe
 /// a stdlib module's own imports are derived against.
 pub fn stdlib_universe_excluding(module: &ModulePath) -> Vec<&'static CompiledModule> {

@@ -10,7 +10,8 @@ use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
-    ImportPlan, NameRole, NameUse, RequiredImport, derive_std_imports, insert_imports,
+    ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports, cfg_unsatisfied_imports,
+    derive_std_imports, insert_imports,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 
@@ -816,7 +817,7 @@ fn inserting_the_missing_imports_leaves_nothing_missing() {
     );
 }
 
-// ─── c1-c4: #cfg-gated imports cover only under a cfg that satisfies them ──
+// ─── c1-c5: #cfg-gated imports cover only under a cfg that satisfies them ──
 
 #[test]
 fn a_cfg_gated_import_covers_only_under_a_cfg_that_satisfies_it() {
@@ -912,5 +913,55 @@ fn inserting_the_missing_imports_under_a_cfg_leaves_nothing_missing_under_it() {
         derive_parsed(&reparsed, &universe).missing_from(&reparsed, &cfg),
         vec![],
         "fixed source:\n{fixed}"
+    );
+}
+
+#[test]
+fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off() {
+    let parsed = parse_clean(
+        "import std.fake.a
+         #cfg(wide)
+import std.fake.b.Thing
+         #cfg(wide)
+#cfg(tall)
+import std.fake.c
+
+         structure def S {}
+",
+        SUBJECT_PATH,
+    );
+    let split = |cfg: &CfgSet| {
+        let dotted = |modules: Vec<ModulePath>| -> Vec<String> {
+            modules.iter().map(ModulePath::to_dotted).collect()
+        };
+        (
+            dotted(cfg_satisfied_imports(&parsed, cfg)),
+            dotted(cfg_unsatisfied_imports(&parsed, cfg)),
+        )
+    };
+    assert_eq!(
+        split(&CfgSet::default()),
+        (
+            vec!["std.fake.a".to_string()],
+            vec!["std.fake.b".to_string(), "std.fake.c".to_string()]
+        )
+    );
+    assert_eq!(
+        split(&flags(&["wide"])),
+        (
+            vec!["std.fake.a".to_string(), "std.fake.b".to_string()],
+            vec!["std.fake.c".to_string()]
+        )
+    );
+    assert_eq!(
+        split(&flags(&["wide", "tall"])),
+        (
+            vec![
+                "std.fake.a".to_string(),
+                "std.fake.b".to_string(),
+                "std.fake.c".to_string()
+            ],
+            vec![]
+        )
     );
 }

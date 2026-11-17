@@ -99,9 +99,10 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     if missing.is_empty() {
         return true;
     }
+    let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
     if check_only {
         for required in &missing {
-            println!("{path}: missing import {}", describe(required));
+            println!("{path}: missing import {}", describe(required, &gated_off));
         }
         return false;
     }
@@ -115,7 +116,7 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         return false;
     }
     for required in &missing {
-        println!("{path}: added import {}", describe(required));
+        println!("{path}: added import {}", describe(required, &gated_off));
     }
     true
 }
@@ -167,13 +168,23 @@ fn refuse_other_hard_links(target: &Path, metadata: &std::fs::Metadata) -> std::
     )))
 }
 
-/// `std.x.y (A, B)`: the module and the names that need it.
-fn describe(required: &RequiredImport) -> String {
+/// `std.x.y (A, B)`: the module and the names that need it, plus a note when the module is one
+/// of `gated_off`, the modules of the file's imports the active cfg leaves out of effect.
+fn describe(required: &RequiredImport, gated_off: &[ModulePath]) -> String {
     let names: BTreeSet<&str> = required
         .names
         .iter()
         .map(|name_use| name_use.name.as_str())
         .collect();
     let names: Vec<&str> = names.into_iter().collect();
-    format!("{} ({})", required.module.to_dotted(), names.join(", "))
+    let note = if gated_off.contains(&required.module) {
+        "; a #cfg-gated import of it is not in effect under the active cfg"
+    } else {
+        ""
+    };
+    format!(
+        "{} ({}){note}",
+        required.module.to_dotted(),
+        names.join(", ")
+    )
 }

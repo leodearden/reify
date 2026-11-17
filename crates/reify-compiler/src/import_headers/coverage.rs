@@ -8,20 +8,36 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportKind, ParsedModule};
+use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportDecl, ImportKind, ParsedModule};
 use reify_core::ModulePath;
 
 use crate::cfg::CfgSet;
 use crate::module_dag::import_cfg_satisfied;
 
 /// Every `import` `parsed` declares whose `#cfg` predicates `cfg` satisfies,
-/// in declaration order, with the module it names. Panics on an import path
-/// that is not a module path, which a parse-clean module never has, whether
-/// or not `cfg` gates that import off.
+/// in declaration order, with the module it names.
 pub(crate) fn imports<'p>(
     parsed: &'p ParsedModule,
     cfg: &CfgSet,
 ) -> impl Iterator<Item = (ModulePath, &'p ImportKind)> {
+    declared(parsed)
+        .filter(|(_, import)| import_cfg_satisfied(import, cfg))
+        .map(|(module, import)| (module, &import.kind))
+}
+
+/// The module of every `import` `parsed` declares whose `#cfg` predicates
+/// `cfg` does not satisfy, in declaration order: the imports [`imports`]
+/// leaves out.
+pub(crate) fn gated_off(parsed: &ParsedModule, cfg: &CfgSet) -> impl Iterator<Item = ModulePath> {
+    declared(parsed)
+        .filter(|(_, import)| !import_cfg_satisfied(import, cfg))
+        .map(|(module, _)| module)
+}
+
+/// Every `import` `parsed` declares, in declaration order, with the module it
+/// names. Panics on an import path that is not a module path, which a
+/// parse-clean module never has, whatever its `#cfg` predicates.
+fn declared(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath, &ImportDecl)> {
     parsed
         .declarations
         .iter()
@@ -40,8 +56,6 @@ pub(crate) fn imports<'p>(
             });
             (module, import)
         })
-        .filter(|(_, import)| import_cfg_satisfied(import, cfg))
-        .map(|(module, import)| (module, &import.kind))
 }
 
 /// Which names of each imported module a module's imports in effect under

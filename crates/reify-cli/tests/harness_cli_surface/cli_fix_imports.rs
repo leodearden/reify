@@ -25,6 +25,10 @@ const ENTITY_HEADER: &str = "import std.materials.appearance.Finish\nimport std.
 const GATED_HEADER: &str =
     "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n";
 
+/// What `fix` appends to a reported module that the file imports under a `#cfg` the active cfg
+/// leaves unsatisfied.
+const GATED_OFF_NOTE: &str = "; a #cfg-gated import of it is not in effect under the active cfg";
+
 /// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
 /// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
 /// to withhold. If the binders become scope-aware, re-point this at another fixture that leaves a
@@ -278,16 +282,18 @@ fn an_entity_import_covers_only_the_name_it_imports() {
     );
     assert!(!stdout.contains("Finish"), "{}", describe(&output));
     assert!(!stdout.contains("std.si_units"), "{}", describe(&output));
+    assert!(!stdout.contains(GATED_OFF_NOTE), "{}", describe(&output));
     assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
 
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("added import std.materials.appearance (Color)"),
+        stdout.contains("added import std.materials.appearance (Color)"),
         "{}",
         describe(&output)
     );
+    assert!(!stdout.contains(GATED_OFF_NOTE), "{}", describe(&output));
     let fixed = fs::read_to_string(&file).expect("read fixed file");
     assert_eq!(
         fixed,
@@ -315,7 +321,9 @@ fn a_cfg_gated_import_covers_only_under_a_cfg_that_satisfies_it() {
     assert!(!output.status.success(), "{}", describe(&output));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("missing import std.materials.appearance (Color, Finish)"),
+        stdout.contains(&format!(
+            "missing import std.materials.appearance (Color, Finish){GATED_OFF_NOTE}\n"
+        )),
         "{}",
         describe(&output)
     );
@@ -336,8 +344,9 @@ fn fix_adds_an_ungated_import_beside_an_unsatisfied_gated_one() {
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(output.status.success(), "{}", describe(&output));
     assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("added import std.materials.appearance (Color, Finish)"),
+        String::from_utf8_lossy(&output.stdout).contains(&format!(
+            "added import std.materials.appearance (Color, Finish){GATED_OFF_NOTE}\n"
+        )),
         "{}",
         describe(&output)
     );
@@ -379,11 +388,13 @@ fn the_host_target_satisfies_a_target_gated_import_by_default() {
         &file,
     ]);
     assert!(!output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("missing import std.materials.appearance"),
+        stdout.contains("missing import std.materials.appearance"),
         "{}",
         describe(&output)
     );
+    assert!(stdout.contains(GATED_OFF_NOTE), "{}", describe(&output));
     assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
 }
 
