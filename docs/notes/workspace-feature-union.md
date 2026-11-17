@@ -173,8 +173,14 @@ relink_sources() {
 }
 relink_sources < /tmp/<id>-D.lst | xargs -r -d '\n' touch --
 git diff --name-only "$B"   # must print nothing
-# Check the whole tree both ways: every relink source at $B against every file newer than 2020-01-02.
 git ls-files | relink_sources | LC_ALL=C sort > /tmp/<id>-relink.lst
+# A dispatch rebase after the seed also rewrote files outside D: $B's content, a fresh mtime. Stamp back each tracked
+# file newer than 2020-01-02 that is no relink source and has no skip-worktree flag (.mcp.json has one), if it equals $B:
+git ls-files -v | sed -n 's/^H //p' | LC_ALL=C sort > /tmp/<id>-tracked.lst
+find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -printf '%P\n' |
+  LC_ALL=C sort | LC_ALL=C comm -23 - /tmp/<id>-relink.lst | LC_ALL=C comm -12 - /tmp/<id>-tracked.lst |
+  while IFS= read -r f; do git diff --quiet "$B" -- "$f" && touch -h -d 2020-01-01T00:00:00 "$f"; done
+# Check the whole tree both ways: every relink source at $B against every file newer than 2020-01-02.
 find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -printf '%P\n' |
   LC_ALL=C sort | LC_ALL=C comm -3 - /tmp/<id>-relink.lst
 # must print only incidentals such as .mcp.json, unindented; an indented line is a relink source still at 2020
@@ -186,6 +192,12 @@ The directory lines matter because git bumps the mtime of every directory that
 holds a file it rewrites, and reify-eval's build script watches directories: a
 bumped `crates/reify-kernel-gmsh/src` reran it, and with it reify-eval's lib and
 the crates that link that lib, in probe D1 (Host profiles).
+
+The stamp-back step after the relink exists because the dispatch can run
+`git rebase main` in a lane after the seed. That rewrites every file that
+differs between the commit the seed stamped and main's tip, and a file outside
+D among them has `$B`'s content but a fresh mtime, so the file check lists it.
+In `_lane-10` that was 64 files (Tree-sitter re-probe after #9896).
 
 After the last probe, return with `git checkout <task branch>`, which rewrites
 the delta with fresh mtimes, the state the seed gives a branch's HEAD. An
@@ -532,8 +544,9 @@ directory stamp and without the tree-sitter reset line or arm B, which the
 procedure keeps for older gens. The block's file check failed at first. Besides
 `.mcp.json` it listed 64 tracked files that the dispatch's `git rebase main`
 had rewritten at 14:14, after the seed, moving the branch from `48f6c7710b` to
-`202e206e6f`. Their content equalled the basecommit's, and the block re-stamps
-only the basecommit-to-HEAD delta, so they were re-stamped to 2020-01-01 too.
+`202e206e6f`. Their content equalled the basecommit's, and the block then
+re-stamped only the basecommit-to-HEAD delta, so they were re-stamped to
+2020-01-01 by hand. The block's stamp-back step now does this.
 The lane then matched the seed's model, files and directories. A reflink
 snapshot of `target/` (69,437 non-directory entries) matched the seed's listing
 and was never restored: HEAD did not move during either pair.
@@ -604,12 +617,13 @@ still `cb24012c60`, its last verify attempt (`target/reify-verify-attempt.json`)
 was stamped 12:27:51Z, and no `tree-sitter-reify-*` run dir had been invoked
 after 12:09:26. So no merge verify had run there since gen.643's own.
 
-The artefacts of that verify show the build script re-run with no input change.
-The three run dirs that hold a generation stamp were invoked at 2026-11-17
-06:30:31 (release, `02cc16f2…`), 11:40:25 and 12:09:26 (debug, `867156fd…` and
-`e66a76b4…`), and their `generation_key.stamp` files are from 2026-11-16, 17:11
-to 17:16. The key stamp is rewritten after every generation, so none of these
-runs regenerated. The lane's reflog places the two debug invocations in
+The run dirs `_merge-verify` holds show the build script re-run without
+regenerating, with `tree-sitter-reify/` byte-identical throughout. The three run
+dirs that hold a generation stamp were invoked at 2026-11-17 06:30:31 (release,
+`02cc16f2…`), 11:40:25 and 12:09:26 (debug, `867156fd…` and `e66a76b4…`), and
+their `generation_key.stamp` files are from 2026-11-16, 17:11 to 17:16. The key
+stamp is rewritten after every generation, so none of these runs regenerated.
+The lane's reflog places the two debug invocations in
 gen.643's verify at `cb24012c60`, checked out at 11:39:51 from `48f6c7710b`,
 which contains `d176b5ddfd` and is identical under `tree-sitter-reify/`. The
 release invocation falls under the 05:35:53 reset to `40b1ebb59f`, which also
@@ -1189,7 +1203,7 @@ kernels' accepted member-feature splits (Member features) still make a plain
   `_merge-verify`, `grammar.js`'s mtime was bumped mid-verify with its bytes
   unchanged, the build script re-ran, and two other run dirs are now older
   than it, so the next verify there is expected to re-run the script and
-  rebuild the cascade. This is filed as a follow-up and is unresolved.
+  rebuild the cascade. It is unresolved, and owned by #10144.
   Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
