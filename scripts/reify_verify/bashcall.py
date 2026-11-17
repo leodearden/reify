@@ -9,6 +9,7 @@ read_export and source_delta each fork ONE `bash -c` per call; run_script
 forks the script itself. Paths, the function name and its arguments travel as argv
 and are never interpolated into the script text. A lib is sourced and called
 under the nounset and pipefail a `$(...)` inherits from verify.sh's options.
+ask reports a function that never ran as a NotCalled, never as a status.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
 Each reader turns that into its own conservative value and a stderr warning.
@@ -23,7 +24,10 @@ from reify_verify import childproc
 from reify_verify.childproc import CallResult
 
 _VERIFY_LIB_OPTIONS = "set -uo pipefail; "
-_SOURCE_AND_CALL = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; shift; "$@"'
+_SOURCED_RECORD = "@@bashcall:sourced@@"
+_SOURCE_AND_CALL = (
+    _VERIFY_LIB_OPTIONS + f'source "$1" || exit; builtin printf "\\0{_SOURCED_RECORD}\\0" >&2; shift; "$@"'
+)
 _SOURCE_AND_PRINT = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; printenv -- "$2" || exit 0'
 _ENV_AROUND_SOURCE_END = "@@source_delta:end@@"
 _ENV_AROUND_SOURCE = (
@@ -112,6 +116,16 @@ class EnvDelta:
         return adopted
 
 
+@dataclass(frozen=True)
+class NotCalled:
+    """The function never ran: bash did not start, or sourcing its lib failed or ended the shell.
+
+    `result` is the shell's status and stderr, never the function's answer.
+    """
+
+    result: CallResult
+
+
 class DataFileUnreadable(Exception):
     def __init__(self, file: DataFile, reason: str):
         super().__init__(f"{file.path} is unreadable ({reason})")
@@ -131,28 +145,38 @@ class BashCallError(Exception):
 
 
 def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
-    """The call's stdout and stderr lines; a non-zero exit raises BashCallError, as does bash
-    itself failing to start.
+    """The call's stdout and stderr lines; a non-zero exit raises BashCallError, as does a
+    function that never ran.
 
     cwd is repo_root, as under verify.sh's `cd "$REPO_ROOT"`, and stderr is
     captured so the caller returns it in bash's stderr order.
     """
-    result = ask(call, args, repo_root, env)
-    if result.returncode != 0:
-        raise BashCallError(call, result)
-    return result
+    answer = ask(call, args, repo_root, env)
+    if isinstance(answer, NotCalled):
+        raise BashCallError(call, answer.result, "the function never ran")
+    if answer.returncode != 0:
+        raise BashCallError(call, answer)
+    return answer
 
 
-def ask(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
-    """The call's result, whatever its status: for a function whose exit status is its answer.
+def ask(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult | NotCalled:
+    """The function's result, whatever its status: for a function whose exit status is its answer.
 
-    It forks as run does; bash failing to start is returned with the shell's status.
+    A returned CallResult's status is always the function's own. Once the lib
+    is sourced, the shell writes a NUL-wrapped record to stderr before it
+    calls the function; without that record the function never ran, which
+    is a NotCalled. The record is removed, so the stderr is the lib's and
+    the function's, byte for byte.
     """
-    return childproc.run(
+    result = childproc.run(
         ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
         repo_root,
         _seam_env(env),
     )
+    before, sourced, after = result.stderr.partition(f"\0{_SOURCED_RECORD}\0")
+    if not sourced:
+        return NotCalled(result)
+    return CallResult(result.returncode, result.stdout, before + after)
 
 
 def run_script(call: ScriptCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
