@@ -251,6 +251,33 @@ pub struct KeyedSubInfo {
     pub member_keys: Vec<MemberKey>,
 }
 
+/// A sub-instance slot holding cells in `value_cells` whose registry entry
+/// does not name the template its sub stamps from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubSlotRegistryMismatch {
+    pub(crate) slot: String,
+    pub(crate) sub_template: String,
+    pub(crate) registry_template: Option<String>,
+}
+
+impl std::fmt::Display for SubSlotRegistryMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            slot,
+            sub_template,
+            registry_template,
+        } = self;
+        write!(
+            f,
+            "`{slot}` holds cells of `{sub_template}` but the registry records "
+        )?;
+        match registry_template {
+            Some(template) => write!(f, "`{template}`"),
+            None => write!(f, "none"),
+        }
+    }
+}
+
 /// The evaluation graph: holds all typed nodes in PersistentMaps
 /// for O(1) clone with structural sharing.
 #[derive(Debug, Clone, Default)]
@@ -624,6 +651,41 @@ impl EvaluationGraph {
     /// when `entity` is not a sub instance in this graph.
     pub(crate) fn sub_instance_template(&self, entity: &str) -> Option<&str> {
         self.sub_instance_templates.get(entity).map(String::as_str)
+    }
+
+    /// Every collection-sub slot holding a cell in `value_cells` whose registry
+    /// entry does not name the template its sub stamps from.
+    pub(crate) fn sub_slot_registry_mismatches(&self) -> Vec<SubSlotRegistryMismatch> {
+        let stamped: HashSet<&str> = self
+            .value_cells
+            .keys()
+            .map(|id| id.entity.as_str())
+            .collect();
+        self.stamped_sub_slots(&stamped)
+            .filter_map(|(slot, sub_template)| {
+                let registry_template = self.sub_instance_template(&slot);
+                (registry_template != Some(sub_template)).then(|| SubSlotRegistryMismatch {
+                    registry_template: registry_template.map(str::to_string),
+                    sub_template: sub_template.to_string(),
+                    slot,
+                })
+            })
+            .collect()
+    }
+
+    /// Each sub slot whose entity is in `stamped`, paired with the template
+    /// its sub stamps from. A collection's slots are a contiguous prefix, so
+    /// its walk stops at the first slot holding no cell.
+    fn stamped_sub_slots<'a>(
+        &'a self,
+        stamped: &'a HashSet<&str>,
+    ) -> impl Iterator<Item = (String, &'a str)> + 'a {
+        self.collection_subs.iter().flat_map(move |col_sub| {
+            (0_i64..)
+                .map(|index| col_sub.slot_entity(index))
+                .take_while(|slot| stamped.contains(slot.as_str()))
+                .map(|slot| (slot, col_sub.structure_name.as_str()))
+        })
     }
 
     /// The realization whose handle the scalar geometry cell `cell` holds: the
