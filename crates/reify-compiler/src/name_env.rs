@@ -381,8 +381,9 @@ mod tests {
         crate::compile(&parsed)
     }
 
-    /// `hi` (import tier) outranks `lo` (std tier). `local` declares `L` twice
-    /// and an OCCURRENCE `Q` over `hi`'s structure `Q`.
+    /// `hi` (import tier) outranks `lo` (std tier); both declare `X`, `hi` as
+    /// an occurrence and `lo` as a structure. `local` declares `L` twice and an
+    /// OCCURRENCE `Q` over `hi`'s structure `Q`.
     struct Fixture {
         hi: CompiledModule,
         lo: CompiledModule,
@@ -418,10 +419,11 @@ mod tests {
             Fixture { hi, lo, local }
         }
 
-        /// Lists `lo` first, so a view that took winners in slice order rather
-        /// than tier order binds `X` and `Q` differently.
-        fn prelude(&self) -> [&CompiledModule; 2] {
-            [&self.lo, &self.hi]
+        /// Both orders of the two-module prelude. `X` is the only name both
+        /// modules declare, so `lo`-first catches a view that keeps the first
+        /// slice entry and `hi`-first catches one that keeps the last.
+        fn slice_orders(&self) -> [[&CompiledModule; 2]; 2] {
+            [[&self.lo, &self.hi], [&self.hi, &self.lo]]
         }
 
         /// The bindings of the prelude-only ctor view.
@@ -451,17 +453,24 @@ mod tests {
             .unwrap_or_else(|| panic!("fixture declares {name}"))
     }
 
+    /// `prelude` is the slice order `view` was built under; failures name it.
     fn assert_binds(
         view: &HashMap<String, &TopologyTemplate>,
         expected: &[(&str, &TopologyTemplate)],
+        prelude: &[&CompiledModule],
     ) {
+        let order = prelude
+            .iter()
+            .map(|module| module.path.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let keys: BTreeSet<&str> = view.keys().map(String::as_str).collect();
         let expected_keys: BTreeSet<&str> = expected.iter().map(|(name, _)| *name).collect();
-        assert_eq!(keys, expected_keys);
+        assert_eq!(keys, expected_keys, "under prelude slice order {order}");
         for (name, template) in expected {
             assert!(
                 std::ptr::eq(view[*name], *template),
-                "{name} binds the wrong {} template",
+                "{name} binds the wrong {} template under prelude slice order {order}",
                 view[*name].entity_kind
             );
         }
@@ -470,28 +479,37 @@ mod tests {
     #[test]
     fn prelude_ctor_view_keeps_winning_prelude_structures_only() {
         let fixture = Fixture::new();
-        assert_binds(
-            &prelude_ctor_view(&fixture.prelude()),
-            &fixture.expected_prelude_view(),
-        );
+        for prelude in fixture.slice_orders() {
+            assert_binds(
+                &prelude_ctor_view(&prelude),
+                &fixture.expected_prelude_view(),
+                &prelude,
+            );
+        }
     }
 
     #[test]
     fn overlaying_local_templates_shadows_the_prelude_by_name() {
         let fixture = Fixture::new();
-        let prelude_view = prelude_ctor_view(&fixture.prelude());
-        assert_binds(
-            &overlay_local_templates(&prelude_view, &fixture.local),
-            &fixture.expected_overlaid_view(),
-        );
+        for prelude in fixture.slice_orders() {
+            let prelude_view = prelude_ctor_view(&prelude);
+            assert_binds(
+                &overlay_local_templates(&prelude_view, &fixture.local),
+                &fixture.expected_overlaid_view(),
+                &prelude,
+            );
+        }
     }
 
     #[test]
     fn ctor_template_registry_is_the_prelude_view_overlaid_by_the_locals() {
         let fixture = Fixture::new();
-        assert_binds(
-            &ctor_template_registry(&fixture.local, &fixture.prelude()),
-            &fixture.expected_overlaid_view(),
-        );
+        for prelude in fixture.slice_orders() {
+            assert_binds(
+                &ctor_template_registry(&fixture.local, &prelude),
+                &fixture.expected_overlaid_view(),
+                &prelude,
+            );
+        }
     }
 }
