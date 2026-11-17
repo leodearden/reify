@@ -296,8 +296,12 @@ pub fn emit_rpath_for_bins(dep: NativeDep) -> bool {
 /// unscoped form which covers it.
 ///
 /// For packages with bins of their own (`reify-cli`, `reify-gui`), this
-/// also applies to those bins; that's identical in effect to
-/// [`emit_rpath_for_bins`] and harmless when both are called.
+/// also reaches those bins, at its place on the link line: cargo passes link
+/// args to the linker in `build.rs` emission order, scoped or not, and `ld`
+/// concatenates `-rpath` occurrences in that order. So such a package must
+/// emit its bin-scoped directives ([`emit_tbb_pin_for_bins`], then
+/// [`emit_rpath_for_bins`]) before any unscoped one, or the unscoped dir
+/// lands earlier in the bin's RUNPATH.
 pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
     let row = dep.row();
     println!("cargo:rerun-if-env-changed={}", row.lib_env);
@@ -355,7 +359,9 @@ pub fn emit_tbb_pin_for_bins() -> bool {
 /// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
 /// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
 /// load time (both bind the same pin-dir copy) and is harmless to the
-/// loader, just slightly redundant in the ELF.
+/// loader, just slightly redundant in the ELF. Link args reach the linker in
+/// emission order, so such a package emits this after its bin-scoped
+/// directives, as [`emit_rpath_for_tests`] explains.
 pub fn emit_tbb_pin_for_tests() -> bool {
     emit_tbb_pin("cargo:rustc-link-arg")
 }
