@@ -17,7 +17,7 @@ mod name_uses;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticIdentity, ModulePath, Severity};
+use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
 
@@ -32,10 +32,53 @@ pub struct RequiredImport {
     pub names: Vec<NameUse>,
 }
 
+/// The exact module an [`ImportPlan`] was derived for: its path and the hash
+/// of its source.
+#[derive(Clone, PartialEq, Eq)]
+struct Subject {
+    path: ModulePath,
+    content_hash: ContentHash,
+}
+
+impl Subject {
+    fn of(parsed: &ParsedModule) -> Self {
+        Self {
+            path: parsed.path.clone(),
+            content_hash: parsed.content_hash,
+        }
+    }
+
+    /// # Panics
+    ///
+    /// If `parsed` is not this subject: another path, or the same path with
+    /// edited source.
+    fn assert_is(&self, parsed: &ParsedModule) {
+        let given = Self::of(parsed);
+        if *self == given {
+            return;
+        }
+        let source_changed = if self.path == given.path {
+            format!(
+                ": the paths match but the source changed ({:?} at derive, {:?} given); \
+                 re-derive the plan for the edited source",
+                self.content_hash, given.content_hash
+            )
+        } else {
+            String::new()
+        };
+        panic!(
+            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
+             derived for `{}`, given `{}`{source_changed}",
+            self.path.to_dotted(),
+            given.path.to_dotted()
+        );
+    }
+}
+
 /// The std-import derivation of one module over one universe.
 #[derive(Clone)]
 pub struct ImportPlan<'u> {
-    subject: ModulePath,
+    subject: Subject,
     required: Vec<RequiredImport>,
     universe: Vec<&'u CompiledModule>,
     whole_universe_diagnostics: Vec<Diagnostic>,
@@ -85,20 +128,16 @@ impl<'u> ImportPlan<'u> {
     ///
     /// # Panics
     ///
-    /// If `parsed` is not at the module path the plan was derived for: the
-    /// whole-universe diagnostics are that module's.
+    /// If `parsed` is not the module the plan was derived for, at the same
+    /// path with the same source: the whole-universe diagnostics are that
+    /// exact module's, so a module whose source was edited, for example by
+    /// [`insert_imports`], needs a fresh plan.
     pub fn residual_diagnostics(
         &self,
         parsed: &ParsedModule,
         imports: &[ModulePath],
     ) -> Vec<Diagnostic> {
-        assert!(
-            parsed.path == self.subject,
-            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
-             derived for `{}`, given `{}`",
-            self.subject.to_dotted(),
-            parsed.path.to_dotted()
-        );
+        self.subject.assert_is(parsed);
         let imported: Vec<&CompiledModule> = self
             .universe
             .iter()
@@ -154,7 +193,7 @@ pub fn derive_std_imports<'u>(
         }
     }
     ImportPlan {
-        subject: parsed.path.clone(),
+        subject: Subject::of(parsed),
         required: by_module
             .into_values()
             .map(|(module, names)| RequiredImport {
