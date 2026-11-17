@@ -13,7 +13,7 @@ use reify_compiler::import_headers::{
     ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports, cfg_unsatisfied_imports,
     derive_std_imports, insert_imports,
 };
-use reify_core::{DiagnosticCode, ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_to_string};
 
 const SUBJECT_PATH: &str = "subject";
 
@@ -512,13 +512,25 @@ fn an_already_imported_module_is_still_derived() {
     );
 }
 
-// ─── g1-g5: the residual-diagnostics guard ─────────────────────────────────
+// ─── g1-g6: the residual-diagnostics guard ─────────────────────────────────
 
 fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
     dotted
         .iter()
         .map(|path| ModulePath::from_dotted(path).expect("valid dotted module path"))
         .collect()
+}
+
+/// What `plan.residual_diagnostics` panics with for `given`. `#[should_panic]`
+/// matches one substring, and a refusal is also pinned by what it must not say.
+fn refusal_message(plan: &ImportPlan, given: &ParsedModule) -> String {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plan.residual_diagnostics(given, &[])
+    }));
+    match outcome {
+        Ok(residual) => panic!("expected a refusal, but the plan judged the module: {residual:?}"),
+        Err(payload) => panic_payload_to_string(payload.as_ref()),
+    }
 }
 
 #[test]
@@ -560,6 +572,25 @@ fn a_module_other_than_the_one_the_plan_was_derived_for_is_refused() {
     let plan = derive(source, &universe);
     let elsewhere = parse_clean(source, "elsewhere");
     plan.residual_diagnostics(&elsewhere, &[]);
+}
+
+#[test]
+fn a_refusal_for_another_path_names_both_paths_and_never_claims_they_match() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let other_source = "structure def Other {}\n";
+    let plan = derive(source, &universe);
+    for elsewhere_source in [source, other_source] {
+        let message = refusal_message(&plan, &parse_clean(elsewhere_source, "elsewhere"));
+        assert!(
+            message.contains("derived for `subject`, given `elsewhere`"),
+            "{message}\nsource:\n{elsewhere_source}"
+        );
+        assert!(
+            !message.contains("the paths match"),
+            "{message}\nsource:\n{elsewhere_source}"
+        );
+    }
 }
 
 #[test]
