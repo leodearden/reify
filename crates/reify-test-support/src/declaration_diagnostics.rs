@@ -44,7 +44,10 @@ pub fn assert_single_declaration_error(
     };
     let span = label.span;
     let Some(covered) = source.get(span.start as usize..span.end as usize) else {
-        panic!("'{declaration}': label span {span:?} is outside the source")
+        panic!(
+            "'{declaration}': label span {span:?} is not a valid char range of the {}-byte source",
+            source.len()
+        )
     };
     assert!(
         covered.contains(&declaration),

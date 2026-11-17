@@ -10,14 +10,18 @@
 //!
 //! This file guards `reify-test-support`'s panicking helpers against
 //! regressing back to the closure form, or dropping `#[track_caller]` from
-//! any link of a delegation chain: `require_default_expr` (reached through
-//! the public `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr`
-//! wrappers), `cell_value`, and the value-cell lookup family's own panics
-//! ("no template named", "no value cell named", "ambiguous cell name",
-//! "expected at least one template"), each driven through the longest public
-//! chain that reaches it, and `assert_single_declaration_error`. Each guard asserts the reported location plus a
-//! SHORT payload substring — never full message prose, per the wording rule
-//! `dimensioned_assertions.rs` already follows.
+//! any link of a delegation chain:
+//! - `require_default_expr`, reached through the public
+//!   `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr` wrappers;
+//! - `cell_value`;
+//! - the value-cell lookup family's own panics ("no template named", "no
+//!   value cell named", "ambiguous cell name", "expected at least one
+//!   template"), each driven through the longest public chain that reaches it;
+//! - `assert_single_declaration_error`, called directly.
+//!
+//! Each guard asserts the reported location plus a SHORT payload substring —
+//! never full message prose, per the wording rule `dimensioned_assertions.rs`
+//! already follows.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
@@ -92,8 +96,8 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
     }
 }
 
-/// Asserts `site` was attributed to the CALLER (this file), not to `helpers.rs`, and that
-/// its payload contains `needle`. File identity alone discriminates the regression, so no
+/// Asserts `site` was attributed to the CALLER (this file), not to the helper's own module,
+/// and that its payload contains `needle`. File identity alone discriminates the regression, so no
 /// exact line is pinned (`rustfmt --edition 2024` is free to shift it); `site.line` is
 /// surfaced for diagnosis only.
 #[track_caller]
@@ -101,7 +105,8 @@ fn assert_attributed_here(site: &PanicSite, needle: &str) {
     assert_eq!(
         site.file.as_str(),
         file!(),
-        "panic must attribute to the CALLER (this file), not to helpers.rs; reported {}:{}",
+        "panic must attribute to the CALLER (this file), not to the helper's own module; \
+         reported {}:{}",
         site.file,
         site.line,
     );
