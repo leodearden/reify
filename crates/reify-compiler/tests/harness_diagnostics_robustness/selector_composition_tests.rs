@@ -1,14 +1,6 @@
 //! Compiler integration tests for **task 4119 δ**, selector composition algebra
 //! (`union`/`intersect`/`difference`) — the E_SELECTOR_KIND_MISMATCH diagnostic
 //! (BT1) and same-kind composition result type (Type::Selector(k)).
-//!
-//! Two test groups:
-//!   (a) Mixed-kind composition: `union`/`intersect`/`difference` over Face and
-//!       Edge selectors each produce EXACTLY ONE `E_SELECTOR_KIND_MISMATCH`
-//!       diagnostic (Error severity) naming both kinds.  BT1.
-//!   (b) Same-kind composition: `union`/`intersect`/`difference` over two Face
-//!       selectors compile with no errors and the binding's inferred type is
-//!       `Type::Selector(Face)`.
 
 use reify_core::Type;
 use reify_core::{DiagnosticCode, Severity, ty::SelectorKind};
