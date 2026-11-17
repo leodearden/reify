@@ -79,6 +79,13 @@ pub use geometry::diagnose as geometry_diagnose;
 /// `undef`.
 pub use orientation::diagnose as orientation_diagnose;
 
+/// Public re-export of the `dir` builtin's post-`Value::Undef` classifier
+/// (direction-typing β). Drained by `crates/reify-expr/src/lib.rs`'s
+/// `emit_undef_builtin_diagnostics`: a dimensioned component is
+/// `DimensionedArgRejected`, a zero or non-finite vector is
+/// `E_DegenerateDirection`; shape faults stay silent.
+pub use direction::diagnose as direction_diagnose;
+
 /// Public re-export of the PRB-flexure diagnostic classifier (task 3871).
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
@@ -204,6 +211,7 @@ mod analysis;
 mod complex;
 mod construct;
 mod dfm;
+mod direction;
 mod fea;
 mod flexures;
 mod geometry;
@@ -286,6 +294,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = orientation::eval_orientation(name, args) {
+        return v;
+    }
+    if let Some(v) = direction::eval_direction(name, args) {
         return v;
     }
     if let Some(v) = geometry::eval_geometry(name, args) {

@@ -671,10 +671,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
                     // case (`linear_combine`) / AffineMap-constructor or
                     // transform_exp / inverse-dynamics / iso_it_tolerance /
-                    // orient_exp builtin returns `Value::Undef`, classify and emit
-                    // its specific diagnostic into the ctx sink.
-                    // The six name families are disjoint, so at most one diagnose
-                    // helper fires for a single Undef. Consolidated into one
+                    // orient_exp / dir builtin returns `Value::Undef`, classify and
+                    // emit its specific diagnostic into the ctx sink.
+                    // The classifiers' name families are disjoint, so at most one
+                    // diagnose helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 3 MiB test-thread stack under
@@ -2045,8 +2045,9 @@ fn interp_render(value: &Value) -> String {
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
-/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
-/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
+/// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
+/// (#6080), and the `dir` direction constructor (`direction_diagnose`) — for a
+/// builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2057,10 +2058,10 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
-/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// The classifiers' name families (stackup math builtins / `"linear_combine"` /
+/// the geometry-builtin family (`geometry_diagnose`) / dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"`) are disjoint, so at most
+/// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
 ///
@@ -2097,6 +2098,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // spelling, so this Severity::Error is the migration mechanism for that
         // breaking change rather than a silent Undef.
         reify_stdlib::orientation_diagnose(name, args),
+        // `dir`: dimensioned component -> DimensionedArgRejected; zero or
+        // non-finite vector -> E_DegenerateDirection.
+        reify_stdlib::direction_diagnose(name, args),
     ];
     for diag in classified.into_iter().flatten() {
         // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This

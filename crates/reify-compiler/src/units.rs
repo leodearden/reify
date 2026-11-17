@@ -641,7 +641,7 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// understands — suppressing the very `UnresolvedFunction` warning this module
 /// exists to emit.
 ///
-/// **`offset` is arity-gated**, not arity-blind like its thirteen siblings:
+/// **`offset` is arity-gated**, not arity-blind like its fourteen siblings:
 /// only the arity-2 `offset(Plane, Length) -> Plane` form is a construction
 /// datum (the arity-3 form is a γ relation in
 /// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
@@ -671,6 +671,8 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
     "bbox",
     "bbox_size",
     "bbox_center",
+    // Direction constructor (direction-typing β, docs/prds/v0_6/direction-typing.md C4).
+    "dir",
     // Arity-gated: construction datum at arity 2 only (see above).
     "offset",
 ];
@@ -681,7 +683,8 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], [`TOLERANCING_MARKER_NAMES`]).
 ///
 /// These are pure kernel-free value-algebra constructors evaluated in
-/// `reify_stdlib::geometry::eval_geometry`:
+/// reify-stdlib's `eval_builtin` chain (`geometry::eval_geometry`;
+/// `direction::eval_direction` for `dir`):
 ///
 /// ```text
 /// fn midplane(a: Plane, b: Plane)                  -> Plane
@@ -694,6 +697,8 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// fn bbox(min: Point3<Length>, max: Point3<Length>)-> BoundingBox
 /// fn bbox_size(bb: BoundingBox)                    -> Vector3<Length>
 /// fn bbox_center(bb: BoundingBox)                  -> Point3<Length>
+/// fn dir(x, y, z)                                  -> Direction  (x, y, z: Int | Real | dimensionless Scalar)
+/// fn dir(v: Vector3<Dimensionless>)                -> Direction
 /// ```
 ///
 /// Each name resolves to its datum codomain:
@@ -706,6 +711,7 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// - `bbox`                                → `Type::BoundingBox`
 /// - `bbox_size`                           → `Vector3<Length>`
 /// - `bbox_center`                         → `Point3<Length>`
+/// - `dir`                                 → `Type::Direction`
 ///
 /// **BoundingBox is Length-valued (task 6081).** The three `bbox*` names are
 /// the BoundingBox constructor and its two accessors. Their quantity slot is
@@ -762,14 +768,15 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 /// ladder places the relation arm BEFORE this one, so arity-3 `offset` claims
 /// `Relation` first and arity-2 `offset` falls through to here. This arg-aware
 /// shape (mirroring [`affine_map_algebra_result_type`]) exists solely for
-/// `offset`'s arity gate; the other four names are arity-blind.
+/// `offset`'s arity gate; every other name is arity-blind.
 ///
 /// **Arity validation deferred to eval (by design).** Apart from `offset`'s
 /// gate, these constructors do NOT check argument count here: a wrong-arity
 /// `axis_through(p)` or `frame_at(o)` still types as its codomain (`Axis` /
-/// `Frame(3)`), and the arity error surfaces at eval in
-/// `reify_stdlib::geometry::eval_geometry` (which returns `Value::Undef` on bad
-/// args). This mirrors the sibling affine-map constructor family, which is
+/// `Frame(3)`), and the arity error surfaces at eval, where the name's eval
+/// home (`reify_stdlib::geometry::eval_geometry`, or
+/// `reify_stdlib::direction::eval_direction` for `dir`) returns `Value::Undef`
+/// on bad args. This mirrors the sibling affine-map constructor family, which is
 /// likewise arity-blind at the type level. Pinned by
 /// `datum_constructor_tests::wrong_arity_constructor_still_types_as_codomain`.
 /// The six axis-aligned neighbours inherit that contract unchanged: a
@@ -793,6 +800,9 @@ pub(crate) fn datum_constructor_result_type(
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
         "frame_at" => Some(reify_core::Type::Frame(3)),
+        // Arity-blind: arity and component kinds are judged at eval by
+        // `reify_stdlib::direction`'s classifier.
+        "dir" => Some(reify_core::Type::Direction),
         // Axis-aligned construction datums (task 5344 neighbour audit). Same
         // datum vocabulary, same codomains — `make_plane`/`make_axis` in
         // `reify_stdlib::geometry` are the eval side. Arity-blind by design like
@@ -4588,5 +4598,26 @@ mod tests {
             datum_constructor_result_type("frame_at", &[]),
             Some(reify_core::Type::Frame(3)),
         );
+    }
+
+    /// `dir` is a datum-family name typed `Direction` at every arity: arity
+    /// and argument kinds are judged at eval by reify-stdlib's classifier.
+    #[test]
+    fn dir_is_claimed_by_the_datum_resolver_as_direction() {
+        assert!(DATUM_CONSTRUCTOR_NAMES.contains(&"dir"));
+        for arity in [0, 1, 3] {
+            let probe_args = vec![
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Undef,
+                    reify_core::Type::dimensionless_scalar(),
+                );
+                arity
+            ];
+            assert_eq!(
+                datum_constructor_result_type("dir", &probe_args),
+                Some(reify_core::Type::Direction),
+                "dir at arity {arity} must type as Direction"
+            );
+        }
     }
 }

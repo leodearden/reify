@@ -791,6 +791,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "04-linalg",
     },
     BuiltinFunctionInfo {
+        name: "dir",
+        signature: "dir(x: Real, y: Real, z: Real) -> Direction | dir(v: Vector3<Dimensionless>) -> Direction",
+        doc: "Unit Direction from three dimensionless components (Int, Real or dimensionless Scalar) or a Vector3<Dimensionless>; a dimensioned component is rejected, and a zero or non-finite vector is an E_DegenerateDirection error.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
         name: "magnitude",
         signature: "magnitude(v: Vector) -> Real",
         doc: "Euclidean length of vector `v`.",
@@ -2733,6 +2739,7 @@ type Speed = Length
             func_labels.contains(&"normalize"),
             "should include 'normalize'"
         );
+        assert!(func_labels.contains(&"dir"), "should include 'dir'");
         assert!(
             func_labels.contains(&"magnitude"),
             "should include 'magnitude'"
@@ -2862,6 +2869,23 @@ type Speed = Length
             .detail
             .clone()
             .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
+    }
+
+    /// `dir` has two arities; the served signature must advertise both.
+    #[test]
+    fn dir_completion_advertises_both_arities() {
+        let items = compute_completions(
+            reify_test_support::bracket_source(),
+            &test_uri(),
+            Position::new(1, 0),
+        );
+        let sig = served_signature(&items, "dir");
+        for part in ["dir(x", "dir(v", "-> Direction"] {
+            assert!(
+                sig.contains(part),
+                "dir's served signature must carry {part:?}; got: {sig}"
+            );
+        }
     }
 
     fn builtin_signature(name: &str) -> &'static str {

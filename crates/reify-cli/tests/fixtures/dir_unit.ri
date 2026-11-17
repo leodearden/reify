@@ -1,0 +1,18 @@
+// dir_unit.ri — CLI eval fixture for direction-typing β: `dir(x, y, z)` and
+// `dir(v)` construct unit Directions that flow into Direction slots.
+
+module dir_unit
+
+fn pick(d: Direction) -> Direction { d }
+
+structure def DirUnit {
+    let o = point3(0mm, 0mm, 0mm)
+    let a = dir(0, 1, 0)
+    let b = dir(0.0, 2.0, 0.0)
+    let c = dir(vec3(0, 0, 3))
+    let near = dir(2e-12, 0, 0)
+    let ident = dir(axis_x(o).dir)
+    let fy = frame_at(o, dir(1, 0, 0), dir(0, 0, 1)).y
+    let via_fn = pick(dir(0, 1, 0))
+    let via_proj = pick(axis_y(o).dir)
+}

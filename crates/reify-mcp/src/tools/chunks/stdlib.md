@@ -22,7 +22,7 @@ The Reify standard library (`std.*`) provides domain-specific functionality.
 `abs`, `min`, `max`, `clamp`, `lerp`, `sqrt`, `pow`, `log`, `exp`
 `sin`, `cos`, `tan` (take `Angle`)
 `asin`, `acos`, `atan`, `atan2` (return `Angle`)
-`dot`, `cross`, `normalize`, `magnitude`, `determinant`, `inverse`
+`dot`, `cross`, `normalize`, `magnitude`, `determinant`, `inverse`, `dir` (three dimensionless components, or a `Vector3<Dimensionless>`, to a unit `Direction`)
 
 ## Key Geometry Operations
 
