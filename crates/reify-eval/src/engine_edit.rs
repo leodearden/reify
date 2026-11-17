@@ -2780,6 +2780,9 @@ impl Engine {
         // the gap by re-evaluating grown instances within the same pass that
         // grows them.
         if structural_mutation {
+            new_snapshot
+                .graph
+                .debug_assert_sub_instance_registry_agrees();
             let compiled_fields = Arc::clone(&self.compiled_fields);
             let new_reverse_index =
                 crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
@@ -4441,6 +4444,7 @@ impl Engine {
         // pre-edit snapshot, add/remove instances to match the new count.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            let mut resized = false;
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -4456,6 +4460,7 @@ impl Engine {
                 if new_count_val == old_count_val {
                     continue;
                 }
+                resized = true;
 
                 // Helper closure: resolve a collection count value to an integer.
                 let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
@@ -4563,6 +4568,11 @@ impl Engine {
                     .graph
                     .topology_fingerprint()
                     .combine(count_state_hash);
+            }
+            if resized {
+                new_snapshot
+                    .graph
+                    .debug_assert_sub_instance_registry_agrees();
             }
         }
 
