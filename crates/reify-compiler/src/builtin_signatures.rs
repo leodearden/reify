@@ -247,6 +247,7 @@
 //! skipped here and still relies on the eval-layer gate.  Both layers are load-
 //! bearing; removing either leaves a hole.
 
+use reify_core::direction::DIRECTION_MIGRATION_HINT;
 use reify_core::units::{ANGLE_MIGRATION_HINT, DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
@@ -287,9 +288,10 @@ pub(crate) enum ExpectedArg {
         /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
         ///
         /// Non-optional: a dimensioned slot always has a literal spelling to
-        /// migrate TO, so a hint-less `Scalar` slot is unrepresentable. Only
-        /// [`ExpectedArg::Int`], [`ExpectedArg::Enum`] and
-        /// [`ExpectedArg::Direction`] render un-hinted.
+        /// migrate TO, so a hint-less `Scalar` slot is unrepresentable.
+        /// [`ExpectedArg::Int`] and [`ExpectedArg::Enum`] render un-hinted; an
+        /// [`ExpectedArg::Direction`] slot is hinted only for a `Vector3` (see
+        /// [`direction_mismatch_hint`]).
         ///
         /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
         /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
@@ -1215,9 +1217,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
-/// because the field is non-optional. Only [`ExpectedArg::Int`],
-/// [`ExpectedArg::Enum`] and [`ExpectedArg::Direction`] render un-hinted, and
-/// for them there is nothing to migrate TO.
+/// because the field is non-optional. [`ExpectedArg::Int`] and
+/// [`ExpectedArg::Enum`] render un-hinted, for there is nothing to migrate TO;
+/// an [`ExpectedArg::Direction`] slot is hinted only for a `Vector3` (see
+/// [`direction_mismatch_hint`]).
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1437,7 +1440,7 @@ pub(crate) fn check_builtin_arg_types(
                     slot.name,
                     &Type::Direction.to_string(),
                     other,
-                    None,
+                    direction_mismatch_hint(other),
                     call_span,
                     diagnostics,
                 ),
@@ -1509,6 +1512,12 @@ fn emit_mismatch(
             .with_code(DiagnosticCode::ArgTypeMismatch)
             .with_label(DiagnosticLabel::new(call_span, label_msg)),
     );
+}
+
+/// A `Vector3` where a Direction is required gets the `dir(…)` fix hint; any
+/// other kind renders un-hinted (direction-typing C7).
+fn direction_mismatch_hint(actual: &Type) -> Option<&'static str> {
+    matches!(actual, Type::Vector { n: 3, .. }).then_some(DIRECTION_MIGRATION_HINT)
 }
 
 #[cfg(test)]
