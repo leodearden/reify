@@ -36,8 +36,8 @@ fn key(
 fn allowlist_table_is_exactly_the_seeded_burn_down_set() {
     assert_eq!(
         CHECK_ERROR_EXIT_ALLOWLIST.len(),
-        3,
-        "the burn-down set has exactly three entries; growing it is a \
+        2,
+        "the burn-down set has exactly two entries; growing it is a \
          regression against INV-SF-2's no-per-code-list end state, and \
          shrinking it means an entry was retired — update this pin \
          deliberately, in the same commit as the demotion/fix that retired it"
@@ -52,11 +52,6 @@ fn allowlist_table_is_exactly_the_seeded_burn_down_set() {
         (
             r#"MessageContains("all geometry operations failed")"#.to_string(),
             CheckErrorAllowlistDisposition::Demote,
-            "#5404",
-        ),
-        (
-            "Code(ConstraintViolated)".to_string(),
-            CheckErrorAllowlistDisposition::FixPath,
             "#5404",
         ),
     ];

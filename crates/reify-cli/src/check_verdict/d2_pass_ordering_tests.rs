@@ -1,7 +1,7 @@
 //! The three D2 passes COMPOSED, in `cmd_check`'s order.
 //!
 //! The comment block at `cmd_check`'s sub-path (b) declares twice that the
-//! ordering `merge_post_build_verdicts` → `drop_falsified_indeterminate_
+//! ordering `merge_post_build_verdicts` → `drop_falsified_constraint_
 //! diagnostics` → `merge_build_diagnostics` is LOAD-BEARING, but every other
 //! check_verdict test module exercises the three helpers in ISOLATION, and the
 //! integration lock uses a fixture where `check()` resolves the constraint on
@@ -10,7 +10,7 @@
 //! reorder the calls and every existing test would still pass.
 
 use super::{
-    check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
+    check_gating_error, dedup_diagnostics, drop_falsified_constraint_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
 use reify_core::{
@@ -71,10 +71,8 @@ fn indeterminate_warning(needle: &str) -> Diagnostic {
 /// returns the diagnostic list that reaches `report_eval_output`.
 fn run_in_cmd_check_order(result: &mut CheckResult, build: &BuildResult) -> Vec<Diagnostic> {
     merge_post_build_verdicts(result, Some(build));
-    let build_diagnostics = drop_falsified_indeterminate_diagnostics(
-        &build.diagnostics,
-        &result.constraint_results,
-    );
+    let build_diagnostics =
+        drop_falsified_constraint_diagnostics(&build.diagnostics, &result.constraint_results);
     merge_build_diagnostics(&result.diagnostics, &build_diagnostics)
 }
 
@@ -94,7 +92,7 @@ fn run_in_cmd_check_purpose_order(
     gdt_diags: &[Diagnostic],
     constraint_results: &[ConstraintCheckEntry],
 ) -> Vec<Diagnostic> {
-    let build_diags = drop_falsified_indeterminate_diagnostics(build_diags, constraint_results);
+    let build_diags = drop_falsified_constraint_diagnostics(build_diags, constraint_results);
     let realization_only = strip_diagnostics_reproduced_by(&build_diags, gdt_diags);
     let deduped_build = dedup_diagnostics(&realization_only);
     let mut merged = merge_build_diagnostics(&deduped_build, check_diags);
@@ -425,26 +423,22 @@ fn gate_reads_the_merged_set_not_checks_own_list() {
     );
 }
 
-/// CHARACTERIZATION, not endorsement: an id-less `ConstraintIndeterminate`
-/// diagnostic survives the inward leg even when the entry it describes was
-/// upgraded.
+/// An id-less `ConstraintIndeterminate` diagnostic survives the inward leg
+/// even when the entry it describes was upgraded, BY DESIGN.
 ///
 /// `engine_constraints::gdt_indeterminate_diag` emits `Conforms
 /// INDETERMINATE: {reason}` with the code but no constraint id, so
-/// [`indeterminacy_subject_in`]'s `constraint {id-or-label} indeterminate`
-/// grammar cannot read a subject out of it.  Surviving is CORRECT for a build-only entry (an
-/// unmatched diagnostic must never be dropped — that is what preserves D2's
-/// "every build()-only diagnostic appears at least once"), and is the reason
+/// `constraint_claim_in` reads no subject out of it and no verdict can speak
+/// for it.  Surviving is CORRECT for a build-only entry (an unmatched
+/// diagnostic must never be dropped — that is what preserves D2's "every
+/// build()-only diagnostic appears at least once"), and is the reason
 /// `keeps_idless_indeterminate_diagnostics` locks it on the outward leg.
 ///
 /// On the inward leg the same rule means an upgraded geometric `Conforms`
-/// would keep check()'s own id-less warning, reproducing the
-/// stdout-OK/stderr-indeterminate contradiction this task removes elsewhere.
-/// No measured path reaches it — build's copy runs with cleared
-/// `realization_handles`, so it is never MORE definite on the GD&T axis, and
-/// the upgrade cannot fire.  The combination is pinned here rather than
-/// argued in prose; it is the same residual gap tracked as #6048, and
-/// whoever closes that ticket should decide this case with it.
+/// would keep check()'s own id-less warning.  No measured path reaches it —
+/// build's copy runs with cleared `realization_handles`, so it is never MORE
+/// definite on the GD&T axis, and the upgrade cannot fire.  The combination
+/// is pinned here as a behaviour, not argued in prose.
 #[test]
 fn idless_indeterminate_warning_survives_an_upgrade() {
     let idless = Diagnostic::warning("Conforms INDETERMINATE: feature handle unrealized")
@@ -475,10 +469,9 @@ fn idless_indeterminate_warning_survives_an_upgrade() {
     assert_eq!(
         merged.iter().map(key).collect::<Vec<_>>(),
         vec![key(&idless)],
-        "an id-less ConstraintIndeterminate carries no needle to match, so \
+        "an id-less ConstraintIndeterminate carries no subject to match, so \
          the anchored retain leaves it alone. If this now fails because the \
-         line was dropped, the matcher grew a span- or code-only arm — \
-         update #6048 and this test together"
+         line was dropped, the matcher grew a span- or code-only arm"
     );
 }
 
@@ -489,7 +482,7 @@ fn idless_indeterminate_warning_survives_an_upgrade() {
 /// The warning must appear ZERO times in the final list.  That fails if
 /// `merge_build_diagnostics` runs before either filter (build's copy is
 /// re-appended after the inward leg dropped check's), or if
-/// `drop_falsified_indeterminate_diagnostics` reads the PRE-upgrade
+/// `drop_falsified_constraint_diagnostics` reads the PRE-upgrade
 /// verdicts (the entry still looks `Indeterminate`, so build's copy is not
 /// falsified and survives).
 #[test]
@@ -635,37 +628,20 @@ fn empty_build_diags_short_circuits_regardless_of_verdicts() {
         entry(1, Satisfaction::Violated),
     ];
 
-    assert!(drop_falsified_indeterminate_diagnostics(&[], &results).is_empty());
+    assert!(drop_falsified_constraint_diagnostics(&[], &results).is_empty());
 }
 
-/// CHARACTERIZATION, not endorsement: pins the mirror case that
-/// [`drop_falsified_indeterminate_diagnostics`]' `ConstraintIndeterminate`
-/// scoping deliberately leaves open (#6048).
+/// The mirror of `upgraded_constraints_warning_survives_in_neither_list` on
+/// the VIOLATION word (#6048 shape a).
 ///
 /// `check()` says `Satisfied`; `build()`'s copy says `Violated` and emits a
-/// matching `ConstraintViolated` error.  The verdict axis is already locked
-/// by `never_regresses_a_definite_check_verdict` — this locks the
-/// DIAGNOSTIC axis the reviewer found unasserted, so the helper's doc claim
-/// ("a `ConstraintViolated` line naming the same constraint survives
-/// untouched") is a test rather than prose.
-///
-/// The surviving error IS the stdout/stderr self-contradiction #6048
-/// describes.  It is pinned rather than fixed because dropping a violation
-/// error is a heavier call than dropping an indeterminacy warning.
-///
-/// The gap is exit-relevant: `check_gating_error` reads this merged set,
-/// so a surviving stale `ConstraintViolated` Error would move `check`'s
-/// EXIT CODE against the `Satisfied` verdict on its own stdout.
-/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `Code(ConstraintViolated)`
-/// (disposition `FixPath`) holds that off — this test and that entry are
-/// two views of one gap, and `FixPath` says the repair belongs in
-/// `drop_falsified_indeterminate_diagnostics`, not in the gate.
-///
-/// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
-/// assert the drop, and retire the `Code(ConstraintViolated)` allowlist
-/// entry in the same change.
+/// matching coded `ConstraintViolated` Error.  The verdict axis is locked by
+/// `never_regresses_a_definite_check_verdict`; this locks the DIAGNOSTIC
+/// axis: the stale Error is dropped by the outward filter, so stdout's `OK`
+/// and stderr agree, and `check_gating_error` (which reads this merged set)
+/// cannot move the exit code against the `Satisfied` verdict.
 #[test]
-fn mirror_case_build_side_violation_currently_survives() {
+fn stale_build_side_violation_is_dropped_when_check_says_satisfied() {
     let needle = "BoltFlange#constraint[1]";
     let violation = Diagnostic::error(format!(
         "constraint {} violated: clearance 0.4mm below minimum 0.5mm",
@@ -683,7 +659,7 @@ fn mirror_case_build_side_violation_currently_survives() {
         values: Default::default(),
         constraint_results: vec![entry(1, Satisfaction::Violated)],
         geometry_output: None,
-        diagnostics: vec![violation.clone()],
+        diagnostics: vec![violation],
         resolved_params: Default::default(),
     };
 
@@ -695,13 +671,15 @@ fn mirror_case_build_side_violation_currently_survives() {
         "precondition: the upgrade-only rule must have KEPT check()'s \
          definite verdict, else this is not the mirror scenario"
     );
-    assert_eq!(
-        merged.iter().map(key).collect::<Vec<_>>(),
-        vec![key(&violation)],
-        "known gap #6048: stdout will say OK for this constraint while \
-         stderr carries build's violation error. If this assertion now \
-         fails because the line was dropped, #6048 is fixed — update this \
-         test and the doc comment on \
-         drop_falsified_indeterminate_diagnostics together"
+    assert!(
+        merged.is_empty(),
+        "build's violation claim about a constraint the authoritative check \
+         reports Satisfied is false and must be dropped; got {:?}",
+        merged.iter().map(key).collect::<Vec<_>>()
+    );
+    assert!(
+        check_gating_error(&merged).is_none(),
+        "with the stale violation dropped, nothing gates check's exit against \
+         its own Satisfied verdict"
     );
 }

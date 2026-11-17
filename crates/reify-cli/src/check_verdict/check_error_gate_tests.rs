@@ -164,17 +164,21 @@ fn seeded_allowlist_entries_excuse_their_families() {
         "the `all geometry operations failed` entry (#5404): check writes no \
          geometry, so this is not a fact about the design"
     );
+}
+
+/// Families whose allowlist entry has been retired now gate like any other
+/// Error: whatever still excused them is fixed upstream of the gate.
+#[test]
+fn retired_allowlist_families_now_gate() {
     assert!(
         check_gating_error(&[Diagnostic::error(
             "constraint BoltFlange#constraint[1] violated: clearance 0.4mm \
              below minimum 0.5mm"
         )
         .with_code(DiagnosticCode::ConstraintViolated)])
-        .is_none(),
-        "the `Code(ConstraintViolated)` entry (#5404): a stale build-side \
-         ConstraintViolated can survive \
-         the merge while check's authoritative verdict is Satisfied; gating \
-         on it would contradict check's own stdout"
+        .is_some(),
+        "a violation Error that survives the merge is real: stale ones are \
+         removed upstream by drop_falsified_constraint_diagnostics"
     );
 }
 

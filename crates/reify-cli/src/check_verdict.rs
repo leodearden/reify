@@ -744,7 +744,7 @@ mod check_error_gate_tests;
 #[cfg(test)]
 mod merge_build_diagnostics_tests;
 #[cfg(test)]
-mod drop_falsified_indeterminate_diagnostics_tests;
+mod drop_falsified_constraint_diagnostics_tests;
 #[cfg(test)]
 mod merge_post_build_verdicts_tests;
 #[cfg(test)]
