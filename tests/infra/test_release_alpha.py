@@ -11,9 +11,17 @@ this file.
 Hermetic: each case runs a COPY of the real script inside a throwaway git repo
 whose push remote is a local bare repo under a `github.com/` path (so the
 script's remote filter matches and the push stays on disk), with a stub
-scripts/build-bundle.sh honouring its stdout contract and a stub `gh` first on
-PATH that serves auth, repo, release and issue calls from a state dir and logs
-every argv. Nothing reaches the network or the real repository.
+scripts/build-bundle.sh honouring its stdout contract, a stub
+tests/infra/test_bundle_clean_install.py that records its argv and proof knobs
+and exits with a fixture-controlled code, and a stub `gh` first on PATH that
+serves auth, repo, release and issue calls from a state dir and logs every
+argv. Nothing reaches the network or the real repository.
+
+The B7 proof gate (task 10079): the release runs the clean-container proof
+armed over exactly the one .deb and one .AppImage it publishes, and a red proof
+leaves no tag, release or closed issue, on a re-run too. ProofArmChain drives
+the REAL proof with the same arm env and a failing stub docker, so a renamed arm
+variable reds instead of shipping behind an all-skipped green.
 """
 
 import json
@@ -28,6 +36,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_SCRIPT = REPO_ROOT / "scripts" / "release-alpha.sh"
 BUILD_BUNDLE = REPO_ROOT / "scripts" / "build-bundle.sh"
+PROOF = "tests/infra/test_bundle_clean_install.py"
+
+PROOF_ARM_ENV = {"REIFY_RUN_BUNDLE_CLEAN_INSTALL": "1"}
+PROOF_KNOBS = ("REIFY_RUN_BUNDLE_CLEAN_INSTALL", "REIFY_BUNDLE_DEB", "REIFY_BUNDLE_APPIMAGE")
 
 TAG = "v9.9-test"
 NOTE = f"docs/releases/{TAG}.md"
@@ -82,14 +94,36 @@ if group == "issue":
 sys.exit(99)
 '''
 
+BUILD_BUNDLE_BANNER = "build-bundle (stub): building"
 BUILD_BUNDLE_STUB = '''#!/usr/bin/env bash
-echo "build-bundle (stub): building" >&2
+echo "@BANNER@" >&2
 printf '%s\\n' "@DEB@" "@APPIMAGE@"
+'''.replace("@BANNER@", BUILD_BUNDLE_BANNER)
+
+PROOF_STUB = r'''#!@PYTHON@
+import json
+import os
+import sys
+from pathlib import Path
+
+state = Path("@STATE@")
+with open(state / "calls.jsonl", "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": sys.argv[1:],
+                          "env": {k: os.environ.get(k) for k in @KNOBS@}}) + "\n")
+print("clean-install proof (stub): ran", file=sys.stderr)
+exit_file = state / "exit"
+sys.exit(int(exit_file.read_text(encoding="utf-8")) if exit_file.exists() else 0)
+'''
+
+DOCKER_STUB = '''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "@LOG@"
+exit 1
 '''
 
 
 def _hermetic_env(root):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("GIT_") and k not in PROOF_KNOBS}
     env.update({
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -113,10 +147,12 @@ class ReleaseFixture:
         self.repo = root / "repo"
         self.remote = root / "github.com" / "fake" / "repo.git"
         self.state = root / "gh-state"
+        self.proof_state = root / "proof-state"
         self.deb = root / "assets" / "reify_0.1.0_amd64.deb"
         self.appimage = root / "assets" / "Reify_0.1.0_amd64.AppImage"
         self.env = _hermetic_env(root)
-        for d in (root / "home", root / "bin", self.state / "issues", self.deb.parent):
+        for d in (root / "home", root / "bin", self.state / "issues", self.deb.parent,
+                  self.proof_state):
             d.mkdir(parents=True)
         self.deb.write_bytes(b"deb")
         self.appimage.write_bytes(b"appimage")
@@ -137,6 +173,11 @@ class ReleaseFixture:
         stub.write_text(BUILD_BUNDLE_STUB.replace("@DEB@", str(self.deb))
                         .replace("@APPIMAGE@", str(self.appimage)), encoding="utf-8")
         stub.chmod(0o755)
+        proof = self.repo / PROOF
+        proof.parent.mkdir(parents=True)
+        proof.write_text(PROOF_STUB.replace("@PYTHON@", sys.executable)
+                         .replace("@STATE@", str(self.proof_state))
+                         .replace("@KNOBS@", json.dumps(PROOF_KNOBS)), encoding="utf-8")
         note = self.repo / NOTE
         note.parent.mkdir(parents=True)
         note.write_text(f"# {TAG}\n\nCloses: #1, #2\n", encoding="utf-8")
@@ -168,6 +209,18 @@ class ReleaseFixture:
 
     def clear_gh_calls(self):
         (self.state / "calls.jsonl").unlink(missing_ok=True)
+
+    def proof_calls(self):
+        log = self.proof_state / "calls.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    def fail_proof(self, code=1):
+        (self.proof_state / "exit").write_text(f"{code}\n", encoding="utf-8")
+
+    def issue_state(self, n):
+        return (self.state / "issues" / str(n)).read_text(encoding="utf-8").strip()
 
     def remote_tag_type(self):
         proc = subprocess.run(
@@ -220,6 +273,22 @@ class Preflight(ReleaseCase):
         (self.fx.state / "unauthenticated").write_text("", encoding="utf-8")
         self.assert_refused(self.fx.run_release(), "not authenticated")
 
+    def test_an_absent_clean_install_proof_is_refused(self):
+        (self.fx.repo / PROOF).unlink()
+        self.assert_refused(self.fx.run_release(), "test_bundle_clean_install.py missing")
+        self.assertEqual(self.fx.proof_calls(), [])
+
+    def test_a_tag_not_at_head_is_refused_before_the_build_and_the_proof(self):
+        self.fx.git("tag", "-a", TAG, "-m", TAG)
+        self.fx.git("commit", "-q", "--allow-empty", "-m", "after the tag")
+        proc = self.fx.run_release()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn(f"tag {TAG} exists and does not point at HEAD", proc.stderr)
+        self.assertNotIn(BUILD_BUNDLE_BANNER, proc.stderr)
+        self.assertEqual(self.fx.proof_calls(), [])
+        self.assertIsNone(self.fx.remote_tag_type())
+        self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
+
 
 class Release(ReleaseCase):
 
@@ -230,6 +299,12 @@ class Release(ReleaseCase):
 
     def test_first_run_succeeds(self):
         self.assertEqual(self.first.returncode, 0, self.first.stderr)
+
+    def test_the_proof_runs_once_armed_over_the_built_assets(self):
+        (call,) = self.fx.proof_calls()
+        self.assertEqual(call["env"], {**PROOF_ARM_ENV,
+                                       "REIFY_BUNDLE_DEB": str(self.fx.deb),
+                                       "REIFY_BUNDLE_APPIMAGE": str(self.fx.appimage)})
 
     def test_an_annotated_tag_at_head_reaches_the_remote(self):
         self.assertEqual(self.fx.remote_tag_type(), "tag")
@@ -268,6 +343,42 @@ class Release(ReleaseCase):
         self.assertEqual(_verb_calls(calls, "issue", "close"), [])
 
 
+class ProofGate(ReleaseCase):
+    """B7 (docs/prds/alpha-spine.md §6) gates every tag, push, release and
+    issue close, on a first run and on a re-run alike."""
+
+    PROOF_FAILED = "B7 clean-container proof failed"
+
+    def test_a_red_proof_leaves_no_tag_release_or_closed_issue(self):
+        self.fx.fail_proof()
+        self.assert_refused(self.fx.run_release(), self.PROOF_FAILED)
+        self.assertEqual(len(self.fx.proof_calls()), 1)
+        self.assertIsNone(self.fx.remote_tag_type())
+        calls = self.fx.gh_calls()
+        self.assertEqual([c for c in calls if c[:1] == ["release"]], [])
+        self.assertEqual(_verb_calls(calls, "issue", "close"), [])
+        self.assertEqual([self.fx.issue_state(n) for n in (1, 2)], ["OPEN", "OPEN"])
+
+    def test_a_red_proof_on_a_rerun_uploads_nothing(self):
+        first = self.fx.run_release()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.fx.clear_gh_calls()
+        self.fx.fail_proof()
+        second = self.fx.run_release()
+        self.assertEqual(second.returncode, 2, second.stderr)
+        self.assertIn(self.PROOF_FAILED, second.stderr)
+        calls = self.fx.gh_calls()
+        for group, verb in (("release", "upload"), ("release", "edit"), ("issue", "close")):
+            self.assertEqual(_verb_calls(calls, group, verb), [], f"gh {group} {verb}")
+
+    def test_a_bundle_that_is_not_one_deb_and_one_appimage_is_refused(self):
+        stub = self.fx.repo / "scripts" / "build-bundle.sh"
+        stub.write_text(BUILD_BUNDLE_STUB.replace("@DEB@", str(self.fx.deb))
+                        .replace("@APPIMAGE@", str(self.fx.deb)), encoding="utf-8")
+        self.assert_refused(self.fx.run_release(), "expected one .deb and one .AppImage")
+        self.assertEqual(self.fx.proof_calls(), [])
+
+
 class RealTree(unittest.TestCase):
     """The release gates (#9735, #9738) exec these two scripts directly."""
 
@@ -285,6 +396,51 @@ class RealTree(unittest.TestCase):
 
     def test_build_bundle_is_executable_bash(self):
         self.assert_executable_bash(BUILD_BUNDLE)
+
+
+class ProofArmChain(unittest.TestCase):
+    """The env the release sets arms the real B7 proof, not an all-skipped green."""
+
+    def test_the_release_arm_env_arms_the_real_proof(self):
+        """PROOF_ARM_ENV arms the real proof rather than an all-skipped green.
+
+        Second link of the chain whose first is
+        Release.test_the_proof_runs_once_armed_over_the_built_assets: unittest
+        exits 0 when every test skips, so a renamed arm variable on either
+        side would otherwise publish behind a vacuous proof. A failing stub
+        docker stops the armed proof at `docker info`, before any build or
+        container."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "bin").mkdir()
+        docker_log = root / "docker.log"
+        docker = root / "bin" / "docker"
+        docker.write_text(DOCKER_STUB.replace("@LOG@", str(docker_log)), encoding="utf-8")
+        docker.chmod(0o755)
+        deb, appimage = root / "a.deb", root / "a.AppImage"
+        deb.write_bytes(b"deb")
+        appimage.write_bytes(b"appimage")
+        env = {k: v for k, v in os.environ.items() if k not in PROOF_KNOBS}
+        env.update({
+            "PATH": f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+            "REIFY_BUNDLE_DEB": str(deb),
+            "REIFY_BUNDLE_APPIMAGE": str(appimage),
+        })
+
+        def run_proof(extra):
+            return subprocess.run(
+                [sys.executable, str(REPO_ROOT / PROOF)], env={**env, **extra},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            )
+
+        unarmed = run_proof({})
+        self.assertIn("skipped", unarmed.stderr)
+        self.assertFalse(docker_log.exists(), "the unarmed proof called docker")
+
+        armed = run_proof(PROOF_ARM_ENV)
+        self.assertNotEqual(armed.returncode, 0, armed.stderr)
+        self.assertIn("info", docker_log.read_text(encoding="utf-8").split())
 
 
 if __name__ == "__main__":

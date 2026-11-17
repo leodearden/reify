@@ -24,6 +24,8 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
 Knobs: REIFY_BUNDLE_DEB + REIFY_BUNDLE_APPIMAGE reuse a prior build instead of
 running scripts/build-bundle.sh; REIFY_BUNDLE_PROOF_READY_SECS (default 600) is
 the hang guard on the store_state readiness poll — no elapsed time is asserted.
+scripts/release-alpha.sh arms the proof with both reuse knobs over the assets it
+is about to publish (B7 before any tag, task 10079).
 """
 
 import json

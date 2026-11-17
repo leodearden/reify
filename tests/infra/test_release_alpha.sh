@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 9732 (docs/prds/alpha-spine.md D7, §5.3):
-# scripts/release-alpha.sh's preflight refusals, tag, prerelease, issue closing
-# and idempotent re-run, run as a copy inside a throwaway repo with a stub `gh`,
-# a stub build-bundle.sh and a local bare remote. Hermetic: no network.
+# Infrastructure test for tasks 9732 and 10079 (docs/prds/alpha-spine.md D7,
+# §5.3): scripts/release-alpha.sh's preflight refusals, B7 clean-container proof
+# gate, tag, prerelease, issue closing and idempotent re-run, run as a copy
+# inside a throwaway repo with a stub `gh`, a stub build-bundle.sh, a stub
+# clean-install proof and a local bare remote. Hermetic: no network.
 #
 # This wrapper is the member run_all.sh discovers (it globs `test_*.sh` only)
 # and the one that holds the run-all-classification.manifest row. The

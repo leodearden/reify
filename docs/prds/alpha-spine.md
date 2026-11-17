@@ -32,7 +32,7 @@ A named alpha tester on a stock Ubuntu 24.04 machine downloads one file from a G
 | D4 | **Launcher = a Start view inside the existing Tauri app**, shown whenever no document is loaded (`reify-gui` with no argument already yields `resolve_initial_file_path("") == None`). Open… uses the already-wired `tauri-plugin-dialog`; New… writes a minimal module template to a path the user picks; Recent is a persisted list; Mode ∈ {Design, Design + Assistant, Debug}. Debug starts the MCP listener on demand in-process (today it is read from `REIFY_DEBUG=1` at startup); Assistant shows the sidecar panel and states that it needs a Claude Code login (`@anthropic-ai/claude-code` is the sidecar's dependency). The desktop entry and `.ri` file association come from the Tauri bundler config already in `gui/src-tauri/tauri.conf.json`. | No second process, no re-exec, no new IPC; the three modes map to existing capabilities. "Dev mode" (vite hot reload) is a contributor mode and stays on `scripts/run-gui-dev.sh`. |
 | D5 | **Edges view = a persistent viewport toggle** rendering a black `EdgesGeometry` overlay over every mesh (threshold angle as a constant), independent of selection, persisted in the GUI store, toolbar button + key, exposed in `store_state` for the debug MCP. Default off. | Matches the ask; reuses the overlay mechanism selection already uses; observable without a screenshot. |
 | D6 | **Installer = `cargo tauri build` for `deb` + `appimage`** via a committed `scripts/build-bundle.sh`, bundling the runtime `.so` set from `/opt/reify-deps` (OCCT 7.9, gmsh, OpenVDB, oneTBB pin, FLTK, conda `libstdc++`/`libgcc_s`; measured by `ldd target/release/reify`) and shipping the `reify` CLI in the same package. Proof is a clean `ubuntu:24.04` container with no PPA and no conda: install, `reify check examples/m5_geometry.ri`, then the GUI under `xvfb-run` with `REIFY_DEBUG=1` answering a debug-MCP `store_state` with ≥ 1 mesh. The proof script is a heavy, off-gate infra test (docker + a cold bundle build). | The engine links those libraries dynamically from a conda prefix the bundler does not know about; a package that works only where `/opt/reify-deps` exists is the build-from-source path with extra steps. The container proof is the only honest signal. |
-| D7 | **Releases run unattended** (Leo, 2026-11-03: "do this automatically when the release is ready"): ρ1 and ρ2 are deterministic auto-deploy tasks whose `before_done` is `scripts/release-alpha.sh <tag>` — delivered by δ from the reference implementation in §5.3 — which builds the bundle, tags HEAD, pushes the tag, creates the GitHub prerelease with the assets and the note as body, and closes the issues the note's `Closes:` line names. A failure escalates born-at-L2 with the script's stderr; success needs no human act. | `gh` authenticates from the orchestrator's systemd user-service context (keyring over the user D-Bus; measured 2026-11-03), so nothing in the release needs Leo's hands. Supersedes the 2026-11-02 pure-gate design. |
+| D7 | **Releases run unattended** (Leo, 2026-11-03: "do this automatically when the release is ready"): ρ1 and ρ2 are deterministic auto-deploy tasks whose `before_done` is `scripts/release-alpha.sh <tag>` — delivered by δ, contract in §5.3 — which builds the bundle, runs the B7 clean-container proof over the built assets, tags HEAD, pushes the tag, creates the GitHub prerelease with the assets and the note as body, and closes the issues the note's `Closes:` line names. A failure escalates born-at-L2 with the script's stderr; success needs no human act. | `gh` authenticates from the orchestrator's systemd user-service context (keyring over the user D-Bus; measured 2026-11-03), so nothing in the release needs Leo's hands. Supersedes the 2026-11-02 pure-gate design. |
 | D8 | **Migration notes are tested documents**: `docs/releases/<tag>.md` lists each source-breaking change with a before/after `.ri` snippet and the diagnostic code; every "before" snippet is a committed fixture under `tests/prd-gate/fixtures/` that an infra test runs through `reify check` expecting that code, and every "after" fixture passes. Spec §14.5 is the obligation; the test is what keeps the note true. | G6 branch 4: a rejection claimed in prose must be observed to fire. |
 | D9 | **Existing breaking-change leaves are adopted by dependency, never re-filed.** v0.2 set: #5646, #5762, #5763 (dimensioned-construction), #5312 (+ its dep #8102), #5404; #8116 for issue #3. v0.3 set: direction-typing ν #9652 and stdlib-namespace κ #5503 / λ #5504 with their open closures (resolution-unification β–κ #5516–#5524, #6953; S15 #8674, #8679, #8683, #8686, #8697, #8706, #9293, #8730; #6941, #7456). | SPOT: those PRDs own their leaves; this PRD only orders the release gates behind them. |
 
@@ -46,84 +46,7 @@ Verified at `f8e47e232c`: `tauri-cli 2.10.1` on the host and the bundle config w
 
 **5.2 Bundle contents.** A `.deb` and an AppImage, each containing: `reify-gui`; `reify` CLI on `PATH` (`/usr/bin/reify` for the deb); `reify-sidecar` + the landlock resources; the full runtime shared-library closure of both binaries that is not in a stock Ubuntu 24.04 install (derived at build time from `ldd`, never a hand list), with an `RPATH`/`LD_LIBRARY_PATH` wrapper so the system loader finds them; a desktop entry with the `.ri` association. Invariant: the package installs and runs on `ubuntu:24.04` with no extra apt sources and no `/opt/reify-deps`.
 
-**5.3 `scripts/release-alpha.sh` — contract and reference implementation.** δ lands this file verbatim (adjusting only what its own `build-bundle.sh` contract requires) together with `scripts/build-bundle.sh`, whose stdout contract the header states. It is reproduced here rather than committed directly because a new `scripts/*.sh` on `main` sends `hooks/pre-commit` through the whole infra lane (measured 2026-11-03: over 60 min holding the index lock, killed), while the merge queue verifies a task branch without holding `main`'s lock.
-
-```bash
-#!/usr/bin/env bash
-# scripts/release-alpha.sh <tag> — publish an alpha release from the main checkout.
-#
-# The `before_done` deploy action of the alpha-spine release gates (docs/prds/alpha-spine.md
-# D7, tasks ρ1 #9735 and ρ2 #9738): runs unattended from the orchestrator's main checkout once
-# every leaf of that release has landed. Steps, each loud on failure so the runner escalates:
-#   1. preflight: on main, docs/releases/<tag>.md present, scripts/build-bundle.sh present (δ #9732),
-#      gh authenticated;
-#   2. scripts/build-bundle.sh — contract: prints the absolute path of every produced asset
-#      (.deb and .AppImage) one per line on stdout, everything else on stderr;
-#   3. annotated tag <tag> at HEAD (an existing tag must already point at HEAD), pushed to the
-#      GitHub remote;
-#   4. GitHub prerelease <tag> with the note as body and the assets attached; a re-run on an
-#      existing release re-uploads the assets (--clobber) instead of failing;
-#   5. close every issue the note names on a line starting `Closes:` (e.g. `Closes: #1, #2`),
-#      commenting with the release URL; already-closed issues are skipped.
-# Idempotent: a second run on the same tag reaches the same end state.
-set -euo pipefail
-
-TAG="${1:?usage: scripts/release-alpha.sh <tag>}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
-NOTE="docs/releases/$TAG.md"
-
-fail() { echo "release-alpha: $*" >&2; exit 2; }
-
-# ---- 1. preflight ----------------------------------------------------------------
-[ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || fail "HEAD is not main"
-[ -f "$NOTE" ] || fail "missing migration note $NOTE"
-[ -x scripts/build-bundle.sh ] || fail "scripts/build-bundle.sh missing or not executable (alpha-spine δ)"
-command -v gh >/dev/null || fail "gh not on PATH"
-gh auth status >/dev/null 2>&1 || fail "gh is not authenticated in this environment"
-REMOTE="$(git remote -v | awk '/github\.com/ && /\(push\)/ {print $1; exit}')"
-[ -n "$REMOTE" ] || fail "no github.com push remote"
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
-[ -n "$REPO" ] || fail "gh cannot resolve the repository"
-
-# ---- 2. bundle --------------------------------------------------------------------
-mapfile -t ASSETS < <(scripts/build-bundle.sh | grep -E '\.(deb|AppImage)$' || true)
-[ "${#ASSETS[@]}" -ge 2 ] || fail "build-bundle.sh produced ${#ASSETS[@]} asset path(s); expected a .deb and an AppImage"
-for a in "${ASSETS[@]}"; do [ -s "$a" ] || fail "asset missing or empty: $a"; done
-
-# ---- 3. tag -----------------------------------------------------------------------
-HEAD_SHA="$(git rev-parse HEAD)"
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-    [ "$(git rev-parse "$TAG^{commit}")" = "$HEAD_SHA" ] || fail "tag $TAG exists and does not point at HEAD $HEAD_SHA"
-else
-    git tag -a "$TAG" -m "$TAG" "$HEAD_SHA"
-fi
-# https remote with no stored git credential: borrow gh's token for this one push.
-git -c credential.helper= -c "credential.helper=!gh auth git-credential" push "$REMOTE" "refs/tags/$TAG"
-
-# ---- 4. release -------------------------------------------------------------------
-if gh release view "$TAG" >/dev/null 2>&1; then
-    gh release upload "$TAG" "${ASSETS[@]}" --clobber
-    gh release edit "$TAG" --notes-file "$NOTE" --prerelease >/dev/null
-else
-    gh release create "$TAG" "${ASSETS[@]}" --title "$TAG" --notes-file "$NOTE" --prerelease --target "$HEAD_SHA" >/dev/null
-fi
-URL="$(gh release view "$TAG" --json url -q .url)"
-
-# ---- 5. close the issues the note names -----------------------------------------
-ISSUES="$(grep -iE '^Closes:' "$NOTE" | grep -oE '#[0-9]+' | tr -d '#' | sort -un || true)"
-for n in $ISSUES; do
-    state="$(gh issue view "$n" --json state -q .state 2>/dev/null || echo MISSING)"
-    case "$state" in
-        OPEN) gh issue close "$n" --comment "Fixed in $TAG: $URL" >/dev/null; echo "closed #$n" ;;
-        CLOSED) echo "already closed #$n" ;;
-        *) fail "issue #$n named in $NOTE does not exist in $REPO" ;;
-    esac
-done
-
-echo "released $TAG at $HEAD_SHA: $URL"
-printf '%s\n' "${ASSETS[@]}"
-```
+**5.3 `scripts/release-alpha.sh` — contract.** δ landed it as `scripts/release-alpha.sh`, together with `scripts/build-bundle.sh`, whose stdout contract it consumes; the script's header states the step contract and is the normative copy. Since #10079 the release runs B7 (§6) armed over exactly the `.deb` and AppImage it is about to publish, between bundle and tag, and a red proof exits 2 before any tag, push, prerelease or issue close.
 
 ## 6. Boundary-test sketch (H-lite)
 
@@ -168,7 +91,7 @@ Labels are the sidecar's; task ids backfilled at decompose on 2026-11-02 (reify 
 | α4 #9729 | Issue #4: `tsup.sidecar.ts` bundles the sidecar's runtime dependencies (`@modelcontextprotocol/sdk` and the rest) so `target/release/reify-sidecar` runs with no `node_modules` on its path | — | B9 third clause: the sidecar started from an empty temp dir completes the handshake; sidecar vitest asserts the built bundle imports nothing bare |
 | β #9730 | Launcher: `StartView` + `create_new_file` / `list_recent` / `record_recent` / `set_mode` per §5.1; Debug mode starts the MCP listener on demand | — | B1–B5 as an e2e smoke scenario in `gui/test/visual` plus vitest; `store_state` carries `document.loaded` and `mode` |
 | γ #9731 | Edges-in-black viewport toggle per D5 | — | B6: `store_state.viewport.edges` toggles; screenshot delta in the e2e smoke; vitest on `meshManager` |
-| δ #9732 | Installer: `scripts/build-bundle.sh` (deb + AppImage per §5.2, CLI included, runtime `.so` closure from `ldd`), `scripts/release-alpha.sh <tag>` (bundle → tag → `gh release create` with assets + `docs/releases/<tag>.md` → close the issues the note names), and the clean-container proof `tests/infra/test_bundle_clean_install.sh` (heavy bucket, off the merge gate) | #8116 | B7 passes on the host for both package forms |
+| δ #9732 | Installer: `scripts/build-bundle.sh` (deb + AppImage per §5.2, CLI included, runtime `.so` closure from `ldd`), `scripts/release-alpha.sh <tag>` (bundle → tag → `gh release create` with assets + `docs/releases/<tag>.md` → close the issues the note names), and the clean-container proof `tests/infra/test_bundle_clean_install.sh` (off the merge gate; `release-alpha.sh` runs it over the assets it publishes, #10079) | #8116 | B7 passes on the host for both package forms |
 | ε #9733 | README + getting-started: binary install first, source build under "For contributors", launcher in §4, "What to expect" rewritten (installer exists, Ubuntu 24.04 still the only platform) | β, γ, δ | README names the release asset download; `scripts/review-readme.sh` passes; B1 walkthrough matches the doc |
 | ζ #9734 | Migration note v0.2-alpha (`docs/releases/v0.2-alpha.md`) per D8: every source-breaking change since `v0.1-alpha` (real/dimensionless unification and bare `Scalar`, struct-ctor field conformance, dimensioned-construction strictness, FEA selector strings, undef allowlist burn, angle units, units-length gate — derived from `git log v0.1-alpha..` and the PRDs' Status lines, not from this list) + "coming in v0.3-alpha" naming direction typing and stdlib namespace; fixtures + `tests/infra/test_migration_note_v0_2.sh` | #5646, #5762, #5763, #5312, #5404 | B10 for the v0.2 set |
 | ρ1 #9735 | **Release v0.2-alpha** (deterministic auto-deploy, `before_done` = `scripts/release-alpha.sh v0.2-alpha`, escalates only on failure) | α1, α2, #8116, α4, β, γ, δ, ε, ζ | the release page exists with both assets and the note; issues #1–#4 closed |
