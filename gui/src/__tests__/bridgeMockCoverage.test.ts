@@ -44,6 +44,10 @@
  *    would evaluate the real bridge.ts — its `@tauri-apps/api` and
  *    `@tauri-apps/plugin-dialog` imports and every real implementation — inside
  *    the most load-bearing mock in the file.
+ * 3. A factory entry resolving to a GuiState or PublishedState is a bare
+ *    `vi.fn()`. Its default lives only in the file-level beforeEach, as
+ *    `makeGuiState()` (in `published()` for a PublishedState) via the typed
+ *    `vi.mocked(bridge.X)`: a factory value is untyped, so tsc misses its drift.
  *
  * Shape mirrors `debugParity.test.ts` — the house pattern for "two artifacts
  * must stay in lockstep, with documented legitimate asymmetries": mock the
