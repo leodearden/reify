@@ -11,6 +11,7 @@ mod debug_write_tool_routing_tests;
 mod dev_url_tests;
 mod diff_tests;
 mod engine_activity_tests;
+mod engine_compile_tests;
 mod engine_lock_tests;
 mod engine_reload_tests;
 mod engine_state_view_tests;
