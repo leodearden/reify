@@ -285,8 +285,9 @@ function leavesFrom({ raw, value, parseError }, warn) {
 // (PRD §3 M4), so args is the only channel.  A non-array object (or a JSON
 // string of one) owning an envelope key is an envelope; anything else must
 // itself be a leaf batch, by the same isLeafBatch rule as an envelope's
-// leaves, or it is refused (task #9946).  Operator contract:
-// .claude/skills/prd/project.md, "Choosing the reify binary".
+// leaves, or it is refused (task #9946).  The rule judges a JSON string by its
+// decoded value, so "null" is refused like null (task #10063).  Operator
+// contract: .claude/skills/prd/project.md, "Choosing the reify binary".
 // ---------------------------------------------------------------------------
 
 const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
@@ -301,16 +302,17 @@ function batchEnvelope(value) {
 // an array (an explicit [] is the only empty batch), one leaf object, or a
 // non-blank string.  Anything else, a blank template slot rendered as ""
 // included, would become a vacuous zero-leaf PASS or a leaf made of a bare
-// scalar.
+// scalar.  It is applied to the decoded value: a JSON string is held to what it
+// encodes (task #10063).
 function isLeafBatch(leaves) {
     return (leaves !== null && typeof leaves === "object")
         || (typeof leaves === "string" && leaves.trim() !== "");
 }
 
-function leafBatchRefusal(subject, leaves) {
-    if (isLeafBatch(leaves)) return null;
+function leafBatchRefusal(subject, { raw, value }) {
+    if (isLeafBatch(value)) return null;
     return `${subject} must be the leaf array, its JSON string, or one leaf object; `
-        + `got ${JSON.stringify(leaves)}`;
+        + `got ${JSON.stringify(raw)}`;
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is
@@ -324,7 +326,7 @@ function envelopeRefusal(envelope) {
         return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
             + `unknown key(s): ${JSON.stringify(unknown)}`;
     }
-    const leavesRefusal = leafBatchRefusal("leaves", envelope.leaves);
+    const leavesRefusal = leafBatchRefusal("leaves", destringifyArgs(envelope.leaves));
     if (leavesRefusal !== null) return leavesRefusal;
     const bin = envelope.reify_bin;
     if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
@@ -338,7 +340,7 @@ function batchArgs(rawArgs, warn) {
     const destringified = destringifyArgs(rawArgs);
     const envelope = batchEnvelope(destringified.value);
     const refusal = envelope === null
-        ? leafBatchRefusal("args", rawArgs)
+        ? leafBatchRefusal("args", destringified)
         : envelopeRefusal(envelope);
     if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
     if (envelope === null) {
