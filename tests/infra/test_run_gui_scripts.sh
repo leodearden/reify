@@ -19,6 +19,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # _rgs_free_port below.
 # shellcheck source=scripts/lib_portable.sh
 source "$REPO_ROOT/scripts/lib_portable.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
@@ -1673,6 +1674,7 @@ env DISPLAY=:99 \
     bash "$_t36rel_tmpdir/scripts/run-gui.sh" "$_t36rel_tmpdir/test.ri" >/dev/null 2>&1 || true
 
 _t36_resolve run-gui.sh "$_t36rel_tmpdir"
+_t36rel_features=$_t36_features _t36rel_tauri=$_t36_tauri
 
 assert "run-gui.sh: tauri resolves WITH custom-protocol under --features '$_t36_features', so the window serves gui/dist (tauri features: ${_t36_tauri//$'\n'/,})" \
     bash -c 'grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
@@ -1695,6 +1697,7 @@ env DISPLAY=:99 \
     bash "$_t36dev_tmpdir/scripts/run-gui-dev.sh" "$_t36dev_tmpdir/test.ri" >/dev/null 2>&1 || true
 
 _t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
+_t36dev_features=$_t36_features _t36dev_tauri=$_t36_tauri
 
 assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
     bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
@@ -1970,6 +1973,35 @@ _t42b_rc=0
     PATH="$_t42b_tmpdir/bin:$PATH" \
     bash "$_t42b_tmpdir/scripts/run-gui.sh" sub/design.ri) >/dev/null 2>&1 || _t42b_rc=$?
 _t42_check run-gui.sh "$_t42b_tmpdir" "$_t42b_rc"
+
+# -- Test 43: Test 36's verdict does not depend on the registry cache --------
+echo ""
+echo "--- Test 43: Test 36's verdict does not depend on the registry cache (task 9993) ---"
+
+# An empty CARGO_HOME, once the suite's own fetch has run, must resolve exactly
+# Test 36's warm answers. The negative control proves the reads consult it.
+_rgs_mktemp _t43_home
+_rgs_mktemp _t43_scratch
+
+_t43_rc=0
+CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$_t36rel_features" >/dev/null || _t43_rc=$?
+assert "an empty CARGO_HOME cannot resolve reify-gui before the fetch (rc $_t43_rc)" \
+    test "$_t43_rc" -ne 0
+
+CARGO_HOME="$_t43_home" assert_infra_input "the suite's cargo fetch fills an empty CARGO_HOME" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
+
+# _t43_same_as_warm <label> <features> <warm-tauri>
+_t43_same_as_warm() {
+    local _cold _rc=0
+    _cold=$(CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$2") || _rc=$?
+    assert "$1: the fetched empty CARGO_HOME resolves reify-gui under --features '$2' (rc $_rc)" \
+        test "$_rc" -eq 0
+    assert "$1: tauri's features there equal Test 36's warm ones (cold: ${_cold//$'\n'/,}; warm: ${3//$'\n'/,})" \
+        test "$_cold" = "$3"
+}
+_t43_same_as_warm run-gui.sh "$_t36rel_features" "$_t36rel_tauri"
+_t43_same_as_warm run-gui-dev.sh "$_t36dev_features" "$_t36dev_tauri"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""

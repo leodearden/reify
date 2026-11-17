@@ -31,7 +31,9 @@ MARKER = "@@REIFY_INFRA_UNAVAILABLE@@"
 UNAVAILABLE_RC = 75
 
 # Members that source cargo_inputs_lib.sh; DriftTest keeps this exact.
-ADOPTERS = ()
+ADOPTERS = (
+    "test_run_gui_scripts.sh",
+)
 
 SOURCES_LIB = re.compile(r"^\s*(source|\.)\s+\S*cargo_inputs_lib\.sh", re.M)
 FAIL_LINE = re.compile(r"^\s*FAIL:", re.M)
@@ -195,6 +197,7 @@ class AdoptersTest(unittest.TestCase):
         self.assertEqual(sourcing, set(ADOPTERS))
 
     def test_each_adopter_stops_at_its_fetch_with_the_infra_verdict(self):
+        self.assertTrue(ADOPTERS, "no adopter: this check would pass vacuously")
         for name in ADOPTERS:
             with self.subTest(member=name), \
                     tempfile.TemporaryDirectory(prefix="reify-cil-adopter.") as home:
