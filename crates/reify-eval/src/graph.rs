@@ -322,8 +322,9 @@ pub struct EvaluationGraph {
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
     /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
-    /// remove through [`Self::remove_collection_slots`], so the registry and
-    /// `value_cells` do not drift.
+    /// remove through [`Self::remove_collection_slots`].
+    /// [`Self::debug_assert_sub_instance_registry_agrees`] checks the registry
+    /// against `value_cells` at construction and after each collection resize.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -610,6 +611,7 @@ impl EvaluationGraph {
         for (entity, template) in cell_contributions::sub_instances(templates) {
             graph.record_sub_instance(entity, template.to_string());
         }
+        graph.debug_assert_sub_instance_registry_agrees();
 
         graph
     }
@@ -678,6 +680,25 @@ impl EvaluationGraph {
                 })
             })
             .collect()
+    }
+
+    /// In a debug build, panic naming every
+    /// [`Self::sub_slot_registry_mismatches`] slot.
+    pub(crate) fn debug_assert_sub_instance_registry_agrees(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let mismatches = self.sub_slot_registry_mismatches();
+        assert!(
+            mismatches.is_empty(),
+            "sub-instance registry disagrees with value_cells (stamp sub-instance cells \
+             through EvaluationGraph::insert_sub_instance_cell): {}",
+            mismatches
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
     }
 
     /// Each sub slot whose entity is in `stamped`, paired with the template
