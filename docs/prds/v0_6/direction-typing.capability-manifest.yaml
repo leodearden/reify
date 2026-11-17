@@ -782,7 +782,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: Already wired; ε's behavioural cover is B17 on feature datums.
+      reason: "Already wired; ε's behavioural cover is B17's displayed projection on feature datums (the op-consumed form is ε′, gate #10138)."
   - name: decode-direction-and-from-vector
     binding: 'upstream α (in prereqs): decode_direction, UnitVec3::from_vector.'
     verdict: PASS
