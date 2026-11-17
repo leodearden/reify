@@ -162,7 +162,9 @@ pub fn compile_program(
 /// key is `parsed.path`, dotted.
 ///
 /// The seam exists for callers that already hold the entry's parse (the CLI's
-/// `reify check` parses it for its own module-path gate first), and for callers
+/// `reify check` parses it for its own module-path gate first, and the GUI's
+/// file-backed reload parses it to route the compile and keeps the parse for
+/// source write-back), and for callers
 /// that must seed extra enum names into the parse — an import's enums, which
 /// `parse_with_stdlib` does not know — until task #5522 (θ) moves that fixup
 /// into the resolution phase.
