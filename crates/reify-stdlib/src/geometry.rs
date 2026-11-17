@@ -3547,15 +3547,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_z", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps.len(), 3);
-                    assert_eq!(comps[0], Value::Real(0.0));
-                    assert_eq!(comps[1], Value::Real(0.0));
-                    assert_eq!(comps[2], Value::Real(1.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(0.0, 0.0, 1.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -3592,14 +3584,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_x", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps[0], Value::Real(1.0));
-                    assert_eq!(comps[1], Value::Real(0.0));
-                    assert_eq!(comps[2], Value::Real(0.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(1.0, 0.0, 0.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -3609,14 +3594,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_y", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps[0], Value::Real(0.0));
-                    assert_eq!(comps[1], Value::Real(1.0));
-                    assert_eq!(comps[2], Value::Real(0.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(0.0, 1.0, 0.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -4121,14 +4099,7 @@ mod tests {
                     }
                     other => panic!("expected Point, got {:?}", other),
                 }
-                match *normal {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(0.0));
-                        assert_eq!(comps[1], Value::Real(1.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
-                }
+                assert_eq!(*normal, unit_dir(0.0, 1.0, 0.0));
             }
             other => panic!("expected Plane, got {:?}", other),
         }
@@ -4159,14 +4130,7 @@ mod tests {
                     }
                     other => panic!("expected Point, got {:?}", other),
                 }
-                match *normal {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(1.0));
-                        assert_eq!(comps[1], Value::Real(0.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
-                }
+                assert_eq!(*normal, unit_dir(1.0, 0.0, 0.0));
             }
             other => panic!("expected Plane, got {:?}", other),
         }
@@ -4232,15 +4196,7 @@ mod tests {
         let offset = Value::length(0.005);
         let result = eval_builtin("plane_xy", &[offset]);
         match result {
-            Value::Plane { normal, .. } => match *normal {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps.len(), 3, "normal should be 3D");
-                    assert_eq!(comps[0], Value::Real(0.0), "normal.x should be 0");
-                    assert_eq!(comps[1], Value::Real(0.0), "normal.y should be 0");
-                    assert_eq!(comps[2], Value::Real(1.0), "normal.z should be 1");
-                }
-                other => panic!("normal should be Vector, got {:?}", other),
-            },
+            Value::Plane { normal, .. } => assert_eq!(*normal, unit_dir(0.0, 0.0, 1.0)),
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
@@ -4319,7 +4275,7 @@ mod tests {
     /// decision D3's scope lock, since a unit vector legitimately has bare
     /// components.
     #[test]
-    fn plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare() {
+    fn plane_xy_length_zero_mirrors_length_into_origin_and_mints_a_direction_normal() {
         let result = eval_builtin("plane_xy", &[Value::length(0.0)]);
         let Value::Plane { origin, normal } = result else {
             panic!("expected Value::Plane, got {result:?}");
@@ -4335,8 +4291,8 @@ mod tests {
         );
         assert_eq!(
             *normal,
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
-            "the synthesized normal is a unit vector and stays dimensionless (D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized normal is a Direction, dimensionless by type"
         );
     }
 
@@ -4359,6 +4315,15 @@ mod tests {
             comps[1].as_f64().unwrap(),
             comps[2].as_f64().unwrap(),
         ]
+    }
+
+    /// The components of a datum direction/normal, which every producer mints
+    /// as a `Value::Direction`; panics on any other shape.
+    fn dir_comps(v: &Value) -> [f64; 3] {
+        match v {
+            Value::Direction(u) => u.components(),
+            other => panic!("expected a Value::Direction, got {other:?}"),
+        }
     }
 
     /// Assert two 3-vectors agree component-wise within a tight tolerance.
@@ -4392,7 +4357,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.005]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4407,7 +4372,7 @@ mod tests {
         match result {
             Value::Axis { origin, direction } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.0]);
-                approx3(comps3(&direction), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&direction), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Axis, got {:?}", other),
         }
@@ -4423,7 +4388,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.0]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4437,7 +4402,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.005]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4738,7 +4703,7 @@ mod tests {
             Some(DimensionVector::LENGTH),
             "the shifted origin must stay LENGTH"
         );
-        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+        approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
     }
 
     /// A plane whose NORMAL is a `Value::Direction` rather than a `Value::Vector`
@@ -4800,14 +4765,14 @@ mod tests {
             Some(DimensionVector::LENGTH),
             "the bisecting plane's origin must stay LENGTH"
         );
-        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+        approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
     }
 
     /// A LENGTH `axis_through` still builds its Axis, carrying the first point
-    /// VERBATIM (the impl clones it) beside a DIMENSIONLESS direction — D3's
-    /// scope lock.
+    /// VERBATIM (the impl clones it) beside a `Direction` — dimensionless by
+    /// type, D3's scope lock.
     #[test]
-    fn axis_through_length_points_round_trip_origin_and_keep_direction_bare() {
+    fn axis_through_length_points_round_trip_origin_and_mint_a_direction() {
         let pa = point3_len(0.001, 0.002, 0.003);
         let pb = point3_len(0.001, 0.002, 0.007);
         let result = eval_builtin("axis_through", &[pa.clone(), pb]);
@@ -4817,15 +4782,15 @@ mod tests {
         assert_eq!(*origin, pa, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *direction,
-            super::make_real_vec3([0.0, 0.0, 1.0]),
-            "the synthesized direction stays dimensionless (decision D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized direction is a Direction, dimensionless by type (D3)"
         );
     }
 
     /// A LENGTH `plane_through` still builds its Plane, carrying `a` VERBATIM
-    /// beside a DIMENSIONLESS normal.
+    /// beside a `Direction` normal.
     #[test]
-    fn plane_through_length_points_round_trip_origin_and_keep_normal_bare() {
+    fn plane_through_length_points_round_trip_origin_and_mint_a_direction() {
         let a = point3_len(0.001, 0.002, 0.003);
         let b = point3_len(0.005, 0.002, 0.003);
         let c = point3_len(0.001, 0.006, 0.003);
@@ -4836,8 +4801,8 @@ mod tests {
         assert_eq!(*origin, a, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *normal,
-            super::make_real_vec3([0.0, 0.0, 1.0]),
-            "the synthesized normal stays dimensionless (decision D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized normal is a Direction, dimensionless by type (D3)"
         );
     }
 

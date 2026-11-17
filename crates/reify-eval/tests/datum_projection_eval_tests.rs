@@ -49,25 +49,6 @@ fn assert_direction(v: &Value, expected: [f64; 3]) {
     }
 }
 
-/// Assert `v` is a plane normal in the shape `decode_plane` requires — a
-/// 3-component `Value::Vector`, NOT a `Value::Direction` — close to `expected`.
-fn assert_vector_normal(v: &Value, expected: [f64; 3]) {
-    let comps = match v {
-        Value::Vector(comps) if comps.len() == 3 => [
-            comps[0].as_f64().expect("normal component 0 is numeric"),
-            comps[1].as_f64().expect("normal component 1 is numeric"),
-            comps[2].as_f64().expect("normal component 2 is numeric"),
-        ],
-        other => panic!("expected a 3-component Value::Vector normal, got {other:?}"),
-    };
-    assert!(
-        (comps[0] - expected[0]).abs() < EPS
-            && (comps[1] - expected[1]).abs() < EPS
-            && (comps[2] - expected[2]).abs() < EPS,
-        "expected normal {expected:?}, got {comps:?}",
-    );
-}
-
 /// Extract the three numeric components of a 3-component `Value::Point`.
 fn point_components(v: &Value) -> [f64; 3] {
     match v {
@@ -183,7 +164,7 @@ fn frame_principal_planes_project_on_a_rotated_frame() {
         match &result {
             Value::Plane { origin, normal } => {
                 assert_point(origin, [4.0, 5.0, 6.0]);
-                assert_vector_normal(normal, expected_normal);
+                assert_direction(normal, expected_normal);
             }
             other => panic!("frame.{member}: expected Value::Plane, got {other:?}"),
         }
@@ -267,7 +248,7 @@ fn self_datum_projections_evaluate_to_the_identity_frame_constants() {
         match project_self(member, Type::Plane) {
             Value::Plane { origin, normal } => {
                 assert_point(&origin, [0.0, 0.0, 0.0]);
-                assert_vector_normal(&normal, expected_normal);
+                assert_direction(&normal, expected_normal);
             }
             other => panic!("self.{member}: expected Value::Plane, got {other:?}"),
         }

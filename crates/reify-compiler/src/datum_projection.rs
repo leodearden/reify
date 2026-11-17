@@ -370,7 +370,7 @@ mod tests {
             Type::Direction => matches!(v, Value::Direction(_)),
             Type::Plane => matches!(
                 v,
-                Value::Plane { normal, .. } if matches!(&**normal, Value::Vector(c) if c.len() == 3)
+                Value::Plane { normal, .. } if matches!(&**normal, Value::Direction(_))
             ),
             Type::Frame(_) => matches!(v, Value::Frame { .. }),
             t if *t == point3_length() => matches!(v, Value::Point(c) if c.len() == 3),
