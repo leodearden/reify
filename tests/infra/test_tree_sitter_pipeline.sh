@@ -3504,11 +3504,11 @@ test_generate_keeps_its_outputs_when_attestation_fails() {
     # ordinary spike; this pins what happens when even the retries lose.
     #
     # UNPROVEN is already the safe state. Outputs with no manifest beside them
-    # are read as STALE by _stamp_is_current here and by build.rs's
-    # needs_generate, so the next run regenerates unprompted. Deleting a good
-    # parser.c buys nothing that leaving it unstamped does not already buy.
-    # build_support.rs's write_generation_stamps makes the identical call
-    # ("Never fatal") for the identical condition.
+    # are read as STALE by tree-sitter-generate.sh's _stamp_is_current, so the
+    # next run regenerates unprompted. Deleting a good parser.c buys nothing
+    # that leaving it unstamped does not already buy. build_support.rs's
+    # write_generation_stamps makes the same never-fatal choice for build.rs's
+    # own copy in $OUT_DIR/src.
     require_tree_sitter_cli || return 0
 
     local fix
