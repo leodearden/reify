@@ -80,6 +80,14 @@ const VARIANTS: &[Variant] = &[
     refused("1m^1/2/3"),
     refused("1m^1/2.5"),
     refused("1m^(1/2)"),
+    // A `^p/q` directly followed by a unit name: the exponent token takes `p/q`.
+    refused("1m^2/3s"),
+    refused("1m^1/2kg"),
+    // The unit fold's combined exponent overflows `Rational`.
+    refused("1m^127^127^127"),
+    refused("1m^1/127*m^1/126*m^1/125"),
+    // The combined dimension of a value-level `*` overflows `Rational`.
+    refused("1m^1/31 * 1m^1/37 * 1m^1/41"),
 ];
 
 const PREFIX: &str = "structure def T {\n  let v = ";

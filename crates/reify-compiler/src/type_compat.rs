@@ -4862,7 +4862,7 @@ mod tests {
     fn infer_mul_div_result_scalar_times_scalar_multiplies_dimensions() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::length()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
             }),
         );
@@ -4872,7 +4872,7 @@ mod tests {
     fn infer_mul_div_result_scalar_div_scalar_divides_dimensions() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::length()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::LENGTH.div(&DimensionVector::LENGTH),
             }),
         );
@@ -4882,17 +4882,17 @@ mod tests {
     fn infer_mul_div_result_int_times_int_yields_int() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Int),
-            Some(Type::Int)
+            Ok(Type::Int)
         );
     }
 
     #[test]
     fn infer_mul_div_result_int_div_int_yields_int_exemption() {
-        // β3 exemption ledger (PRD decision 4): stays Some(Int) statically even
+        // β3 exemption ledger (PRD decision 4): stays Ok(Int) statically even
         // though the runtime widens to Real on non-divisible operands.
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::Int, &Type::Int),
-            Some(Type::Int)
+            Ok(Type::Int)
         );
     }
 
@@ -4900,11 +4900,11 @@ mod tests {
     fn infer_mul_div_result_scalar_times_int_preserves_dimension_both_orders() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::Int),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::length()),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
     }
 
@@ -4912,7 +4912,7 @@ mod tests {
     fn infer_mul_div_result_scalar_div_int_preserves_dimension() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::Int),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
     }
 
@@ -4920,7 +4920,7 @@ mod tests {
     fn infer_mul_div_result_int_div_scalar_yields_reciprocal_dimension() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::Int, &time_ty()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
             }),
         );
@@ -4931,7 +4931,7 @@ mod tests {
         // A `Real` literal types as `Scalar{DIMENSIONLESS}` — there is no `Type::Real`.
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::dimensionless_scalar(), &time_ty()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
             }),
         );
@@ -4942,14 +4942,14 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &v, &Type::dimensionless_scalar()),
-            Some(v),
+            Ok(v),
         );
     }
 
     #[test]
     fn infer_mul_div_result_int_times_vector_is_commutative() {
         let v = Type::vec3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Some(v));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Ok(v));
     }
 
     #[test]
@@ -4957,9 +4957,9 @@ mod tests {
         let p = Type::point3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &p, &Type::Int),
-            Some(p.clone())
+            Ok(p.clone())
         );
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Some(p));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Ok(p));
     }
 
     #[test]
@@ -4967,9 +4967,9 @@ mod tests {
         let t = Type::tensor(1, 3, Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
-            Some(t.clone())
+            Ok(t.clone())
         );
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Some(t));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Ok(t));
     }
 
     #[test]
@@ -4978,7 +4978,7 @@ mod tests {
         let v = Type::vec3(force_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &v, &Type::dimensionless_scalar()),
-            Some(v),
+            Ok(v),
         );
     }
 
@@ -4986,7 +4986,7 @@ mod tests {
     fn infer_mul_div_result_vector_div_scalar_time_yields_reciprocal_component() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::vec3(Type::length()), &time_ty()),
-            Some(Type::vec3(Type::Scalar {
+            Ok(Type::vec3(Type::Scalar {
                 dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
             })),
         );
@@ -5001,48 +5001,63 @@ mod tests {
                 &Type::dimensionless_scalar(),
                 &Type::vec3(Type::length())
             ),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
     #[test]
     fn infer_mul_div_result_vector_times_vector_is_none() {
         let v = Type::vec3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &v, &v), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &v),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_tensor_times_tensor_is_none() {
         let t = Type::tensor(1, 3, Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &t, &t), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &t, &t),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_point_times_point_is_none() {
         let p = Type::point3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &p, &p), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &p, &p),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_scalar_div_vector_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::vec3(Type::length())),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
     #[test]
     fn infer_mul_div_result_matrix_operand_is_none_both_orders() {
         let m = Type::matrix(2, 2, Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &m, &Type::Int), None);
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &m), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &m, &Type::Int),
+            Err(MulDivRefusal::OperandKinds)
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &m),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_list_operand_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::List(Box::new(Type::Int)), &Type::Int),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
@@ -5050,7 +5065,7 @@ mod tests {
     fn infer_mul_div_result_bool_operand_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Bool, &Type::Int),
-            None
+            Err(MulDivRefusal::OperandKinds)
         );
     }
 
@@ -5066,7 +5081,10 @@ mod tests {
     #[test]
     fn infer_mul_div_result_scalar_param_times_scalar_param_is_none() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &q), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &q, &q),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     /// `Int / ScalarParam(Q)` is deliberately left unhandled: the `Int ⊗
@@ -5076,16 +5094,19 @@ mod tests {
     #[test]
     fn infer_mul_div_result_int_div_scalar_param_is_none() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Div, &Type::Int, &q), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &q),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     /// `ScalarParam(Q) * Int` preserves `Q` (Int carries no dimension) — pins
-    /// the `(Type::ScalarParam(name), Type::Int)` arm's Some-returning result
-    /// type, not just the adjacent None-returning edges above.
+    /// the `(Type::ScalarParam(name), Type::Int)` arm's Ok-returning result
+    /// type, not just the adjacent Err-returning edges above.
     #[test]
     fn infer_mul_div_result_scalar_param_times_int_preserves_q() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Some(q));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Ok(q));
     }
 
     /// `Int * ScalarParam(Q)` preserves `Q` — the commutative (Mul-only)
@@ -5093,7 +5114,7 @@ mod tests {
     #[test]
     fn infer_mul_div_result_int_times_scalar_param_preserves_q() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Some(q));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Ok(q));
     }
 
     /// `ScalarParam(Q) * Scalar{DIMENSIONLESS}` preserves `Q` — the
@@ -5106,7 +5127,7 @@ mod tests {
         let q = Type::ScalarParam("Q".to_string());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &q, &Type::dimensionless_scalar()),
-            Some(q)
+            Ok(q)
         );
     }
 
@@ -5117,7 +5138,7 @@ mod tests {
         let q = Type::ScalarParam("Q".to_string());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::dimensionless_scalar(), &q),
-            Some(q)
+            Ok(q)
         );
     }
 
@@ -5299,7 +5320,7 @@ mod tests {
         let time_complex = Type::complex(time_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &length_complex, &time_complex),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
             })),
         );
@@ -5308,7 +5329,7 @@ mod tests {
     #[test]
     fn infer_mul_div_result_complex_times_scalar_multiplies_dimensions_both_orders() {
         let length_complex = Type::complex(Type::length());
-        let expected = Some(Type::complex(Type::Scalar {
+        let expected = Ok(Type::complex(Type::Scalar {
             dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
         }));
         assert_eq!(
@@ -5326,11 +5347,11 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &length_complex, &Type::Int),
-            Some(length_complex.clone()),
+            Ok(length_complex.clone()),
         );
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &length_complex),
-            Some(length_complex),
+            Ok(length_complex),
         );
     }
 
@@ -5340,7 +5361,7 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &area_complex, &length_complex),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
             })),
         );
@@ -5351,7 +5372,7 @@ mod tests {
         let area_complex = Type::complex(area_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &area_complex, &Type::length()),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
             })),
         );
@@ -5362,7 +5383,7 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &length_complex, &Type::Int),
-            Some(length_complex),
+            Ok(length_complex),
         );
     }
 
@@ -5371,7 +5392,7 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &v),
-            Some(v),
+            Ok(v),
         );
     }
 
@@ -5380,7 +5401,7 @@ mod tests {
         let p = Type::point3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &p),
-            Some(p),
+            Ok(p),
         );
     }
 
@@ -5389,7 +5410,7 @@ mod tests {
         // β1 row-9 pin: `Transform(3) * Transform(3) -> Transform(3)`.
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &Type::transform(3)),
-            Some(Type::transform(3)),
+            Ok(Type::transform(3)),
         );
     }
 
@@ -5400,7 +5421,89 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
-            None,
+            Err(MulDivRefusal::OperandKinds),
+        );
+    }
+
+    // ── task 9236: a combined dimension that overflows `Rational` ───────────
+
+    fn length_pow(num: i16, den: i16) -> DimensionVector {
+        DimensionVector::LENGTH
+            .checked_pow_rational(reify_core::Rational::new(num, den))
+            .expect("a small power of LENGTH does not overflow")
+    }
+
+    fn length_pow_scalar(num: i16, den: i16) -> Type {
+        Type::Scalar {
+            dimension: length_pow(num, den),
+        }
+    }
+
+    /// `Scalar<Length^(68/1147)>`, the type of `1m^1/31 * 1m^1/37`. Combined
+    /// with `Length^(±1/41)` its Length exponent needs denominator 47027.
+    fn overflow_base() -> Type {
+        length_pow_scalar(68, 1147)
+    }
+
+    /// A Length slot of `i16::MIN`, whose reciprocal `0 - i16::MIN` does not fit.
+    fn length_min_scalar() -> Type {
+        let mut dimension = DimensionVector::DIMENSIONLESS;
+        dimension.0[0] = reify_core::Rational::new(i16::MIN, 1);
+        Type::Scalar { dimension }
+    }
+
+    #[test]
+    fn infer_mul_div_result_refuses_an_overflowing_combined_dimension() {
+        let (a, b, b_neg) = (
+            overflow_base(),
+            length_pow_scalar(1, 41),
+            length_pow_scalar(-1, 41),
+        );
+        let (ca, cb, cb_neg) = (
+            Type::complex(a.clone()),
+            Type::complex(b.clone()),
+            Type::complex(b_neg.clone()),
+        );
+        let rows = [
+            (BinOp::Mul, a.clone(), b.clone()),
+            (BinOp::Div, a.clone(), b_neg.clone()),
+            (BinOp::Div, Type::Int, length_min_scalar()),
+            (BinOp::Mul, ca.clone(), cb),
+            (BinOp::Div, ca.clone(), cb_neg),
+            (BinOp::Mul, ca.clone(), b.clone()),
+            (BinOp::Mul, b.clone(), ca),
+            (BinOp::Mul, Type::vec3(a), b),
+        ];
+        for (op, left, right) in rows {
+            assert_eq!(
+                infer_mul_div_result(op, &left, &right),
+                Err(MulDivRefusal::DimensionOverflow),
+                "{left} {op:?} {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn mul_div_result_or_placeholder_poisons_a_dimension_overflow() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                Err(MulDivRefusal::DimensionOverflow),
+                &Type::length(),
+                &Type::length()
+            ),
+            Type::Error
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_at_the_dimension_boundary_stays_ok() {
+        assert_eq!(
+            infer_mul_div_result(
+                BinOp::Mul,
+                &length_pow_scalar(1, 127),
+                &length_pow_scalar(1, 126)
+            ),
+            Ok(length_pow_scalar(253, 16002))
         );
     }
 
