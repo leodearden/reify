@@ -118,11 +118,11 @@ structure FeaBracketMinimizeMass {
     // Filed as follow-up ticket tkt_0RSVYHGPGEYD2QV9MTGTXPQ86S. Until it lands,
     // `PointLoad.point` is a plain `String` by declaration — no selector to mint
     // and no conformance debt — which keeps this example honest end-to-end.
-    let tip_load = PointLoad(point: "tip", force: 750.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 750.0)
 
     // "root" is the face name the synthetic cantilever clamp honours
     // (`SYNTHETIC_CLAMP_FACE`, elastic_static.rs) — the x_min end.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // Mirrors `Steel_AISI_1045.yield_stress = some(310MPa)`. A plain Pressure
     // literal rather than the field itself: `yield_stress` is `Option<Pressure>`

@@ -81,10 +81,11 @@ pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
 /// `crates/reify-cli/tests/fixtures/fea_cantilever_violated.ri` (same
 /// solve setup: material / point load / fixed support / `solve_elastic_
 /// static` / `let peak_stress = result.max_von_mises` / FEA-result
-/// constraints) but omits that fixture's `let body = box(...)` geometry
-/// realization — the LSP path attaches no geometry kernel and has no
-/// STEP-file exit-code gate, and `solve_elastic_static` takes scalar
-/// dims (not a `Solid`), so `box` is unnecessary here.
+/// constraints). Its `let body = box(...)` exists only as the anchor of the
+/// support's typed `face(body, "root")` target (task 5312): the LSP path
+/// attaches no geometry kernel and has no STEP-file exit-code gate, and
+/// `solve_elastic_static` takes scalar dims (not a `Solid`), so the box is
+/// never realized.
 ///
 /// Deliberately FEA-only: no geometry/dimensional constraint exists that
 /// could be genuinely `Violated`, so a "zero Violated" assertion over
@@ -108,8 +109,8 @@ pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount], ElasticOptions()
@@ -119,6 +120,7 @@ pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
 
     constraint peak_stress < 1MPa
     constraint peak_stress < 100MPa
+    let body = box(length, width, height)
 }"#;
 
 /// Two constraints that are both `Indeterminate` under the LSP's solver-free
@@ -140,8 +142,8 @@ pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"structure FeaBearingMixed {
     param gap : Length = auto
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount], ElasticOptions()
@@ -151,6 +153,7 @@ pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"structure FeaBearingMixed {
 
     constraint peak_stress < 1MPa && peak_stress < 100MPa
     constraint gap > 1mm
+    let body = box(length, width, height)
 }"#;
 
 /// Byte offsets of every occurrence of `needle` in `source`, ascending.

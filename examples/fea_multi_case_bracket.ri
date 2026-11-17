@@ -49,23 +49,23 @@ structure FeaMultiCaseBracket {
     // PointLoad magnitude varies.  This is the canonical multi-case shape:
     // shared BCs, per-case load variation — mesh + factorisation reused
     // across cases (PRD "Cache reuse is the natural common case").
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let lc_operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         supports: [mount],
     )
 
     let lc_overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
         supports: [mount],
     )
 
     let lc_transport = LoadCase(
         name:     "transport",
-        loads:    [PointLoad(point: "tip", force: 3000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 3000.0)],
         supports: [mount],
     )
 

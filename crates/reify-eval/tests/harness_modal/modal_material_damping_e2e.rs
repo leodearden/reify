@@ -57,7 +57,7 @@
 //! ## Fixture and source-inlining
 //!
 //! One shared geometry across all four arms (a 100 × 20 × 5 mm `Steel_AISI_1045`
-//! cantilever, `FixedSupport(target: "x_min")`, `n_modes: 2`, P2 elements),
+//! cantilever, `FixedSupport(target: face(beam, "x_min"))`, `n_modes: 2`, P2 elements),
 //! measured on this branch at f₁ = 418.0101090358127 Hz and
 //! f₂ = 1616.206557442738 Hz — both comfortably inside the physical band the
 //! guards below assert. Using ONE source for every arm is what makes the
@@ -99,7 +99,7 @@ structure def MaterialDampingProbe {
 
     let steel = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: steel)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     // η read from the MODEL, never transcribed into the assertions.
     let eta : Real = steel.loss_factor
@@ -171,6 +171,7 @@ structure def MaterialDampingProbe {
     let f_both_2 : Frequency = r_both.modes[1].frequency
     let z_both_1 : Real = r_both.modes[0].damping_ratio
     let z_both_2 : Real = r_both.modes[1].damping_ratio
+    let beam = box(length, width, height)
 }
 "#;
 
@@ -535,7 +536,7 @@ structure def NotDampedProbe {
 
     let plain = PlainSteel()
     let mi = FEAMaterialInput(material: plain)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     let opts = ModalOptions(
         n_modes: 2,
@@ -549,6 +550,7 @@ structure def NotDampedProbe {
     )
     let r = modal_analysis(mi.material, length, width, height, opts)
     let n_modes_returned : Int = r.modes.count
+    let beam = box(length, width, height)
 }
 "#;
 
@@ -563,7 +565,7 @@ structure def DampedProbe {
 
     let steel = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: steel)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     let opts = ModalOptions(
         n_modes: 2,
@@ -577,6 +579,7 @@ structure def DampedProbe {
     )
     let r = modal_analysis(mi.material, length, width, height, opts)
     let n_modes_returned : Int = r.modes.count
+    let beam = box(length, width, height)
 }
 "#;
 

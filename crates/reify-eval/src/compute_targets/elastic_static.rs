@@ -226,6 +226,7 @@ use super::shell_solve::{
     resolve_extraction_failure,
 };
 
+use super::bc_resolve;
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use super::fea_inputs::{
@@ -363,20 +364,21 @@ fn first_instance_source_span(list: &Value) -> Option<SourceSpan> {
 /// supplied (see `fea_no_loads.ri` / `examples/fea_cantilever_smoke.ri`).
 const SYNTHETIC_CLAMP_FACE: &str = "root";
 
-/// `true` if any `Value::StructureInstance` in `supports` carries a `target`
-/// field equal to `Value::String(face)`.
+/// `true` if any `Value::StructureInstance` in `supports` carries a typed
+/// `target` selector whose single `Named` leaf is `face`, whatever its kind
+/// (`face(body, "root")`, `edge(body, "root")`, …).
 ///
-/// A lightweight `.ri`-source-level check, NOT real topology selector
-/// resolution (owned by #5313): reads each support's raw
-/// `target` field as authored. The kernel-less trampoline (no BUILD-time
-/// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
-/// original `Value::String`, never a resolved handle list.
+/// A name read, NOT topology selector resolution: the kernel-less trampoline
+/// receives the target as the `Value::Selector` the named-leaf ctor minted,
+/// and [`bc_resolve::named_leaf_target`] reads its name. A bare
+/// `Value::String` is never a target (D8). Interim name read; Bmig2-consume
+/// (#5313, PRD D9) replaces it with node-set resolution.
 fn any_support_targets(supports: &[Value], face: &str) -> bool {
     supports.iter().any(|s| {
         matches!(
             s,
             Value::StructureInstance(data)
-                if data.fields.get("target") == Some(&Value::String(face.to_string()))
+                if data.fields.get("target").and_then(bc_resolve::named_leaf_target) == Some(face)
         )
     })
 }
@@ -665,8 +667,8 @@ pub fn solve_elastic_static_trampoline(
     // proceed. Unlike the empty-supports branch, a PRESENT support exists to
     // reference, so the diagnostic carries the first support's `.ri`
     // construction-site span. Selector RESOLUTION against real topology
-    // is owned by #5313 — this is a lightweight string check
-    // (`any_support_targets`).
+    // stays deferred to Bmig2-consume (#5313) — this reads only the typed
+    // target's Named-leaf name (`any_support_targets`).
     //
     // No `structured_detail` push here (unlike the empty-supports branch):
     // `FeaFailure::structured_detail()` asserts `support_count == 0` — the
@@ -4988,46 +4990,14 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
 ///
 /// Fields mirror `PressureLoad` in `solver_elastic.ri`:
 /// - `magnitude` — surface pressure magnitude in Pa (SI)
-/// - `face`      — face identifier: "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"
+/// - `face`      — the name of the typed `face` selector's Named leaf, one of
+///   "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"
 /// - `direction` — "normal" (only supported value in v0.4)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PressureSpec {
     pub(crate) magnitude: f64,
     pub(crate) face: String,
     pub(crate) direction: String,
-}
-
-/// Read a `PressureLoad.face` field into its face-name string, accepting every
-/// runtime shape the field can take across the String→typed-Selector migration
-/// (task 4370):
-///
-/// - `Value::String(s)` — the pre-migration literal form. Kept for transition
-///   safety so any un-migrated call site (and the `solver_elastic.ri` fixtures)
-///   keeps working.
-/// - `Value::Selector(sv)` — the migrated typed form, e.g. a `face(b, "x_max")`
-///   named-leaf selector. Walks `sv.node` to a `Leaf` and returns its
-///   `LeafQuery::Named(name)`. Non-`Named` leaf queries (predicate/extremal) and
-///   composed nodes (Union/Intersect/Difference) carry no single face name and
-///   yield `None` — the box-face pressure path (`box_face_plane`) supports only
-///   the six named faces.
-/// - `Value::Option(Some(inner))` — the `Option[FaceSelector]` field wrapper;
-///   recurse into the payload. `Value::Option(None)` (the `= none` default)
-///   yields `None`.
-///
-/// Returns `None` for every other shape, signalling the caller to skip the load.
-fn extract_pressure_face_name(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Selector(sv) => match &sv.node {
-            reify_ir::value::SelectorNode::Leaf {
-                query: reify_ir::value::LeafQuery::Named(name),
-                ..
-            } => Some(name.clone()),
-            _ => None,
-        },
-        Value::Option(Some(inner)) => extract_pressure_face_name(inner),
-        _ => None,
-    }
 }
 
 /// Parse a single `PressureLoad` `StructureInstance` into a [`PressureSpec`], or
@@ -5043,12 +5013,12 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 /// - `face` is absent, or is the `= none` default (`Value::Option(None)`): a
 ///   `PressureLoad` with no face applies no traction, and this is skipped
 ///   *quietly* — it is the field's post-migration default, not an error;
-/// - `face` carries a value that [`extract_pressure_face_name`] cannot map to one
-///   of the six named box faces — a non-`Named` selector leaf (e.g. `faces(b)`)
-///   or a composed Union/Intersect/Difference. Because the field is now typed
-///   `Option<FaceSelector>` a user can readily write such a selector, so rather
-///   than dropping the load silently a `tracing::warn!` is emitted naming the
-///   offending shape.
+/// - `face` carries a value that [`bc_resolve::named_leaf_target`] cannot map to
+///   one of the six named box faces — a non-`Named` selector leaf (e.g.
+///   `faces(b)`) or a composed Union/Intersect/Difference. Because the field is
+///   typed `Option<FaceSelector>` a user can readily write such a selector, so
+///   rather than dropping the load silently a `tracing::warn!` is emitted naming
+///   the offending shape.
 ///
 /// `direction` defaults to `"normal"` when absent or non-`String` (the only
 /// supported value in v1).
@@ -5059,8 +5029,8 @@ fn parse_pressure_spec(
         return Ok(None);
     };
     let face = match data.fields.get("face") {
-        Some(face_val) => match extract_pressure_face_name(face_val) {
-            Some(name) => name,
+        Some(face_val) => match bc_resolve::named_leaf_target(face_val) {
+            Some(name) => name.to_owned(),
             None => {
                 // The `= none` default materialises as `Value::Option(None)` and
                 // means "no face specified" → skip quietly. Any *other*
@@ -7412,7 +7382,7 @@ mod tests {
         // Build a PressureLoad StructureInstance
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
-            ("face".to_string(), Value::String("x_max".to_string())),
+            ("face".to_string(), named_face("x_max")),
             ("direction".to_string(), Value::String("normal".to_string())),
         ]
         .into_iter()
@@ -7472,25 +7442,11 @@ mod tests {
     /// and the pressure load is silently dropped (0 specs). GREENed by step-8.
     #[test]
     fn extract_loads_reads_selector_face_named_leaf() {
-        use reify_core::identity::RealizationNodeId;
-        use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // A symbolic (kernel_handle=None) Face selector naming "x_max" — exactly
         // the shape the named-leaf stand-in mints for `face(b, "x_max")` (step-2).
-        let target = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let sel = SelectorValue::leaf(
-            SelectorKind::Face,
-            target,
-            LeafQuery::Named("x_max".to_string()),
-        )
-        .expect("LeafQuery::Named accepts any SelectorKind");
-        let face_val = Value::Selector(sel);
+        let face_val = named_face("x_max");
 
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
@@ -7533,62 +7489,40 @@ mod tests {
         assert_eq!(pressures[0].face, "x_max");
     }
 
-    /// amend (task 4370): directly pin the two `Value::Option` arms that the
-    /// `PressureLoad.face : String → Option<FaceSelector>` migration added to
-    /// `extract_pressure_face_name`. The bare-`Value::Selector` test above
-    /// exercises the leaf arm but not these, and after migration the *production*
-    /// runtime shape is `Value::Option(Some(Value::Selector(..)))` (the field is
-    /// `Option`-typed), with `Value::Option(None)` the `= none` default.
+    /// Build a one-item list holding a `PressureLoad` whose `face` field is
+    /// `face_val`, the shape `solve_elastic_static`'s `loads` argument carries.
+    fn pressure_load_list(face_val: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            ("magnitude".to_string(), Value::Real(1.0e6)),
+            ("face".to_string(), face_val),
+            ("direction".to_string(), Value::String("normal".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PressureLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))])
+    }
+
+    /// amend (task 4370): pin the two `Value::Option` shapes of the
+    /// `PressureLoad.face : Option<FaceSelector>` field. After migration the
+    /// *production* runtime shape is `Value::Option(Some(Value::Selector(..)))`,
+    /// with `Value::Option(None)` the `= none` default.
     ///
-    /// - `Value::Option(Some(Value::Selector(Named)))` → recurse+unwrap → 1 spec.
+    /// - `Value::Option(Some(Value::Selector(Named)))` → unwrapped → 1 spec.
     /// - `Value::Option(None)` (the `= none` default) → skipped → 0 specs (never a
     ///   spurious empty-face load).
     #[test]
-    fn extract_pressure_face_name_handles_option_arms() {
-        use reify_core::identity::RealizationNodeId;
-        use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let named_face_selector = |name: &str| {
-            let target = GeometryHandleRef {
-                realization_ref: RealizationNodeId::new("TestBody", 0),
-                upstream_values_hash: [0u8; 32],
-                kernel_handle: None,
-            };
-            Value::Selector(
-                SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::Named(name.to_string()))
-                    .expect("LeafQuery::Named accepts any SelectorKind"),
-            )
-        };
-        let make_pressure_list = |face_val: Value| {
-            let fields: PersistentMap<String, Value> = [
-                ("magnitude".to_string(), Value::Real(1.0e6)),
-                ("face".to_string(), face_val),
-                ("direction".to_string(), Value::String("normal".to_string())),
-            ]
-            .into_iter()
-            .collect();
-            Value::List(vec![Value::StructureInstance(Box::new(
-                StructureInstanceData {
-                    type_name: "PressureLoad".to_string(),
-                    type_id: StructureTypeId(u32::MAX),
-                    version: 0,
-                    fields,
-                },
-            ))])
-        };
-
+    fn extract_pressure_loads_handles_option_face_arms() {
         // (a) Value::Option(Some(Value::Selector(Named))) — the wrapped, migrated
         // production shape — must unwrap to exactly one spec naming the leaf.
-        let wrapped = Value::Option(Some(Box::new(named_face_selector("x_max"))));
-        assert_eq!(
-            extract_pressure_face_name(&wrapped).as_deref(),
-            Some("x_max"),
-            "Option(Some(Selector(Named))) must recurse+unwrap to the face name"
-        );
+        let wrapped = Value::Option(Some(Box::new(named_face("x_max"))));
         let specs =
-            extract_pressure_loads(&make_pressure_list(wrapped)).expect("a bare magnitude reads");
+            extract_pressure_loads(&pressure_load_list(wrapped)).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7598,14 +7532,9 @@ mod tests {
         assert_eq!(specs[0].face, "x_max");
         assert_eq!(specs[0].magnitude, 1.0e6);
 
-        // (b) Value::Option(None) — the `= none` default — must be skipped, both at
-        // the pure-helper level (None) and end-to-end (0 specs, no empty-face load).
-        assert_eq!(
-            extract_pressure_face_name(&Value::Option(None)),
-            None,
-            "Option(None) is the `= none` default → no face name"
-        );
-        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)))
+        // (b) Value::Option(None) — the `= none` default — must be skipped
+        // (0 specs, no empty-face load).
+        let none_specs = extract_pressure_loads(&pressure_load_list(Value::Option(None)))
             .expect("a face-less load is skipped, not rejected");
         assert!(
             none_specs.is_empty(),
@@ -7629,7 +7558,7 @@ mod tests {
                     dimension: DimensionVector::FORCE,
                 },
             ),
-            ("face".to_string(), Value::String("x_max".to_string())),
+            ("face".to_string(), named_face("x_max")),
         ]
         .into_iter()
         .collect();
@@ -7651,6 +7580,25 @@ mod tests {
             isolated.err(),
             extract_loads(&loads, 0.0).err(),
             "both pressure paths must reject the same way"
+        );
+    }
+
+    /// Bmig2 (task 5312, D8): the retired `face: "x_max"` String form is no
+    /// longer read. A `PressureLoad` whose `face` is a bare `Value::String`
+    /// applies no pressure through either extractor.
+    #[test]
+    fn pressure_load_with_bare_string_face_applies_no_pressure() {
+        let loads = pressure_load_list(Value::String("x_max".to_string()));
+        assert!(
+            extract_pressure_loads(&loads)
+                .expect("a String face is skipped, not rejected")
+                .is_empty(),
+            "a bare String face must yield no PressureSpec"
+        );
+        let (_tip_force, pressures, _body_force) = extract_loads(&loads, 0.0).unwrap();
+        assert!(
+            pressures.is_empty(),
+            "extract_loads must apply no pressure for a bare String face, got {pressures:?}"
         );
     }
 
@@ -10035,7 +9983,7 @@ mod tests {
             "PressureLoad",
             vec![
                 ("magnitude", scalar(5.0e6, DimensionVector::PRESSURE)),
-                ("face", Value::String("x_max".to_string())),
+                ("face", named_face("x_max")),
             ],
         );
         let gravity = structure(
@@ -10061,7 +10009,7 @@ mod tests {
         for (type_name, field, wrong) in cases {
             let mut fields = vec![(field, scalar(2.0, wrong))];
             if type_name == "PressureLoad" {
-                fields.push(("face", Value::String("x_max".to_string())));
+                fields.push(("face", named_face("x_max")));
             }
             let loads = Value::List(vec![structure(type_name, fields)]);
             let res = extract_loads(&loads, 7850.0);
@@ -11298,11 +11246,9 @@ mod tests {
     // offending support's `.ri` construction-site span to
     // `fea_diagnostic_to_core`. Fails to COMPILE until step-8 adds the helper.
 
-    fn fixed_support_with_span(target: &str, span: Option<SourceSpan>) -> Value {
+    fn fixed_support_with_span(target: Value, span: Option<SourceSpan>) -> Value {
         let fields: PersistentMap<String, Value> =
-            [("target".to_string(), Value::String(target.to_string()))]
-                .into_iter()
-                .collect();
+            [("target".to_string(), target)].into_iter().collect();
         Value::StructureInstance(Box::new(
             StructureInstanceData {
                 type_name: "FixedSupport".to_string(),
@@ -11314,10 +11260,46 @@ mod tests {
         ))
     }
 
+    fn named_face(name: &str) -> Value {
+        crate::compute_targets::bc_resolve::named_leaf_selector(
+            reify_core::ty::SelectorKind::Face,
+            name,
+        )
+    }
+
+    // ── task 5312 (Bmig2): the synthetic-clamp advisory reads the typed target
+
+    #[test]
+    fn any_support_targets_reads_a_typed_named_target() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
+        let naming = |kind, name| vec![fixed_support_with_span(named_leaf_selector(kind, name), None)];
+
+        for kind in [SelectorKind::Face, SelectorKind::Edge, SelectorKind::Vertex] {
+            assert!(
+                any_support_targets(&naming(kind, "root"), "root"),
+                "a {kind:?} Named(\"root\") target must count as targeting the clamp face"
+            );
+        }
+        assert!(
+            !any_support_targets(&naming(SelectorKind::Face, "tip"), "root"),
+            "a Named(\"tip\") target does not target the root clamp face"
+        );
+    }
+
+    #[test]
+    fn any_support_targets_ignores_a_bare_string_target() {
+        let supports = vec![fixed_support_with_span(Value::String("root".into()), None)];
+        assert!(
+            !any_support_targets(&supports, "root"),
+            "a bare String target is the retired form and must not be read (D8)"
+        );
+    }
+
     #[test]
     fn first_instance_source_span_returns_first_elements_span() {
         let span = SourceSpan::new(40, 68);
-        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), Some(span))]);
         assert_eq!(
             first_instance_source_span(&list),
             Some(span),
@@ -11345,7 +11327,7 @@ mod tests {
 
     #[test]
     fn first_instance_source_span_none_when_first_instance_has_no_span() {
-        let list = Value::List(vec![fixed_support_with_span("tip", None)]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), None)]);
         assert_eq!(
             first_instance_source_span(&list),
             None,
@@ -11358,7 +11340,7 @@ mod tests {
         let span = SourceSpan::new(5, 9);
         let list = Value::List(vec![
             Value::Int(7),
-            fixed_support_with_span("tip", Some(span)),
+            fixed_support_with_span(named_face("tip"), Some(span)),
         ]);
         assert_eq!(
             first_instance_source_span(&list),
@@ -11371,7 +11353,7 @@ mod tests {
     #[test]
     fn first_instance_source_span_threads_into_fea_diagnostic_label() {
         let span = SourceSpan::new(12, 40);
-        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), Some(span))]);
 
         let failure = FeaFailure::UnderConstrained { support_count: 1 };
         let diag = fea_diagnostic_to_core(&failure, first_instance_source_span(&list));
@@ -13253,7 +13235,7 @@ mod tests {
     /// Sibling to `..._malformed_options_field`: `supports` ([5]) is also
     /// outside the gate (see the "Scope" comment above `gate_or_fail!`). A
     /// `FixedSupport` with a malformed `target` field (`Value::Real`, not
-    /// the `Value::String`/`Value::List` that `any_support_targets` /
+    /// the `Value::Selector`/`Value::List` that `any_support_targets` /
     /// `target_node_set` each pattern-match on) fails both matches and
     /// falls through to the same untargeted-support path already exercised
     /// by every other test's no-target `shell9_make_supports()` baseline —
@@ -13261,7 +13243,7 @@ mod tests {
     #[test]
     fn validate_all_inputs_gate_does_not_panic_on_malformed_supports_field() {
         let malformed_support_fields: PersistentMap<String, Value> =
-            [("target".to_string(), Value::Real(1.0))] // malformed: must be Value::String/List
+            [("target".to_string(), Value::Real(1.0))] // malformed: must be Value::Selector/List
                 .into_iter()
                 .collect();
         let malformed_supports = Value::List(vec![Value::StructureInstance(Box::new(

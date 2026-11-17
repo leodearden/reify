@@ -9,7 +9,8 @@ module support_policy_modal_unknown_face
 structure SupportPolicyModalUnknownFace {
     let material = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: material)
-    let typo_mount = FixedSupport(target: "nonexistent_face")
+    let beam = box(20mm, 10mm, 10mm)
+    let typo_mount = FixedSupport(target: face(beam, "nonexistent_face"))
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [typo_mount],

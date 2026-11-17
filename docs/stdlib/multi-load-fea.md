@@ -25,20 +25,21 @@ let material  = Steel_AISI_1045()
 let width     = 80mm
 let height    = 100mm
 let thickness = 6mm
+let body      = box(width, height, thickness)
 
 // ── Load-case bundles ──────────────────────────────────────────────────────
 // Shared mounting face; only the applied load varies between cases.
-let mount = FixedSupport("mount_face")
+let mount = FixedSupport(target: face(body, "mount_face"))
 
 let operating = LoadCase(
     name:     "operating",
-    loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: vertex(body, "load_point"), force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
 let overload = LoadCase(
     name:     "overload",
-    loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: vertex(body, "load_point"), force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
@@ -268,7 +269,7 @@ See §4 for the per-case `mesh_size` / `element_order` option interaction and th
 ```
 let tight_case = LoadCase(
     name:     "fine_check",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: vertex(body, "load_point"), force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(cg_tolerance: 1e-10, shell_force: ShellForce.Off)),
 )
@@ -280,7 +281,7 @@ let tight_case = LoadCase(
 ```
 let coarse_case = LoadCase(
     name:     "coarse_sanity",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: vertex(body, "load_point"), force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(mesh_size: 0.02, shell_force: ShellForce.Off)),
 )
@@ -315,7 +316,7 @@ The **first case** pays the full cost: mesh generation → matrix assembly → f
 | Factorisation | Free (reused from first case) | Paid per distinct support configuration |
 | Back-substitution | Paid (right-hand side changes with loads) | Paid |
 
-In the bracket example — three cases sharing one `FixedSupport("mount_face")`, with only the load vector differing — the marginal cost per additional case is one back-substitution. The mesh and factorisation are paid once for the three cases combined.
+In the bracket example — three cases sharing one `FixedSupport(target: face(body, "mount_face"))`, with only the load vector differing — the marginal cost per additional case is one back-substitution. The mesh and factorisation are paid once for the three cases combined.
 
 If `supports` vary between cases (e.g. one pinned case and one fixed-base case), the assembled system matrix differs and factorisation is repeated per distinct support configuration. Load variation within a fixed support configuration is always cheap.
 
