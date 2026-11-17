@@ -4444,6 +4444,7 @@ impl Engine {
         // pre-edit snapshot, add/remove instances to match the new count.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            let mut resized = false;
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -4459,6 +4460,7 @@ impl Engine {
                 if new_count_val == old_count_val {
                     continue;
                 }
+                resized = true;
 
                 // Helper closure: resolve a collection count value to an integer.
                 let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
@@ -4567,10 +4569,12 @@ impl Engine {
                     .topology_fingerprint()
                     .combine(count_state_hash);
             }
+            if resized {
+                new_snapshot
+                    .graph
+                    .debug_assert_sub_instance_registry_agrees();
+            }
         }
-        new_snapshot
-            .graph
-            .debug_assert_sub_instance_registry_agrees();
 
         // (14b) Drain `pending_warm_seeds` into the cache, completing the
         //       checkout-and-seed half of the WarmStatePool round-trip
