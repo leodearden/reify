@@ -73,7 +73,8 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 ///   result are DISCARDED; the unified pass compiles them in the fn's slot;
 /// * otherwise the result is exactly what the unified pass would compile —
 ///   `Compiled`, and the scratch is emitted, once, here.  Debug builds re-check
-///   that in [`SourceOrderFnEnv::compile_function_decl`].
+///   the compiled defaults, not the scratch, in
+///   [`SourceOrderFnEnv::compile_function_decl`].
 ///
 /// Seeds `ctx.resolution_functions` with the resulting stubs composed with the
 /// prelude as [`build_resolution_functions`] composes them, and records the
@@ -258,8 +259,9 @@ fn default_fingerprints(defaults: &[Option<CompiledExpr>]) -> Vec<Option<(Conten
 /// the unified `env` gives `early`, the `Compiled` defaults that
 /// [`phase_fn_param_defaults`] committed.
 ///
-/// The recompile's diagnostics are dropped: the early pass already emitted them
-/// once.
+/// It checks the compiled defaults only, not the diagnostics compiling them
+/// drew: the recompile's are dropped, and nothing compares them with the ones
+/// the early pass emitted.
 fn assert_early_defaults_match_unified(
     fn_def: &FnDef,
     sig: &FnSignature,
@@ -667,12 +669,19 @@ mod tests {
         decl_with_early_defaults(EARLY_PROBE, early);
     }
 
+    /// The control for the type-only test above: an honest default passes the
+    /// debug recheck (release has none), so [`honest_defaults`] and this test's
+    /// empty unified env give `spoiled` the same `content_hash`, and the
+    /// type-only panic can only come from the `result_type` comparison.
     #[test]
-    fn an_honest_compiled_default_is_reused_as_compiled() {
+    fn an_honest_compiled_default_passes_the_debug_recheck() {
         let honest = honest_defaults(EARLY_PROBE);
-        let reused = decl_with_early_defaults(EARLY_PROBE, honest.clone())
+        let compiled = decl_with_early_defaults(EARLY_PROBE, honest.clone())
             .expect("a well-formed fn compiles")
             .param_defaults;
-        assert_eq!(default_fingerprints(&reused), default_fingerprints(&honest));
+        assert_eq!(
+            default_fingerprints(&compiled),
+            default_fingerprints(&honest)
+        );
     }
 }
