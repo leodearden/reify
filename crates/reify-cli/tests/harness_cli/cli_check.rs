@@ -1177,7 +1177,7 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 /// the warnings BUILD itself upgraded, and `merge_post_build_verdicts`
 /// (main.rs) retains only over check()'s OWN list, for the entries IT upgraded.
 /// Nothing in either pass knows about the later, authoritative `check()`, which
-/// is why the CLI-side `drop_falsified_indeterminate_diagnostics` filter is
+/// is why the CLI-side `drop_falsified_constraint_diagnostics` filter is
 /// required: stdout reporting `OK SphereCheck#constraint[0]` +
 /// `All constraints satisfied.` while stderr calls that same constraint
 /// indeterminate is a self-contradiction, and truthfulness is the whole point
@@ -1647,7 +1647,7 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
         !stderr.contains("OverweightBlock#constraint[2] indeterminate"),
         "stdout reports VIOLATED, so a surviving `… indeterminate` line for the \
          same constraint would be a self-contradiction \
-         (`drop_falsified_indeterminate_diagnostics`).\nstderr: {stderr}"
+         (`drop_falsified_constraint_diagnostics`).\nstderr: {stderr}"
     );
 }
 

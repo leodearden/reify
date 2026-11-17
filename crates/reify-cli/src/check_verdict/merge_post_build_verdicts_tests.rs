@@ -1,11 +1,11 @@
 //! Prefix-collision coverage for the INWARD leg — the sibling of
-//! `drop_falsified_indeterminate_diagnostics_tests` (task 5748, esc-5748-4).
+//! `drop_falsified_constraint_diagnostics_tests` (task 5748, esc-5748-4).
 //!
 //! `merge_post_build_verdicts`'s retain used a bare
 //! `d.message.contains(label_or_id)` while the outward leg was already anchored.
-//! Both now share [`is_falsified_indeterminacy`] (over [`indeterminacy_subject`]
-//! and [`indeterminacy_subject_in`]); these tests pin that the inward leg really
-//! is anchored, so the two matchers cannot drift apart again.
+//! Both now read claims through [`constraint_claim_in`] (over
+//! [`constraint_subject`]); these tests pin that the inward leg really is
+//! anchored, so the two matchers cannot drift apart again.
 
 use super::merge_post_build_verdicts;
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity, ValueCellId};

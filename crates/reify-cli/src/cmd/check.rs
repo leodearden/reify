@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::{PurposeActivation, parse_purpose_flag, split_cfg_args_or_usage};
 use crate::check_verdict::{
-    check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
+    check_gating_error, dedup_diagnostics, drop_falsified_constraint_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
 use crate::constraint_report::{finish_check, report_achieved_deviations, report_eval_output};
@@ -320,14 +320,13 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // A `None` build result (the lightweight arm, and the kernel-backed
         // sub-case that takes only the `tessellate_realizations` side effect)
         // yields an empty slice, so those paths stay byte-identical (C2).
-        let build_diagnostics: Vec<reify_core::Diagnostic> =
-            drop_falsified_indeterminate_diagnostics(
-                build_result
-                    .as_ref()
-                    .map(|b| b.diagnostics.as_slice())
-                    .unwrap_or(&[]),
-                &result.constraint_results,
-            );
+        let build_diagnostics: Vec<reify_core::Diagnostic> = drop_falsified_constraint_diagnostics(
+            build_result
+                .as_ref()
+                .map(|b| b.diagnostics.as_slice())
+                .unwrap_or(&[]),
+            &result.constraint_results,
+        );
         let merged_diagnostics = merge_build_diagnostics(&result.diagnostics, &build_diagnostics);
 
         let outcome = report_eval_output(
@@ -517,18 +516,16 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             // produced by both passes is reported exactly once.
             //
             // Same return leg as sub-path (b), applied symmetrically so the two
-            // cannot drift: build's stale `ConstraintIndeterminate` claims are
-            // filtered against the AUTHORITATIVE `constraint_results` first. The
+            // cannot drift: build's stale constraint claims are filtered
+            // against the AUTHORITATIVE `constraint_results` first. The
             // known divergence path here is `engine_fixpoint`'s UnifiedDag
             // `declined` set, whose constraints keep build's Indeterminate
             // warning while the CLI-side check still reaches a definite verdict.
             //
             // Composition pinned by `d2_pass_ordering_tests::
             // run_in_cmd_check_purpose_order`'s tests.
-            let front_end_diagnostics = drop_falsified_indeterminate_diagnostics(
-                &front_end_diagnostics,
-                &constraint_results,
-            );
+            let front_end_diagnostics =
+                drop_falsified_constraint_diagnostics(&front_end_diagnostics, &constraint_results);
             // The realization's list also carries a COPY of the GD&T legality
             // pass appended below. Withdraw it before the dedup rather than
             // letting the dedup collapse the two runs: that pass can emit two

@@ -3,75 +3,118 @@
 
 use reify_core::{DiagnosticCode, DiagnosticIdentity, Severity};
 
-/// The constraint-indeterminacy message grammar, as one pair of literals:
-/// `constraint {label-or-id} indeterminate: {reason}`.
+/// The constraint-claim message grammar, as literals:
+/// `constraint {label-or-id} indeterminate: {reason}` and
+/// `constraint {label-or-id} violated`.
 ///
 /// That is exactly what `reify_constraints`' checker emits
 /// (reify-constraints/src/lib.rs), with the raw id rewritten to the constraint's
 /// label by `engine_constraints::labeled_diagnostics` when it carries one.
 /// Every reading of the grammar below — forward and inverse — is built from
-/// these two literals, so they cannot drift apart; the round trip is pinned by
-/// `indeterminacy_grammar_round_trips`.
-const INDETERMINACY_PREFIX: &str = "constraint ";
+/// these literals, so they cannot drift apart; the round trip is pinned by
+/// `constraint_claim_grammar_round_trips`.
+const CONSTRAINT_CLAIM_PREFIX: &str = "constraint ";
 const INDETERMINACY_INFIX: &str = " indeterminate";
+const VIOLATION_INFIX: &str = " violated";
 
-/// The SUBJECT an indeterminacy diagnostic about `entry` names: its label when
-/// it has one (preferred exactly as `engine_constraints::labeled_diagnostics`
-/// does), else its raw id.
+/// What a coded constraint diagnostic claims about its subject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstraintClaim {
+    Indeterminate,
+    Violated,
+}
+
+impl ConstraintClaim {
+    const ALL: [ConstraintClaim; 2] = [ConstraintClaim::Indeterminate, ConstraintClaim::Violated];
+
+    fn code(self) -> DiagnosticCode {
+        match self {
+            ConstraintClaim::Indeterminate => DiagnosticCode::ConstraintIndeterminate,
+            ConstraintClaim::Violated => DiagnosticCode::ConstraintViolated,
+        }
+    }
+
+    fn infix(self) -> &'static str {
+        match self {
+            ConstraintClaim::Indeterminate => INDETERMINACY_INFIX,
+            ConstraintClaim::Violated => VIOLATION_INFIX,
+        }
+    }
+
+    /// Whether one authoritative `verdict` contradicts the claim.  Any definite
+    /// verdict settles an indeterminacy; only `Satisfied` retracts a violation,
+    /// because dropping a violation Error is the heavier call.
+    fn is_falsified_by(self, verdict: reify_ir::Satisfaction) -> bool {
+        match self {
+            ConstraintClaim::Indeterminate => verdict != reify_ir::Satisfaction::Indeterminate,
+            ConstraintClaim::Violated => verdict == reify_ir::Satisfaction::Satisfied,
+        }
+    }
+
+    /// Whether the verdicts of every constraint sharing the claim's subject
+    /// falsify it: at least one holder, and each one contradicts the claim.
+    /// Compiler labels are unique per entity, not per module, so one subject
+    /// can name several constraints.
+    fn is_falsified_by_every(self, verdicts: &[reify_ir::Satisfaction]) -> bool {
+        !verdicts.is_empty() && verdicts.iter().all(|&v| self.is_falsified_by(v))
+    }
+
+    /// The forward reading of the grammar, kept next to the inverse so the two
+    /// stay legible as one definition.  Test-only: production code goes the
+    /// other way (extract once, then hash-lookup), which is the whole point of
+    /// the shape.
+    #[cfg(test)]
+    fn anchor(self, subject: &str) -> String {
+        format!("{CONSTRAINT_CLAIM_PREFIX}{subject}{}", self.infix())
+    }
+}
+
+/// The SUBJECT a constraint claim about `entry` names: its label when it has
+/// one (preferred exactly as `engine_constraints::labeled_diagnostics` does),
+/// else its raw id.
 ///
 /// Borrowed for a labeled entry, so the identity of a constraint costs no
 /// allocation on that path.  Both falsification legs go through this one
 /// definition, so they cannot drift into computing different identities
 /// (esc-5748-4).
-fn indeterminacy_subject(entry: &reify_eval::ConstraintCheckEntry) -> std::borrow::Cow<'_, str> {
+fn constraint_subject(entry: &reify_eval::ConstraintCheckEntry) -> std::borrow::Cow<'_, str> {
     match entry.label.as_deref() {
         Some(label) => std::borrow::Cow::Borrowed(label),
         None => std::borrow::Cow::Owned(entry.id.to_string()),
     }
 }
 
-/// The INVERSE reading of the grammar: the subject `message` claims is
-/// indeterminate, or `None` when the message does not follow the grammar.
+/// The INVERSE reading of the grammar: the claim `d` makes and the subject it
+/// makes it about, or `None` when `d` carries no claim code or its message does
+/// not follow that claim's grammar.
 ///
-/// Extracting the subject and hashing it is what keeps both falsification legs
-/// O(diagnostics + constraints).  The shape this replaces built one anchored
-/// `constraint {subject} indeterminate` `String` per definite constraint and ran
-/// a `message.contains(…)` for every (diagnostic, constraint) pair — quadratic
-/// in the constraint count of any real assembly, on EVERY geometry-bearing
-/// `reify check` since D1 widened the routing.
-///
-/// The match is now EXACT rather than a substring test, which is strictly
-/// stronger than the anchoring it replaces: `Foo#constraint[1]` cannot match
-/// `Foo#constraint[10]`'s still-true warning, and a one-character label cannot
+/// Keyed on the CODE first, so a line is read only under the one claim its code
+/// names.  Extracting the subject and hashing it is what keeps both
+/// falsification legs O(diagnostics + constraints).  The match is EXACT rather
+/// than a substring test: `Foo#constraint[1]` cannot match
+/// `Foo#constraint[10]`'s still-true line, and a one-character label cannot
 /// match nearly every message (`anchored_matcher_survives_an_id_prefix_collision`,
 /// `anchored_matcher_survives_a_short_label_collision`).
 ///
-/// A message that does not follow the grammar at all yields `None` and is
-/// therefore never dropped — `gdt_indeterminate_diag`'s id-less `Conforms
-/// INDETERMINATE: {reason}` (`keeps_idless_indeterminate_diagnostics`), and any
-/// third-party `ConstraintChecker`'s own wording.  That is the safe direction: a
-/// wrongly dropped line is unrecoverable output loss (it is the only explanation
-/// the user gets for a printed `INDETERMINATE`), a wrongly kept one is merely
+/// A message off the grammar yields `None` and is therefore never dropped: the
+/// id-less GD&T `Conforms INDETERMINATE: …` / `Conforms VIOLATED: …`, the
+/// `evaluated to non-boolean value` error, and any third-party
+/// `ConstraintChecker`'s own wording.  That is the safe direction: a wrongly
+/// dropped line is unrecoverable output loss, a wrongly kept one is merely
 /// redundant.
-fn indeterminacy_subject_in(message: &str) -> Option<&str> {
-    let rest = message.strip_prefix(INDETERMINACY_PREFIX)?;
-    let end = rest.find(INDETERMINACY_INFIX)?;
-    Some(&rest[..end])
+fn constraint_claim_in(d: &reify_core::Diagnostic) -> Option<(ConstraintClaim, &str)> {
+    let claim = ConstraintClaim::ALL
+        .into_iter()
+        .find(|claim| d.code == Some(claim.code()))?;
+    let rest = d.message.strip_prefix(CONSTRAINT_CLAIM_PREFIX)?;
+    let end = rest.find(claim.infix())?;
+    Some((claim, &rest[..end]))
 }
 
-/// The forward reading of the grammar, kept next to the inverse so the two stay
-/// legible as one definition.  Test-only: production code goes the other way
-/// (extract once, then hash-lookup), which is the whole point of the shape.
-#[cfg(test)]
-fn indeterminacy_anchor(subject: &str) -> String {
-    format!("{INDETERMINACY_PREFIX}{subject}{INDETERMINACY_INFIX}")
-}
-
-/// `true` when `d` is a `ConstraintIndeterminate` claim about one of `subjects`.
-///
-/// The single matcher both falsification legs — [`merge_post_build_verdicts`]'s
-/// retain and [`drop_falsified_indeterminate_diagnostics`]' filter — go through,
-/// so they cannot drift into deleting different sets.
+/// `true` when `d` is an indeterminacy claim about one of `subjects` — the
+/// inward leg's matcher, read through the same [`constraint_claim_in`] parser
+/// as [`drop_falsified_constraint_diagnostics`], so the two legs cannot drift
+/// into reading different grammars.
 fn is_falsified_indeterminacy<S>(
     d: &reify_core::Diagnostic,
     subjects: &std::collections::HashSet<S>,
@@ -79,8 +122,10 @@ fn is_falsified_indeterminacy<S>(
 where
     S: std::borrow::Borrow<str> + Eq + std::hash::Hash,
 {
-    d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
-        && indeterminacy_subject_in(&d.message).is_some_and(|s| subjects.contains(s))
+    matches!(
+        constraint_claim_in(d),
+        Some((ConstraintClaim::Indeterminate, subject)) if subjects.contains(subject)
+    )
 }
 
 /// Adopt post-realization constraint verdicts from a captured [`BuildResult`]
@@ -106,7 +151,8 @@ where
 ///   MORE definite than `check()`, so only the geometry-query axis moves.
 /// * **Entries are matched by `id`**, never by position.
 /// * **The upgraded entry's now-false `ConstraintIndeterminate` warning is
-///   dropped**, matched by the shared [`is_falsified_indeterminacy`].
+///   dropped**, matched by [`is_falsified_indeterminacy`] over the shared
+///   [`constraint_claim_in`] parser.
 /// * **Diagnostics are otherwise untouched**; [`merge_build_diagnostics`] owns
 ///   appending build()-only entries.
 ///
@@ -148,7 +194,7 @@ pub(crate) fn merge_post_build_verdicts(
             continue;
         }
         entry.set_verdict(new_sat, None);
-        upgraded.insert(indeterminacy_subject(entry).into_owned());
+        upgraded.insert(constraint_subject(entry).into_owned());
     }
     if upgraded.is_empty() {
         return;
@@ -160,8 +206,8 @@ pub(crate) fn merge_post_build_verdicts(
         .retain(|d| !is_falsified_indeterminacy(d, &upgraded));
 }
 
-/// Drop the `ConstraintIndeterminate` diagnostics in `build_diags` that the
-/// AUTHORITATIVE `constraint_results` positively falsify.
+/// Drop the constraint claims in `build_diags` that the AUTHORITATIVE
+/// `constraint_results` positively falsify.
 ///
 /// The outward mirror of [`merge_post_build_verdicts`], and D2's return leg.
 /// The diagnostic merge only ever ADDS build entries, and neither retain that
@@ -169,74 +215,68 @@ pub(crate) fn merge_post_build_verdicts(
 /// or [`merge_post_build_verdicts`]' — knows about the other pass's verdicts.
 /// Without this filter, `check` prints stdout `OK …` / `All constraints
 /// satisfied.` while stderr still carries build's `… indeterminate: undefined
-/// inputs: …` for the same constraint (measured on
-/// `tests/fixtures/dfm_with_repr_within.ri`).
+/// inputs: …` (measured on `tests/fixtures/dfm_with_repr_within.ri`) or `…
+/// violated` for the same constraint.  The violated case is also
+/// exit-relevant: [`check_gating_error`] reads the merged set, so a stale
+/// `ConstraintViolated` Error would move the exit code against the `Satisfied`
+/// verdict `check` prints.
 ///
 /// # Contract
 ///
-/// * **Drop on positive falsification only.**  An entry is removed only when
-///   `constraint_results` holds a DEFINITE verdict for that same constraint; an
-///   id the authoritative list never mentions is left alone.  That is what
-///   preserves PRD D2's "every build()-only diagnostic appears at least once".
-/// * **Only `DiagnosticCode::ConstraintIndeterminate` is in scope.**  A verdict
-///   falsifies the indeterminacy claim and nothing else, so a
-///   `ConstraintViolated` line naming the same constraint survives.
-/// * **The matcher is the shared [`is_falsified_indeterminacy`]**, over the
-///   shared [`indeterminacy_subject`] identity, so this leg and the inward one
-///   cannot drift.
+/// * **Both claim words are in scope**, read by the shared
+///   [`constraint_claim_in`] over the shared [`constraint_subject`] identity,
+///   so this leg and the inward one cannot drift.
+/// * **Drop on positive falsification only.**  A claim is removed only when at
+///   least one authoritative entry holds its subject AND every such holder
+///   falsifies it ([`ConstraintClaim::is_falsified_by`]): any definite verdict
+///   settles an indeterminacy, only `Satisfied` retracts a violation.  An
+///   unmentioned subject is left alone, which preserves PRD D2's "every
+///   build()-only diagnostic appears at least once".
+/// * **Id-less claims are never falsified, by design.**  The GD&T
+///   `Conforms INDETERMINATE` / `Conforms VIOLATED` lines and the `evaluated to
+///   non-boolean value` error name no subject, so no verdict can speak for them
+///   (`keeps_idless_conformance_violation`, `keeps_idless_indeterminate_diagnostics`,
+///   and on the inward leg `idless_indeterminate_warning_survives_an_upgrade`).
 ///
-/// Two residual gaps are pinned as tests rather than argued here, both tracked
-/// under #6048: build reporting `Violated` where check says `Satisfied` keeps
-/// build's error line (`mirror_case_build_side_violation_currently_survives`),
-/// and an id-less `ConstraintIndeterminate` carries no needle to match
-/// (`idless_indeterminate_warning_survives_an_upgrade`).
-///
-/// The first gap is exit-relevant: [`check_gating_error`] reads the merged set,
-/// so a surviving stale `ConstraintViolated` Error would move the exit code
-/// against the `Satisfied` verdict `check` prints on stdout.
-/// The [`CHECK_ERROR_EXIT_ALLOWLIST`] entry `Code(ConstraintViolated)`
-/// (`FixPath`) holds that off; its fix
-/// belongs HERE — widening this helper's scope past `ConstraintIndeterminate`
-/// (#6048) — not in the gate.  Real violations still exit non-zero via
-/// `ConstraintOutcome::SomeViolated` in `finish_check`.
-///
-/// No exit code can move either way: `report_eval_output`'s outcome derives
-/// solely from `constraint_results`, never from the diagnostic list.  An empty
-/// `constraint_results`, or one holding no definite verdict, falsifies nothing
-/// → `build_diags` verbatim (C2).
-pub(crate) fn drop_falsified_indeterminate_diagnostics(
+/// Real violations still exit non-zero via `ConstraintOutcome::SomeViolated`
+/// in `finish_check`, which reads `constraint_results`, never this list.  An
+/// empty `constraint_results` falsifies nothing → `build_diags` verbatim (C2).
+pub(crate) fn drop_falsified_constraint_diagnostics(
     build_diags: &[reify_core::Diagnostic],
     constraint_results: &[reify_eval::ConstraintCheckEntry],
 ) -> Vec<reify_core::Diagnostic> {
     if build_diags.is_empty() {
         return Vec::new();
     }
-    // The subjects build's list actually CLAIMS are indeterminate, extracted
-    // once and BORROWED from the messages — no allocation, and empty on the
-    // common no-op path where a realization reported only compile/kernel errors.
-    let claimed: std::collections::HashSet<&str> = build_diags
-        .iter()
-        .filter(|d| d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate))
-        .filter_map(|d| indeterminacy_subject_in(&d.message))
-        .collect();
-    if claimed.is_empty() {
+    // The subjects build's list actually makes a claim about, BORROWED from the
+    // messages, each mapped to the verdicts of the authoritative entries that
+    // hold it.  Empty on the common no-op path where a realization reported
+    // only compile/kernel errors.
+    let mut holder_verdicts: std::collections::HashMap<&str, Vec<reify_ir::Satisfaction>> =
+        build_diags
+            .iter()
+            .filter_map(constraint_claim_in)
+            .map(|(_, subject)| (subject, Vec::new()))
+            .collect();
+    if holder_verdicts.is_empty() {
         return build_diags.to_vec();
     }
-    // ONE walk of the authoritative verdicts, hashing each definite entry's
-    // subject into `claimed`.  The shape this replaces allocated an anchored
-    // needle per definite entry and then scanned every message for each of them
-    // — O(diagnostics x constraints) on every geometry-bearing `reify check`.
-    let falsified: std::collections::HashSet<&str> = constraint_results
-        .iter()
-        .filter(|e| e.satisfaction != reify_ir::Satisfaction::Indeterminate)
-        .filter_map(|e| claimed.get(indeterminacy_subject(e).as_ref()).copied())
-        .collect();
-    if falsified.is_empty() {
-        return build_diags.to_vec();
+    // ONE walk of the authoritative verdicts, hashing each entry's subject into
+    // the claimed set: O(diagnostics + constraints), never their product.
+    for entry in constraint_results {
+        if let Some(verdicts) = holder_verdicts.get_mut(constraint_subject(entry).as_ref()) {
+            verdicts.push(entry.satisfaction);
+        }
     }
     build_diags
         .iter()
-        .filter(|d| !is_falsified_indeterminacy(d, &falsified))
+        .filter(|d| {
+            !constraint_claim_in(d).is_some_and(|(claim, subject)| {
+                holder_verdicts
+                    .get(subject)
+                    .is_some_and(|verdicts| claim.is_falsified_by_every(verdicts))
+            })
+        })
         .cloned()
         .collect()
 }
@@ -292,6 +332,7 @@ pub(crate) fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
 
 /// How one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry selects the diagnostics it
 /// excuses.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckErrorAllowlistMatcher {
     /// Preferred: match the machine-readable [`DiagnosticCode`].
@@ -312,6 +353,7 @@ enum CheckErrorAllowlistMatcher {
 
 /// What retiring one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry will take.  Recorded
 /// so the burn-down owner does not have to re-derive it from the message.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckErrorAllowlistDisposition {
     /// The emission's `Severity::Error` is simply wrong for this path; the
@@ -321,16 +363,16 @@ enum CheckErrorAllowlistDisposition {
     /// The emission needs a machine-readable [`DiagnosticCode`] before it can
     /// be reasoned about (or excused) precisely.
     ///
-    /// Part of the documented taxonomy but not exercised by the seeded table:
-    /// both code-less seed entries are `Demote`, because their severity — not
-    /// their lack of a code — is what is wrong on `check`'s path.  Kept so
-    /// the burn-down owner has the vocabulary without having to invent it, and
-    /// carrying a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it
-    /// anchors no PTODO marker — there is no deferred work here to cite).
-    #[allow(dead_code)]
+    /// Part of the documented taxonomy but never exercised by the seeded
+    /// table: both code-less seed entries were `Demote`, because their
+    /// severity — not their lack of a code — was what was wrong on `check`'s
+    /// path.  Kept so a burn-down owner has the vocabulary without having to
+    /// invent it.
     Recode,
     /// The emission is a real Error, but `check` reaching it at all is the
-    /// bug; the fix is on the code path, not on the diagnostic.
+    /// bug; the fix is on the code path, not on the diagnostic.  Its one
+    /// entry (`Code(ConstraintViolated)`) was retired by fixing the path in
+    /// [`drop_falsified_constraint_diagnostics`].
     FixPath,
 }
 
@@ -378,8 +420,9 @@ struct CheckErrorExitAllowance {
 /// exited 0 while printing an `error:` line, the unsolved-`auto` case they
 /// targeted was the only one expected on a healthy path.  `check` now solves,
 /// so that case no longer arises, and their code-less substrings excuse only
-/// the over-broad cases the `is unresolved (Undef)` entry describes.  The
-/// `Code(ConstraintViolated)` entry is a merge hazard, not a corpus finding.
+/// the over-broad cases the `is unresolved (Undef)` entry describes.  A
+/// third, `Code(ConstraintViolated)` merge-hazard entry was retired by fixing
+/// the path in [`drop_falsified_constraint_diagnostics`].
 /// The genuine design errors in that same sweep —
 /// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
 /// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
@@ -424,25 +467,6 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
     CheckErrorExitAllowance {
         matcher: CheckErrorAllowlistMatcher::MessageContains("all geometry operations failed"),
         disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#5404",
-    },
-    // TODO(#5404): retire once #6048 widens
-    // `drop_falsified_indeterminate_diagnostics` past `ConstraintIndeterminate`.
-    //
-    // MERGE HAZARD, not a corpus finding: build's copy can emit a stale
-    // `ConstraintViolated` Error that survives the merge while `check`'s
-    // AUTHORITATIVE verdict for the same constraint is `Satisfied` — pinned by
-    // `d2_pass_ordering_tests::mirror_case_build_side_violation_currently_
-    // survives`.  `drop_falsified_indeterminate_diagnostics` scopes only to
-    // `ConstraintIndeterminate`, so nothing withdraws it today.  Gating on it
-    // would produce a FALSE exit 1 contradicting `check`'s own stdout.
-    //
-    // No real signal is lost: a genuine violation still exits non-zero through
-    // `ConstraintOutcome::SomeViolated` in `finish_check`, which reads the
-    // authoritative `constraint_results`, never the diagnostic list.
-    CheckErrorExitAllowance {
-        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::ConstraintViolated),
-        disposition: CheckErrorAllowlistDisposition::FixPath,
         cite: "#5404",
     },
 ];
