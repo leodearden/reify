@@ -1115,6 +1115,16 @@ verify_cross_check_remote_green: false
 verify_task_host_policy: remote_all
 verify_task_remote_cross_check_every_n: 10
 
+# Task verifies stay narrow (scoped to the touched modules); the merge verify is full,
+# the way dark-factory runs it (Leo, 2026-11-17, ruling 3 of the warm-base 6696 study,
+# plans/warm-base-6696-study-2026-11-17/REPORT.md in dark-factory). "full" runs every
+# registered module's suite at merge, and it also tells
+# merge_lane/gates.py::_reverify_rebased_tree that the gate is whole-tree, so the
+# disjoint-delta skip is unsound: every rebased landing is re-verified before it lands
+# instead of being cleared as disjoint unverified. Restart-only (not in
+# RELOADABLE_FIELDS); live from the next orchestrator restart.
+merge_verify_breadth: "full"
+
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge
 # phase rebases the task branch onto main and runs a full task-role scoped
