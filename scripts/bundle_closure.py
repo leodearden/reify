@@ -7,7 +7,9 @@ install (derived at build time from ldd, never a hand list)". This tool derives
 that closure EMPIRICALLY, against the target rather than from host metadata:
 
   * host `ldd` (LD_LIBRARY_PATH removed) maps every soname the shipped ELFs
-    need to the host file that satisfies it;
+    need to the host file that satisfies it; where the binaries resolve one
+    soname to different files, the first named (--main-binary, then each
+    --extra-binary in order) supplies the one copy the bundle ships;
   * a reference image — ubuntu:24.04 plus the deb's own declared Depends, read
     from tauri.conf.json, plus patchelf — stands in for the installed target;
   * a fixed point stages the shipped ELFs at <stage>/usr/bin and each soname
@@ -44,7 +46,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping, Sequence
 
 BASE_IMAGE = "ubuntu:24.04"
 IMAGE_REPOSITORY = "reify-bundle-ref"
@@ -59,9 +61,8 @@ GLIBC_SONAMES = frozenset({
 
 class ClosureError(RuntimeError):
     """The closure cannot be derived: a library no host file supplies, a glibc
-    gap no bundle can close, a soname the shipped binaries resolve to different
-    host files, an invalid input, or a round that staged nothing new while the
-    target still reports a gap."""
+    gap no bundle can close, an invalid input, or a round that staged nothing
+    new while the target still reports a gap."""
 
 
 class CommandError(RuntimeError):
@@ -78,6 +79,23 @@ class LddReport:
         object.__setattr__(self, "resolved", MappingProxyType(dict(self.resolved)))
         object.__setattr__(self, "missing", frozenset(self.missing))
         object.__setattr__(self, "version_short", frozenset(self.version_short))
+
+
+@dataclass(frozen=True)
+class HostResolution:
+    """Each soname the shipped binaries need, mapped to the host file the
+    bundle copies if the target lacks it (`resolved`), and to each later
+    binary, in precedence order, whose host resolution of it is a different
+    file, with that binary's own host path (`shadowed`). If the soname is
+    bundled, that binary loads the bundled copy; if the target supplies it,
+    every binary loads the target's and the host's difference is moot."""
+    resolved: Mapping[str, str]
+    shadowed: Mapping[str, tuple[tuple[Path, str], ...]]
+
+    def __post_init__(self):
+        object.__setattr__(self, "resolved", MappingProxyType(dict(self.resolved)))
+        object.__setattr__(self, "shadowed", MappingProxyType(
+            {soname: tuple(shadows) for soname, shadows in self.shadowed.items()}))
 
 
 _RESOLVED = re.compile(r"^(?P<soname>\S+) => (?P<path>/\S+) \(0x[0-9a-f]+\)$")
@@ -214,36 +232,58 @@ def _run(argv: list[str], *, input_text: str | None = None,
     return proc.stdout
 
 
-def merge_host_reports(reports: Mapping[Path, LddReport]) -> dict[str, str]:
-    """soname -> host path over each shipped ELF's host ldd report. Every
-    shipped ELF loads from one bundled library dir, so two binaries resolving
-    one soname to different files is an error: one would get a library it was
-    never linked or tested against."""
+def merge_host_reports(main: tuple[Path, LddReport],
+                       extras: Sequence[tuple[Path, LddReport]] = ()) -> HostResolution:
+    """Merge each shipped ELF's host ldd report into one copy per soname, since
+    every shipped ELF loads from the one bundled library dir.
+
+    Precedence is `main` first, then `extras` in order: the first binary that
+    resolves a soname supplies its copy, and each later binary that resolves
+    it to a different file (by realpath) is recorded as shadowed. On the
+    target, the reference-image probe checks that copy only as far as plain
+    ldd does: derive_closure stops if any binary is left missing a library or
+    short of a symbol version. An unversioned symbol the copy lacks surfaces
+    only when a binary binds it, which the armed (opt-in) clean-install proof
+    exercises by running both binaries on stock Ubuntu."""
     resolved: dict[str, str] = {}
-    resolved_for: dict[str, Path] = {}
-    for binary, report in reports.items():
+    shadowed: dict[str, list[tuple[Path, str]]] = {}
+    for binary, report in (main, *extras):
         if report.missing or report.version_short:
             raise ClosureError(
                 f"{binary} does not resolve on the build host itself: "
                 + ", ".join(sorted(report.missing | report.version_short)))
         for soname, host_path in report.resolved.items():
-            prior = resolved.get(soname)
-            if prior is None:
-                resolved[soname] = host_path
-                resolved_for[soname] = binary
-            elif os.path.realpath(prior) != os.path.realpath(host_path):
-                raise ClosureError(
-                    f"{soname} resolves to {prior} for {resolved_for[soname]} but to "
-                    f"{host_path} for {binary}; the bundle has one library dir for both")
-    return resolved
+            chosen = resolved.setdefault(soname, host_path)
+            if os.path.realpath(chosen) != os.path.realpath(host_path):
+                shadowed.setdefault(soname, []).append((binary, host_path))
+    return HostResolution(resolved=resolved, shadowed=shadowed)
 
 
-def host_resolution(binaries: Mapping[str, Path]) -> dict[str, str]:
-    """soname -> host path over every shipped ELF, with LD_LIBRARY_PATH
-    removed so only the binaries' own RUNPATHs and the system paths count."""
+def describe_closure(host: HostResolution, closure: frozenset[str]) -> list[str]:
+    """Log lines for a derived closure: each bundled soname with the host file
+    it is copied from, then each shipped binary the host resolves it to another
+    file for. A shadowed soname outside the closure is not reported: the target
+    supplies it, so no shipped binary loads a bundled copy of it."""
+    lines = []
+    for soname in sorted(closure):
+        lines.append(f"bundled {soname} <- {host.resolved[soname]}")
+        lines.extend(
+            f"  {binary} resolves {soname} to {host_path} on the build host; "
+            "it loads the bundled copy"
+            for binary, host_path in host.shadowed.get(soname, ()))
+    return lines
+
+
+def host_resolution(main: Path, extras: Iterable[Path]) -> HostResolution:
+    """merge_host_reports over the host ldd of `main` and each of `extras`, with
+    LD_LIBRARY_PATH removed so only the binaries' own RUNPATHs and the system
+    paths count."""
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
-    return merge_host_reports(
-        {path: parse_ldd(_run(["ldd", str(path)], env=env)) for path in binaries.values()})
+
+    def host_report(path: Path) -> tuple[Path, LddReport]:
+        return path, parse_ldd(_run(["ldd", str(path)], env=env))
+
+    return merge_host_reports(host_report(main), [host_report(path) for path in extras])
 
 
 def ensure_reference_image(dockerfile_text: str) -> str:
@@ -349,12 +389,12 @@ def _run_derivation(args: argparse.Namespace) -> None:
         raise ClosureError(f"stage dir {stage} is not empty; remove it first")
     stage.mkdir(parents=True, exist_ok=True)
 
-    host_resolved = host_resolution(binaries)
+    host = host_resolution(args.main_binary[1], extras.values())
     image = ensure_reference_image(reference_dockerfile(depends))
-    probe = docker_probe(image, stage, product_name, binaries, host_resolved)
-    closure = derive_closure(host_resolved, probe)
-    for soname in sorted(closure):
-        _log(f"bundled {soname} <- {host_resolved[soname]}")
+    probe = docker_probe(image, stage, product_name, binaries, host.resolved)
+    closure = derive_closure(host.resolved, probe)
+    for line in describe_closure(host, closure):
+        _log(line)
     _log(f"closure: {len(closure)} libraries; staged at {stage}")
 
     overlay = tauri_overlay(stage, product_name, args.main_binary[0], extras)

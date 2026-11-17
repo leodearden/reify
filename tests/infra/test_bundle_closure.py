@@ -20,6 +20,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -131,24 +132,39 @@ CLI = Path("/t/release/reify")
 class MergeHostReports(unittest.TestCase):
 
     def test_both_binaries_sonames_are_merged(self):
-        merged = bc.merge_host_reports({
-            GUI: _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15"}),
-            CLI: _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
-                                   "libslvs.so.1": "/usr/lib/libslvs.so.1"}),
-        })
-        self.assertEqual(merged, {"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
-                                  "libslvs.so.1": "/usr/lib/libslvs.so.1"})
+        merged = bc.merge_host_reports(
+            (GUI, _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15"})),
+            [(CLI, _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
+                                     "libslvs.so.1": "/usr/lib/libslvs.so.1"}))])
+        self.assertEqual(dict(merged.resolved),
+                         {"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
+                          "libslvs.so.1": "/usr/lib/libslvs.so.1"})
+        self.assertEqual(dict(merged.shadowed), {})
 
-    def test_one_soname_resolved_to_two_files_is_an_error_naming_both(self):
-        with self.assertRaises(bc.ClosureError) as caught:
-            bc.merge_host_reports({
-                GUI: _report(resolved={"libstdc++.so.6": "/opt/d/libstdc++.so.6"}),
-                CLI: _report(resolved={"libstdc++.so.6": "/usr/lib/libstdc++.so.6"}),
-            })
-        message = str(caught.exception)
-        for expected in ("libstdc++.so.6", "/opt/d/libstdc++.so.6",
-                         "/usr/lib/libstdc++.so.6", str(GUI), str(CLI)):
-            self.assertIn(expected, message)
+    def test_the_main_binary_supplies_a_soname_the_binaries_resolve_differently(self):
+        gui_copy = (GUI, "/opt/d/libstdc++.so.6")
+        cli_copy = (CLI, "/usr/lib/libstdc++.so.6")
+        for main, extra in ((gui_copy, cli_copy), (cli_copy, gui_copy)):
+            with self.subTest(main=str(main[0])):
+                merged = bc.merge_host_reports(
+                    (main[0], _report(resolved={"libstdc++.so.6": main[1]})),
+                    [(extra[0], _report(resolved={"libstdc++.so.6": extra[1]}))])
+                self.assertEqual(merged.resolved["libstdc++.so.6"], main[1])
+                self.assertEqual(merged.shadowed["libstdc++.so.6"], (extra,))
+
+    def test_extras_take_precedence_in_their_given_order_after_the_main_binary(self):
+        first, second = Path("/t/release/first"), Path("/t/release/second")
+        merged = bc.merge_host_reports(
+            (GUI, _report(resolved={"libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15"})),
+            [(first, _report(resolved={"libfoo.so.1": "/opt/first/libfoo.so.1"})),
+             (second, _report(resolved={"libfoo.so.1": "/opt/second/libfoo.so.1",
+                                        "libgmsh.so.4.15": "/usr/lib/libgmsh.so.4.15"}))])
+        self.assertEqual(merged.resolved["libfoo.so.1"], "/opt/first/libfoo.so.1")
+        self.assertEqual(merged.shadowed["libfoo.so.1"],
+                         ((second, "/opt/second/libfoo.so.1"),))
+        self.assertEqual(merged.resolved["libgmsh.so.4.15"], "/opt/d/libgmsh.so.4.15")
+        self.assertEqual(merged.shadowed["libgmsh.so.4.15"],
+                         ((second, "/usr/lib/libgmsh.so.4.15"),))
 
     def test_two_paths_to_one_file_are_the_same_library(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -156,17 +172,72 @@ class MergeHostReports(unittest.TestCase):
             real.write_bytes(b"")
             alias_dir = Path(tmp) / "alias"
             alias_dir.symlink_to(tmp)
-            merged = bc.merge_host_reports({
-                GUI: _report(resolved={"libfoo.so.1": str(real)}),
-                CLI: _report(resolved={"libfoo.so.1": str(alias_dir / "libfoo.so.1")}),
-            })
-        self.assertEqual(merged, {"libfoo.so.1": str(real)})
+            merged = bc.merge_host_reports(
+                (GUI, _report(resolved={"libfoo.so.1": str(real)})),
+                [(CLI, _report(resolved={"libfoo.so.1": str(alias_dir / "libfoo.so.1")}))])
+        self.assertEqual(dict(merged.resolved), {"libfoo.so.1": str(real)})
+        self.assertEqual(dict(merged.shadowed), {})
+
+    def test_resolution_is_immutable(self):
+        merged = bc.merge_host_reports(
+            (GUI, _report(resolved={"libstdc++.so.6": "/opt/d/libstdc++.so.6"})),
+            [(CLI, _report(resolved={"libstdc++.so.6": "/usr/lib/libstdc++.so.6"}))])
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            merged.resolved = {}
+        with self.assertRaises(TypeError):
+            merged.resolved["x"] = "/y"
+        with self.assertRaises(TypeError):
+            merged.shadowed["x"] = ()
 
     def test_a_binary_unresolved_on_the_host_is_an_error_naming_it(self):
-        with self.assertRaises(bc.ClosureError) as caught:
-            bc.merge_host_reports({CLI: _report(missing={"libfoo.so.1"})})
-        self.assertIn(str(CLI), str(caught.exception))
-        self.assertIn("libfoo.so.1", str(caught.exception))
+        unresolved = (CLI, _report(missing={"libfoo.so.1"}))
+        healthy = (GUI, _report())
+        for position, (main, extras) in (("main", (unresolved, [healthy])),
+                                         ("extra", (healthy, [unresolved]))):
+            with self.subTest(position):
+                with self.assertRaises(bc.ClosureError) as caught:
+                    bc.merge_host_reports(main, extras)
+                self.assertIn(str(CLI), str(caught.exception))
+                self.assertIn("libfoo.so.1", str(caught.exception))
+
+
+class DescribeClosure(unittest.TestCase):
+
+    def setUp(self):
+        self.host = bc.merge_host_reports(
+            (GUI, _report(resolved={
+                "libfreeimage.so.3": "/usr/lib/libfreeimage.so.3",
+                "libcairo.so.2": "/usr/lib/libcairo.so.2",
+                "libgmsh.so.4.15": "/opt/d/libgmsh.so.4.15",
+            })),
+            [(CLI, _report(resolved={
+                "libfreeimage.so.3": "/opt/d/libfreeimage.so.3",
+                "libcairo.so.2": "/opt/d/libcairo.so.2",
+            }))])
+        self.closure = frozenset({"libfreeimage.so.3", "libgmsh.so.4.15"})
+
+    def test_each_closure_soname_has_a_line_naming_its_bundled_host_path(self):
+        lines = bc.describe_closure(self.host, self.closure)
+        for soname, path in (("libfreeimage.so.3", "/usr/lib/libfreeimage.so.3"),
+                             ("libgmsh.so.4.15", "/opt/d/libgmsh.so.4.15")):
+            with self.subTest(soname):
+                self.assertIn(f"bundled {soname} <- {path}", lines)
+
+    def test_a_shadowed_closure_soname_names_the_other_binary_and_its_path(self):
+        lines = bc.describe_closure(self.host, self.closure)
+        # GUI's path has CLI's as a prefix, so CLI must not run on into "-gui".
+        names_cli = re.compile(re.escape(str(CLI)) + r"(?![\w-])")
+        self.assertTrue(
+            any("libfreeimage.so.3" in line and names_cli.search(line)
+                and "/opt/d/libfreeimage.so.3" in line for line in lines),
+            lines)
+
+    def test_a_shadowed_soname_outside_the_closure_is_not_reported(self):
+        lines = bc.describe_closure(self.host, self.closure)
+        self.assertFalse([line for line in lines if "libcairo.so.2" in line], lines)
+
+    def test_an_empty_closure_yields_no_lines(self):
+        self.assertEqual(bc.describe_closure(self.host, frozenset()), [])
 
 
 class FakeTarget:

@@ -8,10 +8,14 @@
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
- * attempt is refused, by refuseIfDocumentPending, with a LaunchFailure under its
- * own code naming that path. Only the attempt's own settling clears pending (the
- * store's reset does not), so a load that never settles leaves every document
- * attempt refused until the app restarts.
+ * attempt is refused, by refuseIfDocumentPending, with E_GUI_DOCUMENT_BUSY
+ * naming that path. Pending is cleared by the attempt's own settling or by
+ * abandonDocumentAttempt, not by the store's reset. Abandoning resolves the
+ * attempt's action at once and aborts the signal its stages were given. The
+ * attempt then loads nothing further, and the action ignores how the attempt
+ * settles. Abandoning a create does not undo a template write that has landed
+ * or still lands: that file stays on disk, unloaded and out of Recent, and
+ * opens like any other.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -40,9 +44,11 @@ export interface LauncherDeps {
   /**
    * Read `path` into the editor and engine stores (App's one open funnel).
    * Rejects only before writing any store, so a failure reaches a caller that
-   * can still present it.
+   * can still present it. Once `signal` is aborted it sends no further engine
+   * request and writes no further store, so an abandoned attempt never writes
+   * over a document opened since.
    */
-  loadDocument(path: string): Promise<void>;
+  loadDocument(path: string, signal: AbortSignal): Promise<void>;
   createNewFile(path: string): Promise<FileData>;
   recordRecent(path: string): Promise<RecentEntry[]>;
   listRecent(): Promise<RecentEntry[]>;
@@ -67,14 +73,6 @@ const SELECT_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> =
   debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
 });
 
-export type DocumentAttemptKind = 'open' | 'create';
-
-/** The code a document attempt of each kind is refused under while another is pending. */
-const DOCUMENT_ATTEMPT_CODES: Readonly<Record<DocumentAttemptKind, LaunchErrorCode>> = Object.freeze({
-  open: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
-  create: LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED,
-});
-
 /**
  * selectMode's set_mode failure code, given the debugPort the store held
  * before the call. A non-null debugPort came from a set_mode reply, so the
@@ -95,13 +93,30 @@ async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promi
   }
 }
 
+/**
+ * Settle with `work`, or resolve as soon as `signal` aborts, whichever comes
+ * first. A later settling of `work` is ignored, a rejection included, so it
+ * is neither presented nor unhandled.
+ */
+function untilAbandoned(work: Promise<void>, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) resolve();
+    signal.addEventListener('abort', () => resolve(), { once: true });
+    work.then(resolve, reject);
+  });
+}
+
 export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) {
+  /** The controller of the attempt that owns document.pending. */
+  let inFlight: AbortController | null = null;
+
   function debugBridgeStage(): Promise<void> {
     return inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED, () => deps.ensureDebugBridge());
   }
 
-  async function loadAndRecord(path: string): Promise<void> {
-    await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path));
+  async function loadAndRecord(path: string, signal: AbortSignal): Promise<void> {
+    await inStage(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => deps.loadDocument(path, signal));
+    signal.throwIfAborted();
     try {
       store.setRecent(await deps.recordRecent(path));
     } catch (err) {
@@ -110,38 +125,49 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   /** Callers refuse before their own preparation (a native file dialog); the action re-checks. */
-  function refuseIfDocumentPending(kind: DocumentAttemptKind): void {
-    const inFlight = store.state.document.pending;
-    if (inFlight !== null) {
-      throw new LaunchFailure(DOCUMENT_ATTEMPT_CODES[kind], `${inFlight} is still opening`);
+  function refuseIfDocumentPending(): void {
+    const pendingPath = store.state.document.pending;
+    if (pendingPath !== null) {
+      throw new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY, `${pendingPath} is still opening`);
     }
   }
 
   async function exclusiveDocumentAttempt(
-    kind: DocumentAttemptKind,
     path: string,
-    attempt: () => Promise<void>,
+    attempt: (signal: AbortSignal) => Promise<void>,
   ): Promise<void> {
-    refuseIfDocumentPending(kind);
+    refuseIfDocumentPending();
+    const controller = new AbortController();
+    inFlight = controller;
     store.setDocumentPending(path);
     try {
-      await attempt();
+      await untilAbandoned(attempt(controller.signal), controller.signal);
     } finally {
-      store.setDocumentPending(null);
+      if (inFlight === controller) {
+        inFlight = null;
+        store.setDocumentPending(null);
+      }
     }
   }
 
   function openDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt('open', path, () => loadAndRecord(path));
+    return exclusiveDocumentAttempt(path, (signal) => loadAndRecord(path, signal));
   }
 
   function createDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt('create', path, async () => {
+    return exclusiveDocumentAttempt(path, async (signal) => {
       const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
         deps.createNewFile(path),
       );
-      await loadAndRecord(created.path);
+      signal.throwIfAborted();
+      await loadAndRecord(created.path, signal);
     });
+  }
+
+  function abandonDocumentAttempt(): void {
+    inFlight?.abort();
+    inFlight = null;
+    store.setDocumentPending(null);
   }
 
   async function refreshRecent(): Promise<void> {
@@ -186,6 +212,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     openDocument,
     createDocument,
     refuseIfDocumentPending,
+    abandonDocumentAttempt,
     refreshRecent,
     selectMode,
     adoptLiveDebugServer,

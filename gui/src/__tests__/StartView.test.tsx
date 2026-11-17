@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@solidjs/testing-library';
+import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import { StartView } from '../panels/StartView';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
-import { LaunchFailure, type LauncherActions } from '../app/launcherActions';
+import { createLauncherActions, LaunchFailure, type LauncherActions } from '../app/launcherActions';
 import { pickOpenPath, pickSavePath } from '../bridge';
 import { deferred } from './test-utils';
+import { makeLauncherDeps } from './test_utils/launcherDeps';
 
 vi.mock('../bridge', () => ({
   pickOpenPath: vi.fn(),
@@ -18,6 +19,7 @@ function makeActions() {
   return {
     openDocument: vi.fn<LauncherActions['openDocument']>().mockResolvedValue(undefined),
     createDocument: vi.fn<LauncherActions['createDocument']>().mockResolvedValue(undefined),
+    abandonDocumentAttempt: vi.fn<LauncherActions['abandonDocumentAttempt']>(),
     refreshRecent: vi.fn<LauncherActions['refreshRecent']>().mockResolvedValue(undefined),
     selectMode: vi.fn<LauncherActions['selectMode']>().mockResolvedValue(undefined),
   };
@@ -409,9 +411,48 @@ describe('StartView pending document attempt', () => {
 
     expect(screen.getAllByTestId('start-recent-item')).toHaveLength(2);
     for (const control of documentControls()) expect(isDisabled(control)).toBe(true);
+    const status = within(screen.getByTestId('start-document-pending')).getByRole('status');
+    expect(status.textContent).toBe('Opening /designs/bracket.ri…');
+  });
+
+  it('the Opening… line offers an enabled Cancel, outside its status region, that abandons the attempt', () => {
+    store.setDocumentPending('/designs/bracket.ri');
+    renderStartView();
+
+    const cancel = screen.getByTestId('start-document-cancel');
     const line = screen.getByTestId('start-document-pending');
-    expect(line.getAttribute('role')).toBe('status');
-    expect(line.textContent).toBe('Opening /designs/bracket.ri…');
+    expect(line.contains(cancel)).toBe(true);
+    expect(within(line).getByRole('status').contains(cancel)).toBe(false);
+    expect(cancel.tagName).toBe('BUTTON');
+    expect(isDisabled(cancel)).toBe(false);
+
+    fireEvent.click(cancel);
+
+    expect(actions.abandonDocumentAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel on a hung open re-enables the document actions, presents no error, and the next open loads', async () => {
+    const deps = makeLauncherDeps();
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const launcherActions = createLauncherActions(store, deps);
+    render(() => <StartView launcher={store} actions={launcherActions} />);
+
+    typePath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await screen.findByTestId('start-document-pending');
+
+    fireEvent.click(screen.getByTestId('start-document-cancel'));
+    await flush();
+
+    expect(screen.queryByTestId('start-document-pending')).toBeNull();
+    expect(screen.queryByTestId('start-document-error')).toBeNull();
+    expect(isDisabled(screen.getByTestId('start-open-path'))).toBe(false);
+
+    typePath('/designs/flange.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() =>
+      expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri', expect.any(AbortSignal)),
+    );
   });
 
   it('the mode buttons stay enabled while an attempt is pending', () => {
@@ -428,6 +469,7 @@ describe('StartView pending document attempt', () => {
     for (const control of documentControls()) expect(isDisabled(control)).toBe(false);
     for (const id of MODE_IDS) expect(isDisabled(screen.getByTestId(id))).toBe(false);
     expect(screen.queryByTestId('start-document-pending')).toBeNull();
+    expect(screen.queryByTestId('start-document-cancel')).toBeNull();
   });
 
   it('the actions re-enable and Opening… goes once the attempt settles', () => {

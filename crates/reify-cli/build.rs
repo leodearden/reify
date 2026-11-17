@@ -21,7 +21,6 @@ fn main() {
     // BEFORE the native-dep rpath emissions below, so tbb-pin lands first
     // in the binary's DT_RUNPATH ahead of /opt/reify-deps/lib et al.
     reify_build_utils::emit_tbb_pin_for_bins();
-    reify_build_utils::emit_tbb_pin_for_tests();
 
     // Declare has_openvdb as a known cfg so rustc does not warn on unknown cfgs.
     println!("cargo::rustc-check-cfg=cfg(has_openvdb)");
@@ -29,10 +28,15 @@ fn main() {
     if reify_build_utils::find(reify_build_utils::NativeDep::OpenVdb).is_some() {
         println!("cargo:rustc-cfg=has_openvdb");
     }
-    // Emit RPATH for test binaries that transitively link libopenvdb.
-    reify_build_utils::emit_rpath_for_tests(NativeDep::OpenVdb);
 
     reify_build_utils::emit_rpath_for_bins(NativeDep::Occt);
     reify_build_utils::emit_rpath_for_bins(NativeDep::Gmsh);
     reify_build_utils::emit_rpath_for_bins(NativeDep::OpenVdb);
+
+    // Pin and RPATH for test binaries that transitively link libopenvdb.
+    // Cargo hands link args to ld in emission order and these unscoped ones
+    // also reach the `reify` bin, so they come last: the bin's RUNPATH then
+    // keeps reify-gui's order (gui/src-tauri/build.rs).
+    reify_build_utils::emit_tbb_pin_for_tests();
+    reify_build_utils::emit_rpath_for_tests(NativeDep::OpenVdb);
 }

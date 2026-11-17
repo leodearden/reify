@@ -296,8 +296,12 @@ pub fn emit_rpath_for_bins(dep: NativeDep) -> bool {
 /// unscoped form which covers it.
 ///
 /// For packages with bins of their own (`reify-cli`, `reify-gui`), this
-/// also applies to those bins; that's identical in effect to
-/// [`emit_rpath_for_bins`] and harmless when both are called.
+/// also reaches those bins, at its place on the link line: cargo passes link
+/// args to the linker in `build.rs` emission order, scoped or not, and `ld`
+/// concatenates `-rpath` occurrences in that order. So such a package must
+/// emit its bin-scoped directives ([`emit_tbb_pin_for_bins`], then
+/// [`emit_rpath_for_bins`]) before any unscoped one, or the unscoped dir
+/// lands earlier in the bin's RUNPATH.
 pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
     let row = dep.row();
     println!("cargo:rerun-if-env-changed={}", row.lib_env);
@@ -350,12 +354,12 @@ pub fn emit_tbb_pin_for_bins() -> bool {
 /// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
 /// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
 /// pin `-rpath` and the forced `--no-as-needed -l:libtbb.so.12 --as-needed`
-/// link-arg twice (once bin-scoped, once unscoped) — this is intentional,
-/// the same bin double-emission [`emit_rpath_for_tests`] documents for
-/// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
-/// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
-/// load time (both bind the same pin-dir copy) and is harmless to the
-/// loader, just slightly redundant in the ELF.
+/// link-arg twice (once bin-scoped, once unscoped). Both duplicates are
+/// harmless wherever they land: the pin dir holds only `libtbb.so.12`, so a
+/// second pin `-rpath` changes no other soname's resolution, and a duplicate
+/// direct `NEEDED libtbb.so.12` binds the same pin-dir copy. Where unscoped
+/// link args belong relative to bin-scoped ones is [`emit_rpath_for_tests`]'s
+/// ordering rule.
 pub fn emit_tbb_pin_for_tests() -> bool {
     emit_tbb_pin("cargo:rustc-link-arg")
 }
