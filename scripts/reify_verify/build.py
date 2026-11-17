@@ -43,6 +43,7 @@ from reify_verify import (
     testregion,
 )
 from reify_verify.bashcall import BashCall, BashExport
+from reify_verify.diagnostics import ERROR, WARNING
 from reify_verify.environment import (
     NextestAvailable,
     NextestBroken,
@@ -53,7 +54,6 @@ from reify_verify.gatepaths import COMPILE_GATE, GUI_CRATE_GUARD, RUN_ALL
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
-    ERROR,
     ArtifactAssertion,
     Cargo,
     Guarded,
@@ -411,7 +411,7 @@ class Walls:
 GUI_VITEST_RUN = "scripts/gui-vitest-run.sh"
 VITEST_SPEC_CHARS = re.compile(r"[A-Za-z0-9._/ -]+", re.ASCII)
 GUI_SPECS_REJECTED = (
-    f"verify.sh: WARNING — {knobs.GUI_RETRY_SPECS.name} contains characters outside "
+    f"{WARNING}{knobs.GUI_RETRY_SPECS.name} contains characters outside "
     "[A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite"
 )
 

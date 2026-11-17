@@ -524,14 +524,15 @@ class TestDerivedFixtureCoupling(InClone):
 
     def test_a_failing_staged_pins_read_fails_wide(self):
         read = FailingGit("pins read", "cat-file blob")
+        warning = (
+            f"verify.sh: WARNING — {GUI_PINS} is unreadable (git cat-file blob :{GUI_PINS} exited 128 "
+            f"({read.reason})) — every prd-gate fixture counts as GUI-pinned (fail wide, contract C5)"
+        )
         self.clone.stage(fixture(self.UNREFERENCED))
         with tempfile.TemporaryDirectory() as scratch:
             py = self.clone.py(STAGED_SCOPE, read.env(Path(scratch)))
         self.assertEqual(scope_record(py)["scope"]["run_gui"], 1, "an unreadable pins blob fails wide")
-        self.assertIn(
-            f"{GUI_PINS} is unreadable (git cat-file blob :{GUI_PINS} exited 128 ({read.reason}))",
-            py.stderr,
-        )
+        self.assertIn(warning, py.stderr.splitlines())
 
     def test_the_derivation_is_lazy_and_fails_wide(self):
         (self.clone.root / GUI_PINS).write_text("{ not json\n", encoding="utf-8")
