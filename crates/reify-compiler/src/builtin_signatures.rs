@@ -288,7 +288,8 @@ pub(crate) enum ExpectedArg {
         ///
         /// Non-optional: a dimensioned slot always has a literal spelling to
         /// migrate TO, so a hint-less `Scalar` slot is unrepresentable. Only
-        /// [`ExpectedArg::Int`] and [`ExpectedArg::Enum`] render un-hinted.
+        /// [`ExpectedArg::Int`], [`ExpectedArg::Enum`] and
+        /// [`ExpectedArg::Direction`] render un-hinted.
         ///
         /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
         /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
@@ -339,6 +340,12 @@ pub(crate) enum ExpectedArg {
         /// as `enum_name`).
         type_name: &'static str,
     },
+    /// Exactly `Type::Direction` (direction-typing PRD D8 / C7), with no
+    /// coercion from `Vector3`, `Axis` or `Plane` (D2).
+    ///
+    /// Fieldless: the displayed name is `Type::Direction`'s own, so it cannot
+    /// drift from what the arm accepts.
+    Direction,
 }
 
 /// Build one LENGTH slot — the shape every Contract C length position shares.
@@ -391,12 +398,22 @@ const fn angle_arg(index: usize, name: &'static str) -> CheckableArg {
     }
 }
 
+/// Build one DIRECTION slot; callers need the `const { &[…] }` block, as for
+/// [`angle_arg`].
+const fn direction_arg(index: usize, name: &'static str) -> CheckableArg {
+    CheckableArg {
+        index,
+        name,
+        expected: ExpectedArg::Direction,
+    }
+}
+
 /// Return the checkable dimensioned-scalar argument slots for a named builtin
 /// call of a given arity.
 ///
 /// Returns an empty slice for:
 /// - Unrecognized names.
-/// - Names with no checked dimensioned-scalar arg (e.g. `split`, `face`, `edge`,
+/// - Names with no checked argument (e.g. `split`, `face`, `edge`,
 ///   `solid_body`, `volume`, `edges`, `faces`, …).
 /// - A recognized *overloaded* name called at an arity whose positional layout
 ///   has no checked slot (see "Arity awareness" below).
@@ -1145,7 +1162,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             },
         }],
 
-        // All other names: empty (no dimensioned-scalar arg to check).
+        // ── frame_at(o, x: Direction, z: Direction) ──────────────────────────
+        // arg0: the origin, unchecked (arg0 is never a slot).
+        // args1-2: x / z → Direction, names per units.rs's frame_at row.
+        // Single-form, so arity-agnostic.
+        "frame_at" => const { &[direction_arg(1, "x"), direction_arg(2, "z")] },
+
+        // All other names: empty (no argument to check).
         _ => &[],
     }
 }
@@ -1157,16 +1180,16 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// # Gradualism (PRD decision 6)
 ///
 /// The check fires only when a definite concrete type is available:
-/// - `Type::Error` — poison sentinel; silently skipped at BOTH arms (avoids
+/// - `Type::Error` — poison sentinel; silently skipped at EVERY arm (avoids
 ///   cascading diagnostics off an unrelated root-cause error).
-/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at BOTH
-///   arms (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at EVERY
+///   arm (constraint-aware / auto-type-param resolution is out of scope for ζ).
 /// - `Type::ScalarParam(_)` — unresolved DIMENSION placeholder (`Scalar<Q>`);
 ///   silently skipped at the [`ExpectedArg::Scalar`] arm ONLY, and still
-///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862). The scope is
-///   per-arm, not global, because the defer is a DIMENSION-comparison argument
-///   and an `Int` count slot is not a dimension slot; each arm states its own
-///   half of the reasoning below.
+///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862) and every other.
+///   The scope is per-arm, not global, because the defer is a
+///   DIMENSION-comparison argument and an `Int` count slot is not a dimension
+///   slot; each arm states its own half of the reasoning below.
 /// - Any other variant — a concrete known type; compared against the slot's
 ///   expected dimension.
 ///
@@ -1192,9 +1215,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
-/// because the field is non-optional. Only [`ExpectedArg::Int`] and
-/// [`ExpectedArg::Enum`] render un-hinted, and for them there is nothing to
-/// migrate TO.
+/// because the field is non-optional. Only [`ExpectedArg::Int`],
+/// [`ExpectedArg::Enum`] and [`ExpectedArg::Direction`] render un-hinted, and
+/// for them there is nothing to migrate TO.
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1401,6 +1424,23 @@ pub(crate) fn check_builtin_arg_types(
                         diagnostics,
                     );
                 }
+            },
+
+            ExpectedArg::Direction => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently. `ScalarParam`
+                // is rejected, as at the Int arm: a `Scalar<Q>` is never a
+                // Direction for any `Q`.
+                Type::Error | Type::TypeParam(_) => continue,
+                Type::Direction => continue,
+                other => emit_mismatch(
+                    name,
+                    slot.name,
+                    &Type::Direction.to_string(),
+                    other,
+                    None,
+                    call_span,
+                    diagnostics,
+                ),
             },
         }
     }
