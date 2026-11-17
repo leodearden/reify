@@ -3,6 +3,8 @@
 //! These tests verify that the compiler produces well-formed CompiledModules
 //! that the evaluator can consume.
 
+use std::collections::HashSet;
+
 use reify_compiler::*;
 use reify_test_support::*;
 
@@ -36,155 +38,43 @@ fn bracket_topology_structure() {
     assert_eq!(template.constraints.len(), 3);
 }
 
-/// All CompiledExpr identifiers are ValueRef (never unresolved).
+/// All CompiledExpr identifiers are ValueRefs that resolve to a declared value
+/// cell (never unresolved).
 #[test]
 fn all_identifiers_resolved() {
     let module = bracket_compiled_module();
     let template = &module.templates[0];
+    let declared: HashSet<&reify_core::ValueCellId> =
+        template.value_cells.iter().map(|vc| &vc.id).collect();
 
     // Check all constraint expressions
     for constraint in &template.constraints {
-        assert_no_unresolved(&constraint.expr);
+        assert_refs_name_declared_cells(&constraint.expr, &declared);
     }
 
     // Check all let expressions
     for vc in &template.value_cells {
         if let Some(expr) = &vc.default_expr {
-            assert_no_unresolved(expr);
+            assert_refs_name_declared_cells(expr, &declared);
         }
     }
 }
 
-fn assert_no_unresolved(expr: &reify_ir::CompiledExpr) {
+fn assert_refs_name_declared_cells(
+    expr: &reify_ir::CompiledExpr,
+    declared: &HashSet<&reify_core::ValueCellId>,
+) {
     use reify_ir::CompiledExprKind;
-    match &expr.kind {
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ValueRef(_) => {} // Resolved — good
-        // CrossSubGeometryRef is a leaf (consumed by entity.rs before eval); treat as resolved.
-        CompiledExprKind::CrossSubGeometryRef(_) => {}
-        CompiledExprKind::BinOp { left, right, .. } => {
-            assert_no_unresolved(left);
-            assert_no_unresolved(right);
+    expr.walk(&mut |node| {
+        if let CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) =
+            &node.kind
+        {
+            assert!(
+                declared.contains(id),
+                "ref to undeclared cell `{id}` in {expr:?}"
+            );
         }
-        CompiledExprKind::UnOp { operand, .. } => {
-            assert_no_unresolved(operand);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                assert_no_unresolved(arg);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            assert_no_unresolved(condition);
-            assert_no_unresolved(then_branch);
-            assert_no_unresolved(else_branch);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            assert_no_unresolved(discriminant);
-            for arm in arms {
-                assert_no_unresolved(&arm.body);
-            }
-        }
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                assert_no_unresolved(arg);
-            }
-        }
-        CompiledExprKind::Lambda { body, .. } => {
-            assert_no_unresolved(body);
-        }
-        CompiledExprKind::ListLiteral(elements) => {
-            for elem in elements {
-                assert_no_unresolved(elem);
-            }
-        }
-        CompiledExprKind::ReflectiveCellList(elements) => {
-            for elem in elements {
-                assert_no_unresolved(elem);
-            }
-        }
-        CompiledExprKind::SetLiteral(elements) => {
-            for elem in elements {
-                assert_no_unresolved(elem);
-            }
-        }
-        CompiledExprKind::MapLiteral(entries) => {
-            for (key, val) in entries {
-                assert_no_unresolved(key);
-                assert_no_unresolved(val);
-            }
-        }
-        CompiledExprKind::IndexAccess { object, index } => {
-            assert_no_unresolved(object);
-            assert_no_unresolved(index);
-        }
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            assert_no_unresolved(object);
-            for arg in args {
-                assert_no_unresolved(arg);
-            }
-        }
-        CompiledExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            assert_no_unresolved(collection);
-            assert_no_unresolved(predicate);
-        }
-        CompiledExprKind::OptionSome(inner) => {
-            assert_no_unresolved(inner);
-        }
-        CompiledExprKind::OptionNone => {}
-        CompiledExprKind::MetaAccess { .. } => {}
-        CompiledExprKind::DeterminacyPredicate { .. } => {}
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                assert_no_unresolved(lo);
-            }
-            if let Some(hi) = upper {
-                assert_no_unresolved(hi);
-            }
-        }
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            assert_no_unresolved(base);
-            for arg in args {
-                assert_no_unresolved(arg);
-            }
-        }
-        // Reflective-aggregation placeholder (task-2289): leaf, expanded by
-        // activate_purpose at runtime. Treated as resolved here.
-        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
-        // shared-enum variant (step-16). Recurse into supplied args + captured
-        // defaults so unresolved identifiers nested inside a structure ctor's
-        // argument expressions are still asserted against.
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                assert_no_unresolved(arg);
-            }
-            for (_, def) in defaults {
-                assert_no_unresolved(def);
-            }
-        }
-        CompiledExprKind::VariantCtor { payload, .. } => {
-            for (_, field) in payload {
-                assert_no_unresolved(field);
-            }
-        }
-        // task 4118 (γ): recurse into the wrapped selector.
-        CompiledExprKind::ResolveSelector { selector } => {
-            assert_no_unresolved(selector);
-        }
-    }
+    });
 }
 
 /// Type checking: constraint expr → Bool result type.
