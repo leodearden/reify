@@ -73,12 +73,12 @@ function buildBundle(command: readonly [string, ...string[]], outDir: string): B
       `${command.join(' ')} failed (status ${build.status}, signal ${build.signal}): ${build.error ?? ''}\n${build.stdout}${build.stderr}`,
     );
   }
-  const metafile = readOnlyMetafile(outDir);
+  const metafile = readSoleMetafile(outDir);
   return { bundlePath: entryPointOutput(metafile), metafile };
 }
 
 /** tsup writes one metafile-<format>.json per format, so the harness follows whatever format tsup.sidecar.ts picks. */
-function readOnlyMetafile(outDir: string): BundleMetafile {
+function readSoleMetafile(outDir: string): BundleMetafile {
   const metafiles = fs.readdirSync(outDir).filter((name) => /^metafile-.*\.json$/.test(name));
   if (metafiles.length !== 1) {
     throw new Error(`expected exactly one tsup metafile in ${outDir}, found ${JSON.stringify(metafiles)}`);
