@@ -1,21 +1,21 @@
 //! Ratchet pin for `CHECK_ERROR_EXIT_ALLOWLIST` (PRD §7: "the ratchet test
 //! asserts the exact table contents").
 //!
-//! ## Standing obligation (2026-08-26 ruling)
+//! ## Standing obligation (2026-08-26 ruling): never add a row
 //!
-//! The allowlist is a **bounded migration ratchet**, not a policy surface.  It
-//! exists only because INV-SF-2's general `Severity::Error` exit gate landed
-//! (#5403) before the individual legacy emissions it catches were corrected,
-//! and it is burned to ZERO by #5404 — at which point `reify check` converges
-//! on INV-SF-2's end state, where no per-code list mediates the exit at all.
+//! The allowlist was a **bounded migration ratchet**, not a policy surface.  It
+//! existed only because INV-SF-2's general `Severity::Error` exit gate landed
+//! (#5403) before the individual legacy emissions it caught were corrected.
+//! The burn-down is complete: the table is pinned EMPTY, so `reify check` is
+//! at INV-SF-2's end state, where no per-code list mediates the exit at all.
 //!
-//! Consequently: **`DiagnosticCode`s minted after this gate landed — #6608's
-//! in particular — MUST NEVER be added.**  A code that did not exist before
-//! the gate has no legacy burn-down claim; if a new emission would trip the
-//! gate, the emission's severity is what is wrong, not the gate.  This
-//! whole-table equality assertion exists precisely so that an ADDITION is as
-//! loud in review as a modification: there is no way to slip an entry in
-//! without editing the literal below.
+//! Consequently: **never add a row.**  A `DiagnosticCode` minted after the
+//! gate landed — #6608's in particular — has no legacy burn-down claim, and
+//! neither does anything else now: if a new emission would trip the gate on a
+//! healthy path, the emission's severity is what is wrong, not the gate.
+//! `allowlist_table_is_empty` makes an addition as loud in review as a
+//! modification; the two cite guards below stay as the check on any row that
+//! is added regardless, and are vacuous at zero rows by design.
 
 use super::CHECK_ERROR_EXIT_ALLOWLIST;
 use reify_test_support::ptodo_cite_marker::has_liveness_marker;

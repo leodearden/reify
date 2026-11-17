@@ -300,12 +300,10 @@ pub(crate) fn drop_falsified_constraint_diagnostics(
 /// `has_error_diagnostic` argument by calling [`has_error_diagnostic`], the
 /// one shared severity predicate, so the two commands cannot drift apart.
 ///
-/// `reify check` gates on that SAME predicate and then layers one extra thing
-/// on top: [`check_gating_error`] excuses any Error a
-/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry claims (a bounded burn-down ratchet,
-/// #5404).  `build`/`eval` are deliberately NOT allowlist-aware — they have
-/// gated on raw `Severity::Error` since #4458 and must keep gating on every
-/// Error, whatever `check` excuses.
+/// `reify check` gates on that SAME severity filter through
+/// [`check_gating_error`], over its merged diagnostic set.  The
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] it consults is EMPTY, so every Error moves
+/// all three commands' exit codes alike.
 ///
 /// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
 /// unit-testable; callers convert to `ExitCode` at the boundary.
@@ -344,10 +342,10 @@ enum CheckErrorAllowlistMatcher {
     /// the gate can never be excused through a legacy substring
     /// (`check_error_gate_tests::a_substring_row_excuses_only_code_less_diagnostics`).
     ///
-    /// PRD §7 sketches this as `MessagePrefix`; the `is unresolved (Undef)`
-    /// entry's marker sits mid-string, after the per-argument
-    /// detail, so a prefix match could not express it.  Substring is the
-    /// honest spelling of the same intent.
+    /// PRD §7 sketches this as `MessagePrefix`; a code-less emission's
+    /// distinguishing text can sit mid-string, after per-call detail, where a
+    /// prefix match could not express it.  Substring is the honest spelling
+    /// of the same intent.
     MessageContains(&'static str),
 }
 
@@ -376,17 +374,15 @@ enum CheckErrorAllowlistDisposition {
     FixPath,
 }
 
-/// One row of the `reify check` Error-exit burn-down allowlist.
+/// One row of the `reify check` Error-exit allowlist.
+#[allow(dead_code)]
 struct CheckErrorExitAllowance {
     /// The only field the gate itself reads — see [`row_excuses`].
     matcher: CheckErrorAllowlistMatcher,
-    /// What retiring this entry will take.  BURN-DOWN METADATA: read by
-    /// `check_error_exit_allowlist_ratchet`, never by the gate, so it carries
-    /// a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it anchors
-    /// no PTODO marker — the work is cited by `cite` below, not here).
-    /// Deliberately data rather than prose: the burn-down owner reads it off
-    /// the table instead of re-deriving it from each message.
-    #[allow(dead_code)]
+    /// What retiring this entry will take.  Read by
+    /// `check_error_exit_allowlist_ratchet`, never by the gate.  Deliberately
+    /// data rather than prose: a burn-down owner reads it off the table
+    /// instead of re-deriving it from each message.
     disposition: CheckErrorAllowlistDisposition,
     /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
     /// Burn-down metadata, same as `disposition` above.  PTODO never reads a
@@ -394,82 +390,26 @@ struct CheckErrorExitAllowance {
     /// comment in this file citing the same task: that marker is load-bearing,
     /// not a duplicate to delete, and `every_allowlist_cite_has_a_ptodo_liveness_marker`
     /// turns red if it goes missing.
-    #[allow(dead_code)]
     cite: &'static str,
 }
 
-/// The BOUNDED burn-down set for INV-SF-2's `reify check` exit gate.
+/// INV-SF-2's `reify check` Error-exit allowlist: EMPTY by design, so every
+/// `Severity::Error` diagnostic gates.
 ///
-/// [`check_gating_error`] makes any `Severity::Error` diagnostic on any
-/// channel exit non-zero — *unless* an entry here excuses it.  Every entry was
-/// seeded for a legacy emission that predates the gate and whose Error
-/// severity was wrong (or wrongly reachable) on `check`'s path at the time;
-/// none of them is a policy decision about what `check` should tolerate.  The
-/// enforced excusal is the MATCHER, not that intent, and the
-/// `is unresolved (Undef)` entry's matcher is knowingly broader than its
-/// intent — see that entry.
+/// The row types, [`row_excuses`] and [`first_unexcused_error`] stay only as
+/// the guard vocabulary `check_error_exit_allowlist_ratchet` pins (PRD
+/// eradicate-silent-undef §3 Leg B item 4: "the mechanism remains as the guard
+/// against re-additions").  **Do not add entries** — see that module's doc for
+/// the standing obligation.  The four seeded rows retired as follows:
 ///
-/// The table is pinned whole by `check_error_exit_allowlist_ratchet` and is
-/// burned to ZERO by #5404, converging on INV-SF-2's end state where no
-/// per-code list mediates the exit code at all.  **Do not add entries** — see
-/// that module's doc for the standing obligation.
-///
-/// The two `MessageContains` entries were seeded from a MEASURED sweep of
-/// `reify check` over all `examples/*.ri` and
-/// `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of the files that
-/// exited 0 while printing an `error:` line, the unsolved-`auto` case they
-/// targeted was the only one expected on a healthy path.  `check` now solves,
-/// so that case no longer arises, and their code-less substrings excuse only
-/// the over-broad cases the `is unresolved (Undef)` entry describes.  A
-/// third, `Code(ConstraintViolated)` merge-hazard entry was retired by fixing
-/// the path in [`drop_falsified_constraint_diagnostics`].
-/// The genuine design errors in that same sweep —
-/// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
-/// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
-/// deliberately NOT excused and now exit 1, matching `reify eval`, which
-/// already exits 1 on every one of them.
-const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
-    // TODO(#5404): delete this entry; the case it was seeded for no longer
-    // arises, so it excuses only the over-broad cases below.
-    //
-    // Seeded for a geometry op argument left `Undef` because an `auto` param
-    // awaited a solver `check` did not run at the time (`examples/
-    // fea_bracket_minimize_mass.ri`, `param thickness : Length = auto(free)`).
-    // `check` now solves, and that file emits no Undef-argument line under it
-    // (MEASURED), so the seeding case is gone.
-    //
-    // KNOWINGLY OVER-BROAD: the text comes from
-    // `geometry_ops.rs::unresolved_arg_message`, which words EVERY Undef
-    // geometry argument this way, so this entry also excuses genuine design
-    // errors that `reify eval` rejects (a `box` width divided by a zero param
-    // exits 0 under `check`, 1 under `eval`), as well as the code-less
-    // "per-instance re-realization compile error … is unresolved (Undef)"
-    // family #6608 replaces with coded Errors.  That gap is pinned by
-    // `cli_check.rs::check_excuses_every_code_less_undef_geometry_argument`,
-    // which #5404 flips.
-    CheckErrorExitAllowance {
-        matcher: CheckErrorAllowlistMatcher::MessageContains("is unresolved (Undef)"),
-        disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#5404",
-    },
-    // TODO(#5404): demote alongside the entry above — this is its rollup.
-    //
-    // "all geometry operations failed; no geometry output produced" is the
-    // rollup printed whenever every op failed, WHATEVER the cause; `check`
-    // writes no geometry, so "no geometry output produced" is not a fact about
-    // the design.  Excusing it is harmless only while the per-op errors beside
-    // it still gate; where the `is unresolved (Undef)` entry excuses those
-    // too, this entry inherits that entry's over-breadth.
-    //
-    // `examples/sweep_degenerate.ri` carries the same rollup beside
-    // `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')` errors that
-    // nothing here matches, so it still exits 1 — as `reify eval` does.
-    CheckErrorExitAllowance {
-        matcher: CheckErrorAllowlistMatcher::MessageContains("all geometry operations failed"),
-        disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#5404",
-    },
-];
+/// * `Code(NoRegisteredComputeTrampoline)` was deleted by #6693.
+/// * `MessageContains("is unresolved (Undef)")` was deleted once `check`
+///   solved: every remaining match is a genuine Error `reify eval` also exits 1 on.
+/// * `MessageContains("all geometry operations failed")`, that family's
+///   rollup, was deleted with it, for the same reason.
+/// * `Code(ConstraintViolated)` was fixed on the path, in
+///   [`drop_falsified_constraint_diagnostics`].
+const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[];
 
 /// Every `Severity::Error` entry of `diagnostics`, in order.
 ///
@@ -490,9 +430,9 @@ fn error_diagnostics(
 /// used by eval/build".
 ///
 /// Deliberately allowlist-BLIND: [`CHECK_ERROR_EXIT_ALLOWLIST`] is a
-/// `check`-only migration ratchet.  `eval` and `build` have gated on
-/// `Severity::Error` since #4458 and must keep gating on the trampoline Error
-/// — locked by `check_error_gate_tests::
+/// `check`-only guard, empty by design.  `eval` and `build` have gated on
+/// `Severity::Error` since #4458 and must keep gating on every Error — locked
+/// by `check_error_gate_tests::
 /// has_error_diagnostic_is_pure_severity_and_allowlist_blind`.
 pub(crate) fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
     error_diagnostics(diagnostics).next().is_some()
@@ -522,7 +462,8 @@ fn first_unexcused_error<'a>(
 }
 
 /// `reify check`'s exit gate (INV-SF-2): the first `Severity::Error`
-/// diagnostic that no [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses, or `None`.
+/// diagnostic, or `None`.  [`CHECK_ERROR_EXIT_ALLOWLIST`] is empty, so no
+/// Error is excused.
 ///
 /// Applied identically on both `cmd_check` paths, over the MERGED diagnostic
 /// set — what the user was just shown — so a realization-only Error is no

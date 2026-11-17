@@ -29,12 +29,11 @@ use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 /// with `--purpose`: that path never measures a deviation, so it would print
 /// nothing.
 ///
-/// **`error:` lines.** Every `Severity::Error` diagnostic makes
-/// `check` exit non-zero through [`check_gating_error`] unless a
-/// `check_verdict::CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.  The residual shapes across
-/// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
-/// measures them), which owns triaging them — never by adding allowlist
-/// entries.
+/// **`error:` lines.** Every `Severity::Error` diagnostic makes `check` exit
+/// non-zero through [`check_gating_error`]; nothing excuses one.  The residual
+/// shapes across `examples/**/*.ri` are inventoried in #7308 (with the sweep
+/// command that measures them), which owns triaging them — never by adding
+/// allowlist entries.
 pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, CHECK_USAGE) {
         Ok(v) => v,
@@ -348,8 +347,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         );
 
         // INV-SF-2: any `Severity::Error` in the set `report_eval_output` just
-        // showed the user makes `check` exit non-zero, unless a
-        // `CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.
+        // showed the user makes `check` exit non-zero.
         //
         // Gated on `merged_diagnostics`, NOT `result.diagnostics`, so a
         // realization-only Error moves the exit code too — e.g. the

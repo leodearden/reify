@@ -45,8 +45,8 @@ const TRAMPOLINE_CANCELLED: &str =
 
 /// `has_error_diagnostic` is the ONE definition of "this set carries an
 /// Error", shared with `cmd_eval` and `cmd_build`.  It must know nothing
-/// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only
-/// migration ratchet, and eval/build have gated on `Severity::Error` since
+/// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only guard,
+/// empty by design, and eval/build have gated on `Severity::Error` since
 /// #4458 — including on the trampoline Error, which `build_is_success`'
 /// own doc names as its motivating example.
 #[test]
