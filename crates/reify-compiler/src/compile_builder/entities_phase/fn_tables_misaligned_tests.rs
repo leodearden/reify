@@ -70,7 +70,12 @@ fn misaligned_spans(ctx: &CompilationCtx) -> Vec<SourceSpan> {
     ctx.diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::FnDeclTablesMisaligned))
-        .map(|d| d.labels[0].span)
+        .map(|d| {
+            d.labels
+                .first()
+                .unwrap_or_else(|| panic!("FnDeclTablesMisaligned carries no label: {d:?}"))
+                .span
+        })
         .collect()
 }
 
@@ -88,25 +93,42 @@ fn user_fn_names(ctx: &CompilationCtx) -> Vec<&str> {
     ctx.functions.iter().map(|f| f.name.as_str()).collect()
 }
 
-/// Whether call-table slot `idx` holds the compiled fn `name`, not its signature stub.
-///
-/// The two differ in `content_hash`: a stub's is `ContentHash::of_str(name)`,
-/// while a compiled fn's folds its params, defaults and body.
-fn slot_holds_real_fn(ctx: &CompilationCtx, idx: usize, name: &str) -> bool {
-    let Some(slot) = ctx.resolution_functions.get(idx) else {
-        return false;
-    };
-    slot.name == name
-        && ctx
-            .functions
-            .iter()
-            .any(|real| real.name == name && real.content_hash == slot.content_hash)
-}
-
 /// What identifies a call-table entry: the name and params the slot guard
 /// matches on, and the hash that tells a signature stub from a compiled fn.
-fn slot_identity(slot: &CompiledFunction) -> (&str, &[(String, Type)], ContentHash) {
+/// A stub's hash is `ContentHash::of_str(name)`; a compiled fn's folds its
+/// params, defaults and body.
+type SlotIdentity<'a> = (&'a str, &'a [(String, Type)], ContentHash);
+
+fn slot_identity(slot: &CompiledFunction) -> SlotIdentity<'_> {
     (&slot.name, &slot.params, slot.content_hash)
+}
+
+/// The identity of what call-table slot `idx` holds.
+fn slot_identity_at(ctx: &CompilationCtx, idx: usize) -> SlotIdentity<'_> {
+    let slots = &ctx.resolution_functions;
+    let slot = slots.get(idx).unwrap_or_else(|| {
+        panic!(
+            "no call-table slot {idx}: the table has {} slots",
+            slots.len()
+        )
+    });
+    slot_identity(slot)
+}
+
+/// The identity of the fn the pass compiled as `name`: what its call-table slot
+/// holds once the pass has replaced the signature stub.
+fn compiled_fn_identity<'a>(ctx: &'a CompilationCtx, name: &str) -> SlotIdentity<'a> {
+    let compiled = ctx
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "the pass compiled no fn `{name}`, only {:?}",
+                user_fn_names(ctx)
+            )
+        });
+    slot_identity(compiled)
 }
 
 #[test]
@@ -124,13 +146,15 @@ fn untampered_tables_draw_no_misalignment_and_slot_every_real_fn() {
         "untampered tables drew errors: {errors:?}"
     );
     assert_eq!(user_fn_names(&ctx), ["a", "b"]);
-    assert!(
-        slot_holds_real_fn(&ctx, 0, "a"),
-        "slot 0 still holds a's signature stub"
+    assert_eq!(
+        slot_identity_at(&ctx, 0),
+        compiled_fn_identity(&ctx, "a"),
+        "slot 0 does not hold the compiled a"
     );
-    assert!(
-        slot_holds_real_fn(&ctx, 1, "b"),
-        "slot 1 still holds b's signature stub"
+    assert_eq!(
+        slot_identity_at(&ctx, 1),
+        compiled_fn_identity(&ctx, "b"),
+        "slot 1 does not hold the compiled b"
     );
 }
 
@@ -146,9 +170,10 @@ fn a_signature_record_naming_another_fn_skips_only_that_body() {
     let errors = other_errors(&ctx);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     assert_eq!(user_fn_names(&ctx), ["b"]);
-    assert!(
-        slot_holds_real_fn(&ctx, 1, "b"),
-        "slot 1 still holds b's signature stub"
+    assert_eq!(
+        slot_identity_at(&ctx, 1),
+        compiled_fn_identity(&ctx, "b"),
+        "slot 1 does not hold the compiled b"
     );
 }
 
@@ -174,9 +199,10 @@ fn a_missing_per_fn_record_skips_only_that_body() {
         let errors = other_errors(&ctx);
         assert!(errors.is_empty(), "{label}: unexpected errors: {errors:?}");
         assert_eq!(user_fn_names(&ctx), ["a"], "{label}: wrong compiled fns");
-        assert!(
-            slot_holds_real_fn(&ctx, 0, "a"),
-            "{label}: slot 0 still holds a's signature stub"
+        assert_eq!(
+            slot_identity_at(&ctx, 0),
+            compiled_fn_identity(&ctx, "a"),
+            "{label}: slot 0 does not hold the compiled a"
         );
     }
 }
@@ -218,13 +244,14 @@ fn a_call_table_slot_not_matching_its_fn_keeps_the_stub_and_still_compiles_the_b
             "{label}: wrong compiled fns"
         );
         assert_eq!(
-            slot_identity(&ctx.resolution_functions[0]),
+            slot_identity_at(&ctx, 0),
             slot_identity(&tampered_slot),
             "{label}: the tampered stub in slot 0 was overwritten"
         );
-        assert!(
-            slot_holds_real_fn(&ctx, 1, "b"),
-            "{label}: slot 1 still holds b's signature stub"
+        assert_eq!(
+            slot_identity_at(&ctx, 1),
+            compiled_fn_identity(&ctx, "b"),
+            "{label}: slot 1 does not hold the compiled b"
         );
     }
 }
