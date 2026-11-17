@@ -2095,7 +2095,7 @@ fn forcing_time_history_struct_has_correct_param_shape() {
 /// construction (via SIR-α's `check_constraints_against_templates`) rather than
 /// waiting for the transient_response trampoline (task θ) to flag it. Follows
 /// the task-2544 explicit-contract convention mirrored by
-/// `PiecewisePolynomialProfile.constraint waypoints.count > 0` (trajectory.ri:230).
+/// `PiecewisePolynomialProfile.constraint waypoints.count > 0` (`trajectory.ri :: PiecewisePolynomialProfile`).
 #[test]
 fn forcing_time_history_constrains_sources_nonempty() {
     let template = find_structure("ForcingTimeHistory");

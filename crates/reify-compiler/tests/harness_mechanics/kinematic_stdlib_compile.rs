@@ -226,7 +226,7 @@ fn conforming_joints_have_driving_joint_bound() {
 // still-resolvable type (e.g. Vec3→Int, dropping one of Planar's two axes).
 // Vec3<Q> is `Vector3<Q>` (task #4794); axis fields take Q = Dimensionless
 // (direction, task 5848). JointValue is still
-// a `Real` alias (trajectory.ri:76) and resolves to Type::dimensionless_scalar().
+// a `Real` alias (trajectory.ri :: JointValue) and resolves to Type::dimensionless_scalar().
 
 /// Cylindrical's constrained-DOF compliance groups (task 7163) are APPENDED
 /// after `axis`, so a positional `Cylindrical(vec3(…))` still binds `axis`. The
@@ -695,7 +695,7 @@ fn snapshot_has_correct_params() {
         fv.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
         "Snapshot.free_values should be Type::List(Real) \
-         (JointValue = Real alias, trajectory.ri:76)"
+         (JointValue = Real alias, trajectory.ri :: JointValue)"
     );
 
     let is_sing = params
