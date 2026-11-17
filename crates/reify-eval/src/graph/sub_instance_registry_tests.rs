@@ -4,7 +4,7 @@
 use reify_compiler::ValueCellKind;
 use reify_core::{ContentHash, Type, ValueCellId};
 
-use super::{CollectionSubInfo, EvaluationGraph, ValueCellNode};
+use super::{CollectionSubInfo, EvaluationGraph, SubSlotRegistryMismatch, ValueCellNode};
 
 fn cell(entity: &str, member: &str) -> ValueCellNode {
     ValueCellNode {
@@ -128,4 +128,75 @@ fn remove_collection_slots_refuses_to_forget_a_slot_holding_a_cell_outside_its_s
     graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "stray"));
 
     graph.remove_collection_slots(&bolts, 0..1);
+}
+
+fn graph_with_bolts_collection() -> EvaluationGraph {
+    let mut graph = EvaluationGraph::default();
+    graph.collection_subs.push(bolts_collection(&["d", "len"]));
+    graph
+}
+
+#[test]
+fn a_collection_slot_stamped_around_the_registry_is_a_mismatch() {
+    let mut graph = graph_with_bolts_collection();
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
+    let stray = cell("P.s[1]", "d");
+    graph.value_cells.insert(stray.id.clone(), stray);
+
+    assert_eq!(
+        graph.sub_slot_registry_mismatches(),
+        vec![SubSlotRegistryMismatch {
+            slot: "P.s[1]".to_string(),
+            sub_template: "Bolt".to_string(),
+            registry_template: None,
+        }],
+    );
+}
+
+#[test]
+fn a_collection_slot_registered_to_another_template_is_a_mismatch() {
+    let mut graph = graph_with_bolts_collection();
+    graph.insert_sub_instance_cell("Screw", cell("P.s[0]", "d"));
+
+    assert_eq!(
+        graph.sub_slot_registry_mismatches(),
+        vec![SubSlotRegistryMismatch {
+            slot: "P.s[0]".to_string(),
+            sub_template: "Bolt".to_string(),
+            registry_template: Some("Screw".to_string()),
+        }],
+    );
+}
+
+#[test]
+fn shrinking_then_regrowing_a_collection_leaves_no_mismatch() {
+    let bolts = bolts_collection(&["d", "len"]);
+    let mut graph = graph_with_bolts_collection();
+    for index in 0..3 {
+        let slot = format!("P.s[{index}]");
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "d"));
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "len"));
+    }
+    graph.remove_collection_slots(&bolts, 0..3);
+    for index in 0..2 {
+        let slot = format!("P.s[{index}]");
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "d"));
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "len"));
+    }
+
+    assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
+    assert_eq!(graph.sub_instance_template("P.s[1]"), Some("Bolt"));
+    assert!(
+        graph
+            .value_cells
+            .contains_key(&ValueCellId::new("P.s[1]", "d")),
+        "the regrown slot must hold its cells",
+    );
+}
+
+#[test]
+fn an_empty_graph_has_no_mismatch() {
+    let graph = graph_with_bolts_collection();
+
+    assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
 }
