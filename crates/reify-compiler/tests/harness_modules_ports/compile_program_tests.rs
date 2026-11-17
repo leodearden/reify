@@ -973,6 +973,54 @@ fn entry_follows_imports_only_for_a_followed_user_import() {
     }
 }
 
+/// `followed_imports` names exactly the imports `compile_program` compiles:
+/// cfg-satisfied (I3), non-`std` (I4), in declaration order, one per path.
+#[test]
+fn followed_imports_lists_exactly_what_compile_program_follows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "parts.ri",
+        "module parts\npub structure def Part {\n    param p : Real = 1\n}\n",
+    );
+    write(
+        dir.path(),
+        "util.ri",
+        "module util\npub structure def Util {\n    param u : Real = 2\n}\n",
+    );
+    let main_src = "module main\n\
+                    import std.units\n\
+                    import parts\n\
+                    #cfg(target = \"wasm\")\nimport ghost\n\
+                    import parts\n\
+                    import util\n\
+                    structure def Rig {\n    sub p = Part()\n    sub u = Util()\n}\n";
+    let linux = CfgSet {
+        target: Some("linux".to_string()),
+        ..Default::default()
+    };
+    let parsed = reify_compiler::parse_with_stdlib(main_src, ModulePath::single("main"));
+
+    let followed = reify_compiler::program::followed_imports(&parsed, &linux);
+    let followed_paths: Vec<&str> = followed.iter().map(|import| import.path.as_str()).collect();
+
+    assert_eq!(
+        followed_paths,
+        vec!["parts", "util"],
+        "declaration order, std.* and the cfg-gated import excluded, the duplicate listed once"
+    );
+    assert_eq!(
+        followed_paths,
+        import_keys(&compile_entry(dir.path(), "main", main_src, &linux)),
+        "followed_imports must report the follow set compile_program compiles"
+    );
+    assert!(reify_compiler::program::entry_follows_imports(&parsed, &linux));
+    assert_eq!(
+        reify_compiler::program::entry_follows_imports(&parsed, &linux),
+        !followed.is_empty()
+    );
+}
+
 fn declared_names(program: &CompiledProgram) -> Vec<&str> {
     program
         .entry_declared_templates()
