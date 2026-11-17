@@ -3554,7 +3554,10 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
-  it('a Ctrl+O with unsaved changes while a Start-view open is still loading refuses without the discard prompt', async () => {
+  it.each([
+    { shortcut: 'Ctrl+O', key: 'o', refusal: 'Open file failed: E_GUI_OPEN_FAILED', picker: 'pickOpenPath' },
+    { shortcut: 'Ctrl+N', key: 'n', refusal: 'New file failed: E_GUI_TEMPLATE_WRITE_FAILED', picker: 'pickSavePath' },
+  ] as const)('a $shortcut with unsaved changes while a Start-view open is still loading refuses without the discard prompt', async ({ key, refusal, picker }) => {
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
     const reply = deferred<PublishedState>();
     vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
@@ -3566,16 +3569,16 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
     capturedEditorStore.markDirty('/project/bracket.ri');
     vi.mocked((bridge as any).ask).mockResolvedValue(true);
-    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/designs/flange.ri');
-    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    vi.mocked(bridge[picker]).mockResolvedValue('/designs/flange.ri');
+    fireEvent.keyDown(document, { key, ctrlKey: true });
 
     await waitFor(() =>
       expect(
-        toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED') && t.includes('/designs/bracket.ri is still opening')),
+        toastTexts().some((t) => t.includes(refusal) && t.includes('/designs/bracket.ri is still opening')),
       ).toBe(true),
     );
     expect(bridge.ask).not.toHaveBeenCalled();
-    expect(bridge.pickOpenPath).not.toHaveBeenCalled();
+    expect(bridge[picker]).not.toHaveBeenCalled();
 
     reply.resolve(published(makeGuiState()));
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());

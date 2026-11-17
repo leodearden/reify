@@ -8,9 +8,8 @@
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
- * attempt is refused with a LaunchFailure under its own code naming that path;
- * refuseIfDocumentPending lets a caller refuse before its own preparation, and
- * the action re-checks. Only the attempt's own settling clears pending (the
+ * attempt is refused, by refuseIfDocumentPending, with a LaunchFailure under its
+ * own code naming that path. Only the attempt's own settling clears pending (the
  * store's reset does not), so a load that never settles leaves every document
  * attempt refused until the app restarts.
  */
