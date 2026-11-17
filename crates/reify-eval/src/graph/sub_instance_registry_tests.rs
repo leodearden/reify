@@ -138,16 +138,19 @@ fn remove_collection_slots_refuses_to_forget_a_slot_holding_a_cell_outside_its_s
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "does not name: `P.s[0].stray`; `P.s[1].stray`")]
+#[should_panic(
+    expected = "does not name: `P.s[0].stray`; `P.s[1].stray`; `P.s[2].stray`; `P.s[3].stray`"
+)]
 fn remove_collection_slots_names_every_stray_cell_in_sorted_order() {
     let bolts = bolts_collection(&["d"]);
     let mut graph = EvaluationGraph::default();
-    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
-    graph.insert_sub_instance_cell("Bolt", cell("P.s[1]", "d"));
-    graph.insert_sub_instance_cell("Bolt", cell("P.s[1]", "stray"));
-    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "stray"));
+    for index in (0..4).rev() {
+        let slot = format!("P.s[{index}]");
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "d"));
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "stray"));
+    }
 
-    graph.remove_collection_slots(&bolts, 0..2);
+    graph.remove_collection_slots(&bolts, 0..4);
 }
 
 #[test]
