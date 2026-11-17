@@ -24,6 +24,9 @@ const SIDECAR_EXECUTABLE = 'reify-sidecar';
 const BUILD_TIMEOUT_MS = 60_000;
 const RUN_TIMEOUT_MS = 30_000;
 const TURN_ID = 't1';
+const BUNDLE_ENTRY_POINT = 'src/cli.ts';
+// Node 18 (Ubuntu 24.04's nodejs) loads an extensionless file as CommonJS; this flag makes newer Node do the same.
+const NODE_18_EXTENSIONLESS_LOADER = { NODE_OPTIONS: '--no-experimental-detect-module' };
 
 const FAKE_CLAUDE_STREAM: readonly object[] = [
   { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'PONG' }] } },
@@ -31,7 +34,7 @@ const FAKE_CLAUDE_STREAM: readonly object[] = [
 ];
 
 interface BundleMetafile {
-  outputs: Record<string, { imports: Array<{ path: string; kind: string; external?: boolean }> }>;
+  outputs: Record<string, { entryPoint?: string; imports: Array<{ path: string; kind: string; external?: boolean }> }>;
 }
 
 interface BuiltBundle {
@@ -70,10 +73,26 @@ function buildBundle(command: readonly [string, ...string[]], outDir: string): B
       `${command.join(' ')} failed (status ${build.status}, signal ${build.signal}): ${build.error ?? ''}\n${build.stdout}${build.stderr}`,
     );
   }
-  return {
-    bundlePath: path.join(outDir, 'cli.js'),
-    metafile: JSON.parse(fs.readFileSync(path.join(outDir, 'metafile-esm.json'), 'utf8')) as BundleMetafile,
-  };
+  const metafile = readOnlyMetafile(outDir);
+  return { bundlePath: entryPointOutput(metafile), metafile };
+}
+
+/** tsup writes one metafile-<format>.json per format, so the harness follows whatever format tsup.sidecar.ts picks. */
+function readOnlyMetafile(outDir: string): BundleMetafile {
+  const metafiles = fs.readdirSync(outDir).filter((name) => /^metafile-.*\.json$/.test(name));
+  if (metafiles.length !== 1) {
+    throw new Error(`expected exactly one tsup metafile in ${outDir}, found ${JSON.stringify(metafiles)}`);
+  }
+  return JSON.parse(fs.readFileSync(path.join(outDir, metafiles[0]), 'utf8')) as BundleMetafile;
+}
+
+/** The metafile's output keys are relative to tsup's cwd, the sidecar package. */
+function entryPointOutput(metafile: BundleMetafile): string {
+  const outputs = Object.entries(metafile.outputs).filter(([, output]) => output.entryPoint === BUNDLE_ENTRY_POINT);
+  if (outputs.length !== 1) {
+    throw new Error(`expected exactly one output built from ${BUNDLE_ENTRY_POINT}, found ${JSON.stringify(outputs.map(([key]) => key))}`);
+  }
+  return path.resolve(SIDECAR_ROOT, outputs[0][0]);
 }
 
 function sha256Of(filePath: string): string {
@@ -127,7 +146,7 @@ function installFakeClaude(streamEvents: readonly object[]): string {
  * nothing inherited (NODE_PATH, NODE_OPTIONS, REIFY_LANDLOCK_EXEC, ...) can change module
  * resolution or the code path.
  */
-function launchSidecar(installDir: string, pathDirs: string[] = []): SidecarProcess {
+function launchSidecar(installDir: string, pathDirs: string[] = [], extraEnv: NodeJS.ProcessEnv = {}): SidecarProcess {
   const sidecar = new SidecarProcess(path.join(installDir, SIDECAR_EXECUTABLE), installDir, {
     PATH: [...pathDirs, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter),
     HOME: os.homedir(),
@@ -135,6 +154,7 @@ function launchSidecar(installDir: string, pathDirs: string[] = []): SidecarProc
     // session.ts makes reify-mcp-* dirs under TMPDIR. A private one keeps them out of the shared /tmp
     // that session.test.ts's leak guard watches, and removes them even when the child is SIGKILLed.
     TMPDIR: makeScratchDir('reify-sidecar-tmp-'),
+    ...extraEnv,
   });
   launched.push(sidecar);
   return sidecar;
@@ -224,6 +244,18 @@ function includesReady(messages: readonly OutboundMessage[]): boolean {
   return messages.some((message) => message.type === 'ready');
 }
 
+/** The host's handshake: `ready` is the first message, and closing stdin shuts the sidecar down cleanly. */
+async function expectReadyThenCleanExit(sidecar: SidecarProcess): Promise<void> {
+  const [first] = await sidecar.receiveUntil((received) => received.length >= 1);
+  expect(first).toEqual({ type: 'ready' });
+
+  const exit = await sidecar.endInput();
+  expect({ code: exit.code, signal: exit.signal }, `sidecar stderr:\n${exit.stderr}`).toEqual({
+    code: 0,
+    signal: null,
+  });
+}
+
 describe('the sidecar bundle built from tsup.sidecar.ts', () => {
   let bundle: BuiltBundle;
 
@@ -257,14 +289,13 @@ describe('the sidecar bundle built from tsup.sidecar.ts', () => {
   it('the installed sidecar completes the ready handshake from a directory with no node_modules above it', async () => {
     const sidecar = launchSidecar(installIntoBareDirectory(bundle.bundlePath));
 
-    const [first] = await sidecar.receiveUntil((received) => received.length >= 1);
-    expect(first).toEqual({ type: 'ready' });
+    await expectReadyThenCleanExit(sidecar);
+  }, RUN_TIMEOUT_MS);
 
-    const exit = await sidecar.endInput();
-    expect({ code: exit.code, signal: exit.signal }, `sidecar stderr:\n${exit.stderr}`).toEqual({
-      code: 0,
-      signal: null,
-    });
+  it("the installed sidecar completes the ready handshake when Node loads it as CommonJS, as Ubuntu 24.04's Node 18 does", async () => {
+    const sidecar = launchSidecar(installIntoBareDirectory(bundle.bundlePath), [], NODE_18_EXTENSIONLESS_LOADER);
+
+    await expectReadyThenCleanExit(sidecar);
   }, RUN_TIMEOUT_MS);
 
   it('the installed sidecar still spawns the claude CLI from PATH', async () => {
