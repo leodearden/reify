@@ -276,7 +276,7 @@ impl std::fmt::Display for SubSlotRegistryMismatch {
         } = self;
         write!(
             f,
-            "`{slot}` holds cells of `{sub_template}` but the registry records "
+            "`{slot}` (a slot of a `{sub_template}` sub) holds cells but the registry records "
         )?;
         match registry_template {
             Some(template) => write!(f, "`{template}`"),

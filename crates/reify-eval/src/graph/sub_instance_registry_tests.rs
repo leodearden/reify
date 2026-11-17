@@ -2,10 +2,10 @@
 //! cells stamped into `value_cells`.
 
 use reify_compiler::ValueCellKind;
-use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+use reify_core::{ContentHash, Type, ValueCellId};
 use reify_ir::MemberKey;
 
+use super::cell_contributions::fixtures::rig_with_every_slot_kind;
 use super::{
     CollectionSubInfo, EvaluationGraph, KeyedSubInfo, SubSlotRegistryMismatch, ValueCellNode,
 };
@@ -162,13 +162,18 @@ fn a_collection_slot_registered_to_another_template_is_a_mismatch() {
     let mut graph = graph_with_bolts_collection();
     graph.insert_sub_instance_cell("Screw", cell("P.s[0]", "d"));
 
+    let mismatches = graph.sub_slot_registry_mismatches();
     assert_eq!(
-        graph.sub_slot_registry_mismatches(),
+        mismatches,
         vec![SubSlotRegistryMismatch {
             slot: "P.s[0]".to_string(),
             sub_template: "Bolt".to_string(),
             registry_template: Some("Screw".to_string()),
         }],
+    );
+    assert_eq!(
+        mismatches[0].to_string(),
+        "`P.s[0]` (a slot of a `Bolt` sub) holds cells but the registry records `Screw`",
     );
 }
 
@@ -236,17 +241,22 @@ fn a_keyed_slot_stamped_around_the_registry_is_a_mismatch() {
 
 #[test]
 fn from_templates_builds_a_registry_with_no_mismatch() {
-    let parsed = reify_compiler::parse_with_stdlib(
-        "structure def Bolt { param len : Real = 1.0 }\n\
-         structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
-         constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
-         \"a\" => { len = 2.0 }\n    }\n}\n",
-        ModulePath::single("test"),
-    );
-    let module = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let module = rig_with_every_slot_kind();
     let mut graph = EvaluationGraph::from_templates(&module.templates);
 
     assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
+    let keyed_a = keyed_slot("Rig", "keyed", "a");
+    assert_eq!(
+        graph.sub_instance_template(&keyed_a),
+        Some("Bolt"),
+        "anti-vacuity: from_templates must register the keyed slot it stamps",
+    );
+    assert!(
+        graph
+            .value_cells
+            .contains_key(&ValueCellId::new(&keyed_a, "len")),
+        "anti-vacuity: from_templates must stamp the keyed slot's cells",
+    );
 
     let past_rack = graph
         .collection_subs
@@ -256,7 +266,6 @@ fn from_templates_builds_a_registry_with_no_mismatch() {
         .slot_entity(2);
     let stray = cell(&past_rack, "len");
     graph.value_cells.insert(stray.id.clone(), stray);
-    let keyed_a = keyed_slot("Rig", "keyed", "a");
     graph.insert_sub_instance_cell("Screw", cell(&keyed_a, "len"));
 
     let mut in_rig: Vec<SubSlotRegistryMismatch> = graph
@@ -285,7 +294,9 @@ fn from_templates_builds_a_registry_with_no_mismatch() {
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "`P.s[1]` holds cells of `Bolt` but the registry records none")]
+#[should_panic(
+    expected = "`P.s[1]` (a slot of a `Bolt` sub) holds cells but the registry records none"
+)]
 fn the_registry_assertion_names_the_unregistered_slot_and_its_template() {
     let mut graph = graph_with_bolts_collection();
     graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
