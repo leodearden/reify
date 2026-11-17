@@ -15,6 +15,8 @@
 #      script that writes tree-sitter-reify/src for the `tree-sitter parse` CLI.
 #   4. Infrastructure checks — .gitignore, git tracking, orchestrator config,
 #      hooks, routing, and install guidance.
+#   5. The suite's own fixture helpers — each fills the empty dir its caller
+#      made and registered for cleanup, and allocates nothing of its own (#10044).
 #
 # Assert helpers capture full stdout/stderr on failure for diagnostics.
 # File state is managed via backup/restore with trap-based cleanup.
@@ -409,14 +411,13 @@ run_ts_freshness() {
     fi
 }
 
-# ts_masked_path_dir <name-to-mask>
+# ts_masked_path_dir <dir> <name-to-mask>
 #
-# Print a shim directory holding symlinks to every executable currently
-# resolvable on PATH EXCEPT <name-to-mask>, so `PATH=$shim` reproduces this
-# host minus exactly one binary. PATH dirs are walked in order and the first
-# occurrence of a basename wins (`[ -e "$shim/$b" ] && continue`), so
-# resolution order is preserved exactly. Registers its own cleanup through
-# CLEANUP_ACTIONS.
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with symlinks to every executable currently resolvable on PATH EXCEPT
+# <name-to-mask>, so `PATH=<dir>` reproduces this host minus exactly one binary.
+# PATH dirs are walked in order and the first occurrence of a basename wins
+# (`[ -e "$shim/$b" ] && continue`), so resolution order is preserved exactly.
 #
 # MASKING BY OMISSION, NOT BY SHADOWING — load-bearing. The obvious shim
 # (a `sha256sum` stub that exits 1, placed first on PATH) drives a DIFFERENT
@@ -443,14 +444,11 @@ run_ts_freshness() {
 #
 # Deliberately NOT named test_* (see the block header above).
 ts_masked_path_dir() {
-    local mask="${1:-}"
-    if [ -z "$mask" ]; then
-        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <name-to-mask>" >&2
+    local shim="${1:-}" mask="${2:-}"
+    if [ -z "$shim" ] || [ -z "$mask" ]; then
+        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <dir> <name-to-mask>" >&2
         return 1
     fi
-    local shim
-    shim=$(mktemp -d) || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$shim'")
 
     local -a dirs=()
     IFS=':' read -r -a dirs <<< "$PATH"
@@ -474,29 +472,28 @@ ts_masked_path_dir() {
         done
     done
     [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-
-    printf '%s' "$shim"
+    return 0
 }
 
-# mk_ts_generate_fixture
+# mk_ts_generate_fixture <dir>
 #
-# A throwaway root holding a copy of scripts/ and a minimal tree-sitter-reify/,
-# so the REAL scripts/tree-sitter-generate.sh can be driven end to end without
-# ever mutating the lane's own tree. The script resolves its target as
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a copy of scripts/ and a minimal tree-sitter-reify/, so the REAL
+# scripts/tree-sitter-generate.sh can be driven end to end without ever mutating
+# the lane's own tree. The script resolves its target as
 # "$SCRIPT_DIR/../tree-sitter-reify", so the two must be copied together.
 #
 # Only grammar.js and package.json are copied in: `tree-sitter generate` needs
 # nothing else, and everything under src/ is an OUTPUT this fixture exists to
-# observe. Prints the root; registers its own cleanup.
+# observe.
 mk_ts_generate_fixture() {
-    local dir
-    dir="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
     mkdir -p "$dir/tree-sitter-reify/src" || return 1
     cp "$TS_DIR/grammar.js" "$dir/tree-sitter-reify/grammar.js" || return 1
-    [ -f "$TS_DIR/package.json" ] && cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/"
-    printf '%s' "$dir"
+    if [ -f "$TS_DIR/package.json" ]; then
+        cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/" || return 1
+    fi
 }
 
 # ts_generate_outputs_stamp <fixture-root> — path to the new sibling stamp.
@@ -710,27 +707,27 @@ ts_normalize_lane_mtimes() {
         | xargs -0 -r touch -d '2020-01-01 00:00:00'
 }
 
-# mk_verify_fixture
+# mk_verify_fixture <dir>
 #
-# A throwaway git repo holding a copy of scripts/ and .config/, enough for
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a throwaway git repo holding a copy of scripts/ and .config/, enough for
 # `verify.sh ... --print-plan` to classify scope from a staged file list without
-# touching the real worktree's index. Prints the directory; registers cleanup.
+# touching the real worktree's index.
 #
 # Copies the WHOLE scripts/ dir (1.8 MB) rather than enumerating verify.sh's
 # source closure the way test_verify_scope.sh's make_fixture does: that file
 # needs the explicit list because it also asserts on it, whereas here a missing
 # lib would only ever produce a confusing failure. Wholesale copy cannot drift.
 mk_verify_fixture() {
-    local dir
-    dir="$(mktemp -d)"
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
-    [ -d "$REPO_ROOT/.config" ] && cp -r "$REPO_ROOT/.config" "$dir/.config"
+    if [ -d "$REPO_ROOT/.config" ]; then
+        cp -r "$REPO_ROOT/.config" "$dir/.config" || return 1
+    fi
     mkdir -p "$dir/docs"
     git -C "$dir" init -q || return 1
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
-    printf '%s' "$dir"
 }
 
 # mk_ts_dir_with_cli_outputs <dir>
@@ -748,6 +745,44 @@ mk_ts_dir_with_cli_outputs() {
              tree_sitter/parser.h tree_sitter/zz_extra.h; do
         printf '/* fixture: CLI-path output */\n' > "$d/src/$f" || return 1
     done
+}
+
+# ts_run_with_tmpdir <tmpdir> <cmd> [args...]
+#
+# Run <cmd> in a subshell whose TMPDIR is <tmpdir>: whatever it mktemps lands
+# there, and the caller's own TMPDIR and shell state stay untouched. <cmd> may be
+# a shell function, which `env TMPDIR=... <cmd>` cannot run.
+ts_run_with_tmpdir() {
+    ( export TMPDIR="$1"; shift; "$@" )
+}
+
+# ts_assert_fills_only_given_dir <target> <cmd> [args...]
+#
+# Assert that <cmd> — a fixture helper handed the caller-created <target> —
+# allocates no temp storage of its own: it runs with TMPDIR pointed at a private,
+# empty directory, which must still be empty afterwards. What <target> must end
+# up holding is the caller's to assert: it is what tells a helper that built
+# nothing apart from one that built the right thing.
+#
+# Call it directly, never through `$(...)`: the cleanup it registers would die
+# with the subshell. Deliberately NOT named test_* (see the block header above).
+ts_assert_fills_only_given_dir() {
+    local target="$1"; shift
+    local private leaked
+    private=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$private'")
+
+    assert_cmd_success "$1 runs to completion under a private TMPDIR" \
+        ts_run_with_tmpdir "$private" "$@" || return 1
+
+    leaked=$(ls -A "$private")
+    if [ -n "$leaked" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: $* allocated temp storage of its own"
+        echo "  instead of filling only $target. Left in its TMPDIR:"
+        printf '%s\n' "$leaked" | sed 's/^/    /'
+        return 1
+    fi
 }
 
 # --- Runner ---
@@ -867,7 +902,9 @@ test_generate_outputs_are_untracked_and_ignored() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -2507,7 +2544,9 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     fi
 
     local mask
-    mask=$(ts_masked_path_dir sha256sum) || return 1
+    mask=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$mask'")
+    ts_masked_path_dir "$mask" sha256sum || return 1
 
     # POSITIVELY assert the mask took effect before concluding anything from the
     # run. Without this the test degrades into exactly the vacuity it replaces:
@@ -2912,7 +2951,9 @@ test_verify_plan_brackets_the_cargo_wave_with_freshness() {
     # cannot stage is a broken fixture, not a passing test: the staging failure
     # is fatal now, and the index is inspected before the plan is reasoned about.
     local fix add_out staged
-    fix=$(mk_verify_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_verify_fixture "$fix" || return 1
     add_out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$add_out'")
     printf 'docs\n' > "$fix/docs/note.md"
@@ -3193,7 +3234,9 @@ test_generate_writes_a_content_manifest_for_its_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3212,7 +3255,9 @@ test_generate_keeps_the_grammar_stamp_format_intact() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3249,7 +3294,9 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3302,7 +3349,9 @@ test_generate_regenerates_when_a_header_is_missing() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3353,7 +3402,9 @@ test_generate_refuses_to_stamp_when_the_cli_writes_no_header() {
     # would leave. Stamping that tree would report success and then regenerate
     # on every later run, since the headers stay missing.
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
 
     local stubdir
     stubdir=$(mktemp -d) || return 1
@@ -3398,7 +3449,9 @@ test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
     assert_file_exists "$(ts_generate_grammar_stamp "$fix")" || return 1
@@ -3459,7 +3512,9 @@ test_generate_keeps_its_outputs_when_attestation_fails() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
 
     # A sha256sum that fails for parser.c ONLY, delegating every other file to
     # the real binary. Scoping it to one file is load-bearing: a hasher that
@@ -3937,6 +3992,61 @@ test_freshness_detects_and_repairs_a_stale_archive() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
+}
+
+test_generate_fixture_helper_allocates_no_temp_of_its_own() {
+    # A fixture helper fills the empty dir its caller made and registered for
+    # cleanup, and allocates nothing else. The old shape mktemp'd inside the
+    # helper and appended its `rm -rf` to CLEANUP_ACTIONS there; every caller ran
+    # it as `fix=$(helper)`, so that append died with the command-substitution
+    # subshell and each run leaked a full copy of scripts/ into /tmp (#10044).
+    # What a helper allocates is observable: it is whatever lands under TMPDIR.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_ts_generate_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/tree-sitter-generate.sh" || return 1
+    assert_file_exists "$target/tree-sitter-reify/grammar.js" || return 1
+}
+
+test_verify_fixture_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the verify fixture. Its dir must also come out a git repo with docs/:
+    # the cases that stage files into it need both.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_verify_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/verify.sh" || return 1
+    if [ ! -d "$target/docs" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the fixture has no docs/ directory: $target"
+        return 1
+    fi
+    assert_cmd_success "the fixture is a git repo" \
+        git -C "$target" rev-parse --git-dir || return 1
+}
+
+test_masked_path_dir_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the PATH shim. Its dir must also be a faithful mask: the named binary
+    # gone, the rest of the toolchain still resolving.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" ts_masked_path_dir "$target" sha256sum || return 1
+    if [ -z "$(ls -A "$target")" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the masked PATH dir is empty: $target"
+        return 1
+    fi
+    assert_cmd_fails "sha256sum is masked out of the shim" \
+        env PATH="$target" bash -c 'command -v sha256sum' || return 1
+    assert_cmd_success "ls still resolves through the shim" \
+        env PATH="$target" bash -c 'command -v ls' || return 1
 }
 
 # --- Main ---
