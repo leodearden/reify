@@ -2,9 +2,10 @@
 # Infrastructure tests for the canonical frontend-checkpoint runner
 # scripts/gui-test.sh (esc-5232-3).
 #
-# Validates the script's CONTRACT (source checks, arg-parsing smoke, and Test 3's
-# run of a copy against stub npm / stub runner) so the guarantee "an agent can
-# reliably run the gui vitest suites in any lane" can't silently regress.
+# Validates the script's CONTRACT (source checks, arg-parsing smoke, and Tests 3
+# and 6, which run a copy against stub npm / stub runner via
+# gui_test_fixture_lib.sh) so the guarantee "an agent can reliably run the gui
+# vitest suites in any lane" can't silently regress.
 # Deliberately never executes the real `npm ci`/typecheck/vitest path (slow,
 # network-adjacent) — mirroring test_run_gui_scripts.sh, which checks the
 # launcher contract without launching the GUI.
@@ -16,11 +17,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+[ -f "$SCRIPT_DIR/gui_test_fixture_lib.sh" ] || { echo "ERROR: gui_test_fixture_lib.sh not found at $SCRIPT_DIR/gui_test_fixture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/gui_test_fixture_lib.sh"
 
 GUI_TEST="$REPO_ROOT/scripts/gui-test.sh"
 
-# Suite-private scratch root for Test 3's impostors and stub-driven run trees.
-# test_helpers.sh installs no EXIT trap, so this one clobbers nothing.
+# Suite-private scratch root for the impostor scripts of Tests 3 and 6 (each
+# stubbed run makes and removes its own tree). Neither sourced lib installs an
+# EXIT trap, so this one clobbers nothing.
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/reify-guitest.XXXXXX")"
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
@@ -63,39 +67,11 @@ assert "scripts/gui-test.sh passes 'bash -n' syntax check" \
 # judge the calls those recorded, so a usage line or progress echo that merely
 # names `npm ci` or the runner cannot satisfy them. The impostor pins below
 # prove each check tells an invocation from a mention (tests/infra/README.md
-# "Assert behaviour, not source prose").
+# "Assert behaviour, not source prose"). script_runs_runner lives in
+# gui_test_fixture_lib.sh, shared with rpc-hardening C2, so its no-runner pin
+# here proves C2's sensitivity too.
 echo ""
 echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
-
-# gui_test_calls <script>: run a copy of <script> as scripts/gui-test.sh in a fresh
-# repo-shaped tree whose npm and sibling scripts/gui-vitest-run.sh are stubs, and
-# print the calls they recorded, one "<program> <argv>" line each. Returns the
-# run's exit status (its output goes to stderr when non-zero), so a script that
-# dies part-way fails every check.
-gui_test_calls() {
-    local dir
-    dir="$(mktemp -d "$FIXTURE_ROOT/run.XXXXXX")" || return 1
-    mkdir "$dir/scripts" "$dir/gui" "$dir/bin" || return 1
-    cp "$1" "$dir/scripts/gui-test.sh" || return 1
-    cat >"$dir/bin/npm" <<'STUB' || return 1
-#!/usr/bin/env bash
-printf '%s %s\n' "${0##*/}" "$*" >>"$GUI_TEST_CALL_LOG"
-STUB
-    cp "$dir/bin/npm" "$dir/scripts/gui-vitest-run.sh" || return 1
-    chmod +x "$dir/scripts/gui-test.sh" "$dir/scripts/gui-vitest-run.sh" "$dir/bin/npm" || return 1
-    : >"$dir/calls.log"
-    GUI_TEST_CALL_LOG="$dir/calls.log" PATH="$dir/bin:$PATH" \
-        "$dir/scripts/gui-test.sh" >"$dir/out.log" 2>&1 \
-        || { local rc=$?; cat "$dir/out.log" >&2; return "$rc"; }
-    cat "$dir/calls.log"
-}
-
-# first_call <calls> <program> [first-arg]: 1-based index of the first call to
-# <program> (whose first argument is <first-arg>, when given); empty when none.
-first_call() {
-    awk -v program="$2" -v first_arg="${3:-}" \
-        '$1 == program && (first_arg == "" || $2 == first_arg) { print NR; exit }' <<<"$1"
-}
 
 script_runs_npm_ci() {
     local calls; calls="$(gui_test_calls "$1")" || return 2
@@ -106,11 +82,6 @@ script_npm_ci_prefers_offline() {
     local calls; calls="$(gui_test_calls "$1")" || return 2
     awk '$1 == "npm" && $2 == "ci" { for (i = 3; i <= NF; i++) if ($i == "--prefer-offline") found = 1 }
          END { exit !found }' <<<"$calls"
-}
-
-script_runs_runner() {
-    local calls; calls="$(gui_test_calls "$1")" || return 2
-    [ -n "$(first_call "$calls" gui-vitest-run.sh)" ]
 }
 
 script_runs_npm_ci_before_runner() {
@@ -211,6 +182,24 @@ assert "scripts/gui-test.sh rejects an unknown flag with a usage error (exit 64)
 # -- Test 6: --no-typecheck and '--' forwarding, judged by the calls made ------
 echo ""
 echo "--- Test 6: --no-typecheck skips typecheck and '--' forwards vitest args (stub-driven) ---"
+
+script_typechecks_by_default() {
+    local calls; calls="$(gui_test_calls "$1")" || return 2
+    has_call "$calls" npm run typecheck
+}
+
+script_no_typecheck_skips_typecheck() {
+    local calls; calls="$(gui_test_calls "$1" --no-typecheck)" || return 2
+    ! has_call "$calls" npm run typecheck && [ -n "$(first_call "$calls" gui-vitest-run.sh)" ]
+}
+
+# The space inside one argument tells a boundary-keeping "${VITEST_ARGS[@]}"
+# apart from a joining "${VITEST_ARGS[*]}".
+script_forwards_vitest_args() {
+    local vitest_args=(-t 'two words' src/a.test.ts) calls
+    calls="$(gui_test_calls "$1" --no-typecheck -- "${vitest_args[@]}")" || return 2
+    has_call "$calls" gui-vitest-run.sh "${vitest_args[@]}"
+}
 
 assert "scripts/gui-test.sh runs 'npm run typecheck' by default" \
     script_typechecks_by_default "$GUI_TEST"
