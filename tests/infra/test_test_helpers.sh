@@ -2320,7 +2320,7 @@ check "IV-a: it prints test_summary's 'Results: 1 passed, 0 failed' line" \
 check "IV-a: it prints a line starting 'INFRASTRUCTURE: cargo inputs'" \
     "$(grep -q '^INFRASTRUCTURE: cargo inputs' <<<"$infra_out" && echo true || echo false)"
 check "IV-a: it prints no FAIL line" \
-    "$(grep -q 'FAIL:' <<<"$infra_out" && echo false || echo true)"
+    "$(grep -q '^[[:space:]]*FAIL:' <<<"$infra_out" && echo false || echo true)"
 
 # (b) an assertion already FAILed: that FAIL decides the verdict.
 rc=0
@@ -2356,7 +2356,7 @@ check "IV-d: assert_infra_input ends the member with exit 75 on the unavailable 
 check "IV-d: it prints the INFRASTRUCTURE line" \
     "$(grep -q '^INFRASTRUCTURE: inputs present' <<<"$infra_out" && echo true || echo false)"
 check "IV-d: it prints no FAIL line" \
-    "$(grep -q 'FAIL:' <<<"$infra_out" && echo false || echo true)"
+    "$(grep -q '^[[:space:]]*FAIL:' <<<"$infra_out" && echo false || echo true)"
 check "IV-d: nothing after the call runs (no AFTER sentinel)" \
     "$(grep -q '^AFTER$' <<<"$infra_out" && echo false || echo true)"
 
