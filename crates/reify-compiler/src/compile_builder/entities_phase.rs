@@ -1920,3 +1920,6 @@ fn for_each_template_root_expr(
         }
     }
 }
+
+#[cfg(test)]
+mod fn_tables_misaligned_tests;
