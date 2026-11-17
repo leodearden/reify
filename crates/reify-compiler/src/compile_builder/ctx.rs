@@ -488,6 +488,27 @@ mod tests {
         );
     }
 
+    /// Only structures and occurrences can win a ctor-view slot, so the
+    /// borrowing and owned views of the module-local names both exclude the
+    /// field and constraint entities that share the entity namespace.
+    #[test]
+    fn local_entity_names_admit_only_structures_and_occurrences() {
+        let mut ctx = CompilationCtx::new();
+        ctx.record_or_report_duplicate("S", SourceSpan::new(0, 1), "structure");
+        ctx.record_or_report_duplicate("O", SourceSpan::new(2, 3), "occurrence");
+        ctx.record_or_report_duplicate("F", SourceSpan::new(4, 5), "field");
+        ctx.record_or_report_duplicate("C", SourceSpan::new(6, 7), "constraint");
+
+        assert_eq!(
+            ctx.local_entity_name_iter().collect::<HashSet<&str>>(),
+            HashSet::from(["S", "O"]),
+        );
+        assert_eq!(
+            ctx.local_entity_names(),
+            HashSet::from(["S".to_string(), "O".to_string()]),
+        );
+    }
+
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
     /// is empty, the entity-name tracker is empty, and both registries have no
     /// entries.  Anchors the invariant that construction does no hidden seeding
