@@ -523,13 +523,13 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
     def test_stringified_non_array_is_one_whole_string_leaf(self):
         """A JSON string that parses to neither a leaf array nor an envelope is
         ONE mega-leaf: the whole string, as the logged warning says. It holds as
-        the args themselves and as an envelope's `leaves` (task #9845). A
-        stringified scalar is such a string too: the leaf batch rule reads the
-        args as given, never their parse, so "null" is not refused like null
-        (task #9946).
+        the args themselves and as an envelope's `leaves` (task #9845). A JSON
+        string of a non-blank string is such a string too, while a JSON string
+        of a scalar or a blank string is refused (TestMjsTopLevelArgs, task
+        #10063).
         """
         solo_object = json.dumps({"signal": "solo"}, separators=(",", ":"))
-        for solo in (solo_object, "null", "0", '""'):
+        for solo in (solo_object, json.dumps("solo")):
             for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
                 with self.subTest(args=args_js):
                     verdict, logs = self._run_fanout(args_js)
@@ -2006,7 +2006,9 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
 class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
     """Top-level args that are not an envelope must be a leaf batch under the
     rule an envelope's `leaves` follows (task #9946): an omitted, falsy, scalar
-    or blank args is refused before any agent runs, not run as a vacuous PASS."""
+    or blank args is refused before any agent runs, not run as a vacuous PASS.
+    A JSON string of such an args is refused too, judged by what it encodes
+    (task #10063)."""
 
     # Each args that is no leaf batch, and how its refusal renders it.
     _NOT_A_LEAF_BATCH = (
@@ -2018,6 +2020,10 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
         ("false", "false"),
         ("7", "7"),
         ("true", "true"),
+        ("JSON.stringify(null)", json.dumps("null")),
+        ("JSON.stringify(0)", json.dumps("0")),
+        ('JSON.stringify("")', json.dumps('""')),
+        ('JSON.stringify("   ")', json.dumps('"   "')),
     )
 
     _ARGS_SUBJECT = "prd-decompose-verify args: args "
