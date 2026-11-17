@@ -895,8 +895,10 @@ impl Callee {
 /// OCCURRENCE and a prelude occurrence or structure never enter the ctor view
 /// the way a local structure does, so calling one from a fn body must not draw a
 /// message claiming "structure 'X' is declared after this function" — that
-/// message would lie. Only the absence of the ordering diagnostic is pinned:
-/// whatever else these calls produce is not this rule's business.
+/// message would lie. Each case also carries a positive witness, so the absence
+/// check cannot pass vacuously: the fixture compiles without Errors, `f`'s
+/// `let x` was lowered, and the callee is still the occurrence or structure its
+/// label names.
 #[test]
 fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
     for (what, src, callee) in [
@@ -923,8 +925,8 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
         (
             "prelude structure",
             "module t.prelude_struct\n\
-             pub fn f() -> Real { let x = MaterialFrame(); 1.0 }\n",
-            Callee::PreludeStructure("MaterialFrame"),
+             pub fn f() -> Real { let x = Color(); 1.0 }\n",
+            Callee::PreludeStructure("Color"),
         ),
     ] {
         let module = reify_test_support::helpers::compile_source_with_stdlib(src);
