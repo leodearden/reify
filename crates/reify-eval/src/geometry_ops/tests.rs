@@ -25769,11 +25769,6 @@
     const PLANE_ORIGIN_SHAPE_ERR: &str =
         "mirror: Plane origin is not a valid 3-component numeric Point/Vector";
 
-    /// The wrong-SHAPE message for a plane NORMAL. The normal is not gated, so
-    /// it still reads through bare `point3_components`.
-    const PLANE_NORMAL_SHAPE_ERR: &str =
-        "mirror: Plane normal is not a valid 3-component numeric Point/Vector";
-
     /// Build a `Value::Plane` from an origin and a normal `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY normal shape — which
     /// is the entire point of this block: the two halves are governed by
@@ -25813,6 +25808,19 @@
              about the deliberately-bare normal; got: {:?}",
             diagnostics
         );
+    }
+
+    /// A `Value::Direction` normal — the shape every datum producer mints —
+    /// decodes to its exact unit components beside a LENGTH origin.
+    #[test]
+    fn decode_plane_accepts_a_direction_bearing_plane() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(length_point3(0.0, 0.0, 0.01), unit_dir(0.0, 0.0, 1.0));
+        assert_eq!(
+            decode_plane(&plane, "mirror", &mut diagnostics),
+            Ok(([0.0, 0.0, 0.01], [0.0, 0.0, 1.0]))
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
 
     /// The headline δ behaviour for `decode_plane`: a BARE origin is rejected at
@@ -25910,15 +25918,6 @@
                     bare_real_vector3(0.0, 0.0, 1.0),
                 ),
                 PLANE_ORIGIN_SHAPE_ERR.to_string(),
-            ),
-            // Wrong SHAPE, normal side: read through bare `point3_components`,
-            // which is exactly why a `Value::Direction` normal still lands here.
-            (
-                plane_of(
-                    length_point3(0.0, 0.0, 0.0),
-                    unit_dir(0.0, 0.0, 1.0),
-                ),
-                PLANE_NORMAL_SHAPE_ERR.to_string(),
             ),
             // Degenerate normal over a clean LENGTH origin.
             (
@@ -26022,11 +26021,6 @@
     const AXIS_ORIGIN_SHAPE_ERR: &str =
         "circular_pattern: Axis origin is not a valid 3-component numeric Point/Vector";
 
-    /// The wrong-SHAPE message for an axis DIRECTION. The direction is not
-    /// gated, so it still reads through bare `point3_components`.
-    const AXIS_DIRECTION_SHAPE_ERR: &str =
-        "circular_pattern: Axis direction is not a valid 3-component numeric Point/Vector";
-
     /// Build a `Value::Axis` from an origin and a direction `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY direction shape.
     fn axis_of(origin: reify_ir::Value, direction: reify_ir::Value) -> reify_ir::Value {
@@ -26100,33 +26094,18 @@
         }
     }
 
-    /// A `Value::Direction` direction paired with a LENGTH origin
-    /// behaves EXACTLY as it did pre-δ: `Direction` is not a `Point`/`Vector`, so
-    /// it still fails `point3_components` with the unchanged shape message.
-    ///
-    /// This row exists to pin that δ did not perturb the KERNEL-DATUM path.
-    /// `feature_datum.rs` mints analytic axes as `Value::length` origins beside a
-    /// `Value::Direction`, so the origin half is already dimensioned and passes
-    /// the new gate; only the direction half fails, and it fails the way it
-    /// always did, for a reason that has nothing to do with units.
+    /// A `Value::Direction` direction — the shape every datum producer mints,
+    /// the kernel's analytic axes included — decodes to its exact unit
+    /// components beside a LENGTH origin.
     #[test]
-    fn decode_axis_direction_variant_still_fails_the_pre_delta_way() {
+    fn decode_axis_accepts_a_direction_bearing_axis() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let axis = axis_of(
-            length_point3(0.0, 0.0, 0.01),
-            unit_dir(0.0, 0.0, 1.0),
-        );
+        let axis = axis_of(length_point3(0.0, 0.0, 0.01), unit_dir(0.0, 0.0, 1.0));
         assert_eq!(
             decode_axis(&axis, "circular_pattern", &mut diagnostics),
-            Err(AXIS_DIRECTION_SHAPE_ERR.to_string()),
-            "unchanged by δ — a `Value::Direction` is a SHAPE mismatch for the \
-             bare direction read, not a units rejection"
+            Ok(([0.0, 0.0, 0.01], [0.0, 0.0, 1.0]))
         );
-        assert!(
-            diagnostics.is_empty(),
-            "and it therefore emits no units diagnostic; got: {:?}",
-            diagnostics
-        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
 
     /// Non-unit directions are still normalised SILENTLY over a LENGTH origin.

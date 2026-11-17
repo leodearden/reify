@@ -17,7 +17,7 @@ use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 use reify_test_support::{
-    axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+    axis_val, direction_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
 };
 
 const EPS: f64 = 1e-12;
@@ -99,6 +99,15 @@ fn axis_dir_projects_to_direction() {
     assert_direction(&result, [1.0, 0.0, 0.0]);
 }
 
+/// Every datum producer mints `Axis.direction` as a `Value::Direction`; `.dir`
+/// hands that direction back unchanged.
+#[test]
+fn axis_dir_of_a_direction_bearing_axis_is_that_direction() {
+    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(0.0, 1.0, 0.0));
+    let result = project(axis, Type::Axis, "dir", Type::Direction);
+    assert_eq!(result, direction_val(0.0, 1.0, 0.0));
+}
+
 #[test]
 fn axis_origin_projects_to_point() {
     let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
@@ -113,6 +122,15 @@ fn plane_normal_projects_to_direction() {
     let plane = plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0));
     let result = project(plane, Type::Plane, "normal", Type::Direction);
     assert_direction(&result, [0.0, 0.0, 1.0]);
+}
+
+/// Every datum producer mints `Plane.normal` as a `Value::Direction`; `.normal`
+/// hands that direction back unchanged.
+#[test]
+fn plane_normal_of_a_direction_bearing_plane_is_that_direction() {
+    let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(1.0, 0.0, 0.0));
+    let result = project(plane, Type::Plane, "normal", Type::Direction);
+    assert_eq!(result, direction_val(1.0, 0.0, 0.0));
 }
 
 // ─── Frame projections ───────────────────────────────────────────────────────
