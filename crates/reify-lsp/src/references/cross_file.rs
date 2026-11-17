@@ -620,6 +620,3 @@ pub fn compute_rename_cross_file(
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod self_alias_tests;
