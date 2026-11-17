@@ -177,8 +177,11 @@
 #   REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S  ROW4 anti-hang bound on waiting for BOTH
 #                                       burns to report ready through the fixture's
 #                                       --ready-file (default 30; task 9698).  ROW1-1
-#                                       waits on its one burn, and ROW2_3 on every
-#                                       mix source, under the same bound.
+#                                       waits on its one burn under the same bound.
+#                                       ROW2_3 waits on every mix source under the
+#                                       smaller of this and ROW2-2's fixed 15 s launch
+#                                       slack (_ROW23_LAUNCH_SLACK_S), so raising the
+#                                       knob never loosens ROW2-2.
 #                                       Technique T (docs/prds/infra-test-wallclock-
 #                                       deflake.md): it only keeps a burn that never
 #                                       reports from hanging the suite and NEVER
@@ -186,8 +189,9 @@
 #                                       expires ROW1-1 / ROW2-1 / ROW3-1 / ROW4-1
 #                                       SKIP, there being no window to measure.
 #                                       Generous by an order of magnitude over a
-#                                       governed launch, and the base of the ROW1,
-#                                       ROW2_3 and ROW4 burn caps
+#                                       governed launch, and the base of the ROW1
+#                                       and ROW4 burn caps and, as the smaller value
+#                                       above, of the ROW2_3 burn cap
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -2500,8 +2504,8 @@ fi
 #   3. Concurrently run the timed CONFINED+PINNED governed probe → T_mix.
 #   4. The window opens once EVERY mix source has reported ready through its
 #      own fixture --ready-file (not at launch); warm up, then sample the task
-#      slice's OWN cpu.pressure avg10 (per-cgroup, not global).  The mix is
-#      stopped right after T_mix.
+#      slice's OWN cpu.pressure avg10 (per-cgroup, not global).  When every
+#      source reported ready, the mix is stopped right after T_mix.
 #
 # §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
 #   confined+pinned sources completed.
@@ -2538,11 +2542,11 @@ _row23_mix_timing() {
     return 0
 }
 
-# Mix burn cap: the window opens on readiness, which can come as late as the
-# ready deadline after launch, so the burn must outlast deadline + WARMUP_S +
-# PROBE_S + settling (as _ROW1_CONFINE_BURN_MIN does).  The mix is stopped
-# explicitly after T_mix, so the cap adds no wall time.
-_ROW23_MIX_BURN_S=$(( _ROW4_READY_DEADLINE_S + _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
+# ROW2-2's starvation bound: a source whose burn has not started this many seconds after launch
+# is killed by its outer timeout before its done marker.  Fixed, never a knob.
+_ROW23_LAUNCH_SLACK_S=15
+_ROW23_MIX_TIMING="$(_row23_mix_timing "$_ROW4_READY_DEADLINE_S" "$_ROW23_LAUNCH_SLACK_S" "$_ROW23_WARMUP_S" "$_ROW23_PROBE_S")"
+read -r _ROW23_READY_DEADLINE_S _ROW23_MIX_BURN_S _ROW23_MIX_TIMEOUT_S <<< "$_ROW23_MIX_TIMING"
 
 # _row23_write_stub_cargo <bin_dir> <fixture> <burn_s> <marker_dir>
 #   Writes the executable stub "real cargo" <bin_dir>/cargo: it burns <burn_s> s through <fixture>,
@@ -3027,7 +3031,7 @@ PROBE_PY
         GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_task_${_mi}" \
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         REIFY_CPU_ADMIT_PROC_PATH="$_ROW23_TASK_PRESSURE_PATH" \
-        timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
             bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
             >/dev/null 2>&1 &
         _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -3038,7 +3042,7 @@ PROBE_PY
     PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
     GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_merge" \
     REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+    timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
         >/dev/null 2>&1 &
     _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -3053,7 +3057,7 @@ PROBE_PY
     #     _row23_sample_window.  _ROW23_AVG10_RC lets the ROW3-1 hedge
     #     (_row3_foreign_load below) tell a genuine 99+ reading apart from a
     #     defaulted-because-unreadable one (task 5999 review-amendment).
-    _row23_sample_window "$_ROW4_READY_DEADLINE_S" "$_ROW23_WARMUP_S" \
+    _row23_sample_window "$_ROW23_READY_DEADLINE_S" "$_ROW23_WARMUP_S" \
         "$_ROW23_TASK_SLICE_REL" "$_ROW23_TASK_PRESSURE_PATH" $_ROW23_READY_FILES
 
     # Usage fraction and stall window over the MEASURED read-to-read window
@@ -3087,10 +3091,12 @@ PROBE_PY
         _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
     fi
 
-    # (e) Stop the mix, then wait for it to finish (a stopped source still
-    #     exits 0 and writes its done marker; a source that never reported
-    #     ready runs to its burn or its outer timeout).
-    _row23_stop_mix $_ROW23_READY_FILES
+    # (e) Stop the mix only when every source reported ready (a stopped source still exits 0 and
+    #     writes its done marker); otherwise each source runs to its burn's end or its outer
+    #     timeout.  Then wait for the mix to finish.
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _row23_stop_mix $_ROW23_READY_FILES
+    fi
     for _mpid in $_MIX_PIDS; do
         wait "$_mpid" 2>/dev/null || true
     done
@@ -3135,7 +3141,7 @@ PROBE_PY
     # (contention-inflated, not a governance failure).  No window to measure
     # when the mix never reported ready: SKIP before looking at the sample.
     if [ "$_ROW23_READY" -eq 0 ]; then
-        echo "  SKIP ROW2-1: mix did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+        echo "  SKIP ROW2-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no window to measure"
     elif ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
     elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
@@ -3156,10 +3162,13 @@ sys.exit(0 if v < t else 1)
     # under oversubscription can SIGTERM the slowest sources before their outer timeout,
     # making strict equality unreliable even when governance is correct.  SKIP (not
     # FAIL) when sub-90% AND foreign contention was detected — inconclusive.
+    # A source not started _ROW23_LAUNCH_SLACK_S after launch is killed by its outer timeout
+    # before its marker.  The post-T_mix stop runs only when every source reported within the
+    # readiness bound, which never exceeds that slack, so the stop never rescues a starved source.
     if [ "$_ROW23_ALL_PROGRESSED" -eq 0 ] && [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-2: sub-90% completion (${_ROW23_DONE_COUNT}/${_ACTIVE_SOURCES}) under detected foreign load on the pinned CPUs — inconclusive, not a governance failure"
     else
-        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
+        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT}; launch slack ${_ROW23_LAUNCH_SLACK_S}s)" \
             test "${_ROW23_ALL_PROGRESSED}" -eq 1
     fi
 
@@ -3190,7 +3199,7 @@ sys.exit(0 if v < t else 1)
     # docstring: below-floor is "physically impossible" for the model, i.e.
     # a modeling/measurement mismatch, not evidence of broken governance).
     if [ "$_ROW23_READY" -eq 0 ]; then
-        echo "  SKIP ROW3-1: mix did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no mix to probe under"
+        echo "  SKIP ROW3-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no mix to probe under"
     elif _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
         echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
