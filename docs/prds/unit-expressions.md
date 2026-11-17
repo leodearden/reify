@@ -116,6 +116,8 @@ exponent    := '-'? /[0-9]+/ ('/' /[0-9]+/)?          // signed integer or ratio
   reread (the legacy reading of `1m^2/2` was 0.5 m²).
 - A value-level `/` touching a unit exponent (`1m^1/ 2`, `1m^1/-2`, `1m^1/2/3`) is a
   located parse error at the `/`. To divide, put a space before it: `1m^2 / 2`.
+- A `^p/q` directly followed by a unit name (`1m^2/3s`, `1m^1/2kg`) is a parse error,
+  because the exponent token takes `2/3`. To divide, write `1m^2 / 3s`.
 - `/` after a unit NAME followed by a digit stays value division (`25USD/1kg`,
   `50MPa/2`).
 - Parentheses group sub-expressions and may be raised to a power (`(kg*m/s)^2`).
@@ -343,3 +345,8 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
    That bound covers WRITTEN exponents. A fold whose resulting dimension does not fit
    `Rational` (`m^127^127^127`, `m^1/127*m^1/126*m^1/125`) is the resolve error
    `UnitResolveError::DimensionOverflow`, never a panic or a wrapped dimension.
+   A value-level `*` or `/` whose combined dimension does not fit `Rational`
+   (`1m^1/31 * 1m^1/37 * 1m^1/41`) is the compile error `DimensionExponentOverflow` and
+   evaluates to `Undef`. The value-level `^` (#9696) and the builtin dimension
+   combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`; #9796) do not have this
+   guarantee yet.
