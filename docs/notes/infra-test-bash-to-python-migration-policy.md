@@ -180,9 +180,8 @@ not the flake remedy.
 
 Flake fixes #9698 and #10023 and the latent ROW2_3 window fix in #10025 landed
 in bash without the Arm 2 port. The member is 4,174 lines (1,613 code lines,
-165 `assert` sites) on main `48f6c7710b`, and 4,493 lines after #10025. The
-port is a follow-up filed from #10025, ticket `tkt_0RX3200X6BDCWCTZS2F97VFF4J`.
-It must keep:
+165 `assert` sites) on main `48f6c7710b`. The port is a follow-up filed from
+#10025, ticket `tkt_0RX3200X6BDCWCTZS2F97VFF4J`. It must keep:
 
 - **Node id and class.** `test_cpu_load_governance.sh` stays the node: a thin
   wrapper running the same-stem `.py`, manifest row `host-exclusive`. Its
