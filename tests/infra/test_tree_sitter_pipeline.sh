@@ -710,27 +710,27 @@ ts_normalize_lane_mtimes() {
         | xargs -0 -r touch -d '2020-01-01 00:00:00'
 }
 
-# mk_verify_fixture
+# mk_verify_fixture <dir>
 #
-# A throwaway git repo holding a copy of scripts/ and .config/, enough for
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a throwaway git repo holding a copy of scripts/ and .config/, enough for
 # `verify.sh ... --print-plan` to classify scope from a staged file list without
-# touching the real worktree's index. Prints the directory; registers cleanup.
+# touching the real worktree's index.
 #
 # Copies the WHOLE scripts/ dir (1.8 MB) rather than enumerating verify.sh's
 # source closure the way test_verify_scope.sh's make_fixture does: that file
 # needs the explicit list because it also asserts on it, whereas here a missing
 # lib would only ever produce a confusing failure. Wholesale copy cannot drift.
 mk_verify_fixture() {
-    local dir
-    dir="$(mktemp -d)"
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
-    [ -d "$REPO_ROOT/.config" ] && cp -r "$REPO_ROOT/.config" "$dir/.config"
+    if [ -d "$REPO_ROOT/.config" ]; then
+        cp -r "$REPO_ROOT/.config" "$dir/.config" || return 1
+    fi
     mkdir -p "$dir/docs"
     git -C "$dir" init -q || return 1
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
-    printf '%s' "$dir"
 }
 
 # mk_ts_dir_with_cli_outputs <dir>
@@ -2952,7 +2952,9 @@ test_verify_plan_brackets_the_cargo_wave_with_freshness() {
     # cannot stage is a broken fixture, not a passing test: the staging failure
     # is fatal now, and the index is inspected before the plan is reasoned about.
     local fix add_out staged
-    fix=$(mk_verify_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_verify_fixture "$fix" || return 1
     add_out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$add_out'")
     printf 'docs\n' > "$fix/docs/note.md"
