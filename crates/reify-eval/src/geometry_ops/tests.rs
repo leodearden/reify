@@ -26639,8 +26639,8 @@
     //
     // | site                  | position              | why it stays bare                          |
     // |-----------------------|-----------------------|--------------------------------------------|
-    // | `decode_plane`        | plane NORMAL          | dimensionless unit vector, normalised by `unit_vector3` |
-    // | `decode_axis`         | axis DIRECTION        | dimensionless unit vector, normalised by `unit_vector3` |
+    // | `decode_plane`        | plane NORMAL          | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
+    // | `decode_axis`         | axis DIRECTION        | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
     // | `modify_offset_curve` | `third` → `direction` | its own production diagnostic already calls it "a direction vec3" |
 
     /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument. GREEN by construction.

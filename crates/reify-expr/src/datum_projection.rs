@@ -19,14 +19,6 @@ pub(crate) fn datum_vec3(v: &Value) -> Option<[f64; 3]> {
     Some([a, b, c])
 }
 
-/// Project a stored direction/normal `Point`/`Vector` to a unit `Direction`,
-/// or `Undef` if the vector is degenerate or malformed.
-fn vec3_to_direction(v: &Value) -> Value {
-    datum_vec3(v)
-        .and_then(|c| UnitVec3::from_vector(c).ok())
-        .map_or(Value::Undef, Value::Direction)
-}
-
 /// Basis axis `axis` (0=x, 1=y, 2=z) of a `Frame` as a unit vector, or `None`
 /// for a non-Frame or a malformed basis.
 fn frame_axis_unit(frame: &Value, axis: usize) -> Option<UnitVec3> {
@@ -68,18 +60,12 @@ fn frame_plane(frame: &Value, origin: &Value, normal_axis: usize) -> Value {
 pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
     match obj {
         Value::Axis { origin, direction } => match method {
-            "dir" => Some(
-                decode_direction(direction)
-                    .map_or_else(|_| vec3_to_direction(direction), Value::Direction),
-            ),
+            "dir" => Some(decode_direction(direction).map_or(Value::Undef, Value::Direction)),
             "origin" => Some((**origin).clone()),
             _ => None,
         },
         Value::Plane { origin, normal } => match method {
-            "normal" => Some(
-                decode_direction(normal)
-                    .map_or_else(|_| vec3_to_direction(normal), Value::Direction),
-            ),
+            "normal" => Some(decode_direction(normal).map_or(Value::Undef, Value::Direction)),
             "origin" => Some((**origin).clone()),
             _ => None,
         },

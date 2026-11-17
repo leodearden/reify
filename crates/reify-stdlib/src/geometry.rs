@@ -1470,24 +1470,18 @@ fn make_real_vec3(xyz: [f64; 3]) -> Value {
     ])
 }
 
-/// Decode a `Value::Plane` into (origin[3], origin_dim, normal[3]). `None` for any
-/// non-Plane / non-3D / mixed-dimension / non-finite input. Reuses the shared
-/// `decompose_point3` (origin) and `decompose_vec3` (normal) validators.
-fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
+/// Decode a `Value::Plane` into (origin[3], origin_dim, unit normal). `None` for
+/// any non-Plane / non-3D / mixed-dimension / non-finite origin, or a normal that
+/// is not a `Value::Direction`. The origin goes through the shared
+/// `decompose_point3` validator and the normal through
+/// [`reify_ir::decode_direction`], the one direction reader (ε, task 9638).
+fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, UnitVec3)> {
     let (origin, normal) = match v {
         Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         _ => return None,
     };
     let (o, o_dim) = decompose_point3(origin)?;
-    // A plane normal may be a dimensionless `Value::Vector` (synthetic, e.g. from
-    // `make_real_vec3` / `plane_xy`) OR a `Value::Direction` (how a kernel-realized
-    // feature→datum plane carries its normal). Accept both so the construction-datum
-    // constructors (`offset` / `midplane`) consume a REALIZED plane — the actual
-    // use case — not only a synthetic one.
-    let n = match decompose_vec3(normal) {
-        Some((n, _)) => n,
-        None => decode_direction(normal).ok()?.components(),
-    };
+    let n = decode_direction(normal).ok()?;
     Some((o, o_dim, n))
 }
 
@@ -1570,22 +1564,19 @@ fn classify_datum_point(arg_name: &'static str, v: &Value) -> Result<[f64; 3], D
 /// returning its origin and normal components.
 ///
 /// The whole SHAPE question — the `Plane` variant, the origin triple AND the
-/// dual `Vector`-or-`Direction` normal — is read through [`decode_plane`], the
-/// SAME decoder the eval gates have always used, and it is read BEFORE any
-/// dimension is judged. That ordering is what makes a malformed normal a
-/// `Shape` fault rather than a `NotLength` one: such a plane never reaches the
-/// LENGTH verdict, so its fault is never blamed on its origin's dimension.
+/// `Direction` normal — is read through [`decode_plane`], the SAME decoder the
+/// eval gates have always used, and it is read BEFORE any dimension is judged.
+/// That ordering is what makes a malformed normal a `Shape` fault rather than a
+/// `NotLength` one: such a plane never reaches the LENGTH verdict, so its fault
+/// is never blamed on its origin's dimension.
 ///
-/// Preserving `decode_plane`'s dual normal acceptance is load-bearing rather
-/// than conservative: the one real `.ri` call site of this family
-/// (`examples/geometric_relations/construction_datum.ri`) feeds a
-/// kernel-realized plane whose normal is a `Value::Direction`, so narrowing the
-/// normal decode would break the shipped example while the unit suite stayed
-/// green.
-fn classify_datum_plane(
-    arg_name: &'static str,
-    v: &Value,
-) -> Result<([f64; 3], [f64; 3]), DatumFault> {
+/// A normal that is not a `Value::Direction` — a raw `Vector` included — is
+/// such a `Shape` fault (ε, task 9638). Every plane this family is fed has a
+/// `Direction` normal: the stdlib datum constructors mint one, and so does the
+/// kernel for a realized plane such as the `top_plane` of
+/// `examples/geometric_relations/construction_datum.ri`, this family's one real
+/// `.ri` call site.
+fn classify_datum_plane(arg_name: &'static str, v: &Value) -> Result<PlaneParts, DatumFault> {
     let (_, _, normal) = decode_plane(v).ok_or(DatumFault::Shape)?;
     let Value::Plane { origin, .. } = v else {
         // Unreachable: `decode_plane` returns `None` for every non-`Plane` value.
@@ -1615,8 +1606,8 @@ fn classify_datum_delta(arg_name: &'static str, v: &Value) -> Result<f64, DatumF
     }
 }
 
-/// A decoded plane: its origin components and its normal components.
-type PlaneParts = ([f64; 3], [f64; 3]);
+/// A decoded plane: its origin components and its unit normal.
+type PlaneParts = ([f64; 3], UnitVec3);
 
 /// Three decoded `Point3<Length>` positions, in argument order — what
 /// [`classify_plane_through_args`] yields.
@@ -1774,7 +1765,8 @@ fn eval_midplane(args: &[Value]) -> Value {
     let Ok(((oa, na), (ob, nb))) = classify_midplane_args(args) else {
         return Value::Undef;
     };
-    let Some(normal) = direction_value([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) else {
+    let ([ax, ay, az], [bx, by, bz]) = (na.components(), nb.components());
+    let Some(normal) = direction_value([ax + bx, ay + by, az + bz]) else {
         return Value::Undef;
     };
     let mid = [
@@ -1847,7 +1839,8 @@ fn eval_plane_through(args: &[Value]) -> Value {
 ///
 /// BOTH operands are REQUIRED to carry LENGTH — `p`'s ORIGIN and `delta` itself
 /// (units-length η, task 6591). `Undef` on bad arity, a non-LENGTH or
-/// undecodable plane origin, a non-LENGTH delta, or a degenerate normal.
+/// undecodable plane origin, a normal that is not a `Value::Direction`, or a
+/// non-LENGTH delta.
 ///
 /// Gating `delta` closes an R12-class SILENT REINTERPRETATION, not merely a
 /// missing check: the rule this replaces compared `delta`'s dimension to the
@@ -1857,13 +1850,10 @@ fn eval_plane_through(args: &[Value]) -> Value {
 /// the new guard, and [`classify_offset_plane_args`] for the predicate this gate
 /// and [`diagnose`]'s arm share, which also fixes the `p`-before-`delta` order.
 ///
-/// The normal keeps its dimension-agnostic decode, including the
-/// `Value::Direction` form a kernel-realized plane carries (decision D3).
+/// The normal is decoded as a `Value::Direction` and re-minted unchanged, so
+/// `offset(p, d).normal` is bit-identical to `p.normal` (decision D3).
 fn eval_offset_plane(args: &[Value]) -> Value {
-    let Ok(((o, n), delta)) = classify_offset_plane_args(args) else {
-        return Value::Undef;
-    };
-    let Ok(n_hat) = UnitVec3::from_vector(n) else {
+    let Ok(((o, n_hat), delta)) = classify_offset_plane_args(args) else {
         return Value::Undef;
     };
     let [nx, ny, nz] = n_hat.components();
