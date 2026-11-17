@@ -2045,6 +2045,71 @@ _row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5
 assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
     test "$_row2_uf_vacuity5_rc" -ne 0
 
+# ROW2-1-BAND-WINDOW-VACUITY (task 10025): ROW2_3's ROW2-1 sizes its usage
+# fraction and its stall window from the interval MEASURED between two
+# cgroup-usage-stamped reads, never from a nominal warm-up budget.
+# _row2_band_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<usage_fraction> <window_us>", or exactly "unavailable unavailable".
+# Cases 1-5 are pure awk: always-on.  Cases 6-8 feed the two fields into
+# _row2_band_inconclusive as the live cycle does, which reaches python3 through
+# _row1_stall_contended: gated on _PYTHON_AVAILABLE like ROW2-1-BAND-VACUITY.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs.  Outputs compare by
+# exact string and rcs by exact value, never `-ne 0`.
+_row2_band_window1="$(_row2_band_window "0 0" "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 14.0 CPU-s over a MEASURED 10 s window on 2 cores => '0.700000 10000000' (got '${_row2_band_window1}'); a nominal 8 s budget would have read 0.875000, i.e. saturating, and hidden the starvation" \
+    test "$_row2_band_window1" = "0.700000 10000000"
+
+_row2_band_window2="$(_row2_band_window unavailable "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-2: unavailable BEFORE sample => 'unavailable unavailable' (got '${_row2_band_window2}')" \
+    test "$_row2_band_window2" = "unavailable unavailable"
+
+_row2_band_window3="$(_row2_band_window "0 0" unavailable 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-3: unavailable AFTER sample => 'unavailable unavailable' (got '${_row2_band_window3}')" \
+    test "$_row2_band_window3" = "unavailable unavailable"
+
+_row2_band_window4="$(_row2_band_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-4: non-advancing stamp (before=after=5000000) => 'unavailable unavailable' (got '${_row2_band_window4}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row2_band_window4" = "unavailable unavailable"
+
+_row2_band_window5="$(_row2_band_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-5: counter wrap (after usage < before usage) => '0.000000 3000000' (got '${_row2_band_window5}'); delta clamps to 0, never a negative fraction" \
+    test "$_row2_band_window5" = "0.000000 3000000"
+
+# _row2_band_window_verdict_is <expected_capture> <expected_rc> <before_sample>
+#   <after_sample> <stall_after>
+#   Test-side composition of ROW2-1's band decision on 2 cores (avg10 57 against
+#   threshold 50, stall 0 -> <stall_after>).  Passes iff _row2_band_window's
+#   capture equals <expected_capture> AND _row2_band_inconclusive's rc equals
+#   <expected_rc>, both exactly, so an empty capture cannot pass by yielding rc 1.
+_row2_band_window_verdict_is() {
+    local expected_capture="$1" expected_rc="$2" before="$3" after="$4" stall_after="$5"
+    local capture usage_fraction window_us rc=0
+    capture="$(_row2_band_window "$before" "$after" 2 || true)"
+    if [ "$capture" != "$expected_capture" ]; then
+        echo "capture '${capture}' != expected '${expected_capture}'"
+        return 1
+    fi
+    read -r usage_fraction window_us <<< "$capture"
+    _row2_band_inconclusive 57 50 "$usage_fraction" 0 "$stall_after" "$window_us" || rc=$?
+    if [ "$rc" -ne "$expected_rc" ]; then
+        echo "band decision rc ${rc} != expected ${expected_rc}"
+        return 1
+    fi
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2-1-BAND-WINDOW-VACUITY-6..8: python3 not on PATH"
+else
+    assert "ROW2-1-BAND-WINDOW-VACUITY-6: USAGE CRUX -- measured usage 0.70 is starved (< floor 0.85) and stall 0->6000000 over the 10 s window is contended (0.6) => '0.700000 10000000' and inconclusive (rc 0); a nominal 8 s budget reads 0.875, saturating, and would leave the hard assert reachable" \
+        _row2_band_window_verdict_is "0.700000 10000000" 0 "0 0" "14000000 10000000" 6000000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-7: STALL-WINDOW CRUX -- stall 0->4500000 over the MEASURED 10 s window is 0.45, not contended => '0.700000 10000000' and NOT inconclusive (rc 1, the hard assert stays reachable); a nominal 8 s window would read 0.5625 and SKIP" \
+        _row2_band_window_verdict_is "0.700000 10000000" 1 "0 0" "14000000 10000000" 4500000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-8: END-TO-END FAIL-SAFE -- an unavailable sample (avg10=57 in-band, stall 0->6000000) => 'unavailable unavailable' and NOT inconclusive (rc 1, never masks a genuine regression)" \
+        _row2_band_window_verdict_is "unavailable unavailable" 1 unavailable "14000000 10000000" 6000000
+fi
+
 # Non-vacuity guard for the NEW ROW3-1 baseline-sample normalizer (task 5999,
 # #5999 false-RED): the live T_base capture used to collapse a timed-out or
 # errored probe to a literal "1" (`|| echo "1"` plus a
