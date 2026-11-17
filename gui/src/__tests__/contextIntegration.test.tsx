@@ -190,6 +190,8 @@ beforeEach(() => {
   localStorage.clear();
   // Reset bridge mock implementations
   vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
+  vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
+  vi.mocked(bridge.getDefPreview).mockResolvedValue(makeGuiState());
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -211,8 +213,6 @@ beforeEach(() => {
   vi.mocked(bridge.listRecent).mockResolvedValue([]);
   vi.mocked(bridge.recordRecent).mockResolvedValue([]);
   vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue(null);
-  vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
-  vi.mocked(bridge.getDefPreview).mockResolvedValue(makeGuiState());
 });
 
 afterEach(() => {
