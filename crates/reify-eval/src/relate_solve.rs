@@ -2074,6 +2074,7 @@ structure Mech2 {
         /// Compile a structure with `sub link : Hub` and one joint of the given
         /// `ctor_call`, then assert `mounted_joint_cell("Mech", "link")` returns
         /// `Some(ValueCellId::new("Mech", "j"))`.
+        #[track_caller]
         fn check_kind(ctor_call: &str, kind_label: &str) {
             // Use a fresh structure name per kind to avoid name collisions when
             // all fixtures are compiled in the same module.
