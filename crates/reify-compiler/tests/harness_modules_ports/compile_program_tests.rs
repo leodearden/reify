@@ -1014,11 +1014,9 @@ fn followed_imports_lists_exactly_what_compile_program_follows() {
         import_keys(&compile_entry(dir.path(), "main", main_src, &linux)),
         "followed_imports must report the follow set compile_program compiles"
     );
-    assert!(reify_compiler::program::entry_follows_imports(&parsed, &linux));
-    assert_eq!(
-        reify_compiler::program::entry_follows_imports(&parsed, &linux),
-        !followed.is_empty()
-    );
+    let follows = reify_compiler::program::entry_follows_imports(&parsed, &linux);
+    assert!(follows);
+    assert_eq!(follows, !followed.is_empty());
 }
 
 fn declared_names(program: &CompiledProgram) -> Vec<&str> {
