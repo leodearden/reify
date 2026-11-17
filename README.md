@@ -120,7 +120,7 @@ scripts/                setup-dev.sh, run-gui.sh, run-gui-dev.sh
 
 ## For contributors (build from source)
 
-Building from source is for working on Reify itself, not for trying it. It is Ubuntu 24.04 only too, and needs `sudo` (apt installs during setup), ~10 GB of disk for the build cache, and Node.js 20+ with npm on your `PATH` (see [System requirements](#system-requirements)).
+Building from source is for working on Reify itself, not for trying it. It is Ubuntu 24.04 only too, and needs `sudo` (apt installs during setup), ~10 GB of disk for the build cache, and Node.js with npm on your `PATH` (see [System requirements](#system-requirements)).
 
 ```sh
 git clone https://github.com/leodearden/reify.git
