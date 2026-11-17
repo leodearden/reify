@@ -754,15 +754,15 @@ fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, 
     assert!(
         matches!(edited_selector, Value::Selector(_)),
         "{instance}.s must be a minted Selector after the edit: Undef means the \
-         resize minted `s` before the slot's `body` was committed, got \
+         edit path minted `s` before the instance's `body` was committed, got \
          {edited_selector:?}"
     );
     assert_eq!(
         edited_selector,
         cell(cold, instance, "s"),
         "{instance}.s after the edit must equal a cold eval's: an unequal \
-         selector means the resize minted `s` before the slot's `body` was \
-         committed"
+         selector means the edit path minted `s` before the instance's `body` \
+         was committed"
     );
 }
 
