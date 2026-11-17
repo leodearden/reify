@@ -254,6 +254,22 @@ class _TrustVerdict(IntEnum):
     NOT_BUILT = 2
 
 
+_BASH_STARTUP_ENV = frozenset({"BASH_ENV", "SHELLOPTS", "BASHOPTS"})
+_BASH_EXPORTED_FUNCTION_PREFIX = "BASH_FUNC_"
+
+
+def _trust_home_environ(environ: Mapping[str, str]) -> Dict[str, str]:
+    """`environ` minus the caller state bash takes in before a script's first line.
+
+    That is a BASH_ENV it sources, the options SHELLOPTS and BASHOPTS turn on,
+    and BASH_FUNC_<name>%% functions that shadow commands; none of it may
+    decide the trust answer.
+    """
+    return {name: value for name, value in environ.items()
+            if name not in _BASH_STARTUP_ENV
+            and not name.startswith(_BASH_EXPORTED_FUNCTION_PREFIX)}
+
+
 def _resolve_reify_bin(
     repo_root: str, environ: Mapping[str, str]
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -266,8 +282,7 @@ def _resolve_reify_bin(
     PATH carries no provenance.  A home that cannot be consulted refuses too:
     an unprovable trust answer is never "trusted", and neither is a TRUSTED
     answer that is not one absolute-path line.
-    BASH_ENV is withheld from the home: bash would run it first, and anything
-    it prints would join the answer.
+    The caller's bash startup state is withheld from the home (_trust_home_environ).
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
@@ -278,7 +293,7 @@ def _resolve_reify_bin(
             ["bash", _TRUST_HOME, "resolve", repo_root],
             capture_output=True,
             text=True,
-            env={k: v for k, v in environ.items() if k != "BASH_ENV"},
+            env=_trust_home_environ(environ),
             check=False,
         )
     except OSError as exc:

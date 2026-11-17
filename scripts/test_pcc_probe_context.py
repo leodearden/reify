@@ -259,6 +259,40 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx(BASH_ENV=bash_env)
         self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
 
+    def test_a_caller_shellopts_does_not_reach_the_trust_home(self):
+        """bash turns on every option SHELLOPTS names before the home runs."""
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        for shellopts in ("keyword", "noexec"):
+            with self.subTest(SHELLOPTS=shellopts):
+                ctx = self._ctx(SHELLOPTS=shellopts)
+                self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+
+    def test_a_refusal_under_a_caller_errexit_still_names_its_reason(self):
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        ctx = self._ctx(SHELLOPTS="errexit")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_a_caller_exported_function_cannot_vouch_for_a_stale_binary(self):
+        """An exported BASH_FUNC_git%% shadows git inside the home, so it could forge HEAD."""
+        self._both_binaries(newer="debug")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        poison = {"BASH_FUNC_git%%": "() { echo %s; }" % stale}
+        shadowed_head = subprocess.run(
+            ["bash", "-c", 'git -C "$1" rev-parse HEAD', "_", self.root],
+            env=trust_environ(**poison), capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(shadowed_head, stale)
+        ctx = self._ctx(**poison)
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
         write_profile_binary(self.root, "target/release/reify")
