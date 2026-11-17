@@ -1259,10 +1259,8 @@ impl CompiledExpr {
     /// cell-iteration trigger fires only on placeholder-derived lists.
     pub fn reflective_cell_list(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
         // Invariant (task-2552, follow-up to task-2544): every element must be a
-        // `ValueRef`. The split no-op arm for `ReflectiveCellList` in
-        // `expand_purpose_reflective_placeholders` (reify-eval) elides recursion on
-        // the basis of this invariant — a non-ValueRef element here would silently
-        // skip placeholder expansion in release builds.
+        // `ValueRef` — `eval_quantifier`'s cell-iteration mode (reify-expr) reads
+        // each element's cell and treats any other shape as unreachable.
         debug_assert!(
             elements
                 .iter()
