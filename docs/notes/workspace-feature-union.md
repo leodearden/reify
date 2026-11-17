@@ -511,6 +511,110 @@ leave in arms A and B. The `after` clippy row cannot be read that way: it ran
 against gen.618 before the union reached the base, when every member rehashes,
 so its 30 units are not separable into a `CLIPPY_ARGS` part and a rehash part.
 
+### Tree-sitter re-probe after #9896 (#10046)
+
+Lane `_lane-10`, 2026-11-17 14:27 to 14:45 UTC. Its `target/` carried base
+`target.gen.643`'s mtime to the nanosecond (`12:56:44.495479464`, built under
+`_merge-verify`, basecommit `cb24012c60`), and no file under it was newer than
+the `.basecommit` stamp. gen.643 is the first gen whose basecommit contains
+#9896's merge `d176b5ddfd`. Every run used the verify env, as in Probe
+procedure, and every capture carries
+`CARGO_LOG=cargo::core::compiler::fingerprint=info`, so the log names each
+non-Fresh unit with its reason, and a unit it does not name was Fresh. Each
+pair is one `cargo test -p reify-eval --no-run` run twice with nothing changed
+between the runs. Before #9896 the second run compiled 8 units, tree-sitter-reify
+and the dependents it reaches (Tree-sitter share, "A, 2nd run").
+
+Probe (1) is a fresh lane at zero delta. HEAD `202e206e6f`, main's tip, differs
+from the basecommit in 13 files, among them `crates/reify-eval/src/modal_ops.rs`.
+So probe (1) ran at the basecommit, as in Probing at the base commit, with the
+directory stamp and without the tree-sitter reset line or arm B, which the
+procedure keeps for older gens. The block's file check failed at first. Besides
+`.mcp.json` it listed 64 tracked files that the dispatch's `git rebase main`
+had rewritten at 14:14, after the seed, moving the branch from `48f6c7710b` to
+`202e206e6f`. Their content equalled the basecommit's, and the block re-stamps
+only the basecommit-to-HEAD delta, so they were re-stamped to 2020-01-01 too.
+The lane then matched the seed's model, files and directories. A reflink
+snapshot of `target/` (69,437 non-directory entries) matched the seed's listing
+and was never restored: HEAD did not move during either pair.
+
+Probe (2) replays the reset the merge worker gives `_merge-verify` before each
+verify (dark-factory `GitOps.reset_persistent_merge_worktree`):
+`git reset --hard 202e206e6f`, then `git clean -xfd -e target`, with `-e .task`
+added to keep the task's plan. It ran in `_lane-10` after probe (1), on the
+`target/` that probe (1) built in place, with no re-stamp. The reset rewrote the
+delta's files and left 8 directories newer than the seed's stamp, and the clean
+removed `scripts/__pycache__/`. This is not a run in `_merge-verify`. A task
+agent is sandboxed to its own lane, and refresh-warm-base copies
+`_merge-verify`'s `target/` into the next base gen. What still differs is
+`target/`: `_merge-verify`'s also holds the `--workspace` variants its verify
+builds. The delta changes one reify-eval source, `modal_ops.rs`, plus test,
+script and docs files that `-p reify-eval` does not build.
+
+| Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
+|---|---|---|---|---|---|
+| (1) run 1: `test -p reify-eval --no-run`, fresh lane, zero delta | `cb24012c60` | gen.643 | **0** + 15 | 6:56.36 | 118/181/161 → 212/211/182 |
+| (1) run 2: same command, nothing changed | `cb24012c60` | gen.643 | **0** + **0** | 0:14.27 | 182/204/180 → 160/198/178 |
+| (2) run 1: same command after the replayed reset | `202e206e6f` | gen.643 | **0** + 4 | 4:42.84 | 122/177/173 → 214/186/176 |
+| (2) run 2: same command, nothing changed | `202e206e6f` | gen.643 | **0** + **0** | 0:06.91 | 205/185/176 → 190/182/175 |
+
+All four runs exited 0. Both second runs compiled no unit, and their
+fingerprint logs are empty. The walls are indicative only: the host load was
+over 100 throughout.
+
+Probe (1) run 1 compiled 15 workspace units: reify-compiler,
+reify-compute-contract, reify-constraints, reify-doc-build, reify-eval,
+reify-expr, reify-git-env, reify-kernel-gmsh, reify-kernel-occt,
+reify-kernel-openvdb, reify-mesh-morph, reify-runtime, reify-solver-elastic,
+reify-stdlib and reify-test-support. Its log names 256 non-Fresh units, and
+every one is `failed to read .../.fingerprint/...`, a unit hash the base never
+had:
+
+- the lib of each of the 15;
+- the build-script compile and run of reify-kernel-gmsh and of
+  reify-kernel-openvdb;
+- reify-eval's lib unit test and its 236 `tests/*.rs` targets.
+
+None is dirty, so no unit was rebuilt for a changed input. This measurement does
+not attribute them among the other contributors. The log never names
+tree-sitter-reify or reify-syntax, so all their units were Fresh, and that
+includes tree-sitter-reify's build-script run. The seed reflinked the run dirs
+and relocated their paths to `_lane-10`, and the `OUT_DIR` state they hold
+stayed valid there. After both pairs, no file under any
+`target/*/build/tree-sitter-reify-*` dir was newer than the gen's `.basecommit`
+stamp, so the script was never re-invoked, and `tree-sitter-reify/src` still
+held only its tracked files.
+
+Probe (2) run 1 compiled 4 workspace units: reify-eval, reify-test-support,
+reify-mesh-morph and reify-runtime. The delta explains all four. Of the 241
+non-Fresh units in its log, reify-eval's lib is `StaleItem(ChangedFile)`, stale
+`crates/reify-eval/src/modal_ops.rs` against its `dep-lib-reify_eval`. The other
+240 are `StaleDepFingerprint` on that lib: reify-eval's lib unit test and 236
+`tests/*.rs` targets, and the libs of reify-test-support, reify-mesh-morph and
+reify-runtime. The log names no build-script unit. It does not name
+tree-sitter-reify, reify-syntax or reify-compiler either, and nothing upstream of
+reify-eval changed.
+
+The real `_merge-verify` was read, not written, at 14:44:33 UTC. Its HEAD was
+still `cb24012c60`. Its last verify attempt (`target/reify-verify-attempt.json`)
+was stamped 12:27:51Z and carried `cb24012c60`'s tree, the verify that gen.643
+was built from. No merge verify had run there since gen.643, so there is no
+real-context evidence after it yet. The next one can supply it through the
+`invoked.timestamp` of the `tree-sitter-reify-*` run dirs that hold an `out/`.
+
+Those run dirs also show the script re-invoked before gen.643 without
+regenerating. The three that hold a generation stamp carry `invoked.timestamp`
+values of 2026-11-17 06:30:31 (release), 11:40:25 and 12:09:26 (debug). Their
+`generation_key.stamp` files are from 2026-11-16, 17:11 to 17:16. The key stamp
+is rewritten after every generation, so none of these runs saw a `grammar.js`
+or CLI other than the 2026-11-16 one. No commit on main between #9896 and
+`cb24012c60` touches `tree-sitter-reify/`. These artefacts do not say which
+candidate each verify ran or why the script reran, so the re-invocations are not
+attributed. Several things rerun it without regenerating: a watched input
+rewritten with unchanged bytes, a changed `src/scanner.c` or
+`build_support.rs`, a `rerun-if-env-changed` variable, or a rebuilt build-script
+compile unit.
+
 ### Cold build
 
 Every row above is a warm-lane build. The cold cost is
@@ -1049,10 +1153,13 @@ kernels' accepted member-feature splits (Member features) still make a plain
   `git clean -Xfd -- tree-sitter-reify/src`, which left only `lib.rs` and
   `scanner.c`. Two further identical runs compiled 0 units (1.44 s and 0.78 s)
   and restored no file under `src/`. After `scripts/tree-sitter-generate.sh`
-  rewrote `src/`, a fourth also compiled 0 units (2.19 s). This is an in-lane
-  approximation: `target/` was the lane's own, not a fresh reflink of a base
-  gen built after #9896. A re-probe in a freshly acquired lane and after
-  `_merge-verify`'s reset is filed as a follow-up of #9896.
+  rewrote `src/`, a fourth also compiled 0 units (2.19 s). Re-probed by #10046
+  in a lane freshly seeded from gen.643, the first base gen built after #9896,
+  and again after a replay of `_merge-verify`'s reset in that lane: in both
+  pairs the second identical run compiled 0 units, and tree-sitter-reify's
+  build-script run stayed Fresh in each first run. No verify had run in the
+  real `_merge-verify` since gen.643 to corroborate it there. Details: Tree-sitter
+  re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.
