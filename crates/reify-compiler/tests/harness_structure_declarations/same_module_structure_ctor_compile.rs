@@ -49,7 +49,7 @@ fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
-// ─── step-1: zero errors ──────────────────────────────────────────────────────
+// ─── zero errors ──────────────────────────────────────────────────────────────
 
 /// The module must compile with zero `Severity::Error` diagnostics: `Widget()` in
 /// a same-module fn body resolves against `Widget`'s authoritative template, which
@@ -70,7 +70,7 @@ fn same_module_widget_zero_errors() {
     );
 }
 
-// ─── step-2: make_widget body is StructureInstanceCtor ────────────────────────
+// ─── make_widget body is StructureInstanceCtor ────────────────────────────────
 
 /// `make_widget()`'s result_expr must lower to
 /// `CompiledExprKind::StructureInstanceCtor` with `type_name == "Widget"` — not a
@@ -106,7 +106,7 @@ fn make_widget_body_is_structure_instance_ctor() {
     }
 }
 
-// ─── step-3: eval make_widget() → Value::StructureInstance with defaults ──────
+// ─── eval make_widget() → Value::StructureInstance with defaults ──────────────
 
 /// Evaluating `make_widget()` must yield `Value::StructureInstance` with
 /// `type_name == "Widget"`, `width == Value::Real(3.5)`, `tag == Value::Bool(true)`.
@@ -178,7 +178,7 @@ fn eval_make_widget_returns_struct_with_defaults() {
     );
 }
 
-// ─── step-4: eval make_widget_partial() → covered positional arg + default ───
+// ─── eval make_widget_partial() → covered positional arg + default ────────────
 
 /// `make_widget_partial()` passes `5.5` as the first positional arg (`width`).
 /// Eval must yield `width == Value::Real(5.5)` (covered) and
@@ -229,18 +229,13 @@ fn eval_make_widget_partial_covers_first_param() {
     );
 }
 
-// ─── step-5: sibling-param default survives the fn-returned ctor ──────────────
+// ─── sibling-param default survives the fn-returned ctor ──────────────────────
 
 /// A structure-def param whose default expression references a SIBLING param
 /// must keep that default's real value when the structure is built through a
-/// fn-returned ctor.
-///
-/// Two halves are pinned:
-///
-///   * compile — the fn body lowers `x + 1.0` to a real
-///     `ValueRef(ValueCellId{Point, x})`;
-///   * eval — defaults are resolved against a child scope keyed by
-///     `ValueCellId::new(type_name, member)`.
+/// fn-returned ctor: `App.py == 2.0` requires both the compile-side sibling
+/// reference and the eval-side default scoping (see `eval_structure_instance_ctor`
+/// in reify-expr).
 #[test]
 fn sibling_param_default_in_fn_returned_ctor_evaluates_correctly() {
     let src = r#"
@@ -706,7 +701,7 @@ structure App {
     );
 }
 
-// ─── step-8: a fn body constructing a LATER-declared structure fails LOUDLY ───
+// ─── a fn body constructing a LATER-declared structure fails LOUDLY ───────────
 
 /// Constructing a same-module `structure def` declared BELOW the function is an
 /// ordering ERROR that names the structure and the remedy.
@@ -783,13 +778,13 @@ fn diag_lines(module: &reify_compiler::CompiledModule) -> Vec<String> {
         .collect()
 }
 
-/// Boundary #5 for MEMBER ACCESS: a fn body reading a member of a param typed as
-/// a same-module structure declared BELOW the fn has no template to check the
-/// member against. Without an ordering diagnostic the access takes the
-/// permissive registry-miss fallback, and a `priv` port or guarded member is
-/// silently NOT priv-gated (#5222's gate reopens for this ordering). The rule is
-/// the ctor rule: a fn may use a same-module structure's template only if the
-/// `structure def` is declared above it.
+/// Member-access counterpart of the declared-above rule: a fn may use a
+/// same-module structure's template only if the `structure def` is declared above
+/// it. A fn body reading a member of a param typed as a same-module structure
+/// declared BELOW the fn has no template to check the member against. Without an
+/// ordering diagnostic the access takes the permissive registry-miss fallback,
+/// and a `priv` port or guarded member is silently NOT priv-gated (#5222's gate
+/// reopens for this ordering).
 #[test]
 fn fn_body_member_access_on_later_declared_structure_reports_ordering_error() {
     for (host, src) in [
