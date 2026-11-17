@@ -10,6 +10,7 @@
 
 /// The payload's message, if it is a `&str` or `String`; the borrowing
 /// primitive that [`panic_payload_to_string`] formats.
+// G-allow: borrowing primitive under panic_payload_to_string; strict test sites consume it directly
 pub fn panic_payload_str(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
     payload
         .downcast_ref::<&str>()
