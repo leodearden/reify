@@ -2831,25 +2831,34 @@ _row23_window_advanced() {
 if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW23-WINDOW-VACUITY: python3 not on PATH"
 else
-    # (W1) READINESS-ANCHORED CRUX: usage reads 0 until just BEFORE the source
-    # reports ready (cpu.stat is rewritten, and only then does the ready file
-    # appear).  BEFORE must hold the later value; a sampler that reads first, or
-    # anchors on the launch, sees 0.
+    # (W1) READINESS-ANCHORED CRUX: usage reads 0 until the sampler has found no
+    # ready file and begins to wait; only then is cpu.stat rewritten and the
+    # ready file published, in that order.  BEFORE must hold the later value; a
+    # sampler that reads first, or anchors on the launch, sees 0.  The
+    # publication is driven by the first poll `sleep` the sampler makes (a stub
+    # on PATH), not by a timer, so a slow host cannot let a premature read land
+    # after the publication and pass for an anchored one.
     _row23_win1_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
     _row23_window_fixture "$_row23_win1_dir" 0
-    (
-        sleep 0.5
-        printf 'usage_usec 7000000\n' > "$_row23_win1_dir/cpu.stat.tmp"
-        mv -f "$_row23_win1_dir/cpu.stat.tmp" "$_row23_win1_dir/cpu.stat"
-        printf '4242\n' > "$_row23_win1_dir/ready.tmp"
-        mv -f "$_row23_win1_dir/ready.tmp" "$_row23_win1_dir/ready"
-    ) &
-    _row23_win1_writer=$!
+    mkdir "$_row23_win1_dir/fakebin"
+    cat > "$_row23_win1_dir/fakebin/sleep" << 'PUBLISH_ON_FIRST_SLEEP_EOF'
+#!/bin/sh
+if [ ! -e "$WIN_DIR/published" ]; then
+    : > "$WIN_DIR/published"
+    printf 'usage_usec 7000000\n' > "$WIN_DIR/cpu.stat.tmp"
+    mv -f "$WIN_DIR/cpu.stat.tmp" "$WIN_DIR/cpu.stat"
+    printf '4242\n' > "$WIN_DIR/ready.tmp"
+    mv -f "$WIN_DIR/ready.tmp" "$WIN_DIR/ready"
+fi
+exec "$REAL_SLEEP" "$@"
+PUBLISH_ON_FIRST_SLEEP_EOF
+    chmod +x "$_row23_win1_dir/fakebin/sleep"
+    _row23_win1_real_sleep="$(command -v sleep)"
     _row23_window_poison
     _row23_win1_rc=0
-    _row23_sample_window 30 0 "$_row23_win1_dir/cpu.stat" "$_row23_win1_dir/cpu.pressure" \
+    WIN_DIR="$_row23_win1_dir" REAL_SLEEP="$_row23_win1_real_sleep" PATH="$_row23_win1_dir/fakebin:$PATH" \
+        _row23_sample_window 30 0 "$_row23_win1_dir/cpu.stat" "$_row23_win1_dir/cpu.pressure" \
         "$_row23_win1_dir/ready" || _row23_win1_rc=$?
-    wait "$_row23_win1_writer" 2>/dev/null || true
 
     assert "ROW23-WINDOW-VACUITY-W1a: rc EXACTLY 0 (got ${_row23_win1_rc})" \
         test "$_row23_win1_rc" -eq 0
