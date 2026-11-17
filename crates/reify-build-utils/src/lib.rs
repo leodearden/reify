@@ -354,14 +354,12 @@ pub fn emit_tbb_pin_for_bins() -> bool {
 /// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
 /// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
 /// pin `-rpath` and the forced `--no-as-needed -l:libtbb.so.12 --as-needed`
-/// link-arg twice (once bin-scoped, once unscoped) — this is intentional,
-/// the same bin double-emission [`emit_rpath_for_tests`] documents for
-/// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
-/// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
-/// load time (both bind the same pin-dir copy) and is harmless to the
-/// loader, just slightly redundant in the ELF. Link args reach the linker in
-/// emission order, so such a package emits this after its bin-scoped
-/// directives, as [`emit_rpath_for_tests`] explains.
+/// link-arg twice (once bin-scoped, once unscoped). Both duplicates are
+/// harmless wherever they land: the pin dir holds only `libtbb.so.12`, so a
+/// second pin `-rpath` changes no other soname's resolution, and a duplicate
+/// direct `NEEDED libtbb.so.12` binds the same pin-dir copy. Where unscoped
+/// link args belong relative to bin-scoped ones is [`emit_rpath_for_tests`]'s
+/// ordering rule.
 pub fn emit_tbb_pin_for_tests() -> bool {
     emit_tbb_pin("cargo:rustc-link-arg")
 }

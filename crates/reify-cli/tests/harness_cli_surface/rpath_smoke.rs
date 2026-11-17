@@ -302,15 +302,12 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
-    let needed_tk: Vec<&str> =
-        stdout.lines().filter(|l| l.contains("(NEEDED)") && l.contains("libTK")).collect();
-    if needed_tk.is_empty() {
+    if needed_starting_with(&stdout, "libTK").is_none() {
         eprintln!("no NEEDED libTK* entries in {exe}; OCCT likely stubbed — skipping");
         return;
     }
 
-    let has_direct_tbb_needed =
-        stdout.lines().any(|l| l.contains("(NEEDED)") && l.contains("[libtbb.so.12]"));
+    let has_direct_tbb_needed = needed_sonames(&stdout).any(|soname| soname == "libtbb.so.12");
     assert!(
         has_direct_tbb_needed,
         "readelf -d {exe} has no direct NEEDED libtbb.so.12 entry — \
@@ -318,15 +315,8 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
          may be missing or not taking effect.\n\nFull readelf -d output:\n{stdout}"
     );
 
-    let runpath_line = stdout
-        .lines()
-        .find(|l| l.contains("(RUNPATH)") || l.contains("(RPATH)"))
-        .unwrap_or_else(|| panic!("no RUNPATH/RPATH entry in readelf -d {exe}:\n{stdout}"));
-    let dirs: Vec<&str> = runpath_line
-        .split('[')
-        .nth(1)
-        .and_then(|s| s.split(']').next())
-        .unwrap_or_else(|| panic!("could not parse RUNPATH/RPATH entry: {runpath_line}"))
+    let dirs: Vec<&str> = runpath_entry(&stdout)
+        .unwrap_or_else(|| panic!("no RUNPATH/RPATH entry in readelf -d {exe}:\n{stdout}"))
         .split(':')
         .collect();
     assert_eq!(
@@ -431,13 +421,17 @@ fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
     );
 }
 
-/// The first `(NEEDED)` soname in `readelf -d` output starting with `prefix`.
-fn needed_starting_with<'a>(readelf: &'a str, prefix: &str) -> Option<&'a str> {
+/// The `(NEEDED)` sonames in `readelf -d` output, in order.
+fn needed_sonames(readelf: &str) -> impl Iterator<Item = &str> + '_ {
     readelf
         .lines()
         .filter(|line| line.contains("(NEEDED)"))
         .filter_map(bracketed)
-        .find(|soname| soname.starts_with(prefix))
+}
+
+/// The first `(NEEDED)` soname in `readelf -d` output starting with `prefix`.
+fn needed_starting_with<'a>(readelf: &'a str, prefix: &str) -> Option<&'a str> {
+    needed_sonames(readelf).find(|soname| soname.starts_with(prefix))
 }
 
 /// The colon-separated dir list of the `(RUNPATH)` or `(RPATH)` entry.
