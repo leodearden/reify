@@ -110,30 +110,14 @@ _ATTRIBUTION_CLI="$REPO_ROOT/scripts/reify_path_attribution.py"
 
 echo "=== affected-crates-lib drift tests ==="
 
-# ---------------------------------------------------------------------------
-# Preflight (review follow-up, task 6292): warm-registry-cache dependency.
-#
-# Every real-cargo closure assertion below (#4-#14) needs `cargo metadata
-# --format-version 1 --locked --offline` — the exact invocation
-# _reverse_closure makes — to SUCCEED. On a genuinely cold ~/.cargo (fresh
-# container, new host, a setup-dev.sh that never ran) it cannot, so
-# affected_crates fails wide to ALL and all ~10 of those assertions fail
-# pointing at the closure logic rather than at the missing cache. Assertion
-# #15 is the only one that EXPECTS ALL; it passes in that environment.
-#
-# Advisory, never fatal: this changes no pass/fail semantics, it only makes a
-# cold-cache environment emit one legible CAUSE line instead of ten
-# misleading SYMPTOMS. Re-emitted just before test_summary so the explanation
-# lands next to the FAIL tally rather than scrolled off the top. Costs one
-# extra `cargo metadata` (~2s warm) on top of a suite that already makes a
-# dozen.
-# ---------------------------------------------------------------------------
-_COLD_REGISTRY_PREFLIGHT=""
-if ! ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline ) >/dev/null 2>&1; then
-    _COLD_REGISTRY_PREFLIGHT="COLD REGISTRY CACHE: \`cargo metadata --locked --offline\` fails in $REPO_ROOT, so every real-cargo closure assertion below fails wide to ALL. This is an environment problem, not a closure-logic bug — warm it with \`cargo fetch --locked\` (or run scripts/setup-dev.sh) and re-run."
-    echo ""
-    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
-fi
+# The workspace's locked registry inputs, for every target: _reverse_closure's
+# and _workspace_member_dirs' unfiltered `cargo metadata --offline` needs them all.
+_acl_fetch_cargo_inputs() { cargo_inputs_fetch --manifest-path "$REPO_ROOT/Cargo.toml"; }
+
+echo ""
+echo "--- Cargo inputs ---"
+assert_infra_input "cargo fetch --locked obtains the workspace's locked registry inputs (all targets)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _acl_fetch_cargo_inputs
 
 # ---------------------------------------------------------------------------
 # Step 1: C4 global-force — Cargo.lock forces ALL
@@ -493,7 +477,7 @@ echo "--- RI-CORPUS-DRIFT: every workspace member whose Rust sources read the ex
 # meaning "every member" the moment one is added outside `crates/`, which is how
 # this derivation first missed gui/src-tauri (reify-gui `include_str!`s a corpus
 # leaf at compile time) and then tree-sitter-reify. Empty output means
-# `cargo metadata` failed — see the cold-registry preflight above.
+# `cargo metadata` failed.
 _workspace_member_dirs() {
     local meta
     meta="$( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline 2>/dev/null )" || return 0
@@ -1667,14 +1651,5 @@ _check_cargo_invoked_with_offline() {
     esac
 }
 assert "_reverse_closure invokes cargo metadata with --offline" _check_cargo_invoked_with_offline
-
-# Re-emit the cold-cache cause line adjacent to the FAIL tally (see the
-# preflight near the top of this file for why). Deliberately an `if` and not
-# `[ -n "$x" ] && echo ...`: at top level under `set -e` the latter exits the
-# script with status 1 on the healthy path, where the test is false.
-if [ -n "$_COLD_REGISTRY_PREFLIGHT" ]; then
-    echo ""
-    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
-fi
 
 test_summary
