@@ -29,6 +29,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+[ -f "$SCRIPT_DIR/gui_test_fixture_lib.sh" ] || { echo "ERROR: gui_test_fixture_lib.sh not found at $SCRIPT_DIR/gui_test_fixture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/gui_test_fixture_lib.sh"
 
 VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
 VITEST_CONFIG="$REPO_ROOT/gui/vitest.config.ts"
