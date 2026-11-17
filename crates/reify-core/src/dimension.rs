@@ -529,18 +529,18 @@ impl DimensionVector {
         Some(DimensionVector(result))
     }
 
-    /// Take the nth root (divide all exponents by n).
-    ///
-    /// E.g., `AREA.root(2)` produces LENGTH (halves exponent from 2 to 1).
-    /// Fractional exponents are representable via `Rational`.
+    /// Take the nth root (divide all exponents by n). Panics when an exponent
+    /// overflows; see [`checked_root`](Self::checked_root).
     pub fn root(&self, n: i8) -> DimensionVector {
+        self.checked_root(n)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: ({self}) root {n}"))
+    }
+
+    /// Take the nth root, the power `1/n`, or `None` when an exponent
+    /// overflows `Rational`: `AREA.checked_root(2)` is `Some(LENGTH)`.
+    pub fn checked_root(&self, n: i8) -> Option<DimensionVector> {
         assert!(n != 0, "root degree must not be zero");
-        let n = n as i16;
-        let mut result = [Rational::ZERO; 10];
-        for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num(), self.0[i].den() * n);
-        }
-        DimensionVector(result)
+        self.checked_pow_rational(Rational::new(1, i16::from(n)))
     }
 
     /// Raise to an integer power (multiply all exponents). Panics when an
