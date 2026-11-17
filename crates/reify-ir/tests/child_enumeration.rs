@@ -5,11 +5,13 @@
 //! Every corpus exemplar's direct children are `ValueRef` leaves labelled by
 //! their cell member (`c0`, `c1`, …), and the expected child sequence is
 //! written by hand, so the accessors are pinned by something other than
-//! themselves. The variant-coverage guard makes a new variant fail to compile
-//! here until it is named, and fail `corpus_has_an_exemplar_for_every_variant`
-//! until it gains an exemplar.
+//! themselves. The expected variant set is `CompiledExprKindDiscriminants::iter()`,
+//! which strum derives from `CompiledExprKind`, so a new variant fails
+//! `corpus_has_an_exemplar_for_every_variant` until the corpus gains an
+//! exemplar for it, and that exemplar pins both `for_each_child` and
+//! `for_each_child_mut`.
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 use reify_ast::QuantifierKind;
@@ -18,6 +20,8 @@ use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern,
     DeterminacyPredicateKind, ResolvedFunction, SelectorKind, StructureTypeId, UnOp, Value,
 };
+use reify_ir::expr::CompiledExprKindDiscriminants;
+use strum::IntoEnumIterator;
 
 const STRUCT_TYPE: &str = "S";
 
@@ -126,8 +130,8 @@ fn lets_of(expr: &CompiledExpr) -> &[(String, CompiledExpr)] {
     match &expr.kind {
         CompiledExprKind::StructureInstanceCtor { lets, .. } => lets,
         other => panic!(
-            "expected a StructureInstanceCtor, got {}",
-            variant_name(other)
+            "expected a StructureInstanceCtor, got {:?}",
+            variant_of(other)
         ),
     }
 }
@@ -136,80 +140,22 @@ fn let_cell(expr: &CompiledExpr) -> &ValueCellId {
     match &lets_of(expr)[0].1.kind {
         CompiledExprKind::ValueRef(id) => id,
         other => panic!(
-            "expected the let to be a ValueRef, got {}",
-            variant_name(other)
+            "expected the let to be a ValueRef, got {:?}",
+            variant_of(other)
         ),
     }
 }
 
-fn variant_name(kind: &CompiledExprKind) -> &'static str {
-    match kind {
-        CompiledExprKind::Literal(_) => "Literal",
-        CompiledExprKind::ValueRef(_) => "ValueRef",
-        CompiledExprKind::BinOp { .. } => "BinOp",
-        CompiledExprKind::UnOp { .. } => "UnOp",
-        CompiledExprKind::FunctionCall { .. } => "FunctionCall",
-        CompiledExprKind::Conditional { .. } => "Conditional",
-        CompiledExprKind::Match { .. } => "Match",
-        CompiledExprKind::UserFunctionCall { .. } => "UserFunctionCall",
-        CompiledExprKind::Lambda { .. } => "Lambda",
-        CompiledExprKind::ListLiteral(_) => "ListLiteral",
-        CompiledExprKind::SetLiteral(_) => "SetLiteral",
-        CompiledExprKind::MapLiteral(_) => "MapLiteral",
-        CompiledExprKind::IndexAccess { .. } => "IndexAccess",
-        CompiledExprKind::MethodCall { .. } => "MethodCall",
-        CompiledExprKind::Quantifier { .. } => "Quantifier",
-        CompiledExprKind::OptionSome(_) => "OptionSome",
-        CompiledExprKind::OptionNone => "OptionNone",
-        CompiledExprKind::MetaAccess { .. } => "MetaAccess",
-        CompiledExprKind::DeterminacyPredicate { .. } => "DeterminacyPredicate",
-        CompiledExprKind::RangeConstructor { .. } => "RangeConstructor",
-        CompiledExprKind::AdHocSelector { .. } => "AdHocSelector",
-        CompiledExprKind::PurposeReflectiveAggregation { .. } => "PurposeReflectiveAggregation",
-        CompiledExprKind::ReflectiveCellList(_) => "ReflectiveCellList",
-        CompiledExprKind::CrossSubGeometryRef(_) => "CrossSubGeometryRef",
-        CompiledExprKind::StructureInstanceCtor { .. } => "StructureInstanceCtor",
-        CompiledExprKind::VariantCtor { .. } => "VariantCtor",
-        CompiledExprKind::ResolveSelector { .. } => "ResolveSelector",
-    }
+fn variant_of(kind: &CompiledExprKind) -> CompiledExprKindDiscriminants {
+    CompiledExprKindDiscriminants::from(kind)
 }
-
-const EVERY_VARIANT: [&str; 27] = [
-    "Literal",
-    "ValueRef",
-    "BinOp",
-    "UnOp",
-    "FunctionCall",
-    "Conditional",
-    "Match",
-    "UserFunctionCall",
-    "Lambda",
-    "ListLiteral",
-    "SetLiteral",
-    "MapLiteral",
-    "IndexAccess",
-    "MethodCall",
-    "Quantifier",
-    "OptionSome",
-    "OptionNone",
-    "MetaAccess",
-    "DeterminacyPredicate",
-    "RangeConstructor",
-    "AdHocSelector",
-    "PurposeReflectiveAggregation",
-    "ReflectiveCellList",
-    "CrossSubGeometryRef",
-    "StructureInstanceCtor",
-    "VariantCtor",
-    "ResolveSelector",
-];
 
 /// A `ValueRef` child is labelled by its cell member; any other node by its
 /// variant name in angle brackets.
 fn label(expr: &CompiledExpr) -> String {
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => id.member.clone(),
-        other => format!("<{}>", variant_name(other)),
+        other => format!("<{:?}>", variant_of(other)),
     }
 }
 
@@ -399,12 +345,18 @@ fn corpus() -> Vec<Case> {
 
 #[test]
 fn corpus_has_an_exemplar_for_every_variant() {
-    let covered: BTreeSet<&str> = corpus()
+    let covered: HashSet<CompiledExprKindDiscriminants> = corpus()
         .iter()
-        .map(|case| variant_name(&case.expr.kind))
+        .map(|case| variant_of(&case.expr.kind))
         .collect();
-    let every: BTreeSet<&str> = EVERY_VARIANT.into_iter().collect();
-    assert_eq!(covered, every);
+    let missing: Vec<_> = CompiledExprKindDiscriminants::iter()
+        .filter(|d| !covered.contains(d))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "child_enumeration corpus has no exemplar for CompiledExprKind variant(s) {missing:?}; \
+         add a case whose direct children are labelled ValueRefs"
+    );
 }
 
 #[test]
@@ -477,7 +429,7 @@ fn child_cells(expr: &CompiledExpr) -> Vec<ValueCellId> {
     let mut cells = Vec::new();
     expr.for_each_child(&mut |child| match &child.kind {
         CompiledExprKind::ValueRef(id) => cells.push(id.clone()),
-        other => panic!("corpus children are ValueRefs, got {}", variant_name(other)),
+        other => panic!("corpus children are ValueRefs, got {:?}", variant_of(other)),
     });
     cells
 }
@@ -485,7 +437,7 @@ fn child_cells(expr: &CompiledExpr) -> Vec<ValueCellId> {
 fn ref_cell(expr: &CompiledExpr) -> &ValueCellId {
     match &expr.kind {
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => id,
-        other => panic!("expected a ref leaf, got {}", variant_name(other)),
+        other => panic!("expected a ref leaf, got {:?}", variant_of(other)),
     }
 }
 
@@ -497,14 +449,14 @@ fn lambda_cells(expr: &CompiledExpr) -> (&[ValueCellId], &[ValueCellId]) {
             param_ids,
             ..
         } => (captures, param_ids),
-        other => panic!("expected a Lambda, got {}", variant_name(other)),
+        other => panic!("expected a Lambda, got {:?}", variant_of(other)),
     }
 }
 
 fn quantifier_variable(expr: &CompiledExpr) -> &ValueCellId {
     match &expr.kind {
         CompiledExprKind::Quantifier { variable_id, .. } => variable_id,
-        other => panic!("expected a Quantifier, got {}", variant_name(other)),
+        other => panic!("expected a Quantifier, got {:?}", variant_of(other)),
     }
 }
 
@@ -512,8 +464,8 @@ fn determinacy_cell(expr: &CompiledExpr) -> &ValueCellId {
     match &expr.kind {
         CompiledExprKind::DeterminacyPredicate { cell, .. } => cell,
         other => panic!(
-            "expected a DeterminacyPredicate, got {}",
-            variant_name(other)
+            "expected a DeterminacyPredicate, got {:?}",
+            variant_of(other)
         ),
     }
 }
@@ -521,7 +473,7 @@ fn determinacy_cell(expr: &CompiledExpr) -> &ValueCellId {
 fn meta_entity(expr: &CompiledExpr) -> &str {
     match &expr.kind {
         CompiledExprKind::MetaAccess { entity, .. } => entity,
-        other => panic!("expected a MetaAccess, got {}", variant_name(other)),
+        other => panic!("expected a MetaAccess, got {:?}", variant_of(other)),
     }
 }
 
