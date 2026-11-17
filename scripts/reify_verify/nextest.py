@@ -123,7 +123,7 @@ class PassSpec:
 
     The gui-feature pass never carries a filter: one would narrow away the
     gui-gated tests it exists to run. A pass of a recording kind carries no
-    guard, because its step's one gate path is the recorder's.
+    guard; _refuse_guarded_recording says why.
     """
 
     kind: PassKind
@@ -240,9 +240,8 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
 
     A nextest pass names the runner's config, so a nextest runner holding none
     is refused. A recording runner wraps a nextest pass of a recording kind in
-    the confirm recorder, whose gate path no guard may then take; the
-    cargo-test fallback records nothing. The pass runs without the semaphore
-    slot's descriptor.
+    the confirm recorder; the cargo-test fallback records nothing. The pass
+    runs without the semaphore slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
