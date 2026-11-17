@@ -1,7 +1,9 @@
 //! A template holding each shape of geometry cell the scalar-geometry-cell →
-//! realization link must tell apart, shared by the tests of
-//! `EvaluationGraph::scalar_geometry_cell_realization` and of the instance mint
-//! that resolves through it (task #9846).
+//! realization link must tell apart (task #9846), shared by the tests of
+//! `EvaluationGraph::scalar_geometry_cell_realization` and of both mints that
+//! resolve through it: the graph mint
+//! `Engine::mint_symbolic_geometry_handle_for_cell_from_graph` and the instance
+//! mint `InstanceMintScope`.
 
 use reify_core::ValueCellId;
 
