@@ -1169,6 +1169,44 @@ mod tests {
     }
 
     #[test]
+    fn checked_root_agrees_with_rational_power() {
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::AREA,
+            DimensionVector::PRESSURE,
+            DimensionVector::FRACTURE_TOUGHNESS,
+        ];
+        for d in dims {
+            for n in [-4i8, -3, -2, -1, 1, 2, 3, 4] {
+                let rooted = d.checked_root(n);
+                assert_eq!(
+                    rooted,
+                    d.checked_pow_rational(Rational::new(1, i16::from(n))),
+                    "{d} root {n}: the root and rational power paths disagree"
+                );
+                assert_eq!(rooted, Some(d.root(n)), "{d} root {n}");
+            }
+        }
+        assert_eq!(
+            DimensionVector::AREA.checked_root(2),
+            Some(DimensionVector::LENGTH)
+        );
+    }
+
+    #[test]
+    fn checked_root_refuses_an_overflowing_slot() {
+        let halved = length_pow(253, 16002).checked_root(2);
+        assert_eq!(halved, Some(length_pow(253, 32004)));
+        assert_eq!(halved.unwrap().checked_root(2), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "dimension exponent overflow")]
+    fn root_panics_uniformly_on_overflow() {
+        length_pow(253, 32004).root(2);
+    }
+
+    #[test]
     fn content_hash_determinism_with_wide_values() {
         // DimensionVector with exponents > 127 must hash deterministically.
         let dv = DimensionVector::basis_n(0, 200);
