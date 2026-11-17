@@ -52,10 +52,15 @@ BASE_IMAGE = "ubuntu:24.04"
 IMAGE_REPOSITORY = "reify-bundle-ref"
 LIBRARY_RUNPATH = "$ORIGIN"
 # glibc's own libraries must match the target's dynamic loader, so a copy from
-# the build host can never be bundled next to the target's ld.so.
+# the build host can never be bundled next to the target's ld.so. The set is
+# the sonames libc6 ships in BASE_IMAGE (`dpkg -L libc6`) that a binary can
+# list as DT_NEEDED; is_glibc adds ld-linux* by prefix.
 GLIBC_SONAMES = frozenset({
     "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1",
     "libresolv.so.2", "libutil.so.1",
+    "libmvec.so.1", "libanl.so.1", "libBrokenLocale.so.1", "libthread_db.so.1",
+    "libc_malloc_debug.so.0", "libnsl.so.1", "libnss_compat.so.2",
+    "libnss_dns.so.2", "libnss_files.so.2", "libnss_hesiod.so.2",
 })
 
 
