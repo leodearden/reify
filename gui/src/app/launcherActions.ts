@@ -10,8 +10,9 @@
  * a time: the store's document.pending holds its requested path, and a second
  * attempt is refused with E_GUI_DOCUMENT_BUSY naming that path. Pending is
  * cleared by the attempt's own settling or by abandonDocumentAttempt, not by
- * the store's reset. Abandoning resolves the attempt's action at once, aborts
- * the signal its stages were given, and ignores how it settles later.
+ * the store's reset. Abandoning resolves the attempt's action at once and
+ * aborts the signal its stages were given. The attempt then loads nothing
+ * further, and the action ignores how the attempt settles.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -40,8 +41,9 @@ export interface LauncherDeps {
   /**
    * Read `path` into the editor and engine stores (App's one open funnel).
    * Rejects only before writing any store, so a failure reaches a caller that
-   * can still present it. An aborted `signal` stops it before its next engine
-   * request or its first store write, so an abandoned document never lands.
+   * can still present it. Once `signal` is aborted it sends no further engine
+   * request and writes no further store, so an abandoned attempt never writes
+   * over a document opened since.
    */
   loadDocument(path: string, signal: AbortSignal): Promise<void>;
   createNewFile(path: string): Promise<FileData>;

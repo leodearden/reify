@@ -1183,9 +1183,11 @@ const App: Component = () => {
    * it (the Start view stays up until the editor write dismisses it). Keeping
    * this in one place also ensures the batch() ordering invariant is never
    * accidentally diverged between callers — the subtle race it prevents is
-   * documented in the batch() block below. An aborted `signal` (an abandoned
-   * launcher attempt) stops it before its next engine request or its first
-   * store write, so an abandoned document never lands.
+   * documented in the batch() block below. Once `signal` is aborted (an
+   * abandoned launcher attempt), it sends no further engine request and writes
+   * no further store. It rejects if it has not yet written a store and returns
+   * quietly otherwise, so an abandoned attempt never writes over a document
+   * opened since.
    */
   async function loadPathIntoStores(requestedPath: string, signal: AbortSignal): Promise<void> {
     const fileData = await bridgeOpenFile(requestedPath);
@@ -1202,6 +1204,7 @@ const App: Component = () => {
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
     // user views are in place when auto views are generated.
     const persisted = await loadPersistedViews(path).catch(reportUnrestoredViews);
+    if (signal.aborted) return;
     // Wrap the three store writes in a single batch so the debounced-save
     // effect observes the path transition AND the new view/camera state
     // atomically.  Without batch(), a future refactor that reorders or
