@@ -22,9 +22,6 @@ const GUARDED_SAME_NAME_PARAM_SRC: &str = r#"
             param body : Solid = cylinder(5mm, size)
         }
     }
-    structure P {
-        sub s = T()
-    }
 "#;
 
 #[test]
