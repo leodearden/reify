@@ -88,7 +88,10 @@
 #   Row 4: private hermetic slices via REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides.
 #
 # KNOBS:
-#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up window seconds (default 8)
+#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up seconds, counted from EVERY mix
+#                                       source reporting ready (default 8).  Nominal:
+#                                       ROW2-1 divides by the read-to-read window
+#                                       actually measured
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        UNUSED as of H5/task 4926 — ROW2_3's mix
 #                                       width is confine-cores-scaled (CONFINE_CORES
 #                                       below), never nproc-derived (anti-#4901);
@@ -175,14 +178,20 @@
 #                                       burns to report ready through the fixture's
 #                                       --ready-file (default 30; task 9698).  ROW1-1
 #                                       waits on its one burn under the same bound.
+#                                       ROW2_3 waits on every mix source under the
+#                                       smaller of this and ROW2-2's fixed 15 s launch
+#                                       slack (_ROW23_LAUNCH_SLACK_S), so raising the
+#                                       knob never loosens ROW2-2.
 #                                       Technique T (docs/prds/infra-test-wallclock-
 #                                       deflake.md): it only keeps a burn that never
 #                                       reports from hanging the suite and NEVER
 #                                       discriminates pass from fail — when it
-#                                       expires ROW1-1 / ROW4-1 SKIP, there being no
-#                                       window to measure.  Generous by an order of
-#                                       magnitude over a governed launch, and the
-#                                       base of the ROW1 and ROW4 burn caps above
+#                                       expires ROW1-1 / ROW2-1 / ROW3-1 / ROW4-1
+#                                       SKIP, there being no window to measure.
+#                                       Generous by an order of magnitude over a
+#                                       governed launch, and the base of the ROW1
+#                                       and ROW4 burn caps and, as the smaller value
+#                                       above, of the ROW2_3 burn cap
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -1553,31 +1562,14 @@ _row2_band_inconclusive() {
     _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
 }
 
-# _row2_usage_fraction <usage_before> <usage_after> <budget_us>
-#   Pure usage-fraction helper for ROW2-1's band decision (task 4970 review-
-#   amendment, reviewer_comprehensive/test_masks_regression): computes the
-#   task slice's own usage delta as a fraction of budget_us, OR propagates
-#   the literal "unavailable" sentinel when EITHER bracket is unreadable —
-#   mirrors the _ROW1_STALL_FRACTION unavailable-guard idiom above (lines
-#   909-914). Extracted so the WIRED ROW2_3 caller can no longer collapse an
-#   unreadable usage_usec bracket to a numeric "0.000000" (which reads as
-#   maximally STARVED and, combined with an in-band avg10 + high windowed
-#   stall, would wrongly SKIP a genuine over-admission governance
-#   regression instead of hard-FAILing it — the review-found masking gap).
-#   _row2_band_inconclusive's own non-numeric guard
-#   (case ''|*[!0-9.]*) => return 1) then fails safe on the propagated
-#   sentinel exactly as it already does on a literal "unavailable" input.
-#   Guards counter-wrap (after < before -> delta 0) and non-positive budget
-#   (-> "0"), same degenerate-guard discipline as the ROW1-1 usage-fraction
-#   awk idiom (lines 897-903).
-_row2_usage_fraction() {
-    local before="$1" after="$2" budget="$3"
-    case "$before" in unavailable) echo unavailable; return 0 ;; esac
-    case "$after" in unavailable) echo unavailable; return 0 ;; esac
-    local delta=$(( after - before ))
-    [ "$delta" -lt 0 ] && delta=0  # guard counter wrap
-    awk -v d="$delta" -v b="$budget" \
-        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
+# _row2_band_window <before_sample> <after_sample> <cores>
+#   Samples as in _row1_measure_window.  Prints "<usage_fraction> <window_us>" from the
+#   MEASURED window, or exactly "unavailable unavailable"; returns 0 on every path.
+_row2_band_window() {
+    local measured
+    measured="$(_row1_measure_window "$1" "$2" "$3" || true)"
+    awk 'NF == 3 { print $3, $2; found = 1 }
+         END { if (!found) print "unavailable unavailable" }' <<< "$measured"
 }
 
 # _row3_sample_usable <value>
@@ -1604,7 +1596,7 @@ _row3_sample_usable() {
 #   `[ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"` — which
 #   reads as a legitimate 1.000000-second baseline and, divided into a real
 #   T_mix, manufactures an inflated slowdown ratio (the false RED this task
-#   fixes). Mirrors _row2_usage_fraction's sentinel-propagation shape above:
+#   fixes). Mirrors _row2_band_window's sentinel-propagation shape above:
 #   an unreadable/untrustworthy sample must propagate the literal
 #   "unavailable" sentinel rather than collapse to a numeric that reads as
 #   legitimate. Despite the historical name, this normalizer is probe-
@@ -1987,63 +1979,70 @@ else
         test "$_row2_band_vacuity5_rc" -ne 0
 fi
 
-# Non-vacuity guard for the NEW ROW2-1 usage-fraction helper (task 4970
-# review-amendment, reviewer_comprehensive/test_masks_regression): the WIRED
-# ROW2_3 caller below used to collapse an unreadable usage_usec bracket to
-# _ROW23_USAGE_DELTA=0 => fraction "0.000000", which reads as maximally
-# STARVED and, combined with an in-band avg10 + high windowed stall, wrongly
-# SKIPped a genuine over-admission governance regression instead of
-# hard-FAILing it (ROW2-1-BAND-VACUITY-5 above only proved the PREDICATE
-# fails safe on a literal "unavailable" -- it never exercised the WIRED
-# computation that used to produce "0.000000" instead). _row2_usage_fraction
-# <usage_before> <usage_after> <budget_us> fixes this by PROPAGATING the
-# literal "unavailable" sentinel whenever either bracket is unreadable,
-# mirroring the _ROW1_STALL_FRACTION unavailable-guard idiom (lines 909-914)
-# so _row2_band_inconclusive's own non-numeric guard
-# (case ''|*[!0-9.]*) => return 1) fires on the WIRED path too.
-#
-# Pure shell+awk, NO python needed -- even case (5) below short-circuits
-# inside _row2_band_inconclusive's non-numeric guard before it would ever
-# reach _row1_stall_contended -- so this block is strictly always-on, wider
-# coverage than ROW2-1-BAND-VACUITY above (which is python-gated only
-# because ITS case 1 needs a real contended verdict).
-#
-# Capture idiom: "$(_row2_usage_fraction ... || true)" -- MUST be `|| true`,
-# NOT `|| echo unavailable`: an echo-unavailable fallback would make case (1)
-# pass even while the helper is undefined and would destroy the RED signal.
+# ROW2-1-BAND-WINDOW-VACUITY (task 10025): ROW2_3's ROW2-1 sizes its usage
+# fraction and its stall window from the interval MEASURED between two
+# cgroup-usage-stamped reads, never from a nominal warm-up budget.
+# _row2_band_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<usage_fraction> <window_us>", or exactly "unavailable unavailable".
+# Cases 1-5 are pure awk: always-on.  Cases 6-8 feed the two fields into
+# _row2_band_inconclusive as the live cycle does, which reaches python3 through
+# _row1_stall_contended: gated on _PYTHON_AVAILABLE like ROW2-1-BAND-VACUITY.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs.  Outputs compare by
+# exact string and rcs by exact value, never `-ne 0`.
+_row2_band_window1="$(_row2_band_window "0 0" "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 14.0 CPU-s over a MEASURED 10 s window on 2 cores => '0.700000 10000000' (got '${_row2_band_window1}'); a nominal 8 s budget would have read 0.875000, i.e. saturating, and hidden the starvation" \
+    test "$_row2_band_window1" = "0.700000 10000000"
 
-# (1) REGRESSION CRUX: before-bracket unavailable => propagate the sentinel,
-# never collapse to a numeric (maximally-STARVED-looking) fraction -- the
-# exact reviewer-found masking bug.
-_row2_uf1="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-1: before-bracket unavailable => propagates 'unavailable' (never collapses to 0.000000)" \
-    test "$_row2_uf1" = "unavailable"
+_row2_band_window2="$(_row2_band_window unavailable "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-2: unavailable BEFORE sample => 'unavailable unavailable' (got '${_row2_band_window2}')" \
+    test "$_row2_band_window2" = "unavailable unavailable"
 
-# (2) Symmetric: after-bracket unavailable => propagate.
-_row2_uf2="$(_row2_usage_fraction 1000 unavailable 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-2: after-bracket unavailable => propagates 'unavailable'" \
-    test "$_row2_uf2" = "unavailable"
+_row2_band_window3="$(_row2_band_window "0 0" unavailable 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-3: unavailable AFTER sample => 'unavailable unavailable' (got '${_row2_band_window3}')" \
+    test "$_row2_band_window3" = "unavailable unavailable"
 
-# (3) Both brackets numeric => a real fraction (Δ=300000/1000000 ≈ 0.30),
-# asserted numerically (locale-proof), not a string comparison.
-_row2_uf3="$(_row2_usage_fraction 100000 400000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-3: both brackets numeric (Δ=300000/1000000) => ~0.30 (got ${_row2_uf3})" \
-    awk -v u="$_row2_uf3" 'BEGIN{ exit !((u+0) > 0.29 && (u+0) < 0.31) }'
+_row2_band_window4="$(_row2_band_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-4: non-advancing stamp (before=after=5000000) => 'unavailable unavailable' (got '${_row2_band_window4}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row2_band_window4" = "unavailable unavailable"
 
-# (4) Counter-wrap (after < before) => guarded to 0, not a negative fraction.
-_row2_uf4="$(_row2_usage_fraction 400000 100000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-4: counter-wrap (after < before) => 0 (got ${_row2_uf4})" \
-    awk -v u="$_row2_uf4" 'BEGIN{ exit !((u+0) == 0) }'
+_row2_band_window5="$(_row2_band_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-5: counter wrap (after usage < before usage) => '0.000000 3000000' (got '${_row2_band_window5}'); delta clamps to 0, never a negative fraction" \
+    test "$_row2_band_window5" = "0.000000 3000000"
 
-# (5) END-TO-END FAIL-SAFE: drive the propagated 'unavailable' output through
-# _row2_band_inconclusive with an in-band avg10 + high windowed stall (the
-# exact esc-4959-53 masking shape) and prove the OUTCOME is NOT inconclusive
-# -- ROW2-1's hard assert stays reachable instead of being silently SKIPped.
-_row2_uf5="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
-_row2_uf_vacuity5_rc=0
-_row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5_rc=$?
-assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
-    test "$_row2_uf_vacuity5_rc" -ne 0
+# _row2_band_window_verdict_is <expected_capture> <expected_rc> <before_sample>
+#   <after_sample> <stall_after>
+#   Test-side composition of ROW2-1's band decision on 2 cores (avg10 57 against
+#   threshold 50, stall 0 -> <stall_after>).  Passes iff _row2_band_window's
+#   capture equals <expected_capture> AND _row2_band_inconclusive's rc equals
+#   <expected_rc>, both exactly, so an empty capture cannot pass by yielding rc 1.
+_row2_band_window_verdict_is() {
+    local expected_capture="$1" expected_rc="$2" before="$3" after="$4" stall_after="$5"
+    local capture usage_fraction window_us rc=0
+    capture="$(_row2_band_window "$before" "$after" 2 || true)"
+    if [ "$capture" != "$expected_capture" ]; then
+        echo "capture '${capture}' != expected '${expected_capture}'"
+        return 1
+    fi
+    read -r usage_fraction window_us <<< "$capture"
+    _row2_band_inconclusive 57 50 "$usage_fraction" 0 "$stall_after" "$window_us" || rc=$?
+    if [ "$rc" -ne "$expected_rc" ]; then
+        echo "band decision rc ${rc} != expected ${expected_rc}"
+        return 1
+    fi
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2-1-BAND-WINDOW-VACUITY-6..8: python3 not on PATH"
+else
+    assert "ROW2-1-BAND-WINDOW-VACUITY-6: USAGE CRUX -- measured usage 0.70 is starved (< floor 0.85) and stall 0->6000000 over the 10 s window is contended (0.6) => '0.700000 10000000' and inconclusive (rc 0); a nominal 8 s budget reads 0.875, saturating, and would leave the hard assert reachable" \
+        _row2_band_window_verdict_is "0.700000 10000000" 0 "0 0" "14000000 10000000" 6000000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-7: STALL-WINDOW CRUX -- stall 0->4500000 over the MEASURED 10 s window is 0.45, not contended => '0.700000 10000000' and NOT inconclusive (rc 1, the hard assert stays reachable); a nominal 8 s window would read 0.5625 and SKIP" \
+        _row2_band_window_verdict_is "0.700000 10000000" 1 "0 0" "14000000 10000000" 4500000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-8: END-TO-END FAIL-SAFE -- an unavailable sample (avg10=57 in-band, stall 0->6000000) => 'unavailable unavailable' and NOT inconclusive (rc 1, never masks a genuine regression)" \
+        _row2_band_window_verdict_is "unavailable unavailable" 1 unavailable "14000000 10000000" 6000000
+fi
 
 # Non-vacuity guard for the NEW ROW3-1 baseline-sample normalizer (task 5999,
 # #5999 false-RED): the live T_base capture used to collapse a timed-out or
@@ -2053,18 +2052,18 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # ratio -- the false RED. _row3_probe_sample <rc> <raw> takes the probe's EXIT
 # STATUS as an explicit parameter because stdout alone cannot discriminate an
 # errored probe that still printed a plausible number from a genuine
-# measurement (case 2 below). Mirrors _row2_usage_fraction's
+# measurement (case 2 below). Mirrors _row2_band_window's
 # "unavailable"-sentinel-propagation shape above -- same class of
 # defect (an unreadable/untrustworthy sample collapsing to a numeric that
 # reads as legitimate), same remedy.
 #
 # Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
-# rationale as ROW2-1-USAGE-FRACTION-VACUITY above.
+# rationale as ROW2-1-BAND-WINDOW-VACUITY-1..5 above.
 #
 # Capture idiom: "$(_row3_probe_sample ... || true)" -- MUST be `|| true`, NOT
 # `|| echo unavailable`: an echo-unavailable fallback would make every case
 # below pass even while the helper is undefined and would destroy the RED
-# signal (same prohibition as _row2_usage_fraction's Capture idiom above).
+# signal (same prohibition as ROW2-1-BAND-WINDOW-VACUITY's capture idiom above).
 
 # (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
 # propagate "unavailable", never the old collapse to "1".
@@ -2096,9 +2095,8 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'u
     test "$_row3_bsv5" = "unavailable"
 
 # (6) NON-VACUITY CRUX: rc=0 with a genuine positive baseline passes through
-# verbatim, asserted NUMERICALLY via awk (locale-proof, mirrors
-# ROW2-1-USAGE-FRACTION-VACUITY-3) -- sentinelling a GOOD baseline would make
-# ROW3-1 SKIP unconditionally, which is vacuous.
+# verbatim, asserted NUMERICALLY via awk (locale-proof) -- sentinelling a GOOD
+# baseline would make ROW3-1 SKIP unconditionally, which is vacuous.
 _row3_bsv6="$(_row3_probe_sample 0 "2.750000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
     awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
@@ -2139,8 +2137,7 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-8: rc='abc' (non-numeric) => 'unavailable' ev
 # preserve one.
 #
 # Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
-# rationale as ROW2-1-USAGE-FRACTION-VACUITY / ROW3-1-BASE-SAMPLE-VACUITY
-# above.
+# rationale as ROW3-1-BASE-SAMPLE-VACUITY above.
 
 # (1) THE GAP: t_base unavailable, t_mix usable => unusable (SKIP). No guard
 # at all exists for this direction today -- the #5999 defect.
@@ -2505,8 +2502,10 @@ fi
 #      cpu.pressure (REIFY_CPU_ADMIT_PROC_PATH) so admission throttling is
 #      subtree-relative, never global.
 #   3. Concurrently run the timed CONFINED+PINNED governed probe → T_mix.
-#   4. Warm-up window, then sample the task slice's OWN cpu.pressure avg10
-#      (per-cgroup, not global).
+#   4. The window opens once EVERY mix source has reported ready through its
+#      own fixture --ready-file (not at launch); warm up, then sample the task
+#      slice's OWN cpu.pressure avg10 (per-cgroup, not global).  When every
+#      source reported ready, the mix is stopped right after T_mix.
 #
 # §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
 #   confined+pinned sources completed.
@@ -2530,8 +2529,403 @@ _SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
 _ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
-# Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
-_ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
+
+# _row23_mix_timing <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s>
+#   Prints "<await_deadline_s> <burn_s> <outer_timeout_s>".  The await never exceeds the slack and
+#   outer minus burn equals the slack, so the slack alone bounds how long ROW2-2 lets a source start.
+_row23_mix_timing() {
+    local ready_deadline="$1" launch_slack="$2" warmup="$3" probe="$4"
+    local settling=4
+    local await_deadline=$(( ready_deadline < launch_slack ? ready_deadline : launch_slack ))
+    local burn=$(( await_deadline + warmup + probe + settling ))
+    echo "$await_deadline $burn $(( burn + launch_slack ))"
+    return 0
+}
+
+# ROW2-2's starvation bound: a source whose burn has not started this many seconds after launch
+# is killed by its outer timeout before its done marker.  Fixed, never a knob.
+_ROW23_LAUNCH_SLACK_S=15
+_ROW23_MIX_TIMING="$(_row23_mix_timing "$_ROW4_READY_DEADLINE_S" "$_ROW23_LAUNCH_SLACK_S" "$_ROW23_WARMUP_S" "$_ROW23_PROBE_S")"
+read -r _ROW23_READY_DEADLINE_S _ROW23_MIX_BURN_S _ROW23_MIX_TIMEOUT_S <<< "$_ROW23_MIX_TIMING"
+
+# _row23_write_stub_cargo <bin_dir> <fixture> <burn_s> <marker_dir>
+#   Writes the executable stub "real cargo" <bin_dir>/cargo: it burns <burn_s> s through <fixture>,
+#   reporting the worker pid to $GOVTEST_MIX_READY_FILE (required, `:?`), then touches <marker_dir>/done_<own pid>.
+_row23_write_stub_cargo() {
+    local bin_dir="$1" fixture="$2" burn_s="$3" marker_dir="$4"
+    cat > "$bin_dir/cargo" << STUB_CARGO_EOF
+#!/usr/bin/env bash
+# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
+# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
+bash "${fixture}" 1 ${burn_s} --ready-file "\${GOVTEST_MIX_READY_FILE:?}" >/dev/null 2>&1 || true
+touch "${marker_dir}/done_\$\$"
+STUB_CARGO_EOF
+    chmod +x "$bin_dir/cargo"
+}
+
+# _row23_stop_mix <ready_file>...
+#   TERMs each pid listed in every ready file that exists: the fixture's worker handles, so the
+#   fixture exits 0 and its stub still writes its done marker.  Total: errors ignored, rc 0.
+_row23_stop_mix() {
+    local ready_file pid
+    for ready_file in "$@"; do
+        [ -r "$ready_file" ] || continue
+        while IFS= read -r pid; do
+            [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+            kill -TERM "$pid" 2>/dev/null || true
+        done < "$ready_file"
+    done
+    return 0
+}
+
+# _row23_sample_window <deadline_s> <warmup_s> <usage_source> <pressure_path> <ready_file>...
+#   Sets _ROW23_READY (0|1), _ROW23_SAMPLE_BEFORE/_AFTER (stamped usage), _ROW23_STALL_BEFORE/_AFTER,
+#   _ROW23_AVG10 and _ROW23_AVG10_RC; returns 0.  Order: await ready, BEFORE, warm-up, avg10, AFTER.
+#   Not ready within <deadline_s>: only avg10 is read, every other sample stays "unavailable".
+_row23_sample_window() {
+    local deadline="$1" warmup="$2" usage_source="$3" pressure_path="$4"
+    shift 4
+    _ROW23_READY=0
+    _ROW23_SAMPLE_BEFORE=unavailable
+    _ROW23_SAMPLE_AFTER=unavailable
+    _ROW23_STALL_BEFORE=unavailable
+    _ROW23_STALL_AFTER=unavailable
+    if _row4_await_ready "$deadline" "$@"; then
+        _ROW23_READY=1
+        _ROW23_SAMPLE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+        sleep "$warmup"
+    fi
+    _ROW23_AVG10_RC=0
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$pressure_path" 2>/dev/null)" || _ROW23_AVG10_RC=$?
+    # Rescue on RC, not emptiness: a read that fails AFTER printing a plausible
+    # partial value must not keep that value.
+    if [ "$_ROW23_AVG10_RC" -ne 0 ]; then
+        _ROW23_AVG10=99
+    fi
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _ROW23_SAMPLE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+    fi
+    return 0
+}
+
+# ROW23-STUB-VACUITY (task 10025): the mix stub's ready-file seam and
+# _row23_stop_mix.  ROW2_3 opens its window once every mix source has reported
+# ready through its own fixture --ready-file, and ends the mix by TERMing the
+# fixture workers those files list.  The stub is run directly, with no shim,
+# taskset or cgroup, so the block is always-on.  The 30 s bounds below are
+# anti-hang only (technique T): no assertion bounds an elapsed time.
+# Captures are `|| true` or `|| _rc=$?`, never a sentinel fallback, so an
+# undefined helper leaves an empty capture or rc 127, and FAILs.
+
+# _row23_stub_new_dir: prints a fresh scratch dir holding bin/ and markers/.
+_row23_stub_new_dir() {
+    local dir
+    dir="$(mktemp -d -p "$WORK" row23-stub.XXXXXX)"
+    mkdir "$dir/bin" "$dir/markers"
+    printf '%s\n' "$dir"
+}
+
+# _row23_stub_markers <marker_dir>: the done markers in it, one name per line.
+_row23_stub_markers() {
+    find "$1" -maxdepth 1 -name 'done_*' -printf '%f\n' | sort
+}
+
+# _row23_stub_refuses_without_ready_file <stub_dir>
+#   Passes iff <stub_dir>/bin/cargo exists and, run with GOVTEST_MIX_READY_FILE
+#   unset, dies non-zero ON THAT VARIABLE and leaves no done marker and no ready
+#   file.  A failing check prints why.  The absence checks only count for a stub
+#   that ran and died there, so a missing stub cannot satisfy them vacuously.
+_row23_stub_refuses_without_ready_file() {
+    local stub_dir="$1" rc=0
+    [ -x "$stub_dir/bin/cargo" ] || { echo "no executable stub at ${stub_dir}/bin/cargo"; return 1; }
+    env -u GOVTEST_MIX_READY_FILE bash "$stub_dir/bin/cargo" test >/dev/null 2>"$stub_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || { echo "the stub exited 0 without GOVTEST_MIX_READY_FILE"; return 1; }
+    grep -q 'GOVTEST_MIX_READY_FILE' "$stub_dir/stderr" \
+        || { echo "the stub exited ${rc}, but not on the unset variable: $(cat "$stub_dir/stderr")"; return 1; }
+    [ -z "$(_row23_stub_markers "$stub_dir/markers")" ] || { echo "the stub left a done marker"; return 1; }
+    [ -z "$(find "$stub_dir" -name 'ready*')" ] || { echo "the stub left a ready file"; return 1; }
+}
+
+# (1) Given a ready path the stub reports through its fixture, exits 0 and writes
+# ONE done marker named for its own pid: `$$` is expanded when the stub RUNS, so
+# every mix source gets a marker of its own.
+_row23_stub1_dir="$(_row23_stub_new_dir)"
+_row23_stub1_gen_rc=0
+_row23_write_stub_cargo "$_row23_stub1_dir/bin" "$FIXTURE" 1 "$_row23_stub1_dir/markers" \
+    || _row23_stub1_gen_rc=$?
+GOVTEST_MIX_READY_FILE="$_row23_stub1_dir/ready" bash "$_row23_stub1_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub1_pid=$!
+_row23_stub1_ready_rc=0
+_row4_await_ready 30 "$_row23_stub1_dir/ready" || _row23_stub1_ready_rc=$?
+_row23_stub1_exit_rc=0
+wait "$_row23_stub1_pid" 2>/dev/null || _row23_stub1_exit_rc=$?
+_row23_stub1_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_row23_stub1_dir/ready" 2>/dev/null || true)"
+_row23_stub1_markers="$(_row23_stub_markers "$_row23_stub1_dir/markers" || true)"
+
+assert "ROW23-STUB-VACUITY-1a: _row23_write_stub_cargo => rc EXACTLY 0 (got ${_row23_stub1_gen_rc})" \
+    test "$_row23_stub1_gen_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1b: the generated <bin>/cargo is executable: the agent shim finds the stub through PATH, which needs the exec bit" \
+    test -x "$_row23_stub1_dir/bin/cargo"
+assert "ROW23-STUB-VACUITY-1c: the stub given GOVTEST_MIX_READY_FILE reports ready through its fixture => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub1_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub1_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1d: the ready file is exactly one numeric pid line, the fixture's one worker, and nothing else (got 'numeric-lines total-lines' = '${_row23_stub1_lines}')" \
+    test "$_row23_stub1_lines" = "1 1"
+assert "ROW23-STUB-VACUITY-1e: the stub exits 0 (got ${_row23_stub1_exit_rc})" \
+    test "$_row23_stub1_exit_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1f: exactly one done marker, named for the stub's own pid => 'done_${_row23_stub1_pid}' (got '${_row23_stub1_markers//$'\n'/,}'); \$\$ is expanded when the stub runs, so every mix source writes a marker of its own" \
+    test "$_row23_stub1_markers" = "done_${_row23_stub1_pid}"
+
+# (2) NON-VACUITY CRUX: the same stub WITHOUT a ready path refuses to run.
+# `${GOVTEST_MIX_READY_FILE:?}` aborts it before the fixture and before the done
+# marker.  Without it the fixture's own argument error (exit 64) would be
+# swallowed by `|| true` and the marker still written, so a launch that forgot the
+# ready path would satisfy ROW2-2 while ROW2_3's window never opened.
+_row23_stub2_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub2_dir/bin" "$FIXTURE" 1 "$_row23_stub2_dir/markers" || true
+assert "ROW23-STUB-VACUITY-2: NON-VACUITY CRUX -- the stub run WITHOUT GOVTEST_MIX_READY_FILE dies non-zero on that variable and leaves no done marker and no ready file" \
+    _row23_stub_refuses_without_ready_file "$_row23_stub2_dir"
+
+# (3) STOP CRUX: a 120 s burn that has reported ready is ended by _row23_stop_mix
+# alone, and ends as a COMPLETED source: TERMing the fixture worker lets the
+# fixture exit 0, so the stub still writes its done marker and ROW2-2 counts it.
+# Only the stop can end a 120 s burn inside the 30 s exit poll.
+_row23_stub3_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub3_dir/bin" "$FIXTURE" 120 "$_row23_stub3_dir/markers" || true
+GOVTEST_MIX_READY_FILE="$_row23_stub3_dir/ready" bash "$_row23_stub3_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub3_pid=$!
+_row23_stub3_ready_rc=0
+_row4_await_ready 30 "$_row23_stub3_dir/ready" || _row23_stub3_ready_rc=$?
+_row23_stub3_stop_rc=0
+_row23_stop_mix "$_row23_stub3_dir/ready" || _row23_stub3_stop_rc=$?
+_row23_stub3_deadline=$(( SECONDS + 30 ))
+while kill -0 "$_row23_stub3_pid" 2>/dev/null && [ "$SECONDS" -lt "$_row23_stub3_deadline" ]; do
+    sleep 0.1
+done
+_row23_stub3_exit="hung"
+if ! kill -0 "$_row23_stub3_pid" 2>/dev/null; then
+    _row23_stub3_exit=0
+    wait "$_row23_stub3_pid" 2>/dev/null || _row23_stub3_exit=$?
+fi
+_row23_stub3_workers="$(_row4_worker_affinities "$_row23_stub3_dir/ready" 2>/dev/null || true)"
+
+assert "ROW23-STUB-VACUITY-3a: the 120 s burn reports ready => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub3_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub3_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3b: _row23_stop_mix on that ready file => rc EXACTLY 0 (got ${_row23_stub3_stop_rc})" \
+    test "$_row23_stub3_stop_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3c: STOP CRUX -- after the stop the stub exits 0 inside the anti-hang bound (got '${_row23_stub3_exit}'); nothing else ends a 120 s burn that soon" \
+    test "$_row23_stub3_exit" = "0"
+assert "ROW23-STUB-VACUITY-3d: the stopped source still counts as completed => its done marker 'done_${_row23_stub3_pid}' exists (ROW2-2 counts these)" \
+    test -e "$_row23_stub3_dir/markers/done_${_row23_stub3_pid}"
+assert "ROW23-STUB-VACUITY-3e: the fixture worker is gone => _row4_worker_affinities reads 'unavailable' (got '${_row23_stub3_workers//$'\n'/,}'); the stop ended the worker, not just the stub" \
+    test "$_row23_stub3_workers" = "unavailable"
+
+# Failure path: end whatever the stop left running, so no burn outlives this
+# block.  Workers first: killing the stub alone would orphan its fixture.
+if [ -r "$_row23_stub3_dir/ready" ]; then
+    while IFS= read -r _row23_stub3_worker; do
+        kill -TERM "$_row23_stub3_worker" 2>/dev/null || true
+    done < "$_row23_stub3_dir/ready"
+fi
+kill -TERM "$_row23_stub3_pid" 2>/dev/null || true
+wait "$_row23_stub3_pid" 2>/dev/null || true
+
+# (4) Total: a ready file that does not exist is no error, so the live cycle can
+# call the stop bare under `set -e` on a path where a source never reported.
+_row23_stop4_rc=0
+_row23_stop_mix "$WORK/row23-never-reported" || _row23_stop4_rc=$?
+assert "ROW23-STUB-VACUITY-4: _row23_stop_mix on a ready file that does not exist => rc EXACTLY 0 (got ${_row23_stop4_rc}); total, so safe bare under set -e" \
+    test "$_row23_stop4_rc" -eq 0
+
+# ROW23-WINDOW-VACUITY (task 10025): _row23_sample_window opens ROW2_3's
+# measurement window on the mix's readiness, not on its launch.  It is called in
+# the CURRENT shell (it sets _ROW23_* globals) and reads through
+# cpu_gov_instrument.py, here against synthetic cpu.stat and cpu.pressure
+# files: python3 is needed, a cgroup is not.  Every global is poisoned before a
+# call, so an unset one cannot trip `set -u` and a stale one cannot pass for a
+# result.
+
+# _row23_window_poison: gives each global _row23_sample_window must set a value no real sample takes.
+_row23_window_poison() {
+    local name
+    for name in _ROW23_READY _ROW23_SAMPLE_BEFORE _ROW23_SAMPLE_AFTER \
+                _ROW23_STALL_BEFORE _ROW23_STALL_AFTER _ROW23_AVG10 _ROW23_AVG10_RC; do
+        printf -v "$name" '%s' poison
+    done
+}
+
+# _row23_window_fixture <dir> <usage_usec>: writes <dir>/cpu.stat and <dir>/cpu.pressure (avg10 12.50, some total 100).
+_row23_window_fixture() {
+    printf 'usage_usec %s\n' "$2" > "$1/cpu.stat"
+    printf 'some avg10=12.50 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$1/cpu.pressure"
+}
+
+# _row23_window_advanced <before_sample> <after_sample>: both are stamped samples and the stamp advanced.
+_row23_window_advanced() {
+    local window_re='^[0-9.]+ [0-9]+$'
+    [[ "$(_row2_band_window "$1" "$2" 1 || true)" =~ $window_re ]]
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW23-WINDOW-VACUITY: python3 not on PATH"
+else
+    # (W1) READINESS-ANCHORED CRUX: usage reads 0 until the sampler has found no
+    # ready file and begins to wait; only then is cpu.stat rewritten and the
+    # ready file published, in that order.  BEFORE must hold the later value; a
+    # sampler that reads first, or anchors on the launch, sees 0.  The
+    # publication is driven by the first poll `sleep` the sampler makes (a stub
+    # on PATH), not by a timer, so a slow host cannot let a premature read land
+    # after the publication and pass for an anchored one.
+    _row23_win1_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win1_dir" 0
+    mkdir "$_row23_win1_dir/fakebin"
+    cat > "$_row23_win1_dir/fakebin/sleep" << 'PUBLISH_ON_FIRST_SLEEP_EOF'
+#!/bin/sh
+if [ ! -e "$WIN_DIR/published" ]; then
+    : > "$WIN_DIR/published"
+    printf 'usage_usec 7000000\n' > "$WIN_DIR/cpu.stat.tmp"
+    mv -f "$WIN_DIR/cpu.stat.tmp" "$WIN_DIR/cpu.stat"
+    printf '4242\n' > "$WIN_DIR/ready.tmp"
+    mv -f "$WIN_DIR/ready.tmp" "$WIN_DIR/ready"
+fi
+exec "$REAL_SLEEP" "$@"
+PUBLISH_ON_FIRST_SLEEP_EOF
+    chmod +x "$_row23_win1_dir/fakebin/sleep"
+    _row23_win1_real_sleep="$(command -v sleep)"
+    _row23_window_poison
+    _row23_win1_rc=0
+    WIN_DIR="$_row23_win1_dir" REAL_SLEEP="$_row23_win1_real_sleep" PATH="$_row23_win1_dir/fakebin:$PATH" \
+        _row23_sample_window 30 0 "$_row23_win1_dir/cpu.stat" "$_row23_win1_dir/cpu.pressure" \
+        "$_row23_win1_dir/ready" || _row23_win1_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W1a: rc EXACTLY 0 (got ${_row23_win1_rc})" \
+        test "$_row23_win1_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W1b: the source reported => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W1c: READINESS-ANCHORED CRUX -- BEFORE is taken after the ready report, so it holds the 7000000 written before the report, not the 0 a sampler that read first would see (got '${_ROW23_SAMPLE_BEFORE}')" \
+        awk -v s="$_ROW23_SAMPLE_BEFORE" 'BEGIN { exit !(s ~ /^7000000 [0-9]+$/) }'
+    assert "ROW23-WINDOW-VACUITY-W1d: AFTER is a stamped sample whose stamp is later than BEFORE's (BEFORE='${_ROW23_SAMPLE_BEFORE}', AFTER='${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+    assert "ROW23-WINDOW-VACUITY-W1e: both stall reads hold the fixture's some total (got '${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}', expected '100 100')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "100 100"
+    assert "ROW23-WINDOW-VACUITY-W1f: avg10 is read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W2) NOT READY: nothing ever reports.  No window opens, so every sample is
+    # 'unavailable', but avg10 is STILL read: ROW2-2's contended hatch needs it.
+    _row23_win2_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win2_dir" 5000
+    _row23_window_poison
+    _row23_win2_rc=0
+    _row23_sample_window 0 0 "$_row23_win2_dir/cpu.stat" "$_row23_win2_dir/cpu.pressure" \
+        "$_row23_win2_dir/never-ready" || _row23_win2_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W2a: rc EXACTLY 0 (got ${_row23_win2_rc})" \
+        test "$_row23_win2_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W2b: no ready report => _ROW23_READY=0 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "0"
+    assert "ROW23-WINDOW-VACUITY-W2c: both usage samples and both stall reads are exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W2d: avg10 is still read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'); ROW2-2's contended hatch keeps its input" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W3) The source reported, but the pressure path does not exist.  psi-avg10
+    # and psi-some-total exit 0 on a read failure and print 'unavailable', so
+    # ROW2-1's non-numeric SKIP branch owns this case, not the '99' rescue (W4).
+    _row23_win3_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win3_dir" 5000
+    printf '4242\n' > "$_row23_win3_dir/ready"
+    _row23_window_poison
+    _row23_win3_rc=0
+    _row23_sample_window 30 0 "$_row23_win3_dir/cpu.stat" "$_row23_win3_dir/no-such-cpu.pressure" \
+        "$_row23_win3_dir/ready" || _row23_win3_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W3a: rc EXACTLY 0 (got ${_row23_win3_rc})" \
+        test "$_row23_win3_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W3b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W3c: both stall reads are exactly 'unavailable' (got '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W3d: avg10 is the instrument's own 'unavailable' with rc EXACTLY 0 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'), not the '99' rescue" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "unavailable 0"
+    assert "ROW23-WINDOW-VACUITY-W3e: both usage samples stay stamped (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+
+    # (W4) python3 ITSELF fails: the avg10 read is rescued to '99' on its RC, not
+    # on emptiness (the stub prints a plausible 0.0 BEFORE failing, which must
+    # not be kept), and the RC is carried so ROW3-1's foreign-load hedge can tell
+    # a defaulted 99 from a real one.  Every other read falls back to
+    # 'unavailable'.
+    _row23_win4_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win4_dir" 5000
+    printf '4242\n' > "$_row23_win4_dir/ready"
+    mkdir "$_row23_win4_dir/fakebin"
+    printf '#!/bin/sh\n[ "$2" = psi-avg10 ] && echo 0.0\nexit 3\n' > "$_row23_win4_dir/fakebin/python3"
+    chmod +x "$_row23_win4_dir/fakebin/python3"
+    _row23_window_poison
+    _row23_win4_rc=0
+    PATH="$_row23_win4_dir/fakebin:$PATH" _row23_sample_window 30 0 "$_row23_win4_dir/cpu.stat" \
+        "$_row23_win4_dir/cpu.pressure" "$_row23_win4_dir/ready" || _row23_win4_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W4a: rc EXACTLY 0 (got ${_row23_win4_rc})" \
+        test "$_row23_win4_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W4b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W4c: both usage samples and both stall reads fall back to exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W4d: avg10 is rescued to '99' and its rc 3 is carried (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "99 3"
+fi
+
+# ROW23-TIMING-VACUITY (task 10025): _row23_mix_timing <ready_deadline_s>
+# <launch_slack_s> <warmup_s> <probe_s> prints "<await_deadline_s> <burn_s>
+# <outer_timeout_s>": how long ROW2_3 waits for the mix to report ready, how long
+# each source burns, and its outer timeout.  Pure bash arithmetic, so always-on.
+# Captures are `|| true`, never `|| echo <sentinel>`: an undefined helper must
+# leave an EMPTY capture, which FAILs.  Outputs compare by exact string.
+_row23_timing1="$(_row23_mix_timing 30 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-1: CRUX -- the default 30 s ready deadline is capped at ROW2-2's 15 s launch slack => '15 29 44' (got '${_row23_timing1}'); awaiting the full 30 s let the post-T_mix stop rescue a source that was held 15-30 s" \
+    test "$_row23_timing1" = "15 29 44"
+
+_row23_timing2="$(_row23_mix_timing 10 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-2: a ready deadline below the slack is honoured => '10 24 39' (got '${_row23_timing2}'); the outer timeout is still burn + slack" \
+    test "$_row23_timing2" = "10 24 39"
+
+_row23_timing3="$(_row23_mix_timing 30 5 0 0 || true)"
+assert "ROW23-TIMING-VACUITY-3: SLACK IS A PARAMETER -- slack 5 s, no warm-up, no probe => '5 9 14' (got '${_row23_timing3}'); the helper cannot hard-wire 15" \
+    test "$_row23_timing3" = "5 9 14"
+
+# _row23_timing_holds_bound <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s> <capture>
+#   Passes iff <capture> is exactly three non-negative integers "await burn outer" with
+#   await <= slack, await <= deadline, outer - burn == slack and burn >= await + warmup + probe.
+_row23_timing_holds_bound() {
+    awk -v deadline="$1" -v slack="$2" -v warmup="$3" -v probe="$4" -v capture="$5" 'BEGIN {
+        if (capture !~ /^[0-9]+ [0-9]+ [0-9]+$/) { print "capture is not three non-negative integers: [" capture "]"; exit 1 }
+        split(capture, t, " ")
+        if (t[1] + 0 > slack + 0)             { print "await " t[1] " exceeds the launch slack " slack; exit 1 }
+        if (t[1] + 0 > deadline + 0)          { print "await " t[1] " exceeds the ready deadline " deadline; exit 1 }
+        if (t[3] - t[2] != slack + 0)         { print "outer - burn = " (t[3] - t[2]) ", not the launch slack " slack; exit 1 }
+        if (t[2] + 0 < t[1] + warmup + probe) { print "burn " t[2] " ends before await + warm-up + probe"; exit 1 }
+    }'
+}
+
+# (4) PROPERTY over the knob's range: whatever the ready deadline, ROW2-2's
+# starvation bound stays the slack, and a source reporting ready at the await
+# deadline still burns through the warm-up and the probe quantum.
+for _row23_timing_d in 0 1 14 15 16 30 120; do
+    _row23_timing4="$(_row23_mix_timing "$_row23_timing_d" 15 8 2 || true)"
+    assert "ROW23-TIMING-VACUITY-4[d=${_row23_timing_d}]: PROPERTY -- ready deadline ${_row23_timing_d} s, slack 15 s => await <= min(deadline, 15), outer - burn == 15, burn >= await + 8 + 2 (got '${_row23_timing4}')" \
+        _row23_timing_holds_bound "$_row23_timing_d" 15 8 2 "$_row23_timing4"
+done
+
+_row23_timing5_rc=0
+_row23_mix_timing 30 15 8 2 > /dev/null || _row23_timing5_rc=$?
+assert "ROW23-TIMING-VACUITY-5: rc EXACTLY 0 (got ${_row23_timing5_rc}); the live cycle assigns the capture bare, so a failure would abort it under set -e" \
+    test "$_row23_timing5_rc" -eq 0
 
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
@@ -2567,7 +2961,8 @@ else
     )"
     _ROW23_TASK_PRESSURE_PATH="/sys/fs/cgroup${_ROW23_TASK_SLICE_REL}/cpu.pressure"
 
-    # Marker dir: each stub-cargo source writes done_<PID> here.
+    # Marker dir: each stub-cargo source writes done_<PID> here, and the ready
+    # file of its fixture (ready_*) is named here too.
     _ROW23_MARKER_DIR="$WORK/row23_markers"
     mkdir -p "$_ROW23_MARKER_DIR"
     # Stub-cargo-bin: the stub "real cargo" that burns CPU + writes done-marker.
@@ -2575,14 +2970,7 @@ else
     # The shim strips agent-bin → finds stub-cargo-bin/cargo as "real cargo".
     _STUB_CARGO_BIN="$WORK/stub-cargo-bin"
     mkdir -p "$_STUB_CARGO_BIN"
-    cat > "$_STUB_CARGO_BIN/cargo" << STUB_CARGO_EOF
-#!/usr/bin/env bash
-# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
-# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
-bash "${FIXTURE}" 1 ${_ROW23_MIX_BURN_S} >/dev/null 2>&1 || true
-touch "${_ROW23_MARKER_DIR}/done_\$\$"
-STUB_CARGO_EOF
-    chmod +x "$_STUB_CARGO_BIN/cargo"
+    _row23_write_stub_cargo "$_STUB_CARGO_BIN" "$FIXTURE" "$_ROW23_MIX_BURN_S" "$_ROW23_MARKER_DIR"
     # PATH for mix invocations: shim (agent-bin) first, stub second.
     _MIX_PATH="$REPO_ROOT/scripts/agent-bin:$_STUB_CARGO_BIN:/usr/bin:/bin"
     _SHIM="$REPO_ROOT/scripts/agent-bin/cargo"
@@ -2613,7 +3001,7 @@ PROBE_PY
     #     `|| echo <sentinel>` fallback appears in this capture at all, which
     #     is strictly stronger than swapping the old numeric fallback for a
     #     string one and sidesteps the fallback class this file prohibits
-    #     (see _row2_usage_fraction's Capture idiom comment above).
+    #     (see ROW2-1-BAND-WINDOW-VACUITY's capture-idiom comment above).
     #     _row3_probe_sample turns (rc, raw) into either the literal
     #     "unavailable" or the genuine measurement — never a manufactured
     #     "1" that reads as a legitimate 1-second baseline.
@@ -2631,23 +3019,30 @@ PROBE_PY
     #     confine-cores CPUs.  cpu-admit is redirected to the task slice's
     #     OWN cpu.pressure so admission throttling is subtree-relative
     #     (reuses the ROW4-BYPASS REIFY_CPU_ADMIT_PROC_PATH seam) — never
-    #     global PSI.  Record PIDs for cleanup.
+    #     global PSI.  Record PIDs for cleanup.  Each source's stub reports its
+    #     fixture workers to its own GOVTEST_MIX_READY_FILE (stub contract:
+    #     _row23_write_stub_cargo).
     _MIX_PIDS=""
+    _ROW23_READY_FILES=""
     _mi=0
     while [ "$_mi" -lt "$_MIX_N" ]; do
+        _ROW23_READY_FILES="${_ROW23_READY_FILES}${_ROW23_READY_FILES:+ }$_ROW23_MARKER_DIR/ready_task_${_mi}"
         PATH="$_MIX_PATH" \
+        GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_task_${_mi}" \
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         REIFY_CPU_ADMIT_PROC_PATH="$_ROW23_TASK_PRESSURE_PATH" \
-        timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
             bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
             >/dev/null 2>&1 &
         _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
         _mi=$(( _mi + 1 ))
     done
     # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
+    _ROW23_READY_FILES="${_ROW23_READY_FILES}${_ROW23_READY_FILES:+ }$_ROW23_MARKER_DIR/ready_merge"
     PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
+    GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_merge" \
     REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+    timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
         >/dev/null 2>&1 &
     _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -2655,48 +3050,23 @@ PROBE_PY
     # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
     _ALL_MIX_PIDS="$_MIX_PIDS"
 
-    # ROW2-1 band-decision brackets (task 4970, esc-4959-53): sample the task
-    # slice's OWN usage_usec and cpu.pressure some.total BEFORE the warm-up
-    # sleep, bracketing the SAME window the avg10 read below uses — reuses
-    # the ROW1-1 usage-fraction sampling idiom (cgroup-usage / psi-some-total,
-    # guarded with "unavailable" on failure) so ROW2-1's in-band SKIP branch
-    # can distinguish a starved (foreign-load) slice from a saturating
-    # (genuine-regression) one.
-    _ROW23_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
-        2>/dev/null || echo "unavailable")"
+    # (c) ROW2-1 band-decision window (task 4970, esc-4959-53): opens once every
+    #     mix source has reported ready, warms up, then samples the TASK
+    #     SLICE's OWN usage_usec, cpu.pressure some.total and avg10 (Row 2 PSI
+    #     measurement — per-cgroup, H5).  Sample order and the globals it sets:
+    #     _row23_sample_window.  _ROW23_AVG10_RC lets the ROW3-1 hedge
+    #     (_row3_foreign_load below) tell a genuine 99+ reading apart from a
+    #     defaulted-because-unreadable one (task 5999 review-amendment).
+    _row23_sample_window "$_ROW23_READY_DEADLINE_S" "$_ROW23_WARMUP_S" \
+        "$_ROW23_TASK_SLICE_REL" "$_ROW23_TASK_PRESSURE_PATH" $_ROW23_READY_FILES
 
-    # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
-    #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
-    sleep "$_ROW23_WARMUP_S"
-    # Captures the read's exit status alongside the existing "99" fallback
-    # (task 5999 review-amendment, reviewer_comprehensive/robustness):
-    # _ROW23_AVG10 keeps its EXACT pre-existing value/semantics in every case
-    # (ROW2-1/ROW2-2 below are unaffected), but _ROW23_AVG10_RC now lets the
-    # ROW3-1 hedge (_row3_foreign_load below) tell a genuine 99+ reading
-    # apart from a defaulted-because-unreadable one.
-    _ROW23_AVG10_RC=0
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null)" || _ROW23_AVG10_RC=$?
-    # Rescue on RC, not emptiness: a read that fails AFTER printing a
-    # plausible partial value must not keep that value, same "stdout alone
-    # cannot discriminate" principle as the T_base capture above.
-    [ "$_ROW23_AVG10_RC" -ne 0 ] && _ROW23_AVG10="99"
-
-    # AFTER bracket, same point the avg10 sample above is taken.
-    _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_WINDOW_US=$(( _ROW23_WARMUP_S * 1000000 ))
-
-    # Usage fraction over the warm-up window (task 4970 review-amendment):
-    # delegates to _row2_usage_fraction, which PROPAGATES the "unavailable"
-    # sentinel when either bracket is unreadable instead of collapsing to a
-    # numeric "0.000000" — an unreadable bracket must never read as
-    # maximally STARVED and mask a genuine over-admission regression.
-    _ROW23_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW23_WARMUP_S * 1000000 ))
-    _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
+    # Usage fraction and stall window over the MEASURED read-to-read window
+    # (task 4970 review-amendment): _row2_band_window PROPAGATES the
+    # "unavailable" sentinel when either bracket is unreadable instead of
+    # collapsing to a numeric "0.000000" — an unreadable bracket must never
+    # read as maximally STARVED and mask a genuine over-admission regression.
+    read -r _ROW23_USAGE_FRACTION _ROW23_WINDOW_US <<< "$(_row2_band_window \
+        "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER" "$_ROW4_CONFINE_CORES")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
     #     (Row 3 slowdown). Mirrors the T_base capture above (task 5999
@@ -2708,15 +3078,25 @@ PROBE_PY
     #     through the SAME _row3_probe_sample normalizer so both probes share
     #     one usability rule; _row3_measurement_unusable already handles the
     #     "unavailable" sentinel on either arm, so no other change is needed.
-    _T_MIX_RC=0
-    _T_MIX_RAW="$(
-        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-        timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
-    )" || _T_MIX_RC=$?
-    _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
+    #     Not run when the mix never reported ready: there is no mix to probe
+    #     under, and T_mix stays "unavailable".
+    _T_MIX="unavailable"
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _T_MIX_RC=0
+        _T_MIX_RAW="$(
+            REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+            timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+            python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+        )" || _T_MIX_RC=$?
+        _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
+    fi
 
-    # (e) Wait for mix to finish (natural completion or timeout).
+    # (e) Stop the mix only when every source reported ready (a stopped source still exits 0 and
+    #     writes its done marker); otherwise each source runs to its burn's end or its outer
+    #     timeout.  Then wait for the mix to finish.
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _row23_stop_mix $_ROW23_READY_FILES
+    fi
     for _mpid in $_MIX_PIDS; do
         wait "$_mpid" 2>/dev/null || true
     done
@@ -2758,15 +3138,18 @@ PROBE_PY
     # the subtree's cpu.pressure is transiently unreadable mid-run), so a
     # non-numeric sample SKIPs rather than raising a confusing python
     # ValueError.  A numeric-but-far-beyond-ceiling sample SKIPs too
-    # (contention-inflated, not a governance failure).
-    if ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
+    # (contention-inflated, not a governance failure).  No window to measure
+    # when the mix never reported ready: SKIP before looking at the sample.
+    if [ "$_ROW23_READY" -eq 0 ]; then
+        echo "  SKIP ROW2-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no window to measure"
+    elif ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
     elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
-    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_STALL_WINDOW_US"; then
+    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_WINDOW_US"; then
         echo "  SKIP ROW2-1: inconclusive — foreign load on the pinned CPUs (avg10=${_ROW23_AVG10} in the [${_ADMIT_THRESHOLD},90) band, slice starved: usage_fraction=${_ROW23_USAGE_FRACTION} < floor=${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85} + windowed stall contended) — not a governance failure"
     else
-        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative; usage_fraction=${_ROW23_USAGE_FRACTION}, window=${_ROW23_WINDOW_US}us)" \
             python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
@@ -2779,10 +3162,13 @@ sys.exit(0 if v < t else 1)
     # under oversubscription can SIGTERM the slowest sources before their outer timeout,
     # making strict equality unreliable even when governance is correct.  SKIP (not
     # FAIL) when sub-90% AND foreign contention was detected — inconclusive.
+    # A source not started _ROW23_LAUNCH_SLACK_S after launch is killed by its outer timeout
+    # before its marker.  The post-T_mix stop runs only when every source reported within the
+    # readiness bound, which never exceeds that slack, so the stop never rescues a starved source.
     if [ "$_ROW23_ALL_PROGRESSED" -eq 0 ] && [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-2: sub-90% completion (${_ROW23_DONE_COUNT}/${_ACTIVE_SOURCES}) under detected foreign load on the pinned CPUs — inconclusive, not a governance failure"
     else
-        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
+        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT}; launch slack ${_ROW23_LAUNCH_SLACK_S}s)" \
             test "${_ROW23_ALL_PROGRESSED}" -eq 1
     fi
 
@@ -2812,7 +3198,9 @@ sys.exit(0 if v < t else 1)
     # below, never a governance failure (mirrors fair_share_floor's own
     # docstring: below-floor is "physically impossible" for the model, i.e.
     # a modeling/measurement mismatch, not evidence of broken governance).
-    if _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
+    if [ "$_ROW23_READY" -eq 0 ]; then
+        echo "  SKIP ROW3-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no mix to probe under"
+    elif _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
         echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
@@ -3514,8 +3902,7 @@ else
         > "$_row4_psi_hot_fixture"
 
     # (a) Parses the `some` line's avg10 out of a synthetic HOT fixture.
-    # Compared numerically (locale-proof), mirroring
-    # ROW2-1-USAGE-FRACTION-VACUITY-3 rather than a string equality.
+    # Compared numerically (locale-proof), not by string equality.
     _row4_sampled_hot="$(_row4_sample_host_avg10 "$_row4_psi_hot_fixture" 2>/dev/null || true)"
     assert "ROW4-1-SAMPLE-VACUITY-1: synthetic HOT fixture (some avg10=99.00) => 99 (got '${_row4_sampled_hot}')" \
         awk -v a="$_row4_sampled_hot" 'BEGIN{ exit !(a+0 == 99) }'
@@ -3531,7 +3918,7 @@ else
     # predicate with the real measured false-RED deltas, proving sampler and
     # predicate compose through the REIFY_CPU_GOV_TEST_PROC_PATH seam that
     # step-12 wires into the live ROW4-1 branch. Mirrors
-    # ROW2-1-USAGE-FRACTION-VACUITY-5's END-TO-END idiom.
+    # ROW2-1-BAND-WINDOW-VACUITY-8's END-TO-END idiom.
     assert "ROW4-1-QUIET-VACUITY-8: END-TO-END -- avg10 sampled from a HOT fixture ('${_row4_sampled_hot}' >= ceiling=20) + the measured false-RED deltas => inconclusive (sampler and predicate compose)" \
         _row4_share_inconclusive 10367459 5945387 300 100 0.10 "$_row4_sampled_hot" 20
 fi
@@ -3723,7 +4110,7 @@ else
     # read byte-indistinguishable from a genuinely STARVED merge slice: both
     # arrive as Δmerge=0, but the first is a measurement failure that must SKIP
     # and the second is a real governance break that must go RED.  Propagating
-    # the sentinel — the same shape _row2_usage_fraction adopted for the same
+    # the sentinel — the same shape _row2_band_window adopted for the same
     # reason — lets the guard chain below tell them apart, and makes
     # _row4_share_inconclusive's string guard (ROW4-1-QUIET-VACUITY-6/7) a real
     # second line of defence on the wired path rather than a contract on an

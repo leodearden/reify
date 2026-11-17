@@ -176,6 +176,35 @@ five was fixed by porting it.** Ranks #1–#3 were closed by a library fix in
 bash, and #4/#5 are bash fixes too. The migration is a maintainability policy,
 not the flake remedy.
 
+### Deferred port: `test_cpu_load_governance.sh`
+
+Flake fixes #9698 and #10023 and the latent ROW2_3 window fix in #10025 landed
+in bash without the Arm 2 port. The member is 4,174 lines (1,613 code lines,
+165 `assert` sites) on main `48f6c7710b`. The port is a follow-up filed from
+#10025, ticket `tkt_0RX3200X6BDCWCTZS2F97VFF4J`. It must keep:
+
+- **Node id and class.** `test_cpu_load_governance.sh` stays the node: a thin
+  wrapper running the same-stem `.py`, manifest row `host-exclusive`. Its
+  CLASSIFY cycle takes its name from `$BASH_SOURCE`; key it on the wrapper.
+- **The dialect** in "The Python dialect a port must emit" above.
+- **Stdout other suites grep.** `test_cpu_load_governance_deflake.sh` A1/A4
+  run it under `timeout 120` and grep its `SKIP ROW4:` and `SKIP ROW2_3:`
+  lines ending `host does not support cgroup governance`.
+  `test_govtest_slice_reaper.sh` Block F drives it under
+  `REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY` (armed by `REIFY_GOVTEST_TEST_MODE`) and
+  greps `LIFECYCLE_ONLY=1 IGNORED` and `Cycle SELF`. It also needs no
+  `Results:` line on the seam path and unit names derived from one pid (F3).
+- **Teardown on SIGTERM, SIGINT and SIGHUP**, as the EXIT trap gives today:
+  only SIGKILL may strand units.
+- **Its bash libraries:** `load_tolerance_lib.sh` (`quiet_box_met`),
+  `govtest_slice_reaper_lib.sh` (also used by
+  `test_cpu_governed_exec_hostexcl.sh`), `lib_cgroup.sh`,
+  `run-all-classification-lib.sh`, `test_helpers.sh`.
+- **FIXTURE-3's `timeout 10` bound** is a wall-clock upper bound: wait for
+  #7445 Part B (cost 2 below), or keep that cycle in a `.sh` member.
+- **The checks:** cost 4's `requires-full-gate` on every new file, and
+  mutation validation ("What a port is" above).
+
 ---
 
 ## Mechanics
