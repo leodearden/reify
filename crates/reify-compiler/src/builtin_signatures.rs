@@ -58,6 +58,9 @@
 //!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
 //!   here only because the mechanism is name-keyed and generic. They are the
 //!   table's only `ExpectedArg::Enum` slots.
+//! - The first `ExpectedArg::Direction` slots, `frame_at`'s `x`/`z`
+//!   (direction-typing σ), built by [`direction_arg`]; later leaves add rows on
+//!   the same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -76,7 +79,9 @@
 //!   split on their own arm — deliberately UNCOUNTED here, because a tally
 //!   stated away from the arms is exactly the second copy nothing
 //!   machine-checks that this section opens by warning against. It read
-//!   "three" until task 5662 added the fourth and fifth.
+//!   "three" until task 5662 added the fourth and fifth. The rule governs bare
+//!   scalar COMPONENT triples; a composite `Direction`-typed argument is
+//!   slotted by `ExpectedArg::Direction`.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
@@ -102,7 +107,7 @@
 //!   layer reports for the desugared op — breaking the same-wording premise
 //!   the migration hint depends on (PRD decision D9). (`zone_annulus`' arg3
 //!   `length` is additionally DEAD: `geometry.rs` binds it to `_l`.)
-//! - **Names with no dimensioned-scalar argument have no arm at all**
+//! - **Names with no checkable argument have no arm at all**
 //!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
 //!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
@@ -1670,6 +1675,13 @@ mod tests {
     ///   `topology_selector_result_type(name).expect(...)` has no entry for
     ///   them and would panic. `circular_pattern` ALSO holds an ANGLE slot at
     ///   both of its forms from PRD 3 leaf ζ.
+    ///
+    /// - The direction-typing σ datum constructor `frame_at`, a member of
+    ///   `units.rs`'s `DATUM_CONSTRUCTOR_NAMES` typed by
+    ///   `datum_constructor_result_type`, not a topology selector. Moving it
+    ///   into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would route it through
+    ///   `expr.rs`'s `topology_selector_result_type(name).expect(…)`, which has
+    ///   no entry for it.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -1721,6 +1733,8 @@ mod tests {
         "rotate",
         "arc",
         "draft",
+        // direction-typing σ (#9636) — datum constructor, Direction slots.
+        "frame_at",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -4435,6 +4449,13 @@ mod tests {
         // and unlike a ledgered name such as `fillet` ({2, 3}).
         "orient_euler",
         "orient_to_euler",
+        // direction-typing σ's `frame_at`: a pure eval builtin with no lowering
+        // arm, so the probe sees the same full-window signature as the Euler
+        // pair. Unlike that pair its arm is UNGUARDED (single-form); a future
+        // overload must land an `if arg_count ==` guard in the same change,
+        // since this ledger cannot observe one. Eval-side single-arity pin:
+        // reify-stdlib geometry.rs's `frame_at_wrong_arity_undef`.
+        "frame_at",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by
