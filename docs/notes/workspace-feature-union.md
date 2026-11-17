@@ -546,9 +546,13 @@ added to keep the task's plan. It ran in `_lane-10` after probe (1), on the
 delta's files and left 8 directories newer than the seed's stamp, and the clean
 removed `scripts/__pycache__/`. This is not a run in `_merge-verify`. A task
 agent is sandboxed to its own lane, and refresh-warm-base copies
-`_merge-verify`'s `target/` into the next base gen. What still differs is
-`target/`: `_merge-verify`'s also holds the `--workspace` variants its verify
-builds. The delta changes one reify-eval source, `modal_ops.rs`, plus test,
+`_merge-verify`'s `target/` into the next base gen. Two things still differ.
+`_merge-verify`'s `target/` also holds the `--workspace` variants its verify
+builds. And the replay covers only the reset and the two cargo runs, not
+`scripts/verify.sh`'s non-cargo leaves (`tree-sitter-generate.sh`,
+`tree-sitter-freshness.sh ensure`, the infra tests), which run between cargo
+invocations in `_merge-verify` and can bump a watched input's mtime. The delta
+changes one reify-eval source, `modal_ops.rs`, plus test,
 script and docs files that `-p reify-eval` does not build.
 
 | Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
@@ -595,25 +599,49 @@ reify-runtime. The log names no build-script unit. It does not name
 tree-sitter-reify, reify-syntax or reify-compiler either, and nothing upstream of
 reify-eval changed.
 
-The real `_merge-verify` was read, not written, at 14:44:33 UTC. Its HEAD was
-still `cb24012c60`. Its last verify attempt (`target/reify-verify-attempt.json`)
-was stamped 12:27:51Z and carried `cb24012c60`'s tree, the verify that gen.643
-was built from. No merge verify had run there since gen.643, so there is no
-real-context evidence after it yet. The next one can supply it through the
-`invoked.timestamp` of the `tree-sitter-reify-*` run dirs that hold an `out/`.
+The real `_merge-verify` was read, not written, at 15:02:30 UTC. Its HEAD was
+still `cb24012c60`, its last verify attempt (`target/reify-verify-attempt.json`)
+was stamped 12:27:51Z, and no `tree-sitter-reify-*` run dir had been invoked
+after 12:09:26. So no merge verify had run there since gen.643's own.
 
-Those run dirs also show the script re-invoked before gen.643 without
-regenerating. The three that hold a generation stamp carry `invoked.timestamp`
-values of 2026-11-17 06:30:31 (release), 11:40:25 and 12:09:26 (debug). Their
-`generation_key.stamp` files are from 2026-11-16, 17:11 to 17:16. The key stamp
-is rewritten after every generation, so none of these runs saw a `grammar.js`
-or CLI other than the 2026-11-16 one. No commit on main between #9896 and
-`cb24012c60` touches `tree-sitter-reify/`. These artefacts do not say which
-candidate each verify ran or why the script reran, so the re-invocations are not
-attributed. Several things rerun it without regenerating: a watched input
-rewritten with unchanged bytes, a changed `src/scanner.c` or
-`build_support.rs`, a `rerun-if-env-changed` variable, or a rebuilt build-script
-compile unit.
+The artefacts of that verify show the build script re-run with no input change.
+The three run dirs that hold a generation stamp were invoked at 2026-11-17
+06:30:31 (release, `02cc16f2…`), 11:40:25 and 12:09:26 (debug, `867156fd…` and
+`e66a76b4…`), and their `generation_key.stamp` files are from 2026-11-16, 17:11
+to 17:16. The key stamp is rewritten after every generation, so none of these
+runs regenerated. The lane's reflog places the two debug invocations in
+gen.643's verify at `cb24012c60`, checked out at 11:39:51 from `48f6c7710b`,
+which contains `d176b5ddfd` and is identical under `tree-sitter-reify/`. The
+release invocation falls under the 05:35:53 reset to `40b1ebb59f`, which also
+contains #9896 and is identical there. `grammar.js` reads 12:09:25.125 with a
+clean `git status`, 1.4 s before `e66a76b4…`'s invocation (12:09:26.507). That
+run rewrote the archive (12:09:31) and did not regenerate. So a watched input's
+mtime was bumped mid-verify with its bytes unchanged. The bump was not a
+`tree-sitter-freshness.sh ensure` force. A force touches `src/scanner.c` as well,
+and the script's header says the ledger "is written only AFTER the touch", yet
+`scanner.c`, `target/.tree-sitter-freshness.ledger` and the ledger's mtime
+witness all still read 2026-11-16 17:11:41.
+
+`867156fd…` and `02cc16f2…` were invoked before that mtime. By cargo's
+`rerun-if-changed` mtime rule, the next `_merge-verify` build of those units is
+therefore expected to re-run the script, recompile the archive and rebuild
+tree-sitter-reify's dependents there. That is an expectation: no verify had run
+there since to confirm it. Why those two dirs themselves reran without
+regenerating is not attributed. A watched input rewritten with unchanged bytes,
+a changed `src/scanner.c` or `build_support.rs`, a `rerun-if-env-changed`
+variable or a rebuilt build-script compile unit would each do it.
+
+Hypothesis: `tests/infra/test_tree_sitter_pipeline.sh` makes the bump. Its
+`TS_DIR` is the real `tree-sitter-reify/`, and two of its tests,
+`test_build_rs_watches_all_compiled_inputs` and
+`test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host`, `touch` the real
+`grammar.js` and then run `cargo check -p tree-sitter-reify` into the lane's own
+`target/`. The 1.4 s gap fits that shape, but nothing read-only shows which leaf
+made the bump.
+
+Fresh lanes do not see it: the seed stamps `grammar.js` back to 2020-01-01,
+whatever mtime `_merge-verify` left, and probe (1) measured tree-sitter-reify's
+build-script run Fresh in such a lane.
 
 ### Cold build
 
@@ -1157,9 +1185,12 @@ kernels' accepted member-feature splits (Member features) still make a plain
   in a lane freshly seeded from gen.643, the first base gen built after #9896,
   and again after a replay of `_merge-verify`'s reset in that lane: in both
   pairs the second identical run compiled 0 units, and tree-sitter-reify's
-  build-script run stayed Fresh in each first run. No verify had run in the
-  real `_merge-verify` since gen.643 to corroborate it there. Details: Tree-sitter
-  re-probe after #9896 (#10046).
+  build-script run stayed Fresh in each first run. Open limit: in the real
+  `_merge-verify`, `grammar.js`'s mtime was bumped mid-verify with its bytes
+  unchanged, the build script re-ran, and two other run dirs are now older
+  than it, so the next verify there is expected to re-run the script and
+  rebuild the cascade. This is filed as a follow-up and is unresolved.
+  Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.
