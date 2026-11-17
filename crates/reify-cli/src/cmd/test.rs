@@ -12,7 +12,7 @@ use reify_eval::{TestResult, TestStatus};
 use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
 use crate::constraint_report::report_eval_output;
 use crate::help::TEST_USAGE;
-use crate::parse_and_compile_with_cfg;
+use crate::parse_and_compile_program_entry;
 
 pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, TEST_USAGE) {
@@ -24,7 +24,7 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let compiled = match parse_and_compile_with_cfg(&path, &cfg) {
+    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

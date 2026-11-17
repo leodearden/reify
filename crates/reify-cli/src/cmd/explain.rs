@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
 use crate::help::EXPLAIN_USAGE;
-use crate::{configured_eval_engine, parse_and_compile_with_cfg};
+use crate::{configured_eval_engine, parse_and_compile_program_entry};
 
 /// Compile the entry as a program (its `#cfg`-satisfied imports resolved as
 /// under `reify check`, with repeated `--cfg` selecting them), then print
@@ -32,7 +32,7 @@ pub(crate) fn cmd_explain(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let compiled = match parse_and_compile_with_cfg(&path, &cfg) {
+    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

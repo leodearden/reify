@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::split_cfg_args_or_usage;
 use crate::help::REPORT_USAGE;
-use crate::{configured_eval_engine, parse_and_compile_with_cfg};
+use crate::{configured_eval_engine, parse_and_compile_program_entry};
 
 /// `reify report --bom <file>` — roll up and render a BOM / cost / waste /
 /// provenance report (io-lifecycle-bom-cost #4292, boundary α).
@@ -62,7 +62,7 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile_with_cfg(path, &cfg) {
+    let compiled = match parse_and_compile_program_entry(path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
