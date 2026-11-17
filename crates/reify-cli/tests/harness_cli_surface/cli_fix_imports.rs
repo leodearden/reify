@@ -21,6 +21,10 @@ const HEADER: &str = "import std.materials.appearance\nimport std.si_units\n\n";
 /// Imports `Finish` alone of std.materials.appearance, leaving PLATE's `Color` uncovered.
 const ENTITY_HEADER: &str = "import std.materials.appearance.Finish\nimport std.si_units\n\n";
 
+/// Gates std.materials.appearance on the `appearance` flag.
+const GATED_HEADER: &str =
+    "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n";
+
 /// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
 /// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
 /// to withhold. If the binders become scope-aware, re-point this at another fixture that leaves a
@@ -299,6 +303,136 @@ fn an_entity_import_covers_only_the_name_it_imports() {
 
     let output = run_reify(&["check", &file]);
     assert!(output.status.success(), "{}", describe(&output));
+}
+
+#[test]
+fn a_cfg_gated_import_covers_only_under_a_cfg_that_satisfies_it() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{GATED_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("missing import std.materials.appearance (Color, Finish)"),
+        "{}",
+        describe(&output)
+    );
+    assert!(!stdout.contains("std.si_units"), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+
+    let output = run_reify(&["fix", "--imports", "--check", "--cfg", "appearance", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(output.stdout.is_empty(), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn fix_adds_an_ungated_import_beside_an_unsatisfied_gated_one() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", &format!("{GATED_HEADER}{PLATE}"));
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("added import std.materials.appearance (Color, Finish)"),
+        "{}",
+        describe(&output)
+    );
+    let fixed = fs::read_to_string(&file).expect("read fixed file");
+    assert_eq!(
+        fixed,
+        format!(
+            "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\
+             import std.materials.appearance\n\n{PLATE}"
+        )
+    );
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixed file"), fixed);
+
+    let output = run_reify(&["check", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+}
+
+#[test]
+fn the_host_target_satisfies_a_target_gated_import_by_default() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!(
+        "#cfg(target = \"{}\")\nimport std.materials.appearance\nimport std.si_units\n\n{PLATE}",
+        std::env::consts::OS
+    );
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+
+    let output = run_reify(&[
+        "fix",
+        "--imports",
+        "--check",
+        "--cfg",
+        "target=nowhere",
+        &file,
+    ]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("missing import std.materials.appearance"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
+    let dir = tempdir().expect("tempdir");
+    let source =
+        format!("#cfg(appearance)\nimport std.materials.appearance\n\n{TYPE_PARAM_HIDES_COLOR}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not writing"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+
+    let output = run_reify(&["fix", "--imports", "--cfg", "appearance", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixed file"),
+        format!(
+            "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n\
+             {TYPE_PARAM_HIDES_COLOR}"
+        )
+    );
+}
+
+#[test]
+fn a_malformed_cfg_prints_the_usage_and_leaves_the_file_alone() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
+
+    let output = run_reify(&["fix", "--imports", &file, "--cfg"]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--cfg requires a value"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        stderr.contains("Usage: reify fix --imports"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), PLATE);
 }
 
 #[cfg(unix)]
