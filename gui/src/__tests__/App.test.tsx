@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { DiagnosticInfo, EntityTreeNode, FileData, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
+import type { DiagnosticInfo, EntityTreeNode, FileData, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PersistentViewState, PublishedState, ValueData } from '../types';
 import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -3570,6 +3570,41 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(bridge.openFileEngine).not.toHaveBeenCalled();
     expect(screen.getByTestId('start-view')).toBeTruthy();
     expect(openPaths()).toEqual([]);
+  });
+
+  it('an open abandoned after its document was closed restores no views over the document opened since', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode({ entity_path: 'Root.A' })]);
+    vi.mocked(bridge.openFile)
+      .mockResolvedValueOnce({ path: '/designs/bracket.ri', content: 'structure Bracket {}' })
+      .mockResolvedValueOnce({ path: '/designs/flange.ri', content: 'structure Flange {}' });
+    const heldViews = deferred<PersistentViewState | null>();
+    vi.mocked(sidecarPersistence.loadSidecar).mockReturnValueOnce(heldViews.promise);
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    await waitFor(() => expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith('/designs/bracket.ri'));
+
+    capturedEditorStore.closeFile('/designs/bracket.ri');
+    await screen.findByTestId('start-document-pending');
+    fireEvent.click(screen.getByTestId('start-document-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('start-document-pending')).toBeNull());
+
+    typeStartPath('/designs/flange.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    await waitFor(() => expect(bridge.recordRecent).toHaveBeenCalledWith('/designs/flange.ri'));
+
+    heldViews.resolve(null);
+    await flushMacrotasks();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Default' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /save views/i }));
+    await waitFor(() => expect(sidecarPersistence.saveSidecar).toHaveBeenCalled());
+    expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith('/designs/flange.ri', expect.anything());
+    expect(sidecarPersistence.saveSidecar).not.toHaveBeenCalledWith('/designs/bracket.ri', expect.anything());
+    expect(capturedEditorStore.state.activeFile).toBe('/designs/flange.ri');
   });
 
   it('Design closes the chat panel and Assistant reopens it', async () => {
