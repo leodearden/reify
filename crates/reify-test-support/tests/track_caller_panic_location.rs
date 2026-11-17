@@ -15,7 +15,7 @@
 //! wrappers), `cell_value`, and the value-cell lookup family's own panics
 //! ("no template named", "no value cell named", "ambiguous cell name",
 //! "expected at least one template"), each driven through the longest public
-//! chain that reaches it. Each guard asserts the reported location plus a
+//! chain that reaches it, and `assert_single_declaration_error`. Each guard asserts the reported location plus a
 //! SHORT payload substring — never full message prose, per the wording rule
 //! `dimensioned_assertions.rs` already follows.
 
@@ -212,4 +212,18 @@ fn get_let_expr_empty_module_panic_reports_caller_not_helpers_rs() {
     });
 
     assert_attributed_here(&site, "expected at least one template");
+}
+
+#[test]
+fn assert_single_declaration_error_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::assert_single_declaration_error(
+            "structure S { let a : Length = 5mm }",
+            reify_core::DiagnosticCode::LetAnnotationTypeMismatch,
+            "let",
+            "a",
+        );
+    });
+
+    assert_attributed_here(&site, "expected exactly one error");
 }
