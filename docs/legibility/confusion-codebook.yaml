@@ -4427,6 +4427,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher session ran with DFR empty (echo at turn 30 shows DARK_FACTORY_ROOT unset). A later python3 call resolved session_registry.py against the reify cwd and failed with ENOENT. The agent then had to set DARK_FACTORY_ROOT explicitly in the rearm command.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: Turn 30 shows DARK_FACTORY_ROOT empty (DFR=) in the watcher session, and the python3 call then targets a mis-resolved path (/home/leo/orchestrator/...) that does not exist. The session later exports the variable explicitly.
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -4912,6 +4918,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The same bounded watcher-rearm command (--level 1 --timeout 3600) was re-issued identically at turn 71 after hitting its own CEILING (exit 124) at turn 59.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical watcher-rearm Bash command (run_in_background, timeout 3660000) is re-issued 14 times. The digest does not show the ceiling outcome explicitly, so the ceiling link is inferred.
+  - date: '2026-11-16'
+    project: reify
+    session: 763e3008-e4c1-4b2b-bf8a-310f6ed776c1
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The Bash watcher-rearm bounded wait (--timeout 3600, timeout 3660000) was re-issued three times with identical arguments. The digest does not show the timeout ceiling being hit, so this is a partial match on the identical-reissue pattern.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -5215,6 +5233,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Path-scope guard (df_guard) fired at turn 35 during cross-project operation; orchestrated task in warm-lanes continued with fused-memory MCP calls at turns 95, 114, 126 that failed with socket/timeout errors
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: The df_guard fired 10 times across the session, and the watcher kept re-attempting cross-project operations (watcher re-arm and polling chains) after the guard had already fired.
 - id: entry-cand-20260730-10
   title: Digest mislabels injected memory-hint Context block as a User Correction
   severity: medium
@@ -9274,6 +9298,18 @@ entries:
     origin_phase: unknown
     manifested_phase: review
     note: Turn 92 Bash chained 'sleep 60; tail -5' to poll a background cargo test log, and the anti-chaining guard blocked it. The log name 'review-9901-cargo.log' supports the review phase. The digest does not show the origin phase.
+  - date: '2026-11-16'
+    project: reify
+    session: d2c21bae-9fdf-42c9-b808-394bc6d84c5c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 493: a Bash call chaining `sleep 60` with a cat|grep|head progress check was blocked by the anti-chaining guard, which recommends Monitor or run_in_background. This is the same sleep-chain polling pattern the entry describes. Phase is not supported by the digest.'
+  - date: '2026-11-16'
+    project: reify
+    session: f2307512-d7f0-4459-9b7e-19e9fb02429e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 118 Bash call chains `sleep 240` with `cat ... .output | tail -30` to poll a background test output file. The anti-chaining guard blocked it, matching this entry's sleep+poll-tripped-guard pattern. Phase is not supported by the digest.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -9592,6 +9628,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Agent ran `head -c 1500 .task/plan.json` to inspect an 'existing plan.json stub' in a warm-lane worktree and got 'No such file or directory' (exit 1). This matches the warm-lane task bootstrap missing plan.json pattern. The origin phase can't be determined from the digest.
+  - date: '2026-11-16'
+    project: reify
+    session: ba3aff1f-2708-444f-84f7-f2ccbafc1dd7
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The error neighborhood shows a Read of .task/plan.json in a warm-lane worktree returning 'File does not exist', which matches the warm-lane bootstrap missing plan.json entry.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -11536,6 +11578,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The '## User Corrections' section labels the injected /escalation-watcher command-message block (a system-issued skill invocation with its own output-format instructions) as a user correction. Same digest-mislabel class as the injected-escalation case. Phase cannot be supported from the digest.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's User Corrections section lists the injected /escalation-watcher command body (turn 4), which is a skill invocation rather than a user correction, and it lists an assistant-quoted citation (turn 98) as well. Both are digest mislabels.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -33085,6 +33133,45 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'Contradictory docstring: in `conformance/mod.rs`, an older line says Real and Int are out of scope for the pass. That''s wrong, and the new paragraph right below it now contradicts it.'
+- id: cand-20261116-1
+  title: Background build completion sentinel (.rc file) polled repeatedly although it is never written
+  cause: The agent polls a background build's exit-code sentinel file (/tmp/9979-pre1.rc) with the same tail+cat command across several turns. The file never appears, and the agent does not check whether the producing job is still running or whether the sentinel path is wired correctly before retrying.
+  area: tooling
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: a24ce7d4-2f3d-47a4-9ddc-5cede2dde73e
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'cat: /tmp/9979-pre1.rc: No such file or directory'
+- id: cand-20261116-2
+  title: Watcher declares a base commit 'phantom' without checking its merge provenance, requiring self-correction
+  cause: The escalation watcher classified a base commit it was supposed to wait for as a 'phantom' commit. The commit was actually an unlanded merge belonging to another task (10033), and the watcher had to correct itself later in the session.
+  area: ops
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: '**Correction:** the auto-watcher said the base 9877 was supposed to wait for (`cdb69767d4`) was a "phantom" commit. That''s wrong, as it was for -4: it is 10033''s unlanded merge.'
+- id: cand-20261116-3
+  title: Task spawned from a shared review suggestion has no declared attribution link, so a sibling task's commit cannot be credited and the claim blocks as no_attribution
+  cause: The task was spawned from the same review suggestion as an earlier task (5494). When the architect found that suggestion already fixed by commit 426deaa4f2 on a different task branch, nothing declared the link between the two tasks, so the done-claim could not be attributed to this task. The block required a manual, first-hand rebuild and repro to resolve.
+  area: task attribution / orchestration bookkeeping
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: ba3aff1f-2708-444f-84f7-f2ccbafc1dd7
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: is review suggestion 1 of task 5494, the same suggestion this task was spawned from
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
