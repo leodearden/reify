@@ -32,6 +32,7 @@ UNAVAILABLE_RC = 75
 
 # Members that source cargo_inputs_lib.sh; DriftTest keeps this exact.
 ADOPTERS = (
+    "test_affected_crates_lib.sh",
     "test_run_gui_scripts.sh",
 )
 
