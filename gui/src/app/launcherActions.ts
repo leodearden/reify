@@ -8,7 +8,7 @@
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
- * attempt is refused with a LaunchFailure under its own code naming that path.
+ * attempt is refused with E_GUI_DOCUMENT_BUSY naming that path.
  * Only the attempt's own settling clears pending (the store's reset does not),
  * so a load that never settles leaves every document attempt refused until the
  * app restarts.
@@ -101,14 +101,10 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  async function exclusiveDocumentAttempt(
-    code: LaunchErrorCode,
-    path: string,
-    attempt: () => Promise<void>,
-  ): Promise<void> {
+  async function exclusiveDocumentAttempt(path: string, attempt: () => Promise<void>): Promise<void> {
     const inFlight = store.state.document.pending;
     if (inFlight !== null) {
-      throw new LaunchFailure(code, `${inFlight} is still opening`);
+      throw new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY, `${inFlight} is still opening`);
     }
     store.setDocumentPending(path);
     try {
@@ -119,11 +115,11 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   function openDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, path, () => loadAndRecord(path));
+    return exclusiveDocumentAttempt(path, () => loadAndRecord(path));
   }
 
   function createDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, path, async () => {
+    return exclusiveDocumentAttempt(path, async () => {
       const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
         deps.createNewFile(path),
       );
