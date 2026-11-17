@@ -49,7 +49,7 @@ describe('openDocument', () => {
 
     await actions.openDocument('/designs/bracket.ri');
 
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri');
     expect(deps.loadDocument.mock.invocationCallOrder[0]).toBeLessThan(
       deps.recordRecent.mock.invocationCallOrder[0],
@@ -122,7 +122,7 @@ describe('openDocument', () => {
 
     await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
 
-    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri');
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
   });
 
@@ -137,7 +137,7 @@ describe('openDocument', () => {
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
     expect(failure.message).toBe('/designs/bracket.ri is still opening');
     expect(deps.loadDocument).toHaveBeenCalledTimes(1);
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri', expect.any(AbortSignal));
     expect(store.state.document.pending).toBe('/designs/bracket.ri');
 
     held.resolve();
@@ -186,7 +186,7 @@ describe('createDocument', () => {
     await actions.createDocument('/designs/created');
 
     expect(deps.createNewFile).toHaveBeenCalledWith('/designs/created');
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/created.ri');
     expect(store.state.document.recent).toEqual(RECENT);
   });
@@ -207,7 +207,7 @@ describe('createDocument', () => {
 
     await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
 
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri', expect.any(AbortSignal));
   });
 
   it('a failed load of the created file does not shut the launcher: the next open loads', async () => {
@@ -217,7 +217,7 @@ describe('createDocument', () => {
 
     await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
 
-    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri');
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
   });
 
   it('is pending on the requested path from the template write through the load', async () => {
@@ -231,7 +231,7 @@ describe('createDocument', () => {
     expect(store.state.document.pending).toBe('/designs/created');
 
     written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
-    await vi.waitFor(() => expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri'));
+    await vi.waitFor(() => expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal)));
     expect(store.state.document.pending).toBe('/designs/created');
 
     loaded.resolve();
@@ -271,6 +271,91 @@ describe('createDocument', () => {
 
     written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
     await creating;
+  });
+});
+
+type HeldLoad = ReturnType<typeof deferred<void>>;
+
+describe('abandonDocumentAttempt', () => {
+  it('a hung load can be abandoned and the next open loads', async () => {
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const actions = createLauncherActions(store, deps);
+    const hung = actions.openDocument('/designs/bracket.ri');
+
+    actions.abandonDocumentAttempt();
+
+    expect(store.state.document.pending).toBeNull();
+    await expect(hung).resolves.toBeUndefined();
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
+    expect(deps.recordRecent).toHaveBeenCalledTimes(1);
+    expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
+  });
+
+  it('abandoning aborts the signal the load was given', async () => {
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const actions = createLauncherActions(store, deps);
+    const hung = actions.openDocument('/designs/bracket.ri');
+    const signal = deps.loadDocument.mock.calls[0][1];
+    expect(signal.aborted).toBe(false);
+
+    actions.abandonDocumentAttempt();
+
+    expect(signal.aborted).toBe(true);
+    await hung;
+  });
+
+  it.each([
+    ['a late success', (held: HeldLoad) => held.resolve()],
+    ['a late rejection', (held: HeldLoad) => held.reject(new Error('engine refused'))],
+  ])('an abandoned load that settles late changes nothing (%s)', async (_, settleLate) => {
+    const abandoned = deferred<void>();
+    const next = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(abandoned.promise).mockReturnValueOnce(next.promise);
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+    actions.abandonDocumentAttempt();
+    await first;
+    const second = actions.openDocument('/designs/flange.ri');
+
+    settleLate(abandoned);
+    await flushMacrotasks();
+
+    expect(store.state.document.pending).toBe('/designs/flange.ri');
+    expect(deps.recordRecent).not.toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(store.state.document.error).toBeNull();
+
+    next.resolve();
+    await second;
+  });
+
+  it('an abandoned create whose template write lands late loads nothing', async () => {
+    const written = deferred<FileData>();
+    deps.createNewFile.mockReturnValueOnce(written.promise);
+    const actions = createLauncherActions(store, deps);
+    const creating = actions.createDocument('/designs/created');
+
+    actions.abandonDocumentAttempt();
+    await expect(creating).resolves.toBeUndefined();
+    written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
+    await flushMacrotasks();
+
+    expect(deps.loadDocument).not.toHaveBeenCalled();
+    expect(deps.recordRecent).not.toHaveBeenCalled();
+  });
+
+  it('abandoning with no attempt in flight changes nothing', () => {
+    store.setRecent(RECENT);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
+    const actions = createLauncherActions(store, deps);
+    const errorBefore = store.state.document.error;
+    const recentBefore = store.state.document.recent;
+
+    actions.abandonDocumentAttempt();
+
+    expect(store.state.document.pending).toBeNull();
+    expect(store.state.document.error).toBe(errorBefore);
+    expect(store.state.document.recent).toBe(recentBefore);
   });
 });
 
