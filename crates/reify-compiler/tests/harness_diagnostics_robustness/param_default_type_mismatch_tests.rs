@@ -5,7 +5,7 @@
 //! like any other dimensionless initializer (D5 reinstated; see
 //! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::DiagnosticCode;
 use reify_test_support::{assert_single_declaration_error, compile_source, errors_only};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
@@ -141,32 +141,11 @@ fn param_negative_literal_on_dimensioned_scalar_errors() {
 /// the check.  Scalar[m] and Scalar[kg] are incompatible under `type_compatible`.
 #[test]
 fn param_different_scalar_dimensions_error() {
-    let source = r#"
-structure S {
-    param bad_mass : Length = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param bad_mass : Length = 5kg' \
-         (Scalar[m] ≠ Scalar[kg]); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
-    );
-
-    let diag = mismatch.unwrap();
-    assert!(
-        diag.message.contains("bad_mass"),
-        "error message should mention 'bad_mass'; got: {:?}",
-        diag.message
+    assert_single_declaration_error(
+        "structure S { param bad_mass : Length = 5kg }",
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "bad_mass",
     );
 }
 
@@ -483,7 +462,6 @@ fn assert_single_conformance_arg_type_mismatch(source: &str) {
         Some(DiagnosticCode::ArgTypeMismatch),
         "got: {shapes:?}"
     );
-    assert_eq!(errors[0].severity, Severity::Error, "got: {shapes:?}");
 }
 
 /// A trait-injected default never reaches the declaration-site check, so the

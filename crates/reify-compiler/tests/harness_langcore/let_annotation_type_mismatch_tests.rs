@@ -34,10 +34,10 @@ structure S {
     );
 }
 
-/// Cross-dimension variant: `let a : Length = 5N` (Newtons ≠ meters) must also
-/// produce ≥1 "declared"/"initializer" error anchored at the `let a` declaration.
-///
-/// RED until step-2.
+/// `let a : Length = 5N` must produce ≥1 "declared"/"initializer" error
+/// anchored at the `let a` declaration. Under the stdlib-less `compile_source`,
+/// `N` is an unknown unit (a second, codeless error), so the initializer types
+/// as `Real`, not Force.
 #[test]
 fn let_annotation_dimension_mismatch_force_unit_errors_at_declaration() {
     let source = r#"
@@ -165,40 +165,6 @@ fn let_annotation_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
         DiagnosticCode::LetAnnotationTypeMismatch,
         "let",
         "c",
-    );
-}
-
-/// The headline `let a : Length = 5kg` must carry
-/// `code == DiagnosticCode::LetAnnotationTypeMismatch`.
-///
-/// Already GREEN after step-2. Registers the canonical code assertion.
-#[test]
-fn let_annotation_mismatch_carries_correct_diagnostic_code() {
-    let source = r#"
-structure S {
-    let a : Length = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch error for 'let a : Length = 5kg'; got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
-    );
-
-    let diag = mismatch.unwrap();
-    assert!(
-        diag.message.contains("'a'"),
-        "error message should mention the quoted let name \"'a'\"; got: {:?}",
-        diag.message
     );
 }
 
