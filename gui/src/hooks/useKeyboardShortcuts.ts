@@ -58,9 +58,8 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
 };
 
 /**
- * Shortcut ids that are exempt from the typing-context guard (input/textarea/
- * select type-ahead/contentEditable). These are global palette-open actions that
- * must fire from any focus state, including while the CodeMirror editor is focused.
+ * Shortcut ids the command palette does not list: the palette's own openers,
+ * which would otherwise list themselves.
  */
 const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
 
@@ -113,11 +112,11 @@ function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
 
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, or contenteditable
- * element, or a select receiving one of its own type-ahead keys (see
- * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire),
- * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
- * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
+ * While the event target is an input, textarea, or contenteditable element,
+ * or a select receiving one of its own type-ahead keys (see
+ * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire), only
+ * `worksInTypingContext` shortcuts run; every other key is left to the
+ * focused element. A `toggle` shortcut swallows its key's
  * auto-repeat keydowns, so holding the key flips the state once. With no
  * document open, only `worksWithoutDocument` shortcuts run; the others, and
  * the Escape and 1–9 keys, are swallowed.
@@ -147,9 +146,7 @@ export function useKeyboardShortcuts(
       const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
 
-      // Palette-global shortcuts bypass the typing-context guard.
-      // All other shortcuts respect the guard (do not fire in inputs/editors).
-      if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
+      if (inTypingContext && !shortcut.worksInTypingContext) continue;
 
       e.preventDefault();
       if (noDocument && !shortcut.worksWithoutDocument) return;
