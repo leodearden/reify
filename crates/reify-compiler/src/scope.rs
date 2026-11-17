@@ -277,20 +277,29 @@ pub(crate) struct CompilationScope<'u> {
     /// Set by compile_purpose so that concrete subject types can be validated
     /// against their declared value cells (task-2200). None for entity/function scopes.
     pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
-    /// The module's own `structure def` names (top-level and purpose-nested)
-    /// declared BELOW the fn being compiled (task #5494, PRD stdlib-namespace D-8).
+    /// Module-local ctor-view names whose template this scope cannot use
+    /// (task #5494, PRD stdlib-namespace D-8).
     ///
-    /// Free fn bodies and param defaults compile in source order, interleaved
-    /// with structure templates, so these structures have no template yet. Using
-    /// one — by constructor or by member access — is a declaration-order error,
-    /// reported by `expr.rs`'s `later_declared_structure_error` rather than
-    /// silently degraded (a generic call, the permissive member fallback, or a
-    /// same-named prelude template).
+    /// Using one — by constructor or by member access — draws
+    /// `StructureDeclaredAfterFunction` through `expr.rs`'s
+    /// `later_declared_structure_error` rather than silently degrading (a
+    /// generic call, the permissive member fallback, or a same-named prelude
+    /// template). Its two writers fill it differently:
+    ///
+    /// * the unified source-order pass
+    ///   (`SourceOrderFnEnv::compile_function_decl`) sets the module's
+    ///   `structure def`s declared BELOW the fn — occurrences deliberately
+    ///   excluded. This is where the error reaches the user;
+    /// * the early-default probe (`phase_fn_param_defaults`) sets EVERY local
+    ///   ctor-view name ([`crate::compile_builder::ctx::CompilationCtx::local_entity_names`]),
+    ///   because its ctor view holds no local template. It discards those
+    ///   diagnostics and reads the code only as "these defaults need a local
+    ///   template".
     ///
     /// Only free-fn scopes set this. Entity scopes leave it `None`
     /// (`compile_entity` reports forward entity references its own way), and so
     /// do trait-static and assoc-fn scopes (#5371's documented ruling).
-    pub(crate) later_declared_structure_names: Option<&'u HashSet<String>>,
+    pub(crate) unavailable_local_template_names: Option<&'u HashSet<String>>,
     /// The same-module fn overloads whose param defaults are not yet compiled,
     /// because a default uses a same-module structure (task #5494, PRD
     /// stdlib-namespace D-8; `functions::FnParamDefaults::NeedLocalTemplates`),
@@ -458,7 +467,7 @@ impl<'u> CompilationScope<'u> {
             has_meta_block: false,
             unit_registry: None,
             template_registry: None,
-            later_declared_structure_names: None,
+            unavailable_local_template_names: None,
             fns_with_pending_defaults: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
@@ -487,11 +496,11 @@ impl<'u> CompilationScope<'u> {
         self.template_registry = Some(registry);
     }
 
-    /// Set the later-declared structure names (task #5494). Mirrors
+    /// Set [`Self::unavailable_local_template_names`] (task #5494). Mirrors
     /// `set_template_registry`; called from `functions::FnCompileEnv::scope`
     /// for the param-default and body scopes of a free fn.
-    pub(crate) fn set_later_declared_structure_names(&mut self, names: &'u HashSet<String>) {
-        self.later_declared_structure_names = Some(names);
+    pub(crate) fn set_unavailable_local_template_names(&mut self, names: &'u HashSet<String>) {
+        self.unavailable_local_template_names = Some(names);
     }
 
     /// Tell this scope which stubs of `calls`' table cannot pad yet

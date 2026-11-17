@@ -7087,15 +7087,20 @@ fn member_access_aggregation_or_unsupported(
 /// with structure templates, so they may use a module-local `structure def`'s
 /// template — by constructor or by member access — only if it is declared
 /// ABOVE the fn. `Some` names the violation when `name` is in the scope's
-/// `later_declared_structure_names`; `None` for every other name, and always
-/// for scopes that do not set that field (entity, trait-static, assoc-fn).
+/// [`CompilationScope::unavailable_local_template_names`]; `None` for every
+/// other name, and always for scopes that do not set that field (entity,
+/// trait-static, assoc-fn).
+///
+/// In the unified source-order pass such a name is a `structure def` declared
+/// below the fn, so the message is true. In the early-default probe the
+/// diagnostic is only a signal, and is discarded.
 fn later_declared_structure_error(
     scope: &CompilationScope,
     name: &str,
     span: reify_core::SourceSpan,
 ) -> Option<Diagnostic> {
     let declared_later = scope
-        .later_declared_structure_names
+        .unavailable_local_template_names
         .is_some_and(|names| names.contains(name));
     declared_later.then(|| {
         Diagnostic::error(format!(
@@ -10992,7 +10997,7 @@ mod source_order_helper_tests {
     fn later_declared_structure_error_fires_only_for_names_declared_later() {
         let later = HashSet::from(["Later".to_string()]);
         let mut scope = CompilationScope::new("f");
-        scope.set_later_declared_structure_names(&later);
+        scope.set_unavailable_local_template_names(&later);
         let diag = later_declared_structure_error(&scope, "Later", span())
             .expect("a structure declared below the fn is a declaration-order error");
         assert_eq!(
