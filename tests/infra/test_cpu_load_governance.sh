@@ -2608,6 +2608,36 @@ _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
 # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
 _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
 
+# _row23_write_stub_cargo <bin_dir> <fixture> <burn_s> <marker_dir>
+#   Writes the executable stub "real cargo" <bin_dir>/cargo: it burns <burn_s> s through <fixture>,
+#   reporting the worker pid to $GOVTEST_MIX_READY_FILE (required, `:?`), then touches <marker_dir>/done_<own pid>.
+_row23_write_stub_cargo() {
+    local bin_dir="$1" fixture="$2" burn_s="$3" marker_dir="$4"
+    cat > "$bin_dir/cargo" << STUB_CARGO_EOF
+#!/usr/bin/env bash
+# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
+# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
+bash "${fixture}" 1 ${burn_s} --ready-file "\${GOVTEST_MIX_READY_FILE:?}" >/dev/null 2>&1 || true
+touch "${marker_dir}/done_\$\$"
+STUB_CARGO_EOF
+    chmod +x "$bin_dir/cargo"
+}
+
+# _row23_stop_mix <ready_file>...
+#   TERMs each pid listed in every ready file that exists: the fixture's worker handles, so the
+#   fixture exits 0 and its stub still writes its done marker.  Total: errors ignored, rc 0.
+_row23_stop_mix() {
+    local ready_file pid
+    for ready_file in "$@"; do
+        [ -r "$ready_file" ] || continue
+        while IFS= read -r pid; do
+            [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+            kill -TERM "$pid" 2>/dev/null || true
+        done < "$ready_file"
+    done
+    return 0
+}
+
 # ROW23-STUB-VACUITY (task 10025): the mix stub's ready-file seam and
 # _row23_stop_mix.  ROW2_3 opens its window once every mix source has reported
 # ready through its own fixture --ready-file, and ends the mix by TERMing the
