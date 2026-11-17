@@ -8189,10 +8189,12 @@ pub struct DiagnosticInfo {
     /// Whether this diagnostic carries a real, line-tied source span.
     ///
     /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
-    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// actual span from the compiled source (a first `Diagnostic::labels` entry
+    /// whose span is not [`SourceSpan::prelude`]).
     /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
     /// point at a meaningful source location — e.g. module-level hot-reload staleness
-    /// errors where no span is available.
+    /// errors where no span is available, or a diagnostic re-homed from an
+    /// imported module, whose spans index that module, not this source.
     ///
     /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
     /// navigating the editor to a fake line 1 for span-less diagnostics.

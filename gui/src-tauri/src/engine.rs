@@ -956,36 +956,49 @@ fn gui_cfg() -> reify_compiler::cfg::CfgSet {
 /// Compile a buffer the way its anchor and imports call for.
 ///
 /// A buffer anchored to a file whose entry follows an import compiles as a
-/// program ([`compile_entry_program`]); any other buffer compiles single-file
-/// ([`compile_single_file_with_stdlib`]). This is the routing reify-lsp's
-/// `document_compile::compile_document` applies, so the GUI's own compile and
+/// program ([`compile_entry_program`]); any other anchored buffer compiles
+/// single-file ([`compile_single_file_with_stdlib`]), and a buffer with no
+/// anchor compiles single-file with its imports explained
+/// ([`compile_unanchored`]). The anchored routing is reify-lsp's
+/// `document_compile::compile_document`, over the same
+/// `program::entry_follows_imports` predicate, so the GUI's own compile and
 /// the LSP it hosts agree on every file.
-///
-/// A buffer with no anchor cannot resolve the imports a file-backed compile
-/// would follow, so it carries [`unanchored_import_warning`]: on an accepted
-/// compile among its diagnostics, on a rejection after the errors it explains.
 fn compile_buffer(
     anchor: Option<&Path>,
     source: &str,
     module_name: &str,
 ) -> Result<CompiledSource, CompileRejection> {
     let parsed = parse_entry(source, module_name)?;
-    let followed = reify_compiler::program::followed_imports(&parsed, &gui_cfg());
     match anchor {
-        Some(entry_path) if !followed.is_empty() => {
+        Some(entry_path) if reify_compiler::program::entry_follows_imports(&parsed, &gui_cfg()) => {
             compile_entry_program(entry_path, source, parsed, module_name)
         }
         Some(_) => compile_single_file_with_stdlib(parsed, source, module_name),
-        None => {
-            let warning = unanchored_import_warning(&followed);
-            compile_single_file_with_stdlib(parsed, source, module_name)
-                .map(|mut accepted| {
-                    accepted.compiled.diagnostics.extend(warning.clone());
-                    accepted
-                })
-                .map_err(|rejection| {
-                    rejection.explained_by(warning.as_slice(), &module_key(module_name), source)
-                })
+        None => compile_unanchored(parsed, source, module_name),
+    }
+}
+
+/// Compile `parsed`, the parse of a buffer with no file anchor, single-file.
+///
+/// It cannot resolve the imports a file-backed compile would follow, so it
+/// carries [`unanchored_import_warning`] (D-10): on an accepted compile among
+/// its diagnostics, on a rejection after the errors it explains.
+fn compile_unanchored(
+    parsed: reify_ast::ParsedModule,
+    source: &str,
+    module_name: &str,
+) -> Result<CompiledSource, CompileRejection> {
+    let warning = unanchored_import_warning(&reify_compiler::program::followed_imports(
+        &parsed,
+        &gui_cfg(),
+    ));
+    match compile_single_file_with_stdlib(parsed, source, module_name) {
+        Ok(mut accepted) => {
+            accepted.compiled.diagnostics.extend(warning);
+            Ok(accepted)
+        }
+        Err(rejection) => {
+            Err(rejection.explained_by(warning.as_slice(), &module_key(module_name), source))
         }
     }
 }
@@ -1051,15 +1064,11 @@ fn compile_entry_program(
     parsed: reify_ast::ParsedModule,
     module_name: &str,
 ) -> Result<CompiledSource, CompileRejection> {
-    let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
-    // The stdlib root is never read: compile_program does not walk `std.*` (I4).
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(entry_dir, std::path::PathBuf::new());
     let program = reify_compiler::program::compile_program_with_parsed_entry(
         entry_path,
         source,
         &parsed,
-        &resolver,
+        &reify_compiler::program::entry_dir_resolver(entry_path),
         &gui_cfg(),
         &reify_constraints::SimpleConstraintChecker,
     );
@@ -8602,7 +8611,10 @@ fn collect_value_refs(expr: &reify_ir::CompiledExpr) -> Vec<String> {
 /// known source location), pass `"<unknown>"` and an empty string for `source`.
 ///
 /// Each diagnostic's first label span is used for line/column resolution.
-/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`.
+/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`, and
+/// so does a first label at the prelude sentinel (e.g. a diagnostic
+/// `compile_program` re-homed from an import unit); both report
+/// `has_location: false`.
 ///
 /// # Severity format
 ///
@@ -8646,7 +8658,10 @@ fn diagnostics_to_info(
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
-                has_location: !diag.labels.is_empty(),
+                has_location: diag
+                    .labels
+                    .first()
+                    .is_some_and(|label| !label.span.is_prelude()),
             }
         })
         .collect()

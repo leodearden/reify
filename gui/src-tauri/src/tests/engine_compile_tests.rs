@@ -40,7 +40,8 @@ fn error_diag_count(session: &EngineSession) -> usize {
 }
 
 /// I2: an import unit's own Errors are re-homed onto the entry, attributed to
-/// the import, and reject the load.
+/// the import's file, and reject the load. Their spans index helper.ri, not
+/// the entry, so the wire marks no location in the entry for them.
 #[test]
 fn load_file_surfaces_an_import_units_errors_on_the_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -61,13 +62,25 @@ fn load_file_surfaces_an_import_units_errors_on_the_entry() {
         .expect_err("a broken import unit must reject the load");
 
     assert!(
-        err.contains("in imported module 'helper'"),
-        "the rejection must attribute the import unit's error to helper, got: {err}"
+        err.contains("in imported module 'helper'") && err.contains("helper.ri"),
+        "the rejection must attribute the import unit's error to helper.ri, got: {err}"
     );
     assert!(
         error_diag_count(&session) >= 1,
         "the rejection must carry the re-homed Error diagnostics, got {:?}",
         session.compile_failure_for_test()
+    );
+    let rehomed: Vec<_> = session
+        .compile_failure_for_test()
+        .expect("the rejection must be recorded")
+        .diags
+        .iter()
+        .filter(|diag| diag.message.starts_with("in imported module 'helper'"))
+        .collect();
+    assert!(!rehomed.is_empty());
+    assert!(
+        rehomed.iter().all(|diag| !diag.has_location),
+        "a re-homed diagnostic has no location in the entry, got {rehomed:?}"
     );
 }
 
@@ -226,6 +239,65 @@ fn buffer_only_rejection_still_explains_the_unresolved_import() {
         warning.message.contains("helper") && warning.message.contains("file-backed"),
         "the warning must name the import and the cause, got: {}",
         warning.message
+    );
+}
+
+/// `load_from_source` never compiles against a file, even on a session a
+/// prior `load_file` anchored, so it warns about its imports; the anchor it
+/// preserves still resolves the next `update_source`'s imports.
+#[test]
+fn load_from_source_on_an_anchored_session_warns_and_keeps_the_anchor() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "helper.ri",
+        "module helper\npub structure def Helper {\n    param x : Length = 10mm\n}\n",
+    );
+    let main = write(
+        dir.path(),
+        "main.ri",
+        "module main\nstructure Top { param w: Length = 5mm }\n",
+    );
+    let mut session = session();
+    session
+        .load_file(&main)
+        .expect("the healthy entry must load");
+
+    session
+        .load_from_source(BUF, "solo")
+        .expect("a buffer-only compile with imports must still proceed");
+    assert_one_d10_warning(&session);
+
+    session
+        .update_source(
+            main.to_str().expect("utf-8 tempdir path"),
+            "module main\nimport helper\nstructure Top { sub h = Helper() }\n",
+        )
+        .expect("the preserved anchor must resolve helper beside main.ri");
+    assert!(d10_warnings(&session).is_empty());
+}
+
+/// A rejected buffer with no file anchor and no followed import carries its
+/// Errors and nothing else.
+#[test]
+fn buffer_only_rejection_without_followed_imports_carries_only_errors() {
+    let mut session = session();
+
+    session
+        .load_from_source(
+            &format!("import std.units\nstructure Solo {BROKEN_BODY}"),
+            "solo",
+        )
+        .expect_err("the broken body must reject the buffer");
+
+    let diags = &session
+        .compile_failure_for_test()
+        .expect("the rejection must be recorded")
+        .diags;
+    assert!(!diags.is_empty());
+    assert!(
+        diags.iter().all(|diag| diag.severity == "Error"),
+        "no explanation is attached when no import needs one, got {diags:?}"
     );
 }
 
