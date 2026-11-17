@@ -75,20 +75,30 @@ fn build_cfg_target_selects_the_platform_module_as_check_does() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join("out.step");
     let out_arg = out.to_str().expect("utf-8 tempdir");
-    for (target, verdict) in [
-        ("linux", "OK Rig#constraint[0]"),
-        ("wasm", "VIOLATED Rig#constraint[0]"),
+    for (target, verdict, expected_code) in [
+        ("linux", "OK Rig#constraint[0]", 0),
+        ("wasm", "VIOLATED Rig#constraint[0]", 1),
     ] {
         let cfg = format!("target={target}");
-        let (_status, check_stdout, check_stderr) =
+        let (check_status, check_stdout, check_stderr) =
             common::run_with_args(&["check", "--cfg", &cfg, &main]);
+        assert_eq!(
+            check_status.code(),
+            Some(expected_code),
+            "check --cfg {cfg}: exited {check_status}, expected exit code {expected_code}.\nstdout: {check_stdout}\nstderr: {check_stderr}"
+        );
         assert!(
             check_stdout.contains(verdict),
             "check --cfg {cfg}: missing {verdict:?}.\nstdout: {check_stdout}\nstderr: {check_stderr}"
         );
         let _ = std::fs::remove_file(&out);
-        let (_status, stdout, stderr) =
+        let (status, stdout, stderr) =
             common::run_with_args(&["build", "--cfg", &cfg, &main, "-o", out_arg]);
+        assert_eq!(
+            status.code(),
+            Some(expected_code),
+            "build --cfg {cfg}: exited {status}, expected exit code {expected_code}.\nstdout: {stdout}\nstderr: {stderr}"
+        );
         assert!(
             stdout.contains(verdict),
             "build --cfg {cfg}: missing {verdict:?} (check's verdict).\nstdout: {stdout}\nstderr: {stderr}"
