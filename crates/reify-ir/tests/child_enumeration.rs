@@ -401,11 +401,14 @@ fn try_for_each_child_matches_for_each_child_and_stops_at_first_break() {
 #[test]
 fn for_each_child_mut_reaches_the_same_child_slots() {
     for mut case in corpus() {
+        let mut visited = Vec::new();
         case.expr.for_each_child_mut(&mut |child| {
+            visited.push(label(child));
             if let CompiledExprKind::ValueRef(id) = &mut child.kind {
                 id.member.push('\'');
             }
         });
+        assert_eq!(visited, case.children, "case `{}` visit order", case.name);
         let primed: Vec<String> = case.children.iter().map(|c| format!("{c}'")).collect();
         assert_eq!(child_labels(&case.expr), primed, "case `{}`", case.name);
     }
