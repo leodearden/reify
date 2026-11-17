@@ -27,63 +27,28 @@ fn vec3_to_direction(v: &Value) -> Value {
         .map_or(Value::Undef, Value::Direction)
 }
 
-/// Column `axis` (0=x, 1=y, 2=z) of the rotation matrix for the unit quaternion
-/// `(w, x, y, z)` — i.e. the rotated world basis vector, a unit `Direction`.
-/// The quaternion is normalized first; `None` for a non-finite or zero
-/// quaternion. The column formulas match `reify_stdlib::orientation`'s
-/// row-major `R` (and `quat_rotate`'s active `q·v·q*` convention).
-fn quat_basis_axis(w: f64, x: f64, y: f64, z: f64, axis: usize) -> Option<[f64; 3]> {
-    let n = (w * w + x * x + y * y + z * z).sqrt();
-    if !n.is_finite() || n < 1e-12 {
-        return None;
-    }
-    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
-    let col = match axis {
-        0 => [
-            1.0 - 2.0 * (y * y + z * z),
-            2.0 * (x * y + w * z),
-            2.0 * (x * z - w * y),
-        ],
-        1 => [
-            2.0 * (x * y - w * z),
-            1.0 - 2.0 * (x * x + z * z),
-            2.0 * (y * z + w * x),
-        ],
-        2 => [
-            2.0 * (x * z + w * y),
-            2.0 * (y * z - w * x),
-            1.0 - 2.0 * (x * x + y * y),
-        ],
-        _ => return None,
-    };
-    Some(col)
+/// Basis axis `axis` (0=x, 1=y, 2=z) of a `Frame` as a unit vector, or `None`
+/// for a non-Frame or a malformed basis.
+fn frame_axis_unit(frame: &Value, axis: usize) -> Option<UnitVec3> {
+    frame_basis(frame)
+        .ok()
+        .and_then(|rows| UnitVec3::from_vector(rows[axis]).ok())
 }
 
 /// Project a `Frame` basis axis (`.x`/`.y`/`.z`) to a unit `Direction`.
 fn frame_axis_direction(frame: &Value, axis: usize) -> Value {
-    frame_basis(frame)
-        .ok()
-        .and_then(|rows| UnitVec3::from_vector(rows[axis]).ok())
-        .map_or(Value::Undef, Value::Direction)
+    frame_axis_unit(frame, axis).map_or(Value::Undef, Value::Direction)
 }
 
 /// Project a `Frame` to one of its principal planes: a `Plane` at the frame
-/// origin whose normal is basis axis `normal_axis` (0=x, 1=y, 2=z), kept as the
-/// 3-component `Vector` shape `decode_plane` requires.
-fn frame_plane(origin: &Value, basis: &Value, normal_axis: usize) -> Value {
-    match basis {
-        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, normal_axis) {
-            Some([nx, ny, nz]) => Value::Plane {
-                origin: Box::new(origin.clone()),
-                normal: Box::new(Value::Vector(vec![
-                    Value::Real(nx),
-                    Value::Real(ny),
-                    Value::Real(nz),
-                ])),
-            },
-            None => Value::Undef,
+/// origin whose `Direction` normal is basis axis `normal_axis` (0=x, 1=y, 2=z).
+fn frame_plane(frame: &Value, origin: &Value, normal_axis: usize) -> Value {
+    match frame_axis_unit(frame, normal_axis) {
+        Some(normal) => Value::Plane {
+            origin: Box::new(origin.clone()),
+            normal: Box::new(Value::Direction(normal)),
         },
-        _ => Value::Undef,
+        None => Value::Undef,
     }
 }
 
@@ -118,14 +83,14 @@ pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> 
             "origin" => Some((**origin).clone()),
             _ => None,
         },
-        Value::Frame { origin, basis } => match method {
+        Value::Frame { origin, .. } => match method {
             "x" => Some(frame_axis_direction(obj, 0)),
             "y" => Some(frame_axis_direction(obj, 1)),
             "z" => Some(frame_axis_direction(obj, 2)),
             "origin" => Some((**origin).clone()),
-            "xy_plane" => Some(frame_plane(origin, basis, 2)),
-            "yz_plane" => Some(frame_plane(origin, basis, 0)),
-            "zx_plane" => Some(frame_plane(origin, basis, 1)),
+            "xy_plane" => Some(frame_plane(obj, origin, 2)),
+            "yz_plane" => Some(frame_plane(obj, origin, 0)),
+            "zx_plane" => Some(frame_plane(obj, origin, 1)),
             _ => None,
         },
         Value::Direction(u) => {

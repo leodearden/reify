@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use reify_core::DimensionVector;
 use reify_ir::arg_acceptance::{Acceptance, ArgRejection, accept_arg, length_spec};
 use reify_ir::direction_decode::decode_direction;
-use reify_ir::{Value, quaternion_is_finite};
+use reify_ir::{UnitVec3, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 use crate::matrix::{mat3_det, matrix_components_f64};
@@ -1275,11 +1275,11 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// The offset is the only dimensioned input, so the whole origin triple
 /// consequently carries LENGTH: the two zeros are minted at the gated dimension,
 /// and `plane_xy(5mm)` has origin `(0m, 0m, 5mm)`. That mirroring is VERIFIED by
-/// `plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare`
+/// `plane_xy_length_zero_mirrors_length_into_origin_and_mints_a_direction_normal`
 /// rather than argued here, which is why the origin is built from
 /// [`make_point3`] at LENGTH instead of from a closure that still carried a
 /// DIMENSIONLESS branch the gate has made unreachable. The synthesized normal
-/// stays DIMENSIONLESS: a unit vector legitimately has bare components
+/// is a `Value::Direction` minted by [`direction_value`], dimensionless by type
 /// (decision D3), and nothing in ε widens the gate to it.
 ///
 /// SCOPE. Every construction-datum constructor in this module now REQUIRES
@@ -1287,9 +1287,9 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// `plane_xz` / `plane_yz`, and [`make_axis`] beside it) by task ε, and the five
 /// siblings below — `midplane`, `axis_through`, `plane_through`, the arity-2
 /// `offset` and `frame_at` (task 4387 / η, gated by task 6591) — by their own
-/// per-builtin classifiers. Only DIRECTION and unit-vector operands stay bare:
-/// `frame_at`'s x/z axes and every synthesized or decoded plane NORMAL, because
-/// a unit vector legitimately has dimensionless components (decision D3).
+/// per-builtin classifiers. DIRECTION operands are not gated: `frame_at`'s x/z
+/// axes and every synthesized or decoded plane NORMAL are `Value::Direction`s,
+/// dimensionless by type (decision D3).
 ///
 /// `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate (task δ / 5745) stays live
 /// and reachable from real `.ri` source, so R11 is still shut at BOTH ends
@@ -1324,14 +1324,12 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     }
     let mut origin_si = [0.0; 3];
     origin_si[offset_index] = offset_f;
-    let normal_vec = Value::Vector(vec![
-        Value::Real(normal[0]),
-        Value::Real(normal[1]),
-        Value::Real(normal[2]),
-    ]);
+    let Some(normal) = direction_value(normal) else {
+        return Value::Undef;
+    };
     Value::Plane {
         origin: Box::new(make_point3(origin_si, DimensionVector::LENGTH)),
-        normal: Box::new(normal_vec),
+        normal: Box::new(normal),
     }
 }
 
@@ -1379,9 +1377,9 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
 ///
 /// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
 /// byte-identically (`decode_axis_producer_round_trip_*`). The synthesized
-/// direction stays DIMENSIONLESS: a unit vector legitimately has bare components
-/// (decision D3). See [`make_plane`]'s doc for the scope statement the two
-/// share.
+/// direction is a `Value::Direction` minted by [`direction_value`], dimensionless
+/// by type (decision D3). See [`make_plane`]'s doc for the scope statement the
+/// two share.
 fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -1393,14 +1391,12 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
         Some((_, dim)) if dim == DimensionVector::LENGTH => {}
         _ => return Value::Undef,
     }
-    let dir_vec = Value::Vector(vec![
-        Value::Real(direction[0]),
-        Value::Real(direction[1]),
-        Value::Real(direction[2]),
-    ]);
+    let Some(direction) = direction_value(direction) else {
+        return Value::Undef;
+    };
     Value::Axis {
         origin: Box::new(args[0].clone()),
-        direction: Box::new(dir_vec),
+        direction: Box::new(direction),
     }
 }
 
@@ -1419,6 +1415,13 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+/// Mint a datum direction or normal: the one path every construction datum in
+/// this module takes to a `Value::Direction`. `None` for a degenerate or
+/// non-finite vector, which each caller maps to the family's `Value::Undef`.
+fn direction_value(v: [f64; 3]) -> Option<Value> {
+    UnitVec3::from_vector(v).ok().map(Value::Direction)
 }
 
 /// Normalize a 3-vector to unit length; `None` for a zero-length or non-finite vector.
@@ -1764,15 +1767,15 @@ fn classify_transform_operand_args(
 /// The verdict is reached through [`classify_midplane_args`], the SAME predicate
 /// [`diagnose`]'s `midplane` arm reads; the degeneracy guard is ordered AFTER
 /// it, so a bare-origin call is attributed to its dimension rather than to a
-/// degeneracy. The two NORMALS stay dimension-agnostic (decision D3), and the
-/// bisector's origin is minted at LENGTH because both inputs now are.
+/// degeneracy. The two NORMALS stay dimension-agnostic (decision D3), the
+/// bisector's normal is a `Value::Direction` minted by [`direction_value`], and
+/// its origin is minted at LENGTH because both inputs now are.
 fn eval_midplane(args: &[Value]) -> Value {
     let Ok(((oa, na), (ob, nb))) = classify_midplane_args(args) else {
         return Value::Undef;
     };
-    let normal = match normalize3([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) {
-        Some(n) => n,
-        None => return Value::Undef,
+    let Some(normal) = direction_value([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) else {
+        return Value::Undef;
     };
     let mid = [
         (oa[0] + ob[0]) / 2.0,
@@ -1781,7 +1784,7 @@ fn eval_midplane(args: &[Value]) -> Value {
     ];
     Value::Plane {
         origin: Box::new(make_point3(mid, DimensionVector::LENGTH)),
-        normal: Box::new(make_real_vec3(normal)),
+        normal: Box::new(normal),
     }
 }
 
@@ -1795,19 +1798,18 @@ fn eval_midplane(args: &[Value]) -> Value {
 /// [`diagnose`]'s arm share.
 ///
 /// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
-/// byte-identically; the synthesized direction stays DIMENSIONLESS, since a unit
-/// vector legitimately has bare components (decision D3).
+/// byte-identically; the synthesized direction is a `Value::Direction` minted by
+/// [`direction_value`], dimensionless by type (decision D3).
 fn eval_axis_through(args: &[Value]) -> Value {
     let Ok((pa, pb)) = classify_axis_through_args(args) else {
         return Value::Undef;
     };
-    let direction = match normalize3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) {
-        Some(d) => d,
-        None => return Value::Undef,
+    let Some(direction) = direction_value([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) else {
+        return Value::Undef;
     };
     Value::Axis {
         origin: Box::new(args[0].clone()),
-        direction: Box::new(make_real_vec3(direction)),
+        direction: Box::new(direction),
     }
 }
 
@@ -1824,20 +1826,19 @@ fn eval_axis_through(args: &[Value]) -> Value {
 /// The parameters are `a`/`b`/`c` — the spelling
 /// `reify-compiler/src/units.rs`'s signature block and this family's
 /// diagnostics use. The accepted origin is cloned VERBATIM; the synthesized
-/// normal stays DIMENSIONLESS (decision D3).
+/// normal is a `Value::Direction` minted by [`direction_value`] (decision D3).
 fn eval_plane_through(args: &[Value]) -> Value {
     let Ok((a, b, c)) = classify_plane_through_args(args) else {
         return Value::Undef;
     };
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let normal = match normalize3(cross3(u, v)) {
-        Some(n) => n,
-        None => return Value::Undef,
+    let Some(normal) = direction_value(cross3(u, v)) else {
+        return Value::Undef;
     };
     Value::Plane {
         origin: Box::new(args[0].clone()),
-        normal: Box::new(make_real_vec3(normal)),
+        normal: Box::new(normal),
     }
 }
 
@@ -1862,18 +1863,14 @@ fn eval_offset_plane(args: &[Value]) -> Value {
     let Ok(((o, n), delta)) = classify_offset_plane_args(args) else {
         return Value::Undef;
     };
-    let n_hat = match normalize3(n) {
-        Some(nh) => nh,
-        None => return Value::Undef,
+    let Ok(n_hat) = UnitVec3::from_vector(n) else {
+        return Value::Undef;
     };
-    let new_o = [
-        o[0] + delta * n_hat[0],
-        o[1] + delta * n_hat[1],
-        o[2] + delta * n_hat[2],
-    ];
+    let [nx, ny, nz] = n_hat.components();
+    let new_o = [o[0] + delta * nx, o[1] + delta * ny, o[2] + delta * nz];
     Value::Plane {
         origin: Box::new(make_point3(new_o, DimensionVector::LENGTH)),
-        normal: Box::new(make_real_vec3(n_hat)),
+        normal: Box::new(Value::Direction(n_hat)),
     }
 }
 
@@ -3683,10 +3680,9 @@ mod tests {
     /// The anti-vacuity partner of the rows above: a `Point3<Length>` origin
     /// still builds an `Axis`, carrying that point VERBATIM (the byte-identical
     /// round-trip `decode_axis_producer_round_trip_*` depends on), with a
-    /// DIMENSIONLESS direction — decision D3's scope lock, since a unit vector
-    /// legitimately has bare components.
+    /// `Direction` — dimensionless by type, decision D3's scope lock.
     #[test]
-    fn axis_x_length_origin_round_trips_and_keeps_direction_bare() {
+    fn axis_x_length_origin_round_trips_and_mints_a_direction() {
         let origin = make_point3_length();
         let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
         let Value::Axis {
@@ -3699,8 +3695,8 @@ mod tests {
         assert_eq!(*o, origin, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *direction,
-            Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
-            "the synthesized direction is a unit vector and stays dimensionless (D3)"
+            unit_dir(1.0, 0.0, 0.0),
+            "the synthesized direction is a Direction, dimensionless by type (D3)"
         );
     }
 
