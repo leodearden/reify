@@ -3500,7 +3500,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
-  it('a Ctrl+O while a Start-view open is still loading toasts E_GUI_DOCUMENT_BUSY and starts no second load', async () => {
+  it('a Ctrl+O while a Start-view open is still loading toasts E_GUI_DOCUMENT_BUSY before opening the file dialog and starts no second load', async () => {
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
     const reply = deferred<PublishedState>();
     vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
@@ -3518,12 +3518,71 @@ describe('App launcher Start view (alpha-spine β)', () => {
         toastTexts().some((t) => t.includes('Open file failed: E_GUI_DOCUMENT_BUSY') && t.includes('/designs/bracket.ri is still opening')),
       ).toBe(true),
     );
+    expect(bridge.pickOpenPath).not.toHaveBeenCalled();
     expect(bridge.openFile).not.toHaveBeenCalledWith('/designs/flange.ri');
     expect(bridge.openFileEngine).toHaveBeenCalledTimes(1);
 
     reply.resolve(published(makeGuiState()));
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
     expect(openPaths()).toEqual(['/designs/bracket.ri']);
+  });
+
+  it('a Ctrl+N while a Start-view open is still loading toasts E_GUI_DOCUMENT_BUSY before opening the save dialog', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    const reply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/bracket.ri'));
+
+    vi.mocked(bridge.pickSavePath).mockResolvedValue('/designs/new.ri');
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+    await waitFor(() =>
+      expect(
+        toastTexts().some(
+          (t) => t.includes('New file failed: E_GUI_DOCUMENT_BUSY') && t.includes('/designs/bracket.ri is still opening'),
+        ),
+      ).toBe(true),
+    );
+    expect(bridge.pickSavePath).not.toHaveBeenCalled();
+    expect(bridge.createNewFile).not.toHaveBeenCalled();
+    expect(bridge.openFileEngine).toHaveBeenCalledTimes(1);
+
+    reply.resolve(published(makeGuiState()));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+  });
+
+  it.each([
+    { shortcut: 'Ctrl+O', key: 'o', refusal: 'Open file failed: E_GUI_DOCUMENT_BUSY', picker: 'pickOpenPath' },
+    { shortcut: 'Ctrl+N', key: 'n', refusal: 'New file failed: E_GUI_DOCUMENT_BUSY', picker: 'pickSavePath' },
+  ] as const)('a $shortcut with unsaved changes while a Start-view open is still loading refuses without the discard prompt', async ({ key, refusal, picker }) => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    const reply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/bracket.ri'));
+
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    vi.mocked((bridge as any).ask).mockResolvedValue(true);
+    vi.mocked(bridge[picker]).mockResolvedValue('/designs/flange.ri');
+    fireEvent.keyDown(document, { key, ctrlKey: true });
+
+    await waitFor(() =>
+      expect(
+        toastTexts().some((t) => t.includes(refusal) && t.includes('/designs/bracket.ri is still opening')),
+      ).toBe(true),
+    );
+    expect(bridge.ask).not.toHaveBeenCalled();
+    expect(bridge[picker]).not.toHaveBeenCalled();
+
+    reply.resolve(published(makeGuiState()));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
   });
 
   it('a Start-view open abandoned while the engine is loading never lands, even after another document opened', async () => {

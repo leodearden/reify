@@ -14,6 +14,17 @@ async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   return outcome as LaunchFailure;
 }
 
+function thrownBy(fn: () => void): LaunchFailure {
+  let thrown: unknown;
+  try {
+    fn();
+  } catch (err) {
+    thrown = err;
+  }
+  expect(thrown).toBeInstanceOf(LaunchFailure);
+  return thrown as LaunchFailure;
+}
+
 let store: LauncherStore;
 let deps: ReturnType<typeof makeLauncherDeps>;
 
@@ -250,6 +261,29 @@ describe('createDocument', () => {
 
     written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
     await creating;
+  });
+});
+
+describe('refuseIfDocumentPending', () => {
+  it('does nothing while no document attempt is in flight', () => {
+    const actions = createLauncherActions(store, deps);
+
+    expect(() => actions.refuseIfDocumentPending()).not.toThrow();
+  });
+
+  it('while an open is in flight, throws E_GUI_DOCUMENT_BUSY naming the pending path', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+
+    const refused = thrownBy(() => actions.refuseIfDocumentPending());
+
+    expect(refused.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(refused.message).toBe('/designs/bracket.ri is still opening');
+
+    held.resolve();
+    await opening;
   });
 });
 

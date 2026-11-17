@@ -8,13 +8,14 @@
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
- * attempt is refused with E_GUI_DOCUMENT_BUSY naming that path. Pending is
- * cleared by the attempt's own settling or by abandonDocumentAttempt, not by
- * the store's reset. Abandoning resolves the attempt's action at once and
- * aborts the signal its stages were given. The attempt then loads nothing
- * further, and the action ignores how the attempt settles. Abandoning a create
- * does not undo a template write that has landed or still lands: that file
- * stays on disk, unloaded and out of Recent, and opens like any other.
+ * attempt is refused, by refuseIfDocumentPending, with E_GUI_DOCUMENT_BUSY
+ * naming that path. Pending is cleared by the attempt's own settling or by
+ * abandonDocumentAttempt, not by the store's reset. Abandoning resolves the
+ * attempt's action at once and aborts the signal its stages were given. The
+ * attempt then loads nothing further, and the action ignores how the attempt
+ * settles. Abandoning a create does not undo a template write that has landed
+ * or still lands: that file stays on disk, unloaded and out of Recent, and
+ * opens like any other.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -123,14 +124,19 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
-  async function exclusiveDocumentAttempt(
-    path: string,
-    attempt: (signal: AbortSignal) => Promise<void>,
-  ): Promise<void> {
+  /** Callers refuse before their own preparation (a native file dialog); the action re-checks. */
+  function refuseIfDocumentPending(): void {
     const pendingPath = store.state.document.pending;
     if (pendingPath !== null) {
       throw new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY, `${pendingPath} is still opening`);
     }
+  }
+
+  async function exclusiveDocumentAttempt(
+    path: string,
+    attempt: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
+    refuseIfDocumentPending();
     const controller = new AbortController();
     inFlight = controller;
     store.setDocumentPending(path);
@@ -205,6 +211,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   return {
     openDocument,
     createDocument,
+    refuseIfDocumentPending,
     abandonDocumentAttempt,
     refreshRecent,
     selectMode,
