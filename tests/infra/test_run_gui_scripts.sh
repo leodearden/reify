@@ -21,6 +21,13 @@ source "$SCRIPT_DIR/test_helpers.sh"
 source "$REPO_ROOT/scripts/lib_portable.sh"
 source "$SCRIPT_DIR/cargo_inputs_lib.sh"
 
+# reify-gui's locked registry inputs for this host, fetched before the first
+# assertion: Test 36 reads them with --offline --filter-platform <host>.
+_RGS_HOST=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') || _RGS_HOST=""
+_rgs_fetch_cargo_inputs() {
+    cargo_inputs_fetch --target "$_RGS_HOST" --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml"
+}
+
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
 
@@ -58,6 +65,11 @@ export DISPLAY=:99
 unset WAYLAND_DISPLAY
 
 echo "=== run-gui.sh launcher tests ==="
+
+echo ""
+echo "--- Cargo inputs ---"
+assert_infra_input "the registry holds reify-gui's locked inputs for $_RGS_HOST (cargo fetch --locked)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
 
 # -- Test 1: file exists + is executable -------------------------------------
 echo ""
@@ -527,15 +539,13 @@ _rgs_cargo_build_features() {
 # line, as the REAL cargo resolves reify-gui under --features <features>.
 # <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
 # $(...), where a registration would be lost. Silent and non-zero if cargo
-# cannot resolve (e.g. a cold registry). --filter-platform keeps --offline from
-# needing other targets' crates (macOS-only block2 etc.), which a Linux host
-# never downloads.
+# cannot resolve. Its inputs are fetched at suite start for $_RGS_HOST only, and
+# --filter-platform matches that host-only fetch.
 _rgs_tauri_features_under() {
-    local _json="$1/cargo-metadata.json" _rc=0 _host
-    _host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
-    [ -n "$_host" ] || return 1
+    local _json="$1/cargo-metadata.json" _rc=0
+    [ -n "$_RGS_HOST" ] || return 1
     ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
-        --filter-platform "$_host" \
+        --filter-platform "$_RGS_HOST" \
         --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
         --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
     [ "$_rc" -eq 0 ] || return 1
@@ -1652,7 +1662,7 @@ _t36_resolve() {
     assert "$1: its cargo build of reify-gui passes a --features value" \
         test -n "$_t36_features"
 
-    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc; on a cold registry warm it with \`cargo fetch --locked\`, or run scripts/setup-dev.sh)" \
+    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc)" \
         test "$_rc" -eq 0
 
     # Non-empty iff tauri is in the resolve: the workspace dep always enables devtools.
