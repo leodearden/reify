@@ -8,11 +8,15 @@
 //! gate automatically once step-6 activates it. Until step-6, the same tests
 //! pass trivially (no gate → no panic) which is the correct "no false-positive"
 //! signal.
+//!
+//! The tests after the five idioms (task 10137) pin WHICH order the gate checks:
+//! the walk the realization loop actually performs, not declaration order.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
-use reify_ir::ExportFormat;
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_eval::{BuildResult, BuildScheduler};
+use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::{GeometryOpRecord, MockGeometryKernel, compile_source};
 
 /// Helper: compile source, build with MockGeometryKernel, assert no panic
 /// and no Error diagnostics.
@@ -160,5 +164,101 @@ pub structure Assembly {
     sub p = Part()
     let moved = translate(self.p.body, 5mm, 0mm, 0mm)
 }"#,
+    );
+}
+
+// ── task 10137: a geometry `let` declared after its consumer ──────────────────
+
+/// `p` patterns `g`, but `g` is declared AFTER `p`: the realization DAG has the
+/// edge `T3#1 → T3#0` while declaration order is `[T3#0, T3#1]`.
+const FORWARD_DECLARED_GEOMETRY_SRC: &str = r#"structure T3 {
+    let p = circular_pattern(g, axis_z(point3(0mm, 0mm, 0mm)), 4, 90deg)
+    let g = box(2mm, 2mm, 2mm)
+}"#;
+
+/// Compile [`FORWARD_DECLARED_GEOMETRY_SRC`] and build it on a recording
+/// `MockGeometryKernel` with the scheduler pinned to `scheduler` (so an ambient
+/// `REIFY_BUILD_SCHEDULER` cannot change the path under test). Returns the build
+/// result and every op the kernel recorded, in execution order.
+fn build_forward_declared_geometry(
+    scheduler: BuildScheduler,
+) -> (BuildResult, Vec<GeometryOpRecord>) {
+    let compiled = compile_source(FORWARD_DECLARED_GEOMETRY_SRC);
+
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel)),
+    );
+    engine.set_build_scheduler(scheduler);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let recorded = ops_ref.lock().unwrap().clone();
+    (result, recorded)
+}
+
+/// A geometry `let` declared after the `let` that consumes it builds in debug
+/// exactly as it does in release.
+///
+/// Under the default `UnifiedDag` scheduler the realization loop walks the Kahn
+/// schedule, so `g` (T3#1) runs before `p` (T3#0). The debug gate used to check
+/// declaration order instead and panicked with a false `BackwardEdge`.
+///
+/// NOT `cfg`-gated: both profiles are held to the same expectations — in
+/// particular that `p` patterned `g`'s real body, which is only possible when
+/// `g` ran first.
+#[test]
+fn gate_forward_declared_geometry_let_no_false_positive() {
+    let (result, recorded) = build_forward_declared_geometry(BuildScheduler::UnifiedDag);
+
+    let diagnostics: Vec<String> = result
+        .diagnostics
+        .iter()
+        .map(|d| format!("[{:?}] {}", d.severity, d.message))
+        .collect();
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected no Error diagnostics from build; got: {diagnostics:?}"
+    );
+
+    let box_handle = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for T3.g")
+        .result_handle;
+    let pattern_target = recorded
+        .iter()
+        .find_map(|rec| match rec.op {
+            GeometryOp::CircularPattern { target, .. } => Some(target),
+            _ => None,
+        })
+        .expect("expected a CircularPattern op recorded for T3.p");
+    assert_eq!(
+        pattern_target, box_handle,
+        "T3.p must pattern T3.g's Box handle ({box_handle:?}); got {pattern_target:?}"
+    );
+
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {diagnostics:?}"
     );
 }
