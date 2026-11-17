@@ -1553,6 +1553,16 @@ _row2_band_inconclusive() {
     _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
 }
 
+# _row2_band_window <before_sample> <after_sample> <cores>
+#   Samples as in _row1_measure_window.  Prints "<usage_fraction> <window_us>" from the
+#   MEASURED window, or exactly "unavailable unavailable"; returns 0 on every path.
+_row2_band_window() {
+    local measured
+    measured="$(_row1_measure_window "$1" "$2" "$3" || true)"
+    awk 'NF == 3 { print $3, $2; found = 1 }
+         END { if (!found) print "unavailable unavailable" }' <<< "$measured"
+}
+
 # _row2_usage_fraction <usage_before> <usage_after> <budget_us>
 #   Pure usage-fraction helper for ROW2-1's band decision (task 4970 review-
 #   amendment, reviewer_comprehensive/test_masks_regression): computes the
