@@ -3,8 +3,6 @@
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{DirectionFault, UnitVec3, Value};
 
-use crate::helpers::tensor_components_f64;
-
 /// Why a `dir` call yields no direction. Judged in order: shape, then
 /// dimension, then degeneracy.
 enum DirFault {
@@ -28,20 +26,17 @@ fn classify_dir_args(args: &[Value]) -> Result<UnitVec3, DirFault> {
 fn classify_one(v: &Value) -> Result<UnitVec3, DirFault> {
     match v {
         Value::Direction(u) => Ok(*u),
-        Value::Vector(_) | Value::Tensor(_) => {
-            let (comps, dim) = tensor_components_f64(v).ok_or(DirFault::Shape)?;
-            let [x, y, z] = <[f64; 3]>::try_from(comps).map_err(|_| DirFault::Shape)?;
-            if dim != DimensionVector::DIMENSIONLESS {
-                return Err(DirFault::NotDimensionless(dim));
-            }
-            unit(x, y, z)
-        }
+        Value::Vector(items) | Value::Tensor(items) => match items.as_slice() {
+            [x, y, z] => classify_components(&[x, y, z]),
+            _ => Err(DirFault::Shape),
+        },
         _ => Err(DirFault::Shape),
     }
 }
 
-/// Each component's dimension is judged on its own: a shared-dimension
-/// reading would turn `dir(1mm, 0, 0)` into a silent shape fault.
+/// Both arities judge each component's dimension on its own: a
+/// shared-dimension reading would turn `dir(1mm, 0, 0)` into a silent shape
+/// fault.
 fn classify_components(args: &[&Value; 3]) -> Result<UnitVec3, DirFault> {
     let [x, y, z] = args.map(Value::as_f64);
     let (Some(x), Some(y), Some(z)) = (x, y, z) else {
@@ -245,6 +240,7 @@ mod tests {
         assert_dimensioned(&[mm(1.0), mm(0.0), mm(0.0)]);
         assert_dimensioned(&[mm(0.0), mm(0.0), mm(0.0)]);
         assert_dimensioned(&[Value::Vector(vec![mm(1.0), mm(0.0), mm(0.0)])]);
+        assert_dimensioned(&[Value::Vector(vec![mm(1.0), zero.clone(), zero.clone()])]);
         let angle = Value::Scalar {
             si_value: 1.0,
             dimension: DimensionVector::ANGLE,
@@ -263,7 +259,7 @@ mod tests {
         assert_silent_undef(&[Value::String("x".into()), zero.clone(), zero.clone()]);
         assert_silent_undef(&[Value::Point(reals([0.0, 1.0, 0.0]))]);
         assert_silent_undef(&[Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)])]);
-        assert_silent_undef(&[Value::Vector(vec![mm(1.0), zero.clone(), zero])]);
+        assert_silent_undef(&[Value::Vector(vec![Value::Bool(true), zero.clone(), zero])]);
         assert_silent_undef(&[Value::List(reals([0.0, 1.0, 0.0]))]);
     }
 
