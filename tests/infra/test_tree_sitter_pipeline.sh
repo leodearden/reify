@@ -750,6 +750,44 @@ mk_ts_dir_with_cli_outputs() {
     done
 }
 
+# ts_run_with_tmpdir <tmpdir> <cmd> [args...]
+#
+# Run <cmd> in a subshell whose TMPDIR is <tmpdir>: whatever it mktemps lands
+# there, and the caller's own TMPDIR and shell state stay untouched. <cmd> may be
+# a shell function, which `env TMPDIR=... <cmd>` cannot run.
+ts_run_with_tmpdir() {
+    ( export TMPDIR="$1"; shift; "$@" )
+}
+
+# ts_assert_fills_only_given_dir <target> <cmd> [args...]
+#
+# Assert that <cmd> — a fixture helper handed the caller-created <target> —
+# allocates no temp storage of its own: it runs with TMPDIR pointed at a private,
+# empty directory, which must still be empty afterwards. What <target> must end
+# up holding is the caller's to assert: it is what tells a helper that built
+# nothing apart from one that built the right thing.
+#
+# Call it directly, never through `$(...)`: the cleanup it registers would die
+# with the subshell. Deliberately NOT named test_* (see the block header above).
+ts_assert_fills_only_given_dir() {
+    local target="$1"; shift
+    local private leaked
+    private=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$private'")
+
+    assert_cmd_success "$1 runs to completion under a private TMPDIR" \
+        ts_run_with_tmpdir "$private" "$@" || return 1
+
+    leaked=$(ls -A "$private")
+    if [ -n "$leaked" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: $* allocated temp storage of its own"
+        echo "  instead of filling only $target. Left in its TMPDIR:"
+        printf '%s\n' "$leaked" | sed 's/^/    /'
+        return 1
+    fi
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -3937,6 +3975,22 @@ test_freshness_detects_and_repairs_a_stale_archive() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
+}
+
+test_generate_fixture_helper_allocates_no_temp_of_its_own() {
+    # A fixture helper fills the empty dir its caller made and registered for
+    # cleanup, and allocates nothing else. The old shape mktemp'd inside the
+    # helper and appended its `rm -rf` to CLEANUP_ACTIONS there; every caller ran
+    # it as `fix=$(helper)`, so that append died with the command-substitution
+    # subshell and each run leaked a full copy of scripts/ into /tmp (#10044).
+    # What a helper allocates is observable: it is whatever lands under TMPDIR.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_ts_generate_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/tree-sitter-generate.sh" || return 1
+    assert_file_exists "$target/tree-sitter-reify/grammar.js" || return 1
 }
 
 # --- Main ---
