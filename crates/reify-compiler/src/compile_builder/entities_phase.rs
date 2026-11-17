@@ -151,8 +151,8 @@ pub(crate) fn phase_entities(
 
     // task 3540 (SIR-α): the prelude ctor view, so the expression-lowering site
     // can recognise `Foo()` as a structure constructor (esc-3540-177 RULING 1);
-    // `compile_entity` merges in local already-compiled structure-defs. Rule:
-    // `name_env::prelude_ctor_view`.
+    // `compile_entity` overlays the templates declared above it via
+    // `name_env::overlay_local_templates`. Rule: `name_env::prelude_ctor_view`.
     let prelude_template_registry: HashMap<String, &TopologyTemplate> =
         name_env::prelude_ctor_view(prelude);
 
