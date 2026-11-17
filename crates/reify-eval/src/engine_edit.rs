@@ -2780,6 +2780,9 @@ impl Engine {
         // the gap by re-evaluating grown instances within the same pass that
         // grows them.
         if structural_mutation {
+            new_snapshot
+                .graph
+                .debug_assert_sub_instance_registry_agrees();
             let compiled_fields = Arc::clone(&self.compiled_fields);
             let new_reverse_index =
                 crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
@@ -4565,6 +4568,9 @@ impl Engine {
                     .combine(count_state_hash);
             }
         }
+        new_snapshot
+            .graph
+            .debug_assert_sub_instance_registry_agrees();
 
         // (14b) Drain `pending_warm_seeds` into the cache, completing the
         //       checkout-and-seed half of the WarmStatePool round-trip
