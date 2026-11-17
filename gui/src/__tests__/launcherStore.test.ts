@@ -105,10 +105,11 @@ describe('launcherStore', () => {
     expect(store.state.document.pending).toBe('/designs/bracket.ri');
   });
 
-  it('names exactly the five launch error codes, each spelled as its own key', () => {
+  it('names exactly the six launch error codes, each spelled as its own key', () => {
     expect(Object.entries(LAUNCH_ERROR_CODES)).toEqual([
       ['E_GUI_OPEN_FAILED', 'E_GUI_OPEN_FAILED'],
       ['E_GUI_TEMPLATE_WRITE_FAILED', 'E_GUI_TEMPLATE_WRITE_FAILED'],
+      ['E_GUI_DOCUMENT_BUSY', 'E_GUI_DOCUMENT_BUSY'],
       ['E_GUI_MODE_FAILED', 'E_GUI_MODE_FAILED'],
       ['E_GUI_DEBUG_LISTENER_FAILED', 'E_GUI_DEBUG_LISTENER_FAILED'],
       ['E_GUI_DEBUG_BRIDGE_FAILED', 'E_GUI_DEBUG_BRIDGE_FAILED'],
