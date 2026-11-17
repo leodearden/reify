@@ -16,7 +16,7 @@ use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
-use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
+use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 
 /// `reify check <file>` — resolves autos and reports every constraint verdict.
 ///
@@ -99,7 +99,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
+    let compiled = match parse_and_compile_program_entry(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

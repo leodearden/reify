@@ -10,7 +10,7 @@ use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
 use crate::help::EVAL_USAGE;
 use crate::module_capabilities::module_has_geometry;
-use crate::{configured_eval_engine, parse_and_compile_with_cfg};
+use crate::{configured_eval_engine, parse_and_compile_program_entry};
 
 /// `reify eval <file>` — compile the entry as a program (its `#cfg`-satisfied
 /// imports resolved as under `reify check`, with repeated `--cfg` selecting
@@ -107,7 +107,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile_with_cfg(path, &cfg) {
+    let compiled = match parse_and_compile_program_entry(path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

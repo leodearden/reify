@@ -223,9 +223,8 @@ fn parse_and_compile_program(
 }
 
 /// The entry module of [`parse_and_compile_program`], for a command that needs
-/// nothing else of the program. Both apply `cfg`; they differ only in what they
-/// return.
-fn parse_and_compile_with_cfg(
+/// nothing else of the program. They differ only in what they return.
+fn parse_and_compile_program_entry(
     path: &str,
     cfg: &CfgSet,
 ) -> Result<reify_compiler::CompiledModule, ExitCode> {
