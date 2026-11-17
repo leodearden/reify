@@ -16,11 +16,11 @@ use std::ops::ControlFlow;
 
 use reify_ast::QuantifierKind;
 use reify_core::{ContentHash, Type, ValueCellId};
+use reify_ir::expr::CompiledExprKindDiscriminants;
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern,
     DeterminacyPredicateKind, ResolvedFunction, SelectorKind, StructureTypeId, UnOp, Value,
 };
-use reify_ir::expr::CompiledExprKindDiscriminants;
 use strum::IntoEnumIterator;
 
 const STRUCT_TYPE: &str = "S";
