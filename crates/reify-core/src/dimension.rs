@@ -42,17 +42,6 @@ impl Rational {
         self.den() == 1 || self.num() % self.den() == 0
     }
 
-    pub fn as_i8(self) -> Option<i8> {
-        let val = if self.den() == 1 {
-            self.num()
-        } else if self.num() % self.den() == 0 {
-            self.num() / self.den()
-        } else {
-            return None;
-        };
-        i8::try_from(val).ok()
-    }
-
     /// `self + rhs`, or `None` when the reduced sum does not fit `i16/i16`.
     pub fn checked_add(self, rhs: Rational) -> Option<Rational> {
         let (a, b, c, d) = self.widened_with(rhs);
