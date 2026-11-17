@@ -355,7 +355,7 @@ describe('selectMode', () => {
     ]);
   });
 
-  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails', async () => {
+  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails before the listener is live', async () => {
     deps.setMode.mockRejectedValue('Address already in use (os error 98)');
     const actions = createLauncherActions(store, deps);
 
@@ -365,6 +365,31 @@ describe('selectMode', () => {
     expect(store.state.mode.selected).toBe('assistant');
     expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
     expect(deps.showAssistant).not.toHaveBeenCalled();
+  });
+
+  it('debug: a repeat selection whose set_mode fails once the listener is live rejects with E_GUI_MODE_FAILED, keeping the selection and the live port', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.selectMode('debug');
+
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
+    expect(deps.showAssistant).not.toHaveBeenCalled();
+  });
+
+  it('debug: a selection whose set_mode fails after adoptLiveDebugServer recorded the live port rejects with E_GUI_MODE_FAILED', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.adoptLiveDebugServer();
+
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
   });
 
   it.each(['design', 'assistant'] as const)(
