@@ -2525,6 +2525,19 @@ _SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
 _ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
+
+# _row23_mix_timing <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s>
+#   Prints "<await_deadline_s> <burn_s> <outer_timeout_s>".  The await never exceeds the slack and
+#   outer minus burn equals the slack, so the slack alone bounds how long ROW2-2 lets a source start.
+_row23_mix_timing() {
+    local ready_deadline="$1" launch_slack="$2" warmup="$3" probe="$4"
+    local settling=4
+    local await_deadline=$(( ready_deadline < launch_slack ? ready_deadline : launch_slack ))
+    local burn=$(( await_deadline + warmup + probe + settling ))
+    echo "$await_deadline $burn $(( burn + launch_slack ))"
+    return 0
+}
+
 # Mix burn cap: the window opens on readiness, which can come as late as the
 # ready deadline after launch, so the burn must outlast deadline + WARMUP_S +
 # PROBE_S + settling (as _ROW1_CONFINE_BURN_MIN does).  The mix is stopped
