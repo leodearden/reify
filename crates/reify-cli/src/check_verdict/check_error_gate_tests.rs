@@ -332,20 +332,23 @@ fn an_excused_row_neither_gates_nor_masks() {
     );
 }
 
-/// A Code row must not be over-broad: `TRAMPOLINE_CANCELLED` shares the
-/// `@optimized target "solver::elastic_static": ` prefix with the coded
-/// missing-trampoline message and is a genuine failure.
+/// Text rows match a SUBSTRING, never a prefix.  `TRAMPOLINE_CANCELLED` shares
+/// the `@optimized target "solver::elastic_static": ` prefix with the
+/// missing-trampoline message and is a genuine failure, so a row naming the
+/// missing-trampoline text must excuse that message and nothing sharing its
+/// prefix.
 #[test]
-fn a_code_row_never_swallows_the_prefix_sibling() {
-    let rows = [row(CheckErrorAllowlistMatcher::Code(
-        DiagnosticCode::NoRegisteredComputeTrampoline,
+fn a_substring_row_never_swallows_the_prefix_sibling() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "no registered compute trampoline",
     ))];
     assert!(
-        first_unexcused_error(&[trampoline_error()], &rows).is_none(),
-        "a Code row excuses the coded missing-trampoline Error"
+        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE)], &rows).is_none(),
+        "the row's text sits mid-message, after the target prefix, and still \
+         excuses it"
     );
     assert!(
         first_unexcused_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)], &rows).is_some(),
-        "a cancelled trampoline is a real failure"
+        "a cancelled trampoline shares only the prefix and is a real failure"
     );
 }

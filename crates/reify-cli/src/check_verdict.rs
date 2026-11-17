@@ -350,33 +350,25 @@ enum CheckErrorAllowlistMatcher {
     ///
     /// PRD §7 sketches this as `MessagePrefix`; a code-less emission's
     /// distinguishing text can sit mid-string, after per-call detail, where a
-    /// prefix match could not express it.  Substring is the honest spelling
-    /// of the same intent.
+    /// prefix match could not express it, and a shared prefix is exactly what
+    /// a genuine sibling failure can carry
+    /// (`check_error_gate_tests::a_substring_row_never_swallows_the_prefix_sibling`).
     MessageContains(&'static str),
 }
 
-/// What retiring one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry will take.  Recorded
-/// so the burn-down owner does not have to re-derive it from the message.
+/// What retiring a [`CHECK_ERROR_EXIT_ALLOWLIST`] row would take.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckErrorAllowlistDisposition {
-    /// The emission's `Severity::Error` is simply wrong for this path; the
-    /// producer should emit `Severity::Warning` instead.  A Warning never
-    /// gates, so the entry can then be deleted with no other change.
+    /// The emission's `Severity::Error` is wrong for this path; the producer
+    /// should emit `Severity::Warning`.  A Warning never gates, so the row can
+    /// then be deleted with no other change.
     Demote,
     /// The emission needs a machine-readable [`DiagnosticCode`] before it can
     /// be reasoned about (or excused) precisely.
-    ///
-    /// Part of the documented taxonomy but never exercised by the seeded
-    /// table: both code-less seed entries were `Demote`, because their
-    /// severity — not their lack of a code — was what was wrong on `check`'s
-    /// path.  Kept so a burn-down owner has the vocabulary without having to
-    /// invent it.
     Recode,
     /// The emission is a real Error, but `check` reaching it at all is the
-    /// bug; the fix is on the code path, not on the diagnostic.  Its one
-    /// entry (`Code(ConstraintViolated)`) was retired by fixing the path in
-    /// [`drop_falsified_constraint_diagnostics`].
+    /// bug; the fix is on the code path, not on the diagnostic.
     FixPath,
 }
 
@@ -385,36 +377,24 @@ enum CheckErrorAllowlistDisposition {
 struct CheckErrorExitAllowance {
     /// The only field the gate itself reads — see [`row_excuses`].
     matcher: CheckErrorAllowlistMatcher,
-    /// What retiring this entry will take.  Read by
-    /// `check_error_exit_allowlist_ratchet`, never by the gate.  Deliberately
-    /// data rather than prose: a burn-down owner reads it off the table
-    /// instead of re-deriving it from each message.
+    /// What retiring this row would take.  Never read by the gate.
     disposition: CheckErrorAllowlistDisposition,
-    /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
-    /// Burn-down metadata, same as `disposition` above.  PTODO never reads a
-    /// string literal, so this field is liveness-checked only through a marker
-    /// comment in this file citing the same task: that marker is load-bearing,
-    /// not a duplicate to delete, and `every_allowlist_cite_has_a_ptodo_liveness_marker`
-    /// turns red if it goes missing.
+    /// PTODO-canonical cite (`#NNNN`) of the LIVE task that would retire this
+    /// row.  PTODO never reads a string literal, so this field is
+    /// liveness-checked only through a marker comment in this file citing the
+    /// same task: that marker is load-bearing, not a duplicate to delete, and
+    /// `every_allowlist_cite_has_a_ptodo_liveness_marker` turns red if it goes
+    /// missing.
     cite: &'static str,
 }
 
 /// INV-SF-2's `reify check` Error-exit allowlist: EMPTY by design, so every
 /// `Severity::Error` diagnostic gates.
 ///
-/// The row types, [`row_excuses`] and [`first_unexcused_error`] stay only as
-/// the guard vocabulary `check_error_exit_allowlist_ratchet` pins (PRD
-/// eradicate-silent-undef §3 Leg B item 4: "the mechanism remains as the guard
-/// against re-additions").  **Do not add entries** — see that module's doc for
-/// the standing obligation.  The four seeded rows retired as follows:
-///
-/// * `Code(NoRegisteredComputeTrampoline)` was deleted by #6693.
-/// * `MessageContains("is unresolved (Undef)")` was deleted once `check`
-///   solved: every remaining match is a genuine Error `reify eval` also exits 1 on.
-/// * `MessageContains("all geometry operations failed")`, that family's
-///   rollup, was deleted with it, for the same reason.
-/// * `Code(ConstraintViolated)` was fixed on the path, in
-///   [`drop_falsified_constraint_diagnostics`].
+/// The row types, [`row_excuses`] and [`first_unexcused_error`] remain as the
+/// guard against re-additions (PRD eradicate-silent-undef §3 Leg B item 4).
+/// **Do not add rows** — `check_error_exit_allowlist_ratchet`'s doc states the
+/// standing obligation.
 const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[];
 
 /// Every `Severity::Error` entry of `diagnostics`, in order.
@@ -475,9 +455,8 @@ fn first_unexcused_error<'a>(
 /// set — what the user was just shown — so a realization-only Error is no
 /// longer invisible to the exit code.
 ///
-/// Both production callers only test `.is_some()`.  The diagnostic is returned
-/// rather than a `bool` solely so `an_excused_row_neither_gates_nor_masks`
-/// can assert that an excused Error never masks a co-resident gating one.
+/// Returns the gating diagnostic, as [`first_unexcused_error`] does; both
+/// production callers only test `.is_some()`.
 pub(crate) fn check_gating_error(
     diagnostics: &[reify_core::Diagnostic],
 ) -> Option<&reify_core::Diagnostic> {
