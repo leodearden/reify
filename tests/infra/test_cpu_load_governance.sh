@@ -2768,6 +2768,136 @@ _row23_stop_mix "$WORK/row23-never-reported" || _row23_stop4_rc=$?
 assert "ROW23-STUB-VACUITY-4: _row23_stop_mix on a ready file that does not exist => rc EXACTLY 0 (got ${_row23_stop4_rc}); total, so safe bare under set -e" \
     test "$_row23_stop4_rc" -eq 0
 
+# ROW23-WINDOW-VACUITY (task 10025): _row23_sample_window opens ROW2_3's
+# measurement window on the mix's readiness, not on its launch.  It is called in
+# the CURRENT shell (it sets _ROW23_* globals) and reads through
+# cpu_gov_instrument.py, here against synthetic cpu.stat and cpu.pressure
+# files: python3 is needed, a cgroup is not.  Every global is poisoned before a
+# call, so an unset one cannot trip `set -u` and a stale one cannot pass for a
+# result.
+
+# _row23_window_poison: gives each global _row23_sample_window must set a value no real sample takes.
+_row23_window_poison() {
+    local name
+    for name in _ROW23_READY _ROW23_SAMPLE_BEFORE _ROW23_SAMPLE_AFTER \
+                _ROW23_STALL_BEFORE _ROW23_STALL_AFTER _ROW23_AVG10 _ROW23_AVG10_RC; do
+        printf -v "$name" '%s' poison
+    done
+}
+
+# _row23_window_fixture <dir> <usage_usec>: writes <dir>/cpu.stat and <dir>/cpu.pressure (avg10 12.50, some total 100).
+_row23_window_fixture() {
+    printf 'usage_usec %s\n' "$2" > "$1/cpu.stat"
+    printf 'some avg10=12.50 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$1/cpu.pressure"
+}
+
+# _row23_window_advanced <before_sample> <after_sample>: both are stamped samples and the stamp advanced.
+_row23_window_advanced() {
+    local window_re='^[0-9.]+ [0-9]+$'
+    [[ "$(_row2_band_window "$1" "$2" 1 || true)" =~ $window_re ]]
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW23-WINDOW-VACUITY: python3 not on PATH"
+else
+    # (W1) READINESS-ANCHORED CRUX: usage reads 0 until just BEFORE the source
+    # reports ready (cpu.stat is rewritten, and only then does the ready file
+    # appear).  BEFORE must hold the later value; a sampler that reads first, or
+    # anchors on the launch, sees 0.
+    _row23_win1_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win1_dir" 0
+    (
+        sleep 0.5
+        printf 'usage_usec 7000000\n' > "$_row23_win1_dir/cpu.stat.tmp"
+        mv -f "$_row23_win1_dir/cpu.stat.tmp" "$_row23_win1_dir/cpu.stat"
+        printf '4242\n' > "$_row23_win1_dir/ready.tmp"
+        mv -f "$_row23_win1_dir/ready.tmp" "$_row23_win1_dir/ready"
+    ) &
+    _row23_win1_writer=$!
+    _row23_window_poison
+    _row23_win1_rc=0
+    _row23_sample_window 30 0 "$_row23_win1_dir/cpu.stat" "$_row23_win1_dir/cpu.pressure" \
+        "$_row23_win1_dir/ready" || _row23_win1_rc=$?
+    wait "$_row23_win1_writer" 2>/dev/null || true
+
+    assert "ROW23-WINDOW-VACUITY-W1a: rc EXACTLY 0 (got ${_row23_win1_rc})" \
+        test "$_row23_win1_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W1b: the source reported => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W1c: READINESS-ANCHORED CRUX -- BEFORE is taken after the ready report, so it holds the 7000000 written before the report, not the 0 a sampler that read first would see (got '${_ROW23_SAMPLE_BEFORE}')" \
+        awk -v s="$_ROW23_SAMPLE_BEFORE" 'BEGIN { exit !(s ~ /^7000000 [0-9]+$/) }'
+    assert "ROW23-WINDOW-VACUITY-W1d: AFTER is a stamped sample whose stamp is later than BEFORE's (BEFORE='${_ROW23_SAMPLE_BEFORE}', AFTER='${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+    assert "ROW23-WINDOW-VACUITY-W1e: both stall reads hold the fixture's some total (got '${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}', expected '100 100')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "100 100"
+    assert "ROW23-WINDOW-VACUITY-W1f: avg10 is read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W2) NOT READY: nothing ever reports.  No window opens, so every sample is
+    # 'unavailable', but avg10 is STILL read: ROW2-2's contended hatch needs it.
+    _row23_win2_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win2_dir" 5000
+    _row23_window_poison
+    _row23_win2_rc=0
+    _row23_sample_window 0 0 "$_row23_win2_dir/cpu.stat" "$_row23_win2_dir/cpu.pressure" \
+        "$_row23_win2_dir/never-ready" || _row23_win2_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W2a: rc EXACTLY 0 (got ${_row23_win2_rc})" \
+        test "$_row23_win2_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W2b: no ready report => _ROW23_READY=0 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "0"
+    assert "ROW23-WINDOW-VACUITY-W2c: both usage samples and both stall reads are exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W2d: avg10 is still read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'); ROW2-2's contended hatch keeps its input" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W3) The source reported, but the pressure path does not exist.  psi-avg10
+    # and psi-some-total exit 0 on a read failure and print 'unavailable', so
+    # ROW2-1's non-numeric SKIP branch owns this case, not the '99' rescue (W4).
+    _row23_win3_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win3_dir" 5000
+    printf '4242\n' > "$_row23_win3_dir/ready"
+    _row23_window_poison
+    _row23_win3_rc=0
+    _row23_sample_window 30 0 "$_row23_win3_dir/cpu.stat" "$_row23_win3_dir/no-such-cpu.pressure" \
+        "$_row23_win3_dir/ready" || _row23_win3_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W3a: rc EXACTLY 0 (got ${_row23_win3_rc})" \
+        test "$_row23_win3_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W3b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W3c: both stall reads are exactly 'unavailable' (got '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W3d: avg10 is the instrument's own 'unavailable' with rc EXACTLY 0 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'), not the '99' rescue" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "unavailable 0"
+    assert "ROW23-WINDOW-VACUITY-W3e: both usage samples stay stamped (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+
+    # (W4) python3 ITSELF fails: the avg10 read is rescued to '99' on its RC,
+    # which is carried, so ROW3-1's foreign-load hedge can tell a defaulted 99
+    # from a real one; every other read falls back to 'unavailable'.
+    _row23_win4_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win4_dir" 5000
+    printf '4242\n' > "$_row23_win4_dir/ready"
+    mkdir "$_row23_win4_dir/fakebin"
+    printf '#!/bin/sh\nexit 3\n' > "$_row23_win4_dir/fakebin/python3"
+    chmod +x "$_row23_win4_dir/fakebin/python3"
+    _row23_window_poison
+    _row23_win4_rc=0
+    PATH="$_row23_win4_dir/fakebin:$PATH" _row23_sample_window 30 0 "$_row23_win4_dir/cpu.stat" \
+        "$_row23_win4_dir/cpu.pressure" "$_row23_win4_dir/ready" || _row23_win4_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W4a: rc EXACTLY 0 (got ${_row23_win4_rc})" \
+        test "$_row23_win4_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W4b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W4c: both usage samples and both stall reads fall back to exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W4d: avg10 is rescued to '99' and its rc 3 is carried (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "99 3"
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
