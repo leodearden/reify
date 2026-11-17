@@ -257,11 +257,7 @@ impl KnownBlock {
     }
 }
 
-/// Rational-exponent Display spelling, blocked on #9236, which deletes this row.
-const KNOWN_BLOCKS: &[KnownBlock] = &[KnownBlock {
-    dimension: DimensionVector::FRACTURE_TOUGHNESS,
-    owner: "#9236",
-}];
+const KNOWN_BLOCKS: &[KnownBlock] = &[];
 
 fn invariant_r_report(emissions: &[Emission], blocks: &[KnownBlock]) -> Report {
     let (blocked, unexpected): (Vec<Violation>, Vec<Violation>) = violations(emissions)

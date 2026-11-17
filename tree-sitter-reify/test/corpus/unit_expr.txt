@@ -21,7 +21,7 @@ structure S {
           right: (unit_expr
             base: (unit_expr
               (unit_name))
-            exponent: (signed_integer)))))))
+            exponent: (unit_exponent)))))))
 
 ================================================================================
 unit_expr: Div(m, Pow(s, 2))  [9.81m/s^2]
@@ -46,7 +46,7 @@ structure S {
           right: (unit_expr
             base: (unit_expr
               (unit_name))
-            exponent: (signed_integer)))))))
+            exponent: (unit_exponent)))))))
 
 ================================================================================
 unit_expr: Mul(kN, m)  [5kN*m]
@@ -91,7 +91,29 @@ structure S {
         unit: (unit_expr
           base: (unit_expr
             (unit_name))
-          exponent: (signed_integer))))))
+          exponent: (unit_exponent))))))
+
+================================================================================
+unit_expr: Pow(m, 1/2) rational exponent  [1m^1/2]
+================================================================================
+
+structure S {
+  let x = 1m^1/2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          base: (unit_expr
+            (unit_name))
+          exponent: (unit_exponent))))))
 
 ================================================================================
 unit_expr: Div(Div(kg, m), s) left-assoc  [0.001kg/m/s]
@@ -173,7 +195,7 @@ structure S {
                   (unit_name)))
               right: (unit_expr
                 (unit_name))))
-          exponent: (signed_integer))))))
+          exponent: (unit_exponent))))))
 
 ================================================================================
 negative: 5kg * m splits at whitespace — kg fuses to 5, " * m" is binary
@@ -421,14 +443,14 @@ structure S {
               left: (unit_expr
                 base: (unit_expr
                   (unit_name))
-                exponent: (signed_integer))
+                exponent: (unit_exponent))
               right: (unit_expr
                 (unit_name)))
             right: (unit_expr
               base: (unit_expr
                 (unit_name))
-              exponent: (signed_integer)))
+              exponent: (unit_exponent)))
           right: (unit_expr
             base: (unit_expr
               (unit_name))
-            exponent: (signed_integer)))))))
+            exponent: (unit_exponent)))))))

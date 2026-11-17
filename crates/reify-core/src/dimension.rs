@@ -18,7 +18,7 @@ impl Rational {
 
     pub const fn new(num: i16, den: i16) -> Self {
         assert!(den != 0, "denominator must not be zero");
-        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i16;
+        let g = gcd(num.unsigned_abs() as u32, den.unsigned_abs() as u32) as i16;
         let sign = if den < 0 { -1 } else { 1 };
         Rational {
             num: sign * num / g,
@@ -42,35 +42,60 @@ impl Rational {
         self.den() == 1 || self.num() % self.den() == 0
     }
 
-    pub fn as_i8(self) -> Option<i8> {
-        let val = if self.den() == 1 {
-            self.num()
-        } else if self.num() % self.den() == 0 {
-            self.num() / self.den()
-        } else {
-            return None;
-        };
-        i8::try_from(val).ok()
+    /// `self + rhs`, or `None` when the reduced sum does not fit `i16/i16`.
+    pub fn checked_add(self, rhs: Rational) -> Option<Rational> {
+        let (a, b, c, d) = self.widened_with(rhs);
+        Rational::narrowed(a * d + c * b, b * d)
+    }
+
+    /// `self - rhs`, or `None` when the reduced difference does not fit `i16/i16`.
+    pub fn checked_sub(self, rhs: Rational) -> Option<Rational> {
+        let (a, b, c, d) = self.widened_with(rhs);
+        Rational::narrowed(a * d - c * b, b * d)
+    }
+
+    /// `self * rhs`, or `None` when the reduced product does not fit `i16/i16`.
+    pub fn checked_mul(self, rhs: Rational) -> Option<Rational> {
+        let (a, b, c, d) = self.widened_with(rhs);
+        Rational::narrowed(a * c, b * d)
+    }
+
+    /// Both operands' numerators and denominators as `i32`: products of two
+    /// `i16`s, and sums of two such products, cannot overflow it.
+    fn widened_with(self, rhs: Rational) -> (i32, i32, i32, i32) {
+        (
+            i32::from(self.num),
+            i32::from(self.den),
+            i32::from(rhs.num),
+            i32::from(rhs.den),
+        )
+    }
+
+    /// `num/den` (with `den > 0`) in lowest terms, if that fits `i16/i16`.
+    fn narrowed(num: i32, den: i32) -> Option<Rational> {
+        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i32;
+        Some(Rational {
+            num: i16::try_from(num / g).ok()?,
+            den: i16::try_from(den / g).ok()?,
+        })
     }
 }
 
+/// Panics when the sum does not fit; see [`Rational::checked_add`].
 impl Add for Rational {
     type Output = Rational;
     fn add(self, rhs: Rational) -> Rational {
-        Rational::new(
-            self.num() * rhs.den() + rhs.num() * self.den(),
-            self.den() * rhs.den(),
-        )
+        self.checked_add(rhs)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: {self} + {rhs}"))
     }
 }
 
+/// Panics when the difference does not fit; see [`Rational::checked_sub`].
 impl Sub for Rational {
     type Output = Rational;
     fn sub(self, rhs: Rational) -> Rational {
-        Rational::new(
-            self.num() * rhs.den() - rhs.num() * self.den(),
-            self.den() * rhs.den(),
-        )
+        self.checked_sub(rhs)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: {self} - {rhs}"))
     }
 }
 
@@ -91,7 +116,7 @@ impl fmt::Display for Rational {
     }
 }
 
-const fn gcd(mut a: u16, mut b: u16) -> u16 {
+const fn gcd(mut a: u32, mut b: u32) -> u32 {
     while b != 0 {
         let t = b;
         b = a % b;
@@ -456,47 +481,72 @@ impl DimensionVector {
         format!("{qualifier} Scalar")
     }
 
-    /// Multiply dimensions (add exponents).
+    /// Multiply dimensions (add exponents). Panics when an exponent overflows;
+    /// see [`checked_mul`](Self::checked_mul).
     pub fn mul(&self, other: &DimensionVector) -> DimensionVector {
-        let mut result = [Rational::ZERO; 10];
-        for (i, slot) in result.iter_mut().enumerate() {
-            *slot = self.0[i] + other.0[i];
-        }
-        DimensionVector(result)
+        self.checked_mul(other)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: ({self})*({other})"))
     }
 
-    /// Divide dimensions (subtract exponents).
+    /// Multiply dimensions, or `None` when an exponent overflows `Rational`.
+    pub fn checked_mul(&self, other: &DimensionVector) -> Option<DimensionVector> {
+        self.zip_checked(other, Rational::checked_add)
+    }
+
+    /// Divide dimensions (subtract exponents). Panics when an exponent
+    /// overflows; see [`checked_div`](Self::checked_div).
     pub fn div(&self, other: &DimensionVector) -> DimensionVector {
-        let mut result = [Rational::ZERO; 10];
-        for (i, slot) in result.iter_mut().enumerate() {
-            *slot = self.0[i] - other.0[i];
-        }
-        DimensionVector(result)
+        self.checked_div(other)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: ({self})/({other})"))
     }
 
-    /// Take the nth root (divide all exponents by n).
-    ///
-    /// E.g., `AREA.root(2)` produces LENGTH (halves exponent from 2 to 1).
-    /// Fractional exponents are representable via `Rational`.
+    /// Divide dimensions, or `None` when an exponent overflows `Rational`.
+    pub fn checked_div(&self, other: &DimensionVector) -> Option<DimensionVector> {
+        self.zip_checked(other, Rational::checked_sub)
+    }
+
+    /// Combine slot by slot with `op`, or `None` when any slot overflows.
+    fn zip_checked(
+        &self,
+        other: &DimensionVector,
+        op: fn(Rational, Rational) -> Option<Rational>,
+    ) -> Option<DimensionVector> {
+        let mut result = [Rational::ZERO; 10];
+        for (i, slot) in result.iter_mut().enumerate() {
+            *slot = op(self.0[i], other.0[i])?;
+        }
+        Some(DimensionVector(result))
+    }
+
+    /// Take the nth root (divide all exponents by n). Panics when an exponent
+    /// overflows; see [`checked_root`](Self::checked_root).
     pub fn root(&self, n: i8) -> DimensionVector {
-        assert!(n != 0, "root degree must not be zero");
-        let n = n as i16;
-        let mut result = [Rational::ZERO; 10];
-        for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num(), self.0[i].den() * n);
-        }
-        DimensionVector(result)
+        self.checked_root(n)
+            .unwrap_or_else(|| panic!("dimension exponent overflow: ({self}) root {n}"))
     }
 
-    /// Raise to an integer power (multiply all exponents).
+    /// Take the nth root, the power `1/n`, or `None` when an exponent
+    /// overflows `Rational`: `AREA.checked_root(2)` is `Some(LENGTH)`.
+    pub fn checked_root(&self, n: i8) -> Option<DimensionVector> {
+        assert!(n != 0, "root degree must not be zero");
+        self.checked_pow_rational(Rational::new(1, i16::from(n)))
+    }
+
+    /// Raise to an integer power (multiply all exponents). Panics when an
+    /// exponent overflows; see [`checked_pow_rational`](Self::checked_pow_rational).
     pub fn pow(&self, n: i8) -> DimensionVector {
+        self.checked_pow_rational(Rational::new(i16::from(n), 1))
+            .unwrap_or_else(|| panic!("dimension exponent overflow: ({self})^{n}"))
+    }
+
+    /// Raise to a rational power (multiply all exponents), or `None` when an
+    /// exponent overflows `Rational`: `LENGTH` to the `1/2` is `LENGTH.root(2)`.
+    pub fn checked_pow_rational(&self, exponent: Rational) -> Option<DimensionVector> {
         let mut result = [Rational::ZERO; 10];
-        let n = n as i16;
-        let nr = Rational::new(n, 1);
         for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num() * nr.num(), self.0[i].den() * nr.den());
+            *slot = self.0[i].checked_mul(exponent)?;
         }
-        DimensionVector(result)
+        Some(DimensionVector(result))
     }
 
     /// Scale a raw SI value the same way [`to_display_units`](Self::to_display_units)
@@ -994,6 +1044,155 @@ mod tests {
         assert_eq!(powered.0[0], Rational::new(100, 1));
         let rooted = powered.root(100);
         assert_eq!(rooted, DimensionVector::LENGTH);
+    }
+
+    /// `LENGTH` to the rational power `num/den`, which must not overflow.
+    fn length_pow(num: i16, den: i16) -> DimensionVector {
+        DimensionVector::LENGTH
+            .checked_pow_rational(Rational::new(num, den))
+            .expect("a small power of LENGTH does not overflow")
+    }
+
+    #[test]
+    fn pow_rational_half_is_the_square_root() {
+        assert_eq!(length_pow(1, 2), DimensionVector::LENGTH.root(2));
+    }
+
+    #[test]
+    fn pressure_times_root_length_is_fracture_toughness() {
+        assert_eq!(
+            DimensionVector::PRESSURE.mul(&length_pow(1, 2)),
+            DimensionVector::FRACTURE_TOUGHNESS
+        );
+    }
+
+    #[test]
+    fn pow_rational_inverse_halves_cancel() {
+        assert!(length_pow(-1, 2).mul(&length_pow(1, 2)).is_dimensionless());
+    }
+
+    #[test]
+    fn pow_rational_agrees_with_integer_pow() {
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::PRESSURE,
+            DimensionVector::MASS_DENSITY,
+        ];
+        for d in dims {
+            for n in -10i16..=10 {
+                assert_eq!(
+                    d.checked_pow_rational(Rational::new(n, 1)),
+                    Some(d.pow(n as i8)),
+                    "{d}^{n}: the rational and integer power paths disagree"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rational_checked_mul_refuses_a_product_outside_i16() {
+        let big = Rational::new(16129, 1);
+        assert_eq!(
+            big.checked_mul(Rational::new(2, 1)),
+            Some(Rational::new(32258, 1))
+        );
+        assert_eq!(big.checked_mul(Rational::new(127, 1)), None);
+        assert_eq!(
+            Rational::new(1, 16129).checked_mul(Rational::new(1, 127)),
+            None
+        );
+    }
+
+    /// The checked arithmetic reduces before narrowing to i16, so a result that
+    /// fits is never refused for an intermediate that does not.
+    #[test]
+    fn rational_checked_arithmetic_reduces_before_narrowing() {
+        let tiny = Rational::new(1, 16129);
+        assert_eq!(tiny.checked_add(tiny), Some(Rational::new(2, 16129)));
+        assert_eq!(tiny.checked_sub(tiny), Some(Rational::ZERO));
+        assert_eq!(
+            Rational::new(16129, 2).checked_mul(Rational::new(2, 16129)),
+            Some(Rational::ONE)
+        );
+    }
+
+    #[test]
+    fn rational_checked_add_refuses_a_sum_outside_i16() {
+        let near_max = Rational::new(i16::MAX, 1);
+        assert_eq!(near_max.checked_add(Rational::ONE), None);
+        assert_eq!(Rational::new(i16::MIN, 1).checked_sub(Rational::ONE), None);
+        // Pairwise-coprime denominators: the sum's denominator is their product.
+        let r127_126 = Rational::new(1, 127).checked_add(Rational::new(1, 126));
+        assert_eq!(r127_126, Some(Rational::new(253, 16002)));
+        assert_eq!(r127_126.unwrap().checked_add(Rational::new(1, 125)), None);
+    }
+
+    #[test]
+    fn checked_pow_rational_refuses_an_overflowing_slot() {
+        let m_16129 = length_pow(127, 1)
+            .checked_pow_rational(Rational::new(127, 1))
+            .expect("127 * 127 fits i16");
+        assert_eq!(m_16129.0[0], Rational::new(16129, 1));
+        assert_eq!(m_16129.checked_pow_rational(Rational::new(127, 1)), None);
+        assert_eq!(
+            length_pow(1, 127).checked_pow_rational(Rational::new(1, 127)),
+            Some(DimensionVector::LENGTH.root(127).root(127))
+        );
+        assert_eq!(
+            length_pow(1, 16129).checked_pow_rational(Rational::new(1, 127)),
+            None
+        );
+    }
+
+    #[test]
+    fn checked_mul_and_div_refuse_an_overflowing_slot() {
+        let m_127_126 = length_pow(1, 127).checked_mul(&length_pow(1, 126));
+        assert_eq!(m_127_126.map(|d| d.0[0]), Some(Rational::new(253, 16002)));
+        let m_127_126 = m_127_126.unwrap();
+        assert_eq!(m_127_126.checked_mul(&length_pow(1, 125)), None);
+        assert_eq!(m_127_126.checked_div(&length_pow(1, 125)), None);
+        assert_eq!(
+            m_127_126.checked_div(&m_127_126),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    fn checked_root_agrees_with_rational_power() {
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::AREA,
+            DimensionVector::PRESSURE,
+            DimensionVector::FRACTURE_TOUGHNESS,
+        ];
+        for d in dims {
+            for n in [-4i8, -3, -2, -1, 1, 2, 3, 4] {
+                let rooted = d.checked_root(n);
+                assert_eq!(
+                    rooted,
+                    d.checked_pow_rational(Rational::new(1, i16::from(n))),
+                    "{d} root {n}: the root and rational power paths disagree"
+                );
+                assert_eq!(rooted, Some(d.root(n)), "{d} root {n}");
+            }
+        }
+        assert_eq!(
+            DimensionVector::AREA.checked_root(2),
+            Some(DimensionVector::LENGTH)
+        );
+    }
+
+    #[test]
+    fn checked_root_refuses_an_overflowing_slot() {
+        let halved = length_pow(253, 16002).checked_root(2);
+        assert_eq!(halved, Some(length_pow(253, 32004)));
+        assert_eq!(halved.unwrap().checked_root(2), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "dimension exponent overflow")]
+    fn root_panics_uniformly_on_overflow() {
+        length_pow(253, 32004).root(2);
     }
 
     #[test]
