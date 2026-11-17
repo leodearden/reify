@@ -888,7 +888,7 @@ impl Callee {
 
     /// Panics unless the callee is still the kind `self.kind` names. `call` is the
     /// compiled call expression; `what` labels the failure.
-    fn assert_matches_label(
+    fn assert_still_its_kind(
         &self,
         module: &reify_compiler::CompiledModule,
         call: &CompiledExpr,
@@ -981,10 +981,11 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
             diag_lines(&module)
         );
         assert!(
-            !module
-                .diagnostics
-                .iter()
-                .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
+            reify_test_support::helpers::diags_with_code(
+                &module.diagnostics,
+                DiagnosticCode::UnresolvedFunction
+            )
+            .is_empty(),
             "{what}: the call `{name}()` must resolve to its callee. An UnresolvedFunction \
              Warning means it reaches nothing, so this case no longer exercises the path; \
              all diagnostics: {:#?}",
@@ -992,7 +993,7 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
             name = callee.name
         );
         let call = fn_body_let(&module, "f", "x");
-        callee.assert_matches_label(&module, call, what);
+        callee.assert_still_its_kind(&module, call, what);
     }
 }
 
