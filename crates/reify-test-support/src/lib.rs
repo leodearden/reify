@@ -8,6 +8,7 @@ pub mod adoption_ratchet;
 pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
+pub mod declaration_diagnostics;
 pub mod design_files;
 pub mod examples_corpus;
 pub mod finite_difference;
@@ -53,6 +54,7 @@ pub mod workspace_sweep;
 // - `workspace_root`
 pub use builders::*;
 pub use ctor_conformance::*;
+pub use declaration_diagnostics::*;
 pub use fixtures::*;
 pub use helpers::*;
 pub use lsp_fixtures::*;
