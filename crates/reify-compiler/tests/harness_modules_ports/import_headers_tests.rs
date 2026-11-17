@@ -512,7 +512,7 @@ fn an_already_imported_module_is_still_derived() {
     );
 }
 
-// ─── g1/g2: the residual-diagnostics guard ─────────────────────────────────
+// ─── g1-g5: the residual-diagnostics guard ─────────────────────────────────
 
 fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
     dotted
@@ -560,6 +560,32 @@ fn a_module_other_than_the_one_the_plan_was_derived_for_is_refused() {
     let plan = derive(source, &universe);
     let elsewhere = parse_clean(source, "elsewhere");
     plan.residual_diagnostics(&elsewhere, &[]);
+}
+
+#[test]
+#[should_panic(
+    expected = "derived for `subject`, given `subject`: the paths match but the source changed"
+)]
+fn the_subject_re_parsed_with_edited_source_is_refused() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let parsed = parse_clean(source, SUBJECT_PATH);
+    let plan = derive_parsed(&parsed, &universe);
+    let headed = parse_clean(
+        &insert_imports(source, &parsed, &CfgSet::default(), &plan.modules()),
+        SUBJECT_PATH,
+    );
+    plan.residual_diagnostics(&headed, &plan.modules());
+}
+
+#[test]
+fn an_identical_re_parse_of_the_subject_is_still_judged() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let plan = derive(source, &universe);
+    let reparsed = parse_clean(source, SUBJECT_PATH);
+    let residual = plan.residual_diagnostics(&reparsed, &plan.modules());
+    assert!(residual.is_empty(), "{residual:?}");
 }
 
 // ─── m1-m5: declared-import coverage by import form ────────────────────────
