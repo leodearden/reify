@@ -2304,6 +2304,75 @@ else
 fi
 check "WL-j18: _wl_classify_new_trash called as a plain statement visibly mutates _wl_new_real in the caller's shell, not silently discarded as inside \$( ) (#6299)" "$ok"
 
+# -- Infrastructure verdict: test_summary_infra_unavailable (task 9993) --------
+echo ""
+echo "--- Infrastructure verdict: test_summary_infra_unavailable (task 9993) ---"
+
+# (a) no assertion FAILed: the member ends with the infrastructure verdict.
+rc=0
+infra_out=$(bash -c "set -euo pipefail; source '$HELPER_FILE'
+    assert ok true
+    test_summary_infra_unavailable 'cargo inputs'" 2>/dev/null) || rc=$?
+check "IV-a: test_summary_infra_unavailable exits 75 when no assertion FAILed (got rc=$rc)" \
+    "$([ "$rc" -eq 75 ] && echo true || echo false)"
+check "IV-a: it prints test_summary's 'Results: 1 passed, 0 failed' line" \
+    "$(grep -q '^Results: 1 passed, 0 failed$' <<<"$infra_out" && echo true || echo false)"
+check "IV-a: it prints a line starting 'INFRASTRUCTURE: cargo inputs'" \
+    "$(grep -q '^INFRASTRUCTURE: cargo inputs' <<<"$infra_out" && echo true || echo false)"
+check "IV-a: it prints no FAIL line" \
+    "$(grep -q 'FAIL:' <<<"$infra_out" && echo false || echo true)"
+
+# (b) an assertion already FAILed: that FAIL decides the verdict.
+rc=0
+infra_out=$(bash -c "set -euo pipefail; source '$HELPER_FILE'
+    assert bad false
+    test_summary_infra_unavailable 'cargo inputs'" 2>/dev/null) || rc=$?
+check "IV-b: an earlier FAIL wins: test_summary_infra_unavailable exits 1 (got rc=$rc)" \
+    "$([ "$rc" -eq 1 ] && echo true || echo false)"
+check "IV-b: an earlier FAIL wins: no INFRASTRUCTURE line" \
+    "$(grep -q 'INFRASTRUCTURE:' <<<"$infra_out" && echo false || echo true)"
+
+# -- Infrastructure verdict: assert_infra_input (task 9993) --------------------
+echo ""
+echo "--- Infrastructure verdict: assert_infra_input (task 9993) ---"
+
+# (c) the input command succeeds: a PASS, and the member carries on.
+rc=0
+infra_out=$(bash -c "set -euo pipefail; source '$HELPER_FILE'
+    assert_infra_input 'inputs present' 75 true
+    test_summary" 2>/dev/null) || rc=$?
+check "IV-c: assert_infra_input prints '  PASS: <desc> (rc 0)' for a succeeding command" \
+    "$(grep -qx '  PASS: inputs present (rc 0)' <<<"$infra_out" && echo true || echo false)"
+check "IV-c: execution continues to test_summary, which exits 0 (got rc=$rc)" \
+    "$([ "$rc" -eq 0 ] && grep -q '^Results: 1 passed, 0 failed$' <<<"$infra_out" && echo true || echo false)"
+
+# (d) the input command reports the unavailable rc: the member ends right there.
+rc=0
+infra_out=$(bash -c "set -euo pipefail; source '$HELPER_FILE'
+    assert_infra_input 'inputs present' 75 bash -c 'exit 75'
+    echo AFTER" 2>/dev/null) || rc=$?
+check "IV-d: assert_infra_input ends the member with exit 75 on the unavailable rc (got rc=$rc)" \
+    "$([ "$rc" -eq 75 ] && echo true || echo false)"
+check "IV-d: it prints the INFRASTRUCTURE line" \
+    "$(grep -q '^INFRASTRUCTURE: inputs present' <<<"$infra_out" && echo true || echo false)"
+check "IV-d: it prints no FAIL line" \
+    "$(grep -q 'FAIL:' <<<"$infra_out" && echo false || echo true)"
+check "IV-d: nothing after the call runs (no AFTER sentinel)" \
+    "$(grep -q '^AFTER$' <<<"$infra_out" && echo false || echo true)"
+
+# (e) any other non-zero rc is a defect: a FAIL, and the member carries on.
+rc=0
+infra_out=$(bash -c "set -euo pipefail; source '$HELPER_FILE'
+    assert_infra_input 'inputs present' 75 bash -c 'exit 1'
+    echo AFTER
+    test_summary" 2>/dev/null) || rc=$?
+check "IV-e: assert_infra_input prints '  FAIL: <desc> (rc 1)' for any other non-zero rc" \
+    "$(grep -qx '  FAIL: inputs present (rc 1)' <<<"$infra_out" && echo true || echo false)"
+check "IV-e: execution continues past the FAIL (AFTER sentinel present)" \
+    "$(grep -q '^AFTER$' <<<"$infra_out" && echo true || echo false)"
+check "IV-e: test_summary then exits 1 (got rc=$rc)" \
+    "$([ "$rc" -eq 1 ] && echo true || echo false)"
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
