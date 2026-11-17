@@ -262,3 +262,16 @@ fn gate_forward_declared_geometry_let_no_false_positive() {
         "expected geometry_output to be Some, got None; diagnostics: {diagnostics:?}"
     );
 }
+
+/// The gate still catches a GENUINE backward edge: `LegacyMultiPass` really
+/// walks declaration order, so `p` (T3#0) runs before its producer `g` (T3#1).
+/// Pins that `exec_order` is derived from the executed walk — a fix that ordered
+/// it topologically regardless of the walk would make the gate vacuous and turn
+/// this test red. Cross-template coverage of the same contract:
+/// `cross_sub_geometry_e2e.rs::cross_sub_forward_declared_sub_trips_assert_dag_complete_in_debug`.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "assert_dag_complete: BackwardEdge")]
+fn gate_forward_declared_geometry_let_trips_under_legacy_declaration_order_walk() {
+    build_forward_declared_geometry(BuildScheduler::LegacyMultiPass);
+}
