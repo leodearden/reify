@@ -4030,5 +4030,25 @@ test_verify_fixture_helper_allocates_no_temp_of_its_own() {
         git -C "$target" rev-parse --git-dir || return 1
 }
 
+test_masked_path_dir_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the PATH shim. Its dir must also be a faithful mask: the named binary
+    # gone, the rest of the toolchain still resolving.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" ts_masked_path_dir "$target" sha256sum || return 1
+    if [ -z "$(ls -A "$target")" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the masked PATH dir is empty: $target"
+        return 1
+    fi
+    assert_cmd_fails "sha256sum is masked out of the shim" \
+        env PATH="$target" bash -c 'command -v sha256sum' || return 1
+    assert_cmd_success "ls still resolves through the shim" \
+        env PATH="$target" bash -c 'command -v ls' || return 1
+}
+
 # --- Main ---
 run_tests
