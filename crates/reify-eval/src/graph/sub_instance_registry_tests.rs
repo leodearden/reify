@@ -2,9 +2,13 @@
 //! cells stamped into `value_cells`.
 
 use reify_compiler::ValueCellKind;
-use reify_core::{ContentHash, Type, ValueCellId};
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+use reify_ir::MemberKey;
 
-use super::{CollectionSubInfo, EvaluationGraph, SubSlotRegistryMismatch, ValueCellNode};
+use super::{
+    CollectionSubInfo, EvaluationGraph, KeyedSubInfo, SubSlotRegistryMismatch, ValueCellNode,
+};
 
 fn cell(entity: &str, member: &str) -> ValueCellNode {
     ValueCellNode {
@@ -199,4 +203,82 @@ fn an_empty_graph_has_no_mismatch() {
     let graph = graph_with_bolts_collection();
 
     assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
+}
+
+fn keyed_slot(parent: &str, sub_name: &str, key: &str) -> String {
+    format!("{parent}.{}", MemberKey::new(key).path_segment(sub_name))
+}
+
+#[test]
+fn a_keyed_slot_stamped_around_the_registry_is_a_mismatch() {
+    let mut graph = EvaluationGraph::default();
+    graph.keyed_subs.push(KeyedSubInfo {
+        parent_entity: "P".to_string(),
+        sub_name: "v".to_string(),
+        structure_name: "Vent".to_string(),
+        count_cell: None,
+        member_keys: vec![MemberKey::new("intake"), MemberKey::new("exhaust")],
+    });
+    let intake = keyed_slot("P", "v", "intake");
+    let stray = cell(&intake, "d");
+    graph.value_cells.insert(stray.id.clone(), stray);
+
+    assert_eq!(
+        graph.sub_slot_registry_mismatches(),
+        vec![SubSlotRegistryMismatch {
+            slot: intake,
+            sub_template: "Vent".to_string(),
+            registry_template: None,
+        }],
+        "only the keyed slot holding a cell is checked",
+    );
+}
+
+#[test]
+fn from_templates_builds_a_registry_with_no_mismatch() {
+    let parsed = reify_compiler::parse_with_stdlib(
+        "structure def Bolt { param len : Real = 1.0 }\n\
+         structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
+         constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
+         \"a\" => { len = 2.0 }\n    }\n}\n",
+        ModulePath::single("test"),
+    );
+    let module = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let mut graph = EvaluationGraph::from_templates(&module.templates);
+
+    assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
+
+    let past_rack = graph
+        .collection_subs
+        .iter()
+        .find(|col_sub| col_sub.parent_entity == "Rig" && col_sub.sub_name == "rack")
+        .expect("the fixture registers `Rig.rack` as a collection sub")
+        .slot_entity(2);
+    let stray = cell(&past_rack, "len");
+    graph.value_cells.insert(stray.id.clone(), stray);
+    let keyed_a = keyed_slot("Rig", "keyed", "a");
+    graph.insert_sub_instance_cell("Screw", cell(&keyed_a, "len"));
+
+    let mut in_rig: Vec<SubSlotRegistryMismatch> = graph
+        .sub_slot_registry_mismatches()
+        .into_iter()
+        .filter(|mismatch| mismatch.slot.starts_with("Rig."))
+        .collect();
+    in_rig.sort_by(|a, b| a.slot.cmp(&b.slot));
+    assert_eq!(
+        in_rig,
+        vec![
+            SubSlotRegistryMismatch {
+                slot: keyed_a,
+                sub_template: "Bolt".to_string(),
+                registry_template: Some("Screw".to_string()),
+            },
+            SubSlotRegistryMismatch {
+                slot: past_rack,
+                sub_template: "Bolt".to_string(),
+                registry_template: None,
+            },
+        ],
+        "anti-vacuity: the check must see both the compiled collection and keyed slots",
+    );
 }
