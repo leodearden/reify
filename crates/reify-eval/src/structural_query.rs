@@ -750,3 +750,67 @@ pub(crate) fn expand_constraint_expr(
     apply_trait_filters(&mut expanded, all_templates, trait_registry);
     Some(expanded)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn structure_list_type() -> Type {
+        Type::List(Box::new(Type::StructureRef("Structure".into())))
+    }
+
+    /// `self.children` exactly as the compiler emits it.
+    fn placeholder() -> CompiledExpr {
+        CompiledExpr::method_call(
+            CompiledExpr::value_ref(
+                ValueCellId::new("S", "__self"),
+                Type::StructureRef("S".into()),
+            ),
+            "children".into(),
+            vec![],
+            structure_list_type(),
+        )
+    }
+
+    #[test]
+    fn gate_admits_a_placeholder_nested_in_a_method_call_argument() {
+        let call = CompiledExpr::method_call(
+            CompiledExpr::list_literal(vec![], structure_list_type()),
+            "contains".into(),
+            vec![placeholder()],
+            Type::Bool,
+        );
+        assert!(contains_structural_query(&call));
+    }
+
+    #[test]
+    fn gate_admits_a_bare_placeholder_and_one_under_a_method_call_object() {
+        assert!(contains_structural_query(&placeholder()));
+        let len = CompiledExpr::method_call(placeholder(), "len".into(), vec![], Type::Int);
+        assert!(contains_structural_query(&len));
+    }
+
+    #[test]
+    fn gate_rejects_an_expression_with_no_placeholder() {
+        let other = |member: &str| {
+            CompiledExpr::value_ref(
+                ValueCellId::new("S", member),
+                Type::StructureRef("S".into()),
+            )
+        };
+        let call = CompiledExpr::method_call(
+            other("xs"),
+            "m".into(),
+            vec![CompiledExpr::literal(Value::Int(1), Type::Int)],
+            Type::Int,
+        );
+        assert!(!contains_structural_query(&call));
+        let children_of_non_self = CompiledExpr::method_call(
+            other("xs"),
+            "children".into(),
+            vec![],
+            structure_list_type(),
+        );
+        assert!(!contains_structural_query(&children_of_non_self));
+    }
+}
