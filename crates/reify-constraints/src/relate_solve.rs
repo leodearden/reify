@@ -61,7 +61,10 @@
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
-use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, UnitVec3, Value};
+use reify_ir::{
+    DirectionFault, ResidualSource, SolveFailureCause, SolveResult, UnitVec3, Value,
+    decode_direction,
+};
 
 use crate::linalg::{RankTolerance, RowSpaceQr};
 use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
@@ -291,7 +294,9 @@ fn participating_extent(
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
             let origin = if moving {
-                datum_origin(&transform_datum(&op.datum, witness))
+                transform_datum(&op.datum, witness)
+                    .ok()
+                    .and_then(|moved| datum_origin(&moved))
             } else {
                 datum_origin(&op.datum)
             };
@@ -548,11 +553,15 @@ fn relation_residual_rows(
 ) -> Vec<ResidualRow> {
     let mut datums: Vec<(Value, bool)> = Vec::new(); // (value, moving)
     let mut scalars: Vec<f64> = Vec::new(); // metric operands, in declaration order
+    let mut unposable = false;
     for op in &rel.operands {
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
             let val = if moving {
-                transform_datum(&op.datum, x)
+                transform_datum(&op.datum, x).unwrap_or_else(|_| {
+                    unposable = true;
+                    op.datum.clone()
+                })
             } else {
                 op.datum.clone()
             };
@@ -567,7 +576,26 @@ fn relation_residual_rows(
     // where first and last coincide. Only `tangent`'s two-radius combos need the
     // full `scalars` slice, so widening the signature moves no existing behaviour.
     let scalar = scalars.last().copied();
-    residual_dispatch(&rel.name, &datums, scalar, &scalars)
+    let rows = residual_dispatch(&rel.name, &datums, scalar, &scalars);
+    if unposable {
+        unposable_datum_rows(rows)
+    } else {
+        rows
+    }
+}
+
+/// `rows` with every value NaN: what a relation reads when [`transform_datum`]
+/// cannot pose one of its moving datums, which only a non-finite pose rotation
+/// causes. The rows keep the count and units of the relation's form, which
+/// [`FrameProblem`] requires to be pose-independent, and the NaN reaches
+/// trust_region's NonFinite verdict as a NaN rotated into any other residual does.
+fn unposable_datum_rows(rows: Vec<ResidualRow>) -> Vec<ResidualRow> {
+    rows.into_iter()
+        .map(|row| ResidualRow {
+            value: f64::NAN,
+            ..row
+        })
+        .collect()
 }
 
 /// Dispatch a named relation to its residual vector over the (already
@@ -602,15 +630,11 @@ fn residual_dispatch(
             (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
-        // Normalize before the dot, for the reason spelled out on the `angle` arm
-        // below: `dot(da, db)` is the SINE of the misalignment only when both
-        // operands are unit-length, and `dir_of` does not guarantee that. Left
-        // unnormalized the row scales with the operands' magnitudes — harmless to
-        // the solver, whose zero set is magnitude-invariant, but not to the static
-        // verifier, which compares the row against a FIXED dimensionless rung: a
-        // scale-10 direction would inflate the residual tenfold and fail a build
-        // that is geometrically correct. A degenerate zero-length direction has no
-        // orientation ⇒ no residual row.
+        // `dot(da, db)` is the SINE of the misalignment only for unit operands. Every
+        // direction `dir_of` reads is a `Direction`, unit by construction, and
+        // `unit3` keeps the file's one normalisation convention (as
+        // `direction_alignment_residual` does), so the row the static verifier
+        // compares against a FIXED dimensionless rung never scales with magnitude.
         "perpendicular" => match (dir_of(a), dir_of(b)) {
             (Some(da), Some(db)) => match (unit3(da), unit3(db)) {
                 (Some(ua), Some(ub)) => vec![ResidualRow::dimensionless(dot3(ua, ub))],
@@ -627,16 +651,9 @@ fn residual_dispatch(
         "fasten" => coincident_residual(a, b),
         "distance" => distance_residual(a, b, scalar),
         "angle" => match (dir_of(a), dir_of(b), scalar) {
-            // Normalize both directions before the dot: the residual compares
-            // `dot(da, db)` against `cos(theta)`, which is the cosine of the angle
-            // between them ONLY when both operands are unit-length. A non-unit
-            // Direction/Axis-direction operand (a user `Direction` literal the
-            // language does not normalize, or a kernel projection not guaranteed
-            // unit) would otherwise make the residual zero at the WRONG angle —
-            // silently mis-solving / mis-verifying. Unlike parallel/perpendicular
-            // (whose dot/projection zero-set is magnitude-invariant), `angle` is the
-            // one arm sensitive to operand magnitude, so it must normalize. A
-            // degenerate zero-length direction has no defined angle ⇒ no residual row.
+            // `dot(da, db)` is the cosine of the angle between the operands only for
+            // unit operands, which every `Direction` `dir_of` reads is; `unit3` keeps
+            // the convention of the `perpendicular` arm above.
             (Some(da), Some(db), Some(theta)) => match (unit3(da), unit3(db)) {
                 (Some(ua), Some(ub)) => {
                     vec![ResidualRow::dimensionless(dot3(ua, ub) - theta.cos())]
@@ -1220,8 +1237,9 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<ResidualRo
 
 /// Is `v` a geometric datum (as opposed to a scalar magnitude)?
 ///
-/// `Value::Vector` is included — it is a legitimate raw-direction operand (`dir_of`
-/// resolves it) and [`transform_datum`] rotates it under a moving Frame. `Value::Frame`
+/// A raw `Value::Vector` is not one: B16, the compiler's relation lift admits only
+/// Direction/Axis/Plane/Point (and Frame) operands, so it never emits a Vector, and a
+/// direction is read only as a `Direction` (ε, task 9638). `Value::Frame`
 /// is included for η's `fasten` (= coincident over Frame): [`coincident_residual`]'s
 /// Frame branch consumes two Frame operands and [`transform_datum`] rotate-translates a
 /// moving Frame (origin AND basis), so a moving Frame carries a correct 6-DOF Jacobian
@@ -1235,15 +1253,15 @@ fn is_datum(v: &Value) -> bool {
             | Value::Plane { .. }
             | Value::Direction(_)
             | Value::Point(_)
-            | Value::Vector(_)
             | Value::Frame { .. }
     )
 }
 
-/// Extract a 3-vector `[f64; 3]` from a `Point`/`Vector`/`Direction`.
+/// The components of a position or a translation: a `Point`, or the `Vector` a
+/// `Transform` carries as its translation (read by [`pose_from_frame`]). Never a
+/// direction — those are read through [`unit_of`].
 fn vec3_of(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction(u) => Some(u.components()),
         Value::Point(c) | Value::Vector(c) if c.len() == 3 => {
             Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
         }
@@ -1251,13 +1269,19 @@ fn vec3_of(v: &Value) -> Option<[f64; 3]> {
     }
 }
 
-/// The direction/normal of a datum: `Direction` itself, `Axis.direction`,
-/// `Plane.normal`, or a raw `Vector`.
+/// The unit components of a `Direction`, through the one direction reader
+/// [`decode_direction`]; `None` for any other value.
+fn unit_of(v: &Value) -> Option<[f64; 3]> {
+    decode_direction(v).ok().map(|u| u.components())
+}
+
+/// The unit direction/normal of a datum: `Direction` itself, `Axis.direction` or
+/// `Plane.normal`.
 fn dir_of(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction(_) | Value::Vector(_) => vec3_of(v),
-        Value::Axis { direction, .. } => vec3_of(direction),
-        Value::Plane { normal, .. } => vec3_of(normal),
+        Value::Direction(_) => unit_of(v),
+        Value::Axis { direction, .. } => unit_of(direction),
+        Value::Plane { normal, .. } => unit_of(normal),
         _ => None,
     }
 }
@@ -1282,7 +1306,7 @@ fn datum_origin(v: &Value) -> Option<[f64; 3]> {
 /// `(origin, direction)` of an `Axis`.
 fn axis_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
     match v {
-        Value::Axis { origin, direction } => Some((vec3_of(origin)?, vec3_of(direction)?)),
+        Value::Axis { origin, direction } => Some((vec3_of(origin)?, unit_of(direction)?)),
         _ => None,
     }
 }
@@ -1290,7 +1314,7 @@ fn axis_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
 /// `(origin, normal)` of a `Plane`.
 fn plane_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
     match v {
-        Value::Plane { origin, normal } => Some((vec3_of(origin)?, vec3_of(normal)?)),
+        Value::Plane { origin, normal } => Some((vec3_of(origin)?, unit_of(normal)?)),
         _ => None,
     }
 }
@@ -1298,49 +1322,34 @@ fn plane_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
 // ── Datum transform under a pose ─────────────────────────────────────────────
 
 /// Apply pose `x` to a datum: directions rotate, origins rotate-then-translate.
-fn transform_datum(v: &Value, x: &Pose) -> Value {
+///
+/// A rotated direction is re-minted through [`UnitVec3::from_vector`], so every
+/// direction a residual reads stays a unit `Direction`. That fails only for a
+/// non-finite pose rotation, and the caller reports such a relation through
+/// [`unposable_datum_rows`]. A malformed datum passes through unchanged.
+fn transform_datum(v: &Value, x: &Pose) -> Result<Value, DirectionFault> {
+    let rotate_unit =
+        |u: [f64; 3]| UnitVec3::from_vector(rotate(x.rotation, u)).map(Value::Direction);
     match v {
-        Value::Axis { origin, direction } => {
-            let o = vec3_of(origin).map(|p| transform_point(p, x));
-            let d = vec3_of(direction).map(|u| rotate(x.rotation, u));
-            match (o, d) {
-                (Some(o), Some(d)) => Value::Axis {
-                    origin: Box::new(point_value(o)),
-                    direction: Box::new(vector_value(d)),
-                },
-                _ => v.clone(),
-            }
-        }
-        Value::Plane { origin, normal } => {
-            let o = vec3_of(origin).map(|p| transform_point(p, x));
-            let n = vec3_of(normal).map(|u| rotate(x.rotation, u));
-            match (o, n) {
-                (Some(o), Some(n)) => Value::Plane {
-                    origin: Box::new(point_value(o)),
-                    normal: Box::new(vector_value(n)),
-                },
-                _ => v.clone(),
-            }
-        }
-        // Err is reachable only from a non-finite pose rotation. The raw rotated
-        // vector carries that NaN on, as the sibling arms' rotated values do, so the
-        // solver reports it as a NonFinite evaluation; `dir_of` reads a Vector too.
-        Value::Direction(u) => {
-            let r = rotate(x.rotation, u.components());
-            UnitVec3::from_vector(r).map_or_else(|_| vector_value(r), Value::Direction)
-        }
-        // A raw `Vector` operand is used as a direction (`dir_of` resolves it), so it
-        // ROTATES with the moving Frame and does NOT translate — mirroring the
-        // `Direction` arm. Without this arm a moving `Vector` would fall through to the
-        // catch-all and be left fixed, zeroing its Jacobian contribution.
-        Value::Vector(c) if c.len() == 3 => match vec3_of(v) {
-            Some(d) => vector_value(rotate(x.rotation, d)),
-            None => v.clone(),
+        Value::Axis { origin, direction } => match (vec3_of(origin), unit_of(direction)) {
+            (Some(o), Some(d)) => Ok(Value::Axis {
+                origin: Box::new(point_value(transform_point(o, x))),
+                direction: Box::new(rotate_unit(d)?),
+            }),
+            _ => Ok(v.clone()),
         },
-        Value::Point(c) if c.len() == 3 => match vec3_of(v) {
+        Value::Plane { origin, normal } => match (vec3_of(origin), unit_of(normal)) {
+            (Some(o), Some(n)) => Ok(Value::Plane {
+                origin: Box::new(point_value(transform_point(o, x))),
+                normal: Box::new(rotate_unit(n)?),
+            }),
+            _ => Ok(v.clone()),
+        },
+        Value::Direction(u) => rotate_unit(u.components()),
+        Value::Point(c) if c.len() == 3 => Ok(match vec3_of(v) {
             Some(p) => point_value(transform_point(p, x)),
             None => v.clone(),
-        },
+        }),
         // A moving Frame rotate-translates its origin (like a Point) AND composes the
         // pose rotation onto its basis: world_basis = R(pose) ⊗ local_basis. So the
         // transformed Frame is the sub's pose acting on its local frame — the form
@@ -1350,15 +1359,15 @@ fn transform_datum(v: &Value, x: &Pose) -> Value {
             let o = vec3_of(origin).map(|p| transform_point(p, x));
             let q_pose = quat_of(&orientation_from_exp_map(x.rotation));
             let q_local = quat_of(basis);
-            match (o, q_pose, q_local) {
+            Ok(match (o, q_pose, q_local) {
                 (Some(o), Some(qp), Some(ql)) => Value::Frame {
                     origin: Box::new(point_value(o)),
                     basis: Box::new(orientation_value(quat_mul(qp, ql))),
                 },
                 _ => v.clone(),
-            }
+            })
         }
-        _ => v.clone(),
+        _ => Ok(v.clone()),
     }
 }
 
@@ -1404,11 +1413,6 @@ fn point_value(p: [f64; 3]) -> Value {
         Value::length(p[1]),
         Value::length(p[2]),
     ])
-}
-
-/// Build `Value::Vector` (dimensionless) from a 3-vector.
-fn vector_value(v: [f64; 3]) -> Value {
-    Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
 
 // ── Rank tolerance ───────────────────────────────────────────────────────────
