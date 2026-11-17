@@ -64,10 +64,22 @@ impl InstanceSlot<'_> {
         } = self;
         match self.index {
             SlotIndex::Single => format!("{parent}.{sub_name}"),
-            SlotIndex::Positional(i) => format!("{parent}.{sub_name}[{i}]"),
-            SlotIndex::Keyed(key) => format!("{parent}.{}", key.path_segment(sub_name)),
+            SlotIndex::Positional(i) => positional_slot_entity(parent, sub_name, i),
+            SlotIndex::Keyed(key) => keyed_slot_entity(parent, sub_name, key),
         }
     }
+}
+
+/// The scoped entity of collection sub `sub_name`'s `index`th instance under
+/// `parent`, `P.s[i]`.
+pub(crate) fn positional_slot_entity(parent: &str, sub_name: &str, index: i64) -> String {
+    format!("{parent}.{sub_name}[{index}]")
+}
+
+/// The scoped entity of keyed sub `sub_name`'s `key` instance under `parent`,
+/// `P.s["k"]`.
+pub(crate) fn keyed_slot_entity(parent: &str, sub_name: &str, key: &MemberKey) -> String {
+    format!("{parent}.{}", key.path_segment(sub_name))
 }
 
 impl<'a> ContributedCell<'a> {

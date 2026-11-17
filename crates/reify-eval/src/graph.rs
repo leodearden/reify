@@ -218,7 +218,7 @@ impl CollectionSubInfo {
     /// The scoped entity of this collection's `index`th instance slot,
     /// `P.s[i]`.
     pub(crate) fn slot_entity(&self, index: i64) -> String {
-        format!("{}.{}[{}]", self.parent_entity, self.sub_name, index)
+        cell_contributions::positional_slot_entity(&self.parent_entity, &self.sub_name, index)
     }
 }
 
@@ -249,6 +249,13 @@ pub struct KeyedSubInfo {
     pub count_cell: Option<ValueCellId>,
     /// The author-assigned member keys, in declaration order.
     pub member_keys: Vec<MemberKey>,
+}
+
+impl KeyedSubInfo {
+    /// The scoped entity of this keyed sub's `key` instance slot, `P.s["k"]`.
+    pub(crate) fn slot_entity(&self, key: &MemberKey) -> String {
+        cell_contributions::keyed_slot_entity(&self.parent_entity, &self.sub_name, key)
+    }
 }
 
 /// A sub-instance slot holding cells in `value_cells` whose registry entry
@@ -653,8 +660,8 @@ impl EvaluationGraph {
         self.sub_instance_templates.get(entity).map(String::as_str)
     }
 
-    /// Every collection-sub slot holding a cell in `value_cells` whose registry
-    /// entry does not name the template its sub stamps from.
+    /// Every collection- or keyed-sub slot holding a cell in `value_cells`
+    /// whose registry entry does not name the template its sub stamps from.
     pub(crate) fn sub_slot_registry_mismatches(&self) -> Vec<SubSlotRegistryMismatch> {
         let stamped: HashSet<&str> = self
             .value_cells
@@ -680,12 +687,21 @@ impl EvaluationGraph {
         &'a self,
         stamped: &'a HashSet<&str>,
     ) -> impl Iterator<Item = (String, &'a str)> + 'a {
-        self.collection_subs.iter().flat_map(move |col_sub| {
+        let positional = self.collection_subs.iter().flat_map(move |col_sub| {
             (0_i64..)
                 .map(|index| col_sub.slot_entity(index))
                 .take_while(|slot| stamped.contains(slot.as_str()))
                 .map(|slot| (slot, col_sub.structure_name.as_str()))
-        })
+        });
+        let keyed = self.keyed_subs.iter().flat_map(move |keyed_sub| {
+            keyed_sub
+                .member_keys
+                .iter()
+                .map(|key| keyed_sub.slot_entity(key))
+                .filter(|slot| stamped.contains(slot.as_str()))
+                .map(|slot| (slot, keyed_sub.structure_name.as_str()))
+        });
+        positional.chain(keyed)
     }
 
     /// The realization whose handle the scalar geometry cell `cell` holds: the
