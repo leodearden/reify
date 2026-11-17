@@ -576,6 +576,203 @@ impl CompiledExpr {
         }
     }
 
+    /// Call `f` on each DIRECT child expression in evaluation order, stopping
+    /// at the first `Break`. A child is a sub-expression evaluated in this
+    /// node's scope; `StructureInstanceCtor.lets` are template-local and are
+    /// NOT children.
+    ///
+    /// This match is THE statement of each variant's child shape:
+    /// `for_each_child` derives from it and `for_each_child_mut` mirrors it
+    /// arm for arm (pinned by `crates/reify-ir/tests/child_enumeration.rs`).
+    pub fn try_for_each_child<'a, B>(
+        &'a self,
+        f: &mut dyn FnMut(&'a CompiledExpr) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        match &self.kind {
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::ValueRef(_)
+            | CompiledExprKind::CrossSubGeometryRef(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::DeterminacyPredicate { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                f(left)?;
+                f(right)?;
+            }
+            CompiledExprKind::UnOp { operand, .. } => f(operand)?,
+            CompiledExprKind::FunctionCall { args, .. }
+            | CompiledExprKind::UserFunctionCall { args, .. } => {
+                args.iter().try_for_each(&mut *f)?;
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                f(condition)?;
+                f(then_branch)?;
+                f(else_branch)?;
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                f(discriminant)?;
+                arms.iter().try_for_each(|arm| f(&arm.body))?;
+            }
+            CompiledExprKind::Lambda { body, .. } => f(body)?,
+            CompiledExprKind::ListLiteral(elements)
+            | CompiledExprKind::SetLiteral(elements)
+            | CompiledExprKind::ReflectiveCellList(elements) => {
+                elements.iter().try_for_each(&mut *f)?;
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    f(key)?;
+                    f(val)?;
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                f(object)?;
+                f(index)?;
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                f(object)?;
+                args.iter().try_for_each(&mut *f)?;
+            }
+            CompiledExprKind::Quantifier {
+                collection,
+                predicate,
+                ..
+            } => {
+                f(collection)?;
+                f(predicate)?;
+            }
+            CompiledExprKind::OptionSome(inner) => f(inner)?,
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+                if let Some(lo) = lower {
+                    f(lo)?;
+                }
+                if let Some(hi) = upper {
+                    f(hi)?;
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                f(base)?;
+                args.iter().try_for_each(&mut *f)?;
+            }
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                ordered_args.iter().try_for_each(|(_, arg)| f(arg))?;
+                defaults.iter().try_for_each(|(_, def)| f(def))?;
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                payload.iter().try_for_each(|(_, field)| f(field))?;
+            }
+            CompiledExprKind::ResolveSelector { selector } => f(selector)?,
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Call `f` on each direct child expression in evaluation order; see
+    /// `try_for_each_child` for what a child is.
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a CompiledExpr)) {
+        let ControlFlow::Continue(()) =
+            self.try_for_each_child::<std::convert::Infallible>(&mut |child| {
+                f(child);
+                ControlFlow::Continue(())
+            });
+    }
+
+    /// Mutable mirror of `try_for_each_child`, which states the child shape.
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut CompiledExpr)) {
+        match &mut self.kind {
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::ValueRef(_)
+            | CompiledExprKind::CrossSubGeometryRef(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::DeterminacyPredicate { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                f(left);
+                f(right);
+            }
+            CompiledExprKind::UnOp { operand, .. } => f(operand),
+            CompiledExprKind::FunctionCall { args, .. }
+            | CompiledExprKind::UserFunctionCall { args, .. } => {
+                args.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                f(condition);
+                f(then_branch);
+                f(else_branch);
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                f(discriminant);
+                arms.iter_mut().for_each(|arm| f(&mut arm.body));
+            }
+            CompiledExprKind::Lambda { body, .. } => f(body),
+            CompiledExprKind::ListLiteral(elements)
+            | CompiledExprKind::SetLiteral(elements)
+            | CompiledExprKind::ReflectiveCellList(elements) => {
+                elements.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    f(key);
+                    f(val);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                f(object);
+                f(index);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                f(object);
+                args.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::Quantifier {
+                collection,
+                predicate,
+                ..
+            } => {
+                f(collection);
+                f(predicate);
+            }
+            CompiledExprKind::OptionSome(inner) => f(inner),
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+                if let Some(lo) = lower {
+                    f(lo);
+                }
+                if let Some(hi) = upper {
+                    f(hi);
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                f(base);
+                args.iter_mut().for_each(|arg| f(arg));
+            }
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                ordered_args.iter_mut().for_each(|(_, arg)| f(arg));
+                defaults.iter_mut().for_each(|(_, def)| f(def));
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                payload.iter_mut().for_each(|(_, field)| f(field));
+            }
+            CompiledExprKind::ResolveSelector { selector } => f(selector),
+        }
+    }
+
     /// Recursively walk the expression tree, calling `f` on each node (pre-order).
     ///
     /// This is the canonical traversal for `CompiledExprKind`. All callers

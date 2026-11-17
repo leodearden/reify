@@ -86,14 +86,20 @@ fn structure_ctor_with_lets() -> CompiledExpr {
 fn lets_of(expr: &CompiledExpr) -> &[(String, CompiledExpr)] {
     match &expr.kind {
         CompiledExprKind::StructureInstanceCtor { lets, .. } => lets,
-        other => panic!("expected a StructureInstanceCtor, got {}", variant_name(other)),
+        other => panic!(
+            "expected a StructureInstanceCtor, got {}",
+            variant_name(other)
+        ),
     }
 }
 
 fn let_cell(expr: &CompiledExpr) -> &ValueCellId {
     match &lets_of(expr)[0].1.kind {
         CompiledExprKind::ValueRef(id) => id,
-        other => panic!("expected the let to be a ValueRef, got {}", variant_name(other)),
+        other => panic!(
+            "expected the let to be a ValueRef, got {}",
+            variant_name(other)
+        ),
     }
 }
 
@@ -300,10 +306,7 @@ fn corpus() -> Vec<Case> {
         ),
         case(
             "map_literal_key_then_value_per_entry",
-            CompiledExpr::map_literal(
-                vec![(r("c0"), r("c1")), (r("c2"), r("c3"))],
-                Type::Bool,
-            ),
+            CompiledExpr::map_literal(vec![(r("c0"), r("c1")), (r("c2"), r("c3"))], Type::Bool),
             &["c0", "c1", "c2", "c3"],
         ),
         case(
@@ -388,7 +391,12 @@ fn corpus_has_an_exemplar_for_every_variant() {
 #[test]
 fn for_each_child_yields_each_variants_direct_children_in_order() {
     for case in corpus() {
-        assert_eq!(child_labels(&case.expr), case.children, "case `{}`", case.name);
+        assert_eq!(
+            child_labels(&case.expr),
+            case.children,
+            "case `{}`",
+            case.name
+        );
     }
 }
 
