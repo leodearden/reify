@@ -141,6 +141,8 @@ scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
 # test_command premise it relies on, pinned by a .py suite behind a .sh wrapper.
 dark-factory-orchestrator.yaml       tests/infra/test_merge_verify_workspace_seam.sh
 tests/infra/test_merge_verify_workspace_seam.py    tests/infra/test_merge_verify_workspace_seam.sh
+# Its premise check plans verify.sh's merge role, which the test_verify_*.sh glob misses.
+scripts/verify.sh                    tests/infra/test_merge_verify_workspace_seam.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh

@@ -8,9 +8,12 @@ is the thin wrapper tests/infra/test_merge_verify_workspace_seam.sh.
 
 THE SEAM: top-level `merge_verify_workspace: true` in
 dark-factory-orchestrator.yaml makes DF's merge role run the yaml's global
-verify commands verbatim. The guard pins the knob, and proves the premise the
+verify commands verbatim. The guard pins the knob, and checks the premise the
 knob relies on: that global test command, under DF_VERIFY_ROLE=merge, plans the
-whole-workspace nextest. Background: docs/notes/verify-pipeline-knobs.md.
+whole-workspace nextest. That premise check plans the command in this process's
+environment WITHOUT the yaml's `verify_env` overlay that DF adds, so it does not
+see a verify_env entry that narrows the workspace pass.
+Background: docs/notes/verify-pipeline-knobs.md.
 """
 
 import json
@@ -26,11 +29,9 @@ ORCH_YAML = REPO_ROOT / "dark-factory-orchestrator.yaml"
 KNOBS_DOC = "docs/notes/verify-pipeline-knobs.md"
 
 WITHOUT_THE_KNOB = (
-    "dark-factory-orchestrator.yaml must set top-level `merge_verify_workspace: true`. "
-    "Without it, DF's no-module-config fallback file-scopes the merge verify and drops "
-    "test_command for any diff touching a non-test .py file (DF task 7041, still pending), "
-    "so the merge gate runs lint+type only and can land a red tree (incident 9761). "
-    f"See {KNOBS_DOC}."
+    "dark-factory-orchestrator.yaml must set top-level `merge_verify_workspace: true` "
+    "(else the merge gate can run lint+type only); "
+    f"see {KNOBS_DOC}."
 )
 
 
@@ -72,7 +73,7 @@ class TestTopLevelScalar(unittest.TestCase):
 
 
 class TestMergeVerifyWorkspaceKnob(unittest.TestCase):
-    def test_merge_gate_runs_global_commands_unscoped(self):
+    def test_merge_verify_workspace_knob_is_set_true(self):
         try:
             value = top_level_scalar(ORCH_YAML.read_text(), "merge_verify_workspace")
         except AssertionError as unreadable:
