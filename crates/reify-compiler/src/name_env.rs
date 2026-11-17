@@ -419,9 +419,9 @@ mod tests {
             Fixture { hi, lo, local }
         }
 
-        /// Both orders of the two-module prelude. `X` is the only name both
-        /// modules declare, so `lo`-first catches a view that keeps the first
-        /// slice entry and `hi`-first catches one that keeps the last.
+        /// Both orders of the two-module prelude: `lo`-first catches a view
+        /// that keeps the first slice entry for `X`, `hi`-first catches one
+        /// that keeps the last.
         fn slice_orders(&self) -> [[&CompiledModule; 2]; 2] {
             [[&self.lo, &self.hi], [&self.hi, &self.lo]]
         }
