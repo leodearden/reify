@@ -220,8 +220,8 @@ export const StartView: Component<StartViewProps> = (props) => {
             </button>
           </div>
           <Show when={pending()}>
-            <p class={styles.note} role="status" data-testid="start-document-pending">
-              <span>Opening {pendingPath()}…</span>{' '}
+            <p class={styles.note} data-testid="start-document-pending">
+              <span role="status">Opening {pendingPath()}…</span>{' '}
               <button
                 type="button"
                 class={styles.button}

@@ -1,30 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createLauncherActions, LaunchFailure, type LauncherDeps } from '../app/launcherActions';
+import { createLauncherActions, LaunchFailure } from '../app/launcherActions';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
-import type { FileData, ModeState, RecentEntry } from '../types';
+import type { FileData, ModeState } from '../types';
 import { deferred, flushMacrotasks } from './test-utils';
-
-const RECENT: RecentEntry[] = [
-  { path: '/designs/bracket.ri', opened_at: 2000 },
-  { path: '/designs/flange.ri', opened_at: 1000 },
-];
-
-function makeDeps() {
-  return {
-    loadDocument: vi.fn<LauncherDeps['loadDocument']>().mockResolvedValue(undefined),
-    createNewFile: vi
-      .fn<LauncherDeps['createNewFile']>()
-      .mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' }),
-    recordRecent: vi.fn<LauncherDeps['recordRecent']>().mockResolvedValue(RECENT),
-    listRecent: vi.fn<LauncherDeps['listRecent']>().mockResolvedValue(RECENT),
-    setMode: vi
-      .fn<LauncherDeps['setMode']>()
-      .mockImplementation(async (mode) => ({ mode, debug_port: mode === 'debug' ? 3939 : null })),
-    showAssistant: vi.fn<LauncherDeps['showAssistant']>(),
-    ensureDebugBridge: vi.fn<LauncherDeps['ensureDebugBridge']>().mockResolvedValue(undefined),
-    notify: vi.fn<LauncherDeps['notify']>(),
-  };
-}
+import { makeLauncherDeps, stubRecent } from './test_utils/launcherDeps';
 
 async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   const outcome = await promise.then(
@@ -36,11 +15,11 @@ async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
 }
 
 let store: LauncherStore;
-let deps: ReturnType<typeof makeDeps>;
+let deps: ReturnType<typeof makeLauncherDeps>;
 
 beforeEach(() => {
   store = createLauncherStore();
-  deps = makeDeps();
+  deps = makeLauncherDeps();
 });
 
 describe('openDocument', () => {
@@ -54,7 +33,7 @@ describe('openDocument', () => {
     expect(deps.loadDocument.mock.invocationCallOrder[0]).toBeLessThan(
       deps.recordRecent.mock.invocationCallOrder[0],
     );
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 
   it('leaves the document error to its presenter', async () => {
@@ -150,7 +129,7 @@ describe('openDocument', () => {
   it('a refused open writes nothing to the store', async () => {
     const held = deferred<void>();
     deps.loadDocument.mockReturnValueOnce(held.promise);
-    store.setRecent(RECENT);
+    store.setRecent(stubRecent());
     store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
     const actions = createLauncherActions(store, deps);
     const first = actions.openDocument('/designs/bracket.ri');
@@ -188,7 +167,7 @@ describe('createDocument', () => {
     expect(deps.createNewFile).toHaveBeenCalledWith('/designs/created');
     expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/created.ri');
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 
   it('rejects with E_GUI_OPEN_FAILED when the created file fails to load', async () => {
@@ -305,6 +284,27 @@ describe('abandonDocumentAttempt', () => {
     await hung;
   });
 
+  it('an open started in the same turn as the abandon keeps its pending once the abandoned attempt settles', async () => {
+    const next = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise).mockReturnValueOnce(next.promise);
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+
+    actions.abandonDocumentAttempt();
+    const second = actions.openDocument('/designs/flange.ri');
+    await first;
+
+    expect(store.state.document.pending).toBe('/designs/flange.ri');
+    const failure = await failureOf(actions.openDocument('/designs/created.ri'));
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.message).toBe('/designs/flange.ri is still opening');
+
+    next.resolve();
+    await second;
+
+    expect(store.state.document.pending).toBeNull();
+  });
+
   it.each([
     ['a late success', (held: HeldLoad) => held.resolve()],
     ['a late rejection', (held: HeldLoad) => held.reject(new Error('engine refused'))],
@@ -329,7 +329,7 @@ describe('abandonDocumentAttempt', () => {
     await second;
   });
 
-  it('an abandoned create whose template write lands late loads nothing', async () => {
+  it('an abandoned create whose template write lands late loads nothing and leaves the written file out of Recent', async () => {
     const written = deferred<FileData>();
     deps.createNewFile.mockReturnValueOnce(written.promise);
     const actions = createLauncherActions(store, deps);
@@ -342,10 +342,29 @@ describe('abandonDocumentAttempt', () => {
 
     expect(deps.loadDocument).not.toHaveBeenCalled();
     expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.recent).toEqual([]);
+  });
+
+  it('a create abandoned while its written file is loading leaves that file out of Recent', async () => {
+    const loaded = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(loaded.promise);
+    const actions = createLauncherActions(store, deps);
+    const creating = actions.createDocument('/designs/created');
+    await vi.waitFor(() =>
+      expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal)),
+    );
+
+    actions.abandonDocumentAttempt();
+    await creating;
+    loaded.resolve();
+    await flushMacrotasks();
+
+    expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.recent).toEqual([]);
   });
 
   it('abandoning with no attempt in flight changes nothing', () => {
-    store.setRecent(RECENT);
+    store.setRecent(stubRecent());
     store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
     const actions = createLauncherActions(store, deps);
     const errorBefore = store.state.document.error;
@@ -366,7 +385,7 @@ describe('refreshRecent', () => {
     await actions.refreshRecent();
 
     expect(deps.listRecent).toHaveBeenCalledTimes(1);
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 });
 

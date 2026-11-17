@@ -3490,7 +3490,8 @@ describe('App launcher Start view (alpha-spine β)', () => {
     typeStartPath('/designs/bracket.ri');
     fireEvent.click(screen.getByTestId('start-open-path'));
 
-    expect((await screen.findByTestId('start-document-pending')).textContent).toContain('Opening /designs/bracket.ri…');
+    const pendingLine = await screen.findByTestId('start-document-pending');
+    expect(within(pendingLine).getByRole('status').textContent).toBe('Opening /designs/bracket.ri…');
     for (const id of ['start-open-path', 'start-open-dialog', 'start-new-dialog', 'start-create-path', 'start-recent-item']) {
       expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
     }

@@ -1,15 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@solidjs/testing-library';
+import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import { StartView } from '../panels/StartView';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
-import {
-  createLauncherActions,
-  LaunchFailure,
-  type LauncherActions,
-  type LauncherDeps,
-} from '../app/launcherActions';
+import { createLauncherActions, LaunchFailure, type LauncherActions } from '../app/launcherActions';
 import { pickOpenPath, pickSavePath } from '../bridge';
 import { deferred } from './test-utils';
+import { makeLauncherDeps } from './test_utils/launcherDeps';
 
 vi.mock('../bridge', () => ({
   pickOpenPath: vi.fn(),
@@ -415,17 +411,18 @@ describe('StartView pending document attempt', () => {
 
     expect(screen.getAllByTestId('start-recent-item')).toHaveLength(2);
     for (const control of documentControls()) expect(isDisabled(control)).toBe(true);
-    const line = screen.getByTestId('start-document-pending');
-    expect(line.getAttribute('role')).toBe('status');
-    expect(line.textContent).toContain('Opening /designs/bracket.ri…');
+    const status = within(screen.getByTestId('start-document-pending')).getByRole('status');
+    expect(status.textContent).toBe('Opening /designs/bracket.ri…');
   });
 
-  it('the Opening… line offers an enabled Cancel that abandons the attempt', () => {
+  it('the Opening… line offers an enabled Cancel, outside its status region, that abandons the attempt', () => {
     store.setDocumentPending('/designs/bracket.ri');
     renderStartView();
 
     const cancel = screen.getByTestId('start-document-cancel');
-    expect(screen.getByTestId('start-document-pending').contains(cancel)).toBe(true);
+    const line = screen.getByTestId('start-document-pending');
+    expect(line.contains(cancel)).toBe(true);
+    expect(within(line).getByRole('status').contains(cancel)).toBe(false);
     expect(cancel.tagName).toBe('BUTTON');
     expect(isDisabled(cancel)).toBe(false);
 
@@ -435,22 +432,9 @@ describe('StartView pending document attempt', () => {
   });
 
   it('Cancel on a hung open re-enables the document actions, presents no error, and the next open loads', async () => {
-    const loadDocument = vi
-      .fn<LauncherDeps['loadDocument']>()
-      .mockReturnValueOnce(deferred<void>().promise)
-      .mockResolvedValue(undefined);
-    const launcherActions = createLauncherActions(store, {
-      loadDocument,
-      createNewFile: vi
-        .fn<LauncherDeps['createNewFile']>()
-        .mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' }),
-      recordRecent: vi.fn<LauncherDeps['recordRecent']>().mockResolvedValue([]),
-      listRecent: vi.fn<LauncherDeps['listRecent']>().mockResolvedValue([]),
-      setMode: vi.fn<LauncherDeps['setMode']>().mockResolvedValue({ mode: 'design', debug_port: null }),
-      showAssistant: vi.fn<LauncherDeps['showAssistant']>(),
-      ensureDebugBridge: vi.fn<LauncherDeps['ensureDebugBridge']>().mockResolvedValue(undefined),
-      notify: vi.fn<LauncherDeps['notify']>(),
-    });
+    const deps = makeLauncherDeps();
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const launcherActions = createLauncherActions(store, deps);
     render(() => <StartView launcher={store} actions={launcherActions} />);
 
     typePath('/designs/bracket.ri');
@@ -467,7 +451,7 @@ describe('StartView pending document attempt', () => {
     typePath('/designs/flange.ri');
     fireEvent.click(screen.getByTestId('start-open-path'));
     await waitFor(() =>
-      expect(loadDocument).toHaveBeenCalledWith('/designs/flange.ri', expect.any(AbortSignal)),
+      expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri', expect.any(AbortSignal)),
     );
   });
 

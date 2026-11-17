@@ -12,7 +12,9 @@
  * cleared by the attempt's own settling or by abandonDocumentAttempt, not by
  * the store's reset. Abandoning resolves the attempt's action at once and
  * aborts the signal its stages were given. The attempt then loads nothing
- * further, and the action ignores how the attempt settles.
+ * further, and the action ignores how the attempt settles. Abandoning a create
+ * does not undo a template write that has landed or still lands: that file
+ * stays on disk, unloaded and out of Recent, and opens like any other.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
