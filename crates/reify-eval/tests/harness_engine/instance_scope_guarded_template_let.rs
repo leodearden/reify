@@ -27,6 +27,9 @@ const GUARDED_LET: &str = r#"
     }
 "#;
 
+/// The two slots of the count's static default, plus one grown by `n = 3`.
+const GROWN_SLOTS: &[&str] = &["LRack.items[0]", "LRack.items[1]", "LRack.items[2]"];
+
 fn cell<'a>(result: &'a EvalResult, entity: &str, member: &str) -> Option<&'a Value> {
     result.values.get(&ValueCellId::new(entity, member))
 }
@@ -40,36 +43,41 @@ fn cold_eval(source: &str, overrides: &[(ValueCellId, Value)]) -> EvalResult {
     engine.eval(&parse_and_compile_with_stdlib(source))
 }
 
-/// The template's own `LInner.q`: the same expression over the same
-/// `LInner.half`. Asserted present and determined.
-fn template_q(result: &EvalResult) -> &Value {
-    let reference = cell(result, "LInner", "q").expect("template cell LInner.q not found");
+/// The template's own `LInner.<member>`, asserted present and determined.
+fn template_value<'a>(result: &'a EvalResult, member: &str) -> &'a Value {
+    let reference = cell(result, "LInner", member)
+        .unwrap_or_else(|| panic!("template cell LInner.{member} not found"));
     assert_ne!(
         reference,
         &Value::Undef,
-        "premise: template LInner.q must be determined, or the slot comparison measures nothing"
+        "premise: template LInner.{member} must be determined, or the slot comparison \
+         measures nothing"
     );
     reference
 }
 
-/// Every slot was elaborated (its `r` is determined) and its `q` equals the
-/// template's `LInner.q`.
-fn assert_slots_read_the_template_let(result: &EvalResult, slots: &[&str]) {
-    let reference = template_q(result);
+/// Every slot was elaborated (its `r` is determined) and its `member` equals
+/// `expected`.
+fn assert_slots_hold(result: &EvalResult, slots: &[&str], member: &str, expected: &Value) {
     for slot in slots {
         let r = cell(result, slot, "r");
         assert!(
             r.is_some_and(|v| *v != Value::Undef),
             "premise: {slot}.r must be determined, so the slot was elaborated; got {r:?}"
         );
-        let q = cell(result, slot, "q");
+        let actual = cell(result, slot, member);
         assert_eq!(
-            q,
-            Some(reference),
-            "{slot}.q reads the guarded template let `half`: expected the template's \
-             LInner.q = {reference:?}, got {q:?}"
+            actual,
+            Some(expected),
+            "{slot}.{member} reads a guarded template let: expected {expected:?}, got {actual:?}"
         );
     }
+}
+
+/// Every slot's `q` equals the template's `LInner.q`: the same expression over
+/// the same `LInner.half`.
+fn assert_slots_read_the_template_let(result: &EvalResult, slots: &[&str]) {
+    assert_slots_hold(result, slots, "q", template_value(result, "q"));
 }
 
 /// A slot grown past the count's static default has no graph cell, so it
@@ -84,10 +92,13 @@ fn a_slot_grown_by_a_count_override_reads_a_guarded_template_let_like_the_origin
         ],
     );
 
-    assert_slots_read_the_template_let(
-        &result,
-        &["LRack.items[0]", "LRack.items[1]", "LRack.items[2]"],
+    assert_eq!(
+        template_value(&result, "q"),
+        &Value::length(0.045),
+        "premise: LInner.q = 30mm / 2 * 3; slot equality alone also holds when both \
+         scopes degrade together"
     );
+    assert_slots_read_the_template_let(&result, GROWN_SLOTS);
 }
 
 /// A count default that is not a literal stamps no slot in the graph, so
@@ -137,7 +148,7 @@ fn a_dynamic_index_reads_a_slots_let_over_a_guarded_template_let_at_the_slots_va
         "control: a dynamic index over a plain let must read the slot's value"
     );
 
-    let reference = template_q(&result);
+    let reference = template_value(&result, "q");
     let slot_q = cell(&result, "LRack.items[1]", "q");
     assert_eq!(
         slot_q,
@@ -151,4 +162,95 @@ fn a_dynamic_index_reads_a_slots_let_over_a_guarded_template_let_at_the_slots_va
         picked, slot_q,
         "LRack.picked = items[k].q must read the slot's value {slot_q:?}; got {picked:?}"
     );
+}
+
+fn grow_to_three_slots() -> (ValueCellId, Value) {
+    (ValueCellId::new("LRack", "n"), Value::Int(3))
+}
+
+/// Phase 1 evaluates a param default before phase 2 commits any let, reading a
+/// let it depends on as a scratch value. The guarded-group seed must already be
+/// in phase 1's scope, or the grown slot's scratch `q`, and so its `p`, is Undef.
+#[test]
+fn a_param_default_reading_a_let_over_a_guarded_template_let_resolves_in_a_grown_slot() {
+    let source = GUARDED_LET.replace(
+        "let r = len * 3",
+        "let r = len * 3\n        param p : Length = q",
+    );
+    assert_ne!(
+        source, GUARDED_LET,
+        "premise: LInner must gain the param `p`"
+    );
+
+    let result = cold_eval(&source, &[grow_to_three_slots()]);
+
+    let reference = template_value(&result, "q");
+    assert_eq!(
+        reference,
+        &Value::length(0.015),
+        "premise: LInner.q = 10mm / 2 * 3"
+    );
+    assert_slots_hold(&result, GROWN_SLOTS, "p", reference);
+}
+
+/// Phase 1.5 evaluates a nested sub's ctor arg against phase 1's scope plus
+/// scratch lets, so the guarded-group seed must reach it too.
+#[test]
+fn a_nested_ctor_arg_reading_a_let_over_a_guarded_template_let_resolves_in_a_grown_slot() {
+    let source = format!(
+        "structure LProbe {{ param v : Length = 0mm }}\n{}",
+        GUARDED_LET.replace(
+            "let r = len * 3",
+            "let r = len * 3\n        sub probe = LProbe(v: q)",
+        )
+    );
+    assert!(
+        source.contains("sub probe = LProbe(v: q)"),
+        "premise: LInner must gain the nested sub `probe`"
+    );
+
+    let result = cold_eval(&source, &[grow_to_three_slots()]);
+
+    assert_slots_read_the_template_let(&result, GROWN_SLOTS);
+    let reference = template_value(&result, "q");
+    for slot in GROWN_SLOTS {
+        let v = cell(&result, &format!("{slot}.probe"), "v");
+        assert_eq!(
+            v,
+            Some(reference),
+            "{slot}.probe.v is the ctor arg `q`: expected the template's LInner.q = \
+             {reference:?}, got {v:?}"
+        );
+    }
+}
+
+/// A false guard selects the else branch: a same-name member (`half`) and an
+/// else-only member (`full`) both resolve at the template's else value.
+#[test]
+fn a_grown_slot_reads_a_guarded_template_lets_else_branch() {
+    let source = GUARDED_LET
+        .replace("param on : Bool = true", "param on : Bool = false")
+        .replace(
+            "let half = len / 2\n        }",
+            "let half = len / 2\n        } else {\n            \
+             let half = len\n            \
+             let full = len * 2\n        }\n        \
+             let s = full * 3",
+        );
+    assert!(
+        source.contains("param on : Bool = false") && source.contains("let s = full * 3"),
+        "premise: LInner must gain a false guard and an else branch"
+    );
+
+    let result = cold_eval(&source, &[grow_to_three_slots()]);
+
+    for (member, expected) in [("q", 0.03), ("s", 0.06)] {
+        let reference = template_value(&result, member);
+        assert_eq!(
+            reference,
+            &Value::length(expected),
+            "premise: template LInner.{member} must take the else branch"
+        );
+        assert_slots_hold(&result, GROWN_SLOTS, member, reference);
+    }
 }
