@@ -423,6 +423,24 @@ fn assert_edited_body_like_cold(after_edit: &EvalResult, cold: &EvalResult, inst
     );
 }
 
+/// `instance.s` after an edit must be the selector a cold eval commits.
+fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
+    let edited_selector = cell(after_edit, instance, "s");
+    assert!(
+        matches!(edited_selector, Value::Selector(_)),
+        "{instance}.s must be a minted Selector after the edit: Undef means the \
+         edit path minted `s` before the instance's `body` was committed, got \
+         {edited_selector:?}"
+    );
+    assert_eq!(
+        edited_selector,
+        cell(cold, instance, "s"),
+        "{instance}.s after the edit must equal a cold eval's: an unequal \
+         selector means the edit path minted `s` before the instance's `body` \
+         was committed"
+    );
+}
+
 /// The premise every edit-path pin starts from: `eval()` minted `instance.body`.
 fn assert_minted_at_eval(before: &EvalResult, instance: &str) {
     let minted_at_eval = cell(before, instance, "body");
@@ -747,24 +765,6 @@ const DECL_ORDER_RACK: &str = r#"
         constraint bolts.count == n
     }
 "#;
-
-/// `instance.s` after an edit must be the selector a cold eval commits.
-fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
-    let edited_selector = cell(after_edit, instance, "s");
-    assert!(
-        matches!(edited_selector, Value::Selector(_)),
-        "{instance}.s must be a minted Selector after the edit: Undef means the \
-         edit path minted `s` before the instance's `body` was committed, got \
-         {edited_selector:?}"
-    );
-    assert_eq!(
-        edited_selector,
-        cell(cold, instance, "s"),
-        "{instance}.s after the edit must equal a cold eval's: an unequal \
-         selector means the edit path minted `s` before the instance's `body` \
-         was committed"
-    );
-}
 
 /// The premise both declaration-order pins start from: `eval()` minted the
 /// slot's `body` and `s`.
