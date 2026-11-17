@@ -61,7 +61,7 @@
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
-use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, UnitVec3, Value};
 
 use crate::linalg::{RankTolerance, RowSpaceQr};
 use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
@@ -892,7 +892,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
         (Value::Axis { .. }, Value::Axis { .. }) => axis_coincidence_residual(a, b),
         (Value::Plane { .. }, Value::Plane { .. }) => plane_coincidence_residual(a, b),
         (Value::Frame { .. }, Value::Frame { .. }) => frame_coincidence_residual(a, b),
-        (Value::Direction { .. }, Value::Direction { .. }) => {
+        (Value::Direction(_), Value::Direction(_)) => {
             // Coincident directions are the SAME datum ⇒ same sense (sign +1), NOT
             // merely co-linear: an antiparallel pair is not coincident.
             match (dir_of(a), dir_of(b)) {
@@ -1233,7 +1233,7 @@ fn is_datum(v: &Value) -> bool {
         v,
         Value::Axis { .. }
             | Value::Plane { .. }
-            | Value::Direction { .. }
+            | Value::Direction(_)
             | Value::Point(_)
             | Value::Vector(_)
             | Value::Frame { .. }
@@ -1243,7 +1243,7 @@ fn is_datum(v: &Value) -> bool {
 /// Extract a 3-vector `[f64; 3]` from a `Point`/`Vector`/`Direction`.
 fn vec3_of(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction { x, y, z } => Some([*x, *y, *z]),
+        Value::Direction(u) => Some(u.components()),
         Value::Point(c) | Value::Vector(c) if c.len() == 3 => {
             Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
         }
@@ -1255,7 +1255,7 @@ fn vec3_of(v: &Value) -> Option<[f64; 3]> {
 /// `Plane.normal`, or a raw `Vector`.
 fn dir_of(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction { .. } | Value::Vector(_) => vec3_of(v),
+        Value::Direction(_) | Value::Vector(_) => vec3_of(v),
         Value::Axis { direction, .. } => vec3_of(direction),
         Value::Plane { normal, .. } => vec3_of(normal),
         _ => None,
@@ -1322,13 +1322,12 @@ fn transform_datum(v: &Value, x: &Pose) -> Value {
                 _ => v.clone(),
             }
         }
-        Value::Direction { x: dx, y: dy, z: dz } => {
-            let r = rotate(x.rotation, [*dx, *dy, *dz]);
-            Value::Direction {
-                x: r[0],
-                y: r[1],
-                z: r[2],
-            }
+        // Err is reachable only from a non-finite pose rotation. The raw rotated
+        // vector carries that NaN on, as the sibling arms' rotated values do, so the
+        // solver reports it as a NonFinite evaluation; `dir_of` reads a Vector too.
+        Value::Direction(u) => {
+            let r = rotate(x.rotation, u.components());
+            UnitVec3::from_vector(r).map_or_else(|_| vector_value(r), Value::Direction)
         }
         // A raw `Vector` operand is used as a direction (`dir_of` resolves it), so it
         // ROTATES with the moving Frame and does NOT translate — mirroring the

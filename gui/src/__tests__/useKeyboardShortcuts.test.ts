@@ -1,7 +1,35 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createRoot } from 'solid-js';
-import { useKeyboardShortcuts, hasCallbackWiring, paletteCommands, runCommand } from '../hooks/useKeyboardShortcuts';
-import { SHORTCUTS } from '../shortcuts';
+import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
+import { createRoot, createSignal } from 'solid-js';
+import {
+  useKeyboardShortcuts,
+  hasCallbackWiring,
+  paletteCommands,
+  runCommand,
+  ID_TO_CALLBACK,
+  type KeyboardShortcutCallbacks,
+} from '../hooks/useKeyboardShortcuts';
+import { SHORTCUTS, matchesEvent, type KeyBinding } from '../shortcuts';
+
+function mockAllCallbacks(): Record<keyof KeyboardShortcutCallbacks, Mock> {
+  const callbacks = {} as Record<keyof KeyboardShortcutCallbacks, Mock>;
+  for (const key of Object.values(ID_TO_CALLBACK)) callbacks[key] = vi.fn();
+  callbacks.onDismissReload = vi.fn();
+  callbacks.onClearSelection = vi.fn();
+  callbacks.onSwitchViewByIndex = vi.fn();
+  return callbacks;
+}
+
+function keydownMatching(bind: KeyBinding): KeyboardEvent {
+  return new KeyboardEvent('keydown', {
+    key: bind.key,
+    ctrlKey: bind.ctrl ?? false,
+    shiftKey: bind.shift ?? false,
+    altKey: bind.alt ?? false,
+    metaKey: bind.meta ?? false,
+    bubbles: true,
+    cancelable: true,
+  });
+}
 
 describe('useKeyboardShortcuts', () => {
   let dispose: () => void;
@@ -663,6 +691,44 @@ describe('useKeyboardShortcuts — command palette shortcuts', () => {
       document.body.removeChild(input);
     }
   });
+
+  it('in an <input>, a wired shortcut fires exactly when its def sets worksInTypingContext', () => {
+    const callbacks = mockAllCallbacks();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts(callbacks);
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      const iterated: string[] = [];
+      for (const s of SHORTCUTS) {
+        if (!hasCallbackWiring(s.id)) continue;
+        iterated.push(s.id);
+        const event = keydownMatching(s.bind!);
+        expect(matchesEvent(s.bind!, event), s.id).toBe(true);
+        input.dispatchEvent(event);
+        expect(callbacks[ID_TO_CALLBACK[s.id]!], s.id).toHaveBeenCalledTimes(
+          s.worksInTypingContext ? 1 : 0,
+        );
+        expect(event.defaultPrevented, s.id).toBe(Boolean(s.worksInTypingContext));
+      }
+      const firesInInput = new Set<string>(
+        SHORTCUTS.filter((s) => hasCallbackWiring(s.id) && s.worksInTypingContext).map(
+          (s) => ID_TO_CALLBACK[s.id]!,
+        ),
+      );
+      for (const [key, fn] of Object.entries(callbacks)) {
+        expect(fn, key).toHaveBeenCalledTimes(firesInInput.has(key) ? 1 : 0);
+      }
+      expect(iterated).toEqual(
+        expect.arrayContaining(['commandPalette', 'symbolJump', 'save', 'open', 'help']),
+      );
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
 });
 
 describe('useKeyboardShortcuts — toggleEdges shortcut', () => {
@@ -872,6 +938,13 @@ describe('paletteCommands', () => {
     const cmds = paletteCommands();
     expect(cmds.some((c) => c.id === 'fitToView')).toBe(false);
   });
+
+  it('lists exactly the wired shortcuts whose def does not set hiddenFromPalette, in registry order', () => {
+    const expected = SHORTCUTS.filter((s) => hasCallbackWiring(s.id) && !s.hiddenFromPalette).map(
+      (s) => s.id,
+    );
+    expect(paletteCommands().map((c) => c.id)).toEqual(expected);
+  });
 });
 
 describe('runCommand', () => {
@@ -924,5 +997,108 @@ describe('useKeyboardShortcuts — toggleDiagnostics shortcut', () => {
       new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: false, bubbles: true }),
     );
     expect(onToggleDiagnostics).not.toHaveBeenCalled();
+  });
+});
+
+describe('useKeyboardShortcuts — no document loaded (Start view)', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  function wire(documentLoaded: () => boolean = () => false) {
+    const callbacks = mockAllCallbacks();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts(callbacks, { documentLoaded });
+      return d;
+    });
+    return callbacks;
+  }
+
+  it('Ctrl+N and Ctrl+O still reach onNew and onOpen', () => {
+    const callbacks = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true }));
+    expect(callbacks.onNew).toHaveBeenCalledTimes(1);
+    expect(callbacks.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('every other wired shortcut is swallowed: no callback runs and the default is prevented', () => {
+    const callbacks = wire();
+    const iterated: string[] = [];
+    for (const s of SHORTCUTS) {
+      if (!hasCallbackWiring(s.id) || s.worksWithoutDocument) continue;
+      iterated.push(s.id);
+      const bind = s.bind!;
+      const event = keydownMatching(bind);
+      expect(matchesEvent(bind, event)).toBe(true);
+      document.dispatchEvent(event);
+      expect(event.defaultPrevented, s.id).toBe(true);
+    }
+    for (const [key, fn] of Object.entries(callbacks)) expect(fn, key).not.toHaveBeenCalled();
+    expect(iterated).toEqual(
+      expect.arrayContaining(['help', 'export', 'toggleEdges', 'toggleChat', 'commandPalette']),
+    );
+  });
+
+  it('Escape and the 1-9 view keys are swallowed: no callback runs and the default is prevented', () => {
+    const callbacks = wire();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    const digit = new KeyboardEvent('keydown', { key: '1', bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+    document.dispatchEvent(digit);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(digit.defaultPrevented).toBe(true);
+    expect(callbacks.onDismissReload).not.toHaveBeenCalled();
+    expect(callbacks.onClearSelection).not.toHaveBeenCalled();
+    expect(callbacks.onSwitchViewByIndex).not.toHaveBeenCalled();
+  });
+
+  it('the document predicate is read on every keydown', () => {
+    const [loaded, setLoaded] = createSignal(false);
+    const callbacks = wire(loaded);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
+    expect(callbacks.onHelp).not.toHaveBeenCalled();
+    setLoaded(true);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
+    expect(callbacks.onHelp).toHaveBeenCalledTimes(1);
+  });
+
+  it('a key typed into an <input> with no document still reaches the input', () => {
+    const callbacks = wire();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      const event = new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true });
+      input.dispatchEvent(event);
+      expect(callbacks.onHelp).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it.each([
+    ['commandPalette', 'onCommandPalette', 'p'],
+    ['symbolJump', 'onSymbolJump', 'o'],
+  ] as const)('%s pressed in an <input> with no document is swallowed', (_id, callbackKey, key) => {
+    const callbacks = wire();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      input.dispatchEvent(event);
+      expect(callbacks[callbackKey]).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
+    } finally {
+      document.body.removeChild(input);
+    }
   });
 });

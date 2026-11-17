@@ -24,14 +24,13 @@
 //!
 //! # Value assembly
 //!
-//! When the field-set is valid and every field type-checks, the construction
-//! compiles to a literal `Value::Enum { type_name, variant, payload }` whose
-//! payload is assembled in the variant's DECLARATION order (PRD D6/Q4 — so
+//! When the field-set is valid and every field type-checks, an all-literal
+//! construction folds to a literal `Value::Enum { type_name, variant, payload }`;
+//! any other construction compiles to `CompiledExprKind::VariantCtor`
+//! (reify-ir), which reify-expr evaluates into the same `Value::Enum`. The
+//! payload is in the variant's DECLARATION order in both forms (PRD D6/Q4 — so
 //! `content_hash`/`PartialEq`/`Ord` of the produced value are stable regardless
-//! of construction-site field order). Field values must be compile-time
-//! literals; a non-constant payload field is out of v1 scope (the runtime
-//! constructor node, paralleling `StructureInstanceCtor`, is a deferred
-//! refinement) and draws a diagnostic.
+//! of construction-site field order).
 
 use std::collections::{HashMap, HashSet};
 
@@ -84,6 +83,7 @@ pub(crate) fn compile_variant_construct(
         }
     };
     let enum_name = enum_def.name.as_str();
+    let constructed_type = Type::Enum(enum_name.to_string());
 
     // Declared fields (declaration order). A bare/Unit variant declares none,
     // so its declared set is empty.
@@ -341,55 +341,63 @@ pub(crate) fn compile_variant_construct(
 
     // If any field-set/type check above failed for THIS construction, the value
     // cannot be assembled. The variant IS resolved, so the result type is known
-    // (`Type::Enum`) — return a typed placeholder (not a `Type::Error` poison)
-    // so the field-check diagnostics carry the signal without cascading a type
-    // mismatch at the binding site.
+    // (`constructed_type`) — return a typed placeholder (not a `Type::Error`
+    // poison) so the field-check diagnostics carry the signal without cascading
+    // a type mismatch at the binding site.
     if diagnostics.len() > checks_start {
-        return CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()));
+        return CompiledExpr::literal(Value::Undef, constructed_type);
     }
 
-    // Valid construction: assemble the payload in the variant's DECLARATION
-    // order (PRD D6/Q4 — normalize construction-site field order so the value's
+    // Valid construction: order the payload by the variant's DECLARATION order
+    // (PRD D6/Q4 — normalize construction-site field order so the value's
     // content-hash / PartialEq / Ord are order-stable). A valid field-set
     // guarantees every declared field is supplied exactly once.
-    let mut payload: Vec<(String, Value)> = Vec::with_capacity(declared_fields.len());
-    for (decl_name, _decl_ty) in declared_fields {
-        let (_, compiled) = compiled_fields
-            .iter()
-            .find(|(n, _)| n == decl_name)
-            .expect("valid field-set guarantees every declared field is supplied");
-        match &compiled.kind {
-            CompiledExprKind::Literal(value) => payload.push((decl_name.clone(), value.clone())),
-            _ => {
-                // Non-constant payload value (e.g. a runtime param reference,
-                // which is plausible user code — not a typo): the runtime
-                // constructor node is out of v1 scope (deferred follow-up). The
-                // variant IS resolved and its type is known, so return a TYPED
-                // placeholder (`Value::Undef` @ `Type::Enum`) — mirroring the
-                // failed-field-check arm above — rather than a `Type::Error`
-                // poison. This keeps the "not yet supported" signal from
-                // cascading a spurious type mismatch at the binding site.
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "non-constant payload value for field '{}' of variant '{}' is not yet supported",
-                        decl_name, variant_name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        "non-constant variant payload field",
-                    )),
-                );
-                return CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()));
-            }
-        }
-    }
+    let ordered: Vec<(&str, &CompiledExpr)> = declared_fields
+        .iter()
+        .map(|(decl_name, _decl_ty)| {
+            let (_, compiled) = compiled_fields
+                .iter()
+                .find(|(n, _)| n == decl_name)
+                .expect("valid field-set guarantees every declared field is supplied");
+            (decl_name.as_str(), compiled)
+        })
+        .collect();
+    fold_or_construct(enum_name, variant_name, &ordered, constructed_type)
+}
 
-    CompiledExpr::literal(
-        Value::Enum {
-            type_name: enum_name.to_string(),
-            variant: variant_name.to_string(),
-            payload,
-        },
-        Type::Enum(enum_name.to_string()),
-    )
+/// An all-literal payload folds to a literal `Value::Enum`; any other payload
+/// compiles to the runtime `VariantCtor` node. Only fields that are already
+/// `Literal` fold — a negated literal is a `UnOp` and is evaluated at runtime.
+fn fold_or_construct(
+    enum_name: &str,
+    variant_name: &str,
+    ordered: &[(&str, &CompiledExpr)],
+    constructed_type: Type,
+) -> CompiledExpr {
+    let literal_payload: Option<Vec<(String, Value)>> = ordered
+        .iter()
+        .map(|(name, field)| match &field.kind {
+            CompiledExprKind::Literal(value) => Some((name.to_string(), value.clone())),
+            _ => None,
+        })
+        .collect();
+    match literal_payload {
+        Some(payload) => CompiledExpr::literal(
+            Value::Enum {
+                type_name: enum_name.to_string(),
+                variant: variant_name.to_string(),
+                payload,
+            },
+            constructed_type,
+        ),
+        None => CompiledExpr::variant_ctor(
+            enum_name.to_string(),
+            variant_name.to_string(),
+            ordered
+                .iter()
+                .map(|(name, field)| (name.to_string(), (*field).clone()))
+                .collect(),
+            constructed_type,
+        ),
+    }
 }

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from reify_verify import bashcall, gitcall
 from reify_verify.bashcall import BashCall, DataFile, DataFileUnreadable
+from reify_verify.diagnostics import WARNING
 from reify_verify.invocation import Scope
 from reify_verify.scope import ScopeDecision
 
@@ -115,7 +116,7 @@ def _mapped_globs(changed_paths: tuple[str, ...], repo_root: Path) -> tuple[list
     try:
         text = INFRA_MAP.read_text(repo_root)
     except DataFileUnreadable as err:
-        return [], (f"verify.sh: WARNING — {err} — no infra test is selected from its rows",)
+        return [], (f"{WARNING}{err} — no infra test is selected from its rows",)
     changed = set(changed_paths)
     globs: list[str] = []
     for artifact, glob in _map_rows(text):

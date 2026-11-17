@@ -150,15 +150,16 @@ const MULTI_CASE_ONE_UNSUPPORTED_SOURCE: &str = r#"
 structure def MultiCaseUnsupportedFixture {
     let lc_free   = LoadCase(
         name:     "free",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
         supports: [],
     )
     let lc_fixed  = LoadCase(
         name:     "fixed",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_free, lc_fixed], ElasticOptions())
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

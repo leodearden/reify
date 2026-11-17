@@ -25,10 +25,14 @@
 //      choice since W/m²·K is absent from NAMED_DIMENSIONS (per PRD ε §5.4).
 //   4. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   5. No `#no_prelude` pragma. std.ports.thermal refines Port (std.ports) and
-//      ThermalContactPort refines RegionPort (also std.ports), so stdlib_loader.rs
-//      must include std.ports before this module. Adding `#no_prelude` would
-//      break refinement resolution and the stdlib_loader_tests bidirectional
+//      ThermalContactPort refines RegionPort (also std.ports), imported below.
+//      Adding `#no_prelude` would hide that import, breaking refinement
+//      resolution and the stdlib_loader_tests bidirectional
 //      invariant test.
+
+module std.ports.thermal
+
+import std.ports
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 

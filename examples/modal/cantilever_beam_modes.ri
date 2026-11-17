@@ -69,7 +69,7 @@ structure CantileverBeamModes {
 
     // Cantilever: clamp the root (x_min) face. A single FixedSupport signals
     // the clamped-free configuration to the trampoline (step-16).
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     // Modal options: extract the first 3 modes, undamped, bending in z, at
     // element_order = ElementOrder.P2 — the P2-tet path that resolves bending
@@ -103,4 +103,5 @@ structure CantileverBeamModes {
 
     // Fundamental (first-mode) natural frequency in Hz — the headline signal.
     let f1 = first_frequency(result)
+    let beam = box(length, width, height)
 }

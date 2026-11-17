@@ -31,7 +31,7 @@ ROWS = (
             view=rcr.View.CODE,
             paths=("crates/reify-compiler/src/entity.rs",
                    "crates/reify-compiler/src/guards.rs"),
-            baseline=17, target=1, lowered_by="β #8731"),
+            baseline=13, target=1, lowered_by="β #8731"),
     # D12 R2: "__connector_ string literals in production code.
     rcr.Row(row_id="R2",
             construct=re.compile('"__connector_'),

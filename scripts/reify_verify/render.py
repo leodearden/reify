@@ -9,26 +9,35 @@ when affected_crates printed one crate per line (PRD §2.4 defect 7).
 
 render_step is the one producer of a step's text. The kind decides the
 loader-path scrub: a TOOL step's text starts with it, a CARGO or BUILTIN
-step's never does, and the node lane carries it inside its own braces.
+step's never does, and the node lane carries it inside its own braces. A
+SENTINEL step's text is the token the executor intercepts; the text plan
+prints its annotation in its place.
 """
 
 import json
 
 from reify_verify.jsondata import record_data, to_data
 from reify_verify.plan import (
+    CONFIRM_RECORDER,
     JOBSERVER_VAR,
     ArtifactAssertion,
+    AttemptStamp,
     Cargo,
     CargoEnvMissing,
     CargoEnvSourced,
+    CargoTestRun,
     Chain,
     Command,
+    ConfirmRecorded,
     EnvLine,
     Exported,
     Guarded,
     HeadStamp,
     InfraLeafLoop,
     JobserverUnset,
+    Marker,
+    NextestFlags,
+    NextestRun,
     NodeLaneJoin,
     NodeLaneStart,
     NodeProject,
@@ -37,11 +46,16 @@ from reify_verify.plan import (
     PlanHeader,
     RetryMarker,
     Script,
+    Selector,
+    SemaphoreAcquire,
+    SemaphoreRelease,
+    SlotFdClosed,
     Step,
     StepKind,
     UnsetCause,
     Workspace,
 )
+from reify_verify.policy import HeavyPartition
 
 ENVIRONMENT_MARKER = (
     "# --- environment (process-level; inherited by every command below EXCEPT where a "
@@ -171,6 +185,26 @@ def render_command(command: Command) -> str:
             )
         case InfraLeafLoop():
             return _infra_leaf_loop(command)
+        case NextestRun():
+            return _nextest_run(command)
+        case CargoTestRun():
+            return (
+                f"{KILL_AFTER} {command.wall} {command.prio}cargo test "
+                f"{_test_target(command.selector, command.release, command.features)}"
+                f" -- --test-threads={command.test_threads}"
+            )
+        case ConfirmRecorded():
+            return _confirm_recorded(command)
+        case SlotFdClosed(body=body):
+            return f"{render_command(body)} 9<&-"
+        case Marker(text=text):
+            return f"echo '{text}'"
+        case AttemptStamp():
+            return _attempt_stamp(command)
+        case SemaphoreAcquire():
+            return "@@SEMAPHORE_ACQUIRE@@"
+        case SemaphoreRelease():
+            return "@@SEMAPHORE_RELEASE@@"
     raise TypeError(f"render_command: not a Command: {command!r}")
 
 
@@ -185,16 +219,76 @@ def _script(script: Script) -> str:
 
 def _cargo(cargo: Cargo) -> str:
     release = " --release" if cargo.release else ""
-    match cargo.selector:
-        case Workspace():
-            selector = "--workspace"
-        case Packages(names=names):
-            selector = " ".join(f"-p {name}" for name in names)
     args = "".join(f" {arg}" for arg in cargo.args)
     redirect = " 2>&1" if cargo.stderr_to_stdout else ""
     return (
         f"{KILL_AFTER} {cargo.wall} {cargo.prio}cargo {cargo.subcommand}{release} "
-        f"{selector}{args}{redirect}"
+        f"{_selector(cargo.selector)}{args}{redirect}"
+    )
+
+
+def _selector(selector: Selector) -> str:
+    match selector:
+        case Workspace():
+            return "--workspace"
+        case Packages(names=names):
+            return " ".join(f"-p {name}" for name in names)
+    raise TypeError(f"_selector: not a Selector: {selector!r}")
+
+
+def _test_target(selector: Selector, release: bool, features: tuple[str, ...]) -> str:
+    """A test pass's `<selector>[ --release][ --features f]`."""
+    release_flag = " --release" if release else ""
+    feature_flag = f" --features {','.join(features)}" if features else ""
+    return f"{_selector(selector)}{release_flag}{feature_flag}"
+
+
+def _nextest_run(run: NextestRun) -> str:
+    heavy, retry = _filter_fragments(run.flags)
+    no_fail_fast = " --no-fail-fast" if run.flags.no_fail_fast else ""
+    threads = f" --test-threads={run.flags.test_threads}" if run.flags.test_threads else ""
+    return (
+        f"{KILL_AFTER} {run.wall} {run.prio}cargo nextest run "
+        f"{_test_target(run.selector, run.release, run.features)}"
+        f"{heavy}{no_fail_fast}{threads}{retry} --config-file {run.config_file}"
+    )
+
+
+def _filter_fragments(flags: NextestFlags) -> tuple[str, str]:
+    """The pass's one filter expression, as (the fragment after the target, the one after the threads).
+
+    Without retry ids the heavy expression is double-quoted after the target;
+    with them it joins the ids' expression single-quoted after the threads,
+    since nextest unions several -E. A heavy-only pass runs ignored tests
+    either way.
+    """
+    heavy = {
+        HeavyPartition.INCLUDED: None,
+        HeavyPartition.EXCLUDED: f"not ({flags.heavy_filter})",
+        HeavyPartition.ONLY: f"({flags.heavy_filter})",
+    }[flags.heavy]
+    run_ignored = " --run-ignored all" if flags.heavy is HeavyPartition.ONLY else ""
+    if not flags.retry_ids:
+        return (f' -E "{heavy}"{run_ignored}' if heavy else ""), ""
+    ids = " | ".join(f"test(={test_id})" for test_id in flags.retry_ids)
+    return run_ignored, f" -E '({heavy}) & ({ids})'" if heavy else f" -E '{ids}'"
+
+
+def _confirm_recorded(recorded: ConfirmRecorded) -> str:
+    return (
+        f"( {_nextest_run(recorded.run)}; _confirm_rc=$?; ./{CONFIRM_RECORDER} record "
+        f'--nextest-rc "$_confirm_rc" --junit "{recorded.junit}" --manifest "{recorded.manifest}" '
+        f'--sidecar "{recorded.sidecar}" --profiles "{recorded.profile.value}" >&2 || true; '
+        "exit $_confirm_rc )"
+    )
+
+
+def _attempt_stamp(stamp: AttemptStamp) -> str:
+    profiles = " ".join(profile.value for profile in stamp.profiles)
+    return (
+        """printf '{"tree_oid":"%s","profiles":"%s","timestamp":"%s"}\\n' """
+        '"$(git rev-parse HEAD: 2>/dev/null || echo unknown)" '
+        f'"{profiles}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "{stamp.path}" 2>/dev/null || true'
     )
 
 

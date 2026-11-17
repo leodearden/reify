@@ -5,6 +5,7 @@ import type { ViewStateStore } from '../stores/viewStateStore';
 import type { FeaModeStore } from '../stores/feaModeStore';
 import type { LayoutStore } from '../stores/layoutStore';
 import type { ViewportDisplayStore } from '../stores/viewportDisplayStore';
+import type { LauncherStore } from '../stores/launcherStore';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
 import { onMount, onCleanup } from 'solid-js';
@@ -65,6 +66,8 @@ export interface DebugStores {
   layout: LayoutStore;
   /** The persisted viewport display preferences — edges-in-black. */
   viewportDisplay: ViewportDisplayStore;
+  /** The Start view's document error, Recent list and launch mode. */
+  launcher: LauncherStore;
 }
 
 /** Three.js viewport references set by Viewport.tsx onMount. */

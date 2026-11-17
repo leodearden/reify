@@ -37,6 +37,10 @@ import type {
   TensegritySurfaceData,
   DisplayDirective,
   AppearanceDirective,
+  RecentEntry,
+  LaunchMode,
+  ModeState,
+  InitialFileLoadFailure,
 } from './types';
 import { convertRawMesh, convertRawConstraint, convertRawGuiState, convertRawPublishedState } from './types';
 import type {
@@ -174,6 +178,30 @@ export async function openFile(path: string): Promise<FileData> {
 export async function openFileEngine(path: string): Promise<PublishedState> {
   const raw = await invoke<RawPublishedState>('open_file_engine', { path });
   return convertRawPublishedState(raw);
+}
+
+/**
+ * Create a new design at `path` (`.ri` appended when missing) holding the
+ * starter template, and read it back as `openFile` does. Rejects for an
+ * existing file rather than overwriting it.
+ */
+export async function createNewFile(path: string): Promise<FileData> {
+  return invoke<FileData>('create_new_file', { path });
+}
+
+/** The persisted Recent list, newest first. */
+export async function listRecent(): Promise<RecentEntry[]> {
+  return invoke<RecentEntry[]>('list_recent');
+}
+
+/** Put `path` at the front of the Recent list; resolves the list as stored. */
+export async function recordRecent(path: string): Promise<RecentEntry[]> {
+  return invoke<RecentEntry[]>('record_recent', { path });
+}
+
+/** Why the argv launch file failed to load: recorded before getInitialState replies, handed out once. */
+export async function takeInitialFileLoadFailure(): Promise<InitialFileLoadFailure | null> {
+  return invoke<InitialFileLoadFailure | null>('take_initial_file_load_failure');
 }
 
 /** Export geometry to a file in the specified format. */
@@ -373,9 +401,14 @@ export async function claudePermissionDecision({
 
 // ── Debug ───────────────────────────────────────────────────────────
 
-/** Check if REIFY_DEBUG=1 is set (debug server and bridge enabled). */
+/** Whether the reify-debug server is live in this process (REIFY_DEBUG=1 at launch or Debug mode). */
 export async function isDebugEnabled(): Promise<boolean> {
   return invoke<boolean>('is_debug_enabled');
+}
+
+/** Select a launch mode; `debug` makes the reify-debug server live (idempotent). */
+export async function setMode(mode: LaunchMode): Promise<ModeState> {
+  return invoke<ModeState>('set_mode', { mode });
 }
 
 // ── Claude event subscription ───────────────────────────────────────

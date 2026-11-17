@@ -81,6 +81,10 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  createNewFile: vi.fn().mockResolvedValue({ path: '/new/untitled.ri', content: '' }),
+  listRecent: vi.fn().mockResolvedValue([]),
+  recordRecent: vi.fn().mockResolvedValue([]),
+  takeInitialFileLoadFailure: vi.fn().mockResolvedValue(null),
   openFileEngine: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [] } }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
@@ -111,6 +115,7 @@ vi.mock('../bridge', () => ({
   onFileRemoved: vi.fn().mockResolvedValue(() => {}),
   onSerializationError: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  setMode: vi.fn().mockResolvedValue({ mode: 'design', debug_port: null }),
   onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
@@ -147,6 +152,7 @@ import { createClaudeStore } from '../stores/claudeStore';
 import * as bridge from '../bridge';
 import type { ConstraintData, ValueData, EvaluationStatus } from '../types';
 import { published } from './test_utils/publishedState';
+import { makeGuiState } from './test_utils/guiState';
 
 function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
   return createClaudeStore({
@@ -183,7 +189,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   // Reset bridge mock implementations
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
+  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -200,6 +206,11 @@ beforeEach(() => {
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToSidecarCrashed).mockResolvedValue(() => {});
   vi.mocked(bridge.getUnitLadders).mockResolvedValue([]);
+  vi.mocked(bridge.setMode).mockResolvedValue({ mode: 'design', debug_port: null });
+  vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/new/untitled.ri', content: '' });
+  vi.mocked(bridge.listRecent).mockResolvedValue([]);
+  vi.mocked(bridge.recordRecent).mockResolvedValue([]);
+  vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -323,21 +334,11 @@ describe('App wiring', () => {
 
   it('ConstraintPanel receives onAskClaude handler — right-clicking shows context menu', async () => {
     // Provide initial state with a constraint
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       constraints: [
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
       ],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     await renderAndWaitForReady();
     const row = screen.getByTestId('constraint-row-c1');
     fireEvent.contextMenu(row);
@@ -346,21 +347,11 @@ describe('App wiring', () => {
 
   it('ChatPanel receives engineConstraints from engineStore', async () => {
     // Provide initial state with a violated constraint
-    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
-      meshes: [],
-      values: [],
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState({
       constraints: [
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
       ],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: []
-    }));
+    })));
     await renderAndWaitForReady();
     // Open context picker — 'Violated constraints' should be enabled
     fireEvent.click(screen.getByTestId('context-picker-btn'));

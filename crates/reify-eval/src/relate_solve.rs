@@ -25,8 +25,8 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow, Twist,
-    comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
+    FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
+    Twist, comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
     solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
@@ -1799,33 +1799,46 @@ fn driving_relation_label(driving_position: usize, context: &FailureContext) -> 
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
 ///
-/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve within
-/// the scope's budget: the first pair whose own solve is CERTIFIED infeasible is
-/// returned as the minimal conflict set — a pair that merely ran out of budget or
-/// stalled proves nothing and is not blamed. If no pair is certified (a conflict
-/// that genuinely needs ≥3 relations), falls back to the whole driving set. Returns
-/// INSTANCE positions (into `built.instances`), the shape [`conflict_message`]
-/// expects. Bounded by the driving-set size, which is `≤ 6` for a single Frame
-/// unknown — the pairwise search is cheap.
+/// The smallest non-trivial conflict is a driving PAIR, re-solved within the
+/// scope's budget; [`first_certified_pair`] says which one counts. If no pair is
+/// certified (a conflict that genuinely needs ≥3 relations), falls back to the
+/// whole driving set. Returns INSTANCE positions (into `built.instances`), the
+/// shape [`conflict_message`] expects. Bounded by the driving-set size, which is
+/// `≤ 6` for a single Frame unknown — the pairwise search is cheap.
 fn minimal_infeasible_subset(context: &FailureContext) -> Vec<usize> {
     let instances = &context.built.instances;
-    let driving = &context.partition.driving;
+    let solve_pair = |i: usize, j: usize| {
+        solve_frame_outcome(
+            &[instances[i].clone(), instances[j].clone()],
+            context.unknown,
+            context.seed,
+            context.scaling,
+            context.budget,
+        )
+        .result
+    };
+    match first_certified_pair(&context.partition.driving, solve_pair) {
+        Some(pair) => pair.to_vec(),
+        None => context.partition.driving.clone(),
+    }
+}
+
+/// The first pair of `driving`'s values, in i-before-j order, whose solve is
+/// CERTIFIED infeasible. A pair that converged, ran out of budget, stalled or met
+/// a non-finite value proves nothing and is skipped. With no certified pair it
+/// returns `None`.
+fn first_certified_pair(
+    driving: &[usize],
+    mut solve_pair: impl FnMut(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+) -> Option<[usize; 2]> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
-            let pair = [instances[i].clone(), instances[j].clone()];
-            let outcome = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
-            if matches!(outcome.result, Err(SolveFailureCause::Infeasible(_))) {
-                return vec![i, j];
+            if matches!(solve_pair(i, j), Err(SolveFailureCause::Infeasible(_))) {
+                return Some([i, j]);
             }
         }
     }
-    driving.to_vec()
+    None
 }
 
 // ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
@@ -2152,12 +2165,13 @@ structure MechFixed {
 }
 
 #[cfg(test)]
-mod test_datums {
+mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
+    use reify_test_support::parse_and_compile_with_stdlib;
 
-    use super::RealizedDatums;
+    use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
     pub(super) fn point3v(x: f64, y: f64, z: f64) -> Value {
         Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
@@ -2190,6 +2204,46 @@ mod test_datums {
         }
         RealizedDatums { operands }
     }
+
+    /// Collect the scope of `source`'s template `name`, panicking with the
+    /// available template names on a miss so a fixture rename fails legibly
+    /// rather than as `unwrap` on `None`. A fixture that compiles with errors
+    /// panics first, with its diagnostics.
+    pub(super) fn relate_scope(source: &str, name: &str) -> RelateScope {
+        let module = parse_and_compile_with_stdlib(source);
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture has no template `{name}`; its templates are {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        collect_relate_scope(template)
+    }
+
+    /// `Broken` parses and still compiles to its template, so the template lookup
+    /// alone would accept it; only a check of the compile diagnostics refuses it.
+    #[test]
+    #[should_panic(expected = "compile errors")]
+    fn relate_scope_refuses_a_fixture_that_compiles_with_errors() {
+        const BROKEN: &str = r#"
+structure Broken {
+    let x : Length = true
+}
+"#;
+        relate_scope(BROKEN, "Broken");
+    }
+
+    /// The fixture compiles cleanly but lacks the template asked for, as after a
+    /// rename: the panic names that template and lists those that exist.
+    #[test]
+    #[should_panic(expected = "has no template `Missing`; its templates are [\"Present\"]")]
+    fn relate_scope_names_a_missing_template_and_the_available_ones() {
+        relate_scope("structure Present {}", "Missing");
+    }
 }
 
 #[cfg(test)]
@@ -2206,13 +2260,9 @@ mod tests_static_verification {
 
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::Value;
-    use reify_test_support::compile_source_with_stdlib;
 
-    use super::test_datums::{axis_v, plane_v, point3v, realized};
-    use super::{
-        RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
-        verify_static_scope,
-    };
+    use super::test_fixtures::{axis_v, plane_v, point3v, realized, relate_scope};
+    use super::{RealizedDatums, RelateScope, StaticRelateFacts, verify_static_scope};
 
     /// Three scopes covering the whole `posed` classification:
     ///
@@ -2318,21 +2368,9 @@ structure PerpendicularScope {
 }
 "#;
 
-    /// Collect the named scope, panicking with the available template names on a
-    /// miss so a fixture rename fails legibly rather than as `unwrap` on `None`.
+    /// Collect the named scope from this module's `SOURCE`.
     fn scope(name: &str) -> RelateScope {
-        let module = compile_source_with_stdlib(SOURCE);
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "fixture template `{name}` must compile; got {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        collect_relate_scope(template)
+        relate_scope(SOURCE, name)
     }
 
     /// A sub declared with a concrete `at <pose>` is recorded in `posed`, in
@@ -3122,22 +3160,26 @@ structure PerpendicularScope {
 #[cfg(test)]
 mod tests_driving_set_failure {
     //! Kernel-free unit tests of a failed driving-set solve's renderer
-    //! (`failure_diagnostic`) and conflict search (`minimal_infeasible_subset`).
+    //! (`failure_diagnostic`) and conflict search: `first_certified_pair`, driven
+    //! by injected pair outcomes, and `minimal_infeasible_subset` end to end.
     //!
     //! In-file because those functions, `FailureContext` and `RealizedDatums`'
-    //! map are crate-private. The datums are hand-built via `super::test_datums`,
+    //! map are crate-private. The datums are hand-built via `super::test_fixtures`,
     //! so no geometry kernel is involved.
 
+    use reify_constraints::relate_solve::{FrameSolution, FrameSolveOutcome};
     use reify_core::{DiagnosticCode, Severity};
-    use reify_ir::{SolveFailureCause, SolveStall};
-    use reify_test_support::compile_source_with_stdlib;
+    use reify_ir::{
+        BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+        ResidualSource, SolveFailureCause, SolveStall,
+    };
 
-    use super::test_datums::{axis_v, plane_v, realized};
+    use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
     use super::{
-        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
-        SolveBudget, build_relation_instances, collect_relate_scope, failure_diagnostic,
-        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
-        solve_relate_scope_within, solve_scaling,
+        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, RelationInstance,
+        RelationPartition, SolveBudget, build_relation_instances, failure_diagnostic,
+        first_certified_pair, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3174,6 +3216,9 @@ structure PairSearchScope {
     /// The anchor offset, in metres.
     const C: f64 = 0.002;
 
+    /// The budget the pair search runs under, which allows no trial step.
+    const STARVED_BUDGET: SolveBudget = SolveBudget { max_iterations: 0 };
+
     /// The `PairSearchScope` datums.
     ///
     /// Every moving datum sits at the peg frame origin (the rotation centre) and
@@ -3197,27 +3242,12 @@ structure PairSearchScope {
         ])
     }
 
-    fn pair_search_scope() -> RelateScope {
-        let module = compile_source_with_stdlib(SOURCE);
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == "PairSearchScope")
-            .unwrap_or_else(|| {
-                panic!(
-                    "fixture template `PairSearchScope` must compile; got {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        collect_relate_scope(template)
-    }
-
     /// Run `f` over the `FailureContext` production builds for `PairSearchScope`
     /// under `budget`: the scope's instances, its single auto Frame unknown at
     /// the identity seed, one scaling over every instance, and the driving-set
     /// partition at that seed.
     fn with_failure_context<R>(budget: SolveBudget, f: impl FnOnce(&FailureContext) -> R) -> R {
-        let scope = pair_search_scope();
+        let scope = relate_scope(SOURCE, "PairSearchScope");
         let datums = pair_search_datums();
         let built = build_relation_instances(&scope, &datums);
         let auto = &scope.auto_unknowns[0];
@@ -3244,65 +3274,112 @@ structure PairSearchScope {
         f(&context)
     }
 
-    /// A stall is rendered with the cause's own figures and coded by the cause,
-    /// never as a certified conflict.
-    #[test]
-    fn a_stalled_driving_set_is_coded_constraint_unsatisfiable() {
-        let cause = SolveFailureCause::Stalled(SolveStall {
+    /// Solve `relations` for the context's Frame unknown from its seed, under its
+    /// scaling and `budget`: the solve production runs over the driving set and,
+    /// per candidate pair, in the conflict search.
+    fn solve_in_context(
+        context: &FailureContext,
+        relations: &[RelationInstance],
+        budget: SolveBudget,
+    ) -> FrameSolveOutcome {
+        solve_frame_outcome(
+            relations,
+            context.unknown,
+            context.seed,
+            context.scaling,
+            budget,
+        )
+    }
+
+    // Hand-built pair-solve outcomes, one per way a solve can end.
+
+    fn certified() -> SolveFailureCause {
+        SolveFailureCause::Infeasible(InfeasibilityCertificate {
+            gradient_norm: 0.0,
+            range_cosine: 0.0,
+            max_scaled_residual: 2.0,
+            blame: vec![],
+        })
+    }
+
+    fn exhausted() -> SolveFailureCause {
+        SolveFailureCause::BudgetExhausted(BudgetExhaustion {
+            iterations: 0,
+            budget: 0,
+            step_norms: vec![],
+            max_scaled_residual: 2.0,
+        })
+    }
+
+    fn stalled() -> SolveFailureCause {
+        SolveFailureCause::Stalled(SolveStall {
             iterations: 7,
             step_norm: 1e-12,
             range_cosine: 0.5,
             max_scaled_residual: 40.0,
-        });
-        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
-            failure_diagnostic(&cause, context)
-        });
-        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
-        assert_eq!(
-            diagnostic.code,
-            Some(DiagnosticCode::ConstraintUnsatisfiable),
-            "{diagnostic:?}"
-        );
-        assert!(
-            diagnostic.message.contains(&cause.to_string()),
-            "{diagnostic:?}"
-        );
-        assert!(diagnostic.message.contains("`peg`"), "{diagnostic:?}");
+        })
     }
 
-    /// A pair that merely ran out of budget proves nothing; only a pair whose own
-    /// solve is CERTIFIED infeasible is the minimal conflict.
-    ///
-    /// The stalled-pair half of that rule is unpinned: no smooth relate fixture
-    /// stalls reliably, and a pair's outcome cannot be injected into the search.
-    #[test]
-    fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
-        with_failure_context(SolveBudget { max_iterations: 0 }, |context| {
-            assert_eq!(
-                context.partition.driving,
-                vec![0, 1, 2],
-                "all three relations drive: {:?}",
-                context.partition
-            );
+    fn non_finite() -> SolveFailureCause {
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(0),
+            row: 0,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        })
+    }
 
-            let instances = &context.built.instances;
-            let full = solve_frame_outcome(
-                instances,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
-            );
-            let Err(cause @ SolveFailureCause::Infeasible(_)) = &full.result else {
+    fn converged() -> FrameSolution {
+        FrameSolution {
+            pose: Pose::identity(),
+            rank: 6,
+            null_space: vec![],
+        }
+    }
+
+    /// Run `first_certified_pair` over `driving`, answering each pair with
+    /// `outcome`: what it found, and the pairs it solved to get there, in order.
+    fn search(
+        driving: &[usize],
+        outcome: impl Fn(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+    ) -> (Option<[usize; 2]>, Vec<[usize; 2]>) {
+        let mut tried = Vec::new();
+        let found = first_certified_pair(driving, |i, j| {
+            tried.push([i, j]);
+            outcome(i, j)
+        });
+        (found, tried)
+    }
+
+    /// `with_failure_context` hands its callers the context
+    /// `solve_relate_scope_within` builds: production's driving-set solve fails
+    /// with the same cause, and production renders it to the same single message.
+    ///
+    /// Production runs under `STARVED_BUDGET` itself, not `context.budget`, so the
+    /// budget on its side of the comparison is not read back from the context
+    /// being checked.
+    #[test]
+    fn the_hand_built_failure_context_is_the_one_production_builds() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            let driving: Vec<RelationInstance> = context
+                .partition
+                .driving
+                .iter()
+                .map(|&i| context.built.instances[i].clone())
+                .collect();
+            let outcome = solve_in_context(context, &driving, context.budget);
+            let Err(cause @ SolveFailureCause::Infeasible(_)) = &outcome.result else {
                 panic!(
-                    "the full driving set is certified under this budget, so production \
-                     reaches the conflict search: {full:?}"
+                    "a certified failure is required: only it is rendered through the \
+                     conflict search, which reads every context field: {outcome:?}"
                 );
             };
+
             let production = solve_relate_scope_within(
-                &pair_search_scope(),
+                context.built.scope,
                 &pair_search_datums(),
-                context.budget,
+                STARVED_BUDGET,
             );
             assert_eq!(
                 production.failure.as_ref(),
@@ -3320,29 +3397,153 @@ structure PairSearchScope {
                 [rendered.message.as_str()],
                 "production renders its failure from this same context"
             );
+        });
+    }
 
-            let pair = [instances[0].clone(), instances[1].clone()];
-            let starved = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                context.budget,
+    /// A stall is rendered with the cause's own figures and coded by the cause,
+    /// never as a certified conflict.
+    #[test]
+    fn a_stalled_driving_set_is_coded_constraint_unsatisfiable() {
+        let cause = stalled();
+        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            failure_diagnostic(&cause, context)
+        });
+        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintUnsatisfiable),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.contains(&cause.to_string()),
+            "{diagnostic:?}"
+        );
+        assert!(diagnostic.message.contains("`peg`"), "{diagnostic:?}");
+    }
+
+    /// A non-finite evaluation names the driving relation whose row it was. The
+    /// label indexes the DRIVING slice, not the instance list: with instance 1
+    /// partitioned out, driving position 1 is instance 2.
+    #[test]
+    fn a_non_finite_evaluation_names_its_driving_relation() {
+        let cause = SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(1),
+            row: 4,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        });
+        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            // Only `driving` and `redundant` are coherent here: `spent`, `free` and
+            // `per_relation` still describe production's three-relation driving set.
+            let skipping = RelationPartition {
+                driving: vec![0, 2],
+                redundant: vec![1],
+                ..context.partition.clone()
+            };
+            let narrowed = FailureContext {
+                partition: &skipping,
+                ..*context
+            };
+            failure_diagnostic(&cause, &narrowed)
+        });
+        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintUnsatisfiable),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.contains(&cause.to_string()),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic
+                .message
+                .contains("`concentric` (peg.rod_axis and block.rail_axis)"),
+            "{diagnostic:?}"
+        );
+        assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
+    }
+
+    /// The search walks the driving set's pairs i-before-j, in INSTANCE positions
+    /// (`[3, 5, 8]`, not `[0, 1, 2]`), and stops at the first certified one.
+    #[test]
+    fn the_conflict_is_the_first_certified_pair_in_pairwise_order() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 8] | [5, 8] => Err(certified()),
+            _ => Ok(converged()),
+        });
+        assert_eq!(conflict, Some([3, 8]));
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8]],
+            "the search stops at the first certified pair"
+        );
+    }
+
+    /// A pair that converged, ran out of budget, stalled or met a non-finite value
+    /// proves nothing: the search skips it and blames the next certified pair.
+    #[test]
+    fn only_a_certified_pair_is_the_conflict() {
+        let skipped = [
+            ("converged", Ok(converged())),
+            ("budget-exhausted", Err(exhausted())),
+            ("stalled", Err(stalled())),
+            ("non-finite", Err(non_finite())),
+        ];
+        for (label, first_pair) in skipped {
+            let (conflict, _) = search(&[3, 5, 8], |i, j| match [i, j] {
+                [3, 5] => first_pair.clone(),
+                _ => Err(certified()),
+            });
+            assert_eq!(
+                conflict,
+                Some([3, 8]),
+                "a {label} pair must be skipped, not blamed"
             );
+        }
+    }
+
+    /// With no certified pair there is no pairwise conflict (the caller falls back
+    /// to the whole driving set); a lone driver has no pair to try.
+    #[test]
+    fn no_certified_pair_is_no_conflict() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 5] => Err(exhausted()),
+            [3, 8] => Err(stalled()),
+            _ => Err(non_finite()),
+        });
+        assert_eq!(conflict, None);
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8], [5, 8]],
+            "every pair is tried before the search gives up"
+        );
+
+        let (conflict, tried) = search(&[4], |_, _| Err(certified()));
+        assert_eq!(conflict, None);
+        assert!(tried.is_empty(), "a lone driver has no pair: {tried:?}");
+    }
+
+    /// Real pair solves, through the context production builds, blame the one
+    /// inconsistent pair, (0, 2). Which pair outcomes the search skips is pinned
+    /// with injected outcomes, in the `first_certified_pair` tests.
+    #[test]
+    fn the_conflict_search_blames_the_first_certified_pair_end_to_end() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            assert_eq!(
+                context.partition.driving,
+                vec![0, 1, 2],
+                "all three relations drive: {:?}",
+                context.partition
+            );
+
+            let full = solve_in_context(context, &context.built.instances, context.budget);
             assert!(
-                matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
-                "the first pair is out of budget, not infeasible: {starved:?}"
-            );
-            let funded = solve_frame_outcome(
-                &pair,
-                context.unknown,
-                context.seed,
-                context.scaling,
-                SolveBudget::default(),
-            );
-            assert!(
-                funded.result.is_ok(),
-                "the first pair has a root: {funded:?}"
+                matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
+                "the full driving set is certified under this budget, so production \
+                 reaches the conflict search: {full:?}"
             );
 
             assert_eq!(

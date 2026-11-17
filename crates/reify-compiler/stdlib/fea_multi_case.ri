@@ -11,9 +11,8 @@
 //
 // Module placement: `std.fea.multi_case` leaves room for future `std.fea.*`
 // siblings (e.g. `std.fea.modal`, `std.fea.thermal_coupling`) without
-// renaming. Registered immediately after `std.solver.elastic` in
-// `crates/reify-compiler/src/stdlib_loader.rs` so the growing prelude carries
-// `ElasticOptions` and `ElasticResult` in scope when this file compiles.
+// renaming. It imports `std.solver.elastic` for `ElasticOptions` and
+// `ElasticResult`.
 //
 // Encoding deviations from the PRD:
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
@@ -36,6 +35,13 @@
 //      not as `method def`s here — matching the universal convention in
 //      this stdlib (zero `method def` / `fn def` declarations across all
 //      stdlib `.ri` files).
+
+module std.fea.multi_case
+
+import std.fea.types
+import std.materials.fea
+import std.solver.elastic
+import std.units
 
 // ── LoadCase structure ────────────────────────────────────────────────────────
 
@@ -301,19 +307,23 @@ structure def MultiCaseResult {
 // consumers).
 //
 // Trait surface — `Load` and `Support` are empty marker traits declared in
-// the earlier module `std.fea.types` (loaded before `std.solver.elastic`
-// in `stdlib_loader.rs`).  Conforming structure defs in THIS file get their
-// trait bindings from the growing prelude which carries `std.fea.types` by
-// the time `std.fea.multi_case` compiles.  `Real`/`String` placeholders in
+// `std.fea.types`, which this module imports for the trait bindings of its
+// conforming structure defs.  `Real`/`String` placeholders in
 // the structure defs are dimension-typed slots that tighten in follow-up waves
 // once the dimensional type aliases land.
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
-// Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary
-// tests in `crates/reify-eval/tests/structure_instance_e2e.rs`); callers may
-// override either field at construction.
+//
+//   `point` — the loaded point, a REQUIRED typed `VertexSelector`, e.g.
+//             `vertex(body, "tip")` (task 5312;
+//             docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//             A bare String is a compile error. The solver does not read it
+//             yet: every PointLoad loads the cantilever's x_max face until
+//             Bmig2-consume (#5313, PRD D9) applies the force at the
+//             resolved vertex node set.
+//   `force` — applied force magnitude; defaults to 0.0.
 structure def PointLoad : Load {
-    param point : String = ""
+    param point : VertexSelector
     param force : Real = 0.0
     // Applied-force direction vector.  The total force contribution from this
     // load is `force * direction` component-wise (see elastic_static.rs
@@ -321,15 +331,15 @@ structure def PointLoad : Load {
     // `force` retains its physical magnitude meaning.  Non-unit vectors
     // silently scale the applied force by |direction| — e.g. vec3(0, 0, -2)
     // doubles the -Z force.  Default vec3(0, 0, -1) (−Z, the canonical
-    // bending/gravity direction) preserves backward compatibility — a bare
-    // PointLoad() contributes [0, 0, -force], byte-identical to the pre-4245
-    // hardcoded -Z path.
+    // bending/gravity direction) preserves backward compatibility — a
+    // PointLoad without `direction` contributes [0, 0, -force],
+    // byte-identical to the pre-4245 hardcoded -Z path.
     //
     // `direction` is declared LAST. Ctor args bind BY NAME (task 4522), and
-    // every call site in the corpus today is either zero-arg `PointLoad()` or
-    // fully labelled (`PointLoad(point: ..., force: ...)`), so none of them
-    // depends on where `direction` sits in the declaration — a directional
-    // caller just appends `direction: vec3(...)` (task 3015's non-colinear
+    // every call site in the corpus today is fully labelled
+    // (`PointLoad(point: ..., force: ...)`), so none of them depends on
+    // where `direction` sits in the declaration — a directional caller just
+    // appends `direction: vec3(...)` (task 3015's non-colinear
     // superposition) wherever it likes. Declaration order governs only
     // UNLABELLED args, which fill the remaining slots in order: promoting
     // `direction` ahead of `point`/`force` would silently rebind an
@@ -351,14 +361,18 @@ structure def PointLoad : Load {
 
 // FixedSupport — wave-1 replacement for the `FixedSupport` builtin
 // (supports.rs). The `target` field mirrors the `target` key emitted by the
-// pre-retirement `eval_supports("FixedSupport", ...)` Map. `target : String`
-// is a geometry-selector placeholder; actual migration to a Face/Body selector
-// type is owned by the FEA Load/Support follow-on PRD (depends on
-// docs/prds/topology-selector-value-type.md §10 + task 4092).
+// pre-retirement `eval_supports("FixedSupport", ...)` Map.
+//
+//   `target` — the supported geometry, a REQUIRED kind-agnostic `Selector`
+//              (face, edge, vertex or body), e.g. `face(body, "root")`
+//              (task 5312; docs/prds/v0_6/fea-load-support-selector-migration.md
+//              D10). A bare String is a compile error. The solver reads the
+//              target's Named leaf through an interim name shim until
+//              Bmig2-consume (#5313) resolves it to an FE node set.
 //
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads cross-PRD table).
 structure def FixedSupport : Support {
-    param target : String = ""
+    param target : Selector
 }
 
 // PinnedSupport — wave-2 replacement for the `PinnedSupport` builtin
@@ -367,9 +381,12 @@ structure def FixedSupport : Support {
 // by the pre-retirement `make_kind_map("pinned_support", ...)` call
 // (crates/reify-stdlib/src/supports.rs; Q-SIR-4 preserve-don't-redesign):
 //
-//   `target` — geometry selector target. `String` is a placeholder for
-//              `Selector` until the topology-selector type aliases land;
-//              mirrors the `target` key in the retired builtin.
+//   `target` — the supported geometry, a REQUIRED kind-agnostic `Selector`,
+//              e.g. `face(beam, "x_min")` (task 5312;
+//              docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//              A bare String is a compile error. As for FixedSupport, the
+//              solver reads the Named leaf through an interim name shim until
+//              Bmig2-consume (#5313) resolves it to an FE node set.
 //
 // The BC-framework semantics (translational-DOF-only constraint, 6-DOF
 // distinction for shell entities — explicit-pin opt-out from rotational
@@ -377,13 +394,9 @@ structure def FixedSupport : Support {
 // DoF logic solver-side preserves the downstream FEA contract unchanged.
 // Same boundary as for FixedSupport.
 //
-// All fields default so a bare `PinnedSupport()` constructor succeeds
-// (covers SIR-β-sup boundary tests in `crates/reify-eval/tests/pinned_support.rs`
-// and the golden in `crates/reify-eval/tests/golden/structure_instance.txt`).
-//
 // PRD: docs/prds/v0_3/structure-instance-runtime.md §8 Phase 2 task SIR-β-sup.
 structure def PinnedSupport : Support {
-    param target : String = ""
+    param target : Selector
 }
 
 // PressureLoad — wave-2 replacement for the `pressure_load` builtin
@@ -404,9 +417,8 @@ structure def PinnedSupport : Support {
 //                  mints to a `Value::Selector(Leaf { query: Named(name) })`;
 //                  `extract_loads` reads the `Named` name kernel-lessly via
 //                  `box_face_plane`. `none` (the `= none` default) leaves the
-//                  pressure faceless (no traction applied). The legacy
-//                  `face: "x_max"` String form is still accepted for transition
-//                  safety (extract_loads keeps its `Value::String` arm).
+//                  pressure faceless (no traction applied). The retired
+//                  `face: "x_max"` String form is a compile error (task 5312).
 //   `direction`  — outward-normal sentinel or explicit direction. `String` is
 //                  a placeholder; mirrors the `direction` key in the retired
 //                  builtin. The `"normal"` sentinel means "outward face normal";
@@ -432,26 +444,20 @@ structure def PressureLoad : Load {
 // Q-SIR-4 (preserve-don't-redesign): `face` was the `face` key, `traction` was
 // the `traction` key in the `make_kind_map("traction_load", ...)` call.
 //
-//   `face`     — geometry selector. `String` is a placeholder for `FaceSelector`
-//                (docs/prds/topology-selector-value-type.md — typed-selector
-//                value-type design); actual String → FaceSelector migration is
-//                owned by the FEA Load/Support follow-on PRD (depends on
-//                topology-selector-value-type.md §10 + task 4092). Mirrors the
-//                `face` key emitted by the pre-retirement builtin.
+//   `face`     — the loaded face, a REQUIRED typed `FaceSelector`, e.g.
+//                `face(body, "top")` (task 5312;
+//                docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//                A bare String is a compile error.
 //   `traction` — applied traction. `Real` is a placeholder for
 //                `Vector3<Pressure>` until the dimensional vector type aliases
 //                land; mirrors the `traction` key in the retired builtin.
-//
-// All fields default so a bare `TractionLoad()` constructor succeeds (covers
-// FEA-2 boundary tests in
-// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
 //      migration; FEA follow-on PRD owns the field change, task 4092 owns
 //      selector→node-set mapping).
 structure def TractionLoad : Load {
-    param face     : String = ""
+    param face     : FaceSelector
     param traction : Real   = 0.0
 }
 
@@ -461,28 +467,21 @@ structure def TractionLoad : Load {
 // `force_density` was the `force_density` key in the
 // `make_kind_map("body_force", ...)` call.
 //
-//   `body`          — geometry selector. `String` is a placeholder for
-//                     `BodySelector` (docs/prds/topology-selector-value-type.md —
-//                     typed-selector value-type design); actual String →
-//                     BodySelector migration is owned by the FEA Load/Support
-//                     follow-on PRD (depends on topology-selector-value-type.md
-//                     §10 + task 4092). Mirrors the `body` key emitted by the
-//                     pre-retirement builtin.
+//   `body`          — the loaded body, a REQUIRED typed `BodySelector`, e.g.
+//                     `solid_body(body, "all")` (task 5312;
+//                     docs/prds/v0_6/fea-load-support-selector-migration.md
+//                     D10). A bare String is a compile error.
 //   `force_density` — applied body-force density. `Real` is a placeholder for
 //                     `Vector3<ForceDensity>` until the dimensional vector type
 //                     aliases land; mirrors the `force_density` key in the
 //                     retired builtin.
-//
-// All fields default so a bare `BodyForce()` constructor succeeds (covers
-// FEA-2 boundary tests in
-// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
 //      migration; FEA follow-on PRD owns the field change, task 4092 owns
 //      selector→node-set mapping).
 structure def BodyForce : Load {
-    param body          : String = ""
+    param body          : BodySelector
     param force_density : Real   = 0.0
 }
 

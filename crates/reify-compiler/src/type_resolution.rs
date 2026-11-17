@@ -85,7 +85,7 @@ thread_local! {
     ///
     /// The scope is MODULE-WIDE rather than per-phase on purpose: every phase that
     /// lowers a declared type name must agree on what a shadowed name means.
-    /// Scoping it to `phase_entities` alone left `phase_traits`/`phase_functions`
+    /// Scoping it to `phase_entities` alone left `phase_traits`/`phase_fn_signatures`
     /// (which run earlier) resolving the same name to `Type::StructureRef` while
     /// entity params resolved to `Type::Enum`, so trait conformance and overload
     /// resolution rejected the mismatched pair — a warning-to-error regression on
@@ -3487,6 +3487,11 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
             }
             for (_, def) in defaults {
                 substitute_expr_result_types(def, subst);
+            }
+        }
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            for (_, field) in payload {
+                substitute_expr_result_types(field, subst);
             }
         }
         // task 4118 (γ): recurse into the wrapped selector. The node's own

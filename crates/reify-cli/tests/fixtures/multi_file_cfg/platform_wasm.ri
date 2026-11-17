@@ -1,0 +1,6 @@
+module platform_wasm
+
+pub structure def Housing {
+    param size : Length = 20mm
+    let body = box(size, size, size)
+}

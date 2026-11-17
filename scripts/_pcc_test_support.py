@@ -4,18 +4,21 @@ partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
 constants, the ProbeContext builders and the recording fake runner, the
-grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
-wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
-cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
-fixture only one partition uses lives in that partition.  It imports no test
-file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
-one partition at a time with `python3 scripts/test_pcc_<area>.py`.
+binary-trust fixtures (profile binaries, the sidecar, a hook-safe git repo, and
+the trust ctx built over them), the grammar-e2e and reify-e2e skip-guards (with
+the un-memoized grammar status it wraps; the reify-e2e policy itself lives in
+_pdv_test_support), the measured cache-denial signature and the shared
+TREE_SITTER_BIN stub factories.  A fixture only one partition uses lives in that
+partition.  It imports no test file and defines no TestCase.  Run the suite
+through tests/infra/test_prd_capability_check.sh, or one partition at a time
+with `python3 scripts/test_pcc_<area>.py`.
 """
 
 import functools
 import importlib.util
 import os
 import shlex
+import subprocess
 import sys
 import textwrap
 
@@ -88,6 +91,78 @@ def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
     if parser_c:
         open(os.path.join(src, "parser.c"), "w").close()
     return tmpdir
+
+
+def write_profile_binary(root: str, relpath: str, mode: int = 0o755) -> str:
+    """Create a file at <root>/<relpath> with `mode` and return its absolute path."""
+    path = os.path.join(root, relpath)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(path, mode)
+    return path
+
+
+def write_bin_sidecar(root: str, text: str) -> None:
+    """Write `text` to <root>/target/.reify-bin-sha, creating target/."""
+    target = os.path.join(root, "target")
+    os.makedirs(target, exist_ok=True)
+    with open(os.path.join(target, ".reify-bin-sha"), "w") as fh:
+        fh.write(text)
+
+
+def without_git_vars(environ):
+    """`environ` minus every GIT_* key.
+
+    Under a hook (pre-commit / pre-merge-commit) GIT_DIR is exported and would
+    aim a test's `git init` / `git commit` at the real repository.
+    """
+    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+
+
+def trust_environ(**extra):
+    """os.environ minus every GIT_* key and REIFY_BIN, plus `extra`.
+
+    A lane-exported REIFY_BIN or a hook's GIT_DIR must never decide a
+    binary-trust test; `extra` names exactly what the test means to set.
+    """
+    environ = without_git_vars(os.environ)
+    environ.pop("REIFY_BIN", None)
+    return dict(environ, **extra)
+
+
+def git(root, *args):
+    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
+    return subprocess.run(
+        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=without_git_vars(os.environ), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def make_git_fixture_repo(tmpdir: str) -> str:
+    """Make `tmpdir` a git repository with one empty commit; return its HEAD SHA."""
+    git(tmpdir, "init", "-q")
+    git(tmpdir, "commit", "-q", "--allow-empty", "-m", "x")
+    return git(tmpdir, "rev-parse", "HEAD")
+
+
+def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
+    """(binary path or None, ctx) over a fixture git repo in `root` holding only `binary`.
+
+    `binary` is the repo-relative profile binary to build, or None for none;
+    `sidecar_for_head(head)` is the sidecar text to write, or None for none.
+    The ctx comes from the public ProbeContext.from_environment(), so the REAL
+    trust home (scripts/reify-bin-freshness.sh) decides.  The caller owns
+    `root` and its lifetime.
+    """
+    root = make_fixture_repo(root)
+    head = make_git_fixture_repo(root)
+    path = None if binary is None else write_profile_binary(root, binary)
+    sidecar = sidecar_for_head(head)
+    if sidecar is not None:
+        write_bin_sidecar(root, sidecar)
+    return path, pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
 
 
 def recording_runner(run=None):

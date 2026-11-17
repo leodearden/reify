@@ -36,7 +36,7 @@ structure FeaPressureSmoke {
     let pressure = PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")
 
     // Supports: fully clamped (fixed) at the beam root (x_min face).
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve via the @optimized trampoline.
     // Direct list literals type-check against List<Load> / List<Support> (task 4093).

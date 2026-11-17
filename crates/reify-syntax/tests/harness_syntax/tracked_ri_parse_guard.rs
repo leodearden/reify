@@ -1,13 +1,14 @@
 //! The tracked-`.ri` parse guard: the corpus check of
 //! `docs/prds/v0_6/syntax-lowering-contract.md` D12 / §9 α (task #9343).
 //!
-//! Every tracked `.ri` that is not declared in [`MUST_ERROR_RI_FIXTURES`]
-//! must have a clean Rust tree-sitter CST and an empty
-//! `reify_syntax::parse(..).errors`, outside the trees in
-//! [`UNSWEPT_RI_TREES`], whose undeclared members are skipped unread. A
-//! declared file is checked wherever it lives and must keep showing its
-//! declared fault. When this guard reds, fix the file in the same diff, or
-//! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
+//! Every `.ri` in the shared swept listing (`tracked_corpus::swept_ri_paths`,
+//! which omits every path verify's scope classifier marks inert) must have a
+//! clean Rust tree-sitter CST and an empty `reify_syntax::parse(..).errors`.
+//! Two kinds of file are excepted. A file declared in [`MUST_ERROR_RI_FIXTURES`]
+//! must keep its declared fault, wherever it lives. An undeclared member of
+//! [`UNSWEPT_RI_TREES`] is skipped unread. No entry may be a path the scope
+//! classifier marks inert. When this guard reds, fix the file in the same diff,
+//! or declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -18,7 +19,9 @@ use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
-use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
+use crate::common::tracked_corpus::{
+    INERT_PROBE_RI, partition_by_verify_inert, swept_ri_paths, workspace_root,
+};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,12 +55,6 @@ const MUST_ERROR_RI_FIXTURES: &[MustErrorFixture] = &[
         path: "crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri",
         kind: MustErrorKind::CstFault,
         reason: "deliberately unparseable placement sentinel (that tree's fixtures/README.md)",
-    },
-    MustErrorFixture {
-        path: "docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri",
-        kind: MustErrorKind::ErrorsOnly,
-        reason: "clean CST; lower_sub rejects the indexed `sub` instantiation (the #5482 \
-                 interim rejection)",
     },
     MustErrorFixture {
         path: "gui/test/fixtures/broken_syntax.ri",
@@ -176,8 +173,9 @@ struct UnsweptTree {
     reason: &'static str,
 }
 
-/// The trees the guard does not sweep, ratified on the D12 row of
-/// `docs/prds/v0_6/syntax-lowering-contract.md`.
+/// The trees of chartered inputs that need not parse, each with its reason.
+/// Recorded on the guard row of `docs/prds/v0_6/syntax-lowering-contract.md`
+/// §7.
 const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
     UnsweptTree {
         prefix: "tests/prd-gate/fixtures/", // pg-drift-dir:allow — an exclusion, not a walk: undeclared members are skipped unread, so adding a fixture stays inert
@@ -191,6 +189,22 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
     },
 ];
 
+/// Declared entries the scope classifier marks inert. The swept listing omits
+/// such a file, so its declaration can never be checked.
+fn inert_declared_entries(fixtures: &[MustErrorFixture]) -> Vec<&str> {
+    partition_by_verify_inert(fixtures.iter().map(|fixture| fixture.path).collect()).inert
+}
+
+/// The prefixes of the rows that cover none of `swept`: stale, so to be
+/// deleted. `swept` omits the classifier-inert paths, so a row placed over
+/// only such paths is flagged too.
+fn dead_unswept_rows<'r>(rows: &'r [UnsweptTree], swept: &[String]) -> Vec<&'r str> {
+    rows.iter()
+        .map(|row| row.prefix)
+        .filter(|prefix| !swept.iter().any(|rel| rel.starts_with(prefix)))
+        .collect()
+}
+
 /// What the guard demands of one tracked path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expectation {
@@ -199,8 +213,7 @@ enum Expectation {
     Unswept,
 }
 
-/// A declared entry wins over an unswept tree, so every declared file is
-/// checked wherever it lives.
+/// A declared entry wins over an unswept tree, so it is checked even there.
 fn expectation(path: &str) -> Expectation {
     if let Some(fixture) = MUST_ERROR_RI_FIXTURES.iter().find(|f| f.path == path) {
         return Expectation::MustError(fixture.kind);
@@ -318,8 +331,8 @@ impl fmt::Display for Violation {
                  panic on it"
             ),
             Self::StaleEntry => f.write_str(
-                "declared in MUST_ERROR_RI_FIXTURES but not a tracked .ri; fix or remove the \
-                 entry",
+                "declared in MUST_ERROR_RI_FIXTURES but not in the swept listing (untracked, or \
+                 a path verify's scope classifier marks inert); fix or remove the entry",
             ),
         }
     }
@@ -678,6 +691,50 @@ fn sweep_reports_a_non_string_panic_payload_as_the_workspace_formats_it() {
     );
 }
 
+// ── table-rule unit tests, over synthetic tables ────────────────────────────
+
+const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
+    MustErrorFixture {
+        path: "examples/zz_synthetic.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "synthetic",
+    },
+    MustErrorFixture {
+        path: INERT_PROBE_RI,
+        kind: MustErrorKind::CstFault,
+        reason: "synthetic",
+    },
+];
+
+const SYNTHETIC_UNSWEPT: &[UnsweptTree] = &[
+    UnsweptTree {
+        prefix: "chartered/",
+        reason: "synthetic",
+    },
+    UnsweptTree {
+        prefix: "empty/",
+        reason: "synthetic",
+    },
+];
+
+#[test]
+fn inert_declared_entries_names_each_offender() {
+    assert_eq!(
+        inert_declared_entries(SYNTHETIC_DECLARED),
+        [INERT_PROBE_RI],
+        "only a declared entry the scope classifier marks inert is an offender"
+    );
+}
+
+#[test]
+fn dead_unswept_rows_names_each_row_that_covers_no_swept_ri() {
+    assert_eq!(
+        dead_unswept_rows(SYNTHETIC_UNSWEPT, &listing(&["chartered/zz_synthetic.ri"])),
+        ["empty/"],
+        "a row covering a swept .ri stands; one covering none is stale"
+    );
+}
+
 // ── the tracked corpus ──────────────────────────────────────────────────────
 
 #[test]
@@ -704,7 +761,7 @@ fn expectation_declared_entry_wins_over_an_unswept_tree() {
 #[test]
 fn every_swept_tracked_ri_parses_cleanly_unless_declared_must_error() {
     let root = workspace_root();
-    let files = tracked_ri_paths(&root);
+    let files = swept_ri_paths(&root);
     assert!(
         files.len() > 100,
         "sweep found only {} tracked .ri files under {} — the listing is broken, \
@@ -775,14 +832,19 @@ fn must_error_and_unswept_tables_are_well_formed() {
          tree: {unterminated:?}"
     );
 
-    let tracked = tracked_ri_paths(&workspace_root());
-    let dead: Vec<&str> = UNSWEPT_RI_TREES
-        .iter()
-        .map(|t| t.prefix)
-        .filter(|prefix| !tracked.iter().any(|rel| rel.starts_with(prefix)))
-        .collect();
+    let inert_declared = inert_declared_entries(MUST_ERROR_RI_FIXTURES);
+    assert!(
+        inert_declared.is_empty(),
+        "these entries are paths verify's scope classifier (scripts/reify_path_attribution.py) \
+         marks inert, which the guard never reads, so their declaration cannot be checked; a \
+         file must not be inert to be declared: {inert_declared:?}"
+    );
+
+    let swept = swept_ri_paths(&workspace_root());
+    let dead = dead_unswept_rows(UNSWEPT_RI_TREES, &swept);
     assert!(
         dead.is_empty(),
-        "these UNSWEPT_RI_TREES rows cover no tracked .ri; delete them: {dead:?}"
+        "these UNSWEPT_RI_TREES rows cover no swept .ri (none tracked, or each is a path \
+         verify's scope classifier marks inert); delete them: {dead:?}"
     );
 }

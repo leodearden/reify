@@ -1,7 +1,7 @@
 /**
  * Where the reify-debug server is and when it answers: the ONE home of the
  * debug-port rule and of the drivers' readiness poll, used by every
- * `smoke_*.mjs` driver and by `./endpoint.ts` / `./run.ts`.
+ * `smoke_*.mjs` driver and by `./perRunPort.ts` / `./run.ts`.
  *
  * PLAIN ESM with no imports and no `process` global: the drivers load it under
  * a bare `node`, while vitest loads it through vite's browser resolver, so the

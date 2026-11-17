@@ -22,7 +22,7 @@ import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
-import { resolvePerRunPort } from "./endpoint.js";
+import { resolvePerRunPort } from "./perRunPort.js";
 import { resolveDebugPort, debugUrlForPort } from "./debugServerEndpoint.mjs";
 import { runScenarioSteps } from "./orchestrate.js";
 

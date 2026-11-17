@@ -1,15 +1,20 @@
 use std::collections::HashMap;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, SourceSpan, ValueCellId,
-    VersionId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, VersionId};
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
+
+mod document_compile;
+
+/// The `fea-not-evaluated` constraint hint the pipeline appends to its diagnostics.
+mod fea_hint;
+
+use document_compile::CompiledDocument;
 
 /// The eval/check-pass containment guard shared by both LSP production
 /// entry points — see [`eval_guard`] for the hazard it contains and why it is
@@ -23,7 +28,8 @@ pub(crate) mod eval_guard;
 pub struct EvalState {
     engine: reify_eval::Engine,
     version_counter: u64,
-    last_content_hash: Option<ContentHash>,
+    /// The last evaluated document's eval-cache key.
+    last_eval_cache_key: Option<ContentHash>,
 }
 
 impl EvalState {
@@ -32,8 +38,8 @@ impl EvalState {
     ///
     /// This is the **EVAL-time** checker fed to `reify_eval::Engine::new` —
     /// a separate instance from the **COMPILE-time** checker that
-    /// [`compute_diagnostics_with_state`] now injects into
-    /// `compile_with_stdlib_checked` (task #6798, PRD leaf pi). The two are
+    /// [`compute_diagnostics_with_state`] now injects into its document
+    /// compile (task #6798, PRD leaf pi). The two are
     /// deliberately independent values of the same zero-sized
     /// `SimpleConstraintChecker` type: one feeds constraint-satisfaction
     /// evaluation after eval, the other feeds `auto:` candidate feasibility
@@ -45,13 +51,15 @@ impl EvalState {
         Self {
             engine: reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None),
             version_counter: 0,
-            last_content_hash: None,
+            last_eval_cache_key: None,
         }
     }
 
-    /// Returns the content hash of the last successfully compiled module, if any.
+    /// The last evaluated document's eval-cache key, if any: its module's
+    /// content hash, combined with every imported module's source for a
+    /// document compiled as a program.
     pub fn last_content_hash(&self) -> Option<ContentHash> {
-        self.last_content_hash
+        self.last_eval_cache_key
     }
 
     /// Returns true if the engine has been initialized by a prior `eval()` or `eval_cached()` call.
@@ -122,10 +130,12 @@ pub struct DiagnosticsResult {
 ///
 /// ## Compile-time checker: real `SimpleConstraintChecker`, not a stub (task #6798)
 ///
-/// The compile stage below calls
-/// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
-/// matching `reify check`'s compile path (`parse_and_compile` /
-/// `program::compile_program_with_parsed_entry` in
+/// The compile stage below compiles via `document_compile::compile_document`:
+/// a program compile (`program::compile_program_with_parsed_entry`) for a
+/// file-backed entry that follows an import, the single-file
+/// `reify_compiler::compile_with_stdlib_checked` otherwise, with the same real
+/// `SimpleConstraintChecker` either way. That matches `reify check`'s compile
+/// path (`parse_and_compile` / `program::compile_program_with_parsed_entry` in
 /// `crates/reify-cli/src/main.rs`) and the GUI
 /// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
 /// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
@@ -198,10 +208,10 @@ pub struct DiagnosticsResult {
 /// register the production bundle and so receive `Severity::Error`.)
 ///
 /// That is ONLY about this fallback diagnostic.  It leaves the LSP's SEPARATE
-/// `fea-not-evaluated` INFORMATION constraint hint (below) entirely untouched,
-/// and INV-FEA-1 ratified — the two must not be conflated: one reports that no
-/// trampoline was registered, the other that a constraint was consequently not
-/// evaluated.
+/// `fea-not-evaluated` INFORMATION constraint hint (emitted by `fea_hint`)
+/// entirely untouched, and INV-FEA-1 ratified — the two must not be conflated:
+/// one reports that no trampoline was registered, the other that a constraint
+/// was consequently not evaluated.
 ///
 /// This trampoline-free posture is an executable contract locked by one
 /// test (below, in `mod tests`):
@@ -225,7 +235,7 @@ pub fn compute_diagnostics_with_state(
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
-    // `compile_with_stdlib_checked` below). See task 2525.
+    // `document_compile::compile_document` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
@@ -244,7 +254,9 @@ pub fn compute_diagnostics_with_state(
 
     // Compile. Real checker (task #6798, PRD leaf pi) — see this function's
     // "## Compile-time checker" doc section above for the full rationale.
-    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let document =
+        document_compile::compile_document(&parsed, source, uri, &CfgSet::host_default());
+    let compiled = document.module();
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
@@ -260,13 +272,13 @@ pub fn compute_diagnostics_with_state(
     // produces misleading (here: fatal) secondary results.
     //
     // Placement before the state mutations is LOAD-BEARING. `state.version_counter`
-    // and `state.last_content_hash` both stay unadvanced, leaving `EvalState`
+    // and `state.last_eval_cache_key` both stay unadvanced, leaving `EvalState`
     // exactly as it was, so the next keystroke evaluates `content_unchanged` to
-    // false and takes the cold-start branch. Advancing `last_content_hash` here
+    // false and takes the cold-start branch. Advancing `last_eval_cache_key` here
     // would create precisely the stale-cache bug the comment below warns about:
     // `eval_cached` returns empty diagnostics by construction, so a module that
     // was never evaluated would silently report none.
-    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
+    if let Some(skipped) = eval_guard::skip_reason(compiled) {
         // Observability: skipping eval silently costs the whole document its
         // eval-time diagnostics and constraint results, so say so in the
         // editor as well as the server log. `skip_reason` has already written
@@ -287,12 +299,12 @@ pub fn compute_diagnostics_with_state(
 
     // Use the incremental eval_cached path only when content is unchanged AND
     // the engine has already been initialized by a prior eval(). An uninitialized
-    // engine must always take the cold-start branch regardless of last_content_hash:
+    // engine must always take the cold-start branch regardless of last_eval_cache_key:
     // eval_cached returns empty diagnostics by construction, so routing an
     // uninitialized engine through it would silently drop eval-time errors.
     let content_unchanged = state
-        .last_content_hash
-        .map(|h| h == compiled.content_hash)
+        .last_eval_cache_key
+        .map(|key| key == document.eval_cache_key())
         .unwrap_or(false)
         && state.is_engine_initialized();
 
@@ -310,36 +322,37 @@ pub fn compute_diagnostics_with_state(
     let mut eval_diagnostics: Vec<Diagnostic> = if content_unchanged {
         state
             .engine
-            .eval_cached(&compiled, VersionId(state.version_counter))
+            .eval_cached(compiled, VersionId(state.version_counter))
             .eval_result
             .diagnostics
     } else {
-        // Observability: if the hash *did* match but the engine was uninitialized,
+        // Observability: if the key *did* match but the engine was uninitialized,
         // that is the specific invariant violation the engine-init guard (above) was
-        // added to catch — last_content_hash was set without a preceding eval().
+        // added to catch — last_eval_cache_key was set without a preceding eval().
         // Log a warning in debug builds so the decoupling is not silent. Not a
         // debug_assert!: the state is reachable, if only through a panic inside
         // eval after the engine replacement below followed by the server's Mutex
         // poison recovery, and the right response is to handle it correctly
         // (which we do below) and warn.
         #[cfg(debug_assertions)]
-        if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
+        if state.last_eval_cache_key == Some(document.eval_cache_key())
+            && !state.is_engine_initialized()
         {
             log_messages.push(LogLine {
                 typ: lsp_types::MessageType::WARNING,
-                message: "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
-                          — last_content_hash was set without a preceding eval(); \
+                message: "[reify-lsp] WARNING: eval-cache key matched but engine was uninitialized \
+                          — last_eval_cache_key was set without a preceding eval(); \
                           cold-start forced to prevent silent diagnostic loss (engine-init guard)"
                     .to_string(),
             });
         }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-        state.engine.eval(&compiled).diagnostics
+        state.engine.eval(compiled).diagnostics
     };
 
     // Check constraints from snapshot, falling back to full check() if snapshot is absent
-    let check_result = match state.engine.check_snapshot(&compiled) {
+    let check_result = match state.engine.check_snapshot(compiled) {
         Some(result) => result,
         None => {
             log_messages.push(LogLine {
@@ -352,16 +365,21 @@ pub fn compute_diagnostics_with_state(
             // CheckResult.diagnostics; drop our independently captured copy to
             // avoid double-emission.
             eval_diagnostics = Vec::new();
-            state.engine.check(&compiled)
+            state.engine.check(compiled)
         }
     };
 
-    // Build constraint span lookup map from compiled module
-    let constraint_spans: HashMap<ConstraintNodeId, SourceSpan> = compiled
+    let constraint_ranges: HashMap<ConstraintNodeId, lsp_types::Range> = compiled
         .templates
         .iter()
-        .flat_map(|t| t.constraints.iter())
-        .map(|c| (c.id.clone(), c.span))
+        .enumerate()
+        .flat_map(|(index, t)| t.constraints.iter().map(move |c| (index, c)))
+        .map(|(index, c)| {
+            (
+                c.id.clone(),
+                document.template_span_range(source, index, c.span),
+            )
+        })
         .collect();
 
     // Convert non-constraint eval diagnostics from check result.
@@ -420,7 +438,7 @@ pub fn compute_diagnostics_with_state(
     // that take the `content_unchanged` warm path above.
     //
     // Matched by CODE, not by message substring, per this crate's
-    // `FEA_NOT_EVALUATED_CODE` precedent (below): a copy-edit to the engine's
+    // `fea_hint::FEA_NOT_EVALUATED_CODE` precedent: a copy-edit to the engine's
     // wording must never silently re-open the leak. Its presence on the engine
     // side is locked by
     // `crates/reify-eval/tests/harness_engine/eval_cached_guarded_groups.rs`.
@@ -447,9 +465,9 @@ pub fn compute_diagnostics_with_state(
     for entry in &check_result.constraint_results {
         if entry.satisfaction == Satisfaction::Violated {
             let msg = constraint_violated_message(entry);
-            let span_lookup = constraint_spans.get(&entry.id);
-            let range = span_lookup
-                .map(|span| convert::span_to_range(source, *span))
+            let range = constraint_ranges
+                .get(&entry.id)
+                .copied()
                 .unwrap_or_default();
             diagnostics.push(lsp_types::Diagnostic {
                 range,
@@ -461,16 +479,16 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    diagnostics.extend(fea_not_evaluated_hints(
+    diagnostics.extend(fea_hint::fea_not_evaluated_hints(
         &state.engine,
-        &compiled,
+        &document,
         &check_result,
         source,
     ));
-    diagnostics.extend(freshness_diagnostics(&state.engine, &compiled, source));
+    diagnostics.extend(freshness_diagnostics(&state.engine, &document, source));
 
-    // Record the content hash so the next call can choose incremental vs cold-start.
-    state.last_content_hash = Some(compiled.content_hash);
+    // Record the eval-cache key so the next call can choose incremental vs cold-start.
+    state.last_eval_cache_key = Some(document.eval_cache_key());
 
     DiagnosticsResult {
         diagnostics,
@@ -478,158 +496,6 @@ pub fn compute_diagnostics_with_state(
         log_messages,
         check_result: Some(check_result),
     }
-}
-
-/// Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostics for
-/// FEA-dependent constraints that go unevaluated under
-/// [`compute_diagnostics_with_state`]'s trampoline-free posture. A constraint
-/// reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
-/// `max_von_mises`) body-inlines to `Value::Undef` and therefore checks as
-/// `Satisfaction::Indeterminate` — neither the `violated_messages` skip-set
-/// nor the span-aware `Satisfaction::Violated` loop in that function emits
-/// anything for it, so without this hint it surfaces NO diagnostic at all,
-/// silently indistinguishable from "no constraint". Surface a non-noisy
-/// `Severity::Info` hint instead, anchored to the constraint's span, so the
-/// user knows why the constraint shows nothing in the editor.
-///
-/// Gated by `constraint_depends_on_unregistered_optimized_compute` so this
-/// does NOT fire on every `Indeterminate` constraint — e.g. a
-/// genuinely-unresolved `auto` param is also `Indeterminate` here (no solver
-/// attached), but is not FEA-dependent and must not get this hint.
-///
-/// Deliberately additive and easily removable: one emitter reading
-/// already-computed `check_result` / `compiled` data, no new `EvalState`
-/// fields, no keystroke-time solve.
-fn fea_not_evaluated_hints(
-    engine: &reify_eval::Engine,
-    compiled: &reify_compiler::CompiledModule,
-    check_result: &reify_eval::CheckResult,
-    source: &str,
-) -> Vec<lsp_types::Diagnostic> {
-    // TODO(#5023): remove this stopgap when async-recalc Phase A lands
-    // per-constraint computing/not-evaluated states that supersede this hint.
-    //
-    // Perf guard: this whole function — including the lookup maps below — runs
-    // on the LSP keystroke hot path, so skip it entirely when there is no
-    // `Indeterminate` constraint in this document at all. Nothing in the
-    // loop below can fire without at least one such entry, so this still
-    // frees the common fully-resolved (no `auto` params, no FEA) document
-    // from all of the cost below.
-    //
-    // This guard is intentionally coarse — it is NOT "only FEA documents pay
-    // this cost". A genuinely-unresolved `auto` param is *also*
-    // `Indeterminate` with no solver attached, and `auto` params are routine
-    // in this parametric DSL (this file's own
-    // `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
-    // test uses `param gap : Length = auto` as its non-FEA control case), so
-    // plenty of non-FEA documents still build the maps below on every
-    // keystroke. A cheaper *and correct* pre-filter isn't available for
-    // free: `engine.prelude()` is the full stdlib, which always
-    // declares `@optimized` functions (`solve_elastic_static` and its
-    // siblings), so "does `compiled.functions` ∪ prelude declare any
-    // function with `optimized_target.is_some()`" is trivially true on every
-    // call and would filter nothing; narrowing that check to
-    // `compiled.functions` alone would filter too much, since a real FEA
-    // constraint reaches its solver call through a *prelude* function, not a
-    // module-local one, and would wrongly lose its hint. A correct tighter
-    // filter would have to either walk the same constraint/value-cell
-    // closure the code below already performs (no savings) or cache
-    // results across calls, which would need new persistent state — ruled
-    // out by this hint's "no new `EvalState` fields" design (see this
-    // function's doc).
-    if !check_result
-        .constraint_results
-        .iter()
-        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
-    {
-        return Vec::new();
-    }
-
-    let value_cell_exprs: HashMap<ValueCellId, _> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
-        .collect();
-    let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.constraints.iter())
-        .map(|c| (&c.id, c))
-        .collect();
-    // Precompute name -> "names an unregistered @optimized compute
-    // target" once per document, instead of re-scanning all visible
-    // functions for every `UserFunctionCall` node encountered across
-    // every constraint's transitive value-cell closure — O(nodes *
-    // functions) before, O(functions) once to build plus O(1) lookups
-    // after.
-    //
-    // Iterate the union of the compiled module's own functions and the
-    // engine's prelude functions directly, with no intermediate `Vec` —
-    // stdlib solvers like `solve_elastic_static` are prelude functions,
-    // not user-module functions, so the prelude must be included or
-    // every FEA constraint would fail to match. Module-local functions
-    // are chained FIRST so that `.or_insert_with` (which keeps only the
-    // first-seen function per name) resolves a name shared between a
-    // module-local function and a prelude solver to the module's own
-    // definition — see the caller precedence note on
-    // `constraint_depends_on_unregistered_optimized_compute`.
-    let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
-    for f in compiled
-        .functions
-        .iter()
-        .chain(engine.prelude().iter().flat_map(|m| m.functions.iter()))
-    {
-        unregistered_optimized_fn_names
-            .entry(f.name.as_str())
-            .or_insert_with(|| {
-                f.optimized_target
-                    .as_deref()
-                    .is_some_and(|t| engine.compute_dispatch(t).is_none())
-            });
-    }
-
-    // No `(id, label)` dedup guard is needed here. `check_result.
-    // constraint_results` is built upstream (reify-eval) with at most
-    // one entry per constraint id: `forall` per-element constraints
-    // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
-    // increments `constraint_index` per element, so distinct elements
-    // never share an id), and the GD&T/Conforms path explicitly
-    // overrides any existing same-id entry in place rather than pushing
-    // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
-    // entry ... push if absent" comment). So this single iteration
-    // already yields at most one hint per constraint without any extra
-    // bookkeeping. Pinned by
-    // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
-    // in `mod tests`), which is the case most sensitive to a regression
-    // in this upstream invariant.
-    let mut hints = Vec::new();
-    for entry in &check_result.constraint_results {
-        if entry.satisfaction != Satisfaction::Indeterminate {
-            continue;
-        }
-        let Some(constraint) = compiled_constraints.get(&entry.id) else {
-            continue;
-        };
-        if !constraint_depends_on_unregistered_optimized_compute(
-            &constraint.expr,
-            &value_cell_exprs,
-            &unregistered_optimized_fn_names,
-        ) {
-            continue;
-        }
-        hints.push(lsp_types::Diagnostic {
-            range: convert::span_to_range(source, constraint.span),
-            severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
-            code: Some(lsp_types::NumberOrString::String(
-                FEA_NOT_EVALUATED_CODE.to_string(),
-            )),
-            source: Some("reify".to_string()),
-            message: FEA_NOT_EVALUATED_HINT.to_string(),
-            ..Default::default()
-        });
-    }
-    hints
 }
 
 /// Freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
@@ -649,7 +515,7 @@ fn fea_not_evaluated_hints(
 /// regression test `constraint_violation_does_not_produce_computation_failed` pins this.
 fn freshness_diagnostics(
     engine: &reify_eval::Engine,
-    compiled: &reify_compiler::CompiledModule,
+    document: &CompiledDocument,
     source: &str,
 ) -> Vec<lsp_types::Diagnostic> {
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
@@ -657,11 +523,11 @@ fn freshness_diagnostics(
     // Using a HashMap would yield entries in unstable order, causing flapping in
     // snapshot tests and non-deterministic output for the user.
     let mut diagnostics = Vec::new();
-    for template in &compiled.templates {
+    for (template_index, template) in document.module().templates.iter().enumerate() {
         for vc in &template.value_cells {
             match engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
                 Freshness::Failed { error } => {
-                    let range = convert::span_to_range(source, vc.span);
+                    let range = document.template_span_range(source, template_index, vc.span);
                     diagnostics.push(lsp_types::Diagnostic {
                         range,
                         severity: Some(lsp_types::DiagnosticSeverity::ERROR),
@@ -674,7 +540,7 @@ fn freshness_diagnostics(
                     });
                 }
                 Freshness::Pending { .. } => {
-                    let range = convert::span_to_range(source, vc.span);
+                    let range = document.template_span_range(source, template_index, vc.span);
                     // O(1) HashMap lookup on NodeCache::pending_cause. When the
                     // cause is present we embed it in the message so the user sees
                     // which upstream cell failed. Falls back to the historic static
@@ -724,169 +590,19 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
     }
 }
 
-/// Exact wording of task 5078's (PRD `compute-fea-hardening.md` C2) FEA
-/// "not evaluated in editor" `Severity::Info` hint, emitted by
-/// [`fea_not_evaluated_hints`] above.
-///
-/// Defined once here rather than re-declared as a local constant in each
-/// regression test, so the production message and every test that asserts
-/// on it share one source of truth: a future wording change updates every
-/// consumer at once instead of requiring each test to be hand-edited to
-/// keep matching. Tests should NOT use this to *identify* the diagnostic
-/// (i.e. as a `filter` predicate) — use [`FEA_NOT_EVALUATED_CODE`] for
-/// that, and reserve this for asserting the human-readable wording once a
-/// diagnostic is already known to be the FEA hint.
-const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor — run `reify test`";
-
-/// Stable `code` for task 5078's FEA "not evaluated in editor" hint (PRD
-/// `compute-fea-hardening.md` C2), set on the `lsp_types::Diagnostic`
-/// emitted by [`fea_not_evaluated_hints`] alongside
-/// [`FEA_NOT_EVALUATED_HINT`].
-///
-/// Unlike the message, which is free-text prose, this is the
-/// wording-independent handle consumers — including this file's own
-/// regression tests — should match on to identify the diagnostic,
-/// mirroring the `"computation-pending"` / `"computation-failed"` codes
-/// the freshness diagnostics carry (emitted by
-/// [`freshness_diagnostics`]). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
-/// silently break identification for a consumer matching on this code.
-const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
-
-/// Static discriminator for task 5078's FEA "not evaluated in editor" hint
-/// (PRD `compute-fea-hardening.md` C2).
-///
-/// Returns `true` when `constraint_expr` — or the `default_expr` of any
-/// value cell it transitively depends on — calls a function whose
-/// `@optimized("target")` annotation names a compute target with no
-/// registered trampoline on `engine`. Under this crate's trampoline-free LSP
-/// posture (see [`compute_diagnostics_with_state`]'s doc comment) such a
-/// target always body-inlines to `Value::Undef`, so this predicate is
-/// exactly the "is this constraint's `Indeterminate` result caused by an
-/// unevaluated FEA/compute solve, as opposed to some other cause (e.g. a
-/// genuinely-unresolved `auto` param)" test.
-///
-/// `unregistered_optimized_fn_names` should map every visible function name
-/// (the union of the compiled module's own functions and the engine's
-/// prelude functions — stdlib solvers such as `solve_elastic_static` are
-/// prelude functions, not user-module functions) to whether that name's
-/// `@optimized("target")` annotation (if any) names a compute target with
-/// no registered trampoline on the engine. Building this map is the
-/// caller's responsibility (see [`fea_not_evaluated_hints`]) so it can
-/// be computed once per document rather than once per constraint.
-///
-/// Matching is by function NAME rather than full overload resolution: in
-/// this engine posture *every* `@optimized` target is unregistered, and the
-/// FEA solver overloads uniformly carry the same target string, so a name
-/// match cannot mis-resolve which target applies among same-named prelude
-/// overloads.
-///
-/// Caller precedence note: the caller builds this map from module-local
-/// functions chained *before* prelude functions and inserts with "first
-/// occurrence wins" — mirroring `find_matching_compiled_function`'s
-/// (`reify-expr/src/lib.rs`) first-match-wins precedent for "which function
-/// does this name resolve to". This means a module-local function that
-/// happens to share a prelude solver's name (e.g. a user helper also named
-/// `solve_elastic_static`) correctly shadows the prelude entry here,
-/// avoiding a false-positive hint attributed to the prelude solver when the
-/// resolved call is actually the user's own (non-FEA) function. Residual
-/// limitation: if a *module* itself declares more than one same-named
-/// overload with differing `@optimized` status, the map keeps whichever
-/// happens to iterate first — this mirrors the same overload-blindness
-/// already accepted for prelude solver overloads above, not a new gap.
-///
-/// **Accepted limitation — indirect FEA dependence through a wrapper
-/// function is not detected.** The traversal below follows the constraint
-/// expression and the transitive closure of value-cell `default_expr`s, but
-/// does not descend into the *body* of a called user function. A constraint
-/// that reaches an FEA solver only indirectly (e.g. `let s =
-/// my_wrapper(...)` where `my_wrapper`'s own body calls
-/// `solve_elastic_static`, but `my_wrapper` itself carries no `@optimized`
-/// annotation) still evaluates to `Value::Undef`/`Indeterminate` under the
-/// trampoline-free posture, but this predicate returns `false` for it — such
-/// a constraint falls back to the exact "silently indistinguishable from no
-/// constraint" state this hint exists to fix. Closing this gap would require
-/// also enqueueing called user-function bodies (guarded by a function-name
-/// `visited` set, alongside the existing value-cell one, for cycle-safety);
-/// deferred as a follow-up rather than widening this task's traversal. Not
-/// exercised by any current fixture — all of them call the solver directly.
-///
-/// Traversal is a work-queue over value-cell ids (seeded from
-/// `constraint_expr.collect_value_refs()`, expanded via each visited cell's
-/// own `default_expr.collect_value_refs()`) guarded by a `visited` set for
-/// cycle-safety, mirroring the leaf-walk shape of `classify_undef_origins`
-/// (`reify-eval/src/engine_eval.rs`) but over static `default_expr`s rather
-/// than runtime snapshot values — under this posture the runtime
-/// `ComputeNode` graph is empty (insertion is gated on
-/// `compute_dispatch(target).is_some()`), so the `@optimized` marker
-/// survives only statically on `CompiledFunction.optimized_target`.
-fn constraint_depends_on_unregistered_optimized_compute(
-    constraint_expr: &reify_ir::CompiledExpr,
-    value_cell_exprs: &HashMap<ValueCellId, &reify_ir::CompiledExpr>,
-    unregistered_optimized_fn_names: &HashMap<&str, bool>,
-) -> bool {
-    // `CompiledExpr::walk` (reify-ir/src/expr.rs) takes a plain
-    // `FnMut(&CompiledExpr)` with no `ControlFlow`/abort signal, so it
-    // cannot be short-circuited: the `if found { return; }` below only
-    // skips this closure's own per-node work once a match is found, not
-    // the remaining traversal, which `walk` still performs in full. This
-    // runs on the LSP keystroke hot path (per constraint, per visited
-    // value-cell expr), but is bounded by a single expression's node
-    // count; adding a real abort would require a new short-circuiting
-    // traversal primitive on `CompiledExpr`, out of this file's scope.
-    fn expr_calls_unregistered_optimized_fn(
-        expr: &reify_ir::CompiledExpr,
-        unregistered_optimized_fn_names: &HashMap<&str, bool>,
-    ) -> bool {
-        let mut found = false;
-        expr.walk(&mut |node| {
-            if found {
-                return;
-            }
-            if let reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } = &node.kind {
-                found = unregistered_optimized_fn_names
-                    .get(function_name.as_str())
-                    .copied()
-                    .unwrap_or(false);
-            }
-        });
-        found
-    }
-
-    if expr_calls_unregistered_optimized_fn(constraint_expr, unregistered_optimized_fn_names) {
-        return true;
-    }
-
-    let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
-    let mut queue: Vec<ValueCellId> = constraint_expr.collect_value_refs();
-    while let Some(cell_id) = queue.pop() {
-        if !visited.insert(cell_id.clone()) {
-            continue;
-        }
-        let Some(default_expr) = value_cell_exprs.get(&cell_id) else {
-            continue;
-        };
-        if expr_calls_unregistered_optimized_fn(default_expr, unregistered_optimized_fn_names) {
-            return true;
-        }
-        for referenced in default_expr.collect_value_refs() {
-            if !visited.contains(&referenced) {
-                queue.push(referenced);
-            }
-        }
-    }
-
-    false
-}
-
 /// Shared `auto:` test fixtures and anti-vacuity guards — see
 /// [`auto_type_param_fixtures`] for why they live outside this module.
 #[cfg(test)]
 pub(crate) mod auto_type_param_fixtures;
 
 #[cfg(test)]
+mod multi_file_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decl_oracle::test_fixtures::test_uri;
+    use super::fea_hint::{FEA_NOT_EVALUATED_CODE, FEA_NOT_EVALUATED_HINT};
+    use crate::decl_oracle::test_fixtures::{FEA_BEARING_SRC, FEA_WITH_AUTO_PARAM_SRC, test_uri};
     use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
@@ -911,18 +627,22 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Compile `parsed` exactly the way the LSP's two production compile
-    /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
+    /// Compile `parsed` exactly the way the LSP's SINGLE-FILE route compiles
+    /// it — `reify_compiler::compile_with_stdlib_checked(parsed,
     /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
-    /// the compile-time `CompileTimeIndeterminateChecker` stub.
+    /// the compile-time `CompileTimeIndeterminateChecker` stub: the route of
+    /// every document that follows no import.
     ///
-    /// Any test below that independently reproduces what
-    /// `compute_diagnostics_with_state` computes internally (e.g. a
-    /// `CompiledModule` for a hand-built engine or a span lookup) MUST route
-    /// through this helper rather than calling `compile_with_stdlib` directly — a
-    /// stub-compiled mirror agrees with production only by coincidence
-    /// today (no fixture below carries an `auto:` clause), and would
-    /// silently drift the moment one does.
+    /// The canonical production compile is `document_compile::compile_document`,
+    /// the call `compute_diagnostics_with_state` itself makes; this helper is
+    /// that function's single-file arm, for a test that wants an owned
+    /// `CompiledModule` or has no source text to pass it. A test that
+    /// independently reproduces what `compute_diagnostics_with_state` computes
+    /// internally (e.g. a `CompiledModule` for a hand-built engine or a span
+    /// lookup) MUST compile through one of the two rather than calling
+    /// `compile_with_stdlib` directly — a stub-compiled mirror agrees with
+    /// production only by coincidence today (no fixture below carries an
+    /// `auto:` clause), and would silently drift the moment one does.
     ///
     /// Do NOT use this helper in the BT8 anti-vacuity guards
     /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
@@ -942,42 +662,6 @@ mod tests {
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-}"#;
-
-    /// Inline FEA-bearing fixture (PRD `compute-fea-hardening.md` task C1,
-    /// INV-FEA-1). Mirrors the shape of
-    /// `crates/reify-cli/tests/fixtures/fea_cantilever_violated.ri` (same
-    /// solve setup: material / point load / fixed support / `solve_elastic_
-    /// static` / `let peak_stress = result.max_von_mises` / FEA-result
-    /// constraints) but omits that fixture's `let body = box(...)` geometry
-    /// realization — the LSP path attaches no geometry kernel and has no
-    /// STEP-file exit-code gate, and `solve_elastic_static` takes scalar
-    /// dims (not a `Solid`), so `box` is unnecessary here.
-    ///
-    /// Deliberately FEA-only: no geometry/dimensional constraint exists that
-    /// could be genuinely `Violated`, so a "zero Violated" assertion over
-    /// this fixture holds by construction, not by coincidence.
-    ///
-    /// Reused by `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
-    /// below, and intended for reuse by the follow-up hint-diagnostic task
-    /// (C2) — keep this fixture FEA-only if extending it.
-    const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
-    param length : Length = 1000mm
-    param width  : Length = 100mm
-    param height : Length = 100mm
-
-    let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
-
-    let result = solve_elastic_static(
-        material, length, width, height, [tip_load], [mount], ElasticOptions()
-    )
-
-    let peak_stress = result.max_von_mises
-
-    constraint peak_stress < 1MPa
-    constraint peak_stress < 100MPa
 }"#;
 
     #[test]
@@ -1952,8 +1636,8 @@ structure S {
     /// let-binding ERROR and a CheckResult, report the same set of those
     /// ERRORs, and return no log line.
     ///
-    /// Replaces two pins that wrote a matching `last_content_hash` into a
-    /// fresh `EvalState` to force the engine-init guard's precondition (hash
+    /// Replaces two pins that wrote a matching eval-cache key into a
+    /// fresh `EvalState` to force the engine-init guard's precondition (key
     /// matches, engine uninitialized), then asserted that the cold-start
     /// branch ran and that the guard's warning came back in `log_messages`.
     /// Recorded limitation: that precondition is not constructible through
@@ -2446,22 +2130,22 @@ structure S {
     fn build_engine_with_failed_cell(
         source: &str,
         cell_id: ValueCellId,
-    ) -> (reify_eval::Engine, reify_compiler::CompiledModule) {
+    ) -> (reify_eval::Engine, CompiledDocument) {
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let document = CompiledDocument::single_file(compile_like_production(&parsed));
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises the cache (all cells → Final).
-        let _ = engine.eval(&compiled);
+        let _ = engine.eval(document.module());
 
         // Inject forced panic and run a second full eval.
         engine.set_panic_on_eval(cell_id);
-        let _ = engine.eval(&compiled);
+        let _ = engine.eval(document.module());
         // After pass 2: `cell_id` is Failed; its dependents are Pending.
 
-        (engine, compiled)
+        (engine, document)
     }
 
     /// (a) [`freshness_diagnostics`] must emit an ERROR diagnostic with
@@ -2473,9 +2157,9 @@ structure S {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
         let volume_id = ValueCellId::new("Bracket", "volume");
         let source = reify_test_support::bracket_source();
-        let (engine, compiled) = build_engine_with_failed_cell(source, volume_id.clone());
+        let (engine, document) = build_engine_with_failed_cell(source, volume_id.clone());
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let failed_diags: Vec<_> = diagnostics
             .iter()
@@ -2498,7 +2182,8 @@ structure S {
         // read off the compiled module rather than hardcoded (a line number
         // would drift if bracket_source changes, and stdlib templates may add
         // extra let cells in the future).
-        let volume_span = compiled
+        let volume_span = document
+            .module()
             .templates
             .iter()
             .flat_map(|t| t.value_cells.iter())
@@ -2544,9 +2229,9 @@ structure S {
         // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
-        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
+        let (engine, document) = build_engine_with_failed_cell(source, base_id);
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let pending_diags: Vec<_> = diagnostics
             .iter()
@@ -2595,9 +2280,9 @@ structure S {
         // Same let-chain source and setup as the sibling pending-diagnostic test.
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
-        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
+        let (engine, document) = build_engine_with_failed_cell(source, base_id);
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let pending_diags: Vec<_> = diagnostics
             .iter()
@@ -3267,32 +2952,8 @@ structure S {
     fn fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint() {
         let uri = test_uri();
 
-        // FEA portion copied verbatim from `FEA_BEARING_SRC`'s known-good
-        // body (material / tip_load / mount / solve_elastic_static /
-        // peak_stress) so it compiles, collapsed to ONE compound constraint
-        // that references `peak_stress` twice, plus an unrelated
-        // genuinely-unresolved `auto` param with its own constraint.
-        const SRC: &str = r#"structure FeaBearingMixed {
-    param length : Length = 1000mm
-    param width  : Length = 100mm
-    param height : Length = 100mm
-    param gap : Length = auto
-
-    let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
-
-    let result = solve_elastic_static(
-        material, length, width, height, [tip_load], [mount], ElasticOptions()
-    )
-
-    let peak_stress = result.max_von_mises
-
-    constraint peak_stress < 1MPa && peak_stress < 100MPa
-    constraint gap > 1mm
-}"#;
-
-        let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_WITH_AUTO_PARAM_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         // Guard fixture validity like C1's lock: a fixture typo must fail
@@ -3304,10 +2965,12 @@ structure S {
             .collect();
         assert!(
             compile_errors.is_empty(),
-            "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
+            "fixture sanity: FEA_WITH_AUTO_PARAM_SRC must compile without errors; \
+             got: {compile_errors:#?}"
         );
 
-        let result = compute_diagnostics_with_state(&mut EvalState::new(), SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_WITH_AUTO_PARAM_SRC, &uri);
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3329,7 +2992,7 @@ structure S {
         let check_result = result
             .check_result
             .as_ref()
-            .expect("the pipeline evaluated SRC, so it must carry its CheckResult");
+            .expect("the pipeline evaluated the fixture, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -3356,16 +3019,18 @@ structure S {
 
         // Belt-and-suspenders: directly confirm the surviving hint is not
         // anchored to the `gap > 1mm` constraint's span (identify that
-        // constraint's span by slicing its source text out of SRC, rather
-        // than assuming declaration order).
+        // constraint's span by slicing its source text out of the fixture,
+        // rather than assuming declaration order).
         let gap_constraint_span = compiled
             .templates
             .iter()
             .flat_map(|t| t.constraints.iter())
-            .find(|c| SRC[c.span.start as usize..c.span.end as usize].contains("gap"))
+            .find(|c| {
+                FEA_WITH_AUTO_PARAM_SRC[c.span.start as usize..c.span.end as usize].contains("gap")
+            })
             .map(|c| c.span)
             .expect("fixture sanity: expected a constraint referencing `gap`");
-        let gap_range = convert::span_to_range(SRC, gap_constraint_span);
+        let gap_range = convert::span_to_range(FEA_WITH_AUTO_PARAM_SRC, gap_constraint_span);
         assert!(
             !hints.iter().any(|h| h.range == gap_range),
             "no FEA hint should be anchored to the auto-param `gap` \
@@ -3432,109 +3097,6 @@ structure S {
         );
     }
 
-    /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
-    /// C2): pins the *other* half of
-    /// `constraint_depends_on_unregistered_optimized_compute`'s
-    /// discriminator — `engine.compute_dispatch(t).is_none()` — that every
-    /// other FEA-hint test leaves unexercised. Every other test runs the
-    /// pipeline on `EvalState::new()`, which never registers a compute
-    /// trampoline, so `compute_dispatch` returns `None` for every target in
-    /// every other test; the "registered target ⇒ not FEA-dependent ⇒ no
-    /// hint" branch of the discriminator never runs there.
-    ///
-    /// Registers a trampoline for `"solver::elastic_static"` that itself
-    /// completes with `Value::Undef` — deliberately mirroring the *value*
-    /// the unregistered body-inline fallback would have produced, so the
-    /// constraint remains genuinely `Satisfaction::Indeterminate` (the fixture
-    /// sanity check below confirms this) and the emission loop actually
-    /// reaches the discriminator instead of short-circuiting earlier on
-    /// `entry.satisfaction != Indeterminate`. Only the *registration status*
-    /// differs from the positive control taken on the same engine before
-    /// registering — isolating the `compute_dispatch(..).is_none()` check as
-    /// the thing this test can catch a regression in.
-    ///
-    /// Drives [`fea_not_evaluated_hints`] on a hand-built engine: no
-    /// registered trampoline is reachable through the public pipeline.
-    #[test]
-    fn fea_hint_does_not_fire_when_compute_target_is_registered() {
-        fn undef_result_fn(
-            _value_inputs: &[reify_ir::Value],
-            _realization_inputs: &[reify_eval::RealizationReadHandle],
-            _options: &reify_ir::Value,
-            _prior_warm_state: Option<&reify_ir::OpaqueState>,
-            _cancellation: &reify_eval::CancellationHandle,
-        ) -> reify_eval::ComputeOutcome {
-            reify_eval::ComputeOutcome::Completed {
-                result: reify_ir::Value::Undef,
-                new_warm_state: None,
-                cost_per_byte: None,
-                diagnostics: vec![],
-                structured_detail: vec![],
-            }
-        }
-
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-        let mut engine = reify_eval::Engine::new(
-            reify_eval::SolverPosture::SolverFree,
-            Box::new(SimpleConstraintChecker),
-            None,
-        );
-        let _ = engine.eval(&compiled);
-
-        // Positive control: the same engine and module, target still
-        // unregistered, DO produce hints — so the empty result below is the
-        // registration's doing, not a fixture that never hints.
-        let unregistered_check_result = engine
-            .check_snapshot(&compiled)
-            .expect("the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval");
-        assert!(
-            !fea_not_evaluated_hints(
-                &engine,
-                &compiled,
-                &unregistered_check_result,
-                FEA_BEARING_SRC
-            )
-            .is_empty(),
-            "positive control: with solver::elastic_static unregistered, the \
-             FEA-bearing fixture must produce at least one hint"
-        );
-
-        engine.register_compute_fn(
-            "solver::elastic_static",
-            undef_result_fn as reify_eval::ComputeFn,
-        );
-        let _ = engine.eval_cached(&compiled, VersionId(2));
-
-        let check_result = engine.check_snapshot(&compiled).expect(
-            "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval_cached",
-        );
-        let indeterminate_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
-            .count();
-        assert!(
-            indeterminate_count >= 1,
-            "fixture/test sanity: the registered trampoline returns Undef \
-             (mirroring the unregistered body-inline fallback's value) so \
-             the constraint(s) must still be Indeterminate here — otherwise \
-             this test would trivially pass via the `entry.satisfaction != \
-             Indeterminate` early-exit instead of exercising the \
-             discriminator's `compute_dispatch(..).is_none()` check; got \
-             constraint_results: {:#?}",
-            check_result.constraint_results
-        );
-
-        let hints = fea_not_evaluated_hints(&engine, &compiled, &check_result, FEA_BEARING_SRC);
-        assert!(
-            hints.is_empty(),
-            "no FEA \"not evaluated in editor\" hint should fire once \
-             solver::elastic_static has a registered compute trampoline \
-             (compute_dispatch(..).is_some()) — got: {hints:#?}"
-        );
-    }
-
     /// Amendment (reviewer finding, task 5078): pins that TWO separate
     /// FEA-dependent `Indeterminate` constraints each get their OWN hint,
     /// anchored to their OWN distinct constraint span — not collapsed into
@@ -3546,7 +3108,7 @@ structure S {
     /// This is the scenario most sensitive to a regression in the upstream
     /// "at most one `constraint_results` entry per constraint id" invariant
     /// that the emission loop's dedup-elision rationale (in
-    /// [`fea_not_evaluated_hints`], above) relies on instead of an
+    /// `fea_hint::fea_not_evaluated_hints`) relies on instead of an
     /// explicit `(id, label)` guard: a regression there could plausibly
     /// collapse two constraints' entries into one, or misattribute one
     /// hint's span — `fea_indeterminate_constraint_emits_info_hint`'s

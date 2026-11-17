@@ -1,19 +1,11 @@
 //! Tests for `ParamDefaultTypeMismatch` — param declared-type vs initializer-dimension
 //! mismatch detected at the declaration site.
 //!
-//! Step 1: RED (top-level + guard). Tests compile against current main without
-//! referencing `DiagnosticCode` (that variant does not exist yet).
-//!
-//! Step 3 (appended later): RED (port-member). References `DiagnosticCode::ParamDefaultTypeMismatch`
-//! which is introduced in step 2.
-//!
-//! Amendment pass: additional coverage tests for:
-//!   - Int-literal guard (`param x : Length = 1` must NOT error)
-//!   - Real-literal guard (`param x : Length = 0.5` must NOT error — extended in amendment)
-//!   - Cross-dimension scalar mismatch (`param x : Length = 5kg` MUST error)
-//!   - Reciprocal-dimension non-literal expression (literal-only guard → active error)
+//! A bare or negated numeric literal at a dimensioned Scalar param is rejected
+//! like any other dimensionless initializer (D5 reinstated; see
+//! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source, errors_only};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
@@ -157,69 +149,38 @@ structure S {
 
 // ─── Amendment-pass coverage tests ───────────────────────────────────────────
 
-/// The Int-literal and Real-literal idioms for dimensioned Scalar params must
-/// NOT produce `ParamDefaultTypeMismatch`:
-///
-///   `param x : Length = 0`   — Int literal, accepted (whole-number idiom).
-///   `param x : Length = 1`   — Int literal, accepted (whole-number idiom).
-///   `param x : Length = 0.5` — Real literal, accepted (fractional idiom,
-///                               extended in the amendment-pass guard fix).
-///   `param x : Length = 70.0` — Real literal, accepted.
-///
-/// These cover the most novel branch in `check_param_default_type` — the
-/// Int-for-Scalar early-return — and its new Real-for-Scalar extension.
+/// Inverts a deliberate pin of the opposite rule: a bare Int or Real literal at
+/// a dimensioned Scalar param is rejected (D5 reinstated). The literal tolerance
+/// was introduced by #4318; see docs/prds/v0_6/dimensioned-construction-strictness.md §0.3.
 #[test]
-fn param_int_and_real_literal_on_dimensioned_scalar_do_not_error() {
-    let source = r#"
-structure S {
-    param zero_int   : Length = 0
-    param one_int    : Length = 1
-    param half_real  : Length = 0.5
-    param large_real : Length = 70.0
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let false_pos = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        false_pos.is_none(),
-        "unexpected ParamDefaultTypeMismatch for Int/Real literal on Length param; \
-         Int and dimensionless-Real literals must be accepted for any dimensioned Scalar; \
-         got: {:?}",
-        false_pos
-    );
+fn param_int_and_real_literal_on_dimensioned_scalar_errors() {
+    for (source, param) in [
+        ("structure S { param zero_int : Length = 0 }", "zero_int"),
+        ("structure S { param one_int : Length = 1 }", "one_int"),
+        (
+            "structure S { param half_real : Length = 0.5 }",
+            "half_real",
+        ),
+        (
+            "structure S { param large_real : Length = 70.0 }",
+            "large_real",
+        ),
+    ] {
+        assert_single_param_default_type_mismatch(source, param);
+    }
 }
 
-/// Negative numeric literals (`-5.0`, `-1`) must NOT produce `ParamDefaultTypeMismatch`
-/// for dimensioned Scalar params.
-///
-/// The compiler lowers `-5.0` to `UnOp { Neg, Literal(5.0) }` rather than a bare
-/// `Literal`, so the literal-only guard must also cover negated literals.  Without
-/// this, `param z : Length = -5.0` would false-positive as a type mismatch.
+/// Inverts a deliberate pin of the opposite rule: a negated literal at a
+/// dimensioned Scalar param is rejected like a bare one (D5 reinstated; the
+/// tolerance was introduced by #4318). See docs/prds/v0_6/dimensioned-construction-strictness.md §0.3.
 #[test]
-fn param_negative_literal_on_dimensioned_scalar_does_not_error() {
-    let source = r#"
-structure S {
-    param neg_real : Length = -5.0
-    param neg_int  : Length = -1
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let false_pos = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        false_pos.is_none(),
-        "unexpected ParamDefaultTypeMismatch for negated literal on Length param; \
-         negative numeric literals (-5.0, -1) must be accepted for any dimensioned Scalar; \
-         got: {:?}",
-        false_pos
-    );
+fn param_negative_literal_on_dimensioned_scalar_errors() {
+    for (source, param) in [
+        ("structure S { param neg_real : Length = -5.0 }", "neg_real"),
+        ("structure S { param neg_int : Length = -1 }", "neg_int"),
+    ] {
+        assert_single_param_default_type_mismatch(source, param);
+    }
 }
 
 /// A param whose declared type is a dimensioned Scalar but whose initializer
@@ -340,32 +301,14 @@ structure S {
     );
 }
 
-/// A non-literal initializer (`1.0 / 1m` is a BinOp Div, not a
-/// `CompiledExprKind::Literal`) for a dimensioned Scalar param (`Length`) MUST
-/// produce `ParamDefaultTypeMismatch`.
-///
-/// **Why this works (the literal-guard mechanism):** the Scalar guard in
-/// `check_param_default_type` is restricted to `CompiledExprKind::Literal` nodes.
-/// `1.0 / 1m` is a binary division expression — not a literal — so the guard does
-/// NOT fire regardless of the expression's inferred result_type.  The check falls
-/// through to `type_compatible(Scalar[m], <inferred>)`, which returns `false`
-/// whether `1.0/1m` is inferred as dimensionless (`Scalar[]`) or as the more
-/// precise `Scalar[1/m]` — the mismatch is flagged either way.
-///
-/// Note: a future inference improvement that tracks `1.0/1m` as `Scalar[1/m]`
-/// rather than dimensionless would only refine the printed dimension string in the
-/// error message; it would NOT affect whether an error fires.  The inference gap
-/// is therefore genuinely out of scope and is NOT a prerequisite for this test.
-///
-/// This test is the active regression proof for the literal-only guard (S1): it
-/// would regress to a false-negative if the guard were ever relaxed back to keying
-/// on result_type alone (which would silently accept any dimensionless expression).
+/// A reciprocal-dimension initializer (`1.0 / 1m`, `Scalar[1/m]`) at a `Length`
+/// param MUST produce `ParamDefaultTypeMismatch`: `type_compatible(Scalar[m],
+/// Scalar[1/m])` is false.
 #[test]
 fn param_reciprocal_dim_mismatch_errors() {
     let source = r#"
 structure S {
-    // Length (Scalar[m]) ≠ reciprocal-dimension expression (non-literal BinOp).
-    // The literal-only guard does NOT fire; falls through to type_compatible → error.
+    // Length (Scalar[m]) ≠ reciprocal-dimension expression → error.
     param bad_dim : Length = 1.0 / 1m
 }
 "#;
@@ -378,29 +321,15 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param bad_dim : Length = 1.0/1m' \
-         (non-literal initializer bypasses the literal guard and falls through to \
-         type_compatible(Scalar[m], _) which is false)"
+         (type_compatible(Scalar[m], _) is false)"
     );
 }
 
-// ─── S1 amendment: canonical literal-only guard proof ────────────────────────
+// ─── Dimensionless compound initializer ──────────────────────────────────────
 
-/// A non-literal compound expression that *happens to infer a dimensionless
-/// result* MUST still produce `ParamDefaultTypeMismatch` when assigned to a
-/// dimensioned Scalar param.
-///
-/// `ratio * 2.0` is a `BinOp(Mul)` expression — NOT a `CompiledExprKind::Literal`
-/// — that infers `Scalar[dimensionless]` (product of a dimensionless Real and a
-/// scalar 2.0).  Without the literal-only guard the Scalar early-return would fire
-/// on the dimensionless `result_type` and silently accept the mismatch.  With the
-/// literal-only guard in place `BinOp(Mul)` is NOT a literal, the guard does NOT
-/// fire, and the check falls through to
-/// `type_compatible(Scalar[m], Scalar[dimensionless])` which returns false →
-/// `ParamDefaultTypeMismatch` is correctly emitted.
-///
-/// This is the canonical S1 proof: it would regress to a false-negative if the
-/// guard were ever relaxed back to keying on `result_type` alone (which would
-/// silently accept any dimensionless expression, literal or compound).
+/// A compound initializer that infers dimensionless (`ratio * 2.0`) at a
+/// `Length` param MUST produce `ParamDefaultTypeMismatch`:
+/// `type_compatible(Scalar[m], Scalar[dimensionless])` is false.
 #[test]
 fn param_nonliteral_dimensionless_compound_on_dimensioned_scalar_errors() {
     let source = r#"
@@ -418,9 +347,7 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param x : Length = ratio * 2.0' \
-         (ratio*2.0 infers dimensionless Scalar but is a BinOp, not a literal; \
-         the literal-only guard does NOT fire; falls through to \
-         type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
+         (type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
         errors
             .iter()
             .map(|d| (&d.message, &d.code))
@@ -431,9 +358,7 @@ structure S {
 // ─── S2 amendment: Int-arm + anti-cascade coverage ───────────────────────────
 
 /// A param declared `Int` with a dimensioned initializer (`5kg`) MUST produce
-/// `ParamDefaultTypeMismatch`.  The `Int` arm of the declared-type guard is not
-/// affected by the Scalar literal early-return, so it falls directly through to
-/// `type_compatible(Int, Scalar[kg])` which returns false.
+/// `ParamDefaultTypeMismatch`: `type_compatible(Int, Scalar[kg])` is false.
 #[test]
 fn param_int_declared_with_dimensioned_initializer_errors() {
     let source = r#"
@@ -486,20 +411,9 @@ structure S {
     );
 }
 
-/// A `Real`-declared param with a non-literal reciprocal-dimension initializer
-/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch`.
-///
-/// **Why this works:** `1.0/1m` correctly infers as `Scalar[1/m]` (reciprocal
-/// dimension) — no inference gap exists here.  The literal-only guard does NOT
-/// fire (BinOp Div is not a literal), so the check falls through to
-/// `type_compatible(Real/dimensionless, Scalar[1/m])` which returns false
-/// (distinct Scalar types: dimensionless ≠ 1/m).
-///
-/// Note: this is the *declared=Real* side of the S3 asymmetry, complementary
-/// to `param_reciprocal_dim_mismatch_errors` which covers the *declared=Length*
-/// side.  Both cases fire because `type_compatible` has no Scalar→Scalar
-/// widening rule: only the `Int→dimensionless` coercion and the identity
-/// short-circuit exist.
+/// A `Real`-declared param with a reciprocal-dimension initializer (`1.0/1m`)
+/// MUST produce `ParamDefaultTypeMismatch`: `type_compatible(Real, Scalar[1/m])`
+/// is false. The declared=`Length` twin is `param_reciprocal_dim_mismatch_errors`.
 #[test]
 fn param_real_declared_with_reciprocal_dim_initializer_errors() {
     let source = r#"
@@ -569,6 +483,183 @@ structure S {
         "expected NO ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
          (anti-cascade: unknown-name -> Type::Error -> guard fires -> mismatch suppressed); \
          got unexpected secondary mismatch: {:?}",
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── D4-4: one authoring mistake, one diagnostic ─────────────────────────────
+
+/// Assert `source` yields exactly ONE error: a `ParamDefaultTypeMismatch` that
+/// names `param` and is anchored at its `param <name>` declaration. Returns its
+/// message for callers that pin the rendered types.
+///
+/// Pins code identity and the quoted name only, never other message prose
+/// (PRD D4-8).
+fn assert_single_param_default_type_mismatch(source: &str, param: &str) -> String {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error for param '{param}', got: {shapes:?}"
+    );
+    let diag = errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::ParamDefaultTypeMismatch),
+        "param '{param}': got: {shapes:?}"
+    );
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "param '{param}': got: {shapes:?}"
+    );
+    assert!(
+        diag.message.contains(&format!("'{param}'")),
+        "message must quote '{param}', got: {:?}",
+        diag.message
+    );
+    let span = diag
+        .labels
+        .first()
+        .unwrap_or_else(|| panic!("param '{param}': diagnostic has no label: {diag:?}"))
+        .span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains(&format!("param {param}")),
+        "label must cover the 'param {param}' declaration, covers: {sliced:?}"
+    );
+    diag.message.clone()
+}
+
+/// A default the declaration-site check rejects is reported once, by that check:
+/// the conformance pass does not re-judge it (PRD D4-4).
+#[test]
+fn param_default_mismatch_is_reported_once() {
+    assert_single_param_default_type_mismatch("structure S { param i2 : Int = \"no\" }", "i2");
+    assert_single_param_default_type_mismatch("structure S { param r2 : Real = \"nope\" }", "r2");
+    assert_single_param_default_type_mismatch("structure S { param m : Length = 5kg }", "m");
+    assert_single_param_default_type_mismatch(
+        "trait T { param d : Length }\n\
+         structure S { port p : out T { param d : Length = 5kg } }",
+        "d",
+    );
+}
+
+/// Assert `source` yields exactly ONE error: a conformance `ArgTypeMismatch`.
+fn assert_single_conformance_arg_type_mismatch(source: &str) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {shapes:?}"
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "got: {shapes:?}"
+    );
+    assert_eq!(errors[0].severity, Severity::Error, "got: {shapes:?}");
+}
+
+/// A trait-injected default never reaches the declaration-site check, so the
+/// conformance pass still judges it: the D4-4 de-dup must not silence it.
+#[test]
+fn trait_injected_param_default_mismatch_is_still_reported_by_conformance() {
+    assert_single_conformance_arg_type_mismatch(
+        "trait T { param d : Length = 5kg }\nstructure S : T { }",
+    );
+}
+
+/// A bare literal at a trait-injected dimensioned default is likewise judged by
+/// the conformance pass alone.
+#[test]
+fn trait_injected_bare_literal_param_default_is_still_reported_by_conformance() {
+    assert_single_conformance_arg_type_mismatch(
+        "trait T { param d : Length = 1.0 }\nstructure S : T { }",
+    );
+}
+
+/// The D4-4 skip is per cell. A declaration-site rejection in a template does
+/// not silence the conformance pass for that template's other defaults, whether
+/// they are declared locally or injected by a trait.
+#[test]
+fn declaration_site_rejection_leaves_other_defaults_to_conformance() {
+    let source = r#"
+trait T { param d : Length = 1.0 }
+structure S : T {
+    param m : Length = 5kg
+    param s : String = 42
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+
+    assert_eq!(errors.len(), 3, "got: {shapes:?}");
+    for (code, param) in [
+        (DiagnosticCode::ParamDefaultTypeMismatch, "m"),
+        (DiagnosticCode::ArgTypeMismatch, "d"),
+        (DiagnosticCode::ArgTypeMismatch, "s"),
+    ] {
+        let matching = errors
+            .iter()
+            .filter(|d| d.code == Some(code) && d.message.contains(&format!("'{param}'")))
+            .count();
+        assert_eq!(
+            matching, 1,
+            "expected one {code:?} naming '{param}', got: {shapes:?}"
+        );
+    }
+}
+
+/// A pure numeric-literal-arithmetic default is neither a single literal nor a
+/// dimensioned expression; at a dimensioned param it is rejected once, naming
+/// the declared and found types.
+#[test]
+fn param_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
+    for (source, param, found) in [
+        ("structure S { param a : Length = 2 + 3 }", "a", "`Int`"),
+        (
+            "structure S { param b : Length = 2.0 * 3.0 }",
+            "b",
+            "`Real`",
+        ),
+    ] {
+        let message = assert_single_param_default_type_mismatch(source, param);
+        assert!(
+            message.contains("`Scalar[m]`") && message.contains(found),
+            "param '{param}': message must name declared `Scalar[m]` and found {found}, \
+             got: {message:?}"
+        );
+    }
+}
+
+/// B8 no-over-rejection floor: a unit literal at a dimensioned param and a
+/// dimensionless literal at `Real` / `Int` are clean.
+#[test]
+fn dimensioned_unit_literal_and_dimensionless_literal_defaults_are_clean() {
+    let source = r#"
+structure S {
+    param t : Length = 5mm
+    param r : Real = 1.0
+    param n : Real = 8
+    param i : Int = 3
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors, got: {:?}",
         errors
             .iter()
             .map(|d| (&d.message, &d.code))

@@ -2047,6 +2047,9 @@ pub structure GantryFea {
     /// Equivalent-EI square box: h⁴ = 12·I (same E ⇒ same bending k).
     let h_eq  = sqrt(sqrt(12 * ixx))
     let a_eq  = h_eq * h_eq
+    /// The equivalent box itself — the geometry the supports' face
+    /// selectors address.
+    let beam = box(span, h_eq, h_eq)
     let m_tube : Mass = pi / 4 * (tube_od * tube_od - tube_id * tube_id) * span * rho_cfrp
     /// Density retuned so the equivalent box carries the tube's real mass
     /// (statics don't care; the modal solves do).
@@ -2058,8 +2061,8 @@ pub structure GantryFea {
 
     // Static: half-span cantilever, lateral end shear.
     let half_span = span / 2
-    let mount = FixedSupport(target: "root")
-    let tip   = PointLoad(point: "tip", force: test_load)
+    let mount = FixedSupport(target: face(beam, "root"))
+    let tip   = PointLoad(point: vertex(beam, "tip"), force: test_load)
     // ShellForce.Off: the equivalent-EI section is SQUARE (thickness/extent
     // 1.00), so the shell classifier's fallback warning fires on a cold
     // compute cache; forcing the tet path is what the hint asks for and is
@@ -2079,9 +2082,9 @@ pub structure GantryFea {
 
     // Modal: bare-tube pair bounds + solver validation. SS from FEA (pinned
     // both ends); cantilever validates the solver against Euler-Bernoulli.
-    let fix_a = FixedSupport(target: "x_min")
-    let pin_a = PinnedSupport(target: "x_min")
-    let pin_b = PinnedSupport(target: "x_max")
+    let fix_a = FixedSupport(target: face(beam, "x_min"))
+    let pin_a = PinnedSupport(target: face(beam, "x_min"))
+    let pin_b = PinnedSupport(target: face(beam, "x_max"))
     let opts_cant = ModalOptions(
         n_modes: 2, boundary_conditions: [fix_a], damping: NoDamping(),
         shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
@@ -2461,8 +2464,8 @@ pub structure AFrame {
     // 2026-08-26): [Fixed, Pinned] returns pinned-pinned. PP is the honest
     // FEA bound for a member-framed field; the clamped-pinned estimate is
     // the analytic ×(15.418/9.870) on it.
-    let pin_a = PinnedSupport(target: "x_min")
-    let pin_b = PinnedSupport(target: "x_max")
+    let pin_a = PinnedSupport(target: face(body, "x_min"))
+    let pin_b = PinnedSupport(target: face(body, "x_max"))
     let opts_field = ModalOptions(
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
         shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
@@ -2477,10 +2480,10 @@ pub structure AFrame {
     // overstates the shear path (see header) — carry the analytic-EI value
     // and a wide band, and use the SOFTER of the two in the chain.
     let stub_l = rail_z_m - field_top
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
     let r_pil = solve_elastic_static(
         mat_pil, stub_l, pil_wx, pil_wy,
-        [PointLoad(point: "tip", force: test_load)], [mount],
+        [PointLoad(point: vertex(body, "tip"), force: test_load)], [mount],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_pil = max(r_pil.displacement)
     let k_pil_fea : Stiffness = test_load * 1N / defl_pil
@@ -2505,9 +2508,9 @@ pub structure AFrame {
     // ── GUI FEA case view: pillar under the rail-reaction cases ─────────────
     let stub_l2 = stub_l * 1.0
     let case_peak = LoadCase(name: "rail_x_peak",
-        loads: [PointLoad(point: "tip", force: rail_load_peak)], supports: [mount])
+        loads: [PointLoad(point: vertex(body, "tip"), force: rail_load_peak)], supports: [mount])
     let case_stretch = LoadCase(name: "rail_x_stretch",
-        loads: [PointLoad(point: "tip", force: rail_load_stretch)], supports: [mount])
+        loads: [PointLoad(point: vertex(body, "tip"), force: rail_load_stretch)], supports: [mount])
     let mc = solve_load_cases(
         mat_pil, stub_l2, pil_wx, pil_wy, [case_peak, case_stretch],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))

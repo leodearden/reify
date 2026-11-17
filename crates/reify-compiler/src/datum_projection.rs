@@ -367,7 +367,7 @@ mod tests {
     /// panics, so a new codomain must extend this helper.
     fn has_codomain_kind(v: &Value, codomain: &Type) -> bool {
         match codomain {
-            Type::Direction => matches!(v, Value::Direction { .. }),
+            Type::Direction => matches!(v, Value::Direction(_)),
             Type::Plane => matches!(
                 v,
                 Value::Plane { normal, .. } if matches!(&**normal, Value::Vector(c) if c.len() == 3)
@@ -416,11 +416,7 @@ mod tests {
                 Type::Plane,
             ),
             D::Direction => literal(
-                Value::Direction {
-                    x: 1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
+                Value::Direction(reify_ir::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap()),
                 Type::Direction,
             ),
             // 120° about (1,1,1): frame x/y/z = world y/z/x.

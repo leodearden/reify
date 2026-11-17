@@ -69,11 +69,15 @@ Verdicts:
                     {0, 1}.  Emitted verbatim in both text and --json output;
                     always triggers exit 70.
 
-Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise one
-executable target/release/reify or target/debug/reify is used; with both built,
-target/release/reify is used only when target/.reify-bin-sha (written after a
-release build) names the checkout's HEAD, and otherwise every probe set needing
-reify is refused with exit 64 until REIFY_BIN picks one — an mtime never does.
+Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise an
+auto-discovered executable target/release/reify or target/debug/reify, lone or
+not, is used only when scripts/reify-bin-freshness.sh, the one home of the
+SHA-identity rule, vouches for it: target/.reify-bin-sha names the checkout's
+HEAD (outside a git checkout it fails open).  An unvouched binary and nothing
+built are both REFUSED, not warned about: every probe set needing reify exits
+64 naming REIFY_BIN, because an agent reading --json never sees a stderr
+warning.  A `reify` on PATH is never used: its source commit is unknown.  An
+mtime never decides.
 TREE_SITTER_BIN, when set, is the tree-sitter CLI; otherwise "tree-sitter" on
 PATH.  ProbeContext.from_environment() is the one place all of this is read.
 
@@ -96,7 +100,6 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
-import datetime
 import errno
 import hashlib
 import json
@@ -109,7 +112,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Protocol, Tuple
 
 
@@ -238,12 +241,33 @@ def _find_repo_root() -> str:
     return candidate  # best-effort fallback
 
 
-_RELEASE_REIFY = os.path.join("target", "release", "reify")
-_DEBUG_REIFY = os.path.join("target", "debug", "reify")
-# Written by the verify pipeline after `cargo build --release -p reify-cli`, so
-# it vouches for the RELEASE binary, and only while it names HEAD.  Same reading
-# as scripts/reify-bin-freshness.sh: stripped, compared with HEAD.
-_REIFY_BIN_SIDECAR = os.path.join("target", ".reify-bin-sha")
+# The one home of the binary-trust rule (R14 M6).  Resolved next to this file,
+# not under repo_root: a fixture repo_root has no scripts/.
+_TRUST_HOME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "reify-bin-freshness.sh")
+
+
+class _TrustVerdict(IntEnum):
+    """The exit codes of `reify-bin-freshness.sh resolve`."""
+    TRUSTED = 0
+    UNVOUCHED = 1
+    NOT_BUILT = 2
+
+
+_BASH_STARTUP_ENV = frozenset({"BASH_ENV", "SHELLOPTS", "BASHOPTS"})
+_BASH_EXPORTED_FUNCTION_PREFIX = "BASH_FUNC_"
+
+
+def _trust_home_environ(environ: Mapping[str, str]) -> Dict[str, str]:
+    """`environ` minus the caller state bash takes in before a script's first line.
+
+    That is a BASH_ENV it sources, the options SHELLOPTS and BASHOPTS turn on,
+    and BASH_FUNC_<name>%% functions that shadow commands; none of it may
+    decide the trust answer.
+    """
+    return {name: value for name, value in environ.items()
+            if name not in _BASH_STARTUP_ENV
+            and not name.startswith(_BASH_EXPORTED_FUNCTION_PREFIX)}
 
 
 def _resolve_reify_bin(
@@ -251,88 +275,45 @@ def _resolve_reify_bin(
 ) -> Tuple[Optional[str], Optional[str]]:
     """Return (reify binary, None), or (None, refusal) when no binary can be trusted.
 
-    REIFY_BIN (non-empty) is taken verbatim.  Otherwise the executable profile
-    binaries under repo_root decide: none → "reify" on PATH; one → it; both →
-    target/release/reify only when the sidecar names HEAD, else a refusal.  An
-    mtime is never the tie-break: it says nothing about which build matches this
-    checkout (#5133, R14 M6).
+    REIFY_BIN (non-empty) is taken verbatim: whether it exists is a launch
+    error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
+    decides, and only a vouched-for profile binary is used: a built but
+    unvouched binary is refused, and so is nothing built, because a reify on
+    PATH carries no provenance.  A home that cannot be consulted refuses too:
+    an unprovable trust answer is never "trusted", and neither is a TRUSTED
+    answer that is not one absolute-path line.
+    The caller's bash startup state is withheld from the home (_trust_home_environ).
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
         return env_bin, None
 
-    release = os.path.join(repo_root, _RELEASE_REIFY)
-    debug = os.path.join(repo_root, _DEBUG_REIFY)
-    present = [p for p in (release, debug) if os.path.isfile(p) and os.access(p, os.X_OK)]
-    if not present:
-        return "reify", None  # expect it on PATH
-    if len(present) == 1:
-        return present[0], None
-
-    why_unvouched = _why_sidecar_does_not_vouch(repo_root, environ)
-    if why_unvouched is None:
-        return release, None
-    return None, _two_binaries_refusal(release, debug, why_unvouched)
-
-
-def _why_sidecar_does_not_vouch(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
-    """None when the sidecar names repo_root's HEAD; otherwise why it does not."""
-    sidecar = os.path.join(repo_root, _REIFY_BIN_SIDECAR)
-    try:
-        with open(sidecar) as fh:
-            recorded = fh.read().strip()
-    except OSError:
-        return f"{sidecar} is absent"
-    head = _git_head_sha(repo_root, environ)
-    if head is None:
-        return f"{sidecar} records {recorded!r} but the HEAD of {repo_root} is unknown"
-    if recorded != head:
-        return f"{sidecar} records {recorded!r} but HEAD is {head!r}"
-    return None
-
-
-def _git_head_sha(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
-    """repo_root's HEAD commit, or None when git cannot say.
-
-    Every GIT_* variable is dropped so `-C repo_root` alone decides the
-    repository: under a hook GIT_DIR is exported and would answer for another.
-    """
-    env = {k: v for k, v in environ.items() if not k.startswith("GIT_")}
     try:
         proc = subprocess.run(
-            ["git", "-C", repo_root, "rev-parse", "--verify", "HEAD"],
+            ["bash", _TRUST_HOME, "resolve", repo_root],
             capture_output=True,
             text=True,
-            env=env,
+            env=_trust_home_environ(environ),
             check=False,
         )
-    except OSError:
-        return None
-    head = proc.stdout.strip()
-    return head if proc.returncode == 0 and head else None
+    except OSError as exc:
+        return None, _reify_bin_refusal(f"{_TRUST_HOME} could not be run ({exc})")
+    lines = proc.stdout.splitlines()
+    if (proc.returncode == _TrustVerdict.TRUSTED and len(lines) == 1
+            and os.path.isabs(lines[0])):
+        return lines[0], None
+    if proc.returncode in (_TrustVerdict.UNVOUCHED, _TrustVerdict.NOT_BUILT):
+        return None, _reify_bin_refusal(proc.stdout.strip())
+    return None, _reify_bin_refusal(
+        f"`{_TRUST_HOME} resolve` gave no readable verdict (exit {proc.returncode}, "
+        f"stdout {proc.stdout!r}, stderr {proc.stderr.strip()!r})"
+    )
 
 
-def _mtime_utc(path: str) -> str:
-    """path's mtime in UTC, or "unknown" once a concurrent relink has removed it.
-
-    Diagnostic text only: it never decides whether a binary is trusted.
-    """
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return "unknown"
-    stamp = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc)
-    return stamp.isoformat(timespec="seconds")
-
-
-def _two_binaries_refusal(release: str, debug: str, why_unvouched: str) -> str:
+def _reify_bin_refusal(reason: str) -> str:
     return (
-        f"two reify binaries are built and neither is vouched for: {release} "
-        f"(mtime {_mtime_utc(release)}) and {debug} (mtime {_mtime_utc(debug)}); "
-        f"{why_unvouched}.  Release-first precedence would have chosen {release} "
-        f"and skipped {debug}, but neither an mtime nor the profile says which "
-        "build matches this checkout.  Set REIFY_BIN to the binary to probe with "
-        "(scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
+        f"will not choose a reify binary: {reason}.  Set REIFY_BIN to the binary "
+        "to probe with (scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
     )
 
 
@@ -415,8 +396,9 @@ class ProbeContext:
 
         The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
         an empty value counts as unset for all three.  repo_root defaults to
-        _find_repo_root().  Prints nothing: an untrusted reify binary is
-        recorded as reify_bin_refusal (see _resolve_reify_bin).
+        _find_repo_root().  Prints nothing: a reify binary that
+        scripts/reify-bin-freshness.sh does not vouch for, or no built binary
+        at all, is recorded as reify_bin_refusal (see _resolve_reify_bin).
         """
         env = os.environ if environ is None else environ
         root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())

@@ -29,36 +29,10 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// so the caller controls its lifetime. All other sources are `include_str!`
 /// literals converted to owned `String` for a uniform element type.
 ///
-/// Order is significant: the topo-sort in `stdlib_topo::compile_modules_topo`
-/// is stable (identity when no module declares `import`), so the hand-chosen
-/// positions are preserved unchanged. `std.units` stays first,
-/// `std.determinacy.purposes` stays last.
-///
-/// **Ordering footgun:** the hand-chosen positions encode implicit load-order
-/// constraints (e.g. `std.solver.buckling.fns` after `std.solver.buckling`,
-/// `std.determinacy.purposes` last) that are NOT expressed as `import` edges
-/// and are therefore NOT machine-checked by the topo-sort.  Adding any `import`
-/// declaration to a stdlib module causes `compile_modules_topo` to reorder it
-/// (pulling dependencies earlier), which may silently violate one of these
-/// implicit constraints.  Before adding an `import`, re-validate ALL ordering
-/// requirements against the new topo output.  The stability regression test
-/// `signal_2_real_stdlib_compiles_clean_and_order_is_stable` (in
-/// `stdlib_topo::tests`) acts as a permanent guard that the sort remains the
-/// identity when no imports are present; it will need updating if imports are
-/// intentionally introduced.
-///
-/// **What ordering can NO LONGER do (NS-P2, task 5496):** registration order is
-/// semantically inert for the name kinds covered by the duplicate-pub-name scan
-/// in [`build_stdlib_modules`].  Before that gate, two stdlib modules could
-/// declare the same name and the winner was decided silently and
-/// inconsistently — compile-side template resolution took last-wins while the
-/// eval-side instantiation registry took first-wins, so `Mode` denoted
-/// different structures in different phases.  Reordering this list could
-/// therefore change program meaning.  It can't now: any cross-module duplicate
-/// fails the stdlib build outright, so the only thing position still controls
-/// is what is *resolvable* during the sequential prelude build (the footgun
-/// above), not what a resolvable name *means*.  That inertness is the §5
-/// precondition the ζ task consumes.
+/// Registration order is semantically inert: each module compiles against
+/// only the modules it declares as imports, and the build order is derived
+/// from those imports (`stdlib_topo`), not from this list. Pinned by
+/// `harness_modules_ports/stdlib_strict_build_tests`.
 ///
 /// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each
 /// compiled stdlib module with its source by module path.
@@ -67,12 +41,6 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),
         ("std.si_units", si_units_source),
-        // `std.materials.appearance` declares Color/Finish/Appearance/Visual —
-        // the stable, source-agnostic visual contract (PRD appearance-substrate §4.1).
-        // Deps: built-in Real/String only; no `import`; no #no_prelude (not a
-        // bootstrap-whitelist target — mirrors ports.ri). Registered before
-        // std.materials.mechanical so Appearance/Visual are in the growing prelude
-        // when #4761 (β: Material : Visual) and #4762 (γ: library : ElasticMaterial + Visual) compile.
         (
             "std.materials.appearance",
             include_str!("../stdlib/materials_appearance.ri").to_owned(),
@@ -109,13 +77,6 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.constitutive",
             include_str!("../stdlib/constitutive.ri").to_owned(),
         ),
-        // `std.fea.types` declares the empty marker traits `Load` and
-        // `Support`.  It MUST precede `std.solver.elastic` so that
-        // `solve_elastic_static`'s `loads : List<Load>` / `supports :
-        // List<Support>` params can resolve in the growing prelude.
-        // Zero dependencies (empty marker traits) — placement is free.
-        // Mirrors the `std.constitutive` → `std.solver.elastic` pattern
-        // for `ConstitutiveLaw`.
         (
             "std.fea.types",
             include_str!("../stdlib/fea_types.ri").to_owned(),
@@ -125,43 +86,17 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             include_str!("../stdlib/solver_elastic.ri").to_owned(),
         ),
         (
-            "std.solver.buckling",
-            include_str!("../stdlib/solver_buckling.ri").to_owned(),
-        ),
-        (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
-        // `std.fea.multi_case`:
-        //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
-        //     `BucklingOptions`/
-        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
-        //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
-        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
-        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
-        //     type-checker must resolve).
-        // Same split + rationale as `std.flexures.types` / `std.flexures`.
         (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
+            "std.solver.buckling",
+            include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
         (
             "std.analysis",
             include_str!("../stdlib/analysis.ri").to_owned(),
         ),
-        // `std.fea` declares `StressInvariants` — the named output struct
-        // for the `stress_invariants` builtin (FEA-5, task 2884). Placed
-        // immediately after `std.analysis` (which defines `Stress`/
-        // `AnalysisResult`) and before `std.determinacy.purposes` (which
-        // MUST remain last).
-        //
-        // ORDERING CONSTRAINT: `std.fea` MUST follow `std.units`, which
-        // supplies the `Pressure`/`Pressure2`/`Pressure3` aliases its fields
-        // declare (task #6092). Already satisfied — `std.units` is entry [0]
-        // above — so this is a note for whoever reorders next, not a bug. It
-        // previously read "zero ordering constraints … only uses built-in
-        // `Real`", which the retype made false in both clauses.
         ("std.fea", include_str!("../stdlib/fea.ri").to_owned()),
         (
             "std.tolerancing",
@@ -180,295 +115,79 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.modal.analysis",
             include_str!("../stdlib/modal_analysis.ri").to_owned(),
         ),
-        // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
-        // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
-        // which requires `ModalResult`/`Mode` to already be in the prelude
-        // template registry when `phase_functions` runs. Same split +
-        // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
-        // (esc-3851-32).
-        (
-            "std.modal.analysis.fns",
-            include_str!("../stdlib/modal_analysis_fns.ri").to_owned(),
-        ),
         (
             "std.trajectory",
             include_str!("../stdlib/trajectory.ri").to_owned(),
         ),
-        // `std.trajectory.fns` MUST follow `std.trajectory` — the
-        // `@optimized simulate_trajectory` body constructs `EndEffectorTrack()`
-        // (a no-arg ctor — like `ModalResult()`, which also has no per-field
-        // defaults), which requires `EndEffectorTrack` to already be in the
-        // prelude template registry when
-        // `phase_functions` runs. Same split + rationale as `std.modal.analysis`
-        // / `std.modal.analysis.fns` (modal_analysis_fns.ri:6-20). Placed before
-        // the later `std.dynamics` / `std.kinematic`, which themselves depend on
-        // `std.trajectory`, so order is safe (task π, prereq-2).
-        (
-            "std.trajectory.fns",
-            include_str!("../stdlib/trajectory_fns.ri").to_owned(),
-        ),
         ("std.fdm", include_str!("../stdlib/fdm.ri").to_owned()),
-        // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
-        // structures reference `InfillPattern` (from std.fdm) and
-        // `MaterialPropertyProvenance` (from the earlier std.materials.fea),
-        // both resolved via the growing sequential prelude.
         (
             "std.fdm.correlations",
             include_str!("../stdlib/fdm_correlations.ri").to_owned(),
         ),
-        // `std.fdm.as_printed` (task δ) MUST follow `std.fdm.correlations` —
-        // its surface references `AnisotropicMaterial`/`MaterialFrame`
-        // (std.constitutive), `FDMProcess` (std.fdm), and `FDMCouponOverride`
-        // (std.fdm.correlations), all resolved via the growing sequential
-        // prelude. Declares no `import`, so the topo-sort stays the identity.
         (
             "std.fdm.as_printed",
             include_str!("../stdlib/fdm_as_printed.ri").to_owned(),
         ),
-        // `std.fdm.slice` (task η) MUST follow `std.fdm` (and is placed after
-        // `std.fdm.as_printed` to keep the FDM modules contiguous) — its surface
-        // references `FDMProcess` (std.fdm), resolved via the growing sequential
-        // prelude. Declares the Toolpath value surface (`enum BeadRole`, the
-        // `Bead` / `Layer` / `Toolpath` / `FDMSliceOptions` structures) plus the
-        // `@optimized("fdm::slice")` `fdm_slice` function. Declares no `import`,
-        // so the topo-sort stays the identity.
         (
             "std.fdm.slice",
             include_str!("../stdlib/fdm_slice.ri").to_owned(),
         ),
-        // `std.tensegrity` depends on `std.units` (Length, Area, Force),
-        // `std.si_units` (0N literal), and `std.materials.fea`
-        // (ElasticMaterial trait) — all earlier in the prelude sequence.
-        // End-insertion minimises merge friction with future sibling additions.
         (
             "std.tensegrity",
             include_str!("../stdlib/tensegrity.ri").to_owned(),
         ),
-        // `std.process` depends only on `std.units` (Time, Money — the first
-        // module in the sequence). End-append is order-safe and conflict-free.
-        // Reconstruction of lost work from task #333 per PRD §Slice B.
         (
             "std.process",
             include_str!("../stdlib/process.ri").to_owned(),
         ),
-        // `std.kinematic` declares the DrivingJoint marker trait, per-kind
-        // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
-        // non-conforming joints (Coupling/Fixed), and top-level container types
-        // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
-        // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
-        // Moved before std.dynamics (mechanism-β, task 4311) so that Mechanism
-        // and Snapshot are in scope when dynamics.ri's inverse_dynamics /
-        // inverse_dynamics_at_snapshot parameter types are compiled. No
-        // circular dependency: std.kinematic only requires std.trajectory +
-        // std.units, both of which are earlier in this sequence.
-        // KCC-ζ task 3845.
         (
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the FlexureCompliance
-        // structure_def, the `FlexureJoint` marker, and the
-        // flexure_compliance() accessor (the former RotationalStiffness=Real
-        // alias was removed in task 4547 — the built-in ROTATIONAL_STIFFNESS
-        // dimension shadowed it). The same-module skeleton pre-pass (task 3895)
-        // makes the structure_def visible to the accessor fn body in the same
-        // module, so no split is needed.
-        //
-        // MUST follow `std.kinematic` (task #5476, placeholder-ratchet α) —
-        // `structure def FlexureJoint : DrivingJoint` references the
-        // `DrivingJoint` trait declared in kinematic.ri, resolved via the
-        // growing sequential prelude. Declares no `import`, so the topo-sort
-        // stays the identity permutation and registration order IS visibility
-        // order. Moved down from its former slot before `std.tensegrity`: the
-        // only modules stepped over are `std.tensegrity` and `std.process`,
-        // neither of which references `FlexureCompliance` / `flexure_compliance`
-        // / `FlexureJoint`, so nothing earlier in the sequence loses visibility.
         (
             "std.flexures",
             include_str!("../stdlib/flexures.ri").to_owned(),
         ),
-        // `std.joints` defines the standard kinematic joint set (revolute /
-        // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
-        // declarations over the relation vocabulary (geometric-joints γ, task
-        // 4397). References only built-in relations (concentric / on / coincident
-        // / flush / perpendicular) and built-in datum types (Axis / Plane /
-        // Point3 / Orientation / Angle / Length) — declares NO `import`, so
-        // the topo-sort remains the identity permutation. Placement after
-        // std.kinematic keeps joint definitions organisationally co-located
-        // with the kinematic module; there is no formal dependency.
-        // `load_stdlib`'s panic-on-Error permanently enforces "all self-checks
-        // pass" at prelude build: if any joint body mismatches its declared DOF
-        // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
         ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
-        // `std.ports` declares the Directionality enum, the Port base trait,
-        // and the `Frame3` structure (a `Vec3<Length>` origin, which is a
-        // position, and `Vec3<Dimensionless>` x/y/z axes, which are directions).
-        // No inter-module dependencies beyond built-in types.
-        // Reconstruction of lost work per PRD task α.
-        //
-        // MOVED before `std.dynamics` (task 4547, pre-1): dynamics.ri's
-        // `MassProperties.origin : Frame3` field needs `Frame3` resolved in the
-        // growing prelude when std.dynamics compiles. std.ports has zero
-        // stdlib-module deps so moving it earlier is safe; the `std.ports.*`
-        // submodules below only require std.ports to precede them, which still
-        // holds.
         ("std.ports", include_str!("../stdlib/ports.ri").to_owned()),
-        // `std.dynamics` depends on `std.units` (Mass / Length / Time),
-        // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
-        // `std.kinematic` (Mechanism / Snapshot nominal types used in
-        // inverse_dynamics / inverse_dynamics_at_snapshot parameter types —
-        // updated from Real placeholders by mechanism-β, task 4311), and
-        // `std.ports` (the `Frame3` type used by `MassProperties.origin` —
-        // task 4547). Placement after std.kinematic and std.ports satisfies
-        // all four dependencies.
-        // RBD-α task 3822.
         (
             "std.dynamics",
             include_str!("../stdlib/dynamics.ri").to_owned(),
         ),
-        // `std.modal.mechanism.fns` declares `mechanism_modal_analysis(mechanism,
-        // options) -> ModalResult` — the κ-modal-bridge (task 4271).
-        //
-        // Ordering constraint: MUST follow BOTH:
-        //   - `std.modal.analysis` — supplies ModalOptions/ModalResult/Mode
-        //   - `std.kinematic` — supplies the Mechanism type
-        // The existing `std.modal.analysis.fns` loads BEFORE
-        // `std.kinematic`, so Mechanism is not yet in its prelude; placing
-        // `mechanism_modal_analysis` there would produce an unresolved-type error.
-        // Tail placement after `std.dynamics` satisfies both constraints
-        // directly: `std.modal.analysis` and `std.kinematic` both precede
-        // this entry (`std.kinematic` is itself pulled in ahead of
-        // `std.dynamics`).
-        // Same prelude-ordering rationale as the original std.modal.analysis /
-        // std.modal.analysis.fns split (esc-3851-32).
         (
             "std.modal.mechanism.fns",
             include_str!("../stdlib/modal_mechanism_fns.ri").to_owned(),
         ),
-        // `std.stackup` declares the tolerance stack-up authoring surface
-        // (Distribution, StackupMethod, Contributor, StackupResult).
-        // Depends only on built-in Length/Int types and the mm literal
-        // (available via std.si_units, earlier in this sequence).
-        // Tail placement after std.dynamics is order-safe and conflict-free.
-        // PRD v0_6 T6 — task 4004.
         (
             "std.stackup",
             include_str!("../stdlib/stackup.ri").to_owned(),
         ),
-        // `std.ports.mechanical` refines Port from std.ports and adds
-        // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
-        // ThreadedPort, StructurePort). (Formerly also defined a `Torque`
-        // type alias; that alias was deleted by task η/5785 in favor of the
-        // NAMED_DIMENSIONS registry entry in reify-core's dimension.rs.)
-        // Must follow std.ports in the growing prelude sequence so Port is
-        // resolved when MechanicalPort : Port is compiled.
-        // Reconstruction of lost work per PRD task α.
         (
             "std.ports.mechanical",
             include_str!("../stdlib/ports_mechanical.ri").to_owned(),
         ),
-        // `std.ports.electrical` refines Port from std.ports and adds
-        // electrical port traits (ElectricalPort, PowerPort, SignalPort)
-        // plus the SignalKind enum.
-        // Must follow std.ports in the growing prelude sequence so Port is
-        // resolved when ElectricalPort : Port is compiled.
-        // Reconstruction of lost work per PRD task β.
         (
             "std.ports.electrical",
             include_str!("../stdlib/ports_electrical.ri").to_owned(),
         ),
-        // `std.ports.thermal` refines Port from std.ports and adds the
-        // lumped-thermal-port trait ThermalPort (Modelica HeatPort convention:
-        // temperature potential + heat_flow through variable).
-        // Must follow std.ports in the growing prelude sequence so Port is
-        // resolved when ThermalPort : Port is compiled.
-        // Reconstruction of lost work per PRD task β.
         (
             "std.ports.thermal",
             include_str!("../stdlib/ports_thermal.ri").to_owned(),
         ),
-        // `std.ports.fluid` refines Port from std.ports and adds the fluid
-        // port trait FluidPort (pressure + VolumetricFlowRate + medium).
-        // VolumetricFlowRate = Volume / Time type alias is pub (mirrors
-        // units.ri Velocity); binary dim-op requires alias indirection.
-        // Must follow std.ports in the growing prelude sequence so Port is
-        // resolved when FluidPort : Port is compiled.
-        // Reconstruction of lost work per PRD task β.
         (
             "std.ports.fluid",
             include_str!("../stdlib/ports_fluid.ri").to_owned(),
         ),
-        // `std.fields` packages the built-in field differential operators
-        // (gradient, divergence, curl, laplacian, sample) and hosts the
-        // single generic exemplar `pub fn through<T>(x: T) -> T` (task
-        // 4233 δ — Tier-1 generics gate; fields-api tasks ε/ζ will extend
-        // this module further). It references no other stdlib module →
-        // zero ordering constraints; tail-append is safe.
-        // Reconstruction per PRD §Slice C.
         ("std.fields", include_str!("../stdlib/fields.ri").to_owned()),
-        // `std.option_recovery` declares the 7 generic Option/Map recovery
-        // combinators (unwrap_or / or_else / or_default / fallback /
-        // is_some / is_none / get_or) as `pub fn` with typecheck-only
-        // placeholder bodies (task α — PRD docs/prds/v0_6/result-and-fallback.md
-        // §8 Phase 1).  Resolution and return-type substitution are delivered
-        // free by the existing generic-fn resolver (resolve_function_overload →
-        // type_compat::unify → substitute_type_params).  Real tag-driven
-        // recovery eval is task β (intercept in reify-expr per §11 Q1).
-        //
-        // No import edges → compile_modules_topo keeps the identity order.
-        // MUST be inserted BEFORE std.determinacy.purposes (which MUST remain
-        // LAST; see its comment below).  Placement after std.fields satisfies
-        // both constraints and keeps the load order stable.
-        //
-        // map_or is intentionally omitted — it needs an arrow-type grammar
-        // production that does not exist; owned by task 4595.
         (
             "std.option_recovery",
             include_str!("../stdlib/option_recovery.ri").to_owned(),
         ),
-        // `std.result` declares the PRELUDE `Result<T, E>` enum (task B-α
-        // #4035 — PRD docs/prds/v0_6/result-and-fallback.md §4.3/§8.B): a
-        // plain generic data-carrying enum (fork F4-a / D5), NOT a Value
-        // intrinsic.  Construction (`Ok`/`Err`), type-arg inference, and the
-        // pinned-annotation payload check are all delivered free by task γ
-        // #4031's `compile_variant_construct` machinery via
-        // `ctx.resolution_enums` (prelude ++ local) — this registration adds
-        // no Rust logic.
-        //
-        // No import edges → compile_modules_topo keeps the identity order.
-        // Placed adjacent to std.option_recovery (same PRD cluster) and MUST
-        // remain BEFORE std.determinacy.purposes (which must remain LAST; see
-        // its comment below).
         ("std.result", include_str!("../stdlib/result.ri").to_owned()),
-        // `std.surface_finish` declares the functional surface finish/coating/
-        // treatment vocabulary as spec-bearing part properties.  Deps:
-        //   - Color (from std.materials.appearance, earlier in sequence) via
-        //     the growing prelude — Coating.color : Color = Color().
-        //   - Money/Area/Length/Density (built-in dimensions) and the `um`
-        //     Length unit (std.si_units prefix table).
-        //   - ArealCostRate = Money / Area (own pub type alias).
-        // No `import` declared → compile_modules_topo stays identity permutation.
-        // Tail placement (after std.option_recovery, before std.determinacy.purposes)
-        // satisfies the "after std.materials.appearance" ordering requirement and
-        // the "before std.determinacy.purposes (MUST remain last)" constraint
-        // simultaneously, matching the dominant recent-module convention.
-        // Reference: docs/prds/v0_6/surface-finish-functional.md §4.1 task α.
         (
             "std.surface_finish",
             include_str!("../stdlib/surface_finish.ri").to_owned(),
         ),
-        // `std.determinacy.purposes` ships the two standard determinacy-check
-        // purposes (simulation_ready + design_review, PRD §5) that are merged
-        // into every user module via merge_prelude_purposes (task-4016 ζ).
-        //
-        // MUST be LAST in the source list: merge_prelude_purposes runs for
-        // every compile including each intra-stdlib module compile, but
-        // no-ops here because std.determinacy.purposes is the only stdlib
-        // module with pub purposes and it is registered last — no later
-        // stdlib module sees it as a prelude during load_stdlib(), so none
-        // inadvertently inherit simulation_ready/design_review during
-        // prelude construction. Stdlib-internal count/hash goldens stay
-        // byte-stable.
         (
             "std.determinacy.purposes",
             include_str!("../stdlib/determinacy_purposes.ri").to_owned(),
@@ -478,16 +197,15 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
 
 /// Returns a reference to the compiled stdlib modules.
 ///
-/// On the first call, compiles all embedded `.ri` stdlib files via
-/// [`crate::stdlib_topo::compile_modules_topo`], which performs a stable
-/// topological sort so each module is compiled against a growing prelude
-/// of its dependencies (dependency-first order).  When no module declares
-/// an `import`, the sort is the identity permutation and output order is
-/// identical to the hand-chosen order in [`stdlib_sources`].
+/// On the first call, builds every embedded `.ri` stdlib module through
+/// [`build_stdlib_modules`]: each compiles against only its declared imports,
+/// in a canonical order derived from them
+/// ([`crate::stdlib_topo::compile_modules_topo`]), so the slice is
+/// topologically ordered and does not depend on the order of [`stdlib_sources`].
 ///
-/// Any cycle in the stdlib import graph panics immediately (should never
-/// occur with the embedded sources).  Any Error-severity diagnostic in any
-/// stdlib module also panics rather than caching a broken result.
+/// An import cycle, an import of a module outside the stdlib, or any
+/// Error-severity diagnostic in any stdlib module panics rather than caching a
+/// broken result.
 ///
 /// Subsequent calls return the cached result with zero overhead.
 pub fn load_stdlib() -> &'static [CompiledModule] {
@@ -511,7 +229,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
 /// function returns findings".
 pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
     let modules = crate::stdlib_topo::compile_modules_topo(sources)
-        .unwrap_or_else(|cycle| panic!("stdlib import cycle: {}", cycle.message));
+        .unwrap_or_else(|e| panic!("stdlib import graph: {e}"));
 
     // Fail fast: Error-severity diagnostics in embedded stdlib are always
     // programming errors. Without this check, a broken module gets permanently
@@ -528,7 +246,7 @@ pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
         assert!(
             !has_errors,
             "stdlib module '{}' has Error-severity diagnostics: {:?}",
-            module.path,
+            module.path.to_dotted(),
             module
                 .diagnostics
                 .iter()

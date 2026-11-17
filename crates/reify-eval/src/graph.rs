@@ -1,6 +1,7 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind,
@@ -12,6 +13,12 @@ use reify_core::{
 use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
 pub mod cell_contributions;
+#[cfg(test)]
+pub(crate) mod geometry_cell_link_fixture;
+#[cfg(test)]
+mod scalar_geometry_cell_realization_tests;
+#[cfg(test)]
+mod sub_instance_registry_tests;
 #[cfg(test)]
 mod value_cell_fold_tests;
 
@@ -207,6 +214,14 @@ pub struct CollectionSubInfo {
     pub child_value_cells: Vec<(String, ValueCellKind, Type, Option<CompiledExpr>)>,
 }
 
+impl CollectionSubInfo {
+    /// The scoped entity of this collection's `index`th instance slot,
+    /// `P.s[i]`.
+    pub(crate) fn slot_entity(&self, index: i64) -> String {
+        format!("{}.{}[{}]", self.parent_entity, self.sub_name, index)
+    }
+}
+
 /// Metadata for a keyed sub-component in the evaluation graph.
 ///
 /// A keyed sub (`sub vents : Keyed<Vent> { "intake" => {...} }`) uses
@@ -267,6 +282,19 @@ pub struct EvaluationGraph {
     /// separate registry so that keyed members are never subject to positional
     /// add/remove operations.
     pub keyed_subs: Vec<KeyedSubInfo>,
+    /// Every sub-instance entity whose cells are in `value_cells` (`P.s`,
+    /// `P.s[i]`, `P.s["k"]`), mapped to the name of the template those cells
+    /// are stamped from. Read through [`Self::sub_instance_template`].
+    /// `from_templates` fills it from [`cell_contributions::sub_instances`],
+    /// the same slot enumeration that stamps those cells. The edit path's
+    /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
+    /// remove through [`Self::remove_collection_slots`], so the registry and
+    /// `value_cells` do not drift.
+    ///
+    /// **NOT mixed into `topology_fingerprint` or any other hash:** the
+    /// instance cells it names are already in the fingerprint via
+    /// `value_cells`, so, like `keyed_subs`, this registry is metadata-only.
+    sub_instance_templates: PersistentMap<String, String>,
     /// Captured per-element body templates for statement-form `forall`
     /// over deferred-count collection subs (task 2629; PRD criterion 7
     /// second-half). The runtime `Engine::edit_param` collection-count
@@ -545,6 +573,9 @@ impl EvaluationGraph {
         for cell in contributed_cells(templates) {
             insert_contributed_cell(&mut graph.value_cells, cell);
         }
+        for (entity, template) in cell_contributions::sub_instances(templates) {
+            graph.record_sub_instance(entity, template.to_string());
+        }
 
         graph
     }
@@ -587,6 +618,94 @@ impl EvaluationGraph {
     /// `value_cells.get(id).is_some_and(|n| n.kind.is_auto())` form.
     pub(crate) fn is_auto_cell(&self, id: &ValueCellId) -> bool {
         self.value_cells.get(id).is_some_and(|n| n.kind.is_auto())
+    }
+
+    /// The template sub instance `entity`'s cells are stamped from, or `None`
+    /// when `entity` is not a sub instance in this graph.
+    pub(crate) fn sub_instance_template(&self, entity: &str) -> Option<&str> {
+        self.sub_instance_templates.get(entity).map(String::as_str)
+    }
+
+    /// The realization whose handle the scalar geometry cell `cell` holds: the
+    /// one whose `geometry_cell` link, set by [`Self::from_templates`], names
+    /// it. `None` for any other cell. A geometry-list cell is linked N:1 (task
+    /// #5385), and for length 1 that is indistinguishable from 1:1 by link
+    /// count, so the cell's type decides. A list cell's value is never one
+    /// element's handle: it is assembled by the list regroup and by
+    /// `tessellate_snapshot`'s baseline mint.
+    ///
+    /// A scalar geometry cell can be linked twice today, by a top-level Solid
+    /// param and a guarded same-name override: the compiler names both
+    /// realizations after the member, and `from_templates` links by name. This
+    /// returns whichever link the map's iteration reaches first, which is
+    /// unspecified.
+    pub(crate) fn scalar_geometry_cell_realization(
+        &self,
+        cell: &ValueCellId,
+    ) -> Option<&RealizationNodeData> {
+        if !self
+            .value_cells
+            .get(cell)
+            .is_some_and(|node| node.cell_type == Type::Geometry)
+        {
+            return None;
+        }
+        self.realizations
+            .values()
+            .find(|realization| realization.geometry_cell.as_ref() == Some(cell))
+    }
+
+    /// Record that `entity`'s cells are stamped from `template`.
+    fn record_sub_instance(&mut self, entity: String, template: String) {
+        self.sub_instance_templates.insert(entity, template);
+    }
+
+    /// Stamp `node`, a cell of sub instance `node.id.entity`, from `template`
+    /// into `value_cells`, recording (or correcting) the instance's template so
+    /// the registry always names the template its cells came from.
+    pub(crate) fn insert_sub_instance_cell(&mut self, template: &str, node: ValueCellNode) {
+        if self.sub_instance_template(&node.id.entity) != Some(template) {
+            self.record_sub_instance(node.id.entity.clone(), template.to_string());
+        }
+        self.value_cells.insert(node.id.clone(), node);
+    }
+
+    /// Remove `col_sub`'s instance slots `slots`, each holding a cell per
+    /// `child_value_cells` member, and forget them; returns those cells' ids,
+    /// slot by slot in member order, none of which remains in `value_cells`.
+    pub(crate) fn remove_collection_slots(
+        &mut self,
+        col_sub: &CollectionSubInfo,
+        slots: Range<i64>,
+    ) -> Vec<ValueCellId> {
+        let entities: Vec<String> = slots.map(|index| col_sub.slot_entity(index)).collect();
+        let removed: Vec<ValueCellId> = entities
+            .iter()
+            .flat_map(|entity| {
+                col_sub
+                    .child_value_cells
+                    .iter()
+                    .map(move |(member, ..)| ValueCellId::new(entity, member))
+            })
+            .collect();
+        for id in &removed {
+            self.value_cells.remove(id);
+        }
+        for entity in &entities {
+            self.sub_instance_templates.remove(entity);
+        }
+        debug_assert!(
+            {
+                let forgotten: HashSet<&String> = entities.iter().collect();
+                self.value_cells
+                    .keys()
+                    .all(|id| !forgotten.contains(&id.entity))
+            },
+            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name",
+            col_sub.parent_entity,
+            col_sub.sub_name,
+        );
+        removed
     }
 
     /// Determine which constraint IDs are active given the current values.

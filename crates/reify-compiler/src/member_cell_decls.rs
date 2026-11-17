@@ -16,9 +16,8 @@ use crate::types::{SolverHint, ValueCellDecl, ValueCellKind, Visibility};
 /// `priv param` → `Visibility::Private` (hidden from external dot-access,
 /// task #3978 δ); otherwise `Visibility::Public`. Shared by every
 /// `ValueCellDecl` construction site that lowers a param's visibility —
-/// top-level structure-param, port-member, guarded-block (`guards.rs`), and
-/// the structure-def skeleton pass — so the mapping can't drift between
-/// sites.
+/// top-level structure-param, port-member and guarded-block (`guards.rs`) —
+/// so the mapping can't drift between sites.
 pub(crate) fn priv_flag_to_visibility(is_priv: bool) -> Visibility {
     if is_priv {
         Visibility::Private

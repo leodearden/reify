@@ -16,6 +16,7 @@ from pathlib import Path
 
 from reify_verify import bashcall, knobs
 from reify_verify.bashcall import BashCall
+from reify_verify.diagnostics import WARNING
 from reify_verify.invocation import Scope
 from reify_verify.scope import ScopeDecision
 
@@ -161,7 +162,7 @@ def narrow(
     if retry_specs and not run_gui_vitest:
         warnings = (
             *warnings,
-            f"verify.sh: WARNING — {knobs.GUI_RETRY_SPECS.name} is set but this run emits no "
+            f"{WARNING}{knobs.GUI_RETRY_SPECS.name} is set but this run emits no "
             f"vitest lane (RUN_GUI={int(decision.run_gui)} RUN_GUI_VITEST=0); the requested "
             "specs will NOT run",
         )

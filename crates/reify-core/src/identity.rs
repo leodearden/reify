@@ -68,7 +68,8 @@ impl ModulePath {
     }
 
     /// The dot-separated spelling `import` and `module` declarations use
-    /// (`["std", "units"]` → `"std.units"`); the inverse of [`Self::from_dotted`].
+    /// (`["std", "units"]` → `"std.units"`); the inverse of [`Self::from_dotted`]
+    /// over the paths it accepts (non-empty, no segment empty or containing `.`).
     /// `Display` is slash-separated instead.
     pub fn to_dotted(&self) -> String {
         self.0.join(".")

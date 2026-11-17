@@ -155,7 +155,7 @@ const CC_BETA_L_PINNED: f64 = std::f64::consts::PI;
 const CC_BETA_L_FIXED: f64 = 4.730041;
 
 /// βL for the clamped-pinned (propped-cantilever) fundamental — the MIXED pair
-/// `[FixedSupport("x_min"), PinnedSupport("x_max")]`, task 6663's scope
+/// `[FixedSupport on x_min, PinnedSupport on x_max]`, task 6663's scope
 /// extension.
 ///
 /// λ² = 15.4182, strictly between the pinned-pinned 9.8696 and the
@@ -384,7 +384,7 @@ fn register_compute_fns_installs_modal_free_vibration() {
 //
 // ── step-11 RED → step-12 GREEN ──────────────────────────────────────────────
 //
-// BC realization (build_dirichlet_bcs): the single FixedSupport(target:"x_min")
+// BC realization (build_dirichlet_bcs): the single FixedSupport on x_min
 // clamps ALL THREE translational DOFs on every root-face (x ≈ 0) node — the
 // cantilever clamped-free configuration (catching P2 edge-midpoints by
 // coordinate once the trampoline promotes the mesh).
@@ -1080,9 +1080,9 @@ fn e2e_printer_gantry_prints_five_modes() {
 // The headline acceptance test. One fixture
 // (tests/fixtures/clamped_clamped_beam_modes.ri), one eval, three modal solves
 // over the SAME 800 × 44.588 × 44.588 mm section differing ONLY in support kind:
-//   • `[FixedSupport("x_min"), FixedSupport("x_max")]`   → clamped-clamped
-//   • `[PinnedSupport("x_min"), PinnedSupport("x_max")]` → pinned-pinned
-//   • `[FixedSupport("x_min"), PinnedSupport("x_max")]`  → propped cantilever
+//   • `[FixedSupport on x_min, FixedSupport on x_max]`   → clamped-clamped
+//   • `[PinnedSupport on x_min, PinnedSupport on x_max]` → pinned-pinned
+//   • `[FixedSupport on x_min, PinnedSupport on x_max]`  → propped cantilever
 //
 // Bands (c)–(g) are read on the VERTICAL (Z-dominant) family, selected by
 // eigenvector dominant-axis energy, not on the raw `first_frequency`. The

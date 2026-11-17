@@ -32,10 +32,15 @@
 //   - These conventions are established by `materials_fea.ri` (density uses
 //     the compound-unit literal `<n>kg/m^3`) and `printer.ri` (vec3 axis vectors).
 //
-// Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
+// Cross-module dependencies, imported below:
 //   - `MaterialPropertyProvenance` — from std.materials.fea
 //   - `ElasticMaterial`            — from std.materials.fea
 //   - `ABS_Plastic`                — from std.materials.fea
+
+module std.fdm
+
+import std.materials.fea
+import std.trajectory
 
 // ── InfillPattern ─────────────────────────────────────────────────────────────
 

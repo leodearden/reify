@@ -37,9 +37,12 @@
 //   "low-confidence defaults flagged" (PRD §"Built-in property correlations")
 //   a machine-checkable contract rather than buried prose.
 //
-// Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
+// Cross-module dependencies, imported below:
 //   - `MaterialPropertyProvenance` — from std.materials.fea
-//   - `InfillPattern`              — from std.fdm
+
+module std.fdm.correlations
+
+import std.materials.fea
 
 // ── FDMCorrelationDefaults ──────────────────────────────────────────────────
 

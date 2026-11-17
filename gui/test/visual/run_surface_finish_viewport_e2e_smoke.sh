@@ -16,9 +16,9 @@
 # post-mortem and the SIGTERM teardown — lives in gui/test/visual/lib_e2e_smoke.sh,
 # shared with the five sibling e2e smoke runners.  Read that file for the
 # lifecycle contract, including the readiness-race fix (design decision 5,
-# task 4456 step-5) and why the bash-side readiness gate and the driver's own
-# waitForServer(60_000) are both intentional.  It replaces the copy this runner
-# used to carry (task 5596).
+# task 4456 step-5) and why the bash-side readiness gate and the driver's shared
+# waitForServer (debugServerEndpoint.mjs, SERVER_READY_TIMEOUT_MS) are both
+# intentional.  It replaces the copy this runner used to carry (task 5596).
 #
 # LIVE-ONLY — not CI/verify-gated.  Waivable when blocked solely on the debug-port
 # gap (esc-4202-61).  The deterministic gate (Rust backstops + examples_smoke) is the

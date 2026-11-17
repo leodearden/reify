@@ -1,25 +1,30 @@
 //! Pre-step: pre-compute the trait-name and structure-name sets on
-//! [`CompilationCtx`] so that both `phase_functions` and `phase_traits` can
+//! [`CompilationCtx`] so that both `phase_fn_signatures` and `phase_traits` can
 //! consume them without re-deriving the same information twice.
 //!
 //! ## Why a separate phase?
 //!
 //! In the original design, `phase_traits` built `trait_names` and
 //! `structure_names` as local `HashSet<String>` values for its own use.
-//! Because `phase_functions` runs BEFORE `phase_traits`, `compile_function`
-//! had no access to those sets and passed empty ones, causing any fn parameter
+//! Because fn-signature resolution runs BEFORE `phase_traits`, it had no
+//! access to those sets and passed empty ones, causing any fn parameter
 //! or return type that referenced a user-defined structure or trait name to
-//! produce a spurious "unresolved type" Error diagnostic.
+//! produce a spurious "unresolved type" Error diagnostic.  The argument is
+//! unchanged by task 5494's reorder — only the consumer's name is: the
+//! signature-resolving phase is now `functions_phase::phase_fn_signatures`,
+//! which likewise runs before `phase_traits` and would likewise otherwise
+//! pass empty name sets.
 //!
 //! Lifting the construction into this tiny pre-step (run before
 //! `enums_phase::resolve_enum_variant_payloads` +
 //! `enums_phase::bind_resolution_enums`, and before
-//! `functions_phase::phase_functions`) stores the result on
+//! `functions_phase::phase_fn_signatures`) stores the result on
 //! `CompilationCtx.resolution_trait_names` / `CompilationCtx.resolution_structure_names`.
-//! Both `phase_functions` and `phase_traits` then read the cached ctx fields
-//! instead of rebuilding or doing without.
+//! Both `phase_fn_signatures` and `phase_traits` then read the cached ctx
+//! fields instead of rebuilding or doing without.
 //!
-//! All inputs required for construction are available before `phase_functions`:
+//! All inputs required for construction are available before
+//! `phase_fn_signatures`:
 //! - `ctx.seen_entity_names` — populated by `pre_pass::collect_decl_refs`
 //! - `trait_refs` / `fn_refs` — populated by `pre_pass::collect_decl_refs`
 //! - `prelude.trait_defs` / `prelude.templates` / `prelude.functions` — from the
@@ -35,15 +40,15 @@ use crate::compile_builder::ctx::CompilationCtx;
 ///
 /// **Must be called** after `aliases_phase::phase_aliases` and **before**
 /// `enums_phase::resolve_enum_variant_payloads` (which reads the name sets to
-/// resolve variant field types) and `functions_phase::phase_functions`.
+/// resolve variant field types) and `functions_phase::phase_fn_signatures`.
 ///
 /// The first two sets mirror the construction logic previously local to
 /// `phase_traits` (lines 71-97 of the original `traits_phase.rs`) verbatim, so
 /// they are semantically identical — they just live on `ctx` instead of a local
 /// let. `declared_fn_names` (task #5371) joined them because it has the same
 /// shape and the same two consumers, and because it must be complete before the
-/// first fn BODY compiles — which is precisely what deriving it inside
-/// `phase_functions` could not guarantee.
+/// first fn BODY compiles — which deriving it from compiled fn output cannot
+/// guarantee.
 pub(crate) fn build_resolution_names(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
@@ -84,9 +89,10 @@ pub(crate) fn build_resolution_names(
     // Declared fn names: every local `fn` declaration + every prelude function.
     //
     // Taken from the DECLARATION list, so the set is order-independent and
-    // complete before `phase_functions` compiles the first body — unlike
-    // `ctx.functions`, which that loop grows in source order, and unlike
-    // `ctx.resolution_functions`, which only exists once the loop has finished.
+    // complete before the first body compiles — unlike `ctx.functions`, which
+    // the unified pass in `phase_entities` grows in source order, and unlike
+    // `ctx.resolution_functions`, which holds signature-only stubs until that
+    // pass has finished.
     // `CompilationCtx::declared_fn_names` documents why that distinction is the
     // whole reason the set exists.
     ctx.declared_fn_names = fn_refs

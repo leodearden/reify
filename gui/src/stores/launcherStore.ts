@@ -1,0 +1,99 @@
+/**
+ * The Start view's state (alpha-spine β): the document-opening error, Recent
+ * list and the path of the document attempt in flight (`pending`, null when
+ * none is), and the selected launch mode with the debug server's live port.
+ */
+import { createStore } from 'solid-js/store';
+import type { InitialFileLoadFailure, LaunchMode, ModeState, RecentEntry } from '../types';
+
+export const LAUNCH_ERROR_CODES = Object.freeze({
+  E_GUI_OPEN_FAILED: 'E_GUI_OPEN_FAILED',
+  E_GUI_TEMPLATE_WRITE_FAILED: 'E_GUI_TEMPLATE_WRITE_FAILED',
+  E_GUI_MODE_FAILED: 'E_GUI_MODE_FAILED',
+  E_GUI_DEBUG_LISTENER_FAILED: 'E_GUI_DEBUG_LISTENER_FAILED',
+  E_GUI_DEBUG_BRIDGE_FAILED: 'E_GUI_DEBUG_BRIDGE_FAILED',
+} as const);
+
+export type LaunchErrorCode = (typeof LAUNCH_ERROR_CODES)[keyof typeof LAUNCH_ERROR_CODES];
+
+export interface LaunchErrorInfo {
+  code: LaunchErrorCode;
+  message: string;
+}
+
+export interface LauncherState {
+  document: { error: LaunchErrorInfo | null; recent: RecentEntry[]; pending: string | null };
+  mode: { selected: LaunchMode; debugPort: number | null; error: LaunchErrorInfo | null };
+}
+
+/** The one definition of "a document is loaded": the editor has an open file. */
+export function isDocumentLoaded(editor: { openFiles: readonly unknown[] }): boolean {
+  return editor.openFiles.length > 0;
+}
+
+/**
+ * The launch file's failure as a Start-view error. The file came from the
+ * launch, not from the Start view, so the message names it ahead of the
+ * backend's error.
+ */
+export function initialFileLoadFailureInfo(failure: InitialFileLoadFailure): LaunchErrorInfo {
+  return {
+    code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+    message: `Could not open ${failure.path}: ${failure.error}`,
+  };
+}
+
+export function createLauncherStore() {
+  const [state, setState] = createStore<LauncherState>({
+    document: { error: null, recent: [], pending: null },
+    // The chat panel opens by default, so the initial selection is the assistant.
+    mode: { selected: 'assistant', debugPort: null, error: null },
+  });
+
+  function applyModeState(reply: ModeState): void {
+    setState('mode', { selected: reply.mode, debugPort: reply.debug_port, error: null });
+  }
+
+  function failDocument(error: LaunchErrorInfo): void {
+    setState('document', 'error', error);
+  }
+
+  function clearDocumentError(): void {
+    setState('document', 'error', null);
+  }
+
+  function failMode(error: LaunchErrorInfo): void {
+    setState('mode', 'error', error);
+  }
+
+  function setRecent(recent: RecentEntry[]): void {
+    setState('document', 'recent', recent);
+  }
+
+  function setDocumentPending(path: string | null): void {
+    setState('document', 'pending', path);
+  }
+
+  /**
+   * Clear both errors; the Recent list and the mode stay (a bound listener
+   * cannot be un-bound), and so does the pending flag, which the in-flight
+   * attempt owns.
+   */
+  function reset(): void {
+    setState('document', 'error', null);
+    setState('mode', 'error', null);
+  }
+
+  return {
+    state,
+    applyModeState,
+    failDocument,
+    clearDocumentError,
+    failMode,
+    setRecent,
+    setDocumentPending,
+    reset,
+  };
+}
+
+export type LauncherStore = ReturnType<typeof createLauncherStore>;

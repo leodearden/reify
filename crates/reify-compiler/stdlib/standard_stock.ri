@@ -4,6 +4,8 @@
 //
 // Exposed as zero-arg `pub fn` because Reify lacks top-level `const`; migrate when added.
 
+module std.stock
+
 /// Standard ISO 4014 / ISO 4017 bolt length series, 8 mm through 100 mm.
 /// Values are the canonical preferred increments used in fastener catalogues.
 /// Intended to be referenced as the second arg of `@solver_hint("discrete_set", standard_bolt_lengths)`.

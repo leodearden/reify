@@ -978,15 +978,14 @@ _release_scoped_roles_for_file() {
 # pass-level wall really binds them and their ceiling must stay under it.
 GATE_RESIDENT_FILTERS=(
     'package(reify-eval) & binary(representation_within_assertion)'
-    'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
 )
 GATE_RESIDENT_CEILING_SECONDS=1800
 
 # DERIVED, not a literal. This is the merge role's binding DEBUG wall — the same
 # number Assertion L reads for the background role — and the gate-resident tier
 # exists precisely to stay under it. Hardcoding 3600 here would mean lowering
-# verify.sh's debug default (to 20m, say) silently left the two gate-resident
-# 1800s ceilings unreachable on the BLOCKING gate with nothing going red: the
+# verify.sh's debug default (to 20m, say) silently left the gate-resident
+# 1800s ceiling unreachable on the BLOCKING gate with nothing going red: the
 # zero-attribution shape, reintroduced where it matters most. Assertion H's own
 # comment records this same defect being fixed once already.
 GATE_WALL_SECONDS="$(_debug_wall_secs_for_file "$VERIFY_SH")"
@@ -1011,6 +1010,19 @@ _in_list() {
     done
     return 1
 }
+
+# _binary_has_no_slow_override <file> <binary> — returns 0 iff NO slow-timeout
+# block's filter names binary(<binary>). A substring match over the shared parse,
+# so a narrower test-scoped re-add (`... & test(...)`) is caught too.
+_binary_has_no_slow_override() {
+    local f
+    while IFS= read -r f; do
+        [[ "$f" == *"binary($2)"* ]] && return 1
+    done < <(_slow_timeout_filters_for_file "$1")
+    return 0
+}
+
+_binary_slow_override_reject() { ! _binary_has_no_slow_override "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
 # _classify_overrides_ok <file> — returns 0 iff EVERY slow-timeout override in
@@ -1079,13 +1091,10 @@ for _g in ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; do
         _in_list "$_g" ${_K_SEEN+"${_K_SEEN[@]}"}
 done
 
-# solve_elastic_static_body_e2e is named explicitly: it is the override this task
-# was combined to cover (it had no drift-guard at all before task 6485), so it
-# must be VISIBLY covered rather than only incidentally covered by the loop above.
-assert "K: solve_elastic_static_body_e2e (task 7339's contention-headroom override) is enumerated and gate-resident at ${GATE_RESIDENT_CEILING_SECONDS}s — the previously unguarded block this task closes" \
-    bash -c '[ "$1" = "$2" ]' _ \
-        "$(_slow_ceiling_for_filter "$NEXTEST_TOML" 'package(reify-eval) & binary(solve_elastic_static_body_e2e)')" \
-        "$GATE_RESIDENT_CEILING_SECONDS"
+# Named rather than left to UNCLASSIFIED: this also reds on a block re-added AND
+# re-allowlisted, and its message points at the measurements behind the retirement.
+assert "K: solve_elastic_static_body_e2e carries NO slow-timeout override — the [profile.default] ceiling (${DEFAULT_SECONDS:-?}s) governs it (task 9910 retired task 7339's contention-headroom block on post-9858 measurements; evidence: docs/notes/elastic-body-e2e-solver-threading-measurement.md)" \
+    _binary_has_no_slow_override "$NEXTEST_TOML" solve_elastic_static_body_e2e
 
 assert "K: the two classes PARTITION the file — every enumerated slow-timeout override is consumed by exactly one class" \
     _classify_overrides_ok "$NEXTEST_TOML"
@@ -1837,6 +1846,24 @@ filter = "package(reify-eval) & binary(dquoted_newcomer)"
 slow-timeout = { period = "120s", terminate-after = 99 }
 DQUOTED
 
+# (xii) task 7339's retired solve_elastic_static_body_e2e block, re-added verbatim.
+cp "$NEXTEST_TOML" "$_KL_FIX/retired-readded.toml"
+cat >> "$_KL_FIX/retired-readded.toml" <<'RETIRED_READDED'
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+RETIRED_READDED
+
+# (xiii) the same retired override re-added NARROWER, scoped to a test subset.
+cp "$NEXTEST_TOML" "$_KL_FIX/retired-test-scoped.toml"
+cat >> "$_KL_FIX/retired-test-scoped.toml" <<'RETIRED_TEST_SCOPED'
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(solve_elastic_static_body_e2e) & test(/^non_prismatic_/)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+RETIRED_TEST_SCOPED
+
 assert "K-neg (i): classifier REJECTS an EXTRA override belonging to neither class (a new override must be classified, not absorbed)" \
     _classify_overrides_reject "$_KL_FIX/extra.toml"
 
@@ -1938,6 +1965,18 @@ assert "K-neg (x) fixture is non-vacuous — the double-quoted-filter seed reall
 
 assert "K-neg (x): classifier REJECTS an unclassified override whose filter is double-quoted (both TOML quote characters must be seen)" \
     _classify_overrides_reject "$_KL_FIX/dquoted.toml"
+
+assert "K-neg (xii) fixture is non-vacuous — the retired-block re-add seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/retired-readded.toml"
+
+assert "K-neg (xii): the no-override check REJECTS a re-added binary-scoped solve_elastic_static_body_e2e block" \
+    _binary_slow_override_reject "$_KL_FIX/retired-readded.toml" solve_elastic_static_body_e2e
+
+assert "K-neg (xiii) fixture is non-vacuous — the test-scoped re-add seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/retired-test-scoped.toml"
+
+assert "K-neg (xiii): the no-override check REJECTS a re-added test-scoped solve_elastic_static_body_e2e block" \
+    _binary_slow_override_reject "$_KL_FIX/retired-test-scoped.toml" solve_elastic_static_body_e2e
 
 # Positive controls: the SAME checkers accept the real files, so the rejections
 # above are attributable to the seeded drift and not to checkers that reject

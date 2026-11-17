@@ -25,6 +25,7 @@ pub(crate) mod containment_graph;
 pub use containment_graph::sub_component_forward_adjacency;
 mod builtin_registry;
 mod builtin_signatures;
+mod call_table;
 mod datum_projection;
 mod diagnostics;
 mod entity;
@@ -498,15 +499,11 @@ pub fn merge_prelude_functions(
 /// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
 /// their declaring module.
 ///
-/// `std.determinacy.purposes` is registered LAST in `stdlib_loader::load_stdlib`.
-/// `merge_prelude_purposes` runs for every compile including each intra-stdlib
-/// module compile, but no-ops for all earlier stdlib modules because none of them
-/// declare pub purposes. `std.determinacy.purposes` is the only stdlib module with
-/// pub purposes, and being last it has no successor during `load_stdlib()` — so no
-/// other stdlib module ever sees it as a prelude and inherits its standard purposes.
-/// Stdlib-internal `compiled_purposes` counts and content hashes therefore stay
-/// byte-stable. Only user modules (compiled against the full stdlib) gain the
-/// standard purposes. (task-4016 ζ)
+/// A stdlib module inherits pub purposes only from the modules it imports, and
+/// no stdlib module imports `std.determinacy.purposes`, the only stdlib module
+/// with pub purposes. So only user modules (compiled against the full stdlib)
+/// gain the standard purposes: a prelude for users, not for sibling stdlib
+/// modules. (task-4016 ζ)
 ///
 /// **Hash contract:** the merged purposes are included in `compute_module_hash`,
 /// so a user module's `content_hash` incorporates the full set of available
@@ -644,7 +641,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
     //
     // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
-    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // lowers a declared type name must agree on what `Fit` means: `phase_fn_signatures`
     // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
     // `phase_entities` alone made a trait requirement / fn signature param keep
     // `Type::StructureRef("Fit")` while the conforming structure's param became
@@ -706,7 +703,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `resolve_enum_variant_payloads` reads `ctx.resolution_structure_names` /
     // `ctx.resolution_trait_names`. `build_resolution_names` has no dependency
     // on `resolution_enums`, so running it ahead of the enum clone is
-    // order-safe (its consumers — phase_functions/phase_traits — run later).
+    // order-safe (its consumers — phase_fn_signatures/phase_traits — run later).
     compile_builder::names_phase::build_resolution_names(
         &mut compile_ctx,
         prelude_refs,
@@ -730,11 +727,22 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
-    compile_builder::functions_phase::phase_functions(
+    // Resolve fn SIGNATURES first, then every param default that needs no
+    // same-module template (task 5494 / PRD stdlib-namespace.md D-8). Neither
+    // needs a structure template; together they seed `ctx.resolution_functions`
+    // with signature stubs carrying those defaults for the phases that follow.
+    //
+    // Phase order from here: signatures → template-free param defaults →
+    // traits → fields → constraint_defs → **entities + fn bodies (one unified
+    // pass, source order)** → post-passes. Fn bodies, and defaults that need a
+    // same-module template, are compiled by `phase_entities`, interleaved with
+    // entity templates in declaration order, so a fn body constructing a
+    // same-module structure gets that structure's AUTHORITATIVE template.
+    compile_builder::functions_phase::phase_fn_signatures(&mut compile_ctx, &decl_refs.fn_refs);
+    compile_builder::functions_phase::phase_fn_param_defaults(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,
-        &decl_refs.structure_refs,
     );
 
     let trait_names = compile_builder::traits_phase::phase_traits(

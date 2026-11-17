@@ -47,6 +47,8 @@
 mod cli_broken_pipe;
 #[path = "harness_cli_surface/cli_cache.rs"]
 mod cli_cache;
+#[path = "harness_cli_surface/cli_check_inline_geometry_constraint.rs"]
+mod cli_check_inline_geometry_constraint;
 #[path = "harness_cli_surface/cli_fix_imports.rs"]
 mod cli_fix_imports;
 #[path = "harness_cli_surface/cli_gui.rs"]
@@ -59,6 +61,8 @@ mod cli_lsp;
 mod cli_lsp_protocol;
 #[path = "harness_cli_surface/cli_smoke.rs"]
 mod cli_smoke;
+#[path = "harness_cli_surface/cli_test_report_explain_doc_multi_file.rs"]
+mod cli_test_report_explain_doc_multi_file;
 #[cfg(target_os = "linux")]
 #[path = "harness_cli_surface/rpath_smoke.rs"]
 mod rpath_smoke;

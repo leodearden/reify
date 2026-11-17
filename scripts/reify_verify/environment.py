@@ -31,6 +31,7 @@ from types import MappingProxyType
 from reify_verify import bashcall, childproc, knobs
 from reify_verify.bashcall import BashCall, SourcedFile
 from reify_verify.childproc import CallResult
+from reify_verify.diagnostics import ERROR, WARNING
 from reify_verify.plan import (
     JOBSERVER_VAR,
     CargoEnvMissing,
@@ -122,7 +123,7 @@ def _jobserver(role_policy: RolePolicy, env: Mapping[str, str]) -> tuple[EnvLine
         probe = owner_liveness(fifo)
     if probe.liveness is Liveness.STALE:
         warning = (
-            f"verify.sh: WARNING — stale jobserver FIFO {fifo} (owner pid {probe.pid or '?'} "
+            f"{WARNING}stale jobserver FIFO {fifo} (owner pid {probe.pid or '?'} "
             "not alive / boot mismatch; balancer appears down) — falling back to plain cargo -j"
         )
         return JobserverUnset(UnsetCause.STALE, fifo), warning
@@ -216,7 +217,7 @@ class NextestBroken:
     @property
     def error(self) -> str:
         return (
-            "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe "
+            f"{ERROR}cargo-nextest is present on PATH but the availability probe "
             f"(`{' '.join(NEXTEST_PROBE)}`) failed persistently across "
             f"{self.attempts}/{NEXTEST_PROBE_RETRIES} retries ({self.attempts + 1} probes total, "
             f"including the initial attempt; last retry rc={self.returncode}) — refusing to "

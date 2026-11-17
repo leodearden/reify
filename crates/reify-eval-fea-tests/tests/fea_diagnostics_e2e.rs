@@ -152,7 +152,7 @@ fn no_supports_fixture_emits_fea_under_constrained_warning() {
 // emitted diagnostic's label).
 
 /// Under-constrained-support fixture: a structure with a PointLoad and a
-/// single PRESENT `FixedSupport(target: "tip")` — a non-root selector the
+/// single PRESENT `FixedSupport(target: face(body, "tip"))` — a non-root selector the
 /// synthetic cantilever auto-clamp does not honor.
 ///
 /// Expects:
@@ -162,7 +162,7 @@ fn no_supports_fixture_emits_fea_under_constrained_warning() {
 ///   `code == Some(DiagnosticCode::FeaUnderConstrained)` and message
 ///   containing "supports".
 /// - Exactly one `DiagnosticLabel` whose span start falls within the
-///   fixture's `FixedSupport(target: "tip")` construction-site location —
+///   fixture's `FixedSupport(target: face(body, "tip"))` construction-site location —
 ///   i.e. the offending support's `.ri` source span (task 4089 / PRD B10).
 #[test]
 fn under_constrained_present_but_unhonored_support_emits_labeled_warning() {
@@ -217,12 +217,12 @@ fn under_constrained_present_but_unhonored_support_emits_labeled_warning() {
 
     // The offending support's construction-site location: from the start of
     // the `FixedSupport` callee name through the end of its ctor call
-    // (`FixedSupport(target: "tip")`). Search for the exact ctor-call text
+    // (`FixedSupport(target: face(body, "tip"))`). Search for the exact ctor-call text
     // (not the bare word "FixedSupport"), which also appears earlier in this
     // fixture's doc-comment prose — a bare-word search would match that
-    // comment instead of the actual `let mount = FixedSupport(target: "tip")`
+    // comment instead of the actual `let mount = FixedSupport(target: face(body, "tip"))`
     // construction site.
-    let ctor_call_text = "FixedSupport(target: \"tip\")";
+    let ctor_call_text = "FixedSupport(target: face(body, \"tip\"))";
     let offset = source
         .find(ctor_call_text)
         .expect("fixture must contain the FixedSupport ctor call site") as u32;

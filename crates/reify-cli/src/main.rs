@@ -35,6 +35,7 @@ mod check_verdict;
 mod cmd;
 mod constraint_report;
 mod dev;
+mod diagnostic_line;
 mod help;
 mod module_capabilities;
 mod sigpipe;
@@ -106,8 +107,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// The label on every parse-error line the CLI writes.
+const PARSE_ERROR_LABEL: &str = "Parse error";
+
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
-/// gets, so both entry points cannot drift apart on the prefix or the code.
+/// gets, so every program-compiling command writes the same prefix and exits the same way.
+/// The label in that prefix is `PARSE_ERROR_LABEL`, shared with `report_parse_errors_in`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
@@ -124,9 +129,17 @@ fn main() -> ExitCode {
 /// position gone.
 fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
     for error in rendered {
-        let _ = writeln!(out, "Parse error: {error}");
+        let _ = writeln!(out, "{PARSE_ERROR_LABEL}: {error}");
     }
     ExitCode::FAILURE
+}
+
+/// Writes `report_parse_errors`' lines, each led by `path`, for a command that reports on
+/// several files in one run; the caller owns the failure.
+fn report_parse_errors_in(path: &str, rendered: Vec<String>, out: &mut impl std::io::Write) {
+    for error in rendered {
+        let _ = writeln!(out, "{path}: {PARSE_ERROR_LABEL}: {error}");
+    }
 }
 
 /// The module path a file's own name gives it: its stem as a single segment.
@@ -143,59 +156,22 @@ pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
     ModulePath::single(module_name)
 }
 
-fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path, e);
-            return Err(ExitCode::FAILURE);
-        }
-    };
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, module_path_for_file(path));
-
-    if !parsed.errors.is_empty() {
-        return Err(report_parse_errors(
-            parsed.render_errors(&source),
-            &mut std::io::stderr(),
-        ));
-    }
-
-    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-
-    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-    // parsed.path == module_path_for_file(path) by construction (PRD D-6).
-    if let Some(diag) =
-        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
-    {
-        compiled.diagnostics.push(diag);
-    }
-
-    for diag in &compiled.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
-
-    Ok(compiled)
-}
-
-/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
-/// `#cfg(...)`-gated user-import DAG via
+/// The program compile that program-aware subcommands share: the entry plus
+/// its `#cfg(...)`-satisfied user-import DAG under the active [`CfgSet`], via
 /// [`reify_compiler::program::compile_program_with_parsed_entry`].
 ///
-/// Used only by `reify check`. It preserves single-file behavior — the full
-/// stdlib prelude is still seeded, so every existing `reify check` input keeps
-/// resolving stdlib names — while additionally following the entry's
-/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
-/// modules resolve (task δ's user-observable signal).
+/// It preserves single-file behavior — the full stdlib prelude is still
+/// seeded, so every single-file input keeps resolving stdlib names — while
+/// additionally following the entry's cfg-satisfied user imports, so
+/// `--cfg target=...` selects which platform modules resolve.
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
-/// *inside* the program compile (via `attach_module_path_diag`), so — unlike
-/// [`parse_and_compile`] — this function must NOT re-run it, else the
-/// diagnostic would be emitted twice.
-fn parse_and_compile_with_cfg(
+/// *inside* the program compile (via `attach_module_path_diag`), so this
+/// function must NOT re-run it, else the diagnostic would be emitted twice.
+fn parse_and_compile_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<reify_compiler::CompiledModule, ExitCode> {
+) -> Result<reify_compiler::program::CompiledProgram, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -217,8 +193,8 @@ fn parse_and_compile_with_cfg(
     //
     // `stdlib_root` is INERT on this code path: the program compile skips every
     // `std.*` import (the full stdlib is seeded into the prelude via the cached
-    // stdlib context instead), so the resolver's stdlib_root is never consulted
-    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // stdlib context instead), so the resolver's stdlib_root is never
+    // consulted. We still pass the GUI/LSP-heuristic path
     // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
     // resolver is constructed identically to that bridge; its value has no
     // observable effect here.
@@ -230,21 +206,29 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled = reify_compiler::program::compile_program_with_parsed_entry(
+    let program = reify_compiler::program::compile_program_with_parsed_entry(
         std::path::Path::new(path),
         &source,
         &parsed,
         &resolver,
         cfg,
         &SimpleConstraintChecker,
-    )
-    .entry;
+    );
 
-    for diag in &compiled.diagnostics {
+    for diag in &program.entry.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    Ok(compiled)
+    Ok(program)
+}
+
+/// The entry module of [`parse_and_compile_program`], for a command that needs
+/// nothing else of the program. They differ only in what they return.
+fn parse_and_compile_program_entry(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    parse_and_compile_program(path, cfg).map(|program| program.entry)
 }
 
 /// CLI-local alias for
@@ -440,6 +424,20 @@ mod tests {
             printed.lines().any(|l| l.starts_with(&expected_prefix)),
             "at least one report must land on line {fault_line}, where the fixture's `@@@` \
              fault sits; got {printed:?}"
+        );
+    }
+
+    #[test]
+    fn report_parse_errors_in_leads_each_rendered_error_with_its_file() {
+        let mut out = Vec::new();
+        report_parse_errors_in(
+            "f.ri",
+            vec!["2:20: a".to_string(), "5:1: b".to_string()],
+            &mut out,
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("CLI output must be UTF-8"),
+            "f.ri: Parse error: 2:20: a\nf.ri: Parse error: 5:1: b\n"
         );
     }
 

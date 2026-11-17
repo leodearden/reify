@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Regenerate tree-sitter parser from grammar.js.
+# Regenerate tree-sitter parser from grammar.js into tree-sitter-reify/src, for
+# the tree-sitter CLI (`tree-sitter parse`, as the PRD gate runs it).
 # Produces: src/parser.c, src/grammar.json, src/node-types.json, src/tree_sitter/*.h
 #
+# The cargo build neither calls this script nor reads its output: build.rs
+# generates its own copy into OUT_DIR (#9896).
+#
 # This script is idempotent — safe to run repeatedly.
-# Called by: build.rs (auto), orchestrator verification, hooks/project-checks.
+# Called by: orchestrator verification, hooks/project-checks.
 # Usage: tree-sitter-generate.sh [--force]
 
 set -euo pipefail
@@ -41,7 +45,8 @@ source "$SCRIPT_DIR/lib.sh"
 cd "$TS_DIR"
 
 # Compute grammar hash once before generation (avoids TOCTOU race between
-# staleness check and stamp write — same pattern as build.rs).
+# staleness check and stamp write — the same pattern build.rs uses for its
+# generation key).
 GRAMMAR_HASH=$(compute_sha256 grammar.js | awk '{print $1}')
 STAMP_FILE="src/.grammar_hash.stamp"
 # Content manifest of the generated outputs (`#6992`).  A SIBLING of STAMP_FILE,
@@ -53,6 +58,9 @@ OUTPUTS_STAMP_FILE="src/.generated_outputs.stamp"
 OUTPUTS="grammar.json node-types.json parser.c"
 # Mirrors build_support.rs GENERATED_HEADERS: existence-checked only, not in the manifest.
 GENERATED_HEADERS="tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h"
+# The ABI the generate below passes as `--abi 14` (issue #1). If the two differ,
+# every run regenerates; tests/infra/test_tree_sitter_abi_pin.py catches that.
+GENERATED_PARSER_ABI=14
 
 # _hash_one <path>
 #
@@ -112,6 +120,18 @@ _render_outputs_manifest() {
     done
 }
 
+# _parser_has_pinned_abi
+#
+# Exit 0 when src/parser.c declares `#define LANGUAGE_VERSION
+# $GENERATED_PARSER_ABI`. The stamps attest grammar.js and the output bytes,
+# never the flags the generator ran with, so a parser.c generated before the
+# pin sits behind a consistent stamp pair that only this check can contradict.
+# Mirrors parser_has_pinned_abi in tree-sitter-reify/build_support.rs.
+_parser_has_pinned_abi() {
+    [ "$(awk '$1 == "#define" && $2 == "LANGUAGE_VERSION" { print $3; exit }' \
+        src/parser.c 2>/dev/null)" = "$GENERATED_PARSER_ABI" ]
+}
+
 # _stamp_is_current
 #
 # Exit 0 when BOTH stamps agree with the tree on disk; non-zero otherwise.
@@ -137,6 +157,7 @@ _stamp_is_current() {
     for f in $OUTPUTS $GENERATED_HEADERS; do
         [ -f "src/$f" ] || return 1
     done
+    _parser_has_pinned_abi || return 1
     [ -f "$OUTPUTS_STAMP_FILE" ] || return 1
     # Every recorded entry must match the file on disk, and the manifest must
     # name exactly the expected set — a short manifest attests nothing about the
@@ -157,7 +178,7 @@ _stamp_is_current() {
 #
 # The MANIFEST IS WRITTEN LAST, and the order is load-bearing: a crash between
 # the two leaves a grammar stamp with no manifest beside it, which
-# _stamp_is_current and build_support.rs both read as STALE.  The reverse order
+# _stamp_is_current reads as STALE.  The reverse order
 # would leave a complete manifest beside a grammar stamp describing the PREVIOUS
 # grammar — a stamp pair that actively lies.
 #
@@ -251,7 +272,8 @@ _cleanup_partial_outputs() {
 
 GEN_EXIT=0
 # Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
-portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
+# ABI 14 (= GENERATED_PARSER_ABI) is the newest the workspace's tree-sitter = "0.24" runtime loads (issue #1); see tests/infra/test_tree_sitter_abi_pin.py.
+portable_timeout 60 tree-sitter generate --abi 14 || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     # Remove any partial output files left by the killed process to prevent
@@ -277,13 +299,13 @@ done
 # byte-identical to what it has always held.
 #
 # NEVER FATAL, and the outputs are never touched here — the same call
-# build_support.rs's `write_shell_stamps` makes for the identical condition.
-# The outputs above were generated and existence-verified; only their
-# attestation failed, which leaves them UNPROVEN, and both _stamp_is_current
-# and build.rs's needs_generate read unproven as STALE.  So the next run
-# self-heals at the cost of one regeneration.  Deleting a good parser.c and
-# exiting 1 instead would turn a transient hasher fault into a hard failure of
-# every caller (build.rs, hooks/project-checks, verify) — a far worse trade
+# build_support.rs's `write_generation_stamps` makes for the identical
+# condition. The outputs above were generated and existence-verified; only
+# their attestation failed, which leaves them UNPROVEN, and _stamp_is_current
+# reads unproven as STALE.  So the next run self-heals at the cost of one
+# regeneration.  Deleting a good parser.c and exiting 1 instead would turn a
+# transient hasher fault into a hard failure of every caller
+# (hooks/project-checks, verify) — a far worse trade
 # than the regeneration.  Both stamps go, not just the one that failed: a
 # grammar stamp with no manifest beside it is exactly the unproven state
 # intended, while a surviving pair could vouch for bytes nothing verified.

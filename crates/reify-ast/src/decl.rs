@@ -14,6 +14,7 @@ use std::ops::ControlFlow;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 use crate::ast::{Expr, TypeExpr};
+use crate::import_kind::ImportKind;
 
 /// A parsed module — the output of the parser.
 #[derive(Debug, Clone)]
@@ -1396,21 +1397,6 @@ pub enum ForallConstraintBody {
     Constraint(ConstraintDecl),
     /// `forall v in coll: constraint MinDist(point: v.center)`
     Instantiation(ConstraintInstDecl),
-}
-
-/// The kind of import (determines how names are brought into scope).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ImportKind {
-    /// `import std.math` — import entire module
-    Module,
-    /// `import std.math.sqrt` — import a single entity
-    Entity(String),
-    /// `import std.mech.{Bolt, Nut}` — import multiple entities
-    Destructured(Vec<String>),
-    /// `import std.mech as m` — import module with alias
-    Aliased { alias: String },
-    /// `import std.mech.Bolt as StdBolt` — import entity with alias
-    EntityAliased { entity: String, alias: String },
 }
 
 /// `import std.mechanical.fasteners`

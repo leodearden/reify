@@ -118,6 +118,12 @@ tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted
 # ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
 # 3b to that sibling (no second inline copy, no silent skip when it is missing).
 scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9765: the built-tree arm of refresh-warm-base.sh's inv.9 guard, pinned by a .py suite.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_built_tree.sh
+tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_base_built_tree.sh
+# Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
+# or reshaping that sidecar reds here instead of disabling the guard fail-open.
+scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
@@ -654,6 +660,18 @@ tree-sitter-reify/src/scanner.c      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
 
+# Task 9727 (issue #1): both generators must pass `--abi 14`, held by one
+# behavioural suite. The .py row mirrors test_flake_density_report.py above:
+# a diff touching only the .py otherwise selects no infra test at all.
+# build_support.rs is build.rs's `include!`d half: it owns run_with_timeout,
+# which hands the CLI that argv, and the staleness predicates, so it routes to
+# both suites that drive the real build.rs (the Task 5629 block above lacks it).
+tree-sitter-reify/build.rs           tests/infra/test_tree_sitter_abi_pin.sh
+tree-sitter-reify/build_support.rs   tests/infra/test_tree_sitter_abi_pin.sh
+tree-sitter-reify/build_support.rs   tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_abi_pin.sh
+tests/infra/test_tree_sitter_abi_pin.py    tests/infra/test_tree_sitter_abi_pin.sh
+
 # Task 7139: the reify-audit binary-freshness guard library and the pre-done
 # hook wrapper that consumes it. NEITHER had a row here, so on the task role
 # (DF_VERIFY_ROLE != merge && != background) a diff touching only these two
@@ -892,19 +910,26 @@ tests/infra/harness-layout-lib.sh    tests/infra/test_verify_narrowing_selection
 scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_narrowing_selection.sh
 
 # S18 γ1 (#9098; PRD verify-structured-plan-and-role-table D13, D14): B1, the plan-parity members.
-# The core member and its lint/typecheck grid shards share the harness and the clone, so the
-# shared modules select every member (the glob); each member's own .py selects its wrapper.
+# The core member, its per-action grid shards and the γ2 (#9099) test-region members share the
+# harness and the clone, so the shared modules select every member (the glob); each member's own
+# .py selects its wrapper.
 tests/infra/test_verify_plan_parity.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/test_verify_plan_parity_lint.py    tests/infra/test_verify_plan_parity_lint.sh
 tests/infra/test_verify_plan_parity_typecheck.py    tests/infra/test_verify_plan_parity_typecheck.sh
+tests/infra/test_verify_plan_parity_test.py    tests/infra/test_verify_plan_parity_test.sh
+tests/infra/test_verify_plan_parity_all.py    tests/infra/test_verify_plan_parity_all.sh
+tests/infra/test_verify_plan_parity_region.py    tests/infra/test_verify_plan_parity_region.sh
+tests/infra/test_verify_plan_parity_retry.py    tests/infra/test_verify_plan_parity_retry.sh
 tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_parity*.sh
 scripts/verify-ledger.py    tests/infra/test_verify_plan_parity.sh
-# The plan-model unit member: its own .py and the env helper it imports select its wrapper; the
-# package modules select it through their tests/infra/test_verify_*.sh rows.
+# The plan-model unit member: its own .py and the helpers it imports, the clone harness included,
+# select its wrapper; the package modules select it through their tests/infra/test_verify_*.sh rows.
 tests/infra/test_verify_plan_model.py    tests/infra/test_verify_plan_model.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_model.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_plan_model.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_model.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_policy.sh
@@ -916,3 +941,17 @@ scripts/reify_verify/environment.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/environment.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/jsondata.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/jsondata.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/nextest.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/nextest.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/retry.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/retry.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_policy.sh
+# The plan-model member compares nextest_config_path's lines with the generator's own stderr.
+scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh

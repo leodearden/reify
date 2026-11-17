@@ -43,10 +43,10 @@ structure ThinWalledBracket {
     let material = Steel_AISI_1045()
 
     // Loads: 20 N point load applied at the bracket tip.
-    let tip_load = PointLoad(point: "tip", force: 20.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 20.0)
 
     // Supports: fully clamped (fixed) at the bracket root.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline.

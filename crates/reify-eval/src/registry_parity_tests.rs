@@ -71,9 +71,10 @@
 //! 4. **It creates no new gate artifact.** An in-crate `#[cfg(test)] mod` is
 //!    neither a `crates/*/tests/*.rs` integration binary nor a
 //!    `tests/infra/test_*.sh` script, so it fires neither the overlay rule's
-//!    drift-guard registration trigger (`.claude/skills/prd/project.md:170`)
-//!    nor the I-REG-1 string-dispatch scan, which masks `#[cfg(test)]` blocks
-//!    before scanning. The per-anchor adjudication is recorded in
+//!    drift-guard registration trigger (`.claude/skills/prd/project.md` →
+//!    "Gate-test drift-guard registration") nor the I-REG-1 string-dispatch
+//!    scan, which masks `#[cfg(test)]` blocks before scanning. The per-anchor
+//!    adjudication is recorded in
 //!    `docs/prds/v0_6/builtin-signature-registry.capability-manifest.md`.
 //!
 //! # Why a trivial-accept pair is `Vacuous`, not a pass
@@ -573,7 +574,7 @@ fn ill_formed_sample_point<'a>(
 /// the kernel, the kernel's own guard yields `Value::Undef`, and the sweep
 /// reports the row `Vacuous` for a reason that has nothing to do with the row's
 /// signature. The harness would then be accusing the registry of a fault in
-/// this file.
+/// `registry_parity_tests/probes.rs`.
 ///
 /// The "same number of values as types" check this test used to open with is
 /// gone, deliberately: [`Probe::args`] is a list of PAIRS, so that invariant
@@ -602,7 +603,8 @@ fn representative_probes_are_well_formed_for_every_row() {
                 row.arity.matches(probe.args.len()),
                 "{at}: {} argument(s) do not match the row's declared arity \
                  {:?} — the kernel would short-circuit to Value::Undef and \
-                 the sweep would blame the row for this file's mistake",
+                 the sweep would blame the row for a mistake in \
+                 registry_parity_tests/probes.rs",
                 probe.args.len(),
                 row.arity
             );

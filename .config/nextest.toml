@@ -46,11 +46,9 @@ occt = { max-threads = 24 }
 # THREE TIERS of ceiling live in this file (task 6485):
 #   - default (here): 1200s = 120s x 10. Everything with no more specific
 #     override.
-#   - gate-resident: 1800s = 120s x 15, on the two blocks that DO run on the
-#     merge gate — representation_within_assertion (LPT tier 50) and
-#     solve_elastic_static_body_e2e (task 7339, contention headroom rather than
-#     intrinsic slowness; see that block's own comment). Both must stay strictly
-#     under the 3600s pass-level wall.
+#   - gate-resident: 1800s = 120s x 15, on the one block that DOES run on the
+#     merge gate — representation_within_assertion (LPT tier 50). It must stay
+#     strictly under the 3600s pass-level wall.
 #   - heavy: 2160s = 120s x 18, on all 8 members of
 #     REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh). Was 43200s
 #     (12h) until task 7552, which measured the heavy set for the first time and
@@ -349,8 +347,7 @@ priority = 100
 # margin over the measured budget and costs only false-kill margin that was
 # already generous.
 #
-# STATE BOTH BOUNDS HONESTLY, as the task 7339 block at the end of this file
-# does. The measured worst per-test cost across the heavy set is 545.2s in DEBUG
+# STATE BOTH BOUNDS HONESTLY. The measured worst per-test cost across the heavy set is 545.2s in DEBUG
 # and 545.0s in RELEASE — the same test at the same cost, which matters because
 # this ceiling governs BOTH profiles and a release-only figure would have been
 # standing in for a bound it never validated. 2160s is ~4.0x that worst observed
@@ -395,8 +392,7 @@ slow-timeout = { period = "120s", terminate-after = 18 }
 #
 # slow-timeout ONLY, no `priority` key: none of these was ever in the LPT tier,
 # and adding one would silently change merge-gate scheduling — a distinct lever
-# from a kill ceiling, out of scope here (the same reasoning the task 7339 block
-# at the end of this file records for itself).
+# from a kill ceiling, out of scope here.
 #
 # Each `filter` value below is BYTE-IDENTICAL to its atom in
 # REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh) with the outer
@@ -427,54 +423,14 @@ slow-timeout = { period = "120s", terminate-after = 18 }
 filter = 'package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/)'
 slow-timeout = { period = "120s", terminate-after = 18 }
 
-# solve_elastic_static_body_e2e (reify-eval): NOT a 6th "intrinsically slow"
-# heavy binary like the 5 above — its own history says otherwise. Across
-# data/verify-logs/, 71 recorded PASS entries: min 40.216s, median 171.573s,
-# max 527.959s. Task 5097's attempt-1 (HEAD=d8ea07a52072241e8217b0ccd57f4680b0fd9205,
-# 2026-09-08, esc-5097-3) is the ONLY recorded TIMEOUT for this test ever, hit
-# on the un-overridden [profile.default] 1200s ceiling while the host was
-# under measured CPU oversubscription (/proc/loadavg 106.60-129.65 on 32
-# cores, PSI cpu some avg10=65.72, a second full-workspace nextest run
-# executing concurrently) — a branch that touches zero files under crates/,
-# .config/ or scripts/, so the test itself did not regress. A same-commit,
-# same-profile standalone rerun under similar contention passed at 615.418s.
-# This test does perform TWO full builds (a two-case case plus a one-case
-# control) versus the siblings' one, so ~2x their per-run cost is expected
-# and is folded into the numbers above — it is not evidence of a 3rd,
-# separate slow mode.
-#
-# So: this override buys CONTENTION headroom (task 7339, filed from
-# esc-5097-3), not headroom for intrinsic cost in the sense the
-# [profile.default] comment above anticipates ("A future test that
-# legitimately needs >20 minutes"). Do not read the mere presence of this
-# block as evidence the test is a genuine 20+-minute test; a future reader
-# retuning these ceilings should treat its basis as distinct from the 5
-# above. terminate-after = 15 (1800s) mirrors the sibling blocks' value.
-# State both bounds honestly, since they diverge: ~3x headroom over the
-# worst COMPLETED run (615s) even under contention, but only ~1.5x over the
-# LOWER BOUND of the one observed timeout — esc-5097-3 was SIGTERMed at the
-# prior 1200s ceiling, so its true demand under that contention is unknown
-# and strictly greater than 1200s, and against that observation (not the
-# completed-run figure) the new ceiling carries much thinner margin.
-# Intentionally NOT going higher than 1800s regardless: raising
-# terminate-after further would only widen the window before a genuine hang
-# in this binary is attributed and killed (the exact problem task 5141
-# introduced this per-test ceiling to fix). That widening is accepted here
-# as the cost of absorbing contention; shrinking host oversubscription
-# itself is a scheduler/capacity lever (task 5185, cancelled) and is out of
-# scope. FOLLOW-UP SIGNAL: a second timeout at 1800s under similar
-# contention means the contention lever, not this ceiling, is the
-# remaining fix — do not respond to a repeat by raising terminate-after
-# again.
-#
-# No `priority` key on this block, unlike the 5 LPT-tier siblings above:
-# deliberately left at nextest's default (0) to keep this change a pure
-# slow-timeout adjustment within task 7339's scope. This test's measured
-# runtimes (median 171.573s, max up to 615s) would plausibly qualify it for
-# the secondary LPT tier (priority = 50) as scheduling headroom against the
-# same makespan pressure this override absorbs — see the LPT scheduling
-# comment above — but that is a distinct lever, deliberately left for a
-# follow-up rather than folded into this task.
-[[profile.default.overrides]]
-filter = 'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
-slow-timeout = { period = "120s", terminate-after = 15 }
+# solve_elastic_static_body_e2e (reify-eval): NO override. It inherits
+# [profile.default]'s 1200s ceiling (task 9910). Task 7339's 1800s
+# contention-headroom block was retired: the binary timed out at 1800s four
+# times, every one before task 9858 serialised its two host-width-threaded
+# stages (plain gmsh producer, CG solve). Since 9858 its slowest test, B9
+# (non_prismatic_two_case_build_realizes_body_exactly_once), measured 14.1-44.5s
+# across debug and release on the 32-core main host (loadavg up to 277) and the
+# 16-core laptop: ~27x under 1200s, against the 3x false-kill floor (task 7339 /
+# 7552 precedent). A 1200s timeout of this binary is a regression to escalate
+# with its data/verify-logs path, not a cue to re-add an override. Numbers:
+# docs/notes/elastic-body-e2e-solver-threading-measurement.md.

@@ -8,7 +8,7 @@
 //! ```ri
 //! let body = box(40mm, 40mm, 10mm)
 //! let mat  = as_printed_material(body, FDMProcess())
-//! let result = solve_elastic_static(mat, 40mm, 40mm, 10mm, [PointLoad()], [FixedSupport()])
+//! let result = solve_elastic_static(mat, 40mm, 40mm, 10mm, [PointLoad(point: vertex(body, "tip"))], [FixedSupport(target: face(body, "root"))])
 //! ```
 //!
 //! ## RED state
@@ -78,7 +78,7 @@ fn field_arg_to_solve_elastic_static_compiles_without_conformance_error() {
 structure def HeteroElasticSmoke {
     let body   = box(40mm, 40mm, 10mm)
     let mat    = as_printed_material(body, FDMProcess())
-    let result = solve_elastic_static(mat, 40mm, 40mm, 10mm, [PointLoad()], [FixedSupport()])
+    let result = solve_elastic_static(mat, 40mm, 40mm, 10mm, [PointLoad(point: vertex(body, "tip"))], [FixedSupport(target: face(body, "root"))])
 }
 "#;
 

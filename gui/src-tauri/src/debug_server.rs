@@ -142,7 +142,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "store_state",
-            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle)",
+            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle), document (loaded, error, recent, pending: the Start view's document state), mode (selected, debugPort, error: the launch mode)",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -3278,25 +3278,29 @@ impl BoundDebugListener {
     }
 }
 
-/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
-/// the debug server is not live in this process.
-pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
-    if !debug_enabled {
-        return None;
-    }
-    match BoundDebugListener::bind(port) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            eprintln!(
-                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
-                 the in-app assistant will get no reify-debug tools"
-            );
-            None
-        }
-    }
-}
-
 // --- Server spawn ---
+
+/// Serve `routes` on `listener`, admitting only requests addressed to its bound
+/// loopback address (docs/debug-mcp-contract.md §7).
+pub(crate) async fn serve_debug_routes(
+    listener: BoundDebugListener,
+    routes: Router,
+) -> Result<(), String> {
+    let endpoint = listener.endpoint_url();
+    let bound = listener
+        .listener
+        .local_addr()
+        .map_err(|e| format!("failed to read debug listener address for {endpoint}: {e}"))?;
+    let app = crate::loopback_request_guard::admit_only_requests_addressed_to(routes, bound);
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
+
+    tracing::info!("Debug server listening on {endpoint}");
+
+    axum::serve(listener, app.into_make_service())
+        .await
+        .map_err(|e| format!("debug server error: {e}"))
+}
 
 pub async fn spawn_debug_server(
     listener: BoundDebugListener,
@@ -3324,15 +3328,7 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let endpoint = listener.endpoint_url();
-    let listener = tokio::net::TcpListener::from_std(listener.listener)
-        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
-
-    tracing::info!("Debug server listening on {endpoint}");
-
-    axum::serve(listener, app.into_make_service())
-        .await
-        .map_err(|e| format!("debug server error: {e}"))
+    serve_debug_routes(listener, app).await
 }
 
 #[cfg(test)]

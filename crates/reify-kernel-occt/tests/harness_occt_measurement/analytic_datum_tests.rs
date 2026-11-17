@@ -62,6 +62,18 @@ fn box_kernel(side: f64) -> (OcctKernel, GeometryHandleId) {
     (kernel, h.id)
 }
 
+/// Build a kernel with a sphere of `radius` metres centred at the origin.
+/// Returns the kernel and the sphere body handle.
+fn sphere_kernel(radius: f64) -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let h = kernel
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(radius),
+        })
+        .expect("sphere creation should succeed");
+    (kernel, h.id)
+}
+
 // ── Value decomposition helpers ──────────────────────────────────────────────
 
 /// Decompose a `Value::Point` (3 numeric components) into `[x, y, z]`.
@@ -80,7 +92,7 @@ fn point_xyz(v: &Value) -> [f64; 3] {
 /// into `[x, y, z]`.
 fn dir_xyz(v: &Value) -> [f64; 3] {
     match v {
-        Value::Direction { x, y, z } => [*x, *y, *z],
+        Value::Direction(u) => u.components(),
         Value::Vector(comps) if comps.len() == 3 => [
             comps[0].as_f64().expect("dir component 0 numeric"),
             comps[1].as_f64().expect("dir component 1 numeric"),
@@ -215,6 +227,26 @@ fn box_planar_top_face_projects_to_plane() {
         (origin[2] - half).abs() < LIN_TOL,
         "top-face plane datum origin must lie on z = +{half} (got z = {})",
         origin[2]
+    );
+}
+
+/// A sphere's (`GeomAbs_Sphere`) face projects to a `Value::Point` at the
+/// sphere centre. The FFI payload's direction is ZERO for this kind, so a Rust
+/// minter that built a unit direction before matching on the datum kind would
+/// turn every sphere-face datum into an error; this pins that it does not.
+#[test]
+fn sphere_face_projects_to_centre_point() {
+    let (mut kernel, sphere) = sphere_kernel(0.004);
+    let face = find_face_of_kind(&mut kernel, sphere, "Sphere");
+
+    let datum = kernel
+        .query(&GeometryQuery::FaceAnalyticDatum(face))
+        .expect("FaceAnalyticDatum on a spherical face should succeed");
+
+    let centre = point_xyz(&datum);
+    assert!(
+        centre.iter().all(|c| c.abs() < LIN_TOL),
+        "sphere-face datum must be the centre point at the origin, got {centre:?}"
     );
 }
 

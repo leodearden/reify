@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import { createLayoutStore, type LayoutStore } from '../stores/layoutStore';
 import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import type { DebugStores } from '../debug/types';
 
 /**
@@ -95,6 +96,7 @@ export function makeDebugStores(): DebugStores {
     viewState: makeViewStateStoreMock(),
     layout: makeLayoutStore(),
     viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 

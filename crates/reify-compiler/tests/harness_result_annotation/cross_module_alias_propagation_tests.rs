@@ -452,9 +452,8 @@ fn parametric_pub_prelude_alias_resolves_via_body_no_panic() {
 /// `Rate<Length>` → body `Q / Time` with Q=Length → LENGTH / TIME = VELOCITY.
 ///
 /// This is the precise, harness-free counterpart to the committed .ri signal
-/// (S7/S8); it also guards that adding `Rate` to units.ri keeps the stdlib
-/// build clean (the `signal_2_real_stdlib_compiles_clean_and_order_is_stable`
-/// test in stdlib_topo.rs auto-covers that).
+/// (S7/S8). That adding `Rate` to units.ri keeps the stdlib build clean is
+/// enforced by `load_stdlib`'s NS-M2 panic on any Error diagnostic.
 ///
 /// RED on base: `Rate` is not yet declared in units.ri → unresolved-type Error.
 #[test]

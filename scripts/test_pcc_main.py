@@ -37,6 +37,7 @@ from _pcc_test_support import (
     make_fixture_repo,
     probe_context,
     recording_runner,
+    trust_ctx,
 )
 from _schema_test_support import schema_errors
 
@@ -1427,6 +1428,52 @@ class TestReifyBinaryRefusal(_MainHarness, unittest.TestCase):
         )
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(len(calls), 1)
+
+
+class TestBinaryTrustOnMain(_MainHarness, unittest.TestCase):
+    """main() over a ctx the REAL trust home built: only a vouched binary runs probes.
+
+    The ctx comes from the public ProbeContext.from_environment() over a fixture
+    git repository, so scripts/reify-bin-freshness.sh decides, exactly as on a
+    real invocation, and this pins the two languages' verdict protocol together.
+    """
+
+    _RELEASE = "target/release/reify"
+
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_main_"))
+
+    def test_an_unvouched_lone_binary_is_refused_before_any_probe_runs(self):
+        for sidecar in (None, "0" * 40):
+            with self.subTest(sidecar=sidecar):
+                release, ctx = trust_ctx(self._fresh_root(), self._RELEASE,
+                                         lambda _head: sidecar)
+                runner, calls = recording_runner()
+                rc, _, err = self._run_main_capturing([_EXAMPLE_PROBE_SET],
+                                                      runner=runner, ctx=ctx)
+                self.assertEqual(rc, 64, err)
+                self.assertIn(release, err)
+                self.assertIn("REIFY_BIN", err)
+                self.assertEqual(calls, [])
+
+    def test_a_vouched_lone_binary_runs_the_probes(self):
+        release, ctx = trust_ctx(self._fresh_root(), self._RELEASE, lambda head: head + "\n")
+        runner, calls = recording_runner()
+        rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
+        self.assertNotEqual(rc, 64, out + err)
+        self.assertTrue(calls)
+        for _probe, probe_ctx, _timeout in calls:
+            self.assertEqual(probe_ctx.reify_bin, release)
+
+    def test_nothing_built_is_refused_before_any_probe_runs(self):
+        _, ctx = trust_ctx(self._fresh_root())
+        runner, calls = recording_runner()
+        rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET],
+                                                runner=runner, ctx=ctx)
+        self.assertEqual(rc, 64, err)
+        self.assertIn("REIFY_BIN", err)
+        self.assertEqual(out, "")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

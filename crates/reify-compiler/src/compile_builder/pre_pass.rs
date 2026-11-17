@@ -1,12 +1,12 @@
 //! Pre-pass helpers for [`crate::compile_with_prelude_refs`]: parse-error
-//! forwarding, module-pragma validation, and `#no_prelude` shadowing.
+//! forwarding, module-pragma validation, `#no_prelude` shadowing, and the
+//! top-of-file `module` declaration check.
 //!
-//! Each helper operates on `&mut CompilationCtx`, pushing diagnostics but
-//! otherwise performing no compilation work — that happens in the later
+//! None of the helpers performs compilation work — that happens in the later
 //! phase modules.
 
 use reify_ast::{
-    Declaration, FieldDef, FnDef, ParsedModule, StructureDef, TraitDecl, TypeAliasDecl, UnitDecl,
+    Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
@@ -88,6 +88,25 @@ pub(crate) fn effective_prelude<'a>(
     if has_no_prelude { &[] } else { prelude }
 }
 
+/// Where the path a module must declare comes from, so a mismatch names what fixes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExpectedPathOrigin {
+    /// Resolved from the file's location: user files and filesystem std modules.
+    FileLocation,
+    /// The name an embedded stdlib module is registered under in
+    /// `stdlib_loader::stdlib_sources()`.
+    StdlibRegistration,
+}
+
+impl ExpectedPathOrigin {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::FileLocation => "derived from file location",
+            Self::StdlibRegistration => "the name it is registered under in stdlib_sources()",
+        }
+    }
+}
+
 /// Check the top-of-file `module` declaration against the resolver-derived path.
 ///
 /// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
@@ -101,6 +120,14 @@ pub fn check_module_path_decl(
     declared: Option<&ModulePath>,
     expected: &ModulePath,
 ) -> Option<Diagnostic> {
+    module_path_decl_diag(declared, expected, ExpectedPathOrigin::FileLocation)
+}
+
+fn module_path_decl_diag(
+    declared: Option<&ModulePath>,
+    expected: &ModulePath,
+    origin: ExpectedPathOrigin,
+) -> Option<Diagnostic> {
     match declared {
         None => Some(Diagnostic::warning(format!(
             "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
@@ -109,13 +136,27 @@ pub fn check_module_path_decl(
         ))),
         Some(d) if d != expected => Some(Diagnostic::error(format!(
             "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' (derived from file location); declare `{}` instead \
-             (spec \u{00a7}7.1)",
+             expected path '{}' ({}); declare `{}` instead (spec \u{00a7}7.1)",
             d.0.join("."),
             expected.0.join("."),
+            origin.describe(),
             module_declaration(expected)
         ))),
         Some(_) => None,
+    }
+}
+
+/// Push the module-path diagnostic for `parsed`'s declared module path, if any, onto
+/// `compiled`; `origin` says where `parsed.path` came from.
+pub(crate) fn attach_module_path_diag(
+    compiled: &mut CompiledModule,
+    parsed: &ParsedModule,
+    origin: ExpectedPathOrigin,
+) {
+    if let Some(diag) =
+        module_path_decl_diag(parsed.declared_module_path.as_ref(), &parsed.path, origin)
+    {
+        compiled.diagnostics.push(diag);
     }
 }
 
@@ -137,12 +178,6 @@ pub(crate) struct DeclRefs<'a> {
     pub(crate) field_refs: Vec<&'a FieldDef>,
     pub(crate) unit_refs: Vec<&'a UnitDecl>,
     pub(crate) alias_refs: Vec<&'a TypeAliasDecl>,
-    /// Same-module `structure_def` declarations, in source order, first-def only.
-    ///
-    /// Used by `phase_functions` to build skeleton [`TopologyTemplate`]s so that
-    /// fn bodies can lower `Foo()` to `StructureInstanceCtor` before
-    /// `phase_entities` runs (task 3895).
-    pub(crate) structure_refs: Vec<&'a StructureDef>,
 }
 
 /// Single-pass scan over `parsed.declarations` that:
@@ -151,12 +186,12 @@ pub(crate) struct DeclRefs<'a> {
 /// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
 ///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
 ///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
-///   namespace),
+///   namespace), and records each `Structure` name — top-level or nested in a
+///   `Purpose` — in `ctx.local_structure_def_names`,
 /// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
 ///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
 ///
-/// `Import` and `Purpose` are deliberately untouched — they are handled in
-/// the entities phase and the dedicated purpose pass, respectively.
+/// `Import` is deliberately untouched — it is handled in the entities phase.
 pub(crate) fn collect_decl_refs<'a>(
     ctx: &mut CompilationCtx,
     parsed: &'a ParsedModule,
@@ -167,7 +202,6 @@ pub(crate) fn collect_decl_refs<'a>(
         field_refs: Vec::new(),
         unit_refs: Vec::new(),
         alias_refs: Vec::new(),
-        structure_refs: Vec::new(),
     };
 
     for decl in &parsed.declarations {
@@ -202,7 +236,7 @@ pub(crate) fn collect_decl_refs<'a>(
             }
             Declaration::Structure(structure) => {
                 if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
-                    refs.structure_refs.push(structure);
+                    ctx.local_structure_def_names.insert(structure.name.clone());
                 }
             }
             Declaration::Occurrence(occurrence) => {
@@ -221,22 +255,14 @@ pub(crate) fn collect_decl_refs<'a>(
             }
             Declaration::Purpose(p) => {
                 // task 4639: reserve nested structure names in the entity
-                // namespace (spec §4.2.1) for duplicate detection and so they
-                // flow into `structure_names`. NOT pushed to refs.structure_refs
-                // — compiled by the Purpose arm in phase_entities instead.
-                //
-                // Intentional limitation: because purpose-nested structures are
-                // absent from `structure_refs`, `phase_functions` will NOT build a
-                // skeleton TopologyTemplate for them (it only walks `structure_refs`).
-                // This means a function body that refers to a purpose-nested structure
-                // as a type parameter (e.g. `fn foo(x: InPurpose)`) has a name that
-                // resolves via `structure_names` but no matching skeleton — an
-                // unresolved-type error will be emitted at that function's compile
-                // site. This is the intended behaviour for the v1 ambient-default
-                // scope (task 4639): purpose-nested structures are not referenceable
-                // from function signatures/bodies.
+                // namespace (spec §4.2.1). Compiled by the Purpose arm in
+                // phase_entities; a fn uses one under the same declared-above
+                // rule as a top-level structure def
+                // (`DiagnosticCode::StructureDeclaredAfterFunction`).
                 for s in &p.structures {
-                    ctx.record_or_report_duplicate(&s.name, s.span, "structure");
+                    if ctx.record_or_report_duplicate(&s.name, s.span, "structure") {
+                        ctx.local_structure_def_names.insert(s.name.clone());
+                    }
                 }
             }
             // Import handled in pass 2
@@ -303,6 +329,11 @@ mod tests {
         assert!(
             diag.message.contains("module sub.dep"),
             "message should name the corrective declaration 'module sub.dep', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("derived from file location"),
+            "the public check names the file location as the expected path's source, got: {}",
             diag.message
         );
     }

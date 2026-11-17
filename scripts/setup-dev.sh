@@ -610,6 +610,12 @@ else
 fi
 
 # ---------- tree-sitter-cli ----------
+# Tested with tree-sitter-cli 0.26.8 (tests/infra/test_tree_sitter_abi_pin.sh).
+# The install below deliberately carries NO version pin: both generators
+# (scripts/tree-sitter-generate.sh and tree-sitter-reify/build.rs) pass
+# `--abi 14`, the newest ABI the workspace's tree-sitter = "0.24" runtime loads,
+# so a newer CLI that defaults to ABI 15 (0.25+, issue #1) still emits a
+# loadable parser.
 
 if command -v tree-sitter &>/dev/null; then
     ok "tree-sitter $(tree-sitter --version 2>/dev/null | awk '{print $2}')"

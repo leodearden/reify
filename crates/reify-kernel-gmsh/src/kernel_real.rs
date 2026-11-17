@@ -401,6 +401,22 @@ impl Default for GmshKernel {
 const TRAIT_DISPATCH_MSG: &str = "Gmsh trait dispatch through GeometryKernel::execute is not \
     yet routed for Mesh→VolumeMesh; call `GmshKernel::mesh_to_volume` directly.";
 
+/// The [`crate::MeshingOptions`] every `GeometryKernel` volume producer below
+/// meshes with: one gmsh thread (`deterministic: true`), per Leo's ruling D-J
+/// (`docs/prds/v0_6/meshing-service.md`).
+///
+/// Multi-threaded HXT drifts run to run and is slower at every measured scale:
+/// its wall time is synchronization latency, which host load amplifies without
+/// bound. The trait methods carry no `MeshingOptions`, so this pin reaches every
+/// engine `VolumeMesh` realization and no caller can opt out. Numbers:
+/// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+fn trait_producer_meshing_options() -> crate::MeshingOptions {
+    crate::MeshingOptions {
+        deterministic: true,
+        ..Default::default()
+    }
+}
+
 impl GeometryKernel for GmshKernel {
     fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         Err(GeometryError::OperationFailed(TRAIT_DISPATCH_MSG.into()))
@@ -464,6 +480,12 @@ impl GeometryKernel for GmshKernel {
     /// merges bit-identical OCCT corners and drops slivers; mesh size
     /// auto-derives; the through-thickness post-stage is disabled. Element-order
     /// threading is the call edge's concern (α hardcodes P1).
+    ///
+    /// # Why one gmsh thread
+    ///
+    /// See `trait_producer_meshing_options`. Guarded by
+    /// `tests/mesh_to_volume_tests.rs`'s
+    /// `trait_mesh_surface_to_volume_output_is_reproducible_across_repeated_calls`.
     fn mesh_surface_to_volume(
         &self,
         surface: &Mesh,
@@ -471,7 +493,7 @@ impl GeometryKernel for GmshKernel {
     ) -> Result<VolumeMesh, GeometryError> {
         let report = crate::mesh_surface_to_volume_with_diagnostics(
             surface,
-            &crate::MeshingOptions::default(),
+            &trait_producer_meshing_options(),
             element_order,
             Some(crate::repair::RepairConfig::default()),
             None,
@@ -538,11 +560,13 @@ impl GeometryKernel for GmshKernel {
     /// `reify-eval`'s `engine_build.rs`) degrades to the plain
     /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
     ///
-    /// # Why `deterministic: true`
+    /// # Why one gmsh thread
     ///
-    /// Load-bearing, not decorative — same register as `reify-eval`'s
+    /// The policy is `trait_producer_meshing_options`, shared with
+    /// [`Self::mesh_surface_to_volume`]. Here it is also load-bearing for the
+    /// morph arm — same register as `reify-eval`'s
     /// `RealizedAdaptiveProblem::new`, which pins the adaptive-REFINE step for
-    /// the same reason; this closes the seed/refine asymmetry noted there.
+    /// the same reason.
     ///
     /// `reify-eval`'s `engine_build` stashes any produced `VolumeMesh` as the
     /// next tick's `MorphSource::source_mesh`, but `decide_morph_or_remesh`
@@ -551,25 +575,13 @@ impl GeometryKernel for GmshKernel {
     /// practice this override is the morph arm's sole source supplier.
     /// `reify-mesh-morph` judges the MORPHED mesh against ABSOLUTE quality
     /// floors, so a source that varies run-to-run makes the morph-or-remesh
-    /// verdict depend on thread scheduling rather than on the geometry.
-    /// `deterministic: true` pins `General.NumThreads = 1` (the thread block in
-    /// [`crate::mesh_surface_to_volume_with_attribution`]) and makes the output
-    /// bit-reproducible.
+    /// verdict depend on thread scheduling rather than on the geometry. One
+    /// thread makes the output bit-reproducible; `NumThreads = 1` alone
+    /// suffices, with no `Mesh.RandomSeed` needed or set anywhere in `crates/`.
     ///
     /// The pin is NOT morph-only in reach: `reify-eval` takes this branch for
     /// EVERY boundary-demanded `VolumeMesh` realization — i.e. every FEA
-    /// face-selector-BC solve on real user geometry — always at the
-    /// auto-derived mesh size, since the trait method carries no
-    /// `MeshingOptions` for a caller to opt out with. MEASURED (task 7411)
-    /// rather than assumed away: single-threaded is FASTER at every scale
-    /// measured on this 32-core host (one unit-cube call, pinned vs.
-    /// `default()`) — 1.2k tets 0.016s vs 2.2–3.7s, 33k 0.26s vs 11–15s, 149k
-    /// 1.0s vs 10–21s, 491k 3.4–4.3s vs 25–27s — and `default()` drifts at
-    /// every one of those scales, while the pinned arm repeats its tet count
-    /// exactly. Pinned, this producer is bit-identical across 12 runs spanning
-    /// 2 processes; `NumThreads = 1` alone suffices, with no `Mesh.RandomSeed`
-    /// needed or set anywhere in `crates/`. Full log:
-    /// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+    /// face-selector-BC solve on real user geometry.
     ///
     /// Guarded by `tests/mesh_surface_to_volume_attributed.rs`'s
     /// `attributed_producer_output_is_reproducible_across_repeated_calls`,
@@ -590,7 +602,7 @@ impl GeometryKernel for GmshKernel {
         };
         let report = crate::mesh_surface_to_volume_with_attribution(
             surface,
-            &crate::MeshingOptions { deterministic: true, ..Default::default() },
+            &trait_producer_meshing_options(),
             element_order,
             None,
             None,

@@ -13,7 +13,7 @@
 //! this file can be read in isolation. The file stem MUST match the source's `module`
 //! declaration: on a mismatch the CLI reports `E_MODULE_PATH_MISMATCH` and the test
 //! measures that instead of the units gate (the trap documented at
-//! `harness_cli/cli_check.rs:796-797`).
+//! `harness_cli/cli_check.rs::check_exits_nonzero_on_cross_file_private_structure_reference`).
 //!
 //! ROWS §6 NAMES THAT THIS FILE DELIBERATELY DOES NOT RE-ASSERT. Each already has a
 //! shipped, non-vacuous, gate-resident test; a second copy here would be duplication, not
@@ -28,8 +28,7 @@
 //! - Row 1's `DiagnosticCode` clause —
 //!   `harness_geometry/primitive_profile_length_units_e2e.rs::bare_box_dimensions_drop_the_op_with_a_coded_error`,
 //!   because the code is not observable here: `reify eval` has no structured-diagnostics
-//!   flag (`Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>`)
-//!   and its renderer prints no code prefix for these errors.
+//!   flag (see `reify eval --help`) and its renderer prints no code prefix for these errors.
 
 use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;

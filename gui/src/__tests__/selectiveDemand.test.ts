@@ -22,27 +22,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MeshData, EntityTreeNode, VisibilityState } from '../types';
 
-// Mock the bridge — engineStore imports the full event/command surface at module
-// load, so every named import it uses must be present (mirrors engineStore.test).
-vi.mock('../bridge', () => ({
-  onMeshUpdate: vi.fn(),
-  onValueUpdate: vi.fn(),
-  onConstraintUpdate: vi.fn(),
-  onEvaluationStatus: vi.fn(),
-  onMeshRemoved: vi.fn(),
-  onValueRemoved: vi.fn(),
-  onConstraintRemoved: vi.fn(),
-  onTessellationDiagnostics: vi.fn(),
-  onCompileDiagnostics: vi.fn(),
-  onFeaDiagnosticsChanged: vi.fn(),
-  onAutoResolveStart: vi.fn(),
-  onAutoResolveIteration: vi.fn(),
-  onAutoResolveComplete: vi.fn(),
-  onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
-  cancelSolve: vi.fn(() => Promise.resolve()),
-  syncObservedDemand: vi.fn(() => Promise.resolve()),
-  syncDemand: vi.fn(() => Promise.resolve()),
-}));
+vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import { syncDemand as bridgeSyncDemand } from '../bridge';
 import { createEngineStore, createSelectiveDemandSync } from '../stores/engineStore';

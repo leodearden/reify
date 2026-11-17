@@ -1,0 +1,145 @@
+import { describe, it, expect } from 'vitest';
+import {
+  createLauncherStore,
+  initialFileLoadFailureInfo,
+  isDocumentLoaded,
+  LAUNCH_ERROR_CODES,
+} from '../stores/launcherStore';
+import type { RecentEntry } from '../types';
+
+const RECENT: RecentEntry[] = [
+  { path: '/designs/bracket.ri', opened_at: 2000 },
+  { path: '/designs/flange.ri', opened_at: 1000 },
+];
+
+describe('launcherStore', () => {
+  it('starts with no document error, no recent entries, nothing pending, and the assistant mode selected', () => {
+    const store = createLauncherStore();
+
+    expect(store.state).toEqual({
+      document: { error: null, recent: [], pending: null },
+      mode: { selected: 'assistant', debugPort: null, error: null },
+    });
+  });
+
+  it('applyModeState records the selected mode and the live debug port, clearing a mode error', () => {
+    const store = createLauncherStore();
+    store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: 'bind refused' });
+
+    store.applyModeState({ mode: 'debug', debug_port: 3939 });
+
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+  });
+
+  it('failDocument sets the document error and clearDocumentError clears it', () => {
+    const store = createLauncherStore();
+
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+    expect(store.state.document.error).toEqual({ code: 'E_GUI_OPEN_FAILED', message: 'm' });
+
+    store.clearDocumentError();
+    expect(store.state.document.error).toBeNull();
+  });
+
+  it('failMode sets the mode error and leaves the selected mode unchanged', () => {
+    const store = createLauncherStore();
+    store.applyModeState({ mode: 'design', debug_port: null });
+
+    store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: 'bind refused' });
+
+    expect(store.state.mode).toEqual({
+      selected: 'design',
+      debugPort: null,
+      error: { code: 'E_GUI_DEBUG_LISTENER_FAILED', message: 'bind refused' },
+    });
+  });
+
+  it('setRecent replaces the recent list', () => {
+    const store = createLauncherStore();
+    store.setRecent([{ path: '/old.ri', opened_at: 1 }]);
+
+    store.setRecent(RECENT);
+
+    expect(store.state.document.recent).toEqual(RECENT);
+  });
+
+  it('setDocumentPending records the path of a document attempt in flight and clears it', () => {
+    const store = createLauncherStore();
+    store.setRecent(RECENT);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.setDocumentPending('/designs/bracket.ri');
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    store.setDocumentPending(null);
+    expect(store.state.document).toEqual({
+      error: { code: 'E_GUI_OPEN_FAILED', message: 'm' },
+      recent: RECENT,
+      pending: null,
+    });
+  });
+
+  it('reset clears both errors and keeps the recent list and the mode', () => {
+    const store = createLauncherStore();
+    store.setRecent(RECENT);
+    store.applyModeState({ mode: 'debug', debug_port: 4321 });
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, message: 'exists' });
+    store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: 'bind refused' });
+
+    store.reset();
+
+    expect(store.state).toEqual({
+      document: { error: null, recent: RECENT, pending: null },
+      mode: { selected: 'debug', debugPort: 4321, error: null },
+    });
+  });
+
+  it('reset leaves an in-flight document attempt pending', () => {
+    const store = createLauncherStore();
+    store.setDocumentPending('/designs/bracket.ri');
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.reset();
+
+    expect(store.state.document.error).toBeNull();
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+  });
+
+  it('names exactly the five launch error codes, each spelled as its own key', () => {
+    expect(Object.entries(LAUNCH_ERROR_CODES)).toEqual([
+      ['E_GUI_OPEN_FAILED', 'E_GUI_OPEN_FAILED'],
+      ['E_GUI_TEMPLATE_WRITE_FAILED', 'E_GUI_TEMPLATE_WRITE_FAILED'],
+      ['E_GUI_MODE_FAILED', 'E_GUI_MODE_FAILED'],
+      ['E_GUI_DEBUG_LISTENER_FAILED', 'E_GUI_DEBUG_LISTENER_FAILED'],
+      ['E_GUI_DEBUG_BRIDGE_FAILED', 'E_GUI_DEBUG_BRIDGE_FAILED'],
+    ]);
+    expect(Object.isFrozen(LAUNCH_ERROR_CODES)).toBe(true);
+  });
+});
+
+describe('isDocumentLoaded', () => {
+  it('is false when the editor has no open file', () => {
+    expect(isDocumentLoaded({ openFiles: [] })).toBe(false);
+  });
+
+  it('is true when the editor has an open file', () => {
+    expect(isDocumentLoaded({ openFiles: [{ path: '/designs/bracket.ri' }] })).toBe(true);
+  });
+});
+
+describe('initialFileLoadFailureInfo', () => {
+  const LAUNCH_FILE = '/designs/broken.ri';
+
+  it.each([
+    ['an error that does not mention the file', 'permission denied'],
+    ['an error that already mentions the file', `${LAUNCH_FILE}: permission denied`],
+  ])(
+    'always presents E_GUI_OPEN_FAILED naming the launch file ahead of the error, whatever the error says: %s',
+    (_label, error) => {
+      expect(initialFileLoadFailureInfo({ path: LAUNCH_FILE, error })).toEqual({
+        code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+        message: `Could not open ${LAUNCH_FILE}: ${error}`,
+      });
+    },
+  );
+});

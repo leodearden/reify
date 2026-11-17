@@ -1094,19 +1094,20 @@ const BUCKLING_MULTI_CASE_PROBE_SRC: &str = r#"structure BucklingMultiCaseProbe 
 
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
 
     let mcbr = solve_buckling_load_cases(
         material, length, width, height, [lc1, lc2], BucklingOptions(n_modes: 1)
     )
     let worst = worst_buckling_case(mcbr)
+    let body = box(length, width, height)
 }"#;
 
 /// The single covering-set member heavy enough to warrant its own `#[test]`.
@@ -1151,7 +1152,7 @@ const TRAJECTORY_SIMULATE_PROBE_SRC: &str = r#"structure TrajectorySimulateProbe
 
     let material = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: material)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     let modal_opts = ModalOptions(
         n_modes: 1,
@@ -1176,6 +1177,7 @@ const TRAJECTORY_SIMULATE_PROBE_SRC: &str = r#"structure TrajectorySimulateProbe
 
     let track = simulate_trajectory(profile, 1.0, modal)
     let samples = track.t_samples
+    let beam = box(length, width, height)
 }"#;
 
 /// The second heavy covering-set member, in its own `#[test]` for the same

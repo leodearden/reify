@@ -206,7 +206,7 @@ structure def GravityMagOverride {
 ///
 /// Both params are supplied in declaration order (`magnitude` first, `direction`
 /// second) because structure-def constructors use positional binding — the same
-/// pattern as `PointLoad(point: "", force: 0.0, direction: vec3(…))` in
+/// pattern as `PointLoad(point: vertex(body, "tip"), force: 0.0, direction: vec3(…))` in
 /// `point_load_direction_field_default_and_override`
 /// (`structure_instance_e2e.rs`).
 ///
@@ -401,12 +401,12 @@ structure def LoadHolder {
     );
 }
 
-/// task 4439 step-1: `[Gravity()]` and `[Gravity(), PointLoad()]` fill a
+/// task 4439 step-1: `[Gravity()]` and `[Gravity(), PointLoad(point: ..)]` fill a
 /// `List<Load>` ctor-arg slot without Error diagnostics — the literal
 /// `[g] : List<Load>` user-observable signal.
 ///
 /// Tests both homogeneous (`[Gravity()]`) and heterogeneous
-/// (`[Gravity(), PointLoad()]`) list forms.
+/// (`[Gravity(), PointLoad(point: vertex(body, "tip"))]`) list forms.
 ///
 /// RED: same unresolved-constructor path as above.
 #[test]
@@ -416,8 +416,9 @@ structure def LoadListConsumer {
     param loads : List<Load>
 }
 structure def Usage {
+    let body = box(1m, 0.1m, 0.1m)
     sub a = LoadListConsumer(loads: [Gravity()])
-    sub b = LoadListConsumer(loads: [Gravity(), PointLoad()])
+    sub b = LoadListConsumer(loads: [Gravity(), PointLoad(point: vertex(body, "tip"))])
 }
 "#;
 

@@ -552,8 +552,9 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
   md twin, task metadata) before landing, or keeps the literal label. The blocking-work set is
   derived in `blocking_work`, not in server.rs. Keys: fk-1a772d160168. medium.
 - **μ #8769 — One import resolver; stdlib root resolved once** (§4.7). Subsumes #8557 (cancel
-  with reason "subsumed by μ"). The CLI's literal in `parse_and_compile_with_cfg` moves to
-  `dev_stdlib_root`, unless OQ2-A's #5517 has already removed that function; the GUI literal
+  with reason "subsumed by μ"). The CLI's literal in
+  `crates/reify-cli/src/main.rs::parse_and_compile_program` moves to `dev_stdlib_root`
+  (#5517/#5518 kept it there); the GUI literal
   is S25's (cross-reference). Signal: a handler-level cross-file test for goto-definition
   and prepareRename against an open dirty buffer; ratchet rows → 1 home literal and 1
   resolver. Depends: α. Keys: fk-74ce7cce677f. low.

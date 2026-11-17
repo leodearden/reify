@@ -9,7 +9,7 @@
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::import_headers::{
-    ImportPlan, NameRole, NameUse, derive_std_imports, insert_imports, residual_diagnostics,
+    ImportPlan, NameRole, NameUse, RequiredImport, derive_std_imports, insert_imports,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 
@@ -37,11 +37,11 @@ fn compile_universe(modules: &[(&str, &str)]) -> Vec<CompiledModule> {
         .collect()
 }
 
-fn derive(source: &str, universe: &[CompiledModule]) -> ImportPlan {
+fn derive<'u>(source: &str, universe: &'u [CompiledModule]) -> ImportPlan<'u> {
     derive_parsed(&parse_clean(source, SUBJECT_PATH), universe)
 }
 
-fn derive_parsed(parsed: &ParsedModule, universe: &[CompiledModule]) -> ImportPlan {
+fn derive_parsed<'u>(parsed: &ParsedModule, universe: &'u [CompiledModule]) -> ImportPlan<'u> {
     let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     derive_std_imports(parsed, &universe_refs)
 }
@@ -50,13 +50,24 @@ fn dotted_modules(plan: &ImportPlan) -> Vec<String> {
     plan.modules().iter().map(ModulePath::to_dotted).collect()
 }
 
+/// An import-free module is missing every derived module, so `missing_from` yields the whole plan.
 fn names_needing(plan: &ImportPlan, module: &str) -> Vec<NameUse> {
-    plan.required()
+    let imports_nothing = parse_clean("structure def S {}\n", SUBJECT_PATH);
+    let whole_plan = plan.missing_from(&imports_nothing);
+    let yielded: Vec<String> = whole_plan
         .iter()
+        .map(|required| required.module.to_dotted())
+        .collect();
+    assert_eq!(
+        yielded,
+        dotted_modules(plan),
+        "missing_from(an import-free module) must yield the whole plan"
+    );
+    whole_plan
+        .into_iter()
         .find(|required| required.module.to_dotted() == module)
         .unwrap_or_else(|| panic!("plan has no entry for {module}: {:?}", dotted_modules(plan)))
         .names
-        .clone()
 }
 
 fn name_use(name: &str, role: NameRole) -> NameUse {
@@ -434,7 +445,6 @@ fn a_module_binder_does_not_shadow_a_std_function_in_call_position() {
 #[test]
 fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_clears() {
     let universe = compile_universe(&[FNS, SHAPES]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean(
         "structure def S {\n\
              param twice : Real = 1.0\n\
@@ -442,8 +452,9 @@ fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_cl
          }\n",
         SUBJECT_PATH,
     );
+    let plan = derive_parsed(&parsed, &universe);
 
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(
         residual
             .iter()
@@ -452,8 +463,7 @@ fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_cl
         "expected an UnresolvedFunction warning; got {residual:?}"
     );
 
-    let plan = derive_parsed(&parsed, &universe);
-    let residual = residual_diagnostics(&parsed, &plan.modules(), &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &plan.modules());
     assert!(residual.is_empty(), "{residual:?}");
 }
 
@@ -504,10 +514,10 @@ fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
 #[test]
 fn a_missing_import_leaves_a_residual_that_the_derived_import_clears() {
     let universe = compile_universe(&[SHAPES, FNS]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean("structure def S { param b : Bracket }\n", SUBJECT_PATH);
+    let plan = derive_parsed(&parsed, &universe);
 
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(
         residual
             .iter()
@@ -516,56 +526,151 @@ fn a_missing_import_leaves_a_residual_that_the_derived_import_clears() {
         "expected an UnresolvedType error; got {residual:?}"
     );
 
-    let residual =
-        residual_diagnostics(&parsed, &module_paths(&["std.fake.shapes"]), &universe_refs);
+    let residual = plan.residual_diagnostics(&parsed, &module_paths(&["std.fake.shapes"]));
+    assert!(residual.is_empty(), "{residual:?}");
+
+    let residual = plan.residual_diagnostics(&parsed, &plan.modules());
     assert!(residual.is_empty(), "{residual:?}");
 }
 
 #[test]
 fn a_diagnostic_the_full_universe_also_raises_is_not_residual() {
     let universe = compile_universe(&[SHAPES]);
-    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
     let parsed = parse_clean("structure def S { param b : Nowhere }\n", SUBJECT_PATH);
-    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    let plan = derive_parsed(&parsed, &universe);
+    let residual = plan.residual_diagnostics(&parsed, &[]);
     assert!(residual.is_empty(), "{residual:?}");
 }
 
-// ─── m1: declared imports in every form ────────────────────────────────────
+#[test]
+#[should_panic(expected = "derived for `subject`, given `elsewhere`")]
+fn a_module_other_than_the_one_the_plan_was_derived_for_is_refused() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let plan = derive(source, &universe);
+    let elsewhere = parse_clean(source, "elsewhere");
+    plan.residual_diagnostics(&elsewhere, &[]);
+}
+
+// ─── m1-m5: declared-import coverage by import form ────────────────────────
+
+/// Calls `Bracket` and `Gizmo`, both of std.fake.shapes.
+const BRACKET_AND_GIZMO: &str = "structure def S {\n\
+                                     let b = Bracket()\n\
+                                     let g = Gizmo()\n\
+                                 }\n";
+
+fn missing_for(header: &str, body: &str, universe: &[CompiledModule]) -> Vec<RequiredImport> {
+    let parsed = parse_clean(&format!("{header}{body}"), SUBJECT_PATH);
+    derive_parsed(&parsed, universe).missing_from(&parsed)
+}
+
+fn required(module: &str, names: Vec<NameUse>) -> RequiredImport {
+    RequiredImport {
+        module: ModulePath::from_dotted(module).expect("valid dotted module path"),
+        names,
+    }
+}
 
 #[test]
-fn missing_from_omits_modules_imported_in_any_form() {
-    let universe = compile_universe(&[FNS, SHAPES, ENUMS, CDEFS, UNITS, MOUNTABLE]);
-    let source = "import std.fake.fns\n\
-                  import std.fake.shapes.Bracket\n\
-                  import std.fake.enums.{Hue}\n\
-                  import std.fake.cdefs as c\n\
-                  import std.fake.units.Furlong as F\n\
-                  structure def S : Mountable {\n\
-                      let a = twice(1.0)\n\
-                      let b = Bracket()\n\
-                      let h = Hue.Red\n\
-                      constraint positive(v: 1.0)\n\
-                      let d = 3furlong\n\
-                  }\n";
-    let parsed = parse_clean(source, SUBJECT_PATH);
-    let plan = derive_parsed(&parsed, &universe);
+fn a_namespace_import_covers_every_name_of_its_module() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in [
+        "import std.fake.shapes\n",
+        "import std.fake.shapes as sh\n",
+        "import std.fake.shapes\nimport std.fake.shapes.Bracket\n",
+        "import std.fake.shapes.Bracket\nimport std.fake.shapes\n",
+    ] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![],
+            "header:\n{header}"
+        );
+    }
+}
+
+#[test]
+fn an_entity_import_leaves_the_names_it_does_not_bind_missing() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in [
+        "import std.fake.shapes.Bracket\n",
+        "import std.fake.shapes.{Bracket}\n",
+    ] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![required(
+                "std.fake.shapes",
+                vec![name_use("Gizmo", NameRole::Callee)]
+            )],
+            "header:\n{header}"
+        );
+    }
+}
+
+#[test]
+fn entity_imports_binding_every_needed_name_cover_the_module() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in [
+        "import std.fake.shapes.{Bracket, Gizmo}\n",
+        "import std.fake.shapes.Bracket\nimport std.fake.shapes.Gizmo\n",
+    ] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![],
+            "header:\n{header}"
+        );
+    }
+
+    let universe = compile_universe(&[ENUMS]);
     assert_eq!(
-        dotted_modules(&plan),
-        vec![
-            "std.fake.cdefs",
-            "std.fake.enums",
-            "std.fake.fns",
-            "std.fake.shapes",
-            "std.fake.traits",
-            "std.fake.units",
-        ]
+        missing_for(
+            "import std.fake.enums.{Hue}\n",
+            "structure def S { let h = Hue.Red }\n",
+            &universe
+        ),
+        vec![]
     );
-    let missing: Vec<String> = plan
-        .missing_from(&parsed)
-        .iter()
-        .map(|required| required.module.to_dotted())
-        .collect();
-    assert_eq!(missing, vec!["std.fake.traits"]);
+}
+
+#[test]
+fn an_aliased_entity_import_binds_its_alias_not_the_entity_name() {
+    let universe = compile_universe(&[SHAPES]);
+    assert_eq!(
+        missing_for(
+            "import std.fake.shapes.Bracket as B\n",
+            BRACKET_AND_GIZMO,
+            &universe
+        ),
+        vec![required(
+            "std.fake.shapes",
+            vec![
+                name_use("Bracket", NameRole::Callee),
+                name_use("Gizmo", NameRole::Callee)
+            ]
+        )]
+    );
+}
+
+#[test]
+fn an_entity_import_of_an_enum_does_not_cover_its_variants_written_bare() {
+    let universe = compile_universe(&[ENUMS]);
+    assert_eq!(
+        missing_for(
+            "import std.fake.enums.{Hue}\n",
+            "structure def S {\n\
+                 param n : Int = 1\n\
+                 let k = match n { Red => 1, Green => 2 }\n\
+             }\n",
+            &universe
+        ),
+        vec![required(
+            "std.fake.enums",
+            vec![
+                name_use("Green", NameRole::Variant),
+                name_use("Red", NameRole::Variant)
+            ]
+        )]
+    );
 }
 
 // ─── h1-h5: inserting import lines ─────────────────────────────────────────
@@ -636,4 +741,55 @@ fn inserting_is_idempotent() {
         "import std.fake.c\nimport std.fake.d\n\nstructure def S {}\n"
     );
     assert_eq!(insert(&once, &["std.fake.c", "std.fake.d"]), once);
+}
+
+#[test]
+fn a_module_repeated_in_modules_is_imported_once() {
+    assert_eq!(
+        insert("structure def S {}\n", &["std.fake.c", "std.fake.c"]),
+        "import std.fake.c\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn an_entity_import_does_not_stop_its_module_being_imported_whole() {
+    assert_eq!(
+        insert(
+            "import std.fake.c.Thing\n\nstructure def S {}\n",
+            &["std.fake.c"]
+        ),
+        "import std.fake.c.Thing\nimport std.fake.c\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn an_aliased_module_import_counts_as_imported_whole() {
+    let source = "import std.fake.c as c\n\nstructure def S {}\n";
+    assert_eq!(insert(source, &["std.fake.c"]), source);
+}
+
+// ─── r1: inserting what is missing satisfies missing_from ──────────────────
+
+#[test]
+fn inserting_the_missing_imports_leaves_nothing_missing() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = format!("import std.fake.shapes.Bracket\n\n{BRACKET_AND_GIZMO}");
+    let parsed = parse_clean(&source, SUBJECT_PATH);
+    let missing = derive_parsed(&parsed, &universe).missing_from(&parsed);
+    assert!(
+        !missing.is_empty(),
+        "fixture must start out missing imports"
+    );
+
+    let modules: Vec<ModulePath> = missing
+        .iter()
+        .map(|required| required.module.clone())
+        .collect();
+    let fixed = insert_imports(&source, &parsed, &modules);
+    let reparsed = parse_clean(&fixed, SUBJECT_PATH);
+    assert_eq!(
+        derive_parsed(&reparsed, &universe).missing_from(&reparsed),
+        vec![],
+        "fixed source:\n{fixed}"
+    );
 }

@@ -1,0 +1,8 @@
+module main
+
+import nosuch
+
+structure def Rig {
+    param size : Length = 10mm
+    let body = box(size, size, size)
+}

@@ -187,3 +187,17 @@ mod stdlib_fn_in_user_fn_body_e2e;
 // `reify_compiler::program::compile_program`.
 #[path = "harness_engine/def_env_skeleton.rs"]
 mod def_env_skeleton;
+// Task #8102's instance-scope symbolic geometry/selector mint pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above. They are also
+// a topical fit: they drive `Engine::eval` over `sub` instantiations to pin
+// what `unfold.rs` commits for geometry and selector cells.
+#[path = "harness_engine/instance_scope_symbolic_mint.rs"]
+mod instance_scope_symbolic_mint;
+// Task #5763's dimensioned-construction ε constraint-verdict pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/dimensioned_param_default_constraint_verdicts.rs"]
+mod dimensioned_param_default_constraint_verdicts;
+// Task #10033's checker-side `@optimized` dispatch pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/constraint_check_optimized_dispatch.rs"]
+mod constraint_check_optimized_dispatch;

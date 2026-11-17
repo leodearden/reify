@@ -376,6 +376,9 @@ fn fixture_table_with(from: &str, to: &str) -> String {
 /// FIXTURE_TABLE's one exception row.
 const EXCEPTED_ROW: &str = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
 
+/// The end of FIXTURE_TABLE's test-support stratum row, unique in it.
+const TEST_SUPPORT_STRATUM_END: &str = r#""engine"], "packages": ["reify-test-support"]}"#;
+
 /// A crate rule forbidding reify-test-support from every stratum, stated once.
 const DEV_ONLY_RULE: &str = r#"{"name": "test-support-is-dev-only", "from": {"every_stratum": true}, "never": {"packages": ["reify-test-support"]}}"#;
 
@@ -388,7 +391,6 @@ fn with_dev_only_rule(table: &str) -> String {
 /// `table` with a "tooling" stratum, which may depend on test-support,
 /// after its test-support stratum.
 fn with_tooling_stratum(table: &str) -> String {
-    const TEST_SUPPORT_STRATUM_END: &str = r#""engine"], "packages": ["reify-test-support"]}"#;
     const TOOLING_STRATUM: &str = r#"{"name": "tooling", "may_depend_on": ["spine", "language", "kernel", "solver", "analysis", "engine", "test-support"], "packages": ["reify-audit"]}"#;
     table_with_row_after(table, TEST_SUPPORT_STRATUM_END, TOOLING_STRATUM)
 }
@@ -688,8 +690,12 @@ fn strata_every_stratum_rule_fires_from_every_stratum() {
             r#""packages": []}"#,
             r#""packages": ["reify-analysis-x"]}"#,
         ),
-        r#""engine"], "packages": ["reify-test-support"]}"#,
-        r#""engine"], "packages": ["reify-kernel-conformance", "reify-test-support"]}"#,
+        TEST_SUPPORT_STRATUM_END,
+        &TEST_SUPPORT_STRATUM_END.replacen(
+            r#""packages": ["#,
+            r#""packages": ["reify-kernel-conformance", "#,
+            1,
+        ),
     );
     let mut workspace = clean_workspace();
     workspace.push(pkg("reify-analysis-x", &["reify-core"]));

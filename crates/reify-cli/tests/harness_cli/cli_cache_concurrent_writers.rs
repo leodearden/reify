@@ -53,7 +53,7 @@ use crate::common;
 
 /// The deterministic cantilever fixture both writers solve.
 ///
-/// `common::fixture_path` (`tests/common/mod.rs:35`) is the harness-wide
+/// `common::fixture_path` is the harness-wide
 /// resolver; this module uses it rather than re-deriving
 /// `CARGO_MANIFEST_DIR`/`tests/fixtures` locally, which is what `tests/common`
 /// exists for now that every former standalone binary shares one compile unit.
@@ -64,15 +64,15 @@ fn fixture_path() -> String {
 /// A `reify eval --cache-dir <cache>` invocation, not yet spawned.
 ///
 /// The `--cache-dir` FLAG is used rather than `REIFY_CACHE_DIR` because it has
-/// the highest precedence (`crates/reify-cli/src/main.rs:2049`, applied at
-/// :2115/:2133 after env and config resolution), so nothing below is needed to
-/// steer the ENGINE at `cache`.
+/// the highest precedence (the `--cache-dir` arm of `cmd::eval::cmd_eval`, whose
+/// `set_persistent_cache_dir` override runs after `configured_eval_engine` has
+/// applied env and config resolution), so nothing below is needed to steer the
+/// ENGINE at `cache`.
 ///
 /// `sandbox` is a SECOND, throwaway tempdir, and it is what makes this test
 /// hermetic. `main` calls `cache::run_startup_sweep()` unconditionally before
-/// the dispatcher (`crates/reify-cli/src/main.rs:140`), and that sweep resolves
-/// its own root through `resolve_cache_root_with_cli`
-/// (`crates/reify-cli/src/cache.rs:672`) — which does NOT see `--cache-dir` and
+/// the dispatcher, and that sweep resolves its own root through
+/// `cache::resolve_cache_root_with_cli` — which does NOT see `--cache-dir` and
 /// falls through `$HOME/.config/reify/config.toml`, `<cwd>/.reify/config.toml`,
 /// and finally `$HOME/.cache`. `env_remove`-ing `XDG_CACHE_HOME` therefore does
 /// not suppress the sweep; with `HOME` still inherited it merely aims it at the
@@ -152,8 +152,8 @@ fn bin_input_hash(bin: &Path) -> String {
 ///
 /// The rename-window race proper is owned in-process, where it can be forced,
 /// by `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`
-/// (`crates/reify-eval/src/persistent_cache.rs:3153`, cited from the
-/// `write_entry` docs at :786). The two tests are complements: that one pins
+/// (in `crates/reify-eval/src/persistent_cache.rs`'s `mod tests`, cited from
+/// `write_entry`'s rustdoc). The two tests are complements: that one pins
 /// the collision, this one pins that two real processes can share a cache root
 /// without corrupting it.
 #[test]
@@ -308,7 +308,8 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
     );
 
     // The house tolerance for FEA scalar agreement
-    // (`persistent_cache_compute_round_trip.rs:188-196`).
+    // (`persistent_cache_cross_restart_round_trip` in
+    // `persistent_cache_compute_round_trip.rs`).
     let rel_err = (survivor.max_von_mises - reference_result.max_von_mises).abs()
         / reference_result.max_von_mises.abs().max(f64::MIN_POSITIVE);
     assert!(

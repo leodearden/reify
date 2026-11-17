@@ -47,10 +47,10 @@ rewrite *cannot* fire. A site that merely declines to depend on the rewrite is a
   (`Scalar[m^3·kg·s^-3·A^-2]` vs `Real`), so `materials_electrical.ri`'s `trait Conductive` bound
   genuinely needs its `ohm*m`. This is the load-bearing distinction the sweep preserves.
 - **Param defaults.** `coerce_zero_operand`'s sole call site is inside `compile_binop`, so the
-  rewrite never reaches a param default. The literal guard in `check_param_default_type` merely
-  early-`return`s to SUPPRESS `ParamDefaultTypeMismatch`; it performs no rewrite. So
-  `param phase : Angle = 0` stores a DIMENSIONLESS default while `= 0deg` stores `Scalar[rad]` —
-  see the `HarmonicForce.phase : Angle = 0deg` note in `modal_analysis.ri`.
+  rewrite never reaches a param default: `param phase : Angle = 0` is rejected
+  (`ParamDefaultTypeMismatch`), and the diagnostic does not rewrite the stored dimensionless
+  default. `= 0deg` is the spelling — see the `HarmonicForce.phase : Angle = 0deg` note in
+  `modal_analysis.ri`.
 
 ## Sites that deliberately do not rely on it
 

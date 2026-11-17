@@ -23,6 +23,7 @@
 
 pub mod ast;
 pub mod decl;
+pub mod import_kind;
 pub mod type_param_syntax;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ pub use decl::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
     ConstraintDef, ConstraintInstDecl, Declaration, DefaultDecl, EnumDecl, EnumVariantDecl,
     FieldDef, FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
-    ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
+    ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl,
     JointDef, JointDofField,
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
@@ -54,5 +55,7 @@ pub use decl::{
     find_param_default_span, has_test_annotation,
     walk_all_member_bodies, walk_specialization_scope_members,
 };
+
+pub use import_kind::{EntityBinding, ImportBinding, ImportKind};
 
 pub use type_param_syntax::render_type_param;

@@ -8,6 +8,8 @@
 // The dotted module name `std.materials.appearance` is assigned by the loader
 // tuple (materials_mechanical/ports convention); no internal `module` decl.
 
+module std.materials.appearance
+
 // Surface finish selector (decision 2 — cosmetic in v1, no physics coupling).
 enum Finish { Matte, Satin, Gloss }
 

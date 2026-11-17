@@ -39,7 +39,7 @@ use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 #[path = "common/fea_harness.rs"]
 mod fea_harness;
 use fea_harness::{
-    RetainedSolve, assemble_eliminate_and_solve, box_p1_mesh, dirichlet_fix_face,
+    RetainedSolve, assemble_p1_eliminate_and_solve, box_p1_mesh, dirichlet_fix_face,
     dirichlet_prescribe_boundary_field, distributed_tip_load, end_face_nodes, gather_u_p1,
     rhs_from_point_loads,
 };
@@ -202,7 +202,7 @@ fn self_dual_box(material: &IsotropicElastic, opts: CgSolverOptions) -> DualSolv
         f_eliminated: f,
         bcs_deduped: bcs,
         primal,
-    } = assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &g, opts.clone());
+    } = assemble_p1_eliminate_and_solve(&nodes, &conns, material, bcs, &g, opts.clone());
     let dual = solve_dual_cg(
         &k,
         &qoi,
@@ -256,7 +256,7 @@ fn patch_cube(
         f_eliminated: f,
         bcs_deduped: bcs,
         primal,
-    } = assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts.clone());
+    } = assemble_p1_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts.clone());
 
     let zero = vec![0.0_f64; 3 * nodes.len()];
     let g = qoi
@@ -329,7 +329,7 @@ fn cantilever_pencil(
         f_eliminated: f,
         bcs_deduped: bcs,
         primal,
-    } = assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts);
+    } = assemble_p1_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts);
     CantileverPencil {
         nodes,
         conns,
@@ -796,7 +796,7 @@ fn solve_dual_cg_zeroes_the_dual_load_at_constrained_dofs_and_refuses_an_unresol
         bcs_deduped: bcs,
         primal,
         ..
-    } = assemble_eliminate_and_solve(
+    } = assemble_p1_eliminate_and_solve(
         &nodes,
         &conns,
         &material,
@@ -905,7 +905,7 @@ fn solve_dual_cg_names_a_bc_dof_beyond_the_mesh_rather_than_indexing_out_of_boun
         bcs_deduped: mut bcs,
         primal,
         ..
-    } = assemble_eliminate_and_solve(
+    } = assemble_p1_eliminate_and_solve(
         &nodes,
         &conns,
         &material,
@@ -983,7 +983,7 @@ impl AdaptiveProblem for ShrinkingDomainProblem {
             f_eliminated: f,
             bcs_deduped: bcs,
             primal,
-        } = assemble_eliminate_and_solve(
+        } = assemble_p1_eliminate_and_solve(
             &nodes,
             &conns,
             &self.material,

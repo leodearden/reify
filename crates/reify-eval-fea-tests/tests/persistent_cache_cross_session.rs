@@ -48,8 +48,8 @@
 //! The policy is owned, more strongly, by:
 //!
 //! * `evict_over_cap_evicts_cheap_stale_first_keeps_expensive_old_removes_meta_and_respects_engine_version_scope`
-//!   (`crates/reify-eval/src/persistent_cache.rs:3482`) and its 13 sibling
-//!   `evict_over_cap_*` unit tests, which pin the discriminating property
+//!   (in `crates/reify-eval/src/persistent_cache.rs`'s `mod tests`) and its
+//!   13 sibling `evict_over_cap_*` unit tests, which pin the discriminating property
 //!   (cost-aware score beats naive LRU: the cheap-but-NEWER entry is evicted
 //!   first), the `.meta`-with-`.bin` removal, engine-version scoping, the
 //!   `EvictionReport` fields, and shard-dir prune-vs-preserve. They backdate to
@@ -741,13 +741,13 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // specified the OTHER sub-shape — a `.bin` truncated to fewer than
     // ENTRY_HEADER_ENCODED_LEN bytes, i.e. torn INSIDE the header. That sub-case
     // does NOT satisfy the documented policy today: `CacheEntryHeader::read_from`
-    // (persistent_cache.rs:291) maps every bincode error through
-    // `io::Error::other`, so `e.kind()` is always `ErrorKind::Other` and the
-    // `matches!(e.kind(), UnexpectedEof | InvalidData)` guard in `read_entry`
-    // (persistent_cache.rs:925-943) is unreachable — a header-torn entry returns
-    // `Err` where the rustdoc (:887-892) and the inline comment (:921-924) both
-    // promise `Ok(None)`. Fixing that is a one-line change to
-    // crates/reify-eval/src/persistent_cache.rs, which is outside this
+    // maps every bincode error through `io::Error::other`, so `e.kind()` is
+    // always `ErrorKind::Other` and the
+    // `matches!(e.kind(), UnexpectedEof | InvalidData)` guard on `read_entry`'s
+    // header decode is unreachable — a header-torn entry returns `Err` where
+    // `read_entry`'s rustdoc and its inline "Truncated or otherwise corrupt
+    // headers" comment both promise `Ok(None)`. Fixing that is a one-line
+    // change to crates/reify-eval/src/persistent_cache.rs, which is outside this
     // test-only task's scope; the sub-case is tracked as its own follow-up.
     // It is NOT asserted as `.is_err()` here: pinning the current behaviour
     // would enshrine the defect and silently retire the documented policy.

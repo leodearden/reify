@@ -3,11 +3,12 @@
 //! full stdlib would not also report, the headed stdlib must still build,
 //! and re-deriving on the headed sources must find nothing missing.
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use reify_ast::ParsedModule;
 use reify_compiler::import_headers::{
-    ImportPlan, derive_std_imports, insert_imports, residual_diagnostics, stdlib_universe_excluding,
+    ImportPlan, declared_imports, derive_std_imports, insert_imports, stdlib_universe_excluding,
 };
 use reify_compiler::stdlib_loader::{build_stdlib_modules, stdlib_sources};
 use reify_core::ModulePath;
@@ -16,14 +17,14 @@ struct DerivedModule {
     name: &'static str,
     source: String,
     parsed: ParsedModule,
-    plan: ImportPlan,
+    plan: ImportPlan<'static>,
 }
 
 fn module_path(name: &str) -> ModulePath {
     ModulePath::from_dotted(name).expect("stdlib module names are dotted paths")
 }
 
-fn derive_for(name: &str, source: &str) -> (ParsedModule, ImportPlan) {
+fn derive_for(name: &str, source: &str) -> (ParsedModule, ImportPlan<'static>) {
     let path = module_path(name);
     let parsed = reify_compiler::parse_with_stdlib(source, path.clone());
     assert!(
@@ -76,8 +77,9 @@ fn every_stdlib_module_compiles_against_its_derived_imports_alone() {
     let offenders: Vec<String> = derived_stdlib()
         .iter()
         .filter_map(|module| {
-            let universe = stdlib_universe_excluding(&module_path(module.name));
-            let residual = residual_diagnostics(&module.parsed, &module.plan.modules(), &universe);
+            let residual = module
+                .plan
+                .residual_diagnostics(&module.parsed, &module.plan.modules());
             (!residual.is_empty()).then(|| {
                 let lines: Vec<String> = residual
                     .iter()
@@ -166,4 +168,54 @@ fn a_builtin_geometry_type_does_not_import_the_geometry_traits() {
 fn registry_only_units_import_the_si_units() {
     let plan = plan_of("std.materials.fea");
     assert!(plan.contains(&"std.si_units".to_string()), "{plan:?}");
+}
+
+// ─── s5: the committed headers are the derived ones ────────────────────────
+
+fn dotted_set(paths: &[ModulePath]) -> BTreeSet<String> {
+    paths.iter().map(ModulePath::to_dotted).collect()
+}
+
+#[test]
+fn every_stdlib_module_declares_exactly_its_derived_imports() {
+    let offenders: Vec<String> = derived_stdlib()
+        .iter()
+        .filter_map(|module| {
+            let declared = dotted_set(&declared_imports(&module.parsed));
+            let derived = dotted_set(&module.plan.modules());
+            let missing: Vec<&String> = derived.difference(&declared).collect();
+            let extra: Vec<&String> = declared.difference(&derived).collect();
+            (!missing.is_empty() || !extra.is_empty())
+                .then(|| format!("{}: missing {missing:?}, extra {extra:?}", module.name))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "stdlib import headers differ from the derived imports:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn every_stdlib_module_declares_its_registered_module_path() {
+    let offenders: Vec<String> = derived_stdlib()
+        .iter()
+        .filter(|module| module.parsed.declared_module_path != Some(module_path(module.name)))
+        .map(|module| {
+            format!(
+                "{}: declares {:?}",
+                module.name,
+                module
+                    .parsed
+                    .declared_module_path
+                    .as_ref()
+                    .map(ModulePath::to_dotted)
+            )
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "stdlib modules not declaring their registered module path:\n{}",
+        offenders.join("\n")
+    );
 }

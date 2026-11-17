@@ -5,18 +5,26 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
+use crate::args::split_cfg_args_or_usage;
 use crate::help::REPORT_USAGE;
-use crate::{configured_eval_engine, parse_and_compile};
+use crate::{configured_eval_engine, parse_and_compile_program_entry};
 
 /// `reify report --bom <file>` — roll up and render a BOM / cost / waste /
 /// provenance report (io-lifecycle-bom-cost #4292, boundary α).
 ///
-/// Compiles + evaluates the design on the lightweight kernel-free eval path
+/// Compiles the entry as a program (its `#cfg`-satisfied imports resolved as
+/// under `reify check`, with repeated `--cfg` selecting them) and evaluates
+/// the design on the lightweight kernel-free eval path
 /// (lifecycle `StructureInstance` cells populate under plain `engine.eval`; the
 /// rollup needs no geometry realization), builds a [`reify_eval::BomReport`],
 /// and renders it to stdout. Compile / eval `Severity::Error`s propagate to a
 /// non-zero exit; diagnostics go to stderr so stdout stays the rendered report.
 pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, REPORT_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let args = rest.as_slice();
     // Parse a required `--bom` flag + exactly one positional .ri path. Reject
     // unknown flags so they are never silently misread as the file path.
     let mut want_bom = false;
@@ -54,7 +62,7 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile(path) {
+    let compiled = match parse_and_compile_program_entry(path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

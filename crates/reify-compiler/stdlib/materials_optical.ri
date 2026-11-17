@@ -15,6 +15,10 @@
 // edge resolves correctly; the convention is established by the §6.2-§6.4
 // traits in materials_mechanical.ri and materials_electrical.ri.
 
+module std.materials.optical
+
+import std.materials.mechanical
+
 // ── OpticallyCharacterized ───────────────────────────────────────────────────
 
 // Root optical-material trait. One param is required; three are optional

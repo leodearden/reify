@@ -96,6 +96,9 @@ fn find_node<'a>(
             .iter()
             .find_map(|(_, a)| find_node(a, pred))
             .or_else(|| defaults.iter().find_map(|(_, d)| find_node(d, pred))),
+        CompiledExprKind::VariantCtor { payload, .. } => {
+            payload.iter().find_map(|(_, e)| find_node(e, pred))
+        }
         // task 4118 (γ): recurse into the wrapped selector.
         CompiledExprKind::ResolveSelector { selector } => find_node(selector, pred),
     }

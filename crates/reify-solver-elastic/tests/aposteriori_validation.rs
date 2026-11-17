@@ -442,9 +442,9 @@ impl AdaptiveProblem for FeaAdaptiveProblem {
         let (nodes, conns) = nodes_conns_from_volume_mesh(&self.volume_mesh);
         let n_nodes = nodes.len();
 
-        let mut bcs = (self.bcs_fn)(&nodes);
+        let bcs = (self.bcs_fn)(&nodes);
         let point_loads = (self.loads_fn)(&nodes);
-        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &point_loads, &self.material);
+        let u = solve_p1_pipeline(&nodes, &conns, bcs, &point_loads, &self.material);
 
         let mut per_stress: Vec<[[f64; 3]; 3]> = Vec::with_capacity(conns.len());
         let mut per_volume: Vec<f64> = Vec::with_capacity(conns.len());

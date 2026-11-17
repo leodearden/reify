@@ -362,16 +362,15 @@ pub enum DiagnosticCode {
     ///          (param-level argument type check, task 4546).
     ///
     /// Emitted when a constraint instantiation passes an argument whose
-    /// compile-time type is incompatible with the declared parameter type —
-    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
-    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
-    /// for `Length`) are deliberately tolerated at the binding site; dimensional
-    /// strictness within comparison predicates is enforced by task 4490's
-    /// `E_CmpOperandKind` guard.
+    /// compile-time type does not conform to the declared parameter type. The
+    /// acceptance policy is the Rules list of
+    /// `crates/reify-compiler/src/type_compat.rs::constraint_arg_type_conforms`.
+    /// A rejection short-circuits the instantiation, so no predicate-body
+    /// comparison diagnostic doubles it.
     ///
     /// Canonical message form:
-    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
-    ///   of constraint '<def>' expects <expected>"`.
+    /// `"type mismatch: argument '<arg>' for constraint '<def>' has type \
+    ///   <actual> but parameter expects <expected>"`.
     ///
     /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
     ConstraintArgTypeMismatch,
@@ -546,8 +545,8 @@ pub enum DiagnosticCode {
     /// sees the offending declaration, not a downstream consumer.
     ///
     /// Fired at two sites: (1) structure-body let (entity.rs ~1916) and (2) port-member
-    /// let (entity.rs ~2810). NOT fired at the skeleton/ctor-lowering let (throwaway_diags)
-    /// or at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+    /// let (entity.rs ~2810). NOT fired at trait-default-injected lets (those use
+    /// `TypeMismatchForTraitMember`).
     ///
     /// The PRD-prose mnemonic for this code is `E_LET_ANNOTATION_TYPE_MISMATCH`.
     LetAnnotationTypeMismatch,
@@ -4134,7 +4133,7 @@ pub enum DiagnosticCode {
     /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
     /// The guard fires on the external member-access paths — the StructureRef /
     /// TraitObject dot-access branch, the function-body member-access path (via
-    /// the skeleton template), and the purpose-subject branch; `self.<member>`
+    /// the structure's authoritative template), and the purpose-subject branch; `self.<member>`
     /// and bare-name references inside the defining structure body are resolved
     /// by an earlier branch and are exempt.
     ///
@@ -4602,6 +4601,15 @@ pub enum DiagnosticCode {
     /// one-variant addition that serde round-trips automatically (same
     /// non-breaking argument as `ExpressionNestingTooDeep` above).
     DimensionedArgRejected,
+    /// Origin: the `dir(...)` builtin (docs/prds/v0_6/direction-typing.md
+    /// C4/C11) when `reify_ir::direction::UnitVec3::from_vector` returns a
+    /// `DirectionFault` — a zero, sub-floor or non-finite vector has no unit
+    /// Direction.
+    ///
+    /// Runtime `Severity::Error`; the message embeds the
+    /// `E_DegenerateDirection` mnemonic because the CLI does not print codes.
+    /// Distinct from `DimensionedArgRejected` (the wrong-units fault).
+    DegenerateDirection,
     /// Origin:
     /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
     /// — the single shared refusal builder, emitted from BOTH export surfaces:
@@ -4926,6 +4934,53 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     ImportedModuleParseError,
+    /// Origin: `crates/reify-compiler/src/expr.rs::later_declared_structure_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a free fn's body or param default uses the
+    /// template of a module-local `structure def` that is declared BELOW the fn
+    /// — by constructing it (`Foo()`) or by member access on a param typed as it
+    /// (`m.x`). Fn bodies compile in source order, interleaved with structure
+    /// templates, so a fn may use a same-module structure's template only if the
+    /// `structure def` is declared above the fn. The fix-it is to move it.
+    ///
+    /// Canonical message: `"structure '<Name>' is declared after this function;
+    /// move `structure def <Name>` above it"`.
+    ///
+    /// Severity: Error.
+    StructureDeclaredAfterFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs::pending_default_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a call omits a defaulted arg of a
+    /// same-module fn overload whose default uses a same-module structure, from
+    /// a site that compiles before that fn's slot in the source-order pass (a
+    /// field, a trait-static fn body, an ambient default, or a structure
+    /// declared above the fn). Such a default only exists once the structure's
+    /// template does, so only free fns and structures declared below the fn may
+    /// omit it; fields, trait-static fns and ambient defaults never can.
+    ///
+    /// Canonical message: `"function '<fn>' param '<param>' default is not
+    /// available here: it uses a same-module structure, so only free fns and
+    /// structures declared below `fn <fn>` may omit it; fields, trait-static
+    /// fns and ambient defaults must pass it explicitly"`.
+    ///
+    /// Severity: Error.
+    FnDefaultNotYetAvailable,
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs::fn_tables_misaligned`
+    /// (task #5494).
+    ///
+    /// INTERNAL COMPILER ERROR. The unified source-order pass found a `fn`
+    /// declaration whose per-fn records (resolved signature, param-default
+    /// outcome, or call-table signature stub, all indexed by declaration order)
+    /// describe a different fn. Reported instead of silently skipping the fn's
+    /// body or swapping the wrong call-table slot.
+    ///
+    /// Canonical message: `"internal compiler error: fn '<fn>' (fn declaration
+    /// #<i>) does not match <record>; <consequence>"`.
+    ///
+    /// Severity: Error.
+    FnDeclTablesMisaligned,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5562,6 +5617,15 @@ mod tests {
     fn dimensioned_arg_rejected_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
         assert_eq!(s, "\"DimensionedArgRejected\"");
+    }
+
+    // --- DegenerateDirection tests (direction-typing α) ---
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn degenerate_direction_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DegenerateDirection).unwrap();
+        assert_eq!(s, "\"DegenerateDirection\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---

@@ -1,0 +1,11 @@
+// direction_display.ri — CLI eval fixture for direction-typing C2: a
+// Direction's Display is its round-trip spelling, `dir(x, y, z)`.
+
+module direction_display
+
+structure def DirectionDisplay {
+    let o = point3(0mm, 0mm, 0mm)
+    let ax = axis_x(o).dir
+    let pn = plane_xy(0mm).normal
+    let fy = frame_at(o, ax, pn).y
+}

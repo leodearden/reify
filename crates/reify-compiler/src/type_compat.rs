@@ -1019,17 +1019,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 
 /// Predicate used by `expand_constraint_inst` (entity.rs) to validate that a
 /// constraint instantiation argument's type conforms to the declared parameter
-/// type.
+/// type. It rejects every pairing Rules 1–4 below do not accept.
 ///
-/// This is a **narrow cross-category conformance check** — it rejects only
-/// cross-category mismatches (Bool/String/Enum/aggregate vs numeric/Length
-/// etc.) while deliberately tolerating numeric-for-dimensioned at the binding
-/// site (e.g. `Int` passed where `Length` is declared). Dimensional strictness
-/// within comparison predicates is already enforced by task 4490's
-/// `emit_comparison_operand_diagnostics`; duplicating it here at the binding
-/// site would cause false-positive rejections for currently-valid
-/// instantiations such as `forall v in [1,2,3]: constraint MinThreshold(value: v)`
-/// where `param value: Length` and `v` is `Int`.
+/// The restated Int-for-Length ruling lives at
+/// constraint_def_compile_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
 ///
 /// # Safety of non-numeric param types
 ///
@@ -1043,9 +1036,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// - **Same-type non-numeric params** (e.g. `param actual : Geometry` with a
 ///   `Geometry`-typed arg) exit at Rule 3 via `type_compatible`'s identity
 ///   short-circuit (`from == to`).
-/// - Rule 5 therefore fires only for genuinely cross-category pairs such as
-///   `Bool` or `String` passed where a numeric/`Geometry`/struct param is
-///   declared — those are real errors and correctly rejected.
+/// - For a non-numeric param, Rule 5 therefore fires only for genuinely
+///   cross-category pairs such as `Bool` or `String` passed where a
+///   `Geometry`/struct param is declared — those are real errors and correctly
+///   rejected.
 ///
 /// This invariant is validated by the reify-compiler test suite (including
 /// GD&T `Conforms` tolerancing fixtures that use trait-typed and
@@ -1063,12 +1057,15 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
 ///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
 ///    selector coercions — the common well-typed case).
-/// 4. Both sides are numeric (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`)
-///    → **accept** (numeric leniency: tolerates `Int`-for-`Length` and
-///    cross-dimension scalars at the binding site; task 4490 guards
-///    dimensional correctness inside comparison predicates).
-/// 5. Otherwise → **reject** (cross-category mismatch, e.g. `Bool` vs `Length`,
-///    `String` vs `Length`, `Enum(X)` vs `Length`).
+/// 4. A `Type::ScalarParam(_)` on either side, with the other side a scalar
+///    kind (`is_orderable_scalar`: `Type::Int | Type::Scalar{..} |
+///    Type::ScalarParam(_)`) → **accept** (the D4-5 dimension-generic fence:
+///    the dimension-generic machinery resolves it, not this check).
+/// 5. Otherwise → **reject**: a cross-category mismatch (e.g. `Bool`, `String`
+///    or `Enum(X)` vs `Length`), or a numeric pairing outside both Rule 3's
+///    widening and the fence — a scalar of another dimension (task 5762, δ₂),
+///    an `Int` at a dimensioned scalar param, or a scalar at an `Int` param
+///    (task 10029).
 pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bool {
     // Rule 1: Anti-cascade guard — either side poisoned → accept.
     // Also prevents `type_compatible`'s debug_assert!(!param_ty.is_error()) from
@@ -1087,14 +1084,18 @@ pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bo
     if type_compatible(param_ty, arg_ty) {
         return true;
     }
-    // Rule 4: Numeric leniency — both sides are some form of numeric scalar.
-    // Tolerates Int-for-Length and cross-dimension scalar-for-scalar at the
-    // binding site; dimensional strictness within predicates is task 4490's job.
-    let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
-    if is_numeric(param_ty) && is_numeric(arg_ty) {
+    // Rule 4: The D4-5 fence — a `ScalarParam` against any scalar kind is
+    // accepted, because the dimension-generic machinery resolves it, not this
+    // check.
+    let dimension_generic_meets_scalar = |generic: &Type, other: &Type| {
+        matches!(generic, Type::ScalarParam(_)) && is_orderable_scalar(other)
+    };
+    if dimension_generic_meets_scalar(param_ty, arg_ty)
+        || dimension_generic_meets_scalar(arg_ty, param_ty)
+    {
         return true;
     }
-    // Rule 5: Cross-category mismatch (e.g. Bool vs Length, String vs Length).
+    // Rule 5: Everything else is a mismatch (see Rules, item 5).
     false
 }
 
@@ -1764,6 +1765,26 @@ pub(crate) fn mul_div_result_or_placeholder(
     })
 }
 
+/// Whether `cand` could take `arg_types` by padding its trailing params: it
+/// has strictly more params than args, and every provided arg matches its
+/// param under the tier-3 wildcard gate that `resolve_function_overload`
+/// applies — literally the same function (#5689), so the two cannot drift.
+/// Says nothing about whether the trailing defaults exist.
+///
+/// The ONE "would pad" predicate, shared by [`try_default_padding`] and
+/// `expr.rs`'s `pending_default_error` (task 5494).
+pub(crate) fn provided_prefix_admits_padding(cand: &CompiledFunction, arg_types: &[Type]) -> bool {
+    let provided = arg_types.len();
+    if cand.params.len() <= provided {
+        return false;
+    }
+    let is_generic = !cand.type_params.is_empty();
+    cand.params[..provided]
+        .iter()
+        .zip(arg_types)
+        .all(|((_, param_ty), arg_ty)| slot_matches_wildcard_tier(param_ty, arg_ty, is_generic))
+}
+
 /// Attempt to satisfy a `NoMatch` call via default-padding.
 ///
 /// Searches `named` for the UNIQUE same-name candidate where:
@@ -1803,7 +1824,8 @@ pub(crate) fn mul_div_result_or_placeholder(
 /// Returns `None` when zero candidates are satisfiable (caller falls through to the
 /// existing NoMatch error). (task-4788 / esc-4757-65.)
 ///
-/// **Invariant:** every candidate in `named` must satisfy
+/// **Invariant:** every candidate in `named` that passes
+/// [`provided_prefix_admits_padding`] must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
 /// enforced by `debug_assert!`). Violations are programming errors, not
 /// recoverable call-site conditions.
@@ -1815,8 +1837,7 @@ pub(crate) fn try_default_padding<'a>(
     let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
 
     for &cand in named {
-        // Candidate must have strictly more params than provided args.
-        if cand.params.len() <= provided {
+        if !provided_prefix_admits_padding(cand, arg_types) {
             continue;
         }
         // Strict invariant: param_defaults must be length-aligned to params.
@@ -1832,20 +1853,6 @@ pub(crate) fn try_default_padding<'a>(
             cand.param_defaults.len()
         );
         if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
-        // Provided prefix types must match candidate params using the same
-        // tier-3 wildcard predicate as `resolve_function_overload` — literally
-        // the same function now (#5689), so the two cannot drift apart. See
-        // the function-level doc for why the alignment is required.
-        let is_generic = !cand.type_params.is_empty();
-        let prefix_matches = cand.params[..provided]
-            .iter()
-            .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| {
-                slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
-            });
-        if !prefix_matches {
             continue;
         }
         // All trailing params must carry Some compiled default.
@@ -4630,7 +4637,7 @@ mod tests {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 
-    // ── constraint_arg_type_conforms (task 4546) ──────────────────────────────
+    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂; task 10029) ──
 
     /// (gap) Bool passed where Length expected → false.
     /// This is the primary gap this task closes.
@@ -4642,32 +4649,132 @@ mod tests {
         );
     }
 
-    /// (numeric leniency) Int passed where Length expected → true.
-    /// Dimensional strictness within predicates is task 4490's job.
+    /// (Int-for-Length rejected, task 10029) Int passed where Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_int_for_length_is_true() {
+    fn constraint_arg_type_conforms_int_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::Int),
-            "Int passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &Type::Int),
+            "Int passed as Length param must be rejected"
         );
     }
 
-    /// (cross-dimension numeric tolerated) Mass passed where Length expected → true.
-    /// Both sides are Scalar — the numeric-leniency rule applies.
+    /// (Scalar-at-Int rejected, task 10029) Length passed where Int expected → false.
     #[test]
-    fn constraint_arg_type_conforms_mass_for_length_is_true() {
+    fn constraint_arg_type_conforms_length_arg_for_int_param_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &mass_ty()),
-            "Mass scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&Type::Int, &length_ty()),
+            "Length arg passed as Int param must be rejected"
         );
     }
 
-    /// (dimensionless numeric tolerated) dimensionless Real passed where Length → true.
+    /// (Scalar-at-Int rejected, task 10029) dimensionless Real passed where Int
+    /// expected → false. Rule 3's Int→dimensionless widening is one-way.
     #[test]
-    fn constraint_arg_type_conforms_dimensionless_for_length_is_true() {
+    fn constraint_arg_type_conforms_dimensionless_arg_for_int_param_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
-            "dimensionless Real scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&Type::Int, &Type::dimensionless_scalar()),
+            "dimensionless Real arg passed as Int param must be rejected"
+        );
+    }
+
+    /// (Rule 3 widening kept) Int passed where a dimensionless Real param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_for_dimensionless_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::dimensionless_scalar(), &Type::Int),
+            "Int passed as dimensionless Real param must be accepted (Int widening)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Mass passed where Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_mass_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &mass_ty()),
+            "Mass scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) dimensionless Real passed where
+    /// Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_dimensionless_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
+            "dimensionless Real scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Length passed where a dimensionless
+    /// Real param is declared → false. The reverse direction of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_length_for_dimensionless_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::dimensionless_scalar(), &length_ty()),
+            "Length scalar passed as dimensionless Real param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Length is
+    /// declared → true. Guards against over-removing Rule 4.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Length param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Length passed where a dimension-generic `ScalarParam` param
+    /// is declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_length_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &length_ty()),
+            "Length arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Int passed where a dimension-generic `ScalarParam` param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Int),
+            "Int arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Int is
+    /// declared → true. The fence accepts a `ScalarParam` on either side against
+    /// any scalar kind.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_int_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Int, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Int param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) Bool arg passed where a dimension-generic
+    /// `ScalarParam` is declared → false. The fence needs a scalar kind on the
+    /// other side; a `ScalarParam` alone does not accept.
+    #[test]
+    fn constraint_arg_type_conforms_bool_arg_for_scalar_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Bool),
+            "Bool arg passed as ScalarParam param must be rejected"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) a dimension-generic `ScalarParam` arg passed
+    /// where Bool is declared → false. The reverse of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_bool_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::Bool, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Bool param must be rejected"
         );
     }
 
@@ -5295,5 +5402,55 @@ mod tests {
             infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
             None,
         );
+    }
+
+    // ── task 5494: `provided_prefix_admits_padding` ─────────────────────────
+
+    fn real_real_string() -> CompiledFunction {
+        make_fn(
+            "f",
+            vec![
+                ("x", Type::dimensionless_scalar()),
+                ("y", Type::dimensionless_scalar()),
+                ("z", Type::String),
+            ],
+        )
+    }
+
+    #[test]
+    fn prefix_admits_padding_needs_strictly_more_params_than_args() {
+        let f = real_real_string();
+        let all = [
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+            Type::String,
+        ];
+        assert!(!provided_prefix_admits_padding(&f, &all));
+        let too_many = [all.as_slice(), &[Type::Int]].concat();
+        assert!(!provided_prefix_admits_padding(&f, &too_many));
+    }
+
+    #[test]
+    fn prefix_admits_padding_when_every_provided_arg_matches_its_param() {
+        let f = real_real_string();
+        assert!(provided_prefix_admits_padding(&f, &[]));
+        assert!(provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar()]
+        ));
+        assert!(provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]
+        ));
+    }
+
+    #[test]
+    fn prefix_does_not_admit_padding_when_a_provided_arg_mismatches() {
+        let f = real_real_string();
+        assert!(!provided_prefix_admits_padding(&f, &[Type::String]));
+        assert!(!provided_prefix_admits_padding(
+            &f,
+            &[Type::dimensionless_scalar(), Type::String]
+        ));
     }
 }

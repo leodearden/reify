@@ -20,6 +20,7 @@
 
 pub mod diagnostic_identity;
 pub mod diagnostics;
+pub mod direction;
 pub mod dimension;
 pub mod display_units;
 pub mod field_calculus;

@@ -14,8 +14,6 @@ inventory.workspace = true
 xxhash-rust.workspace = true
 strum.workspace = true
 zip.workspace = true
-[features]
-serde = ["reify-core/serde", "reify-ast/serde"]
 
 [dev-dependencies]
 serde_json = "1"
