@@ -147,13 +147,9 @@ pub fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
         stdlib_loader::build_stdlib_modules(sources);
     }));
     let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
-    if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    }
+    reify_core::panic_payload_str(err.as_ref())
+        .expect("panic payload was neither String nor &'static str")
+        .to_owned()
 }
 
 /// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.

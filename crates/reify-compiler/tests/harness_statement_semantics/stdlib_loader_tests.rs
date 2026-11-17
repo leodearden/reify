@@ -327,13 +327,8 @@ fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
     }));
 
     let err = result.expect_err("expected panic naming all offending paths");
-    let msg: &str = if let Some(s) = err.downcast_ref::<String>() {
-        s.as_str()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        s
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    };
+    let msg: &str = reify_core::panic_payload_str(err.as_ref())
+        .expect("panic payload was neither String nor &'static str");
 
     // Anchor: confirm the panic originates from the aggregated-violations code
     // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
@@ -959,11 +954,7 @@ fn assert_no_collision_panic(sources: &[(&str, &str)], why: &str) {
         stdlib_loader::build_stdlib_modules(sources);
     }));
     if let Err(err) = result {
-        let msg = err
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
-            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         panic!("stdlib build should have accepted {why}; got:\n{msg}");
     }
 }

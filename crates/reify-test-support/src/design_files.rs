@@ -115,11 +115,8 @@ mod tests {
     fn read_design_file_names_the_resolved_path_when_the_file_is_absent() {
         let payload = std::panic::catch_unwind(|| read_design_file(ABSENT_REL))
             .expect_err("reading an absent design file must panic");
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .expect("panic payload is a string");
+        let message =
+            reify_core::panic_payload_str(payload.as_ref()).expect("panic payload is a string");
 
         let resolved = crate::workspace_root::workspace_root()
             .join(ABSENT_REL)

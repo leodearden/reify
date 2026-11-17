@@ -1293,11 +1293,7 @@ fn an_armed_panic_fires_in_the_numeric_step_after_both_reservations() {
         solve(&mut solver, &[1.0; 8], LIMITS, None)
     }))
     .expect_err("the armed hook panics");
-    let message = payload
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| payload.downcast_ref::<&str>().copied())
-        .unwrap_or_default();
+    let message = reify_core::panic_payload_to_string(payload.as_ref());
     assert!(
         message.contains(INJECTED_NUMERIC_PANIC),
         "payload: {message:?}"
