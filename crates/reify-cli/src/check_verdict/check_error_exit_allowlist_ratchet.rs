@@ -17,54 +17,17 @@
 //! loud in review as a modification: there is no way to slip an entry in
 //! without editing the literal below.
 
-use super::{
-    CheckErrorAllowlistDisposition, CheckErrorExitAllowance, CHECK_ERROR_EXIT_ALLOWLIST,
-};
+use super::CHECK_ERROR_EXIT_ALLOWLIST;
 use reify_test_support::ptodo_cite_marker::has_liveness_marker;
 
-/// Renders one table row to a comparable tuple.  The matcher goes through
-/// its `Debug` rendering so the expected side below can be written as a
-/// plain string literal rather than by re-constructing the same enum value
-/// (which would make the assertion tautological).
-fn key(
-    e: &CheckErrorExitAllowance,
-) -> (String, CheckErrorAllowlistDisposition, &'static str) {
-    (format!("{:?}", e.matcher), e.disposition, e.cite)
-}
-
 #[test]
-fn allowlist_table_is_exactly_the_seeded_burn_down_set() {
-    assert_eq!(
-        CHECK_ERROR_EXIT_ALLOWLIST.len(),
-        2,
-        "the burn-down set has exactly two entries; growing it is a \
-         regression against INV-SF-2's no-per-code-list end state, and \
-         shrinking it means an entry was retired — update this pin \
-         deliberately, in the same commit as the demotion/fix that retired it"
-    );
-
-    let expected: Vec<(String, CheckErrorAllowlistDisposition, &'static str)> = vec![
-        (
-            r#"MessageContains("is unresolved (Undef)")"#.to_string(),
-            CheckErrorAllowlistDisposition::Demote,
-            "#5404",
-        ),
-        (
-            r#"MessageContains("all geometry operations failed")"#.to_string(),
-            CheckErrorAllowlistDisposition::Demote,
-            "#5404",
-        ),
-    ];
-
-    assert_eq!(
-        CHECK_ERROR_EXIT_ALLOWLIST
-            .iter()
-            .map(key)
-            .collect::<Vec<_>>(),
-        expected,
-        "CHECK_ERROR_EXIT_ALLOWLIST drifted from its seeded contents. This \
-         is a whole-table equality on purpose: an addition, a re-ordering, \
-         a matcher widening and a cite change are all equally loud."
+fn allowlist_table_is_empty() {
+    assert!(
+        CHECK_ERROR_EXIT_ALLOWLIST.is_empty(),
+        "CHECK_ERROR_EXIT_ALLOWLIST must stay EMPTY: any entry is a regression \
+         against INV-SF-2's end state, where no per-code list mediates `reify \
+         check`'s exit. A new Error on a healthy path means the emission's \
+         severity is wrong, not the gate"
     );
 }
 

@@ -960,28 +960,23 @@ structure def OversizedBuildVolume {
     );
 }
 
-/// KNOWN GAP, pinned so #5404 has a target to flip — characterization, not
-/// endorsement.
+/// A genuine design error in a geometry argument fails `check`, as it fails
+/// `eval` (INV-SF-2).
 ///
-/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `MessageContains("is unresolved
-/// (Undef)")` was seeded for an `auto` param awaiting a solver, but its
-/// code-less substring matches the one
-/// wording `geometry_ops.rs::unresolved_arg_message` gives EVERY Undef geometry
-/// argument. So a genuine design error — here a `box` width that divides by a
-/// zero param — prints `error:` lines beside "All constraints satisfied." and
-/// exits 0, the shape INV-SF-2 forbids, while `reify eval` on the same file
-/// exits 1.
-///
-/// When #5404 narrows or deletes that entry, THIS TEST MUST FAIL: flip the `check` exit
-/// assertion to `!status.success()` and drop the known-gap framing.
+/// A `box` width that divides by a zero param is `Undef` over determined
+/// inputs, so `geometry_ops.rs::unresolved_arg_message`'s code-less
+/// `failed to compile geometry operation: argument 'size_x' for box is
+/// unresolved (Undef)` Error gates the exit code.  "All constraints
+/// satisfied." on stdout is the anchor proving the exit comes from that Error,
+/// not from a constraint verdict.
 #[test]
-fn check_excuses_every_code_less_undef_geometry_argument() {
+fn check_gates_a_genuine_undef_geometry_argument() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         // Whether the realization loop that produces the Undef-argument error
         // is reached under a stub build is not measured; follow the C1
         // convention of the sibling tests and skip rather than guess.
         eprintln!(
-            "skipping Undef-argument allowlist assertions: OCCT unavailable \
+            "skipping Undef-argument gate assertions: OCCT unavailable \
              (cfg(has_occt) not set — stub-mode build)"
         );
         return;
@@ -1013,23 +1008,79 @@ structure def UndefBoxWidth {
          summary; without it this test pins nothing.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    // TODO(#5404): flip to `!status.success()` once the `is unresolved (Undef)`
-    // allowlist entry stops excusing non-`auto` Undef arguments.
     assert!(
-        status.success(),
-        "KNOWN GAP: the `is unresolved (Undef)` allowlist entry excuses this \
-         genuine design error. If this now exits non-zero, #5404 narrowed or \
-         deleted that entry — flip this assertion.\n\
+        !status.success(),
+        "a genuine Undef geometry argument is an Error and must fail `check`.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 
     let (eval_status, eval_stdout, eval_stderr) = common::run_with_args(&["eval", path]);
     assert!(
         !eval_status.success(),
-        "`reify eval` rejects the same file, which is what makes the `check` \
-         exit 0 above a gap rather than a posture.\n\
+        "`reify eval` rejects the same file, so `check` and `eval` agree.\n\
          stdout: {eval_stdout}\nstderr: {eval_stderr}"
     );
+}
+
+/// An `auto` left unresolved fails `check` on BOTH arms, including when the
+/// only constraint on it lives in a purpose.
+///
+/// Decision: the `auto` is still unresolved after the solve, so the box
+/// it feeds gets an `Undef` argument.  `realize_for_check` runs before
+/// `activate_purpose`, so a purpose constraint cannot feed the realized
+/// geometry, and `check --purpose` shows the same genuine failure `reify eval`
+/// reports.  Making purpose constraints reach the solve is a capability gap of
+/// its own, never an exit-code exemption.
+#[test]
+fn check_gates_geometry_fed_by_an_unresolved_auto_on_both_arms() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unresolved-auto gate assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("purpose_only_auto.ri");
+    std::fs::write(
+        &path,
+        r#"module purpose_only_auto
+
+structure def Plate {
+    param t : Length = auto(free)
+    let body = box(t, 10mm, 10mm)
+}
+
+purpose thick_enough(subject : Structure) {
+    constraint subject.t >= 2mm
+}
+"#,
+    )
+    .expect("failed to write temp module");
+    let path = path.to_str().expect("temp path is UTF-8");
+    const UNDEF_ARG: &str = "argument 'size_x' for box is unresolved (Undef)";
+
+    for args in [
+        &["eval", path][..],
+        &["check", path][..],
+        &["check", "--purpose", "thick_enough=Plate", path][..],
+    ] {
+        let (status, stdout, stderr) = common::run_with_args(args);
+        assert!(
+            stderr.contains(UNDEF_ARG),
+            "precondition for `reify {args:?}`: the Undef-argument Error is \
+             reported; without it this test pins nothing.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            !status.success(),
+            "`reify {args:?}` must exit non-zero on geometry fed by an \
+             unresolved `auto`.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
 }
 
 /// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.

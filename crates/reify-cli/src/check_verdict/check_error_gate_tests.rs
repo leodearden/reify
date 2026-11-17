@@ -26,7 +26,8 @@ fn trampoline_warning() -> Diagnostic {
     Diagnostic::warning(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
-/// A code-less geometry Error that the `is unresolved (Undef)` entry excuses.
+/// The code-less geometry Error `geometry_ops.rs::unresolved_arg_message` words
+/// for an argument left `Undef`.
 fn undef_argument_error() -> Diagnostic {
     Diagnostic::error(
         "failed to compile geometry operation: argument 'depth' for box is unresolved (Undef)",
@@ -147,25 +148,6 @@ fn the_deleted_bolt_ons_are_subsumed() {
     }
 }
 
-/// Each seeded allowlist entry, exercised against a message taken verbatim
-/// from the MEASURED corpus sweep that seeded it.
-#[test]
-fn seeded_allowlist_entries_excuse_their_families() {
-    assert!(
-        check_gating_error(&[undef_argument_error()]).is_none(),
-        "the `is unresolved (Undef)` entry (#5404) excuses the code-less \
-         Undef-argument geometry Error"
-    );
-    assert!(
-        check_gating_error(&[Diagnostic::error(
-            "all geometry operations failed; no geometry output produced"
-        )])
-        .is_none(),
-        "the `all geometry operations failed` entry (#5404): check writes no \
-         geometry, so this is not a fact about the design"
-    );
-}
-
 /// Families whose allowlist entry has been retired now gate like any other
 /// Error: whatever still excused them is fixed upstream of the gate.
 #[test]
@@ -179,6 +161,19 @@ fn retired_allowlist_families_now_gate() {
         .is_some(),
         "a violation Error that survives the merge is real: stale ones are \
          removed upstream by drop_falsified_constraint_diagnostics"
+    );
+    assert!(
+        check_gating_error(&[undef_argument_error()]).is_some(),
+        "a code-less Undef-argument Error gates: check solves, so what remains \
+         is a genuine Error that `reify eval` also exits 1 on"
+    );
+    assert!(
+        check_gating_error(&[Diagnostic::error(
+            "all geometry operations failed; no geometry output produced"
+        )])
+        .is_some(),
+        "the code-less rollup Error gates: declared geometry that produced \
+         nothing is never a healthy path"
     );
 }
 
