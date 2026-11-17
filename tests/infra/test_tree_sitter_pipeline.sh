@@ -4009,5 +4009,24 @@ test_generate_fixture_helper_allocates_no_temp_of_its_own() {
     assert_file_exists "$target/tree-sitter-reify/grammar.js" || return 1
 }
 
+test_verify_fixture_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the verify fixture. Its dir must also come out a git repo with docs/:
+    # the cases that stage files into it need both.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_verify_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/verify.sh" || return 1
+    if [ ! -d "$target/docs" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the fixture has no docs/ directory: $target"
+        return 1
+    fi
+    assert_cmd_success "the fixture is a git repo" \
+        git -C "$target" rev-parse --git-dir || return 1
+}
+
 # --- Main ---
 run_tests
