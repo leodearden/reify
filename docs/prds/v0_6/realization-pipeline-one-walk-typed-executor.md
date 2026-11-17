@@ -746,7 +746,7 @@ Rules are inline. Six scout seats measured; the lead re-ran the decisive caller 
 
 ## Amendment (2026-11-17, realized-world evaluation)
 
-`docs/prds/v0_6/realized-world-evaluation.md` (Leo's rulings R1–R17 there) changes what runs at this PRD's walk slots. Its first leaves land ahead of #9739; the leaves here adapt second, and edges record that (#9159 → #10154, #9158 → #10154, #9161 → #10136, #9263 → #10153). Nothing in R3 or R6 is reopened.
+`docs/prds/v0_6/realized-world-evaluation.md` (Leo's rulings R1–R17 there) changes what runs at this PRD's walk slots. Its first leaves land ahead of #9739; the leaves here adapt second, and edges record that (#9159 → #10154, #9158 → #10154, #9263 → #10153). Nothing in R3 or R6 is reopened.
 - **§5.2 step 3.** After each `Realize` step the realized handle is published into the walk's `values` on every surface. Under `PostProcessSet::Realize` that is today's `post_process_geometry_handle_cells` call; under `PostProcessSet::Tessellate` it is a values-only stamp (no oracle entry, no cache node, no compute dispatch), which #10154 adds to `tessellate_from_values` and η #9159 carries into `realize_templates`.
 - **§5.2 step 4.** The `HydrateCell` step takes `derived_member_cells` (computed once per walk) in place of `realization_read_cells`, and evaluates a derived-member cell with the realized context before the surviving ladder rungs. Ladder rung (b) is gone.
 - **§5.2 step 3, op arguments.** The executor builds a realized world per op compile from fields `RealizationOpsInput` already carries; `realized_reprs` feeds that world. There is no pre-resolve step: `prehydrate_inline_curated_selector_args` and `InlineSelectorMemo` are deleted, and the walk owns one memo per invocation.

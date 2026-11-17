@@ -6,11 +6,11 @@ Machine-readable twin: `realized-world-evaluation.capability-manifest.yaml`, sta
 
 Every grep check was executed against main at decompose: each `present` pattern matches nothing today and each `absent` pattern matches today. Absent-checks are bound to the function definition (`fn name\(`), not the bare name, so prose that names a retired mechanism does not keep a check red; where another stream may move the function first, the path is the crate source directory.
 
-**Filed:** 13 leaves. Twelve are new; β adopts the existing task #10136. ξ, α, β and ι run ahead of #9739; the rest depend on it (R8).
+**Filed:** 13 leaves. Twelve are new; β adopts the existing task #10136. ξ, α and ι run ahead of #9739. β follows instantiation-value-flow β #6592, which is parked (ruling R18, made after the first commit: β's mechanical check was withdrawn and its scope narrowed). The rest depend on #9739 (R8).
 
 **Baselines.** Fourteen fixtures, `tests/prd-gate/fixtures/realized_world_*.ri`, each parsed with `tree-sitter parse --quiet` (0 ERROR nodes) and run with `target/debug/reify eval` on 2026-11-17; each file's header comment records what it printed. The PRD introduces no new syntax, so the grammar gate has nothing further to bind.
 
-**G7 (design invariants).** Walked against INV-SF-1..7 and INV-ARCH-1. INV-SF-1: a member evaluated without a realized world carries `UndefCause::AwaitingRealization`, and a failed member carries the failure's cause. INV-ARCH-1: the new module sits below the engine SCC (R16). One waiver, on α: between α and β a let-bound member in an overridden instance takes the default instance's value with no diagnostic (PRD §7, ruling R15); it is owned by β.
+**G7 (design invariants).** Walked against INV-SF-1..7 and INV-ARCH-1. INV-SF-1: a member evaluated without a realized world carries `UndefCause::AwaitingRealization`, and a failed member carries the failure's cause. INV-ARCH-1: the new module sits below the engine SCC (R16). One waiver, on α: a let-bound member in an overridden instance takes the default instance's value with no diagnostic (PRD §7, rulings R15 and R18); instantiation-value-flow β #6592 turns it loud and β makes it correct.
 
 **D3 verification.** `scripts/prd-decompose-verify.mjs` with `reify_bin` = the debug binary, run `wf_660138cd-ef2`, over the two unparked leaves `reify eval` can observe (α, β): `disposition: BLOCKS`, 2 of 2 probed, 28 records all with executed-probe evidence, 0 malformed, 0 fixture-absent, 4 blocking records.
 - 2 are α's own future deliverable probed on today's binary (`reify check` exits 1 on the let-bound and user-fn datum fixtures because the consuming op fails). They confirm the baseline. Not findings.
@@ -46,14 +46,14 @@ Signal leaf of the first slice. Baselines: tests/prd-gate/fixtures/realized_worl
 | tessellate-stamp-and-producer-closure | PASS | built here: the per-Realize values stamp in `tessellate_from_values` and the value-read producer closure in realization_staleness.rs (PRD §5.5, §5.6). | manual: Behavioural: rows B14 and B15, Rust tests over the tessellate entries. S2 η #9159 deletes `tessellate_from_values`, so no grep on it is sound. |
 | override-paths-stay-loud-inline | PASS | rejection-check: realized_world_override_instance_datum.ri run with target/debug/reify eval prints `per-instance re-realization compile error for Outer.a.body` today; this leaf must keep an inline datum in an overridden instance a coded error (B17). | manual: Behavioural rejection, pinned by a CLI harness test on the fixture. |
 
-## β #10136: one instance realization on the scheduled walk (adopts #10136)
+## β #10136: realization-derived cells in an overridden instance (adopts #10136; follows instantiation-value-flow β #6592)
 
-Adopted task #10136. Design-first (PRD §5.7). Baseline: tests/prd-gate/fixtures/realized_world_override_instance.ri builds silently wrong today (x-span 21.0 mm where a standalone size-80 build gives 161.0 mm).
+Adopted task #10136. Design-first (PRD §5.7). Narrowed 2026-11-17 by ruling R18: per-instance realization is instantiation-value-flow β #6592's (upstream); this leaf adds the scheduled slots and the realized world inside it. Baseline: tests/prd-gate/fixtures/realized_world_override_instance.ri builds silently wrong today (x-span 21.0 mm where a standalone size-80 build gives 161.0 mm) and prints `c: undef` for the instance's centroid cell.
 
 | Capability | Verdict | Evidence | Delivered check |
 |---|---|---|---|
-| four-override-paths-replaced | PASS | `grep:crates/reify-eval/src/engine_build.rs` (today defines `realize_overridden_instance_into` and `realize_sub_override_handles`). This leaf replaces both, and the seeders' private loops, with one instance realization. The path is the crate source directory because S2 ι₁ #9161 may move these functions first. | `absent` grep `fn realize_overridden_instance_into\(\|fn realize_sub_override_handles\(` in `crates/reify-eval/src` |
-| instance-derived-cells-correct | PASS | built here, with α upstream for the realized world. | manual: Behavioural: rows B22 and B23; the override fixture's Outer.moved spans x in [-0.5, 160.5] mm. |
+| instance-overlay-of-all-cells | PASS | `producer:task-6592` upstream: the override paths compile an instance's ops against the instance's own cells (instantiation-value-flow C1, C2). Today `instance_value_overlay` overlays params only. | manual: Upstream capability; its delivery is #6592's own delivered checks. |
+| instance-derived-cells-correct | PASS | built here, with α upstream for the realized world and #6592 upstream for the instance realization. | manual: Behavioural: rows B22 and B23; the override fixture's Outer.moved spans x in [-0.5, 160.5] mm and Outer.a.c displays the overridden centroid. No grep is sound here: the functions involved are #6592's to reshape. |
 
 ## ι #10155: docs-truth for the first slice (spec lazy-branch effects, guarantee, chunks, exemplar)
 

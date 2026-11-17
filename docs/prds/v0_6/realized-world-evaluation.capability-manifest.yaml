@@ -116,24 +116,21 @@ tasks:
       reason: 'Behavioural rejection, pinned by a CLI harness test on the fixture.'
 - label: β
   task_id: 10136
-  title: 'realized-world β: one instance realization on the scheduled walk (adopts #10136)'
-  note: 'Adopted task #10136. Design-first (PRD §5.7). Baseline: tests/prd-gate/fixtures/realized_world_override_instance.ri builds silently wrong today (x-span 21.0 mm where a standalone size-80 build gives 161.0 mm).'
+  title: 'realized-world β: realization-derived cells in an overridden instance (adopts #10136; follows instantiation-value-flow β #6592)'
+  note: 'Adopted task #10136. Design-first (PRD §5.7). Narrowed 2026-11-17 by ruling R18: per-instance realization is instantiation-value-flow β #6592''s (upstream); this leaf adds the scheduled slots and the realized world inside it. Baseline: tests/prd-gate/fixtures/realized_world_override_instance.ri builds silently wrong today (x-span 21.0 mm where a standalone size-80 build gives 161.0 mm) and prints `c: undef` for the instance''s centroid cell.'
   capabilities:
-  - name: four-override-paths-replaced
-    binding: '`grep:crates/reify-eval/src/engine_build.rs` (today defines `realize_overridden_instance_into` and `realize_sub_override_handles`). This leaf replaces both, and the seeders'' private loops, with one instance realization. The path is the crate source directory because S2 ι₁ #9161 may move these functions first.'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: 'fn realize_overridden_instance_into\(|fn realize_sub_override_handles\('
-      expect: absent
-      paths:
-      - crates/reify-eval/src
-  - name: instance-derived-cells-correct
-    binding: 'built here, with α upstream for the realized world.'
+  - name: instance-overlay-of-all-cells
+    binding: '`producer:task-6592` upstream: the override paths compile an instance''s ops against the instance''s own cells (instantiation-value-flow C1, C2). Today `instance_value_overlay` overlays params only.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: 'Behavioural: rows B22 and B23; the override fixture''s Outer.moved spans x in [-0.5, 160.5] mm.'
+      reason: 'Upstream capability; its delivery is #6592''s own delivered checks.'
+  - name: instance-derived-cells-correct
+    binding: 'built here, with α upstream for the realized world and #6592 upstream for the instance realization.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Behavioural: rows B22 and B23; the override fixture''s Outer.moved spans x in [-0.5, 160.5] mm and Outer.a.c displays the overridden centroid. No grep is sound here: the functions involved are #6592''s to reshape.'
 - label: ι
   task_id: 10155
   title: 'realized-world ι: docs-truth for the first slice (spec lazy-branch effects, guarantee, chunks, exemplar)'
