@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { DiagnosticInfo, EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
+import type { DiagnosticInfo, EntityTreeNode, FileData, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
 import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -3523,6 +3523,53 @@ describe('App launcher Start view (alpha-spine β)', () => {
     reply.resolve(published(makeGuiState()));
     await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
     expect(openPaths()).toEqual(['/designs/bracket.ri']);
+  });
+
+  it('a Start-view open abandoned while the engine is loading never lands, even after another document opened', async () => {
+    vi.mocked(bridge.openFile)
+      .mockResolvedValueOnce({ path: '/designs/bracket.ri', content: 'structure Bracket {}' })
+      .mockResolvedValueOnce({ path: '/designs/flange.ri', content: 'structure Flange {}' });
+    const abandonedReply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine)
+      .mockReturnValueOnce(abandonedReply.promise)
+      .mockResolvedValue(published(makeGuiState()));
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await screen.findByTestId('start-document-pending');
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/bracket.ri'));
+    fireEvent.click(screen.getByTestId('start-document-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('start-document-pending')).toBeNull());
+
+    typeStartPath('/designs/flange.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    expect(openPaths()).toEqual(['/designs/flange.ri']);
+
+    abandonedReply.resolve(published(makeGuiState()));
+    await flushMacrotasks();
+
+    expect(openPaths()).toEqual(['/designs/flange.ri']);
+    expect(capturedEditorStore.state.activeFile).toBe('/designs/flange.ri');
+  });
+
+  it('a Start-view open abandoned while reading the file sends no engine request', async () => {
+    const read = deferred<FileData>();
+    vi.mocked(bridge.openFile).mockReturnValueOnce(read.promise);
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+    await screen.findByTestId('start-document-pending');
+    fireEvent.click(screen.getByTestId('start-document-cancel'));
+
+    read.resolve({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await flushMacrotasks();
+
+    expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(openPaths()).toEqual([]);
   });
 
   it('Design closes the chat panel and Assistant reopens it', async () => {
