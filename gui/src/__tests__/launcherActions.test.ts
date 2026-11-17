@@ -35,6 +35,17 @@ async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   return outcome as LaunchFailure;
 }
 
+function thrownBy(fn: () => void): LaunchFailure {
+  let thrown: unknown;
+  try {
+    fn();
+  } catch (err) {
+    thrown = err;
+  }
+  expect(thrown).toBeInstanceOf(LaunchFailure);
+  return thrown as LaunchFailure;
+}
+
 let store: LauncherStore;
 let deps: ReturnType<typeof makeDeps>;
 
@@ -270,6 +281,69 @@ describe('createDocument', () => {
 
     written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
     await creating;
+  });
+});
+
+describe('refuseIfDocumentPending', () => {
+  it('does nothing while no document attempt is in flight', () => {
+    const actions = createLauncherActions(store, deps);
+
+    expect(() => actions.refuseIfDocumentPending('open')).not.toThrow();
+    expect(() => actions.refuseIfDocumentPending('create')).not.toThrow();
+  });
+
+  it("while an open is in flight, throws a LaunchFailure under the attempt kind's code naming the pending path", async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+
+    const refusedOpen = thrownBy(() => actions.refuseIfDocumentPending('open'));
+    const refusedCreate = thrownBy(() => actions.refuseIfDocumentPending('create'));
+
+    expect(refusedOpen.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
+    expect(refusedOpen.message).toBe('/designs/bracket.ri is still opening');
+    expect(refusedCreate.code).toBe(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED);
+    expect(refusedCreate.message).toBe('/designs/bracket.ri is still opening');
+
+    held.resolve();
+    await opening;
+  });
+
+  it('writes nothing to the store', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    store.setRecent(RECENT);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+    const errorBefore = store.state.document.error;
+    const recentBefore = store.state.document.recent;
+
+    thrownBy(() => actions.refuseIfDocumentPending('open'));
+
+    expect(store.state.document.error).toBe(errorBefore);
+    expect(store.state.document.recent).toBe(recentBefore);
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    held.resolve();
+    await opening;
+  });
+
+  it('no longer refuses once the attempt settles, failed or not', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+    held.resolve();
+    await opening;
+
+    expect(() => actions.refuseIfDocumentPending('open')).not.toThrow();
+
+    deps.loadDocument.mockRejectedValueOnce('No such file: /designs/missing.ri');
+    await failureOf(actions.openDocument('/designs/missing.ri'));
+
+    expect(() => actions.refuseIfDocumentPending('open')).not.toThrow();
   });
 });
 
