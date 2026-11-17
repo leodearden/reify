@@ -3594,6 +3594,47 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(screen.queryByTestId('start-mode-error')).toBeNull());
   });
 
+  it('a repeat Debug click whose set_mode fails shows E_GUI_MODE_FAILED and keeps Debug selected', async () => {
+    vi.mocked(bridge.setMode)
+      .mockResolvedValueOnce({ mode: 'debug', debug_port: 3939 })
+      .mockRejectedValueOnce('IPC channel closed');
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+    await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true'),
+    );
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_MODE_FAILED');
+    expect(error.textContent).toContain('IPC channel closed');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('start-debug-port').textContent).toContain('3939');
+    expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Debug click after an env-launched debug session whose set_mode fails shows E_GUI_MODE_FAILED', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.setMode)
+      .mockResolvedValueOnce({ mode: 'debug', debug_port: 3939 })
+      .mockRejectedValueOnce('IPC channel closed');
+    await renderAndWaitForReady();
+    await waitFor(() =>
+      expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true'),
+    );
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_MODE_FAILED');
+    expect(error.textContent).toContain('IPC channel closed');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
+  });
+
   it('a Design click whose set_mode fails shows E_GUI_MODE_FAILED and leaves the chat panel open', async () => {
     vi.mocked(bridge.setMode).mockImplementation((mode) =>
       mode === 'design'
