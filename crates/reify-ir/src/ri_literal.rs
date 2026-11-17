@@ -15,11 +15,11 @@
 //! A `Value::Direction` is written as `dir(x, y, z)`; its same-bits guarantee
 //! rests on `UnitVec3::from_vector` being a bit-level fixed point
 //! (docs/prds/v0_6/direction-typing.md C2), so re-parsing re-normalises to
-//! the identical unit vector.
+//! the identical unit vector — subject to qualification 4 below.
 //!
-//! # The three qualifications on that sentence
+//! # The four qualifications on that sentence
 //!
-//! All three are load-bearing for a caller deciding whether a splice is safe,
+//! All four are load-bearing for a caller deciding whether a splice is safe,
 //! so they are stated here rather than left in an inline comment.
 //!
 //! **1. One documented variant change.** A *dimensionless* `Value::Scalar` has
@@ -88,6 +88,22 @@
 //! factor-1.0 atoms structurally avoids (see
 //! `reify_core::units::ri_compound_unit_expr`). A hint may change WHICH exact
 //! literal is written for a bare dimension; it may never reach a compound one.
+//!
+//! **4. A precondition on the target module's function namespace.** Every
+//! other emitted form is a pure literal; `dir(x, y, z)` is a CALL, so its
+//! round trip depends on the name `dir` reaching the builtin. The compiler
+//! consults builtins only when no user function of that name is in scope (the
+//! `NoUserFunctions` arm of reify-compiler's `expr.rs` overload ladder), so a
+//! user `fn dir` either redirects the spliced default to itself or answers
+//! `NoMatchingOverload`. So the guarantee for a `Value::Direction` reads in
+//! full:
+//!
+//! > …provided the target module does not declare its own `fn dir` (or
+//! > otherwise bring a user `fn dir` into scope).
+//!
+//! As with a user-shadowed unit symbol, nothing in this crate can see that
+//! declaration, so a caller splicing into arbitrary user source should treat a
+//! user `fn dir` as outside the guarantee.
 //!
 //! # Why not `Display for Value`
 //!
@@ -286,11 +302,13 @@ pub enum UnitScope {
 /// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
 ///
 /// Re-parsing an `Ok` result yields the same variant, dimension and f64 bits,
-/// subject to the module-level doc's two qualifications: a *dimensionless*
-/// `Value::Scalar` comes back as a `Value::Real` (same dimension, same bits,
-/// different variant — an un-suffixed `.ri` number literal has no other
-/// reading), and the bit-exactness holds unless the target module's
-/// `UnitRegistry` shadows the emitted symbol with a different factor.
+/// subject to the module-level doc's qualifications 1, 2 and 4: a
+/// *dimensionless* `Value::Scalar` comes back as a `Value::Real` (same
+/// dimension, same bits, different variant — an un-suffixed `.ri` number
+/// literal has no other reading), the bit-exactness holds unless the target
+/// module's `UnitRegistry` shadows the emitted symbol with a different factor,
+/// and a `Value::Direction` round-trips only while no user `fn dir` is in
+/// scope.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
