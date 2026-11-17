@@ -8,10 +8,11 @@
  * openDocument's Recent update, and adoptLiveDebugServer's set_mode, which also
  * becomes the store's mode error. One document attempt (open or create) runs at
  * a time: the store's document.pending holds its requested path, and a second
- * attempt is refused with a LaunchFailure under its own code naming that path.
- * Only the attempt's own settling clears pending (the store's reset does not),
- * so a load that never settles leaves every document attempt refused until the
- * app restarts.
+ * attempt is refused with a LaunchFailure under its own code naming that path;
+ * refuseIfDocumentPending lets a caller refuse before its own preparation, and
+ * the action re-checks. Only the attempt's own settling clears pending (the
+ * store's reset does not), so a load that never settles leaves every document
+ * attempt refused until the app restarts.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -67,6 +68,14 @@ const SELECT_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> =
   debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
 });
 
+export type DocumentAttemptKind = 'open' | 'create';
+
+/** The code a document attempt of each kind is refused under while another is pending. */
+const DOCUMENT_ATTEMPT_CODES: Readonly<Record<DocumentAttemptKind, LaunchErrorCode>> = Object.freeze({
+  open: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+  create: LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED,
+});
+
 /**
  * selectMode's set_mode failure code, given the debugPort the store held
  * before the call. A non-null debugPort came from a set_mode reply, so the
@@ -101,15 +110,20 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     }
   }
 
+  /** Callers refuse before their own preparation (a native file dialog); the action re-checks. */
+  function refuseIfDocumentPending(kind: DocumentAttemptKind): void {
+    const inFlight = store.state.document.pending;
+    if (inFlight !== null) {
+      throw new LaunchFailure(DOCUMENT_ATTEMPT_CODES[kind], `${inFlight} is still opening`);
+    }
+  }
+
   async function exclusiveDocumentAttempt(
-    code: LaunchErrorCode,
+    kind: DocumentAttemptKind,
     path: string,
     attempt: () => Promise<void>,
   ): Promise<void> {
-    const inFlight = store.state.document.pending;
-    if (inFlight !== null) {
-      throw new LaunchFailure(code, `${inFlight} is still opening`);
-    }
+    refuseIfDocumentPending(kind);
     store.setDocumentPending(path);
     try {
       await attempt();
@@ -119,11 +133,11 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   function openDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, path, () => loadAndRecord(path));
+    return exclusiveDocumentAttempt('open', path, () => loadAndRecord(path));
   }
 
   function createDocument(path: string): Promise<void> {
-    return exclusiveDocumentAttempt(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, path, async () => {
+    return exclusiveDocumentAttempt('create', path, async () => {
       const created = await inStage(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () =>
         deps.createNewFile(path),
       );
@@ -169,7 +183,14 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     await bridge;
   }
 
-  return { openDocument, createDocument, refreshRecent, selectMode, adoptLiveDebugServer };
+  return {
+    openDocument,
+    createDocument,
+    refuseIfDocumentPending,
+    refreshRecent,
+    selectMode,
+    adoptLiveDebugServer,
+  };
 }
 
 export type LauncherActions = ReturnType<typeof createLauncherActions>;
