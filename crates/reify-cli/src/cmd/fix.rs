@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
+use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{self, RequiredImport};
 use reify_core::ModulePath;
 
@@ -73,8 +74,9 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         .unwrap_or_else(|| parsed.path.clone());
     let universe = import_headers::stdlib_universe_excluding(&own_module);
     let plan = import_headers::derive_std_imports(&parsed, &universe);
+    let cfg = CfgSet::host_default();
 
-    let mut imports_after_fix = import_headers::declared_imports(&parsed);
+    let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, &cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
@@ -88,7 +90,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         return false;
     }
 
-    let missing = plan.missing_from(&parsed);
+    let missing = plan.missing_from(&parsed, &cfg);
     if missing.is_empty() {
         return true;
     }
@@ -102,7 +104,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = import_headers::insert_imports(&source, &parsed, &modules);
+    let fixed = import_headers::insert_imports(&source, &parsed, &cfg, &modules);
     if let Err(e) = replace_atomically(Path::new(path), &fixed) {
         eprintln!("Error writing {path}: {e}");
         return false;

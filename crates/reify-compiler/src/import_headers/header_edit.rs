@@ -1,6 +1,6 @@
 //! Adding `import <module>` lines to a module's source text without
-//! disturbing anything else in it. Imports `reify_ast`/`reify_core` and the
-//! sibling [`coverage`](super::coverage) only.
+//! disturbing anything else in it. Imports `reify_ast`/`reify_core`, the
+//! [`CfgSet`] type and the sibling [`coverage`](super::coverage) only.
 
 use std::collections::HashSet;
 
@@ -8,6 +8,7 @@ use reify_ast::{Declaration, ParsedModule};
 use reify_core::ModulePath;
 
 use super::coverage::ImportCoverage;
+use crate::cfg::CfgSet;
 
 /// A `#cfg(…)` pragma gates the declaration that follows it, so it is never
 /// part of a module's leading pragma header.
@@ -18,9 +19,10 @@ const CFG_PRAGMA: &str = "cfg";
 pub(crate) fn insert_imports(
     source: &str,
     parsed: &ParsedModule,
+    cfg: &CfgSet,
     modules: &[ModulePath],
 ) -> String {
-    let coverage = ImportCoverage::of(parsed);
+    let coverage = ImportCoverage::of(parsed, cfg);
     let mut emitted: HashSet<&ModulePath> = HashSet::new();
     let new_lines: String = modules
         .iter()
