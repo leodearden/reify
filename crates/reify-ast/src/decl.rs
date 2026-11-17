@@ -65,18 +65,12 @@ impl ParsedModule {
     /// order — the GNU shape a multi-file report gives every located line.
     ///
     /// Task #10040. Positions follow the same rule as [`render_errors`](Self::render_errors),
-    /// degenerate inputs included, from one newline table for the whole list. The caller
-    /// supplies `label`, so the CLI keeps a single label for both of its parse-error line
-    /// shapes.
+    /// degenerate inputs included, and are batched the same way. The caller supplies `label`,
+    /// so the CLI keeps a single label for both of its parse-error line shapes.
     pub fn render_errors_in(&self, path: &str, label: &str, source: &str) -> Vec<String> {
-        let line_offsets = reify_core::build_line_offsets(source);
-        self.errors
-            .iter()
-            .map(|e| {
-                let (line, col) = e.line_col_with_offsets(source, &line_offsets);
-                format!("{path}:{line}:{col}: {label}: {}", e.message)
-            })
-            .collect()
+        ParseError::render_each(&self.errors, source, |e, line, col| {
+            format!("{path}:{line}:{col}: {label}: {}", e.message)
+        })
     }
 }
 
@@ -1941,9 +1935,19 @@ impl ParseError {
     /// parse), each of which would re-scan the whole source from byte 0.
     ///
     /// Same output as mapping [`render`](Self::render), one string per input error, in order —
-    /// by construction, since both go through
-    /// [`render_with_offsets`](Self::render_with_offsets).
+    /// by construction, since both resolve positions through `line_col_with_offsets` and
+    /// format through `render_at`.
     pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
+        Self::render_each(errors, source, Self::render_at)
+    }
+
+    /// The batching policy every list renderer shares: resolve each error's position against
+    /// ONE newline table for the whole list, then let `format_line` give it its line shape.
+    fn render_each(
+        errors: &[ParseError],
+        source: &str,
+        format_line: impl Fn(&ParseError, usize, usize) -> String,
+    ) -> Vec<String> {
         // The only short-circuit worth having: with nothing to render, the table would be a
         // scan of the whole source for no lookups at all. A SINGLE error is deliberately NOT
         // special-cased — `render` builds exactly this same table to serve its one lookup, so
@@ -1954,7 +1958,10 @@ impl ParseError {
         let line_offsets = reify_core::build_line_offsets(source);
         errors
             .iter()
-            .map(|e| e.render_with_offsets(source, &line_offsets))
+            .map(|e| {
+                let (line, col) = e.line_col_with_offsets(source, &line_offsets);
+                format_line(e, line, col)
+            })
             .collect()
     }
 
@@ -1966,6 +1973,11 @@ impl ParseError {
     /// `line_col_with_offsets`, which documents the rule and its degenerate inputs.
     pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
         let (line, col) = self.line_col_with_offsets(source, line_offsets);
+        self.render_at(line, col)
+    }
+
+    /// The `line:col: message` shape, at an already-resolved position.
+    fn render_at(&self, line: usize, col: usize) -> String {
         format!("{line}:{col}: {}", self.message)
     }
 
@@ -2246,18 +2258,20 @@ mod parse_error_render_tests {
              got {line}:{col}",
         );
         let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
+        // A label no production surface uses, so only a renderer that formats its `label`
+        // argument can match; the CLI's real label is pinned end to end in cli_fix_imports.rs.
         assert_eq!(
-            module.render_errors_in("dir/f.ri", "Parse error", source),
+            module.render_errors_in("dir/f.ri", "L", source),
             vec![
-                format!("dir/f.ri:{line}:{col}: Parse error: missing ';'"),
-                format!("dir/f.ri:{end_line}:{end_col}: Parse error: past end"),
-                "dir/f.ri:1:1: Parse error: prelude".to_string(),
+                format!("dir/f.ri:{line}:{col}: L: missing ';'"),
+                format!("dir/f.ri:{end_line}:{end_col}: L: past end"),
+                "dir/f.ri:1:1: L: prelude".to_string(),
             ],
         );
 
         assert!(
             mk_module(vec![])
-                .render_errors_in("dir/f.ri", "Parse error", source)
+                .render_errors_in("dir/f.ri", "L", source)
                 .is_empty(),
             "a module with no parse errors must render no lines",
         );
