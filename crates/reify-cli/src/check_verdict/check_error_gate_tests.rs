@@ -178,84 +178,6 @@ fn seeded_allowlist_entries_excuse_their_families() {
     );
 }
 
-/// No matcher may be over-broad: `TRAMPOLINE_CANCELLED` shares the
-/// `@optimized target "solver::elastic_static": ` prefix with the
-/// missing-trampoline message and is a genuine failure that must keep gating.
-#[test]
-fn allowlist_does_not_swallow_the_prefix_sibling() {
-    assert!(
-        check_gating_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)]).is_some(),
-        "a cancelled trampoline is a real failure and must gate"
-    );
-}
-
-/// A `MessageContains` entry excuses CODE-LESS diagnostics only, and no
-/// entry excuses the missing-trampoline text.
-///
-/// This is the executable form of the 2026-08-26 ruling that codes minted
-/// after the gate can never be excused: once an emission is coded — #6608's
-/// replacement of the code-less "per-instance re-realization compile error
-/// … is unresolved (Undef)" family in particular — no legacy substring
-/// entry may silently keep excusing it.  The code attached below is
-/// arbitrary; it is one no `Code(..)` entry names.
-#[test]
-fn message_entries_excuse_only_code_less_diagnostics() {
-    for msg in [
-        "failed to compile geometry operation: argument 'depth' for box is \
-         unresolved (Undef)",
-        "all geometry operations failed; no geometry output produced",
-    ] {
-        assert!(
-            check_gating_error(&[
-                Diagnostic::error(msg).with_code(DiagnosticCode::ArgTypeMismatch)
-            ])
-            .is_some(),
-            "a CODED Error must not be excused by a legacy substring: {msg:?}"
-        );
-    }
-
-    assert!(
-        check_gating_error(&[Diagnostic::error("no registered compute trampoline")]).is_some(),
-        "no allowlist entry excuses the code-less missing-trampoline text"
-    );
-}
-
-/// The load-bearing composition: an allowlisted Error must neither invent a
-/// gate nor mask a co-resident one.
-#[test]
-fn an_excused_error_neither_gates_nor_masks() {
-    assert!(
-        check_gating_error(&[
-            undef_argument_error(),
-            Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
-        ])
-        .is_none(),
-        "an excused Error beside a Warning must not gate"
-    );
-    assert!(
-        check_gating_error(&[
-            trampoline_warning(),
-            Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
-        ])
-        .is_none(),
-        "an empty-registry trampoline Warning (the LSP's posture) beside a \
-         DFM Warning must not gate"
-    );
-
-    let mixed = [
-        undef_argument_error(),
-        Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
-    ];
-    let gating = check_gating_error(&mixed)
-        .expect("a co-resident non-allowlisted Error must still gate");
-    assert!(
-        gating.message.contains("E_DFM_OVERHANG"),
-        "the gate must return the diagnostic that actually gates, not the \
-         excused one it scanned past; got {:?}",
-        gating.message
-    );
-}
-
 /// Behavioural, not a table-text match, so it holds against any matcher
 /// shape.  `ArgTypeMismatch` is guarded whole because a `Code` matcher cannot
 /// be scoped to relate call sites.  Code-less relate Errors (the conflict
@@ -315,7 +237,9 @@ fn an_empty_table_gates_the_first_error() {
 
     assert!(
         first_unexcused_error(
-            &[Diagnostic::warning("W_DFM_DRAFT: 0.5° below the 1° minimum")],
+            &[Diagnostic::warning(
+                "W_DFM_DRAFT: 0.5° below the 1° minimum"
+            )],
             &[]
         )
         .is_none(),

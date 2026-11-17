@@ -297,11 +297,11 @@ enum CheckErrorAllowlistMatcher {
     /// Preferred: match the machine-readable [`DiagnosticCode`].
     Code(DiagnosticCode),
     /// LEGACY code-less emissions ONLY — enforced, not merely documented:
-    /// [`allowlist_excuses`] never lets this arm match a diagnostic that
+    /// [`row_excuses`] never lets this arm match a diagnostic that
     /// carries a [`DiagnosticCode`].  Coding a legacy emission therefore drops
     /// it out of the allowlist with no table edit, and a code minted after
     /// the gate can never be excused through a legacy substring
-    /// (`check_error_gate_tests::message_entries_excuse_only_code_less_diagnostics`).
+    /// (`check_error_gate_tests::a_substring_row_excuses_only_code_less_diagnostics`).
     ///
     /// PRD §7 sketches this as `MessagePrefix`; the `is unresolved (Undef)`
     /// entry's marker sits mid-string, after the per-argument
@@ -336,7 +336,7 @@ enum CheckErrorAllowlistDisposition {
 
 /// One row of the `reify check` Error-exit burn-down allowlist.
 struct CheckErrorExitAllowance {
-    /// The only field the gate itself reads — see [`allowlist_excuses`].
+    /// The only field the gate itself reads — see [`row_excuses`].
     matcher: CheckErrorAllowlistMatcher,
     /// What retiring this entry will take.  BURN-DOWN METADATA: read by
     /// `check_error_exit_allowlist_ratchet`, never by the gate, so it carries
@@ -451,7 +451,7 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
 ///
 /// The single per-diagnostic severity test, so [`has_error_diagnostic`] and
 /// [`check_gating_error`] cannot drift apart: `check`'s gate is exactly this
-/// filter plus [`allowlist_excuses`], never a restatement of the severity
+/// filter plus [`row_excuses`], never a restatement of the severity
 /// comparison.
 fn error_diagnostics(
     diagnostics: &[reify_core::Diagnostic],
@@ -474,17 +474,27 @@ pub(crate) fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bo
     error_diagnostics(diagnostics).next().is_some()
 }
 
-/// Whether some [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses `d` from moving
-/// `reify check`'s exit code.
-fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
-    CHECK_ERROR_EXIT_ALLOWLIST
-        .iter()
-        .any(|entry| match entry.matcher {
-            CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
-            CheckErrorAllowlistMatcher::MessageContains(needle) => {
-                d.code.is_none() && d.message.contains(needle)
-            }
-        })
+/// Whether `row` excuses `d` from moving `reify check`'s exit code.
+fn row_excuses(row: &CheckErrorExitAllowance, d: &reify_core::Diagnostic) -> bool {
+    match row.matcher {
+        CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
+        CheckErrorAllowlistMatcher::MessageContains(needle) => {
+            d.code.is_none() && d.message.contains(needle)
+        }
+    }
+}
+
+/// The first `Severity::Error` entry of `diagnostics` that no row of
+/// `allowlist` excuses, or `None`.
+///
+/// The matching core of [`check_gating_error`], parametrized over the table so
+/// its semantics are pinned against synthetic rows
+/// (`check_error_gate_tests`) whatever the production table holds.
+fn first_unexcused_error<'a>(
+    diagnostics: &'a [reify_core::Diagnostic],
+    allowlist: &[CheckErrorExitAllowance],
+) -> Option<&'a reify_core::Diagnostic> {
+    error_diagnostics(diagnostics).find(|d| !allowlist.iter().any(|row| row_excuses(row, d)))
 }
 
 /// `reify check`'s exit gate (INV-SF-2): the first `Severity::Error`
@@ -495,12 +505,12 @@ fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
 /// longer invisible to the exit code.
 ///
 /// Both production callers only test `.is_some()`.  The diagnostic is returned
-/// rather than a `bool` solely so `an_excused_error_neither_gates_nor_masks`
-/// can assert that an allowlisted Error never masks a co-resident gating one.
+/// rather than a `bool` solely so `an_excused_row_neither_gates_nor_masks`
+/// can assert that an excused Error never masks a co-resident gating one.
 pub(crate) fn check_gating_error(
     diagnostics: &[reify_core::Diagnostic],
 ) -> Option<&reify_core::Diagnostic> {
-    error_diagnostics(diagnostics).find(|d| !allowlist_excuses(d))
+    first_unexcused_error(diagnostics, CHECK_ERROR_EXIT_ALLOWLIST)
 }
 
 /// Outcome of constraint checking.
