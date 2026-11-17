@@ -1174,7 +1174,7 @@ mod tests {
         //
         // - `pre_pass.rs`'s `Declaration::Purpose` arm registers every
         //   `p.structures` entry through
-        //   `ctx.record_or_report_duplicate(&s.name, s.span, "structure")`, so
+        //   `ctx.record_or_report_duplicate(&s.name, s.span, EntityKind::Structure)`, so
         //   the name occupies the MODULE-LEVEL structure namespace and collides
         //   with a same-named top-level `structure`.
         // - `entities_phase.rs`'s matching arm compiles it into the same

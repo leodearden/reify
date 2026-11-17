@@ -28,6 +28,28 @@ use crate::types::{
 use crate::units::UnitRegistry;
 use reify_ir::CompiledFunction;
 
+/// The kind of declaration that claimed a name in the unified entity namespace
+/// tracked by [`CompilationCtx::seen_entity_names`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntityKind {
+    Structure,
+    Occurrence,
+    Field,
+    Constraint,
+}
+
+impl EntityKind {
+    /// The kind's name as it appears in the duplicate-entity diagnostic.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            EntityKind::Structure => "structure",
+            EntityKind::Occurrence => "occurrence",
+            EntityKind::Field => "field",
+            EntityKind::Constraint => "constraint",
+        }
+    }
+}
+
 /// Durable mutable state threaded through every phase of
 /// [`crate::compile_with_prelude_refs`].
 ///
@@ -105,8 +127,8 @@ pub(crate) struct CompilationCtx {
     pub(crate) auto_type_substitution: AutoTypeSubstitution,
     /// Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     /// constraints, and fields all share the entity name space. Maps
-    /// name → (first_span, first_kind_label).
-    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, &'static str)>,
+    /// name → (first_span, first_kind).
+    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, EntityKind)>,
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
@@ -227,7 +249,7 @@ impl CompilationCtx {
     pub(crate) fn local_entity_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.seen_entity_names
             .iter()
-            .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+            .filter(|(_, (_, kind))| matches!(kind, EntityKind::Structure | EntityKind::Occurrence))
             .map(|(name, _)| name.as_str())
     }
 
@@ -261,7 +283,7 @@ impl CompilationCtx {
         &mut self,
         name: &str,
         span: SourceSpan,
-        kind: &'static str,
+        kind: EntityKind,
     ) -> bool {
         if self.is_first_entity_def(name, span) {
             self.seen_entity_names
@@ -274,10 +296,13 @@ impl CompilationCtx {
                 .expect("duplicate path implies prior entry");
             self.diagnostics.push(
                 Diagnostic::error(format!("duplicate entity definition '{}'", name))
-                    .with_label(DiagnosticLabel::new(span, format!("{} defined here", kind)))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("{} defined here", kind.label()),
+                    ))
                     .with_label(DiagnosticLabel::new(
                         first_span,
-                        format!("first defined as {} here", first_kind),
+                        format!("first defined as {} here", first_kind.label()),
                     )),
             );
             false

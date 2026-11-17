@@ -163,7 +163,7 @@ fn nested_structures(decl: &Declaration) -> &[reify_ast::StructureDef] {
 /// WHY NAVIGATION TREATS THESE AS FILE-WIDE: the compiler puts the name in the
 /// MODULE-LEVEL structure namespace. `compile_builder::pre_pass`'s
 /// `Declaration::Purpose` arm registers each through
-/// `record_or_report_duplicate(…, "structure")` — so it COLLIDES with a
+/// `record_or_report_duplicate(…, EntityKind::Structure)` — so it COLLIDES with a
 /// same-named top-level structure — and `compile_builder::entities_phase`
 /// compiles it into the same `ctx.templates` as a top-level structure, scoping
 /// only AMBIENT-DEFAULT resolution to the purpose. A fn uses it exactly like a
