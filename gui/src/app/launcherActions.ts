@@ -58,15 +58,25 @@ export interface LauncherDeps {
 }
 
 /**
- * selectMode's set_mode failure code per mode: only Debug's set_mode can bind
- * the listener (launch_mode.rs::set_mode_impl). A set_mode against a listener
- * already live cannot fail at bind, so recordDebugMode codes its own failure.
+ * set_mode's failure code per mode while the listener is not known to be live:
+ * only Debug's set_mode can bind it (launch_mode.rs::set_mode_impl).
  */
 const SELECT_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> = Object.freeze({
   design: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
   assistant: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
   debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
 });
+
+/**
+ * selectMode's set_mode failure code, given the debugPort the store held
+ * before the call. A non-null debugPort came from a set_mode reply, so the
+ * listener was live then; a live listener is never unbound and ensure_live
+ * does not bind again (debug_server_slot.rs), so set_mode can then fail only
+ * at the IPC level.
+ */
+function selectModeFailureCode(mode: LaunchMode, debugPort: number | null): LaunchErrorCode {
+  return debugPort === null ? SELECT_MODE_FAILURE_CODES[mode] : LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED;
+}
 
 /** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
 async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
@@ -126,7 +136,9 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    const reply = await inStage(SELECT_MODE_FAILURE_CODES[mode], () => deps.setMode(mode));
+    const reply = await inStage(selectModeFailureCode(mode, store.state.mode.debugPort), () =>
+      deps.setMode(mode),
+    );
     store.applyModeState(reply);
     if (mode === 'debug') {
       await debugBridgeStage();
