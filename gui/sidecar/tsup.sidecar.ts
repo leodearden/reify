@@ -4,10 +4,13 @@ import { defineConfig } from 'tsup';
 // it beside the GUI binary), so it runs where no node_modules is reachable: only Node built-ins may stay
 // external. noExternal therefore lists every declared dependency that src/ imports. Nothing imports
 // @anthropic-ai/claude-code (the claude CLI is spawned by name from PATH), so it is absent.
-// src/__tests__/built-bundle.test.ts fails when a dependency is left external.
+// It is also an extensionless file run by `node`, and Node 18 (Ubuntu 24.04's nodejs, which the deb depends
+// on) loads such a file as CommonJS, so it must be CJS; node18 is the syntax floor. built-bundle.test.ts
+// fails when a dependency is left external or the bundle does not load as CommonJS.
 export default defineConfig({
   entry: ['src/cli.ts'],
-  format: ['esm'],
+  format: ['cjs'],
+  target: 'node18',
   dts: false,
   outDir: 'dist',
   noExternal: ['@reify/shared-utils', '@modelcontextprotocol/sdk'],
