@@ -142,16 +142,20 @@ class PassSpec:
                 f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
                 f"retry_ids={self.retry_ids!r})"
             )
-        recorder = CONFIRM_RECORDER if self.kind.records else None
-        _refuse_guarded_recording(f"PassSpec(kind={self.kind.value})", recorder, self.guard)
+        if self.kind.records:
+            _refuse_guard_on_claimed_gate_path(
+                f"PassSpec(kind={self.kind.value})", CONFIRM_RECORDER, self.guard
+            )
 
 
-def _refuse_guarded_recording(owner: str, recorder: str | None, guard: CrateGuard | None) -> None:
-    """A step names one gate path, so a guard may not take the one a recorded pass gives its recorder."""
-    if recorder is not None and guard is not None:
+def _refuse_guard_on_claimed_gate_path(
+    owner: str, claimed_gate_path: str | None, guard: CrateGuard | None
+) -> None:
+    """A step names one gate path, so a guard may not take one its pass has already claimed."""
+    if claimed_gate_path is not None and guard is not None:
         raise ValueError(
-            f"{owner}: a pass that records its failing ids carries no guard: its step names one "
-            f"gate path, which {recorder} and {guard.setup.path} would both claim"
+            f"{owner}: the step names one gate path, which is claimed by {claimed_gate_path}, "
+            f"so the pass carries no guard to claim it for {guard.setup.path}"
         )
 
 
@@ -265,7 +269,7 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
     guard_file = None
     if spec.guard is not None:
         owner = f"emit_pass(kind={spec.kind.value}, profile={spec.profile.value})"
-        _refuse_guarded_recording(owner, gate_path, spec.guard)
+        _refuse_guard_on_claimed_gate_path(owner, gate_path, spec.guard)
         run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
     phase = _phase(spec, nextest=runner.nextest)
