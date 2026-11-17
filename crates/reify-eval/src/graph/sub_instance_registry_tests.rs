@@ -282,3 +282,23 @@ fn from_templates_builds_a_registry_with_no_mismatch() {
         "anti-vacuity: the check must see both the compiled collection and keyed slots",
     );
 }
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "`P.s[1]` holds cells of `Bolt` but the registry records none")]
+fn the_registry_assertion_names_the_unregistered_slot_and_its_template() {
+    let mut graph = graph_with_bolts_collection();
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
+    let stray = cell("P.s[1]", "d");
+    graph.value_cells.insert(stray.id.clone(), stray);
+
+    graph.debug_assert_sub_instance_registry_agrees();
+}
+
+#[test]
+fn the_registry_assertion_accepts_an_agreeing_graph() {
+    let mut graph = graph_with_bolts_collection();
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
+
+    graph.debug_assert_sub_instance_registry_agrees();
+}
