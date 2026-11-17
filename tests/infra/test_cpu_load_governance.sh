@@ -2864,6 +2864,52 @@ PUBLISH_ON_FIRST_SLEEP_EOF
         test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "99 3"
 fi
 
+# ROW23-TIMING-VACUITY (task 10025): _row23_mix_timing <ready_deadline_s>
+# <launch_slack_s> <warmup_s> <probe_s> prints "<await_deadline_s> <burn_s>
+# <outer_timeout_s>": how long ROW2_3 waits for the mix to report ready, how long
+# each source burns, and its outer timeout.  Pure bash arithmetic, so always-on.
+# Captures are `|| true`, never `|| echo <sentinel>`: an undefined helper must
+# leave an EMPTY capture, which FAILs.  Outputs compare by exact string.
+_row23_timing1="$(_row23_mix_timing 30 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-1: CRUX -- the default 30 s ready deadline is capped at ROW2-2's 15 s launch slack => '15 29 44' (got '${_row23_timing1}'); awaiting the full 30 s let the post-T_mix stop rescue a source that was held 15-30 s" \
+    test "$_row23_timing1" = "15 29 44"
+
+_row23_timing2="$(_row23_mix_timing 10 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-2: a ready deadline below the slack is honoured => '10 24 39' (got '${_row23_timing2}'); the outer timeout is still burn + slack" \
+    test "$_row23_timing2" = "10 24 39"
+
+_row23_timing3="$(_row23_mix_timing 30 5 0 0 || true)"
+assert "ROW23-TIMING-VACUITY-3: SLACK IS A PARAMETER -- slack 5 s, no warm-up, no probe => '5 9 14' (got '${_row23_timing3}'); the helper cannot hard-wire 15" \
+    test "$_row23_timing3" = "5 9 14"
+
+# _row23_timing_holds_bound <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s> <capture>
+#   Passes iff <capture> is exactly three non-negative integers "await burn outer" with
+#   await <= slack, await <= deadline, outer - burn == slack and burn >= await + warmup + probe.
+_row23_timing_holds_bound() {
+    awk -v deadline="$1" -v slack="$2" -v warmup="$3" -v probe="$4" -v capture="$5" 'BEGIN {
+        if (capture !~ /^[0-9]+ [0-9]+ [0-9]+$/) { print "capture is not three non-negative integers: [" capture "]"; exit 1 }
+        split(capture, t, " ")
+        if (t[1] + 0 > slack + 0)             { print "await " t[1] " exceeds the launch slack " slack; exit 1 }
+        if (t[1] + 0 > deadline + 0)          { print "await " t[1] " exceeds the ready deadline " deadline; exit 1 }
+        if (t[3] - t[2] != slack + 0)         { print "outer - burn = " (t[3] - t[2]) ", not the launch slack " slack; exit 1 }
+        if (t[2] + 0 < t[1] + warmup + probe) { print "burn " t[2] " ends before await + warm-up + probe"; exit 1 }
+    }'
+}
+
+# (4) PROPERTY over the knob's range: whatever the ready deadline, ROW2-2's
+# starvation bound stays the slack, and a source reporting ready at the await
+# deadline still burns through the warm-up and the probe quantum.
+for _row23_timing_d in 0 1 14 15 16 30 120; do
+    _row23_timing4="$(_row23_mix_timing "$_row23_timing_d" 15 8 2 || true)"
+    assert "ROW23-TIMING-VACUITY-4[d=${_row23_timing_d}]: PROPERTY -- ready deadline ${_row23_timing_d} s, slack 15 s => await <= min(deadline, 15), outer - burn == 15, burn >= await + 8 + 2 (got '${_row23_timing4}')" \
+        _row23_timing_holds_bound "$_row23_timing_d" 15 8 2 "$_row23_timing4"
+done
+
+_row23_timing5_rc=0
+_row23_mix_timing 30 15 8 2 > /dev/null || _row23_timing5_rc=$?
+assert "ROW23-TIMING-VACUITY-5: rc EXACTLY 0 (got ${_row23_timing5_rc}); the live cycle assigns the capture bare, so a failure would abort it under set -e" \
+    test "$_row23_timing5_rc" -eq 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
