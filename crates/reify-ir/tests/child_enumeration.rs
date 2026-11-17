@@ -83,6 +83,45 @@ fn structure_ctor_with_lets() -> CompiledExpr {
     )
 }
 
+fn value_ref_leaf() -> CompiledExpr {
+    r("leaf")
+}
+
+fn cross_sub_leaf() -> CompiledExpr {
+    CompiledExpr::cross_sub_geometry_ref(cross_sub_cell(), Type::Geometry)
+}
+
+fn meta_access_on_e() -> CompiledExpr {
+    CompiledExpr::meta_access("E".to_string(), "k".to_string())
+}
+
+/// Probes cell `d`.
+fn determinacy_on_d() -> CompiledExpr {
+    CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell("d"))
+}
+
+/// Param id `p`, capture `k`, body `c0`.
+fn lambda_capturing_k() -> CompiledExpr {
+    CompiledExpr::lambda(
+        vec![("p".to_string(), None)],
+        vec![cell("p")],
+        r("c0"),
+        vec![cell("k")],
+        Type::Bool,
+    )
+}
+
+/// Variable id `v`, collection `c0`, predicate `c1`.
+fn quantifier_binding_v() -> CompiledExpr {
+    CompiledExpr::quantifier(
+        QuantifierKind::ForAll,
+        "v".to_string(),
+        cell("v"),
+        r("c0"),
+        r("c1"),
+    )
+}
+
 fn lets_of(expr: &CompiledExpr) -> &[(String, CompiledExpr)] {
     match &expr.kind {
         CompiledExprKind::StructureInstanceCtor { lets, .. } => lets,
@@ -202,25 +241,17 @@ fn corpus() -> Vec<Case> {
             CompiledExpr::literal(Value::Bool(true), Type::Bool),
             &[],
         ),
-        case("value_ref", r("leaf"), &[]),
-        case(
-            "cross_sub_geometry_ref",
-            CompiledExpr::cross_sub_geometry_ref(cross_sub_cell(), Type::Geometry),
-            &[],
-        ),
+        case("value_ref", value_ref_leaf(), &[]),
+        case("cross_sub_geometry_ref", cross_sub_leaf(), &[]),
         case(
             "option_none",
             CompiledExpr::option_none(Type::Option(Box::new(scalar()))),
             &[],
         ),
-        case(
-            "meta_access",
-            CompiledExpr::meta_access("E".to_string(), "k".to_string()),
-            &[],
-        ),
+        case("meta_access", meta_access_on_e(), &[]),
         case(
             "determinacy_predicate_probed_cell_is_not_a_child",
-            CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell("d")),
+            determinacy_on_d(),
             &[],
         ),
         case(
@@ -280,13 +311,7 @@ fn corpus() -> Vec<Case> {
         ),
         case(
             "lambda_body_only_not_captures_or_params",
-            CompiledExpr::lambda(
-                vec![("p".to_string(), None)],
-                vec![cell("p")],
-                r("c0"),
-                vec![cell("k")],
-                Type::Bool,
-            ),
+            lambda_capturing_k(),
             &["c0"],
         ),
         case(
@@ -321,13 +346,7 @@ fn corpus() -> Vec<Case> {
         ),
         case(
             "quantifier_collection_then_predicate",
-            CompiledExpr::quantifier(
-                QuantifierKind::ForAll,
-                "v".to_string(),
-                cell("v"),
-                r("c0"),
-                r("c1"),
-            ),
+            quantifier_binding_v(),
             &["c0", "c1"],
         ),
         case(
@@ -452,4 +471,154 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
 fn children_are_direct_only() {
     let nested = add(add(r("c0"), r("c1")), r("c2"));
     assert_eq!(child_labels(&nested), ["<BinOp>", "c2"]);
+}
+
+fn child_cells(expr: &CompiledExpr) -> Vec<ValueCellId> {
+    let mut cells = Vec::new();
+    expr.for_each_child(&mut |child| match &child.kind {
+        CompiledExprKind::ValueRef(id) => cells.push(id.clone()),
+        other => panic!("corpus children are ValueRefs, got {}", variant_name(other)),
+    });
+    cells
+}
+
+fn ref_cell(expr: &CompiledExpr) -> &ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => id,
+        other => panic!("expected a ref leaf, got {}", variant_name(other)),
+    }
+}
+
+/// `(captures, param_ids)`.
+fn lambda_cells(expr: &CompiledExpr) -> (&[ValueCellId], &[ValueCellId]) {
+    match &expr.kind {
+        CompiledExprKind::Lambda {
+            captures,
+            param_ids,
+            ..
+        } => (captures, param_ids),
+        other => panic!("expected a Lambda, got {}", variant_name(other)),
+    }
+}
+
+fn quantifier_variable(expr: &CompiledExpr) -> &ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::Quantifier { variable_id, .. } => variable_id,
+        other => panic!("expected a Quantifier, got {}", variant_name(other)),
+    }
+}
+
+fn determinacy_cell(expr: &CompiledExpr) -> &ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::DeterminacyPredicate { cell, .. } => cell,
+        other => panic!(
+            "expected a DeterminacyPredicate, got {}",
+            variant_name(other)
+        ),
+    }
+}
+
+fn meta_entity(expr: &CompiledExpr) -> &str {
+    match &expr.kind {
+        CompiledExprKind::MetaAccess { entity, .. } => entity,
+        other => panic!("expected a MetaAccess, got {}", variant_name(other)),
+    }
+}
+
+fn remapped_cell(mut expr: CompiledExpr, from: &ValueCellId, to: &ValueCellId) -> CompiledExpr {
+    expr.remap_cell(from, to);
+    expr
+}
+
+fn remapped_entity(mut expr: CompiledExpr, from: &str, to: &str) -> CompiledExpr {
+    expr.remap_entity(from, to);
+    expr
+}
+
+#[test]
+fn walk_visits_each_node_then_its_children_pre_order() {
+    for case in corpus() {
+        let mut visited = Vec::new();
+        case.expr.walk(&mut |n| visited.push(label(n)));
+        let mut expected = vec![label(&case.expr)];
+        expected.extend(case.children.iter().map(|c| c.to_string()));
+        assert_eq!(visited, expected, "case `{}`", case.name);
+    }
+}
+
+#[test]
+fn remap_cell_rewrites_a_matching_cell_in_every_child_slot() {
+    for case in corpus() {
+        let expr = remapped_cell(case.expr, &cell("c0"), &cell("z"));
+        let expected: Vec<&str> = case
+            .children
+            .iter()
+            .map(|&c| if c == "c0" { "z" } else { c })
+            .collect();
+        assert_eq!(child_labels(&expr), expected, "case `{}`", case.name);
+    }
+
+    let ctor = remapped_cell(structure_ctor_with_lets(), &struct_local_cell(), &cell("z"));
+    assert_eq!(let_cell(&ctor), &struct_local_cell());
+}
+
+#[test]
+fn remap_cell_rewrites_each_variants_own_cells() {
+    let z = cell("z");
+
+    let lambda = remapped_cell(lambda_capturing_k(), &cell("k"), &z);
+    assert_eq!(lambda_cells(&lambda), (&[z.clone()][..], &[cell("p")][..]));
+    let lambda = remapped_cell(lambda_capturing_k(), &cell("p"), &z);
+    assert_eq!(lambda_cells(&lambda), (&[cell("k")][..], &[z.clone()][..]));
+
+    let quantifier = remapped_cell(quantifier_binding_v(), &cell("v"), &z);
+    assert_eq!(quantifier_variable(&quantifier), &z);
+
+    let predicate = remapped_cell(determinacy_on_d(), &cell("d"), &z);
+    assert_eq!(determinacy_cell(&predicate), &z);
+
+    let leaf = remapped_cell(value_ref_leaf(), &cell("leaf"), &z);
+    assert_eq!(ref_cell(&leaf), &z);
+
+    let geom2 = ValueCellId::new("P.sub", "geom2");
+    let cross_sub = remapped_cell(cross_sub_leaf(), &cross_sub_cell(), &geom2);
+    assert_eq!(ref_cell(&cross_sub), &geom2);
+}
+
+#[test]
+fn remap_entity_rewrites_child_cells_and_own_cells() {
+    for case in corpus() {
+        let expr = remapped_entity(case.expr, "E", "F");
+        let cells = child_cells(&expr);
+        let members: Vec<&str> = cells.iter().map(|id| id.member.as_str()).collect();
+        assert_eq!(members, case.children, "case `{}`", case.name);
+        assert!(
+            cells.iter().all(|id| id.entity == "F"),
+            "case `{}`: {cells:?}",
+            case.name
+        );
+    }
+
+    let f = |member: &str| ValueCellId::new("F", member);
+
+    let lambda = remapped_entity(lambda_capturing_k(), "E", "F");
+    assert_eq!(lambda_cells(&lambda), (&[f("k")][..], &[f("p")][..]));
+
+    let quantifier = remapped_entity(quantifier_binding_v(), "E", "F");
+    assert_eq!(quantifier_variable(&quantifier), &f("v"));
+
+    let predicate = remapped_entity(determinacy_on_d(), "E", "F");
+    assert_eq!(determinacy_cell(&predicate), &f("d"));
+
+    let meta = remapped_entity(meta_access_on_e(), "E", "F");
+    assert_eq!(meta_entity(&meta), "F");
+
+    let leaf = remapped_entity(value_ref_leaf(), "E", "F");
+    assert_eq!(ref_cell(&leaf), &f("leaf"));
+
+    let cross_sub = remapped_entity(cross_sub_leaf(), "P.sub", "Q.sub");
+    assert_eq!(ref_cell(&cross_sub), &ValueCellId::new("Q.sub", "geom"));
+
+    let ctor = remapped_entity(structure_ctor_with_lets(), STRUCT_TYPE, "F");
+    assert_eq!(let_cell(&ctor), &struct_local_cell());
 }
