@@ -75,7 +75,7 @@ fn assert_point(v: &Value, expected: [f64; 3]) {
 
 #[test]
 fn axis_dir_projects_to_direction() {
-    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0));
     let result = project(axis, Type::Axis, "dir", Type::Direction);
     assert_direction(&result, [1.0, 0.0, 0.0]);
 }
@@ -91,7 +91,7 @@ fn axis_dir_of_a_direction_bearing_axis_is_that_direction() {
 
 #[test]
 fn axis_origin_projects_to_point() {
-    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0));
     let result = project(axis, Type::Axis, "origin", Type::point3(Type::length()));
     assert_point(&result, [1.0, 2.0, 3.0]);
 }
@@ -100,7 +100,7 @@ fn axis_origin_projects_to_point() {
 
 #[test]
 fn plane_normal_projects_to_direction() {
-    let plane = plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0));
+    let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0));
     let result = project(plane, Type::Plane, "normal", Type::Direction);
     assert_direction(&result, [0.0, 0.0, 1.0]);
 }
@@ -112,6 +112,22 @@ fn plane_normal_of_a_direction_bearing_plane_is_that_direction() {
     let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(1.0, 0.0, 0.0));
     let result = project(plane, Type::Plane, "normal", Type::Direction);
     assert_eq!(result, direction_val(1.0, 0.0, 0.0));
+}
+
+/// A raw `Vector` is not a direction: `.dir` / `.normal` of a datum built with
+/// one projects to `Undef` rather than being normalised into a Direction.
+#[test]
+fn a_vector_bearing_axis_or_plane_projects_to_undef() {
+    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    assert_eq!(
+        project(axis, Type::Axis, "dir", Type::Direction),
+        Value::Undef
+    );
+    let plane = plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0));
+    assert_eq!(
+        project(plane, Type::Plane, "normal", Type::Direction),
+        Value::Undef
+    );
 }
 
 // ─── Frame projections ───────────────────────────────────────────────────────

@@ -182,7 +182,7 @@ mod tests {
     use reify_expr::{EvalContext, eval_expr};
     use reify_ir::{CompiledExpr, Value, ValueMap};
     use reify_test_support::{
-        axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+        axis_val, direction_val, frame_val, orientation_val, plane_val, point3,
     };
     use strum::IntoEnumIterator;
 
@@ -408,11 +408,11 @@ mod tests {
         let literal = |value: Value, ty: Type| Pure(CompiledExpr::literal(value, ty));
         match d {
             D::Axis => literal(
-                axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0)),
+                axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0)),
                 Type::Axis,
             ),
             D::Plane => literal(
-                plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0)),
+                plane_val(point3(0.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0)),
                 Type::Plane,
             ),
             D::Direction => literal(

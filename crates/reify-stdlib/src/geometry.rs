@@ -4492,7 +4492,7 @@ mod tests {
     // NORMALS keep their dimension-agnostic decode, because a unit vector
     // legitimately has bare components (decision D3).
 
-    /// A `Value::Plane` whose ORIGIN carries `dim`, with the bare unit +z normal.
+    /// A `Value::Plane` whose ORIGIN carries `dim`, with the +z `Direction` normal.
     ///
     /// The unit-level equivalent of `frame3(point3(…), orient_identity()).xy_plane`
     /// — which, once this gate lands, is the only `.ri` route left to a
@@ -4501,7 +4501,7 @@ mod tests {
     fn plane_with_origin(xyz: [f64; 3], dim: DimensionVector) -> Value {
         Value::Plane {
             origin: Box::new(super::make_point3(xyz, dim)),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         }
     }
 
@@ -4702,16 +4702,13 @@ mod tests {
         approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
     }
 
-    /// A plane whose NORMAL is a `Value::Direction` rather than a `Value::Vector`
-    /// is still ACCEPTED.
+    /// A plane whose NORMAL is a `Value::Direction` — the only normal shape
+    /// `decode_plane` accepts (ε, task 9638) — is ACCEPTED.
     ///
-    /// This is the regression guard for `examples/geometric_relations/`
+    /// This is also the regression guard for `examples/geometric_relations/`
     /// `construction_datum.ri`, the only real `.ri` call site of this builtin:
     /// its `top_plane` is kernel-realized and MEASURES as
-    /// `plane(point(… m), dir(0, 0, 1))`. Narrowing `decode_plane`'s dual
-    /// normal acceptance while adding the LENGTH gate would break the shipped
-    /// example and its OCCT-gated e2e test while the rest of this suite stayed
-    /// green.
+    /// `plane(point(… m), dir(0, 0, 1))`.
     #[test]
     fn offset_accepts_a_plane_whose_normal_is_a_direction() {
         let realized = Value::Plane {
@@ -4723,6 +4720,32 @@ mod tests {
             panic!("expected Value::Plane for a Direction-normal plane, got {result:?}");
         };
         approx3(comps3(&origin), [0.0, 0.0, 0.008]);
+    }
+
+    /// A raw `Value::Vector` normal is not a direction: `midplane` and the
+    /// arity-2 `offset` reject a LENGTH-origin plane carrying one, and
+    /// [`super::diagnose`] stays silent because the fault is one of SHAPE, not
+    /// of units (ε, task 9638).
+    #[test]
+    fn datum_family_rejects_a_plane_whose_normal_is_a_vector() {
+        let vector_normal = Value::Plane {
+            origin: Box::new(point3_len(0.0, 0.0, 0.005)),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+        };
+        for (name, args) in [
+            ("midplane", vec![vector_normal.clone(), plane_at_z(0.010)]),
+            ("offset", vec![vector_normal, Value::length(0.003)]),
+        ] {
+            assert!(
+                eval_builtin(name, &args).is_undef(),
+                "{name}: a Vector-normal plane must be Undef"
+            );
+            assert!(
+                super::diagnose(name, &args).is_none(),
+                "{name}: a Vector normal is a shape fault, never a units one; got {:?}",
+                super::diagnose(name, &args)
+            );
+        }
     }
 
     /// The arity-3 `offset` is the γ RELATION and is UNTOUCHED by this gate: it
@@ -9517,7 +9540,7 @@ mod tests {
             let point = Value::Point(vec![offender.clone(), offender.clone(), offender.clone()]);
             let plane = Value::Plane {
                 origin: Box::new(point.clone()),
-                normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+                normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
             };
             let good_point = point3_len(0.001, 0.002, 0.003);
             let good_plane = plane_at_z(0.010);
@@ -9639,19 +9662,19 @@ mod tests {
         ]);
         let mixed_plane = Value::Plane {
             origin: Box::new(mixed.clone()),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
-        // A NORMAL that cannot be decoded at all, and one that decodes but is
-        // degenerate. Neither is a units fault, and neither may be blamed on the
-        // origin's dimension — the hazard a classifier reading only the origin
-        // would walk straight into.
+        // A NORMAL that cannot be decoded at all, and one that is a raw
+        // `Vector` rather than a `Direction`. Neither is a units fault, and
+        // neither may be blamed on the origin's dimension — the hazard a
+        // classifier reading only the origin would walk straight into.
         let bad_normal_plane = Value::Plane {
             origin: Box::new(good_point.clone()),
             normal: Box::new(Value::Real(1.0)),
         };
-        let degenerate_normal_plane = Value::Plane {
+        let vector_normal_plane = Value::Plane {
             origin: Box::new(good_point.clone()),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 0.0])),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
         };
 
         for (label, name, args) in [
@@ -9698,7 +9721,7 @@ mod tests {
                 "midplane",
                 vec![mixed_plane, good_plane.clone()],
             ),
-            // A malformed or degenerate plane NORMAL.
+            // A malformed plane NORMAL, or one that is not a `Direction`.
             (
                 "midplane undecodable normal",
                 "midplane",
@@ -9710,9 +9733,9 @@ mod tests {
                 vec![bad_normal_plane, Value::length(0.005)],
             ),
             (
-                "offset degenerate normal",
+                "offset Vector normal",
                 "offset",
-                vec![degenerate_normal_plane, Value::length(0.005)],
+                vec![vector_normal_plane, Value::length(0.005)],
             ),
             // `frame_at`'s x/z slots are NOT gated (decision D3), so a fault
             // confined to them is a shape fault and stays silent.

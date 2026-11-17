@@ -6321,11 +6321,7 @@
                 reify_ir::Value::length(0.0),
                 reify_ir::Value::length(0.0),
             ])),
-            direction: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ])),
+            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Circular,
@@ -6798,11 +6794,7 @@
                 reify_ir::Value::Real(0.02),
                 reify_ir::Value::Real(0.03),
             ])),
-            direction: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ])),
+            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let op = circular_pattern_with_axis_value(axis);
 
@@ -6862,7 +6854,7 @@
 
         let axis = reify_ir::Value::Axis {
             origin: Box::new(length_point3(0.01, 0.02, 0.03)),
-            direction: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let op = circular_pattern_with_axis_value(axis);
 
@@ -6911,10 +6903,7 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        let plane = plane_of(
-            length_point3(0.0, 0.0, 0.0),
-            bare_real_vector3(0.0, 0.0, 1.0),
-        );
+        let plane = plane_of(length_point3(0.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0));
         let op = circular_pattern_with_axis_value(plane.clone());
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -6977,7 +6966,7 @@
             circular_pattern_with_origin(literal_f64(0.01), literal_f64(0.02), literal_f64(0.03));
         let value = circular_pattern_with_axis_value(axis_of(
             bare_real_vector3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         ));
 
         assert_eq!(
@@ -7185,10 +7174,7 @@
             .expect_err("a malformed plane VALUE must drop the op")
         };
 
-        let axis = axis_of(
-            length_point3(0.0, 0.0, 0.0),
-            bare_real_vector3(0.0, 0.0, 1.0),
-        );
+        let axis = axis_of(length_point3(0.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0));
         assert_eq!(
             mirror_err_for_plane_arg(axis.clone()),
             format!("mirror: expected a Plane value, got {axis}"),
@@ -7197,7 +7183,7 @@
 
         let bare_origin_plane = plane_of(
             bare_real_vector3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         );
         assert_eq!(
             mirror_err_for_plane_arg(bare_origin_plane),
@@ -25781,31 +25767,28 @@
     }
 
     /// The ANTI-OVER-GATING half, and the more important of the pair: a
-    /// dimensioned LENGTH origin beside a BARE dimensionless normal is the fully
-    /// clean path. The normal MUST NOT be gated — a unit vector legitimately has
-    /// bare components, and `plane_yz(10mm)` produces exactly this shape, so
-    /// gating it would reject correct `.ri` code (D3 adversary finding,
-    /// 2026-07-28, BINDING).
+    /// dimensioned LENGTH origin beside a `Direction` normal is the fully clean
+    /// path. The normal MUST NOT be units-gated — a Direction is dimensionless
+    /// by type, and `plane_yz(10mm)` produces exactly this shape, so gating it
+    /// would reject correct `.ri` code (D3 adversary finding, 2026-07-28,
+    /// BINDING).
     #[test]
-    fn decode_plane_accepts_length_origin_beside_a_bare_normal() {
+    fn decode_plane_accepts_length_origin_beside_a_direction() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let plane = plane_of(
-            length_point3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
-        );
+        let plane = plane_of(length_point3(0.01, 0.02, 0.03), unit_dir(0.0, 0.0, 1.0));
         let (origin, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
-            .expect("a LENGTH origin beside a bare unit normal is the clean path");
+            .expect("a LENGTH origin beside a Direction normal is the clean path");
         assert_eq!(
             origin,
             [0.01, 0.02, 0.03],
             "the gate copies `si_value` and does no arithmetic, so the origin is \
              bit-identical to the pre-δ `point3_components` read"
         );
-        assert_eq!(normal, [0.0, 0.0, 1.0], "the normal is still normalised");
+        assert_eq!(normal, [0.0, 0.0, 1.0]);
         assert!(
             diagnostics.is_empty(),
             "the clean path must emit NOTHING — in particular no units complaint \
-             about the deliberately-bare normal; got: {:?}",
+             about the dimensionless normal; got: {:?}",
             diagnostics
         );
     }
@@ -25819,6 +25802,24 @@
         assert_eq!(
             decode_plane(&plane, "mirror", &mut diagnostics),
             Ok(([0.0, 0.0, 0.01], [0.0, 0.0, 1.0]))
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// A `Vector` normal is not a direction: the decoder rejects it with
+    /// `decode_direction`'s own message behind the kind label, ending in the
+    /// shared `dir(..)` migration hint, rather than normalising it silently.
+    #[test]
+    fn decode_plane_rejects_a_vector_normal_with_the_direction_hint() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(length_point3(0.0, 0.0, 0.0), bare_real_vector3(0.0, 0.0, 1.0));
+        let err = decode_plane(&plane, "mirror", &mut diagnostics)
+            .expect_err("a Vector normal must be rejected");
+        assert!(err.starts_with("mirror:"), "got: {err}");
+        assert!(err.contains("Vector"), "got: {err}");
+        assert!(
+            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
+            "got: {err}"
         );
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
@@ -25839,7 +25840,7 @@
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let plane = plane_of(
             bare_real_vector3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let got = decode_plane(&plane, "mirror", &mut diagnostics);
         assert_eq!(
@@ -25851,7 +25852,7 @@
             diagnostics.len(),
             3,
             "ALL THREE bare origin components are diagnosed in one build — and \
-             the bare NORMAL beside them contributes none; got: {:?}",
+             the NORMAL beside them contributes none; got: {:?}",
             diagnostics
         );
         for (d, name) in diagnostics.iter().zip(["ox", "oy", "oz"]) {
@@ -25864,35 +25865,16 @@
         }
     }
 
-    /// Non-unit normals are still normalised SILENTLY over a LENGTH origin — the
-    /// plane equation is invariant to normal scale, and δ did not touch that.
-    #[test]
-    fn decode_plane_still_normalises_a_non_unit_normal_over_a_length_origin() {
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let plane = plane_of(
-            length_point3(0.0, 0.0, 0.0),
-            bare_real_vector3(0.0, 0.0, 2.0),
-        );
-        let (_, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
-            .expect("a non-unit normal [0,0,2] normalises without error");
-        assert_eq!(normal, [0.0, 0.0, 1.0]);
-        assert!(
-            diagnostics.is_empty(),
-            "silent normalisation means silent: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Every PRE-EXISTING `decode_plane` rejection keeps its EXACT wording, and
-    /// pushes no units diagnostic. δ replaced `point3_components`' acceptance
-    /// policy for the origin, not the decoder's variant check, its normal read,
-    /// or its degeneracy check — so a reader who knew these messages before still
-    /// recognises them.
+    /// Every `decode_plane` rejection that is not a units fault keeps its EXACT
+    /// wording and pushes no units diagnostic. δ replaced `point3_components`'
+    /// acceptance policy for the origin, not the decoder's variant check; ε
+    /// (task 9638) replaced the normal read with `decode_direction`, so a
+    /// `Vector` normal is now rejected with that decoder's own message.
     #[test]
     fn decode_plane_pre_existing_rejections_are_unchanged() {
         let axis = reify_ir::Value::Axis {
             origin: Box::new(length_point3(0.0, 0.0, 0.0)),
-            direction: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let cases: Vec<(reify_ir::Value, String)> = vec![
             // Wrong VARIANT — the message embeds the value's own `Display`.
@@ -25915,20 +25897,20 @@
                         reify_ir::Value::length(0.0),
                         reify_ir::Value::length(0.0),
                     ]),
-                    bare_real_vector3(0.0, 0.0, 1.0),
+                    unit_dir(0.0, 0.0, 1.0),
                 ),
                 PLANE_ORIGIN_SHAPE_ERR.to_string(),
             ),
-            // Degenerate normal over a clean LENGTH origin.
+            // A `Vector` normal over a clean LENGTH origin: not a Direction.
             (
                 plane_of(
                     length_point3(0.0, 0.0, 0.0),
-                    bare_real_vector3(0.0, 0.0, 0.0),
+                    bare_real_vector3(0.0, 0.0, 1.0),
                 ),
-                "mirror: Plane has a degenerate normal: zero-magnitude vector \
-                 [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
-                 unit direction"
-                    .to_string(),
+                format!(
+                    "mirror: Plane normal: expected a Direction, got Vector; {}",
+                    reify_core::direction::DIRECTION_MIGRATION_HINT
+                ),
             ),
         ];
 
@@ -25937,7 +25919,7 @@
             assert_eq!(
                 decode_plane(&value, "mirror", &mut diagnostics),
                 Err(expected.clone()),
-                "pre-δ wording must survive byte-identical for {:?}",
+                "the decoder's wording must survive byte-identical for {:?}",
                 value
             );
             assert!(
@@ -25982,7 +25964,7 @@
                 reify_ir::Value::length(0.0),
                 reify_ir::Value::length(0.0),
             ]),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         );
         assert_eq!(
             decode_plane(&plane, "mirror", &mut diagnostics),
@@ -26030,30 +26012,44 @@
         }
     }
 
-    /// The ANTI-OVER-GATING half: a dimensioned LENGTH origin beside a BARE
-    /// dimensionless direction is the fully clean path — the exact shape
+    /// The ANTI-OVER-GATING half: a dimensioned LENGTH origin beside a
+    /// `Direction` is the fully clean path — the exact shape
     /// `axis_z(point3(0mm, 0mm, 0mm))` produces — and must emit NOTHING.
     #[test]
-    fn decode_axis_accepts_length_origin_beside_a_bare_direction() {
+    fn decode_axis_accepts_length_origin_beside_a_direction() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let axis = axis_of(
-            length_point3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
-        );
+        let axis = axis_of(length_point3(0.01, 0.02, 0.03), unit_dir(0.0, 0.0, 1.0));
         let (origin, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
-            .expect("a LENGTH origin beside a bare unit direction is the clean path");
+            .expect("a LENGTH origin beside a Direction is the clean path");
         assert_eq!(
             origin,
             [0.01, 0.02, 0.03],
             "the gate copies `si_value` and does no arithmetic"
         );
-        assert_eq!(dir, [0.0, 0.0, 1.0], "the direction is still normalised");
+        assert_eq!(dir, [0.0, 0.0, 1.0]);
         assert!(
             diagnostics.is_empty(),
-            "no units complaint may be raised about the deliberately-bare \
+            "no units complaint may be raised about the dimensionless \
              direction; got: {:?}",
             diagnostics
         );
+    }
+
+    /// `decode_plane_rejects_a_vector_normal_with_the_direction_hint`'s axis
+    /// twin: a `Vector` direction is rejected, never normalised silently.
+    #[test]
+    fn decode_axis_rejects_a_vector_direction_with_the_direction_hint() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(length_point3(0.0, 0.0, 0.0), bare_real_vector3(0.0, 0.0, 1.0));
+        let err = decode_axis(&axis, "circular_pattern", &mut diagnostics)
+            .expect_err("a Vector direction must be rejected");
+        assert!(err.starts_with("circular_pattern:"), "got: {err}");
+        assert!(err.contains("Vector"), "got: {err}");
+        assert!(
+            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
+            "got: {err}"
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
 
     /// The headline δ behaviour for `decode_axis`, and the 1000× hazard this
@@ -26064,7 +26060,7 @@
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let axis = axis_of(
             bare_real_vector3(0.01, 0.02, 0.03),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let got = decode_axis(&axis, "circular_pattern", &mut diagnostics);
         assert_eq!(
@@ -26078,7 +26074,7 @@
             diagnostics.len(),
             3,
             "ALL THREE bare origin components are diagnosed in one build — and \
-             the bare DIRECTION beside them contributes none; got: {:?}",
+             the DIRECTION beside them contributes none; got: {:?}",
             diagnostics
         );
         for (d, name) in diagnostics.iter().zip(["ox", "oy", "oz"]) {
@@ -26108,31 +26104,14 @@
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
 
-    /// Non-unit directions are still normalised SILENTLY over a LENGTH origin.
-    #[test]
-    fn decode_axis_still_normalises_a_non_unit_direction_over_a_length_origin() {
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let axis = axis_of(
-            length_point3(0.0, 0.0, 0.0),
-            bare_real_vector3(2.0, 0.0, 0.0),
-        );
-        let (_, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
-            .expect("a non-unit direction [2,0,0] normalises without error");
-        assert_eq!(dir, [1.0, 0.0, 0.0]);
-        assert!(
-            diagnostics.is_empty(),
-            "silent normalisation means silent: {:?}",
-            diagnostics
-        );
-    }
-
-    /// Every PRE-EXISTING `decode_axis` rejection keeps its EXACT wording and
-    /// pushes no units diagnostic.
+    /// Every `decode_axis` rejection that is not a units fault keeps its EXACT
+    /// wording and pushes no units diagnostic; a `Vector` direction is rejected
+    /// with `decode_direction`'s own message (ε, task 9638).
     #[test]
     fn decode_axis_pre_existing_rejections_are_unchanged() {
         let plane = reify_ir::Value::Plane {
             origin: Box::new(length_point3(0.0, 0.0, 0.0)),
-            normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let cases: Vec<(reify_ir::Value, String)> = vec![
             (
@@ -26152,19 +26131,19 @@
                         reify_ir::Value::length(0.0),
                         reify_ir::Value::length(0.0),
                     ]),
-                    bare_real_vector3(0.0, 0.0, 1.0),
+                    unit_dir(0.0, 0.0, 1.0),
                 ),
                 AXIS_ORIGIN_SHAPE_ERR.to_string(),
             ),
             (
                 axis_of(
                     length_point3(0.0, 0.0, 0.0),
-                    bare_real_vector3(0.0, 0.0, 0.0),
+                    bare_real_vector3(0.0, 0.0, 1.0),
                 ),
-                "circular_pattern: Axis has a degenerate direction: zero-magnitude vector \
-                 [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
-                 unit direction"
-                    .to_string(),
+                format!(
+                    "circular_pattern: Axis direction: expected a Direction, got Vector; {}",
+                    reify_core::direction::DIRECTION_MIGRATION_HINT
+                ),
             ),
         ];
 
@@ -26173,7 +26152,7 @@
             assert_eq!(
                 decode_axis(&value, "circular_pattern", &mut diagnostics),
                 Err(expected.clone()),
-                "pre-δ wording must survive byte-identical for {:?}",
+                "the decoder's wording must survive byte-identical for {:?}",
                 value
             );
             assert!(
@@ -26199,7 +26178,7 @@
                 reify_ir::Value::length(f64::INFINITY),
                 reify_ir::Value::length(0.0),
             ]),
-            bare_real_vector3(0.0, 0.0, 1.0),
+            unit_dir(0.0, 0.0, 1.0),
         );
         assert_eq!(
             decode_axis(&axis, "circular_pattern", &mut diagnostics),
@@ -26711,26 +26690,26 @@
 
         let plane = reify_ir::Value::Plane {
             origin: Box::new(length_point3(0.01, 0.0, 0.0)),
-            normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let (plane_origin, plane_normal) = decode_plane(&plane, "mirror", &mut diagnostics)
-            .expect("a bare NORMAL over a LENGTH origin must decode clean");
+            .expect("a Direction NORMAL over a LENGTH origin must decode clean");
         assert_eq!(plane_origin, [0.01, 0.0, 0.0]);
         assert_eq!(plane_normal, [0.0, 0.0, 1.0]);
 
         let axis = reify_ir::Value::Axis {
             origin: Box::new(length_point3(0.0, 0.02, 0.0)),
-            direction: Box::new(bare_real_vector3(1.0, 0.0, 0.0)),
+            direction: Box::new(unit_dir(1.0, 0.0, 0.0)),
         };
         let (axis_origin, axis_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
-            .expect("a bare DIRECTION over a LENGTH origin must decode clean");
+            .expect("a Direction over a LENGTH origin must decode clean");
         assert_eq!(axis_origin, [0.0, 0.02, 0.0]);
         assert_eq!(axis_dir, [1.0, 0.0, 0.0]);
 
         assert!(
             diagnostics.is_empty(),
-            "neither decoder may say anything about a deliberately-bare unit \
-             vector; got: {:?}",
+            "neither decoder may say anything about a dimensionless Direction; \
+             got: {:?}",
             diagnostics
         );
     }
@@ -26741,16 +26720,17 @@
     /// δ's capability manifest carries `delivered_check: expect: present` for
     /// `fn point3_components` precisely because the obvious misreading of this
     /// task is "the gate replaces the bare decoder, so delete it". It does not:
-    /// the helper remains the CORRECT decoder for exactly the three
-    /// dimensionless positions in the table above, and `accept_length_point3`
+    /// the helper remains the CORRECT decoder for `offset_curve`'s direction, its
+    /// one dimensionless caller now that plane normals and axis directions read
+    /// through `decode_direction` (ε, task 9638), and `accept_length_point3`
     /// mirrors its shape check rather than subsuming it.
     #[test]
     fn delta_scope_lock_point3_components_survives_and_accepts_bare_reals() {
         assert_eq!(
             point3_components(&bare_real_vector3(0.0, 0.0, 1.0)),
             Some([0.0, 0.0, 1.0]),
-            "the bare decoder is not dead code — it is what reads the three \
-             un-gated DIRECTION positions"
+            "the bare decoder is not dead code — it is what reads \
+             `offset_curve`'s un-gated direction"
         );
         // And it still reads a dimensioned Point identically, which is why the
         // gated positions could migrate without any numeric change: both helpers
@@ -26893,44 +26873,6 @@
         );
     }
 
-    /// A Plane whose normal vector has magnitude 2 (non-unit) must be
-    /// normalized to a unit normal by decode_plane — never returned as-is.
-    #[test]
-    fn decode_plane_normalizes_non_unit_normal() {
-        let origin = reify_ir::Value::Point(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ]);
-        let non_unit_normal = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(2.0),
-        ]);
-        let plane = reify_ir::Value::Plane {
-            origin: Box::new(origin),
-            normal: Box::new(non_unit_normal),
-        };
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (_, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
-            .expect("non-unit normal [0,0,2] should normalize without error");
-        assert!(
-            (normal[0] - 0.0).abs() < 1e-12,
-            "nx must be 0.0, got {}",
-            normal[0]
-        );
-        assert!(
-            (normal[1] - 0.0).abs() < 1e-12,
-            "ny must be 0.0, got {}",
-            normal[1]
-        );
-        assert!(
-            (normal[2] - 1.0).abs() < 1e-12,
-            "nz must be 1.0 after normalization, got {}",
-            normal[2]
-        );
-    }
-
     /// Value::Axis must be rejected by decode_plane — wrong variant.
     #[test]
     fn decode_plane_rejects_axis_value() {
@@ -26939,11 +26881,7 @@
             reify_ir::Value::length(0.0),
             reify_ir::Value::length(0.0),
         ]);
-        let dir = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(1.0),
-        ]);
+        let dir = unit_dir(0.0, 0.0, 1.0);
         let axis = reify_ir::Value::Axis {
             origin: Box::new(origin),
             direction: Box::new(dir),
@@ -26960,30 +26898,6 @@
         assert!(
             decode_plane(&reify_ir::Value::Undef, "mirror", &mut Vec::new()).is_err(),
             "Value::Undef must be rejected by decode_plane"
-        );
-    }
-
-    /// A Plane with a zero-magnitude normal must be rejected — the decoder
-    /// must never return (0,0,0) as the unit normal.
-    #[test]
-    fn decode_plane_rejects_zero_magnitude_normal() {
-        let origin = reify_ir::Value::Point(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ]);
-        let zero_normal = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-        ]);
-        let plane = reify_ir::Value::Plane {
-            origin: Box::new(origin),
-            normal: Box::new(zero_normal),
-        };
-        assert!(
-            decode_plane(&plane, "mirror", &mut Vec::new()).is_err(),
-            "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
         );
     }
 
@@ -27113,35 +27027,6 @@
         assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz");
     }
 
-    /// A non-unit direction (magnitude 2) must be normalized to unit length.
-    #[test]
-    fn decode_axis_normalizes_non_unit_direction() {
-        let origin = reify_ir::Value::Point(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ]);
-        let non_unit_dir = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(2.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-        ]);
-        let axis = reify_ir::Value::Axis {
-            origin: Box::new(origin),
-            direction: Box::new(non_unit_dir),
-        };
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (_, got_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
-            .expect("non-unit direction [2,0,0] should normalize without error");
-        assert!(
-            (got_dir[0] - 1.0).abs() < 1e-12,
-            "dx must be 1.0 after normalization, got {}",
-            got_dir[0]
-        );
-        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy");
-        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz");
-    }
-
     /// Value::Plane must be rejected by decode_axis — wrong variant.
     #[test]
     fn decode_axis_rejects_plane_value() {
@@ -27150,11 +27035,7 @@
             reify_ir::Value::length(0.0),
             reify_ir::Value::length(0.0),
         ]);
-        let normal = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(1.0),
-        ]);
+        let normal = unit_dir(0.0, 0.0, 1.0);
         let plane = reify_ir::Value::Plane {
             origin: Box::new(origin),
             normal: Box::new(normal),
@@ -27171,29 +27052,6 @@
         assert!(
             decode_axis(&reify_ir::Value::Undef, "circular_pattern", &mut Vec::new()).is_err(),
             "Value::Undef must be rejected by decode_axis"
-        );
-    }
-
-    /// An Axis with a zero-magnitude direction must be rejected.
-    #[test]
-    fn decode_axis_rejects_zero_magnitude_direction() {
-        let origin = reify_ir::Value::Point(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ]);
-        let zero_dir = reify_ir::Value::Vector(vec![
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-            reify_ir::Value::Real(0.0),
-        ]);
-        let axis = reify_ir::Value::Axis {
-            origin: Box::new(origin),
-            direction: Box::new(zero_dir),
-        };
-        assert!(
-            decode_axis(&axis, "circular_pattern", &mut Vec::new()).is_err(),
-            "zero-magnitude direction must be rejected by decode_axis"
         );
     }
 
@@ -27276,11 +27134,7 @@
                 reify_ir::Value::length(0.0),
                 reify_ir::Value::length(0.0),
             ])),
-            normal: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ])),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         }
     }
 
@@ -27513,13 +27367,13 @@
         // producer. Building it here is what keeps δ's consumer-side gate
         // covered, and the gate is still live — the five construction-datum
         // producers ε leaves dimension-polymorphic reach it from real source.
-        // The NORMAL beside it stays bare on purpose (D3, BINDING) and must
-        // contribute no diagnostic of its own.
+        // The Direction NORMAL beside it must contribute no diagnostic of its
+        // own.
         values.insert(
             ValueCellId::new("MySolid", "plane"),
             reify_ir::Value::Plane {
                 origin: Box::new(bare_real_vector3(10.0, 0.0, 0.0)),
-                normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+                normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
             },
         );
 
