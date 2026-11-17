@@ -6,10 +6,14 @@ use std::io;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Output, Stdio};
 
-/// Runs in the forked child, so no other process ever holds the read end. A pipe built in the
-/// multi-threaded test process can be copied into a parallel test's fork, and that copy keeps
-/// a reader alive across the fork-to-exec window (#10035).
-fn point_stdout_at_a_pipe_without_reader() -> io::Result<()> {
+/// Points stdout at a pipe nobody can read. The pipe is built in the forked child rather than in
+/// the multi-threaded test process, where a parallel test's fork could copy the read end and
+/// keep a reader alive across the fork-to-exec window (#10035).
+///
+/// # Safety
+///
+/// Call only in a forked child before exec: it replaces the caller's stdout.
+unsafe fn point_stdout_at_a_pipe_without_reader() -> io::Result<()> {
     let mut pipe_fds: [libc::c_int; 2] = [-1; 2];
     // SAFETY: plain fd syscalls on a buffer and descriptors that only this child holds.
     unsafe {
@@ -36,7 +40,7 @@ fn run_with_closed_stdout(args: &[&str]) -> Output {
         .stdout(Stdio::null()) // the hook below replaces fd 1 in the child
         .stderr(Stdio::piped());
     // SAFETY: runs in the forked child before exec and calls only async-signal-safe libc.
-    unsafe { command.pre_exec(point_stdout_at_a_pipe_without_reader) };
+    unsafe { command.pre_exec(|| point_stdout_at_a_pipe_without_reader()) };
     command.output().expect("failed to execute reify binary")
 }
 
