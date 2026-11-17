@@ -12,8 +12,9 @@
 //! `CompiledExprKind::UserFunctionCall { function_name: "Trait::fn", .. }`,
 //! producing no Error diagnostics.
 
-use reify_core::{DiagnosticCode, Severity, Type};
-use reify_ir::CompiledExprKind;
+use reify_compiler::CompiledModule;
+use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind};
 use reify_test_support::{
     compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
 };
@@ -492,4 +493,116 @@ structure def Assembly {
         "no instantiation diagnostic expected; all diagnostics: {:?}",
         module.diagnostics
     );
+}
+
+// ── The call table a trait-static fn body resolves against ──────────────────
+
+/// `source` compiled as module `test` with module `p`, compiled from
+/// `prelude_source`, as its prelude.
+fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
+    let parse_at = |module: &str, src: &str| {
+        let parsed = reify_syntax::parse(src, ModulePath::single(module));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture `{module}` must parse: {:?}",
+            parsed.errors
+        );
+        parsed
+    };
+    let prelude = reify_compiler::compile(&parse_at("p", prelude_source));
+    reify_compiler::compile_with_prelude(&parse_at("test", source), &[prelude])
+}
+
+fn fn_result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m CompiledExpr {
+    let found = module.functions.iter().find(|f| f.name == fn_name);
+    &found
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `{fn_name}` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+        .body
+        .result_expr
+}
+
+fn assert_calls_user_fn(expr: &CompiledExpr, expected: &str) {
+    match &expr.kind {
+        CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, expected)
+        }
+        other => panic!("expected a UserFunctionCall to `{expected}`, got: {other:?}"),
+    }
+}
+
+/// A trait-static fn body resolves a call to a static fn of an earlier trait,
+/// and a structure body resolves calls to the trait-static fns.
+#[test]
+fn a_later_trait_static_fn_body_calls_an_earlier_one() {
+    let module = compile_source(
+        "trait A { fn make() -> Real { 1.0 } }\n\
+         trait B { fn read() -> Real { A::make() } }\n\
+         structure S { let v = B::read() }\n",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
+
+    assert_calls_user_fn(fn_result_expr(&module, "B::read"), "A::make");
+    assert_calls_user_fn(get_let_expr_in(&module, "S", "v"), "B::read");
+}
+
+/// A trait-static fn body does not see a static fn of a later trait.
+#[test]
+fn an_earlier_trait_static_fn_body_cannot_call_a_later_one() {
+    let module = compile_source(
+        "trait B { fn read() -> Real { A::make() } }\n\
+         trait A { fn make() -> Real { 1.0 } }\n",
+    );
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors[0].message.contains("A::make"),
+        "the error should name `A::make`; got: {:?}",
+        errors[0].message
+    );
+    assert!(
+        module.functions.iter().any(|f| f.name == "A::make"),
+        "`A::make` must still be registered; found functions: {:?}",
+        module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+}
+
+/// A local trait-static fn shadows the prelude's static fn of the same key, for
+/// later static fn bodies and for structure bodies alike.
+#[test]
+fn a_local_trait_static_fn_shadows_the_preludes_same_key_static_fn() {
+    let module = compile_against_prelude(
+        "trait T { fn make() -> Real { 1.0 } }\n",
+        "trait T { fn make() -> String { \"s\" } }\n\
+         trait U { fn read() -> String { T::make() } }\n\
+         structure S { let v = T::make() }\n",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
+
+    assert_eq!(fn_result_expr(&module, "U::read").result_type, Type::String);
+    assert_eq!(get_let_expr_in(&module, "S", "v").result_type, Type::String);
+}
+
+/// A trait-static fn body resolves a call to a prelude free fn.
+#[test]
+fn a_trait_static_fn_body_binds_a_prelude_fn() {
+    let module = compile_against_prelude(
+        "fn twice(x : Real) -> Real { x * 2.0 }\n",
+        "trait T { fn make() -> Real { twice(1.0) } }\n",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
+
+    assert_calls_user_fn(fn_result_expr(&module, "T::make"), "twice");
 }
