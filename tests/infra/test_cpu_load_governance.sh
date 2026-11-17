@@ -2608,6 +2608,136 @@ _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
 # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
 _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
 
+# ROW23-STUB-VACUITY (task 10025): the mix stub's ready-file seam and
+# _row23_stop_mix.  ROW2_3 opens its window once every mix source has reported
+# ready through its own fixture --ready-file, and ends the mix by TERMing the
+# fixture workers those files list.  The stub is run directly, with no shim,
+# taskset or cgroup, so the block is always-on.  The 30 s bounds below are
+# anti-hang only (technique T): no assertion bounds an elapsed time.
+# Captures are `|| true` or `|| _rc=$?`, never a sentinel fallback, so an
+# undefined helper leaves an empty capture or rc 127, and FAILs.
+
+# _row23_stub_new_dir: prints a fresh scratch dir holding bin/ and markers/.
+_row23_stub_new_dir() {
+    local dir
+    dir="$(mktemp -d -p "$WORK" row23-stub.XXXXXX)"
+    mkdir "$dir/bin" "$dir/markers"
+    printf '%s\n' "$dir"
+}
+
+# _row23_stub_markers <marker_dir>: the done markers in it, one name per line.
+_row23_stub_markers() {
+    find "$1" -maxdepth 1 -name 'done_*' -printf '%f\n' | sort
+}
+
+# _row23_stub_refuses_without_ready_file <stub_dir>
+#   Passes iff <stub_dir>/bin/cargo exists and, run with GOVTEST_MIX_READY_FILE
+#   unset, dies non-zero ON THAT VARIABLE and leaves no done marker and no ready
+#   file.  A failing check prints why.  The absence checks only count for a stub
+#   that ran and died there, so a missing stub cannot satisfy them vacuously.
+_row23_stub_refuses_without_ready_file() {
+    local stub_dir="$1" rc=0
+    [ -x "$stub_dir/bin/cargo" ] || { echo "no executable stub at ${stub_dir}/bin/cargo"; return 1; }
+    env -u GOVTEST_MIX_READY_FILE bash "$stub_dir/bin/cargo" test >/dev/null 2>"$stub_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || { echo "the stub exited 0 without GOVTEST_MIX_READY_FILE"; return 1; }
+    grep -q 'GOVTEST_MIX_READY_FILE' "$stub_dir/stderr" \
+        || { echo "the stub exited ${rc}, but not on the unset variable: $(cat "$stub_dir/stderr")"; return 1; }
+    [ -z "$(_row23_stub_markers "$stub_dir/markers")" ] || { echo "the stub left a done marker"; return 1; }
+    [ -z "$(find "$stub_dir" -name 'ready*')" ] || { echo "the stub left a ready file"; return 1; }
+}
+
+# (1) Given a ready path the stub reports through its fixture, exits 0 and writes
+# ONE done marker named for its own pid: `$$` is expanded when the stub RUNS, so
+# every mix source gets a marker of its own.
+_row23_stub1_dir="$(_row23_stub_new_dir)"
+_row23_stub1_gen_rc=0
+_row23_write_stub_cargo "$_row23_stub1_dir/bin" "$FIXTURE" 1 "$_row23_stub1_dir/markers" \
+    || _row23_stub1_gen_rc=$?
+GOVTEST_MIX_READY_FILE="$_row23_stub1_dir/ready" bash "$_row23_stub1_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub1_pid=$!
+_row23_stub1_ready_rc=0
+_row4_await_ready 30 "$_row23_stub1_dir/ready" || _row23_stub1_ready_rc=$?
+_row23_stub1_exit_rc=0
+wait "$_row23_stub1_pid" 2>/dev/null || _row23_stub1_exit_rc=$?
+_row23_stub1_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_row23_stub1_dir/ready" 2>/dev/null || true)"
+_row23_stub1_markers="$(_row23_stub_markers "$_row23_stub1_dir/markers" || true)"
+
+assert "ROW23-STUB-VACUITY-1a: _row23_write_stub_cargo => rc EXACTLY 0 (got ${_row23_stub1_gen_rc})" \
+    test "$_row23_stub1_gen_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1b: the generated <bin>/cargo is executable: the agent shim finds the stub through PATH, which needs the exec bit" \
+    test -x "$_row23_stub1_dir/bin/cargo"
+assert "ROW23-STUB-VACUITY-1c: the stub given GOVTEST_MIX_READY_FILE reports ready through its fixture => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub1_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub1_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1d: the ready file is exactly one numeric pid line, the fixture's one worker, and nothing else (got 'numeric-lines total-lines' = '${_row23_stub1_lines}')" \
+    test "$_row23_stub1_lines" = "1 1"
+assert "ROW23-STUB-VACUITY-1e: the stub exits 0 (got ${_row23_stub1_exit_rc})" \
+    test "$_row23_stub1_exit_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1f: exactly one done marker, named for the stub's own pid => 'done_${_row23_stub1_pid}' (got '${_row23_stub1_markers//$'\n'/,}'); \$\$ is expanded when the stub runs, so every mix source writes a marker of its own" \
+    test "$_row23_stub1_markers" = "done_${_row23_stub1_pid}"
+
+# (2) NON-VACUITY CRUX: the same stub WITHOUT a ready path refuses to run.
+# `${GOVTEST_MIX_READY_FILE:?}` aborts it before the fixture and before the done
+# marker.  Without it the fixture's own argument error (exit 64) would be
+# swallowed by `|| true` and the marker still written, so a launch that forgot the
+# ready path would satisfy ROW2-2 while ROW2_3's window never opened.
+_row23_stub2_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub2_dir/bin" "$FIXTURE" 1 "$_row23_stub2_dir/markers" || true
+assert "ROW23-STUB-VACUITY-2: NON-VACUITY CRUX -- the stub run WITHOUT GOVTEST_MIX_READY_FILE dies non-zero on that variable and leaves no done marker and no ready file" \
+    _row23_stub_refuses_without_ready_file "$_row23_stub2_dir"
+
+# (3) STOP CRUX: a 120 s burn that has reported ready is ended by _row23_stop_mix
+# alone, and ends as a COMPLETED source: TERMing the fixture worker lets the
+# fixture exit 0, so the stub still writes its done marker and ROW2-2 counts it.
+# Only the stop can end a 120 s burn inside the 30 s exit poll.
+_row23_stub3_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub3_dir/bin" "$FIXTURE" 120 "$_row23_stub3_dir/markers" || true
+GOVTEST_MIX_READY_FILE="$_row23_stub3_dir/ready" bash "$_row23_stub3_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub3_pid=$!
+_row23_stub3_ready_rc=0
+_row4_await_ready 30 "$_row23_stub3_dir/ready" || _row23_stub3_ready_rc=$?
+_row23_stub3_stop_rc=0
+_row23_stop_mix "$_row23_stub3_dir/ready" || _row23_stub3_stop_rc=$?
+_row23_stub3_deadline=$(( SECONDS + 30 ))
+while kill -0 "$_row23_stub3_pid" 2>/dev/null && [ "$SECONDS" -lt "$_row23_stub3_deadline" ]; do
+    sleep 0.1
+done
+_row23_stub3_exit="hung"
+if ! kill -0 "$_row23_stub3_pid" 2>/dev/null; then
+    _row23_stub3_exit=0
+    wait "$_row23_stub3_pid" 2>/dev/null || _row23_stub3_exit=$?
+fi
+_row23_stub3_workers="$(_row4_worker_affinities "$_row23_stub3_dir/ready" 2>/dev/null || true)"
+
+assert "ROW23-STUB-VACUITY-3a: the 120 s burn reports ready => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub3_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub3_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3b: _row23_stop_mix on that ready file => rc EXACTLY 0 (got ${_row23_stub3_stop_rc})" \
+    test "$_row23_stub3_stop_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3c: STOP CRUX -- after the stop the stub exits 0 inside the anti-hang bound (got '${_row23_stub3_exit}'); nothing else ends a 120 s burn that soon" \
+    test "$_row23_stub3_exit" = "0"
+assert "ROW23-STUB-VACUITY-3d: the stopped source still counts as completed => its done marker 'done_${_row23_stub3_pid}' exists (ROW2-2 counts these)" \
+    test -e "$_row23_stub3_dir/markers/done_${_row23_stub3_pid}"
+assert "ROW23-STUB-VACUITY-3e: the fixture worker is gone => _row4_worker_affinities reads 'unavailable' (got '${_row23_stub3_workers//$'\n'/,}'); the stop ended the worker, not just the stub" \
+    test "$_row23_stub3_workers" = "unavailable"
+
+# Failure path: end whatever the stop left running, so no burn outlives this
+# block.  Workers first: killing the stub alone would orphan its fixture.
+if [ -r "$_row23_stub3_dir/ready" ]; then
+    while IFS= read -r _row23_stub3_worker; do
+        kill -TERM "$_row23_stub3_worker" 2>/dev/null || true
+    done < "$_row23_stub3_dir/ready"
+fi
+kill -TERM "$_row23_stub3_pid" 2>/dev/null || true
+wait "$_row23_stub3_pid" 2>/dev/null || true
+
+# (4) Total: a ready file that does not exist is no error, so the live cycle can
+# call the stop bare under `set -e` on a path where a source never reported.
+_row23_stop4_rc=0
+_row23_stop_mix "$WORK/row23-never-reported" || _row23_stop4_rc=$?
+assert "ROW23-STUB-VACUITY-4: _row23_stop_mix on a ready file that does not exist => rc EXACTLY 0 (got ${_row23_stop4_rc}); total, so safe bare under set -e" \
+    test "$_row23_stop4_rc" -eq 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
