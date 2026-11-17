@@ -445,3 +445,6 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
    `reify_compiler::import_headers`. ζ and λ consume the same functions —
    `derive_std_imports`, whose `ImportPlan::residual_diagnostics` judges an import set
    against the universe the plan was derived over, and `insert_imports` — or run the CLI.
+   *Decided in #9831:* `fix --imports` takes repeated `--cfg <key=value|flag>` like `check`
+   (target host-defaulted, `conditional-compilation.md` D-2), and counts a `#cfg`-gated
+   import as covering only when that active cfg satisfies it.
