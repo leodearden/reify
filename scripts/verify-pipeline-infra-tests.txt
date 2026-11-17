@@ -137,6 +137,10 @@ deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_tr
 tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
 scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
 scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
+# Task 9871: the merge_verify_workspace knob in the yaml, and the merge-role
+# test_command premise it relies on, pinned by a .py suite behind a .sh wrapper.
+dark-factory-orchestrator.yaml       tests/infra/test_merge_verify_workspace_seam.sh
+tests/infra/test_merge_verify_workspace_seam.py    tests/infra/test_merge_verify_workspace_seam.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
