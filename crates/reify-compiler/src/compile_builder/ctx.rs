@@ -387,7 +387,7 @@ mod tests {
 
         // Seed the tracker as pre_pass would.
         ctx.seen_entity_names
-            .insert("Widget".to_string(), (span_a, "structure"));
+            .insert("Widget".to_string(), (span_a, EntityKind::Structure));
 
         // (b) same span → still the first def (same definition revisited)
         assert!(
@@ -412,12 +412,12 @@ mod tests {
 
         // First insertion: new name → true, entry stored, no diagnostic.
         assert!(
-            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            ctx.record_or_report_duplicate("Widget", span_a, EntityKind::Structure),
             "first insertion should succeed"
         );
         assert_eq!(
             ctx.seen_entity_names.get("Widget"),
-            Some(&(span_a, "structure")),
+            Some(&(span_a, EntityKind::Structure)),
             "entry should be present after insertion"
         );
         assert!(
@@ -427,7 +427,7 @@ mod tests {
 
         // Same name + same span is idempotent → true, still no diagnostic.
         assert!(
-            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            ctx.record_or_report_duplicate("Widget", span_a, EntityKind::Structure),
             "re-inserting with same span should return true"
         );
         assert!(
@@ -437,7 +437,7 @@ mod tests {
 
         // Same name + different span → false, duplicate diagnostic emitted.
         assert!(
-            !ctx.record_or_report_duplicate("Widget", span_b, "structure"),
+            !ctx.record_or_report_duplicate("Widget", span_b, EntityKind::Structure),
             "duplicate span should return false"
         );
         assert_eq!(
@@ -498,10 +498,10 @@ mod tests {
     #[test]
     fn local_entity_names_admit_only_structures_and_occurrences() {
         let mut ctx = CompilationCtx::new();
-        ctx.record_or_report_duplicate("S", SourceSpan::new(0, 1), "structure");
-        ctx.record_or_report_duplicate("O", SourceSpan::new(2, 3), "occurrence");
-        ctx.record_or_report_duplicate("F", SourceSpan::new(4, 5), "field");
-        ctx.record_or_report_duplicate("C", SourceSpan::new(6, 7), "constraint");
+        ctx.record_or_report_duplicate("S", SourceSpan::new(0, 1), EntityKind::Structure);
+        ctx.record_or_report_duplicate("O", SourceSpan::new(2, 3), EntityKind::Occurrence);
+        ctx.record_or_report_duplicate("F", SourceSpan::new(4, 5), EntityKind::Field);
+        ctx.record_or_report_duplicate("C", SourceSpan::new(6, 7), EntityKind::Constraint);
 
         assert_eq!(
             ctx.local_entity_name_iter().collect::<HashSet<&str>>(),
@@ -511,6 +511,41 @@ mod tests {
             ctx.local_entity_names(),
             HashSet::from(["S".to_string(), "O".to_string()]),
         );
+    }
+
+    /// Every entity kind's user-visible label reaches both sites of the
+    /// duplicate diagnostic verbatim.
+    #[test]
+    fn duplicate_entity_diagnostic_labels_name_each_kind() {
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+        for (kind, label) in [
+            (EntityKind::Structure, "structure"),
+            (EntityKind::Occurrence, "occurrence"),
+            (EntityKind::Field, "field"),
+            (EntityKind::Constraint, "constraint"),
+        ] {
+            let mut ctx = CompilationCtx::new();
+            ctx.record_or_report_duplicate("Widget", span_a, kind);
+            ctx.record_or_report_duplicate("Widget", span_b, kind);
+
+            let labels = &ctx.diagnostics[0].labels;
+            assert_eq!(labels[0].message, format!("{label} defined here"));
+            assert_eq!(labels[1].message, format!("first defined as {label} here"));
+        }
+    }
+
+    /// When a name is redefined as a different kind, the first-seen site is
+    /// labelled with the stored first kind, not the duplicate's.
+    #[test]
+    fn duplicate_entity_diagnostic_reports_first_kind_on_first_label() {
+        let mut ctx = CompilationCtx::new();
+        ctx.record_or_report_duplicate("Widget", SourceSpan::new(0, 10), EntityKind::Field);
+        ctx.record_or_report_duplicate("Widget", SourceSpan::new(20, 30), EntityKind::Structure);
+
+        let labels = &ctx.diagnostics[0].labels;
+        assert_eq!(labels[0].message, "structure defined here");
+        assert_eq!(labels[1].message, "first defined as field here");
     }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
