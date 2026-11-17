@@ -61,7 +61,7 @@ export interface ShortcutDef {
   toggle?: boolean;
   /** When true, the shortcut also fires while no document is open (the Start view is up); every other shortcut acts on the layout the Start view covers, so it is suppressed then. */
   worksWithoutDocument?: boolean;
-  /** When true, the shortcut also fires while focus is in a typing context (an input, textarea, contentEditable such as the code editor, or a select receiving type-ahead); every other shortcut leaves those keys to the focused element. */
+  /** When true, the shortcut also fires while focus is in a typing context (see useKeyboardShortcuts); every other shortcut leaves those keys to the focused element. */
   worksInTypingContext?: boolean;
   /** When true, the command palette does not list this action; set on the palette's own openers, which would otherwise list themselves. */
   hiddenFromPalette?: boolean;

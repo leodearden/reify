@@ -714,6 +714,14 @@ describe('useKeyboardShortcuts — command palette shortcuts', () => {
         );
         expect(event.defaultPrevented, s.id).toBe(Boolean(s.worksInTypingContext));
       }
+      const firesInInput = new Set<string>(
+        SHORTCUTS.filter((s) => hasCallbackWiring(s.id) && s.worksInTypingContext).map(
+          (s) => ID_TO_CALLBACK[s.id]!,
+        ),
+      );
+      for (const [key, fn] of Object.entries(callbacks)) {
+        expect(fn, key).toHaveBeenCalledTimes(firesInInput.has(key) ? 1 : 0);
+      }
       expect(iterated).toEqual(
         expect.arrayContaining(['commandPalette', 'symbolJump', 'save', 'open', 'help']),
       );
