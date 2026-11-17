@@ -216,6 +216,23 @@ The **polarity is unchanged and still fail-safe**: every plan line, cargo or too
 
 The six `LD_LIBRARY_PATH="" sqlite3` workarounds in `tests/infra/test_reify_audit_ptodo.sh` are **retained as defence-in-depth**, not superseded: the plan-line scrub cannot reach a bare `bash tests/infra/test_reify_audit_ptodo.sh` run from a shell that already carries a hostile ambient loader path.
 
+## Merge-gate breadth: `merge_verify_workspace` (task 9871)
+
+**What it does.** Top-level `merge_verify_workspace: true` in `dark-factory-orchestrator.yaml` makes dark-factory's merge role run the yaml's global `test_command` / `lint_command` / `type_check_command` verbatim (`force_workspace`), before any file-scoping, fallback or trivial-pass logic. Those commands run with `DF_VERIFY_ROLE=merge`, under which `verify.sh` forces `--scope all` (contract C2), so the merge gate is the whole-workspace gate. Leave `merge_verify_breadth` at its default: `full` only widens *registered* DF module configs, and reify registers none.
+
+**Why reify needs it.** With no registered modules, DF's verify takes its no-module-config branch, and `_build_fallback_config` engages whenever the diff contains any `.py` file. It keeps a non-default `test_command` only when a collectable `test_*.py`, a `conftest.py` or a test-data module was touched; otherwise it drops the test leg, at task **and** merge role. A diff touching only a non-test `.py` (e.g. a `scripts/*.py` helper) therefore merged on lint+type alone. DF task 7041 owns the DF-side fix; the knob closes reify's merge gate without waiting for it.
+
+**The incident (esc-9761-1).** Both of task 9761's merge verifies ran only the `module:__fallback__:lint` and `module:__fallback__:type` units, and it landed a red tree that #9838 healed. Task 9839 (touching only `scripts/assert-crate-strata.py`) merged the same way.
+
+**Where to read a merge's real gate.**
+- The `units` list of the `merge_verify` events in `data/orchestrator/runs.db`: a merge with no `:test` unit ran no tests.
+- `data/verify-logs/<task>/attempt-*.remote-laptop.pass-summary-*.json`, which records `merge_verify_breadth` and `merge_verify_workspace` for the run; the matching `attempt-*.plan-*.json` records each slot's `scope_kind` (a dropped test leg reads `skipped`).
+- **Not** `data/verify-logs/verify-runs.jsonl`: it holds only runs executed on this host, so `runner=laptop` merges never appear in it.
+
+**Offline-deep rows are not whole-tree evidence.** An offline-role `test all` ledger row runs one release nextest step filtered to the heavy-partition binary list, so its PASS says nothing about other crates' lib tests.
+
+**Activation.** The knob is **red tier** (restart-only): a reload accepts it into the file but it stays inert until the next orchestrator restart or redeploy after landing. Guard: `tests/infra/test_merge_verify_workspace_seam.sh` pins the knob and checks that the merge-role `test_command` still plans `cargo nextest run --workspace`.
+
 ## Merge-worker trivial-pass drift guard (background)
 
 The merge worker's **trivial-pass** fast-path (scope=config, diff touches only non-Rust/non-TS files) lands config-only changes (e.g. `dark-factory-orchestrator.yaml` tweaks) without a full `--scope all` verify.
