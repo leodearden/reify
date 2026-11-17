@@ -637,13 +637,17 @@ assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling se
 #   never an answer, and fails WIDE: the release pass stays and a stderr warning
 #   names the status. Driven in process against a throwaway repo root, under the
 #   merge role with the knob armed and the non-sensitive crate as the affected
-#   override (no git). Two kinds of root:
+#   override (no git). Three kinds of root:
 #     - stub roots, whose release-scope-lib.sh is a one-line predicate returning
 #       a chosen status;
 #     - real-lib roots, holding the real lib's load closure minus one file. The
 #       full closure is the CONTROL and must skip, so each failure root differs
 #       from a skipping run by exactly that one missing file. If the closure
-#       grows, the CONTROL reds instead of the failure roots passing vacuously.
+#       grows, the CONTROL reds instead of the failure roots passing vacuously;
+#     - roots whose lib never finishes sourcing (task 10082): absent, returning
+#       at top level, or ending the shell. The predicate never runs, so the
+#       shell's status is not its answer: even a 1 or a 0 keeps the pass and
+#       warns.
 # ===========================================================================
 echo ""
 echo "--- PORT (task 10080): decide_release_delta skips only on rc 1 ---"
@@ -756,5 +760,26 @@ assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_at
     _port_keeps "$_PORT_DECISION"
 assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_attribution.py) => warning names status 2" \
     _port_warns "$_PORT_DECISION" 2
+
+_port_root _PORT_ROOT
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT no release-scope-lib.sh (source exits 1, predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT no release-scope-lib.sh => warning names status 1" \
+    _port_warns "$_PORT_DECISION" 1
+
+_port_stub_root _PORT_ROOT 'return 1'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT lib returning 1 at top level (predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT lib returning 1 at top level => warning names status 1" \
+    _port_warns "$_PORT_DECISION" 1
+
+_port_stub_root _PORT_ROOT $'exit 0\nrelease_delta_requires_pass() { return 1; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT lib ending the shell with 0 while sourced (predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT lib ending the shell with 0 while sourced => warning names status 0" \
+    _port_warns "$_PORT_DECISION" 0
 
 test_summary
