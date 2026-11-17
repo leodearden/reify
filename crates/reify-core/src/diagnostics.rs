@@ -5003,6 +5003,19 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     FnDeclTablesMisaligned,
+    /// Origin: `gui/src-tauri/src/engine.rs::unanchored_import_warning`, the GUI's
+    /// buffer-only compile (task #5519, PRD resolution-unification D-10).
+    ///
+    /// Emitted when a compile with no file anchor (GUI `load_from_source`, or
+    /// `update_source` before any `load_file`) contains imports a file-backed
+    /// compile would follow, which it therefore cannot resolve. One per buffer,
+    /// naming every such import, located at the first.
+    ///
+    /// Canonical message: `"import \"<a>\", \"<b>\" not resolved: imports
+    /// require a file-backed buffer — open the .ri file to resolve them"`.
+    ///
+    /// Severity: Warning.
+    ImportRequiresFileBackedBuffer,
 }
 
 /// A diagnostic message with location and optional labels.

@@ -22,7 +22,7 @@ use reify_ir::{CompiledExprKind, ConstraintChecker, DeterminacyState, ExportForm
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
 
-use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
 
 use crate::types::{
     AppearanceDirective, AutoResolveConstraintProgress, AutoResolveIteration,
@@ -842,8 +842,19 @@ pub(crate) struct CompileRejection {
     /// `"{prefix}: msg1; msg2; …"`, e.g. `"Parse errors: …"` /
     /// `"Compile errors: …"` — the reload entry points' `Err` string.
     pub(crate) message: String,
-    /// The same errors in structured form, for the diagnostics panel.
+    /// The errors, then any Warning explaining them, in structured form, for
+    /// the diagnostics panel.
     pub(crate) diags: Vec<DiagnosticInfo>,
+}
+
+impl CompileRejection {
+    /// Append `explanations` (Warnings that explain the errors) to the
+    /// structured diagnostics, after the errors; `message` stays errors-only.
+    fn explained_by(mut self, explanations: &[Diagnostic], file_path: &str, source: &str) -> Self {
+        self.diags
+            .extend(diagnostics_to_info(explanations, file_path, source));
+        self
+    }
 }
 
 /// Build the [`CompileRejection`] for an error result.
@@ -949,6 +960,10 @@ fn gui_cfg() -> reify_compiler::cfg::CfgSet {
 /// ([`compile_single_file_with_stdlib`]). This is the routing reify-lsp's
 /// `document_compile::compile_document` applies, so the GUI's own compile and
 /// the LSP it hosts agree on every file.
+///
+/// A buffer with no anchor cannot resolve the imports a file-backed compile
+/// would follow, so it carries [`unanchored_import_warning`]: on an accepted
+/// compile among its diagnostics, on a rejection after the errors it explains.
 fn compile_buffer(
     anchor: Option<&Path>,
     source: &str,
@@ -960,8 +975,42 @@ fn compile_buffer(
         Some(entry_path) if !followed.is_empty() => {
             compile_entry_program(entry_path, source, parsed, module_name)
         }
-        _ => compile_single_file_with_stdlib(parsed, source, module_name),
+        Some(_) => compile_single_file_with_stdlib(parsed, source, module_name),
+        None => {
+            let warning = unanchored_import_warning(&followed);
+            compile_single_file_with_stdlib(parsed, source, module_name)
+                .map(|mut accepted| {
+                    accepted.compiled.diagnostics.extend(warning.clone());
+                    accepted
+                })
+                .map_err(|rejection| {
+                    rejection.explained_by(warning.as_slice(), &module_key(module_name), source)
+                })
+        }
     }
+}
+
+/// The D-10 Warning for a buffer with no file anchor that contains `followed`,
+/// the imports a file-backed compile would resolve: one Warning naming them
+/// all, located at the first. `None` when there are none.
+fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diagnostic> {
+    let first = followed.first()?;
+    let names: Vec<String> = followed
+        .iter()
+        .map(|import| format!("\"{}\"", import.path))
+        .collect();
+    Some(
+        Diagnostic::warning(format!(
+            "import {} not resolved: imports require a file-backed buffer — open the .ri file \
+             to resolve them",
+            names.join(", ")
+        ))
+        .with_code(DiagnosticCode::ImportRequiresFileBackedBuffer)
+        .with_label(DiagnosticLabel::new(
+            first.span,
+            "needs a file-backed buffer",
+        )),
+    )
 }
 
 /// Compile `parsed`, the parse of `source`, single-file against the stdlib
