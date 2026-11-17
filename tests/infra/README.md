@@ -683,6 +683,65 @@ cannot undo a disposition the suite inherited. To background a sweep, use the
 harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
 ignores INT and QUIT (measured `SigIgn` `…06`).
 
+## Cargo registry inputs: a verdict never depends on the cache
+
+The rule (Leo, 2026-11-09): a verifying test passes or fails on the merits of
+what it tests, whatever state the cache is in. A cache only makes things
+faster; it is never part of correctness. A member that reads cargo with
+`--offline`/`--frozen` therefore obtains those inputs itself, before its first
+assertion, scoped like the read it feeds:
+
+```bash
+source "$SCRIPT_DIR/test_helpers.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+_suite_fetch_cargo_inputs() {
+    cargo_inputs_fetch --target "$host" --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml"
+}
+assert_infra_input "the registry holds the locked inputs" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _suite_fetch_cargo_inputs
+```
+
+Pass `--target <triple>` only when the read filters to one platform
+(`--filter-platform`, `cargo tree --target`); an unfiltered `cargo metadata`
+needs every target's crates and still fails after a host-only fetch.
+
+**Classification.** `cargo_inputs_fetch` runs `cargo fetch --locked` and
+parses cargo's output once, at the boundary:
+
+- rc 0: the inputs are present (silent).
+- cargo's output matches a known network/offline signature (`unable to update
+  registry`, `download of … failed`, `offline mode (via`, …): the registry
+  could not be reached. It prints a column-0
+  `@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_fetch` line on stderr and returns
+  `$CARGO_INPUTS_UNAVAILABLE_RC` (75).
+- anything else, such as a stale lock (`cannot update the lock file … because
+  --locked was passed`): a defect in the tree. It returns 1 and
+  `assert_infra_input` records a FAIL. Unrecognised output defaults to FAIL so
+  a tree defect is never hidden as infrastructure.
+
+**The infrastructure verdict.** On 75, `assert_infra_input` ends the member
+through `test_summary_infra_unavailable`: an assertion that already FAILed
+wins (exit 1); otherwise it prints an `INFRASTRUCTURE:` line and exits 75
+(EX_TEMPFAIL), with no FAIL line. Never a skip and never a FAIL.
+
+**Why network is not a gate constraint.** `verify_env` sets no
+`CARGO_NET_OFFLINE`, and the gate's own `cargo check` / clippy / nextest run
+online and download on a cold registry, so a host with no network and a cold
+registry already fails the gate's Rust steps. The member's job is to report
+that case honestly.
+
+**run_all.sh still counts exit 75 as FAIL.** Classifying it end to end
+(`RESULT:` and the event schema dark-factory reads) is follow-up #10002.
+
+**Cost.** A warm `cargo fetch --locked` needs no network and takes 0.6-2s.
+Measured cold (cargo 1.96): host target only, ~432MB and 18-38s; all targets,
+~1.3GB and ~26s. The in-suite cold pins in `test_run_gui_scripts.sh` and
+`test_affected_crates_lib.sh` pay that into a private temporary `CARGO_HOME`
+on every run. `test_cargo_inputs_lib.py` pins the lib's classification and
+runs every adopting member with an empty `CARGO_HOME` and
+`CARGO_NET_OFFLINE=true`: each must stop at its fetch with exit 75.
+
 ## Files
 
 | File | Purpose |
@@ -698,7 +757,10 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 | `compiler-namespace-ratchet-baseline.txt` | Exact counts for the compiler namespace ratchet |
 | `test_compiler_namespace_ratchet.sh` | Regression guard: reify-compiler glob re-exports and glob imports match their exact baseline |
 | `test_compiler_namespace_ratchet.py` | Its stdlib-unittest body, driving `source_count_ratchet.py` |
-| `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `test_helpers.sh` | Shared library: `assert()` and `test_summary()`, plus the infrastructure verdict `assert_infra_input()` / `test_summary_infra_unavailable()` |
+| `cargo_inputs_lib.sh` | Shared library: `cargo_inputs_fetch`, a suite's locked cargo inputs classified as present, unavailable (75) or a tree defect |
+| `test_cargo_inputs_lib.sh` | Tests `cargo_inputs_lib.sh` and that every member sourcing it stops at its fetch on a cold, offline registry |
+| `test_cargo_inputs_lib.py` | Its stdlib-unittest body |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
 | `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
