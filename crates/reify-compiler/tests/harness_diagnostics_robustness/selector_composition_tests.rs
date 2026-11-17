@@ -1,17 +1,6 @@
 //! Compiler integration tests for **task 4119 δ**, selector composition algebra
 //! (`union`/`intersect`/`difference`) — the E_SELECTOR_KIND_MISMATCH diagnostic
 //! (BT1) and same-kind composition result type (Type::Selector(k)).
-//!
-//! RED until step-4 wires the `selector_composition_result_type` arm in
-//! `crates/reify-compiler/src/expr.rs`.
-//!
-//! Two test groups:
-//!   (a) Mixed-kind composition: `union`/`intersect`/`difference` over Face and
-//!       Edge selectors each produce EXACTLY ONE `E_SELECTOR_KIND_MISMATCH`
-//!       diagnostic (Error severity) naming both kinds.  BT1.
-//!   (b) Same-kind composition: `union`/`intersect`/`difference` over two Face
-//!       selectors compile with no errors and the binding's inferred type is
-//!       `Type::Selector(Face)`.
 
 use reify_core::Type;
 use reify_core::{DiagnosticCode, Severity, ty::SelectorKind};
@@ -249,16 +238,14 @@ fn difference_same_kind_compiles_clean_with_face_selector_type() {
 }
 
 // ── (c) Named-leaf constructors: face/edge/solid_body ────────────────────────
-// RED until step-8 adds face/edge/solid_body to GEOMETRY_TOPOLOGY_SELECTOR_NAMES
-// and topology_selector_result_type in crates/reify-compiler/src/units.rs.
 //
 // Design note: the BodySelector ctor is `solid_body(g, name)`, NOT `body(g, name)`.
 // `body` is the RBD mechanism constructor (joint_signatures.rs → StructureRef("Mechanism")).
 // The existing family-disjointness tests in units.rs guard against `body` entering
-// GEOMETRY_TOPOLOGY_SELECTOR_NAMES.  The step-8 impl unit test additionally asserts
+// GEOMETRY_TOPOLOGY_SELECTOR_NAMES.  A units.rs unit test additionally asserts
 // `!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"body")` directly.
 
-/// `face(b, "top")` source — compiles to `Type::Selector(Face)` after step-8.
+/// `face(b, "top")` source — compiles to `Type::Selector(Face)`.
 const SOURCE_FACE_NAMED: &str = r#"
 structure def FaceNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -266,7 +253,7 @@ structure def FaceNamed {
 }
 "#;
 
-/// `edge(b, "rim")` source — compiles to `Type::Selector(Edge)` after step-8.
+/// `edge(b, "rim")` source — compiles to `Type::Selector(Edge)`.
 const SOURCE_EDGE_NAMED: &str = r#"
 structure def EdgeNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -274,7 +261,7 @@ structure def EdgeNamed {
 }
 "#;
 
-/// `solid_body(b, "core")` source — compiles to `Type::Selector(Body)` after step-8.
+/// `solid_body(b, "core")` source — compiles to `Type::Selector(Body)`.
 const SOURCE_SOLID_BODY_NAMED: &str = r#"
 structure def SolidBodyNamed {
     let b = box(10mm, 10mm, 10mm)
@@ -283,7 +270,6 @@ structure def SolidBodyNamed {
 "#;
 
 /// `face(b, "top")` must compile without errors and infer `Type::Selector(Face)`.
-/// RED until step-8 adds `face` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 #[test]
 fn face_named_ctor_types_as_face_selector() {
     let compiled = compile_source_with_stdlib(SOURCE_FACE_NAMED);
@@ -302,7 +288,6 @@ fn face_named_ctor_types_as_face_selector() {
 }
 
 /// `edge(b, "rim")` must compile without errors and infer `Type::Selector(Edge)`.
-/// RED until step-8 adds `edge` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 #[test]
 fn edge_named_ctor_types_as_edge_selector() {
     let compiled = compile_source_with_stdlib(SOURCE_EDGE_NAMED);
@@ -321,7 +306,6 @@ fn edge_named_ctor_types_as_edge_selector() {
 }
 
 /// `solid_body(b, "core")` must compile without errors and infer `Type::Selector(Body)`.
-/// RED until step-8 adds `solid_body` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
 /// Closes the `solid_body` vs `body` naming decision (PRD §11.1):
 /// `body` stays as the RBD mechanism constructor → `StructureRef("Mechanism")`.
 #[test]
@@ -527,20 +511,13 @@ fn difference_three_args_emits_compile_time_arity_error() {
 
 // ── (h) All-ident selector composition (task 4527) ───────────────────────────
 //
-// Before the fix: `union(top, big)` where both operands are Ident expressions
-// bound to selector lets is mis-classified as CSG geometry → compile_boolean_op
-// cannot resolve `top`/`big` as GeomRef nodes → emits a confusing geometry
-// error (errors_only non-empty) and/or 'u' is absent from value_cells.
-//
-// After the fix (known_selector_lets accumulator): the Ident arm of
-// is_selector_expr returns `known_selector_lets.contains(name)`, so
-// union(top, big) with top/big in the set → is_selector_composition true →
-// is_geometry_let false → routed to the value-typing path →
-// selector_composition_result_type infers Type::Selector(Face).
+// An Ident operand counts as a selector when it names a let already recorded
+// in `known_selector_lets`, so `union`/`difference` over selector lets routes
+// to the value-typing path and infers `Type::Selector(kind)` instead of being
+// classified as CSG geometry.
 
 /// All-ident operands, union: `let top = faces(b); let big = faces(c); let u = union(top, big)`.
 /// Must compile without errors and `u` must infer `Type::Selector(Face)`.
-/// RED until the known_selector_lets accumulator is implemented (task 4527).
 const SOURCE_UNION_ALL_IDENT: &str = r#"
 structure def UnionAllIdent {
     let b = box(10mm, 10mm, 10mm)
@@ -553,7 +530,6 @@ structure def UnionAllIdent {
 
 /// All-ident operands, difference: `let top = faces(b); let big = faces(c); let u = difference(top, big)`.
 /// Must compile without errors and `u` must infer `Type::Selector(Face)`.
-/// RED until the known_selector_lets accumulator is implemented (task 4527).
 const SOURCE_DIFFERENCE_ALL_IDENT: &str = r#"
 structure def DifferenceAllIdent {
     let b = box(10mm, 10mm, 10mm)
@@ -567,7 +543,6 @@ structure def DifferenceAllIdent {
 /// Transitive/chained: `let u = union(top, big); let v = difference(u, top)`.
 /// `u` itself must be recorded in known_selector_lets so `v` can chain on it.
 /// Both `u` and `v` must infer `Type::Selector(Face)` and the compilation must be error-free.
-/// RED until the known_selector_lets accumulator is implemented (task 4527).
 const SOURCE_CHAINED_ALL_IDENT: &str = r#"
 structure def ChainedAllIdent {
     let b = box(10mm, 10mm, 10mm)
@@ -581,7 +556,6 @@ structure def ChainedAllIdent {
 
 /// `union(top, big)` — both operands are Ident expressions bound to Face selectors —
 /// must compile without errors and `u` must infer `Type::Selector(Face)`.
-/// Fixes the all-ident mis-routing from task 4119 δ (known limitation).
 #[test]
 fn union_all_ident_operands_compiles_clean_with_face_selector_type() {
     let compiled = compile_source_with_stdlib(SOURCE_UNION_ALL_IDENT);
@@ -602,7 +576,6 @@ fn union_all_ident_operands_compiles_clean_with_face_selector_type() {
 
 /// `difference(top, big)` — both operands are Ident expressions bound to Face selectors —
 /// must compile without errors and `u` must infer `Type::Selector(Face)`.
-/// Fixes the all-ident mis-routing from task 4119 δ (known limitation).
 #[test]
 fn difference_all_ident_operands_compiles_clean_with_face_selector_type() {
     let compiled = compile_source_with_stdlib(SOURCE_DIFFERENCE_ALL_IDENT);
@@ -627,7 +600,7 @@ fn difference_all_ident_operands_compiles_clean_with_face_selector_type() {
 /// inside the guarded block and is compiled via `compile_guarded_members` (guards.rs).
 /// That path calls `is_geometry_let` with `known_selector_lets` threaded from the
 /// pre-pass — this test locks that the classification is correct and the guarded member
-/// gets `Type::Selector(Face)` (not mis-routed to CSG). (task 4527 amendment)
+/// gets `Type::Selector(Face)` (not mis-routed to CSG).
 const SOURCE_GUARDED_BLOCK_UNION_ALL_IDENT: &str = r#"
 structure def GuardedBlockUnionAllIdent {
     param cond : Bool = true
@@ -644,15 +617,8 @@ structure def GuardedBlockUnionAllIdent {
 /// All-ident union where BOTH operands are per-decl-guarded selector lets.
 ///
 /// `let s = faces(b) where active` and `let t = faces(c) where active` are per-decl
-/// guarded; `let u = union(s, t)` is unguarded.  The pre-pass populates
-/// `known_selector_lets` regardless of `where_clause`, so `u` routes to the selector
-/// path rather than being mis-classified as a geometry let.  Amendment 1 originally
-/// had to be applied twice — once here and once on the mirror lowering used for
-/// fn-returned structures — which is exactly the lockstep-duplication liability task
-/// 5494 removed by deleting the mirror.  The `pub fn` in the fixture below dates from
-/// that era; it is harmless and now simply exercises a fn-returned position against
-/// the same authoritative template.
-/// (task 4527 amendment)
+/// guarded; `let u = union(s, t)` is unguarded.  `make_it` also constructs the
+/// structure from a fn body.
 const SOURCE_PER_DECL_GUARDED_BOTH_SELECTOR_LETS: &str = r#"
 module test.perdeclguarded
 
@@ -673,7 +639,7 @@ pub fn make_it() -> PerDeclGuardedBothSelectorLets {
 /// `let u = union(top, big); let v = difference(u, top)` — chained all-ident composition.
 /// `u` must itself be recorded in known_selector_lets so `v` resolves `u` as a selector.
 /// Both `u` and `v` must infer `Type::Selector(Face)` and compilation must be error-free.
-/// Locks the transitive accumulator chaining required by task 4527.
+/// Locks transitive accumulator chaining.
 #[test]
 fn chained_all_ident_operands_compiles_clean_with_face_selector_type() {
     let compiled = compile_source_with_stdlib(SOURCE_CHAINED_ALL_IDENT);
@@ -706,7 +672,7 @@ fn chained_all_ident_operands_compiles_clean_with_face_selector_type() {
 /// that site receives `known_selector_lets` (threaded from the pre-pass), so `top`
 /// and `big` are recognised as selector idents and `u` routes to the selector path.
 /// The guarded member `u` must have `Type::Selector(Face)` in `guarded_groups[0].members`.
-/// Locks the guards.rs all-ident classification path (task 4527 amendment).
+/// Locks the guards.rs all-ident classification path.
 #[test]
 fn guarded_block_union_all_ident_compiles_clean_with_face_selector_type() {
     let compiled = compile_source_with_stdlib(SOURCE_GUARDED_BLOCK_UNION_ALL_IDENT);
@@ -742,13 +708,8 @@ fn guarded_block_union_all_ident_compiles_clean_with_face_selector_type() {
 /// (`let s = faces(b) where active`).
 ///
 /// The pre-pass populates `known_selector_lets` regardless of `where_clause`, so
-/// `u = union(s, t)` routes to the selector path; without amendment 1 both `s` and
-/// `t` would be absent from `known_selector_lets` and `u` would be mis-classified as
-/// a geometry let.  The fixture's `pub fn make_it()` once existed to exercise a
-/// SECOND lowering of the same rule; task 5494 deleted that mirror, so there is now
-/// one place this can be got wrong.  The assertions below read
-/// `compiled.templates[0]` — the authoritative template — and are unchanged.
-/// (task 4527 amendment)
+/// `u = union(s, t)` routes to the selector path rather than being classified as a
+/// geometry let.
 #[test]
 fn per_decl_guarded_both_selector_lets_union_compiles_clean() {
     let compiled = compile_source_with_stdlib(SOURCE_PER_DECL_GUARDED_BOTH_SELECTOR_LETS);
