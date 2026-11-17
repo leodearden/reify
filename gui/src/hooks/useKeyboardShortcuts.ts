@@ -58,12 +58,6 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
 };
 
 /**
- * Shortcut ids the command palette does not list: the palette's own openers,
- * which would otherwise list themselves.
- */
-const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
-
-/**
  * Returns true when `id` has a callback wiring entry in ID_TO_CALLBACK, i.e.
  * the shortcut is neither `disabled: true` on SHORTCUTS nor missing a `bind`.
  * This is the narrow predicate the invariant test uses to check membership
@@ -80,14 +74,13 @@ export interface PaletteCommand {
 }
 
 /**
- * Returns the list of commands available in the command palette.
- * Derived from SHORTCUTS entries that have callback wiring, excluding the two
- * palette-control ids themselves (commandPalette, symbolJump) to prevent a
- * recursive "open command palette" entry appearing inside the palette.
+ * Returns the list of commands available in the command palette: the SHORTCUTS
+ * entries that have callback wiring and do not set `hiddenFromPalette`, in
+ * registry order.
  */
 export function paletteCommands(): PaletteCommand[] {
   return SHORTCUTS.filter(
-    (s) => hasCallbackWiring(s.id) && !PALETTE_GLOBAL_IDS.has(s.id),
+    (s) => hasCallbackWiring(s.id) && !s.hiddenFromPalette,
   ).map((s) => ({ id: s.id, title: s.description, key: s.key }));
 }
 

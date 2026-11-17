@@ -63,6 +63,8 @@ export interface ShortcutDef {
   worksWithoutDocument?: boolean;
   /** When true, the shortcut also fires while focus is in a typing context (an input, textarea, contentEditable such as the code editor, or a select receiving type-ahead); every other shortcut leaves those keys to the focused element. */
   worksInTypingContext?: boolean;
+  /** When true, the command palette does not list this action; set on the palette's own openers, which would otherwise list themselves. */
+  hiddenFromPalette?: boolean;
 }
 
 // Private definition uses `as const satisfies` to validate shape against ShortcutDef
@@ -117,8 +119,8 @@ const _SHORTCUTS_DEF = [
   { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
   // Display-only: dispatch owned by the Shift-F12 keymap in Editor.tsx (β, task 4202).
   { id: 'findUses',       key: 'Shift+F12', description: 'Find all uses (references)', category: 'Editor' },
-  { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true }, worksInTypingContext: true },
-  { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true }, worksInTypingContext: true },
+  { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true }, worksInTypingContext: true, hiddenFromPalette: true },
+  { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true }, worksInTypingContext: true, hiddenFromPalette: true },
   { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true }, toggle: true },
   { id: 'toggleEdges',        key: 'E',            description: 'Toggle edges-in-black view', category: 'View', bind: { key: 'e', ctrl: false, shift: false, alt: false, meta: false }, toggle: true },
 ] as const satisfies readonly ShortcutDef[];
