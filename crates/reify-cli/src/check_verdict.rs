@@ -111,21 +111,45 @@ fn constraint_claim_in(d: &reify_core::Diagnostic) -> Option<(ConstraintClaim, &
     Some((claim, &rest[..end]))
 }
 
-/// `true` when `d` is an indeterminacy claim about one of `subjects` — the
-/// inward leg's matcher, read through the same [`constraint_claim_in`] parser
-/// as [`drop_falsified_constraint_diagnostics`], so the two legs cannot drift
-/// into reading different grammars.
-fn is_falsified_indeterminacy<S>(
+/// The verdicts of the authoritative entries holding each subject, keyed by
+/// subject, for exactly the `subjects` given.
+type HolderVerdicts<'s> = std::collections::HashMap<&'s str, Vec<reify_ir::Satisfaction>>;
+
+/// Collect the [`HolderVerdicts`] of `subjects` in ONE walk of
+/// `constraint_results`, hashing each entry's [`constraint_subject`]:
+/// O(subjects + constraints), never their product.  No subjects, no walk.
+fn holder_verdicts<'s>(
+    subjects: impl IntoIterator<Item = &'s str>,
+    constraint_results: &[reify_eval::ConstraintCheckEntry],
+) -> HolderVerdicts<'s> {
+    let mut holders: HolderVerdicts<'s> = subjects
+        .into_iter()
+        .map(|subject| (subject, Vec::new()))
+        .collect();
+    if holders.is_empty() {
+        return holders;
+    }
+    for entry in constraint_results {
+        if let Some(verdicts) = holders.get_mut(constraint_subject(entry).as_ref()) {
+            verdicts.push(entry.satisfaction);
+        }
+    }
+    holders
+}
+
+/// The claim `d` makes, when its subject's `holders` positively falsify it
+/// ([`ConstraintClaim::is_falsified_by_every`]); `None` for a claim still
+/// standing, a subject absent from `holders`, or a line off the grammar.
+///
+/// The ONE falsification decision both legs make, so they read the same
+/// grammar and apply the same rule.
+fn falsified_claim(
     d: &reify_core::Diagnostic,
-    subjects: &std::collections::HashSet<S>,
-) -> bool
-where
-    S: std::borrow::Borrow<str> + Eq + std::hash::Hash,
-{
-    matches!(
-        constraint_claim_in(d),
-        Some((ConstraintClaim::Indeterminate, subject)) if subjects.contains(subject)
-    )
+    holders: &HolderVerdicts<'_>,
+) -> Option<ConstraintClaim> {
+    let (claim, subject) = constraint_claim_in(d)?;
+    let verdicts = holders.get(subject)?;
+    claim.is_falsified_by_every(verdicts).then_some(claim)
 }
 
 /// Adopt post-realization constraint verdicts from a captured [`BuildResult`]
@@ -150,9 +174,10 @@ where
 ///   with cleared `realization_handles`: on the tessellate/GD&T axis it is never
 ///   MORE definite than `check()`, so only the geometry-query axis moves.
 /// * **Entries are matched by `id`**, never by position.
-/// * **The upgraded entry's now-false `ConstraintIndeterminate` warning is
-///   dropped**, matched by [`is_falsified_indeterminacy`] over the shared
-///   [`constraint_claim_in`] parser.
+/// * **An upgraded subject's now-false indeterminacy claim is dropped**, by
+///   the [`falsified_claim`] decision the outward leg shares: only once every
+///   entry holding that subject is definite after the upgrade, so a same-label
+///   holder still `Indeterminate` keeps its true line.
 /// * **Diagnostics are otherwise untouched**; [`merge_build_diagnostics`] owns
 ///   appending build()-only entries.
 ///
@@ -178,10 +203,9 @@ pub(crate) fn merge_post_build_verdicts(
     for r in &build_result.constraint_results {
         build_verdicts.entry(&r.id).or_insert(r.satisfaction);
     }
-    // Subjects of the entries that upgraded, collected during the walk and
-    // applied to `diagnostics` afterwards (one `&mut result` borrow at a time).
-    // A set, not a Vec: the retain below is then O(diagnostics), not
-    // O(diagnostics x upgraded).
+    // Subjects of the entries that upgraded — the only ones whose claims this
+    // pass can have made false.  Collected during the walk and read after it
+    // (one `&mut result` borrow at a time).
     let mut upgraded: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in result.constraint_results.iter_mut() {
         if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
@@ -199,11 +223,13 @@ pub(crate) fn merge_post_build_verdicts(
     if upgraded.is_empty() {
         return;
     }
-    // The warnings check() emitted for the upgraded constraints are now false —
-    // drop them, through the shared matcher.
+    let holders = holder_verdicts(
+        upgraded.iter().map(String::as_str),
+        &result.constraint_results,
+    );
     result
         .diagnostics
-        .retain(|d| !is_falsified_indeterminacy(d, &upgraded));
+        .retain(|d| falsified_claim(d, &holders) != Some(ConstraintClaim::Indeterminate));
 }
 
 /// Drop the constraint claims in `build_diags` that the AUTHORITATIVE
@@ -223,9 +249,8 @@ pub(crate) fn merge_post_build_verdicts(
 ///
 /// # Contract
 ///
-/// * **Both claim words are in scope**, read by the shared
-///   [`constraint_claim_in`] over the shared [`constraint_subject`] identity,
-///   so this leg and the inward one cannot drift.
+/// * **Both claim words are in scope**, decided by the [`falsified_claim`]
+///   the inward leg shares, so the two legs cannot drift.
 /// * **Drop on positive falsification only.**  A claim is removed only when at
 ///   least one authoritative entry holds its subject AND every such holder
 ///   falsifies it ([`ConstraintClaim::is_falsified_by`]): any definite verdict
@@ -245,38 +270,19 @@ pub(crate) fn drop_falsified_constraint_diagnostics(
     build_diags: &[reify_core::Diagnostic],
     constraint_results: &[reify_eval::ConstraintCheckEntry],
 ) -> Vec<reify_core::Diagnostic> {
-    if build_diags.is_empty() {
-        return Vec::new();
-    }
     // The subjects build's list actually makes a claim about, BORROWED from the
-    // messages, each mapped to the verdicts of the authoritative entries that
-    // hold it.  Empty on the common no-op path where a realization reported
+    // messages.  None on the common no-op path where a realization reported
     // only compile/kernel errors.
-    let mut holder_verdicts: std::collections::HashMap<&str, Vec<reify_ir::Satisfaction>> =
+    let holders = holder_verdicts(
         build_diags
             .iter()
             .filter_map(constraint_claim_in)
-            .map(|(_, subject)| (subject, Vec::new()))
-            .collect();
-    if holder_verdicts.is_empty() {
-        return build_diags.to_vec();
-    }
-    // ONE walk of the authoritative verdicts, hashing each entry's subject into
-    // the claimed set: O(diagnostics + constraints), never their product.
-    for entry in constraint_results {
-        if let Some(verdicts) = holder_verdicts.get_mut(constraint_subject(entry).as_ref()) {
-            verdicts.push(entry.satisfaction);
-        }
-    }
+            .map(|(_, subject)| subject),
+        constraint_results,
+    );
     build_diags
         .iter()
-        .filter(|d| {
-            !constraint_claim_in(d).is_some_and(|(claim, subject)| {
-                holder_verdicts
-                    .get(subject)
-                    .is_some_and(|verdicts| claim.is_falsified_by_every(verdicts))
-            })
-        })
+        .filter(|d| falsified_claim(d, &holders).is_none())
         .cloned()
         .collect()
 }
