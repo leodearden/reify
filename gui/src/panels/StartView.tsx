@@ -4,7 +4,8 @@
  * up is written to the launcher store, where the view shows it as a coded
  * error the debug MCP can also observe; the document error lasts until the
  * next attempt or until the view is dismissed. While a document attempt is
- * pending its actions are disabled and the view names the path it is opening.
+ * pending its actions are disabled, and the view names the path it is opening
+ * with a Cancel that abandons the attempt.
  */
 import { createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
@@ -21,7 +22,10 @@ import styles from './StartView.module.css';
 
 export interface StartViewProps {
   launcher: LauncherStore;
-  actions: Pick<LauncherActions, 'openDocument' | 'createDocument' | 'refreshRecent' | 'selectMode'>;
+  actions: Pick<
+    LauncherActions,
+    'openDocument' | 'createDocument' | 'abandonDocumentAttempt' | 'refreshRecent' | 'selectMode'
+  >;
 }
 
 const ASSISTANT_NOTE_ID = 'start-assistant-note-text';
@@ -217,7 +221,15 @@ export const StartView: Component<StartViewProps> = (props) => {
           </div>
           <Show when={pending()}>
             <p class={styles.note} role="status" data-testid="start-document-pending">
-              Opening {pendingPath()}…
+              <span>Opening {pendingPath()}…</span>{' '}
+              <button
+                type="button"
+                class={styles.button}
+                data-testid="start-document-cancel"
+                onClick={() => props.actions.abandonDocumentAttempt()}
+              >
+                Cancel
+              </button>
             </p>
           </Show>
           <Show when={state().document.error}>
