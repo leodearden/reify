@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# scripts/build-bundle.sh — build Reify's Linux installers: a .deb and an AppImage.
+# scripts/build-bundle.sh [--version <semver>] — build Reify's Linux installers: a .deb and
+# an AppImage.
+#
+# VERSION. With --version, both assets are built at <semver> (a `--config` overlay on
+# gui/src-tauri/tauri.conf.json's "version", which names the deb and the AppImage and sets
+# the deb's control Version); scripts/release-alpha.sh passes the version its tag names.
+# Without it they take tauri.conf.json's "version", the unreleased default. Any other
+# argument is a usage error (exit 2) before any step runs.
 #
 # STDOUT CONTRACT. On success stdout carries exactly two lines, the absolute
 # paths of the .deb and of the .AppImage, and nothing else; every other byte
@@ -37,6 +44,13 @@ TAURI_CONF="gui/src-tauri/tauri.conf.json"
 fail() { echo "build-bundle: $*" >&2; exit 2; }
 step() { echo "==> build-bundle: $*" >&2; }
 
+VERSION=""
+if [ "$#" -ne 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--version" ] && [ -n "$2" ] \
+        || fail "usage: scripts/build-bundle.sh [--version <semver>]"
+    VERSION="$2"
+fi
+
 # ---- 1. preflight -------------------------------------------------------------
 step "preflight"
 # Absent native deps compile a kernel-less binary silently (that script's
@@ -47,6 +61,11 @@ docker info >/dev/null 2>&1 || fail "docker is unusable; scripts/bundle_closure.
 for tool in npm python3 dpkg-deb tar cmp; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
+VERSION_CONFIG=()
+if [ -n "$VERSION" ]; then
+    VERSION_CONFIG=(--config "$(python3 -c 'import json, sys; print(json.dumps({"version": sys.argv[1]}))' "$VERSION")")
+fi
+EXPECTED_VERSION="${VERSION:-$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$TAURI_CONF")}"
 
 # ---- 2. frontend and sidecar --------------------------------------------------
 # gui and gui/sidecar are separate npm roots; lockfile-exact installs.
@@ -66,7 +85,7 @@ step "reify-gui: cargo tauri build --no-bundle"
 # so the flag ships the same binary rather than a new combination. `-- --locked`
 # reaches cargo build, so a stale Cargo.lock fails here instead of being rewritten.
 (cd gui/src-tauri && cargo tauri build --ci --no-bundle --ignore-version-mismatches \
-    --features embedded-frontend -- --locked)
+    --features embedded-frontend "${VERSION_CONFIG[@]}" -- --locked)
 step "reify CLI"
 cargo build --release --locked -p reify-cli --bin reify
 
@@ -92,7 +111,7 @@ python3 scripts/bundle_closure.py --tauri-conf "$TAURI_CONF" --stage "$STAGE" \
 step "cargo tauri bundle (deb, appimage)"
 rm -rf "$RELEASE/bundle/deb" "$RELEASE/bundle/appimage"
 (cd gui/src-tauri && env -u LD_LIBRARY_PATH cargo tauri bundle --ci --bundles deb,appimage \
-    --config "$OVERLAY" --features embedded-frontend)
+    --config "$OVERLAY" "${VERSION_CONFIG[@]}" --features embedded-frontend)
 
 # ---- 6. post-checks -------------------------------------------------------------
 step "post-checks"
@@ -115,6 +134,9 @@ dpkg-deb --extract "$DEB" "$DEB_ROOT"
 for member in usr/bin/reify-gui usr/bin/reify usr/bin/reify-sidecar; do
     [ -f "$DEB_ROOT/$member" ] || fail "$DEB does not contain /$member"
 done
+DEB_VERSION="$(dpkg-deb -f "$DEB" Version)"
+[ "$DEB_VERSION" = "$EXPECTED_VERSION" ] \
+    || fail "$DEB has control Version $DEB_VERSION; expected $EXPECTED_VERSION"
 
 # Every deb.files entry of the overlay ships as staged: the RUNPATH-patched
 # copies, not cargo's, which tauri copies first and deb.files must overwrite.
