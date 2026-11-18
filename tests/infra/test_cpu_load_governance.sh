@@ -582,6 +582,93 @@ else
 fi
 
 # ============================================================================
+# Cycle CLEANUP-CLONE — _cleanup_all is inert outside the shell that installed
+# it.  Always runs: it sandboxes _cleanup_all, so it needs no PSI, python3 or
+# cgroup substrate.
+#
+# Task 10124: a launch clone TERMed before exec runs this script's EXIT trap,
+# so _cleanup_all must act only when BASHPID == $$.
+#   Case 1 pins that for any non-owning caller, deterministically.
+#   Case 2 reproduces the real fork-before-exec TERM, because case 1 cannot
+#   catch an `if ... then return 0; fi` guard: in a TERMed clone that form's
+#   then-branch is skipped and the body runs (391 of 400 clones, bash 5.2.21).
+#   The probe's trap string must be exactly `_cleanup_all`: any command placed
+#   before it masks that failure.
+#   Case 2 is gated by a liveness control and SKIPs, never FAILs, where no TERM
+#   lands before exec.
+# No assertion bounds an elapsed time (technique T).  Every scratch dir lives
+# under $WORK, so the real _cleanup_all removes it at exit.
+# ============================================================================
+echo ""
+echo "--- Cycle CLEANUP-CLONE: _cleanup_all is inert outside the shell that installed it (always-on) ---"
+
+# _clone_probe_box: prints a fresh dir holding work/, the WORK a sandboxed _cleanup_all may delete.
+_clone_probe_box() {
+    local box
+    box="$(mktemp -d -p "$WORK" cleanup-clone.XXXXXX)"
+    mkdir "$box/work"
+    printf '%s\n' "$box"
+}
+
+# _clone_probe_run <box> <cmd>...: runs <cmd> in a subshell whose WORK is <box>/work, whose pid lists
+#   are empty and whose govtest_slice_teardown only writes <box>/work.teardown-called, so not even a
+#   broken _cleanup_all can reach this run's real WORK, burns or slices.  stderr is dropped: a TERMed
+#   clone prints bash's own `wait_for: No record of process` line.
+_clone_probe_run() {
+    local box="$1"
+    shift
+    (
+        WORK="$box/work"
+        _ALL_MIX_PIDS=""
+        _ROW4_BURN_PIDS=""
+        govtest_slice_teardown() { : > "${WORK}.teardown-called"; }
+        "$@"
+    ) 2>/dev/null || true
+}
+
+# _clone_probe_terms <trap_cmd> <n>: installs <trap_cmd> as the EXIT trap, then <n> times backgrounds an
+#   env-prefixed external command and TERMs it at once (the launch/stop shape of _row4_launch_role_burn +
+#   _row4_stop_burns at a 0 s ready deadline), so most TERMs land in a clone that has not exec'd yet.
+#   Clears the trap before returning, so only the clones, never the probing shell, can run it.
+_clone_probe_terms() {
+    local trap_cmd="$1" n="$2" i pid
+    trap "$trap_cmd" EXIT
+    for (( i = 0; i < n; i++ )); do
+        GOVTEST_CLONE_PROBE=1 sleep 1 &
+        pid=$!
+        kill -TERM "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+    trap - EXIT
+}
+
+# _clone_probe_unguarded_cleanup: the liveness control's trap, i.e. what an unguarded _cleanup_all does to WORK.
+_clone_probe_unguarded_cleanup() { rm -rf "$WORK"; }
+
+# (1) Called from a subshell (BASHPID != $$), _cleanup_all leaves WORK and every slice alone.
+_cleanup_clone1_box="$(_clone_probe_box)"
+_clone_probe_run "$_cleanup_clone1_box" _cleanup_all
+assert "CLEANUP-CLONE-1a: _cleanup_all called in a subshell (BASHPID != \$\$) leaves WORK in place" \
+    test -d "$_cleanup_clone1_box/work"
+assert "CLEANUP-CLONE-1b: _cleanup_all called in a subshell (BASHPID != \$\$) stops no slice (no govtest_slice_teardown call)" \
+    test ! -e "$_cleanup_clone1_box/work.teardown-called"
+
+# (2) The same under a real fork-before-exec TERM.  The control runs first: it must lose its WORK,
+#     or no TERM landed in a pre-exec clone and the probe would pass vacuously.
+_cleanup_clone_ctl_box="$(_clone_probe_box)"
+_clone_probe_run "$_cleanup_clone_ctl_box" _clone_probe_terms _clone_probe_unguarded_cleanup 20
+if [ -d "$_cleanup_clone_ctl_box/work" ]; then
+    echo "  SKIP CLEANUP-CLONE-2: no TERM landed in a pre-exec clone in 20 launches on this host — the clone probe is inconclusive"
+else
+    _cleanup_clone2_box="$(_clone_probe_box)"
+    _clone_probe_run "$_cleanup_clone2_box" _clone_probe_terms _cleanup_all 20
+    assert "CLEANUP-CLONE-2a: launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, leave WORK in place" \
+        test -d "$_cleanup_clone2_box/work"
+    assert "CLEANUP-CLONE-2b: launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, stop no slice" \
+        test ! -e "$_cleanup_clone2_box/work.teardown-called"
+fi
+
+# ============================================================================
 # Cycle FIXTURE — fixture-generator contract.
 # Gated on PSI (/proc/pressure/cpu) and /proc/stat availability.
 # ============================================================================
