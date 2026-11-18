@@ -219,6 +219,20 @@ def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[
         staged = staged | new
 
 
+def derive_bound_closure(host_resolved: Mapping[str, str], probe: Probe,
+                         bind_probe: Probe) -> frozenset[str]:
+    """derive_closure, then a check that the converged layout binds every symbol.
+
+    The fixed point runs on plain-ldd `probe`s, because `ldd -r` exits non-zero
+    while any library is still not found. bind_probe(staged) stages exactly
+    `staged` and returns `ldd -r`'s report; it runs once, on the converged
+    layout, so a symbol that no loaded object defines, unversioned or not, is a
+    ClosureError."""
+    closure = derive_closure(host_resolved, probe)
+    require_bound_symbols(bind_probe(closure))
+    return closure
+
+
 def installed_lib_dir(product_name: str) -> str:
     return f"/usr/lib/{product_name}/lib"
 
