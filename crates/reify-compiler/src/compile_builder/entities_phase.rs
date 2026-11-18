@@ -34,7 +34,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
-use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+use crate::ambient_defaults::{AmbientDefaults, AmbientValue, ResolvedAmbientDefault};
 use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
@@ -704,7 +704,7 @@ fn resolve_ambient_default(
     Some((
         type_name,
         ResolvedAmbientDefault {
-            value: decl.value.clone(),
+            value: AmbientValue::Accepted(decl.value.clone()),
             declared_type,
             span: decl.span,
         },

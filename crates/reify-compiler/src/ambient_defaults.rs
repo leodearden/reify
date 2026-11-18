@@ -6,33 +6,54 @@
 //! *name*, machinery type-generic; the v1 surface only exercises `Material`).
 //!
 //! Two scopes carry ambient defaults:
-//!   * **file level** — top-level `default` declarations, applied file-wide to
-//!     top-level structures (the only structures that exist; DD6); and
+//!   * **file level** — top-level `default` declarations, applied file-wide; and
 //!   * **purpose level** — `default` declarations nested directly in a `purpose`
-//!     body. Purpose-scoped defaults receive duplicate + declaration-site type
-//!     checks but are NEVER injected into a structure (DD6 — structures cannot
-//!     nest in a purpose, so a purpose default can never reach a definition-site
-//!     injection). The nested map is the forward-compatible seam that lets a
-//!     later task layer structure-in-purpose overrides on non-breakingly.
+//!     body, applied to the structures nested in that same purpose (task 4639).
 //!
 //! Resolution is innermost-wins: a lookup for a given purpose consults that
 //! purpose's own map first and falls back to the file level on a miss.
+//!
+//! A declaration whose value the declaration site rejected still occupies its
+//! slot, as [`AmbientValue::Rejected`], so a consumer's member is filled rather
+//! than reported missing; it never displaces an accepted value.
 
 use std::collections::HashMap;
 
 use reify_core::{SourceSpan, Type};
 
+/// The value side of an ambient-default declaration.
+#[derive(Debug, Clone)]
+pub(crate) enum AmbientValue {
+    /// Passed the declaration-site check; recompiled at each injection site
+    /// exactly like a trait-declared param default (DD2).
+    Accepted(reify_ast::Expr),
+    /// The declaration site rejected the value and already reported it. It
+    /// still fills the member, with no default expression, so consumers neither
+    /// report the member missing nor recompile the value.
+    Rejected,
+}
+
+impl AmbientValue {
+    /// The default expression an injection site compiles, if any.
+    pub(crate) fn default_expr(&self) -> Option<&reify_ast::Expr> {
+        match self {
+            AmbientValue::Accepted(expr) => Some(expr),
+            AmbientValue::Rejected => None,
+        }
+    }
+}
+
 /// A resolved ambient-default entry.
 ///
-/// Carries the default value expression (compiled at injection time exactly
-/// like a trait-declared param default — DD2), the type the default was
-/// declared against (resolved via `resolve_type_expr_with_aliases`), and the
-/// declaration span (used to anchor the declaration-site type-mismatch and
-/// duplicate diagnostics — DD4/DD5).
+/// Carries the declaration's value, the type the default was declared against
+/// (resolved via `resolve_type_expr_with_aliases`), and the declaration span
+/// (used to anchor the declaration-site type-mismatch and duplicate
+/// diagnostics — DD4/DD5).
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedAmbientDefault {
-    /// The default value expression (e.g. the `Material(...)` constructor call).
-    pub value: reify_ast::Expr,
+    /// The value to inject (e.g. the `Material(...)` constructor call), or the
+    /// marker of a value the declaration site rejected.
+    pub value: AmbientValue,
     /// The type the `default` was declared against (e.g. `StructureRef("Material")`).
     pub declared_type: Type,
     /// Span of the `default ...` declaration, for diagnostics.
@@ -77,7 +98,7 @@ impl AmbientDefaults {
 
     /// Insert a file-level (top-level) default for `type_name`.
     pub(crate) fn insert_file_level(&mut self, type_name: String, entry: ResolvedAmbientDefault) {
-        self.file_level.insert(type_name, entry);
+        insert_by_precedence(&mut self.file_level, type_name, entry);
     }
 
     /// Insert a purpose-level default for `type_name` under `purpose`.
@@ -87,11 +108,25 @@ impl AmbientDefaults {
         type_name: String,
         entry: ResolvedAmbientDefault,
     ) {
-        self.purpose_level
-            .entry(purpose)
-            .or_default()
-            .insert(type_name, entry);
+        insert_by_precedence(
+            self.purpose_level.entry(purpose).or_default(),
+            type_name,
+            entry,
+        );
     }
+}
+
+/// A Rejected entry fills only a vacant slot; an Accepted entry takes the slot
+/// from any occupant.
+fn insert_by_precedence(
+    slots: &mut HashMap<String, ResolvedAmbientDefault>,
+    type_name: String,
+    entry: ResolvedAmbientDefault,
+) {
+    if matches!(entry.value, AmbientValue::Rejected) && slots.contains_key(&type_name) {
+        return;
+    }
+    slots.insert(type_name, entry);
 }
 
 #[cfg(test)]
@@ -127,7 +162,10 @@ mod tests {
         let entry = table
             .resolve("Material", purpose)
             .expect("Material should resolve");
-        (entry.span.start, matches!(entry.value, AmbientValue::Rejected))
+        (
+            entry.span.start,
+            matches!(entry.value, AmbientValue::Rejected),
+        )
     }
 
     #[test]

@@ -1819,8 +1819,9 @@ fn report_phase_drift(
 /// ## Scope (DD6)
 ///
 /// `purpose` selects the innermost scope for resolution. Top-level structures
-/// (the only structures that exist) resolve at file scope (`purpose = None`);
-/// purpose-scoped defaults are never injected into a structure.
+/// resolve at file scope (`purpose = None`); structures nested in a purpose
+/// pass `Some(purpose)` (task 4639), so that purpose's defaults win over the
+/// file level's.
 pub(super) fn check_phase_inject_ambient_defaults(
     ctx: &mut MergeContext,
     ambient: &AmbientDefaults,
@@ -1855,8 +1856,10 @@ pub(super) fn check_phase_inject_ambient_defaults(
         };
         // Synthesize a Param default carrying the ambient value expr as its
         // `default`, so `check_phase_inject_defaults` compiles + injects it via
-        // `compile_expr` exactly like a real trait param default. Mirrors the
-        // synthetic-ParamDecl construction at conformance/mod.rs:2131.
+        // `compile_expr` exactly like a real trait param default. A Rejected
+        // entry yields a Param default with the declared type and no default
+        // expr: the member is filled and the value is never recompiled.
+        // Mirrors the synthetic-ParamDecl construction at conformance/mod.rs:2131.
         synthesized.push(TraitDefault {
             name: Some(req.name.clone()),
             kind: DefaultKind::Param {
@@ -1866,7 +1869,7 @@ pub(super) fn check_phase_inject_ambient_defaults(
                     doc: None,
                     is_priv: false,
                     type_expr: None,
-                    default: Some(entry.value.clone()),
+                    default: entry.value.default_expr().cloned(),
                     where_clause: None,
                     annotations: vec![],
                     span: entry.span,
@@ -2109,10 +2112,17 @@ mod ambient_inject_tests {
         );
 
         let [default] = ctx.defaults.as_slice() else {
-            panic!("expected exactly one synthesized default; got {:?}", ctx.defaults);
+            panic!(
+                "expected exactly one synthesized default; got {:?}",
+                ctx.defaults
+            );
         };
         assert_eq!(default.name.as_deref(), Some("material"));
-        let DefaultKind::Param { cell_type, default_decl } = &default.kind else {
+        let DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } = &default.kind
+        else {
             panic!("expected a Param default; got {:?}", default.kind);
         };
         assert_eq!(cell_type, &Type::StructureRef("Material".to_string()));
