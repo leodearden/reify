@@ -389,3 +389,84 @@ fn importing_entry_reports_one_diagnostic_set_on_every_surface() {
          constraint; verdicts {lsp_verdicts:?}"
     );
 }
+
+const HEALTHY_PARTS: (&str, &str) = (
+    "parts.ri",
+    "module parts\npub structure def Pulley {\n    param diameter : Length = 40mm\n}\n",
+);
+
+#[test]
+fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
+    // (entry stem, broken import, the broken import's source — `None` writes no file)
+    let shapes: &[(&str, &str, Option<&str>)] = &[
+        ("missing_import", "nosuch", None),
+        (
+            "parse_error_import",
+            "unparsable",
+            Some("module unparsable\npub structure def Gear { param = }\n"),
+        ),
+        (
+            "type_error_import",
+            "ill_typed",
+            Some("module ill_typed\npub structure def Gear { param q : Frobnicate = zorp() }\n"),
+        ),
+    ];
+    for &(stem, broken, broken_source) in shapes {
+        let entry_name = format!("{stem}.ri");
+        let entry_source = format!(
+            "module {stem}\nimport {broken}\nimport parts\nstructure def Rig {{ sub p = Pulley() }}\n"
+        );
+        let broken_name = format!("{broken}.ri");
+        let mut files = vec![HEALTHY_PARTS, (entry_name.as_str(), entry_source.as_str())];
+        if let Some(source) = broken_source {
+            files.push((broken_name.as_str(), source));
+        }
+        let dir = project(&files);
+        let broken_path = dir.path().join(&broken_name).display().to_string();
+
+        let observed = observe(&dir.path().join(&entry_name));
+
+        let program = &observed.program;
+        assert!(
+            program
+                .entry
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains(&broken_path)),
+            "{stem}: the canonical compile must raise an Error attributed to {broken_path}; every \
+             surface reports the canonical Errors (parity above), so it is on every surface\n{:#?}",
+            program.entry.diagnostics
+        );
+        assert!(
+            program
+                .entry_declared_templates()
+                .iter()
+                .any(|t| t.name == "Rig"),
+            "{stem}: the entry must still compile despite its broken import"
+        );
+
+        // D-11: each command against its own pinned outcome, never against another command's.
+        let pinned_outcomes = [
+            (
+                "`reify check` exits 1",
+                observed.check.status.code() == Some(1),
+            ),
+            (
+                "`reify eval` exits 1",
+                observed.eval.status.code() == Some(1),
+            ),
+            (
+                "the GUI's load_file returns Err",
+                observed.gui.load_error.is_some(),
+            ),
+        ];
+        for (outcome, holds) in pinned_outcomes {
+            assert!(
+                holds,
+                "{stem}: {outcome} (its own pinned outcome; G7 waiver error-severity-exits-nonzero)\n\
+                 check: {:?}\neval: {:?}\ngui load error: {:?}",
+                observed.check.status, observed.eval.status, observed.gui.load_error
+            );
+        }
+    }
+}
