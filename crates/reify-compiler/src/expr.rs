@@ -7091,18 +7091,17 @@ fn member_access_aggregation_or_unsupported(
 /// other name, and always for scopes that do not set that field (entity,
 /// trait-static, assoc-fn).
 ///
-/// In the unified source-order pass such a name is a `structure def` declared
-/// below the fn, so the message is true. In the early-default probe the
-/// diagnostic is only a signal, and is discarded.
+/// Whether the message is true depends on the writer; see
+/// [`CompilationScope::unavailable_local_template_names`].
 fn later_declared_structure_error(
     scope: &CompilationScope,
     name: &str,
     span: reify_core::SourceSpan,
 ) -> Option<Diagnostic> {
-    let declared_later = scope
+    let unavailable = scope
         .unavailable_local_template_names
         .is_some_and(|names| names.contains(name));
-    declared_later.then(|| {
+    unavailable.then(|| {
         Diagnostic::error(format!(
             "structure '{name}' is declared after this function; \
              move `structure def {name}` above it"
