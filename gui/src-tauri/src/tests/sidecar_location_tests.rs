@@ -8,33 +8,21 @@ use std::path::Path;
 
 use crate::claude_bridge::{SIDECAR_EXECUTABLE, sidecar_executable_beside};
 
-fn touch(path: &Path) {
-    fs::create_dir_all(path.parent().expect("fixture path has a parent")).unwrap();
-    fs::write(path, b"").unwrap();
-}
-
 #[test]
-fn deb_layout_finds_the_installed_sidecar_in_usr_bin() {
-    let root = tempfile::TempDir::new().unwrap();
-    let gui = root.path().join("usr/bin/reify-gui");
-    let sidecar = root.path().join("usr/bin/reify-sidecar");
-    touch(&gui);
-    touch(&sidecar);
-    touch(&root.path().join("usr/lib/Reify/sandbox/landlock_exec.py"));
-
-    let resolved = sidecar_executable_beside(&gui).unwrap();
-
-    assert_eq!(resolved, sidecar);
-    assert!(resolved.is_file(), "{} is not a file", resolved.display());
-}
-
-#[test]
-fn appimage_layout_finds_the_sidecar_beside_the_gui() {
-    let app_dir = Path::new("/tmp/.mount_ReifyX1/");
-    assert_eq!(
-        sidecar_executable_beside(&app_dir.join("usr/bin/reify-gui")).unwrap(),
-        app_dir.join("usr/bin/reify-sidecar"),
-    );
+fn sidecar_is_beside_the_gui_in_every_tauri_layout() {
+    let layouts = [
+        ("cargo target dir", "/work/reify/target/release"),
+        ("deb", "/usr/bin"),
+        ("AppImage", "/tmp/.mount_ReifyX1/usr/bin"),
+    ];
+    for (layout, dir) in layouts {
+        let dir = Path::new(dir);
+        assert_eq!(
+            sidecar_executable_beside(&dir.join("reify-gui")),
+            Ok(dir.join("reify-sidecar")),
+            "{layout} layout",
+        );
+    }
 }
 
 #[test]
