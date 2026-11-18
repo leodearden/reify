@@ -30,7 +30,7 @@ LIB = INFRA_DIR / "cargo_inputs_lib.sh"
 MARKER = "@@REIFY_INFRA_UNAVAILABLE@@"
 UNAVAILABLE_RC = 75
 
-# Members that source cargo_inputs_lib.sh; DriftTest keeps this exact.
+# Members that source cargo_inputs_lib.sh; AdoptersTest keeps this exact.
 ADOPTERS = (
     "test_affected_crates_lib.sh",
     "test_engine_hash_closure.sh",
