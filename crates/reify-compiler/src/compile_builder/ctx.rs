@@ -491,6 +491,32 @@ mod tests {
         );
     }
 
+    /// Both name-set accessors filter `seen_entity_names` by kind: structures
+    /// only, and structures plus occurrences. Neither admits a field or a
+    /// constraint.
+    #[test]
+    fn local_name_accessors_filter_seen_entity_names_by_kind() {
+        let mut ctx = CompilationCtx::new();
+        let recorded = [
+            ("TheStructure", "structure"),
+            ("TheOccurrence", "occurrence"),
+            ("TheField", "field"),
+            ("TheConstraint", "constraint"),
+        ];
+        for (start, (name, kind)) in (0..).step_by(10).zip(recorded) {
+            assert!(ctx.record_or_report_duplicate(name, SourceSpan::new(start, start + 5), kind));
+        }
+
+        let names = |names: &[&str]| -> HashSet<String> {
+            names.iter().map(|name| name.to_string()).collect()
+        };
+        assert_eq!(ctx.local_structure_def_names(), names(&["TheStructure"]));
+        assert_eq!(
+            ctx.local_entity_names(),
+            names(&["TheStructure", "TheOccurrence"])
+        );
+    }
+
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
     /// is empty, the entity-name tracker is empty, and both registries have no
     /// entries.  Anchors the invariant that construction does no hidden seeding

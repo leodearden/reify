@@ -306,11 +306,6 @@ structure def Taken { param b : Real = 2.0 }
             "top-level and purpose-nested structures are in; the occurrence `Op` and \
              the structure `Taken` that loses to an earlier occurrence are out"
         );
-        assert!(
-            ctx.local_structure_def_names()
-                .is_subset(&ctx.local_entity_names()),
-            "every local structure def is a local entity"
-        );
         assert_eq!(
             ctx.local_entity_names(),
             names(&["Top", "InP", "Op", "Taken"])
