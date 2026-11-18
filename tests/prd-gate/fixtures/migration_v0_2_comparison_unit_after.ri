@@ -1,4 +1,7 @@
 structure def Box {
     param thickness: Length = 3mm
+    param depth: Length = 20mm
     constraint thickness > 2mm
+    constraint depth < 1m
+    constraint depth > 0
 }
