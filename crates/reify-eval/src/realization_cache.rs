@@ -80,8 +80,9 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_core::ContentHash;
-use reify_ir::{GeometryHandleId, ReprKind};
+use reify_ir::{GeometryHandleId, KernelHandle, ReprKind};
 
+use crate::sweep_classifier::SweptKind;
 use crate::tolerance_bucket::ToleranceBucket;
 
 /// Sentinel value for the "no options" case — pass at call sites that carry no
@@ -107,6 +108,15 @@ pub enum ConversionSlot {
     /// An input produced outside the owning realization (a cross-realization
     /// `Sub` operand), identified by its kernel handle id.
     External(GeometryHandleId),
+}
+
+/// The engine's cached value per realization: the terminal handle and the swept
+/// kind its cold build classified, which a hit restores. A conversion
+/// intermediate carries `swept_kind: None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealizationCacheEntry {
+    pub handle: KernelHandle,
+    pub swept_kind: Option<SweptKind>,
 }
 
 /// Cache keyed by `(entity_id, repr_kind, options_hash, tol: f64)`.

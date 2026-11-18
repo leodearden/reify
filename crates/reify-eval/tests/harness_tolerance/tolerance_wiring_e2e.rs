@@ -1467,13 +1467,14 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
     );
 
     // Capture the handle that the first build stored in the RealizationCache.
-    let cached_handle: reify_ir::KernelHandle = *engine
+    let cached_handle: reify_ir::KernelHandle = engine
         .realization_cache()
         .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
         .expect(
             "sanity: first build() must populate the RealizationCache at \
              (\"MyDesign\", ReprKind::BRep, 1e-6)",
-        );
+        )
+        .handle;
 
     // SANITY: the op-loop populated topology_attribute_table for the sphere's
     // seeded face handle on build #1 (via the staged extraction fixtures).
@@ -1532,8 +1533,9 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
     assert_eq!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0)),
-        Some(&cached_handle),
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
+            .map(|entry| entry.handle),
+        Some(cached_handle),
         "sanity: expected RealizationCache entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) to survive the second build; got \
          None — cache was cleared or key was invalidated unexpectedly.",

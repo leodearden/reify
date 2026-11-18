@@ -31,7 +31,9 @@ use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
 };
-use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::realization_cache::{
+    ConversionSlot, NO_OPTIONS, RealizationCache, RealizationCacheEntry,
+};
 use crate::sub_instance_scope::{direct_sub_instances, instance_value_overlay};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
@@ -330,7 +332,7 @@ struct RealizationOpsInput<'a> {
     realization_name: Option<&'a str>,
     realization_span: SourceSpan,
     kernel_error_out: &'a mut Option<ErrorRef>,
-    realization_cache: &'a mut RealizationCache<KernelHandle>,
+    realization_cache: &'a mut RealizationCache<RealizationCacheEntry>,
     demanded_tol: Option<f64>,
     // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
     // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
@@ -446,7 +448,7 @@ impl<'a> RealizationOpsInput<'a> {
         realization_id: &'a RealizationNodeId,
         realization_span: SourceSpan,
         kernel_error_out: &'a mut Option<ErrorRef>,
-        realization_cache: &'a mut RealizationCache<KernelHandle>,
+        realization_cache: &'a mut RealizationCache<RealizationCacheEntry>,
         dispatch_count: &'a mut usize,
         dispatch_count_by_realization: &'a mut HashMap<RealizationNodeId, usize>,
     ) -> Self {
@@ -6712,7 +6714,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
-        realization_cache: &mut RealizationCache<KernelHandle>,
+        realization_cache: &mut RealizationCache<RealizationCacheEntry>,
         volume_mesh_sources: &mut VolumeMeshSources,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
@@ -7233,7 +7235,7 @@ impl Engine {
     ///    evicted).
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
-        realization_cache: &RealizationCache<KernelHandle>,
+        realization_cache: &RealizationCache<RealizationCacheEntry>,
         realization_id: &RealizationNodeId,
         realization_name: Option<&str>,
         demanded_repr: ReprKind,
@@ -7313,17 +7315,18 @@ impl Engine {
         {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
-                .map(|&handle| (handle, cache_repr))
+                .map(|entry| (entry, cache_repr))
                 .or_else(|| {
                     if cache_repr != ReprKind::BRep {
                         realization_cache
                             .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
-                            .map(|&handle| (handle, ReprKind::BRep))
+                            .map(|entry| (entry, ReprKind::BRep))
                     } else {
                         None
                     }
                 });
-            if let Some((cached_handle, resolved_repr)) = cache_probe {
+            if let Some((entry, resolved_repr)) = cache_probe {
+                let cached_handle = entry.handle;
                 // Fail-closed cross-kernel collision assert (task 4349,
                 // retired to this form by task θ / #5064): `TopologyAttributeTable`
                 // is keyed by the full `KernelHandle` (kernel + kernel-local
@@ -7371,6 +7374,9 @@ impl Engine {
                 // realization's cross-realization `GeomRef::Sub` parent must
                 // be resolved by name rather than by bare handle-id.
                 outputs.named_step_reprs.insert(name.to_string(), resolved_repr);
+                if let Some(kind) = &entry.swept_kind {
+                    outputs.swept_kind_table.record(cached_handle.id, kind.clone());
+                }
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -8276,7 +8282,7 @@ impl Engine {
                                         // `conversion_slot`).
                                         let slot = conversion_slot(pid, &realization_step_ids);
                                         let intermediate_key =
-                                            RealizationCache::<KernelHandle>::intermediate_key(
+                                            RealizationCache::<RealizationCacheEntry>::intermediate_key(
                                                 &realization_id.entity,
                                                 slot,
                                             );
@@ -8362,12 +8368,15 @@ impl Engine {
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant production+ingest.
-                                        if let Some(&cached) = realization_cache.lookup(
-                                            &intermediate_key,
-                                            terminal_to,
-                                            per_stage_tol,
-                                            options_hash,
-                                        ) {
+                                        if let Some(cached) = realization_cache
+                                            .lookup(
+                                                &intermediate_key,
+                                                terminal_to,
+                                                per_stage_tol,
+                                                options_hash,
+                                            )
+                                            .map(|entry| entry.handle)
+                                        {
                                             // Task #4636 (LINK1): topology_attribute_table
                                             // is per-build, unlike realization_cache (which
                                             // persists the intermediate handle itself
@@ -8527,7 +8536,10 @@ impl Engine {
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
-                                                    intermediate_handle,
+                                                    RealizationCacheEntry {
+                                                        handle: intermediate_handle,
+                                                        swept_kind: None,
+                                                    },
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     slot,
@@ -9053,10 +9065,10 @@ impl Engine {
             //    Pinned by
             //    `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
             //    in tests/tolerance_wiring_e2e.rs.
-            if let Some(kind) = classify_swept_body(&realization_ops, &realization_step_ids)
-                && let Some(&last_id) = realization_step_ids.last()
-            {
-                swept_kind_table.record(last_id, kind);
+            let classified_terminal = classify_swept_body(&realization_ops, &realization_step_ids)
+                .zip(step_handles[handle_start..].last().copied());
+            if let Some((kind, terminal)) = &classified_terminal {
+                swept_kind_table.record(terminal.id, kind.clone());
             }
             // task #5196 L2 gate: the tie-scan below is about *selector-
             // resolution* stability, so it is vacuous work when this module
@@ -9717,12 +9729,18 @@ impl Engine {
                     // and cached new geometry. The conversion-intermediate insert
                     // (search `intermediate_cache_inserts`) uses the uncounted
                     // `insert_intermediate` and is deliberately NOT counted.
+                    let swept_kind = classified_terminal
+                        .filter(|(_, terminal)| *terminal == last)
+                        .map(|(kind, _)| kind);
                     realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
                         tol,
                         NO_OPTIONS,
-                        last,
+                        RealizationCacheEntry {
+                            handle: last,
+                            swept_kind,
+                        },
                     );
                 }
                 // Step-14 (task ε / 3436): surface the terminal op's output
@@ -14341,9 +14359,12 @@ mod reset_per_build_state_tests {
             ReprKind::BRep,
             1e-6,
             NO_OPTIONS,
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: GeometryHandleId(1),
+            RealizationCacheEntry {
+                handle: KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                },
+                swept_kind: None,
             },
         );
         engine.next_snapshot_id = 42;

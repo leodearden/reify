@@ -1181,7 +1181,7 @@ structure Assembly {
         topology_attribute_table: TopologyAttributeTable,
         swept_kind_table: SweptKindTable,
         kernel_error_out: Option<ErrorRef>,
-        realization_cache: RealizationCache<KernelHandle>,
+        realization_cache: RealizationCache<RealizationCacheEntry>,
         dispatch_count: usize,
         // Task ε (4741): per-realization sibling of `dispatch_count`; threaded
         // into `execute_realization_ops` by `run` / `run_demand`. Not asserted
@@ -1192,8 +1192,8 @@ structure Assembly {
     }
 
     // Hand-written `Default` instead of `#[derive(Default)]`: the inner
-    // `RealizationCache<KernelHandle>` does not satisfy the derive bound
-    // (`V: Default`) — `KernelHandle` pairs a `KernelId` with a `NewType(u64)`
+    // `RealizationCache<RealizationCacheEntry>` does not satisfy the derive bound
+    // (`V: Default`) — the entry's `KernelHandle` pairs a `KernelId` with a `NewType(u64)`
     // and has no `Default` impl — but `RealizationCache::new()` constructs an empty cache
     // without that bound. Mirrors how production code initialises the field
     // (engine_admin.rs `Engine::with_prelude_and_kernels`).
@@ -4451,7 +4451,7 @@ structure Assembly {
             cached_0.is_some(),
             "intermediate for input step 0 must be cached at (Cross Step(0), Mesh, per_stage_tol)"
         );
-        let cached_0 = *cached_0.unwrap();
+        let cached_0 = cached_0.unwrap().handle;
         assert_eq!(
             cached_0.kernel,
             KernelId::Manifold,
@@ -4469,7 +4469,7 @@ structure Assembly {
             cached_1.is_some(),
             "intermediate for input step 1 must be cached at (Cross Step(1), Mesh, per_stage_tol)"
         );
-        let cached_1 = *cached_1.unwrap();
+        let cached_1 = cached_1.unwrap().handle;
         assert_eq!(cached_1.kernel, KernelId::Manifold);
         assert_eq!(cached_1.id, GeometryHandleId(1001));
 
@@ -4640,7 +4640,7 @@ structure Assembly {
 
     /// Amendment (reviewer_comprehensive test-coverage @ engine_build.rs:7437,
     /// task #4636): the intermediate-cache-hit branch of the `'convert:` loop
-    /// (the `if let Some(&cached) = realization_cache.lookup(...)` arm) must
+    /// (the `if let Some(cached) = realization_cache.lookup(...)` arm) must
     /// RE-forward the source solid's attribute onto the REUSED target handle
     /// every time — `topology_attribute_table` is reset per build while
     /// `realization_cache` persists the intermediate handle itself across
@@ -8392,7 +8392,7 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<RealizationCacheEntry> = RealizationCache::new();
 
         // `demanded_tols = &[]` is the OOB trigger: the producer would have
         // generated `&[vec![None]]` for a 1-template/1-realization module, but
@@ -8458,7 +8458,7 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<RealizationCacheEntry> = RealizationCache::new();
 
         // `demanded_tols` is correctly shaped; `tessellation_budgets = &[]` is
         // the OOB trigger.  The Box primitive in module_with_one_box_realization
@@ -8797,6 +8797,15 @@ structure Assembly {
     // tests drive the helper directly — bypassing the op loop entirely — to
     // pin its contract (PRD §5.1 / INV-BUILD-3) as a reviewable unit.
 
+    /// A realization-cache entry for `handle` whose cold build classified no
+    /// swept kind.
+    fn entry_without_swept_kind(handle: KernelHandle) -> RealizationCacheEntry {
+        RealizationCacheEntry {
+            handle,
+            swept_kind: None,
+        }
+    }
+
     /// step-1 (RED): a primary cache hit must apply the FULL side-effect set
     /// documented on `probe_realization_cache` — not just push a handle.
     ///
@@ -8814,13 +8823,13 @@ structure Assembly {
             id: GeometryHandleId(7),
         };
 
-        let mut cache = RealizationCache::<KernelHandle>::new();
+        let mut cache = RealizationCache::<RealizationCacheEntry>::new();
         cache.insert(
             &realization_id.entity,
             ReprKind::BRep,
             tol,
             NO_OPTIONS,
-            seeded,
+            entry_without_swept_kind(seeded),
         );
 
         let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8905,13 +8914,13 @@ structure Assembly {
         ];
 
         for (is_terminal, name, tol_arg, label) in cases {
-            let mut cache = RealizationCache::<KernelHandle>::new();
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
             cache.insert(
                 &realization_id.entity,
                 ReprKind::BRep,
                 tol,
                 NO_OPTIONS,
-                seeded,
+                entry_without_swept_kind(seeded),
             );
 
             let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8998,7 +9007,7 @@ structure Assembly {
     fn probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order() {
         // Builds fresh output views, probes, and returns (hit, produced_repr_out)
         // — every case in this test needs its own untouched output set.
-        let probe = |cache: &RealizationCache<KernelHandle>,
+        let probe = |cache: &RealizationCache<RealizationCacheEntry>,
                      realization_id: &RealizationNodeId,
                      demanded_repr: ReprKind,
                      demanded_tol: f64|
@@ -9039,8 +9048,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(11),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::Mesh, tol);
 
@@ -9065,8 +9074,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(12),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::BRep, tol);
 
@@ -9085,8 +9094,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(13),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.1);
 
@@ -9104,8 +9113,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(14),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.001);
 
@@ -9314,10 +9323,10 @@ structure Assembly {
             ReprKind::BRep,
             tol,
             NO_OPTIONS,
-            KernelHandle {
+            entry_without_swept_kind(KernelHandle {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(1),
-            },
+            }),
         );
 
         // Allow each test to pre-seed its specific table before the run.
