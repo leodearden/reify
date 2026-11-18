@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
 
-use crate::help::DOC_USAGE;
+use crate::help::{CFG_SYNOPSIS, DOC_USAGE};
 
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
@@ -175,7 +175,7 @@ fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
             values.push(value.clone());
         } else if token.starts_with("--cfg=") {
             return Err(format!(
-                "--cfg takes its value as the next argument (`--cfg <key=value|flag>`), got '{token}'"
+                "--cfg takes its value as the next argument (`{CFG_SYNOPSIS}`), got '{token}'"
             ));
         } else {
             rest.push(token.clone());
