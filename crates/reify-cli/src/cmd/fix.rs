@@ -87,7 +87,10 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
-        report_refusal(path, &source, &residual, &gated_off);
+        let still_gated_off = gated_off
+            .iter()
+            .filter(|module| !imports_after_fix.contains(module));
+        report_refusal(path, &source, &residual, still_gated_off);
         return false;
     }
 
@@ -116,9 +119,14 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     true
 }
 
-/// Why `path` is not written: the residual diagnostics, plus a note naming any `#cfg`-gated
-/// imports the active cfg leaves out of effect.
-fn report_refusal(path: &str, source: &str, residual: &[Diagnostic], gated_off: &[ModulePath]) {
+/// Why `path` is not written: the residual diagnostics, plus an info line naming `still_gated_off`,
+/// the modules of `#cfg`-gated imports that stay out of effect even with the derived imports added.
+fn report_refusal<'a>(
+    path: &str,
+    source: &str,
+    residual: &[Diagnostic],
+    still_gated_off: impl Iterator<Item = &'a ModulePath>,
+) {
     eprintln!(
         "{path}: the derived imports leave diagnostics the full standard library does not; \
          not writing"
@@ -126,15 +134,16 @@ fn report_refusal(path: &str, source: &str, residual: &[Diagnostic], gated_off: 
     for diagnostic in residual {
         eprintln!("{}", render_diagnostic_line(path, source, diagnostic));
     }
-    if gated_off.is_empty() {
+    let modules: BTreeSet<String> = still_gated_off.map(ModulePath::to_dotted).collect();
+    if modules.is_empty() {
         return;
     }
-    let modules: BTreeSet<String> = gated_off.iter().map(ModulePath::to_dotted).collect();
     let modules: Vec<String> = modules.into_iter().collect();
-    eprintln!(
-        "{path}: note: #cfg-gated imports not in effect under the active cfg: {}",
+    let note = Diagnostic::info(format!(
+        "#cfg-gated imports not in effect under the active cfg: {}",
         modules.join(", ")
-    );
+    ));
+    eprintln!("{}", render_diagnostic_line(path, source, &note));
 }
 
 /// Writes a sibling temp file and renames it over `path`'s target, so a failure leaves the
