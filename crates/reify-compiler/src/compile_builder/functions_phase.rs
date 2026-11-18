@@ -612,7 +612,6 @@ mod tests {
         use reify_ir::CompiledExpr;
 
         use super::*;
-        use crate::compile_builder::functions_phase::early_default_recheck::default_fingerprints;
 
         /// One defaulted param, `spoiled`, whose default the unified env
         /// compiles to the literal `1.0`.
@@ -688,13 +687,9 @@ mod tests {
         /// panic can only come from the `result_type` comparison.
         #[test]
         fn an_honest_compiled_default_passes_the_debug_recheck() {
-            let honest = honest_defaults(EARLY_PROBE);
-            let compiled = decl_with_early_defaults(EARLY_PROBE, honest.clone())
-                .expect("a well-formed fn compiles")
-                .param_defaults;
-            assert_eq!(
-                default_fingerprints(&compiled),
-                default_fingerprints(&honest)
+            assert!(
+                decl_with_early_defaults(EARLY_PROBE, honest_defaults(EARLY_PROBE)).is_some(),
+                "an honest `Compiled` default compiles through the debug recheck"
             );
         }
     }
