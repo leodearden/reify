@@ -258,12 +258,12 @@ _BASH_STARTUP_ENV = frozenset({"BASH_ENV", "SHELLOPTS", "BASHOPTS"})
 _BASH_EXPORTED_FUNCTION_PREFIX = "BASH_FUNC_"
 
 
-def _trust_home_environ(environ: Mapping[str, str]) -> Dict[str, str]:
+def _without_bash_startup_state(environ: Mapping[str, str]) -> Dict[str, str]:
     """`environ` minus the caller state bash takes in before a script's first line.
 
     That is a BASH_ENV it sources, the options SHELLOPTS and BASHOPTS turn on,
     and BASH_FUNC_<name>%% functions that shadow commands; none of it may
-    decide the trust answer.
+    decide what a repo script run by this checker answers.
     """
     return {name: value for name, value in environ.items()
             if name not in _BASH_STARTUP_ENV
@@ -282,7 +282,7 @@ def _resolve_reify_bin(
     PATH carries no provenance.  A home that cannot be consulted refuses too:
     an unprovable trust answer is never "trusted", and neither is a TRUSTED
     answer that is not one absolute-path line.
-    The caller's bash startup state is withheld from the home (_trust_home_environ).
+    The caller's bash startup state is withheld from the home (_without_bash_startup_state).
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
@@ -293,7 +293,7 @@ def _resolve_reify_bin(
             ["bash", _TRUST_HOME, "resolve", repo_root],
             capture_output=True,
             text=True,
-            env=_trust_home_environ(environ),
+            env=_without_bash_startup_state(environ),
             check=False,
         )
     except OSError as exc:
@@ -1685,6 +1685,38 @@ def grammar_generated(ctx: ProbeContext) -> tuple:
     """
     parser_c = os.path.join(ctx.repo_root, _GRAMMAR_PARSER_C_RELPATH)
     return (os.path.isfile(parser_c), parser_c)
+
+
+def ensure_grammar_current(ctx: ProbeContext) -> tuple:
+    """Return (ok, reason) after bringing ctx's generated grammar up to date with grammar.js.
+
+    Runs ctx.grammar_generator, which is idempotent: on a current src/ it only
+    checks.  scripts/tree-sitter-generate.sh is the one definition of
+    "current".  With no generator nothing runs and the answer is (True, "").
+    A failure, including one to launch, is never raised: it comes back as one
+    operator-facing line naming the generator, its exit status and the tail of
+    its output.  The generator's stdout is captured, so it never joins --json.
+    """
+    if ctx.grammar_generator is None:
+        return (True, "")
+    command = f"`bash {ctx.grammar_generator}`"
+    try:
+        proc = subprocess.run(
+            ["bash", ctx.grammar_generator],
+            capture_output=True,
+            text=True,
+            env=_without_bash_startup_state(os.environ),
+            check=False,
+        )
+    except OSError as exc:
+        failure = f"{command} could not be run ({exc})"
+    else:
+        if proc.returncode == 0:
+            return (True, "")
+        output = proc.stderr.strip() or proc.stdout.strip()
+        failure = f"{command} exited {proc.returncode}: {output[-_HARNESS_ERROR_STDERR_CAP:]}"
+    return (False, "the reify tree-sitter grammar could not be brought up to date with "
+                   "grammar.js: " + " ".join(failure.splitlines()))
 
 
 def _grammar_not_generated_reason(parser_c: str) -> str:
