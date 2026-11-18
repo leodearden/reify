@@ -309,10 +309,15 @@ function isLeafBatch(leaves) {
         || (typeof leaves === "string" && leaves.trim() !== "");
 }
 
-function leafBatchRefusal(subject, { raw, value }) {
+// Names the args as given and, when a JSON string was decoded, the value that
+// was actually judged.
+function leafBatchRefusal(subject, { raw, value, parseError }) {
     if (isLeafBatch(value)) return null;
-    return `${subject} must be the leaf array, its JSON string, or one leaf object; `
-        + `got ${JSON.stringify(raw)}`;
+    const decoding = typeof raw === "string" && parseError === null
+        ? `, which decodes to ${JSON.stringify(value)}`
+        : "";
+    return `${subject} must be the leaf array, one leaf object, a non-blank string, `
+        + `or the JSON string of one of these; got ${JSON.stringify(raw)}${decoding}`;
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is

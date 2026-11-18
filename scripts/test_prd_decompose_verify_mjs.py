@@ -2003,12 +2003,19 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
                 self.assertEqual(phases, [])
 
 
+def _refused_json_string(value):
+    """How a leaf-batch refusal renders the JSON string of `value`: the string
+    as given, then what it decodes to (task #10063)."""
+    encoded = json.dumps(value)
+    return f"{json.dumps(encoded)}, which decodes to {encoded}"
+
+
 class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
     """Top-level args that are not an envelope must be a leaf batch under the
     rule an envelope's `leaves` follows (task #9946): an omitted, falsy, scalar
     or blank args is refused before any agent runs, not run as a vacuous PASS.
-    A JSON string of such an args is refused too, judged by what it encodes
-    (task #10063)."""
+    A JSON string of such an args is refused too, judged by what it encodes,
+    and its refusal names what it decoded to (task #10063)."""
 
     # Each args that is no leaf batch, and how its refusal renders it.
     _NOT_A_LEAF_BATCH = (
@@ -2020,10 +2027,10 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
         ("false", "false"),
         ("7", "7"),
         ("true", "true"),
-        ("JSON.stringify(null)", json.dumps("null")),
-        ("JSON.stringify(0)", json.dumps("0")),
-        ('JSON.stringify("")', json.dumps('""')),
-        ('JSON.stringify("   ")', json.dumps('"   "')),
+        ("JSON.stringify(null)", _refused_json_string(None)),
+        ("JSON.stringify(0)", _refused_json_string(0)),
+        ('JSON.stringify("")', _refused_json_string("")),
+        ('JSON.stringify("   ")', _refused_json_string("   ")),
     )
 
     _ARGS_SUBJECT = "prd-decompose-verify args: args "
@@ -2036,7 +2043,7 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
                 message, phases, logs = self._run_scenario_error(
                     args_js, self.VERIFIED_RESPONSES)
                 self.assertTrue(message.startswith(self._ARGS_SUBJECT), message)
-                self.assertIn(f"got {rendered}", message)
+                self.assertTrue(message.endswith(f"; got {rendered}"), message)
                 self.assertEqual(phases, [])
                 self.assertNotIn("mega-leaf", " ".join(logs))
                 envelope_message, _, _ = self._run_scenario_error(
