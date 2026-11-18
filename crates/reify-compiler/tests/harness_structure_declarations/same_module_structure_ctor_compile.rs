@@ -839,44 +839,161 @@ structure def GuardHost {
     }
 }
 
+/// Where a same-module `occurrence def` sits relative to the fn that calls it.
+enum DefPlacement {
+    AboveFn,
+    BelowFn,
+}
+
+/// What a fn-body call is meant to reach.
+enum CalleeKind {
+    /// An `occurrence def` in the module under test, placed as given.
+    SameModuleOccurrence(DefPlacement),
+    /// An `occurrence def` in the stdlib prelude.
+    PreludeOccurrence,
+    /// A `structure def` in the stdlib prelude.
+    PreludeStructure,
+}
+
+/// The callee a fn-body call is meant to reach: its `name` and its `kind`.
+///
+/// An unknown name draws no ordering diagnostic either (only an
+/// `UnresolvedFunction` Warning, lowered like an occurrence call), so the absence
+/// check cannot tell a deleted callee from a surviving one. The fixture's call is
+/// therefore built from `name`, and the test checks that the call resolves (no
+/// `UnresolvedFunction`) as well as that the callee is still the kind `kind` names.
+struct Callee {
+    name: &'static str,
+    kind: CalleeKind,
+}
+
+impl Callee {
+    /// The source of module `t.<module_name>`: `pub fn f` binds `let x` to a call of
+    /// this callee, and a same-module occurrence is declared where its placement says.
+    fn fixture(&self, module_name: &str) -> String {
+        let name = self.name;
+        let call_fn = format!("pub fn f() -> Real {{ let x = {name}(); 1.0 }}\n");
+        let body = match &self.kind {
+            CalleeKind::SameModuleOccurrence(placement) => {
+                let def = format!("occurrence def {name} {{ param p : Real = 0 }}\n");
+                match placement {
+                    DefPlacement::AboveFn => format!("{def}{call_fn}"),
+                    DefPlacement::BelowFn => format!("{call_fn}{def}"),
+                }
+            }
+            CalleeKind::PreludeOccurrence | CalleeKind::PreludeStructure => call_fn,
+        };
+        format!("module t.{module_name}\n{body}")
+    }
+
+    /// Panics unless the callee is still the kind `self.kind` names. `call` is the
+    /// compiled call expression; `what` labels the failure.
+    fn assert_still_its_kind(
+        &self,
+        module: &reify_compiler::CompiledModule,
+        call: &CompiledExpr,
+        what: &str,
+    ) {
+        let name = self.name;
+        match self.kind {
+            CalleeKind::SameModuleOccurrence(_) => assert_eq!(
+                reify_compiler::find_template(&module.templates, name).map(|t| t.entity_kind),
+                Some(reify_compiler::EntityKind::Occurrence),
+                "{what}: `{name}` must be an occurrence def of this module; \
+                 all diagnostics: {:#?}",
+                diag_lines(module)
+            ),
+            CalleeKind::PreludeOccurrence => assert_eq!(
+                reify_test_support::stdlib_prelude::template(name).entity_kind,
+                reify_compiler::EntityKind::Occurrence,
+                "{what}: prelude `{name}` must be an occurrence def; all diagnostics: {:#?}",
+                diag_lines(module)
+            ),
+            CalleeKind::PreludeStructure => assert!(
+                matches!(
+                    &call.kind,
+                    CompiledExprKind::StructureInstanceCtor { type_name, .. } if type_name == name
+                ),
+                "{what}: `{name}()` must lower to StructureInstanceCtor{{{name}}}; got {:?}; \
+                 all diagnostics: {:#?}",
+                call.kind,
+                diag_lines(module)
+            ),
+        }
+    }
+}
+
 /// The ordering rule is about module-local `structure def`s only. A same-module
 /// OCCURRENCE and a prelude occurrence or structure never enter the ctor view
 /// the way a local structure does, so calling one from a fn body must not draw a
 /// message claiming "structure 'X' is declared after this function" — that
-/// message would lie. Only the absence of the ordering diagnostic is pinned:
-/// whatever else these calls produce is not this rule's business.
+/// message would lie. The absence check cannot pass vacuously because each case
+/// also witnesses that its fixture, built from the callee's name, compiles
+/// without Errors and its call resolves, that `f`'s `let x` was lowered, and that
+/// the callee is still the occurrence or structure its kind names.
 #[test]
 fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
-    for (what, src) in [
+    for (what, module_name, callee) in [
         (
             "same-module occurrence declared below the fn",
-            "module t.occ_below\n\
-             pub fn f() -> Real { let o = Op(); 1.0 }\n\
-             occurrence def Op { param p : Real = 0 }\n",
+            "occ_below",
+            Callee {
+                name: "Op",
+                kind: CalleeKind::SameModuleOccurrence(DefPlacement::BelowFn),
+            },
         ),
         (
             "same-module occurrence declared above the fn",
-            "module t.occ_above\n\
-             occurrence def Op { param p : Real = 0 }\n\
-             pub fn f() -> Real { let o = Op(); 1.0 }\n",
+            "occ_above",
+            Callee {
+                name: "Op",
+                kind: CalleeKind::SameModuleOccurrence(DefPlacement::AboveFn),
+            },
         ),
         (
             "prelude occurrence",
-            "module t.prelude_occ\n\
-             pub fn g() -> Real { let x = STLOutput(); 1.0 }\n",
+            "prelude_occ",
+            Callee {
+                name: "STLOutput",
+                kind: CalleeKind::PreludeOccurrence,
+            },
         ),
         (
             "prelude structure",
-            "module t.prelude_struct\n\
-             pub fn g() -> Real { let x = MaterialFrame(); 1.0 }\n",
+            "prelude_struct",
+            Callee {
+                name: "Color",
+                kind: CalleeKind::PreludeStructure,
+            },
         ),
     ] {
-        let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+        let src = callee.fixture(module_name);
+        let module = reify_test_support::helpers::compile_source_with_stdlib(&src);
         assert!(
             ordering_diags(&module).is_empty(),
             "{what}: must draw no declaration-order diagnostic; all diagnostics: {:#?}",
             diag_lines(&module)
         );
+        assert!(
+            reify_test_support::helpers::errors_only(&module).is_empty(),
+            "{what}: a new Error means the fixture no longer compiles to a clean call, so \
+             the absence check above proves nothing; all diagnostics: {:#?}",
+            diag_lines(&module)
+        );
+        assert!(
+            reify_test_support::helpers::diags_with_code(
+                &module.diagnostics,
+                DiagnosticCode::UnresolvedFunction
+            )
+            .is_empty(),
+            "{what}: the call `{name}()` must resolve to its callee. An UnresolvedFunction \
+             Warning means it reaches nothing, so this case no longer exercises the path; \
+             all diagnostics: {:#?}",
+            diag_lines(&module),
+            name = callee.name
+        );
+        let call = fn_body_let(&module, "f", "x");
+        callee.assert_still_its_kind(&module, call, what);
     }
 }
 
@@ -1020,6 +1137,27 @@ fn function_named<'m>(
             panic!(
                 "fn `{name}` missing from module.functions; present: {:?}",
                 module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// The compiled expression `fn_name`'s body binds to `let let_name`, panicking
+/// with the lets that ARE present (and the module's diagnostics) when absent.
+fn fn_body_let<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    fn_name: &str,
+    let_name: &str,
+) -> &'m CompiledExpr {
+    let lets = &function_named(module, fn_name).body.let_bindings;
+    lets.iter()
+        .find(|(name, _)| name == let_name)
+        .map(|(_, expr)| expr)
+        .unwrap_or_else(|| {
+            panic!(
+                "`let {let_name}` missing from `{fn_name}`'s body; present: {:?}; \
+                 all diagnostics: {:#?}",
+                lets.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                diag_lines(module)
             )
         })
 }
