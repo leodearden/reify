@@ -12,8 +12,9 @@ use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
-use crate::compile_builder::ctx::{CompilationCtx, EntityKind};
+use crate::compile_builder::ctx::{CompilationCtx, EntityNameKind};
 use crate::type_resolution::convert_type_params;
+use crate::types::EntityKind;
 
 /// Forward every entry in `parsed.errors` as an ERROR diagnostic on `ctx`.
 ///
@@ -233,7 +234,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 if ctx.record_or_report_duplicate(
                     &field_def.name,
                     field_def.span,
-                    EntityKind::Field,
+                    EntityNameKind::Field,
                 ) {
                     refs.field_refs.push(field_def);
                 }
@@ -242,7 +243,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 if ctx.record_or_report_duplicate(
                     &structure.name,
                     structure.span,
-                    EntityKind::Structure,
+                    EntityNameKind::Template(EntityKind::Structure),
                 ) {
                     ctx.local_structure_def_names.insert(structure.name.clone());
                 }
@@ -251,7 +252,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 ctx.record_or_report_duplicate(
                     &occurrence.name,
                     occurrence.span,
-                    EntityKind::Occurrence,
+                    EntityNameKind::Template(EntityKind::Occurrence),
                 );
             }
             Declaration::Constraint(constraint) => {
@@ -260,7 +261,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 ctx.record_or_report_duplicate(
                     &constraint.name,
                     constraint.span,
-                    EntityKind::Constraint,
+                    EntityNameKind::Constraint,
                 );
             }
             Declaration::Unit(unit_decl) => {
@@ -276,7 +277,11 @@ pub(crate) fn collect_decl_refs<'a>(
                 // rule as a top-level structure def
                 // (`DiagnosticCode::StructureDeclaredAfterFunction`).
                 for s in &p.structures {
-                    if ctx.record_or_report_duplicate(&s.name, s.span, EntityKind::Structure) {
+                    if ctx.record_or_report_duplicate(
+                        &s.name,
+                        s.span,
+                        EntityNameKind::Template(EntityKind::Structure),
+                    ) {
                         ctx.local_structure_def_names.insert(s.name.clone());
                     }
                 }

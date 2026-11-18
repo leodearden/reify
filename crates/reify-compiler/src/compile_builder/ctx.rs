@@ -23,29 +23,28 @@ use crate::functions::{FnParamDefaults, FnSignature};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
-    CompiledPurpose, CompiledTrait, CompiledUnit, TopologyTemplate,
+    CompiledPurpose, CompiledTrait, CompiledUnit, EntityKind, TopologyTemplate,
 };
 use crate::units::UnitRegistry;
 use reify_ir::CompiledFunction;
 
 /// The kind of declaration that claimed a name in the unified entity namespace
-/// tracked by [`CompilationCtx::seen_entity_names`].
+/// tracked by [`CompilationCtx::seen_entity_names`]: a structure or occurrence
+/// (both compile to a [`TopologyTemplate`]), a field, or a constraint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EntityKind {
-    Structure,
-    Occurrence,
+pub(crate) enum EntityNameKind {
+    Template(EntityKind),
     Field,
     Constraint,
 }
 
-impl EntityKind {
+impl EntityNameKind {
     /// The kind's name as it appears in the duplicate-entity diagnostic.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            EntityKind::Structure => "structure",
-            EntityKind::Occurrence => "occurrence",
-            EntityKind::Field => "field",
-            EntityKind::Constraint => "constraint",
+            EntityNameKind::Template(kind) => kind.as_label(),
+            EntityNameKind::Field => "field",
+            EntityNameKind::Constraint => "constraint",
         }
     }
 }
@@ -128,7 +127,7 @@ pub(crate) struct CompilationCtx {
     /// Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     /// constraints, and fields all share the entity name space. Maps
     /// name → (first_span, first_kind).
-    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, EntityKind)>,
+    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, EntityNameKind)>,
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
@@ -249,7 +248,7 @@ impl CompilationCtx {
     pub(crate) fn local_entity_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.seen_entity_names
             .iter()
-            .filter(|(_, (_, kind))| matches!(kind, EntityKind::Structure | EntityKind::Occurrence))
+            .filter(|(_, (_, kind))| matches!(kind, EntityNameKind::Template(_)))
             .map(|(name, _)| name.as_str())
     }
 
@@ -283,7 +282,7 @@ impl CompilationCtx {
         &mut self,
         name: &str,
         span: SourceSpan,
-        kind: EntityKind,
+        kind: EntityNameKind,
     ) -> bool {
         if self.is_first_entity_def(name, span) {
             self.seen_entity_names
