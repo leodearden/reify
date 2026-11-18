@@ -103,13 +103,91 @@ mod tests {
     /// purely by the returned span — the value/type are placeholders.
     fn tagged_entry(tag: u32) -> ResolvedAmbientDefault {
         ResolvedAmbientDefault {
-            value: reify_ast::Expr {
+            value: AmbientValue::Accepted(reify_ast::Expr {
                 kind: reify_ast::ExprKind::Ident("placeholder".to_string()),
                 span: SourceSpan::empty(tag),
-            },
+            }),
             declared_type: Type::StructureRef("Material".to_string()),
             span: SourceSpan::empty(tag),
         }
+    }
+
+    /// Like [`tagged_entry`], but for a declaration whose value the
+    /// declaration site rejected.
+    fn tagged_rejected(tag: u32) -> ResolvedAmbientDefault {
+        ResolvedAmbientDefault {
+            value: AmbientValue::Rejected,
+            declared_type: Type::StructureRef("Material".to_string()),
+            span: SourceSpan::empty(tag),
+        }
+    }
+
+    /// The tag of the entry `resolve` returns, and whether it was rejected.
+    fn resolved_tag(table: &AmbientDefaults, purpose: Option<&str>) -> (u32, bool) {
+        let entry = table
+            .resolve("Material", purpose)
+            .expect("Material should resolve");
+        (entry.span.start, matches!(entry.value, AmbientValue::Rejected))
+    }
+
+    #[test]
+    fn rejected_entry_fills_vacant_file_slot() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_rejected(10));
+
+        assert_eq!(resolved_tag(&table, None), (10, true));
+    }
+
+    #[test]
+    fn accepted_entry_displaces_rejected_file_occupant() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_rejected(10));
+        table.insert_file_level("Material".to_string(), tagged_entry(20));
+
+        assert_eq!(resolved_tag(&table, None), (20, false));
+    }
+
+    #[test]
+    fn rejected_entry_never_displaces_accepted_file_occupant() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+        table.insert_file_level("Material".to_string(), tagged_rejected(20));
+
+        assert_eq!(resolved_tag(&table, None), (10, false));
+    }
+
+    #[test]
+    fn first_rejected_entry_keeps_file_slot() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_rejected(10));
+        table.insert_file_level("Material".to_string(), tagged_rejected(20));
+
+        assert_eq!(resolved_tag(&table, None), (10, true));
+    }
+
+    #[test]
+    fn purpose_slot_follows_same_precedence() {
+        let mut table = AmbientDefaults::default();
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_rejected(10));
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_entry(20));
+        table.insert_purpose_level("Q".to_string(), "Material".to_string(), tagged_entry(30));
+        table.insert_purpose_level("Q".to_string(), "Material".to_string(), tagged_rejected(40));
+
+        assert_eq!(resolved_tag(&table, Some("P")), (20, false));
+        assert_eq!(resolved_tag(&table, Some("Q")), (30, false));
+    }
+
+    #[test]
+    fn rejected_purpose_entry_shadows_file_entry() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_rejected(20));
+
+        assert_eq!(
+            resolved_tag(&table, Some("P")),
+            (20, true),
+            "innermost-wins applies to a rejected purpose entry too"
+        );
     }
 
     #[test]

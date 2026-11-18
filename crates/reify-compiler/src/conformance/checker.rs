@@ -1882,20 +1882,30 @@ pub(super) fn check_phase_inject_ambient_defaults(
 #[cfg(test)]
 mod ambient_inject_tests {
     use super::*;
-    use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+    use crate::ambient_defaults::{AmbientDefaults, AmbientValue, ResolvedAmbientDefault};
 
     /// File-level ambient table with a single `Material` entry whose value expr
     /// is a recognizable `Ident(marker)`, so a synthesized default's carried
     /// value can be checked by identity (see [`synth_marker`]).
     fn material_ambient_table(marker: &str) -> AmbientDefaults {
+        material_table_with(AmbientValue::Accepted(reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(marker.to_string()),
+            span: SourceSpan::empty(0),
+        }))
+    }
+
+    /// File-level ambient table whose single `Material` entry was rejected at
+    /// its declaration site.
+    fn rejected_material_table() -> AmbientDefaults {
+        material_table_with(AmbientValue::Rejected)
+    }
+
+    fn material_table_with(value: AmbientValue) -> AmbientDefaults {
         let mut table = AmbientDefaults::default();
         table.insert_file_level(
             "Material".to_string(),
             ResolvedAmbientDefault {
-                value: reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Ident(marker.to_string()),
-                    span: SourceSpan::empty(0),
-                },
+                value,
                 declared_type: Type::StructureRef("Material".to_string()),
                 span: SourceSpan::empty(0),
             },
@@ -2079,6 +2089,37 @@ mod ambient_inject_tests {
             Some("ambient_steel"),
             "second Material param should be synthesized; got {:?}",
             ctx.defaults
+        );
+    }
+
+    /// A rejected entry still fills the requirement: a Param default with the
+    /// declared type and no default expression, so the value is never
+    /// recompiled at the injection site.
+    #[test]
+    fn rejected_entry_fills_param_with_declared_type_and_no_default() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(
+            &mut ctx,
+            &rejected_material_table(),
+            &structure_members,
+            None,
+        );
+
+        let [default] = ctx.defaults.as_slice() else {
+            panic!("expected exactly one synthesized default; got {:?}", ctx.defaults);
+        };
+        assert_eq!(default.name.as_deref(), Some("material"));
+        let DefaultKind::Param { cell_type, default_decl } = &default.kind else {
+            panic!("expected a Param default; got {:?}", default.kind);
+        };
+        assert_eq!(cell_type, &Type::StructureRef("Material".to_string()));
+        assert!(
+            default_decl.default.is_none(),
+            "a rejected entry must carry no default expr; got {:?}",
+            default_decl.default
         );
     }
 
