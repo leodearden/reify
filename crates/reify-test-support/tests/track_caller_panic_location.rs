@@ -30,9 +30,10 @@ use std::sync::{Arc, Mutex};
 
 /// Serialises the panic-hook swap in [`panic_site`]. The hook is
 /// PROCESS-global while libtest runs this binary's tests as parallel
-/// threads of ONE process; see `dimensioned_assertions.rs`'s `PANIC_HOOK`
-/// for the exact interleave this guards against (an unserialised swap can
-/// leave a silencer installed for the rest of the binary).
+/// threads of ONE process, so two unserialised take/set pairs interleave:
+/// `A:take` → `B:take` (gets A's temporary hook) → `A:set(previous)` →
+/// `B:set(A's temporary hook)` leaves A's capturing hook installed for the
+/// rest of the binary, and every later panic is routed through it.
 static PANIC_HOOK: Mutex<()> = Mutex::new(());
 
 /// A captured panic: its payload message and the `Location` `#[track_caller]`
