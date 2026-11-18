@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Shared test helpers for reify shell test files.
-# Provides assert() and test_summary() with PASS/FAIL counters.
+# Provides assert() and test_summary() with PASS/FAIL counters, plus the
+# infrastructure verdict: assert_infra_input() and test_summary_infra_unavailable().
 #
 # assert()'s output shape: "  PASS: <desc>" / "  FAIL: <desc>", where line 1 is
 # byte-identical (parsed by run_all.sh's cause_hint) and any line 2+ of a
@@ -110,6 +111,26 @@ test_summary() {
     if [ "$FAIL" -gt 0 ]; then
         exit 1
     fi
+}
+
+# Ends the member: an assertion that already FAILed wins (exit 1); otherwise the
+# verdict is infrastructure, exit 75. See tests/infra/README.md, "Cargo registry
+# inputs: a verdict never depends on the cache".
+test_summary_infra_unavailable() {
+    test_summary
+    echo "INFRASTRUCTURE: $1 — the remaining assertions did not run (exit 75, EX_TEMPFAIL: neither PASS nor FAIL)"
+    exit 75
+}
+
+# assert_infra_input <desc> <unavailable-rc> <cmd> [arg...]: rc 0 is a PASS, the
+# unavailable rc ends the member via test_summary_infra_unavailable, and any
+# other rc is a FAIL. <cmd> runs uncaptured so its stderr stays in the log.
+assert_infra_input() {
+    local desc=$1 unavailable=$2 rc=0
+    shift 2
+    "$@" || rc=$?
+    [ "$rc" -ne "$unavailable" ] || test_summary_infra_unavailable "$desc"
+    assert "$desc (rc $rc)" test "$rc" -eq 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
