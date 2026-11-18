@@ -253,3 +253,37 @@ fn panic_message_of_non_string_payload_panic_reports_caller_not_its_module() {
 
     assert_attributed_here(&site, "neither a &str nor a String");
 }
+
+/// Parses cleanly, but `unknown_variable` is unresolved, so compiling it yields
+/// an Error-severity diagnostic.
+const COMPILE_ERROR_SOURCE: &str = "structure Bad { let x = unknown_variable }";
+
+/// Does not parse.
+const PARSE_ERROR_SOURCE: &str = "not valid {";
+
+#[test]
+fn parse_and_compile_with_stdlib_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile_with_stdlib(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[test]
+fn compile_source_with_stdlib_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_source_with_stdlib(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn parse_and_compile_with_stdlib_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile_with_stdlib(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
