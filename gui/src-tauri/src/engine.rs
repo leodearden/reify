@@ -22,7 +22,7 @@ use reify_ir::{CompiledExprKind, ConstraintChecker, DeterminacyState, ExportForm
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
 
-use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
 
 use crate::types::{
     AppearanceDirective, AutoResolveConstraintProgress, AutoResolveIteration,
@@ -405,7 +405,7 @@ pub(crate) struct CompileFailure {
     /// `build_gui_state` surfaces this as `files[].content` (overriding the
     /// last-good `source_map` entry) so `compile_diagnostics` line/col positions
     /// index into the correct buffer.  Set to the full entry-file text passed to
-    /// `compile_single_file_with_stdlib` or `compile_entry_with_imports`.
+    /// `compile_buffer`.
     pub(crate) source: String,
     /// Module key (e.g. `"bracket.ri"`) derived via `module_key(module_name)`.
     ///
@@ -827,15 +827,6 @@ pub(crate) fn source_key_matches_path(spelling: &str, path: &str) -> bool {
             == Some(spelling)
 }
 
-/// Returns `true` for any `std` or `std.*` import path.
-///
-/// Used by `compile_entry_with_imports` at two filter sites (prelude-ref
-/// de-duplication and template merge) so both stay in lockstep if the
-/// stdlib path convention ever changes.
-fn is_stdlib_path(p: &str) -> bool {
-    p == "std" || p.starts_with("std.")
-}
-
 /// What a successful compile produced, in one order everywhere.
 pub(crate) struct CompiledSource {
     pub(crate) parsed: reify_ast::ParsedModule,
@@ -851,17 +842,27 @@ pub(crate) struct CompileRejection {
     /// `"{prefix}: msg1; msg2; …"`, e.g. `"Parse errors: …"` /
     /// `"Compile errors: …"` — the reload entry points' `Err` string.
     pub(crate) message: String,
-    /// The same errors in structured form, for the diagnostics panel.
+    /// The errors, then any Warning explaining them, in structured form, for
+    /// the diagnostics panel.
     pub(crate) diags: Vec<DiagnosticInfo>,
+}
+
+impl CompileRejection {
+    /// Append `explanations` (Warnings that explain the errors) to the
+    /// structured diagnostics, after the errors; `message` stays errors-only.
+    fn explained_by(mut self, explanations: &[Diagnostic], file_path: &str, source: &str) -> Self {
+        self.diags
+            .extend(diagnostics_to_info(explanations, file_path, source));
+        self
+    }
 }
 
 /// Build the [`CompileRejection`] for an error result.
 ///
-/// Centralises the mechanical pattern shared by all parse- and compile-error
-/// return sites in `compile_single_file_with_stdlib` and
-/// `compile_entry_with_imports`: join diagnostic messages into a human-readable
-/// string and simultaneously call [`diagnostics_to_info`] for the structured
-/// wire payload.
+/// Centralises the mechanical pattern shared by the parse- and compile-error
+/// rejections ([`parse_errs_to_payload`], [`reject_compile_errors`]): join
+/// diagnostic messages into a human-readable string and simultaneously call
+/// [`diagnostics_to_info`] for the structured wire payload.
 ///
 /// `prefix` becomes the leading label (e.g. `"Parse errors"`, `"Compile errors"`).
 /// The message has the form `"{prefix}: msg1; msg2; …"`, preserving the
@@ -927,231 +928,151 @@ fn reject_compile_errors(
     ))
 }
 
-/// Parse and compile a single-file source string using the stdlib prelude.
+/// Parse `source` as the module `module_name`, pre-seeding the stdlib's enum
+/// names so a reference like `CorrosionClass.C5` disambiguates to `EnumAccess`
+/// rather than `MemberAccess` (task 2525). A parse error rejects the buffer
+/// with a `"Parse errors: …"` [`CompileRejection`].
+fn parse_entry(
+    source: &str,
+    module_name: &str,
+) -> Result<reify_ast::ParsedModule, CompileRejection> {
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    if !parsed.errors.is_empty() {
+        return Err(parse_errs_to_payload(
+            &parsed.errors,
+            &module_key(module_name),
+            source,
+        ));
+    }
+    Ok(parsed)
+}
+
+/// The GUI's one active cfg: the compiling host's (PRD resolution-unification
+/// D-4: no cfg selector in v1).
+fn gui_cfg() -> reify_compiler::cfg::CfgSet {
+    reify_compiler::cfg::CfgSet::host_default()
+}
+
+/// Compile a buffer the way its anchor and imports call for.
 ///
-/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
-/// whose message preserves the existing `"Parse errors: …"` /
-/// `"Compile errors: …"` format (so existing substring assertions remain
-/// valid) and whose diagnostics carry the same errors in structured form.
-/// Callers store those diagnostics in `EngineSession::compile_failure` (via
-/// `record_compile_failure`) so `build_gui_state` can surface the failure in
-/// the diagnostics panel.
-///
-/// This is the single-file counterpart to `compile_entry_with_imports`.  It is
-/// called by both `load_from_source` (which always uses the single-file path) and
-/// the `self.file_path == None` branch of `update_source` (no project-root anchor).
-fn compile_single_file_with_stdlib(
-    content: &str,
+/// A buffer anchored to a file whose entry follows an import compiles as a
+/// program ([`compile_entry_program`]); any other anchored buffer compiles
+/// single-file ([`compile_single_file_with_stdlib`]), and a buffer with no
+/// anchor compiles single-file with its imports explained
+/// ([`compile_unanchored`]). The anchored routing is reify-lsp's
+/// `document_compile::compile_document`, over the same
+/// `program::entry_follows_imports` predicate, so the GUI's own compile and
+/// the LSP it hosts agree on every file.
+fn compile_buffer(
+    anchor: Option<&Path>,
+    source: &str,
     module_name: &str,
 ) -> Result<CompiledSource, CompileRejection> {
-    // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-    // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
-    let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
-    if !parsed.errors.is_empty() {
-        let file_path = module_key(module_name);
-        return Err(parse_errs_to_payload(&parsed.errors, &file_path, content));
+    let parsed = parse_entry(source, module_name)?;
+    match anchor {
+        Some(entry_path) if reify_compiler::program::entry_follows_imports(&parsed, &gui_cfg()) => {
+            compile_entry_program(entry_path, source, parsed, module_name)
+        }
+        Some(_) => compile_single_file_with_stdlib(parsed, source, module_name),
+        None => compile_unanchored(parsed, source, module_name),
     }
+}
+
+/// Compile `parsed`, the parse of a buffer with no file anchor, single-file.
+///
+/// It cannot resolve the imports a file-backed compile would follow, so it
+/// carries [`unanchored_import_warning`] (D-10): on an accepted compile among
+/// its diagnostics, on a rejection after the errors it explains.
+fn compile_unanchored(
+    parsed: reify_ast::ParsedModule,
+    source: &str,
+    module_name: &str,
+) -> Result<CompiledSource, CompileRejection> {
+    let warning = unanchored_import_warning(&reify_compiler::program::followed_imports(
+        &parsed,
+        &gui_cfg(),
+    ));
+    match compile_single_file_with_stdlib(parsed, source, module_name) {
+        Ok(mut accepted) => {
+            accepted.compiled.diagnostics.extend(warning);
+            Ok(accepted)
+        }
+        Err(rejection) => {
+            Err(rejection.explained_by(warning.as_slice(), &module_key(module_name), source))
+        }
+    }
+}
+
+/// The D-10 Warning for a buffer with no file anchor that contains `followed`,
+/// the imports a file-backed compile would resolve: one Warning naming them
+/// all, located at the first. `None` when there are none.
+fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diagnostic> {
+    let first = followed.first()?;
+    let names: Vec<String> = followed
+        .iter()
+        .map(|import| format!("\"{}\"", import.path))
+        .collect();
+    Some(
+        Diagnostic::warning(format!(
+            "import {} not resolved: imports require a file-backed buffer — open the .ri file \
+             to resolve them",
+            names.join(", ")
+        ))
+        .with_code(DiagnosticCode::ImportRequiresFileBackedBuffer)
+        .with_label(DiagnosticLabel::new(
+            first.span,
+            "needs a file-backed buffer",
+        )),
+    )
+}
+
+/// Compile `parsed`, the parse of `source`, single-file against the stdlib
+/// prelude.
+///
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
+/// whose message preserves the `"Compile errors: …"` format (so existing
+/// substring assertions remain valid) and whose diagnostics carry the same
+/// errors in structured form. Callers store those diagnostics in
+/// `EngineSession::compile_failure` (via `record_compile_failure`) so
+/// `build_gui_state` can surface the failure in the diagnostics panel.
+///
+/// The single-file counterpart to [`compile_entry_program`]; [`compile_buffer`]
+/// routes between them.
+fn compile_single_file_with_stdlib(
+    parsed: reify_ast::ParsedModule,
+    source: &str,
+    module_name: &str,
+) -> Result<CompiledSource, CompileRejection> {
     let compiled = reify_compiler::compile_with_stdlib_checked(
         &parsed,
         &reify_constraints::SimpleConstraintChecker,
     );
-    let compiled = reject_compile_errors(compiled, module_name, content)?;
+    let compiled = reject_compile_errors(compiled, module_name, source)?;
     Ok(CompiledSource { parsed, compiled })
 }
 
-/// Parse and compile `source` with multi-file import resolution.
+/// Compile the entry from its possibly dirty buffer `source` as a program
+/// whose user imports resolve from `entry_path`'s directory.
 ///
-/// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
-/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`] in the
-/// same shape and message format as `compile_single_file_with_stdlib`'s (an
-/// import that fails to compile is reported under its own
-/// `"Compile errors in import '…'"` prefix, keyed by the import's file).
-///
-/// `reify_compiler::module_dag::compile_project_with_entry_source` (at
-/// module_dag.rs:607) covers most of the same scaffolding — parse,
-/// `ModuleDag::new`, recursive `compile_module` per import, prelude
-/// collection, final entry compile.  This GUI helper exists because that
-/// compiler function does **not** yet do two things load_file needs:
-///
-///   1. **Stdlib in prelude** — the compiler function uses
-///      `compile_with_prelude_refs` with user imports only.  load_file needs
-///      stdlib enum disambiguation (e.g. `CorrosionClass.C5` → `EnumAccess`)
-///      and stdlib functions like `box(...)` to resolve, which require the
-///      stdlib slice in the prelude.
-///   2. **Template merge for eval** — `find_template` is called against the
-///      entry module only (engine_eval.rs:1629; unfold.rs:418, :466), so
-///      imported pub structures must be merged into `entry.templates` before
-///      eval; the compiler function's return value doesn't do that merge.
-///
-/// Replacing this helper with a call into the compiler API is filed as a
-/// follow-up — extend `compile_project_with_entry_source` to seed stdlib
-/// and return entry-with-merged-templates, then this becomes a one-liner.
-///
-/// # Flow
-///
-/// 1. Parse `source` with `parse_with_stdlib` (preserves stdlib enum
-///    disambiguation, e.g. `CorrosionClass.C5` → `EnumAccess`).
-/// 2. Build `ModuleResolver::new(project_root, stdlib_root)` where
-///    `project_root` is the directory containing `entry_path` and
-///    `stdlib_root = project_root.join("crates/reify-compiler/stdlib")`.
-///    Matching the LSP heuristic: for user projects the stdlib dir usually
-///    doesn't exist on disk, so `ModuleDag` falls back to the embedded stdlib.
-/// 3. For each `import` declaration in the parsed module, call
-///    `dag.compile_module(&import.path, &resolver)`.  Errors are surfaced as
-///    `"Compile errors: ..."` strings.
-/// 4. Build prelude refs: stdlib modules (from `load_stdlib()`) + user imports
-///    from `dag.modules` (in declaration order, skipping `std.*` keys which are
-///    already present via the stdlib slice).
-/// 5. Compile the entry with `compile_with_prelude_context(&parsed, &ctx)`.
-/// 6. Merge non-stdlib imported templates into `compiled.templates` so that
-///    `find_template` during eval finds imported pub structures.
-///
-/// # v1 transitive-import limitation
-///
-/// Only **direct** (1-hop) imports of the entry file have their templates merged
-/// into `compiled.templates`.  If `helper.ri` itself imports `util.ri`, `Util`'s
-/// `TopologyTemplate` will not be present at eval time, and `find_template` will
-/// fail with "unknown structure" for any `sub` referencing `Util`.  Iterating
-/// all entries in `dag.modules` and merging each would fix this; deferred to a
-/// follow-up task.
-///
-/// # v1 source-map limitation
-///
-/// Only the entry's source is stored in `source_map` (under the entry module
-/// key). Imported file contents are not added to `source_map`; the GUI's
-/// "files" panel will show only the entry file.  See task 3228 for the
-/// planned follow-up.
-fn compile_entry_with_imports(
+/// It hands `compile_program_with_parsed_entry` the GUI's own parse, which
+/// [`CompiledSource::parsed`] keeps. Any Error the program raises (the entry's
+/// own, or an import's re-homed onto the entry) rejects the buffer through
+/// [`reject_compile_errors`].
+fn compile_entry_program(
     entry_path: &Path,
     source: &str,
+    parsed: reify_ast::ParsedModule,
     module_name: &str,
 ) -> Result<CompiledSource, CompileRejection> {
-    // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
-    if !parsed.errors.is_empty() {
-        let file_path = module_key(module_name);
-        return Err(parse_errs_to_payload(&parsed.errors, &file_path, source));
-    }
-
-    // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
-    let project_root = entry_path.parent().unwrap_or(Path::new("."));
-    let stdlib_root = project_root.join("crates/reify-compiler/stdlib");
-
-    let resolver = reify_compiler::module_dag::ModuleResolver::new(project_root, &stdlib_root);
-
-    // The GUI dirty-buffer path uses the host default active cfg (PRD §4 D-2):
-    // there is no GUI cfg selector in v1, so `target` is the compiling host's
-    // platform string (std::env::consts::OS) and no flags/kv are set. Build the
-    // DAG with this cfg so TRANSITIVE imports are gated by it too (mirrors the
-    // CLI's compile_entry_with_stdlib_cfg).
-    let host_cfg = reify_compiler::cfg::CfgSet::host_default();
-    let mut dag = reify_compiler::module_dag::ModuleDag::with_cfg(host_cfg.clone());
-
-    // Collect import paths from the parsed module (top-level Import declarations
-    // only), gating each DIRECT import by its `#cfg(...)` predicates against the
-    // host cfg. An import whose predicates are unsatisfied (e.g. a non-host
-    // `#cfg(target = ...)`) is dropped here, so it is skipped uniformly by the
-    // compile loop, the prelude `user_import_refs` collection, and the
-    // pub-template-merge loop below — all three iterate this filtered list.
-    let import_paths: Vec<String> = parsed
-        .declarations
-        .iter()
-        .filter_map(|decl| {
-            if let reify_ast::Declaration::Import(imp) = decl {
-                // Gate each DIRECT import through the canonical shared predicate
-                // (`module_dag::import_cfg_satisfied`) rather than re-inlining
-                // `cfg_predicates.iter().all(cfg_satisfied)`, so the GUI and CLI
-                // gating semantics cannot drift.
-                if reify_compiler::module_dag::import_cfg_satisfied(imp, &host_cfg) {
-                    Some(imp.path.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Compile each non-stdlib import.  Std.* paths are skipped: the full
-    // stdlib is seeded into the prelude below via `load_stdlib()`, and the
-    // user_import_refs / template-merge loops both filter std.* out, so a
-    // `dag.compile_module("std.units", ...)` call would be wasted work
-    // (one extra parse+compile per std import in the typical case).
-    for import_path in &import_paths {
-        if is_stdlib_path(import_path) {
-            continue;
-        }
-        dag.compile_module(import_path, &resolver)
-            .map_err(|diags| {
-                let file_path = format!("{}.ri", import_path);
-                // Resolve the import's source via the resolver for accurate span resolution
-                // so line/column numbers in the diagnostics panel point to real locations.
-                // Falls back to "" (spans collapse to 1:1) if resolution or I/O fails.
-                let import_source = resolver
-                    .resolve_import_path(import_path)
-                    .ok()
-                    .and_then(|p| std::fs::read_to_string(p).ok())
-                    .unwrap_or_default();
-                build_err_payload(
-                    &format!("Compile errors in import '{}'", import_path),
-                    &diags,
-                    &file_path,
-                    &import_source,
-                )
-            })?;
-    }
-
-    // Build prelude refs: stdlib (static) + user imports from dag.modules.
-    // Skipping std.* keys from the import list because the full stdlib is already
-    // present via the load_stdlib() slice — adding them again would be redundant.
-    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
-    let user_import_refs: Vec<&CompiledModule> = import_paths
-        .iter()
-        .filter(|p| !is_stdlib_path(p))
-        .filter_map(|p| dag.modules.get(p))
-        .collect();
-
-    let prelude_refs: Vec<&CompiledModule> = stdlib_modules
-        .iter()
-        .chain(user_import_refs.iter().copied())
-        .collect();
-
-    let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let compiled = reify_compiler::compile_with_prelude_context_checked(
+    let program = reify_compiler::program::compile_program_with_parsed_entry(
+        entry_path,
+        source,
         &parsed,
-        &ctx,
+        &reify_compiler::program::entry_dir_resolver(entry_path),
+        &gui_cfg(),
         &reify_constraints::SimpleConstraintChecker,
     );
-    let mut compiled = reject_compile_errors(compiled, module_name, source)?;
-
-    // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
-    // compiled.templates so that reify_eval::Engine::eval / unfold can find them
-    // via find_template(&module.templates, name).
-    //
-    // The first-wins merge policy — the `Visibility::Public` filter, the de-dup,
-    // and the collision warning — lives in the shared
-    // `reify_compiler::module_dag::merge_imported_pub_templates` helper so this
-    // GUI dirty-buffer bridge and the CLI `reify check` bridge
-    // (`compile_entry_with_stdlib_cfg`) cannot drift. Std.* imports are excluded
-    // (stdlib structures are not top-level GUI entities); cfg-gated-out imports
-    // are already absent from `import_paths`.
-    //
-    // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
-    // util.ri, Util's template will be absent from this list and find_template will
-    // fail at eval for any sub referencing Util.  A future fix should iterate all
-    // dag.modules entries instead of just import_paths.
-    let merge_inputs: Vec<(&str, &CompiledModule)> = import_paths
-        .iter()
-        .filter(|p| !is_stdlib_path(p))
-        .filter_map(|p| dag.modules.get(p).map(|module| (p.as_str(), module)))
-        .collect();
-    reify_compiler::module_dag::merge_imported_pub_templates(
-        &mut compiled,
-        module_name,
-        &merge_inputs,
-    );
-
+    let compiled = reject_compile_errors(program.entry, module_name, source)?;
     Ok(CompiledSource { parsed, compiled })
 }
 
@@ -2198,7 +2119,7 @@ impl EngineSession {
         // Preserve file_path: load_from_source has no file on disk; keep any
         // existing file_path from a prior load_file call.
         self.reload(
-            compile_single_file_with_stdlib(source, module_name),
+            compile_buffer(None, source, module_name),
             module_name,
             source,
             FilePathUpdate::Preserve,
@@ -2808,10 +2729,10 @@ impl EngineSession {
     ///    write-back would disagree about which params exist.
     /// 3. **Not the entry file's entity** — the cell exists, but its entity is
     ///    not declared in the module this session can rewrite. The commonest
-    ///    case is a param of an IMPORTED `.ri`, whose pub template
-    ///    `compile_entry_with_imports` merges into `compiled.templates` (so it
-    ///    passes 2) while its text never enters `source_map` or `parsed_cache`
-    ///    (so there is nothing here to splice). Discriminated ahead of 4
+    ///    case is a param of an IMPORTED `.ri`, whose pub template the program
+    ///    compile merges into `compiled.templates` (so it passes 2) while its
+    ///    text never enters `source_map` or `parsed_cache` (so there is nothing
+    ///    here to splice). Discriminated ahead of 4
     ///    because it would otherwise be misreported as "no default expression".
     /// 4. **No default expression** — a real, editable cell whose param has
     ///    nothing to rewrite. This bucket also absorbs the AST-walk refusals α
@@ -2838,12 +2759,11 @@ impl EngineSession {
         self.require_known_cell(&cell_id, cell_id_str)?;
 
         // The existence gate above searches `compiled.templates`, into which
-        // `compile_entry_with_imports` MERGES every direct import's pub
-        // templates — so a param declared in an imported `.ri` passes it. The
+        // the program compile MERGES every direct import's pub templates — so
+        // a param declared in an imported `.ri` passes it. The
         // default-expression walk below searches `parsed_cache`, which holds
-        // the entry module's declarations and nothing else (imported file
-        // contents never enter `source_map` either — the v1 limitation
-        // documented on `compile_entry_with_imports`). Without this arm an
+        // the entry module's declarations and nothing else (imported files
+        // never enter `source_map` either, GUI ο #5529). Without this arm an
         // imported param would fall out of the walk as `None` and be reported
         // as "no default expression", which is not what happened and would send
         // δ's caller looking for a default that is right there in the other
@@ -3172,12 +3092,9 @@ impl EngineSession {
 
     /// Load a .ri file from disk.
     ///
-    /// Unlike `load_from_source`, this method wires multi-file import resolution:
-    /// it builds a `ModuleResolver` rooted at the file's parent directory and
-    /// compiles each `import` declaration via `ModuleDag` before composing the
-    /// entry's prelude.  See `compile_entry_with_imports` for the full flow and
-    /// for the rationale on why it's GUI-side rather than a direct call into
-    /// `reify_compiler::module_dag::compile_project_with_entry_source`.
+    /// Unlike `load_from_source`, the file anchors the compile: an entry that
+    /// follows an import compiles as a program whose imports resolve from the
+    /// file's directory (see [`compile_buffer`]).
     pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
@@ -3190,7 +3107,7 @@ impl EngineSession {
         // `path.to_path_buf()` is evaluated as a call argument — before reload
         // runs — so a panic in it lands in the pre-commit window: nothing is written.
         self.reload(
-            compile_entry_with_imports(path, &source, module_name),
+            compile_buffer(Some(path), &source, module_name),
             module_name,
             &source,
             FilePathUpdate::Set(path.to_path_buf()),
@@ -3206,17 +3123,16 @@ impl EngineSession {
     /// completely unchanged — source_map, module_name, compiled, and last_check all
     /// retain their previous values. All mutations are deferred until after check() returns.
     ///
-    /// When `self.file_path` is set (i.e. after a prior `load_file`), this method
-    /// routes through `compile_entry_with_imports` to preserve the multi-file import
-    /// graph resolved at `load_file` time — dirty-buffer edits no longer silently
-    /// drop imports.  See task 3318 (item 3).  Both `module_name` and the
-    /// project-root anchor are derived from `self.file_path`; the caller's `path`
-    /// argument is used only for the single-file fallback (when `self.file_path` is
-    /// `None`).  See task 3370.
+    /// When `self.file_path` is set (i.e. after a prior `load_file`), it anchors
+    /// the compile exactly as in `load_file`: an entry that follows an import
+    /// compiles as a program, re-resolving its imports from the entry's directory
+    /// on every edit, so dirty-buffer edits never silently drop imports (task 3318,
+    /// item 3).  Both `module_name` and the anchor are derived from
+    /// `self.file_path`; the caller's `path` argument names the module only when
+    /// `self.file_path` is `None` (task 3370).
     ///
     /// When `self.file_path` is `None` (i.e. `load_from_source`-only sessions with
-    /// no project-root anchor), the original single-file `parse_with_stdlib +
-    /// compile_with_stdlib` path is preserved unchanged.
+    /// no file anchor), the buffer compiles single-file (see [`compile_buffer`]).
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         // When self.file_path is set (i.e. after a prior load_file), derive module_name
         // from it — NOT from the caller's `path` arg.  This keeps module_name in lockstep
@@ -3233,15 +3149,7 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let compiled = match self.core.file_path().map(Path::to_path_buf) {
-            // Multi-file flow — same as load_file. Preserves the import graph
-            // resolved at load_file time so dirty-buffer edits don't silently drop
-            // imports.  Both module_name and the project-root anchor come from
-            // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
-            Some(entry_path) => compile_entry_with_imports(&entry_path, content, module_name),
-            // Single-file flow — no prior load_file means no project_root anchor.
-            None => compile_single_file_with_stdlib(content, module_name),
-        };
+        let compiled = compile_buffer(self.core.file_path(), content, module_name);
 
         // Preserve file_path: update_source does not change which file is loaded;
         // Preserve keeps the file_path set by the prior load_file call.
@@ -8703,7 +8611,10 @@ fn collect_value_refs(expr: &reify_ir::CompiledExpr) -> Vec<String> {
 /// known source location), pass `"<unknown>"` and an empty string for `source`.
 ///
 /// Each diagnostic's first label span is used for line/column resolution.
-/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`.
+/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`, and
+/// so does a first label at the prelude sentinel (e.g. a diagnostic
+/// `compile_program` re-homed from an import unit); both report
+/// `has_location: false`.
 ///
 /// # Severity format
 ///
@@ -8747,7 +8658,10 @@ fn diagnostics_to_info(
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
-                has_location: !diag.labels.is_empty(),
+                has_location: diag
+                    .labels
+                    .first()
+                    .is_some_and(|label| !label.span.is_prelude()),
             }
         })
         .collect()

@@ -106,7 +106,7 @@ enum StdlibMode {
 enum StdlibVisibility {
     /// `std.*` imports resolve through the DAG (filesystem first, embedded
     /// fallback, [`StdlibMode`] all-or-nothing) and each unit sees only what it
-    /// imports. Used by `compile_project*` and the GUI's dirty-buffer bridge.
+    /// imports. Used by `compile_project*`.
     Imported,
     /// The full stdlib is ambient: a `std`/`std.*` import is never followed at
     /// any depth (PRD resolution-unification I4, an interim superseded by
@@ -736,12 +736,8 @@ mod tests {
 /// An import with no `cfg_predicates` is vacuously satisfied (always followed).
 /// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
 ///
-/// This is the canonical import-gating predicate. It is `pub` so the GUI's
-/// dirty-buffer bridge (`gui/src-tauri/src/engine.rs`) can gate its direct
-/// imports through the same definition instead of re-inlining
-/// `cfg_predicates.iter().all(cfg_satisfied)`, which could otherwise drift from
-/// this semantics.
-pub fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
+/// This is the canonical import-gating predicate.
+pub(crate) fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
     import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
 }
 
@@ -900,13 +896,12 @@ fn is_std_import_path(path: &str) -> bool {
 /// Merge the `pub` templates of already-compiled direct imports into `entry`'s
 /// own template list, **first-wins** with a `Warning` on every name collision.
 ///
-/// This is the single home of the cross-import template-merge policy shared by
-/// the program compile ([`crate::program::compile_program_with_parsed_entry`],
-/// which the CLI's `reify check` enters through) and the GUI's
-/// `compile_entry_with_imports` (dirty-buffer bridge). Keeping the policy
-/// — the visibility filter, the first-wins de-dup, and the collision-warning
-/// wording — in one place ensures the two callers cannot drift (e.g. a fix to
-/// the collision logic landing in only one of them).
+/// This is the single home of the cross-import template-merge policy — the
+/// visibility filter, the first-wins de-dup, and the collision-warning wording.
+/// Its one caller is the program compile
+/// ([`crate::program::compile_program_with_parsed_entry`]), which the CLI's
+/// `reify check` and the GUI's file-backed reload enter through; PRD
+/// resolution-unification κ #5524 deletes it with the interim merge.
 ///
 /// - `entry_origin` is the entry module's own path/name, used only to label
 ///   entry-vs-import collisions in the warning message.
@@ -921,7 +916,7 @@ fn is_std_import_path(path: &str) -> bool {
 /// both declaring sides and the `first-wins` policy. The warning is phrased
 /// kind-neutrally ("imported pub template") because `templates` can hold
 /// non-structure template kinds.
-pub fn merge_imported_pub_templates(
+pub(crate) fn merge_imported_pub_templates(
     entry: &mut CompiledModule,
     entry_origin: &str,
     imports: &[(&str, &CompiledModule)],

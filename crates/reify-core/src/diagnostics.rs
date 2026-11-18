@@ -5003,6 +5003,19 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     FnDeclTablesMisaligned,
+    /// Origin: `gui/src-tauri/src/engine.rs::unanchored_import_warning`, the GUI's
+    /// buffer-only compile (task #5519, PRD resolution-unification D-10).
+    ///
+    /// Emitted when a compile with no file anchor (GUI `load_from_source`, or
+    /// `update_source` before any `load_file`) contains imports a file-backed
+    /// compile would follow, which it therefore cannot resolve. One per buffer,
+    /// naming every such import, located at the first.
+    ///
+    /// Canonical message: `"import \"<a>\", \"<b>\" not resolved: imports
+    /// require a file-backed buffer — open the .ri file to resolve them"`.
+    ///
+    /// Severity: Warning.
+    ImportRequiresFileBackedBuffer,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -8176,10 +8189,12 @@ pub struct DiagnosticInfo {
     /// Whether this diagnostic carries a real, line-tied source span.
     ///
     /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
-    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// actual span from the compiled source (a first `Diagnostic::labels` entry
+    /// whose span is not [`SourceSpan::prelude`]).
     /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
     /// point at a meaningful source location — e.g. module-level hot-reload staleness
-    /// errors where no span is available.
+    /// errors where no span is available, or a diagnostic re-homed from an
+    /// imported module, whose spans index that module, not this source.
     ///
     /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
     /// navigating the editor to a fake line 1 for span-less diagnostics.
