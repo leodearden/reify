@@ -287,3 +287,39 @@ fn parse_and_compile_with_stdlib_parse_error_panic_reports_caller_not_helpers_rs
 
     assert_attributed_here(&site, "parse errors");
 }
+
+#[test]
+fn parse_and_compile_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[test]
+fn parse_and_compile_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn compile_source_named_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_source_named(PARSE_ERROR_SOURCE, "named");
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn parse_compile_expect_err_clean_source_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_compile_expect_err("structure S { let x = 1.0 }", "");
+    });
+
+    assert_attributed_here(&site, "expected at least one compile error");
+}
