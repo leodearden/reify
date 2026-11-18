@@ -403,6 +403,43 @@ class DeriveClosure(unittest.TestCase):
         self.assertEqual(calls, [frozenset()])
 
 
+class DeriveBoundClosure(unittest.TestCase):
+
+    def test_the_bind_probe_checks_the_converged_closure_once(self):
+        bind_calls = []
+
+        def bind_probe(staged):
+            bind_calls.append(staged)
+            return _report()
+
+        closure = bc.derive_bound_closure(HOST, FakeTarget(), bind_probe)
+        converged = frozenset({"libA.so.1", "libB.so.2", "libC.so.3"})
+        self.assertEqual(closure, converged)
+        self.assertEqual(bind_calls, [converged])
+
+    def test_an_undefined_symbol_on_the_converged_layout_is_an_error_naming_it(self):
+        referrer = "/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3"
+        undefined = bc.UndefinedSymbol("libraw_open_buffer", None, referrer)
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_bound_closure(
+                HOST, FakeTarget(), lambda staged: _report(undefined={undefined}))
+        self.assertIn("libraw_open_buffer", str(caught.exception))
+        self.assertIn(referrer, str(caught.exception))
+
+    def test_the_bind_probe_is_not_run_when_the_fixed_point_fails(self):
+        bind_calls = []
+
+        def bind_probe(staged):
+            bind_calls.append(staged)
+            return _report()
+
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_bound_closure(
+                HOST, lambda staged: _report(missing={"libZ.so.9"}), bind_probe)
+        self.assertIn("libZ.so.9", str(caught.exception))
+        self.assertEqual(bind_calls, [])
+
+
 class TauriOverlay(unittest.TestCase):
 
     def setUp(self):
