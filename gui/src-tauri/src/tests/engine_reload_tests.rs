@@ -145,6 +145,10 @@ fn every_reload_entry_point_runs_the_pipeline_exactly_once() {
     assert_eq!(log.take(), ONE_RELOAD, "update_source, multi-file branch");
 
     let (mut session, log) = logged_session();
+    session.open_document(&bracket).expect("open_document");
+    assert_eq!(log.take(), ONE_RELOAD, "open_document");
+
+    let (mut session, log) = logged_session();
     session
         .load_from_compiled(simple_compiled_module(), "test")
         .expect("load_from_compiled");
@@ -351,8 +355,14 @@ fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() 
         .open_document(&broken)
         .expect("a readable file opens even when the engine rejects its source");
 
-    assert!(state.meshes.is_empty(), "the previous document's meshes must not be served");
-    assert!(state.values.is_empty(), "the previous document's values must not be served");
+    assert!(
+        state.meshes.is_empty(),
+        "the previous document's meshes must not be served"
+    );
+    assert!(
+        state.values.is_empty(),
+        "the previous document's values must not be served"
+    );
     assert_eq!(
         state.files,
         vec![FileData {
@@ -382,7 +392,10 @@ fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() 
         session.geometry_derived_cache_for_test().is_empty(),
         "the previous document's geometry-derived values must be dropped"
     );
-    assert!(!session.is_stale(), "the previous document's reload error must be dropped");
+    assert!(
+        !session.is_stale(),
+        "the previous document's reload error must be dropped"
+    );
     assert!(session.consumed_idents_cache_for_test().is_none());
     assert_eq!(
         log.take(),
@@ -408,10 +421,15 @@ fn a_repaired_buffer_compiles_as_the_opened_file() {
     std::fs::write(&main, format!("import helper\n{UNPARSEABLE_SRC}\n")).unwrap();
     let main_str = main.to_str().unwrap();
 
-    let opened = session.open_document(&main).expect("open the rejected main.ri");
+    let opened = session
+        .open_document(&main)
+        .expect("open the rejected main.ri");
     assert!(
         !opened.compile_diagnostics.is_empty()
-            && opened.compile_diagnostics.iter().all(|d| d.severity == "Error"),
+            && opened
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.severity == "Error"),
         "the open carries the rejection's errors, got {:?}",
         opened.compile_diagnostics
     );
@@ -419,7 +437,9 @@ fn a_repaired_buffer_compiles_as_the_opened_file() {
     session
         .update_source(main_str, "import helper\nstructure {\n")
         .expect_err("a still-broken edit is rejected");
-    let still_broken = session.build_gui_state().expect("build after a rejected edit");
+    let still_broken = session
+        .build_gui_state()
+        .expect("build after a rejected edit");
     assert!(
         still_broken.meshes.is_empty(),
         "a second rejected edit must not serve the bracket's meshes"
@@ -435,7 +455,10 @@ fn a_repaired_buffer_compiles_as_the_opened_file() {
     );
 
     let repaired = session
-        .update_source(main_str, "import helper\nstructure Top { sub h = Helper() }\n")
+        .update_source(
+            main_str,
+            "import helper\nstructure Top { sub h = Helper() }\n",
+        )
         .expect("the repaired buffer compiles");
     let x = repaired
         .values
@@ -459,7 +482,10 @@ fn opening_an_unreadable_file_leaves_the_loaded_document() {
         .load_file(&super::examples_path("bracket.ri"))
         .expect("load bracket");
     let bracket_values = session.build_gui_state().expect("bracket state").values;
-    assert!(!bracket_values.is_empty(), "precondition: the bracket has values");
+    assert!(
+        !bracket_values.is_empty(),
+        "precondition: the bracket has values"
+    );
     let dir = tempfile::tempdir().unwrap();
 
     let err = session
