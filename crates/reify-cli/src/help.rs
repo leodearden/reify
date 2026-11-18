@@ -525,4 +525,35 @@ mod tests {
              {undescribed:?}"
         );
     }
+
+    #[test]
+    fn every_usage_banner_spells_cfg_as_its_flags_row_does() {
+        let fragment = format!("[{}]...", CFG_FLAG.synopsis);
+        assert!(
+            SUBCOMMANDS
+                .iter()
+                .any(|entry| entry.usage.contains(fragment.as_str())),
+            "no usage banner lists `{fragment}`, so there was nothing to check"
+        );
+        let documents_cfg: Vec<&str> = listed_flags()
+            .filter(|(_, flag)| flag.synopsis == CFG_FLAG.synopsis)
+            .map(|(name, _)| name)
+            .collect();
+        let offending: Vec<String> = SUBCOMMANDS
+            .iter()
+            .filter(|entry| {
+                let listed = entry.usage.matches(fragment.as_str()).count();
+                let respelled = entry.usage.matches("--cfg").count() != listed;
+                let unlisted = documents_cfg.contains(&entry.name) && listed == 0;
+                respelled || unlisted
+            })
+            .map(|entry| format!("`reify {}`: {:?}", entry.name, entry.usage))
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "a usage banner must list --cfg as `{fragment}`, the spelling its Flags row \
+             documents, and must list it whenever that row is shown (heuristic 10, \
+             informative); these banners do not: {offending:?}"
+        );
+    }
 }
