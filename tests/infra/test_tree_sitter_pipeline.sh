@@ -46,6 +46,43 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 [ -f "$SCRIPT_DIR/ts_outputs_manifest_lib.sh" ] || { echo "ERROR: ts_outputs_manifest_lib.sh not found at $SCRIPT_DIR/ts_outputs_manifest_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/ts_outputs_manifest_lib.sh"
 
+# cargo_inputs_lib.sh — cargo_inputs_fetch, for ts_require_cargo_inputs below. The
+# mk_ts_build_fixture crates build --offline with `cc = "1"` and no Cargo.lock, so
+# they resolve against CARGO_HOME. It defines no `test_` name, so run_tests'
+# discovery is unaffected. Rationale: tests/infra/README.md, "Cargo registry
+# inputs: a verdict never depends on the cache".
+[ -f "$SCRIPT_DIR/cargo_inputs_lib.sh" ] || { echo "ERROR: cargo_inputs_lib.sh not found at $SCRIPT_DIR/cargo_inputs_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+# ts_require_cargo_inputs — put the workspace's locked inputs for this host in
+# CARGO_HOME before the first test. The workspace's Cargo.lock pins the cc the
+# fixture crates then resolve offline. Ends the suite itself: exit 75 with the
+# INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the fetch
+# refuses for any other reason. The verdict line is test_helpers.sh's
+# test_summary_infra_unavailable shape; this suite cannot source that file, because
+# run_tests would discover its test_summary* functions as cases.
+ts_require_cargo_inputs() {
+    local host rc=0
+    host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') || host=""
+    if [ -z "$host" ]; then
+        echo "  ASSERTION FAILED: could not read the host triple from rustc -vV"
+        exit 1
+    fi
+    cargo_inputs_fetch --target "$host" --manifest-path "$REPO_ROOT/Cargo.toml" || rc=$?
+    case "$rc" in
+        0) ;;
+        "$CARGO_INPUTS_UNAVAILABLE_RC")
+            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $CARGO_INPUTS_UNAVAILABLE_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+            exit "$CARGO_INPUTS_UNAVAILABLE_RC"
+            ;;
+        *)
+            echo "  ASSERTION FAILED: cargo fetch --locked --target $host --manifest-path $REPO_ROOT/Cargo.toml refused (rc $rc): a defect in the tree"
+            exit 1
+            ;;
+    esac
+}
+ts_require_cargo_inputs
+
 TS_DIR="$REPO_ROOT/tree-sitter-reify"
 
 # The out-of-build freshness guard (task #5629 / esc-5392-1).  A build script that
@@ -546,8 +583,8 @@ ts_assert_outputs_manifest_matches_disk() {
 # cargo and real mtimes are all in play; only the grammar's SIZE changes.
 #
 # Detached from any parent workspace via an empty [workspace] table, and built
-# --offline against the shared registry (cc is already vendored for the real
-# workspace).
+# --offline against the inputs ts_require_cargo_inputs fetched at the top of this
+# file.
 mk_ts_build_fixture() {
     local dir="$1" variant="$2"
     mkdir -p "$dir/src" || return 1
