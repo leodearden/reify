@@ -4,7 +4,8 @@
 //! exactly as `reify check` does, and an import of a missing module fails both
 //! commands. Inputs are the committed fixture dirs `tests/fixtures/multi_file/`,
 //! `tests/fixtures/multi_file_cfg/` and `tests/fixtures/multi_file_missing_import/`.
-//! The same behaviour for `test`, `report`, `explain` and `doc` (δ) is pinned in `harness_cli_surface/cli_test_report_explain_doc_multi_file.rs`.
+//! Import resolution and `--cfg` selection for `test`, `report`, `explain` and `doc` (δ)
+//! are pinned in `harness_cli_surface/cli_test_report_explain_doc_multi_file.rs`.
 
 use crate::common;
 
