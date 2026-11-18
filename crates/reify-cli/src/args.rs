@@ -459,4 +459,40 @@ mod tests {
         assert!(cfg.flags.contains("feat"));
         assert_eq!(rest, strings(&["f.ri"]));
     }
+
+    #[test]
+    fn parse_single_file_arg_returns_the_lone_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["f.ri"]), "explain", "usage"),
+            Ok("f.ri".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_unknown_double_dash_flag() {
+        // The flag is refused whether it comes before or after the file.
+        for argv in [["--strict", "f.ri"], ["f.ri", "--strict"]] {
+            assert_eq!(
+                parse_single_file_arg(&strings(&argv), "explain", "usage"),
+                Err(ExitCode::FAILURE),
+                "argv: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_extra_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["a.ri", "b.ri"]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_a_missing_file() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&[]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
+    }
 }
