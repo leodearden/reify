@@ -26,10 +26,11 @@ use reify_test_support::{
 };
 
 use crate::engine::{
-    EngineSession, FeaConvergenceEmitter, FeaDiagnosticsEmitter, SolveCancellationSink,
+    CompileFailureKind, EngineSession, FeaConvergenceEmitter, FeaDiagnosticsEmitter,
+    SolveCancellationSink,
 };
 use crate::tests::test_helpers::{rigid_mass_props_fixture_path, rigid_mass_props_session};
-use crate::types::{FeaConvergenceInfo, FeaDiagnosticInfo};
+use crate::types::{FeaConvergenceInfo, FeaDiagnosticInfo, FileData};
 
 /// What one successful reload of a non-FEA design records, in order.
 const ONE_RELOAD: [&str; 4] = [
@@ -332,4 +333,144 @@ fn load_from_compiled_builds_its_state_over_the_unresolved_source() {
         .diagnostic(reify_core::Diagnostic::warning("injected"))
         .build();
     let _ = mock_session().load_from_compiled(compiled, "test");
+}
+
+#[test]
+fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() {
+    let mut session = primed_rigid_session();
+    assert!(
+        !session.geometry_derived_cache_for_test().is_empty(),
+        "precondition: the rigid fixture must leave mass-prop values retained"
+    );
+    let log = TelemetryLog::default();
+    log.install_on(&mut session);
+    log.take();
+    let (_dir, broken) = source_file("broken.ri", UNPARSEABLE_SRC);
+
+    let state = session
+        .open_document(&broken)
+        .expect("a readable file opens even when the engine rejects its source");
+
+    assert!(state.meshes.is_empty(), "the previous document's meshes must not be served");
+    assert!(state.values.is_empty(), "the previous document's values must not be served");
+    assert_eq!(
+        state.files,
+        vec![FileData {
+            path: "broken.ri".to_owned(),
+            content: UNPARSEABLE_SRC.to_owned(),
+        }]
+    );
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "the rejection's diagnostics must reach the diagnostics panel"
+    );
+    assert!(
+        state
+            .compile_diagnostics
+            .iter()
+            .all(|d| d.severity == "Error" && d.file_path == "broken.ri"),
+        "every diagnostic is the opened file's error, got {:?}",
+        state.compile_diagnostics
+    );
+
+    let failure = session
+        .compile_failure_for_test()
+        .expect("the rejection is recorded");
+    assert_eq!(failure.kind, CompileFailureKind::ColdStart);
+    assert_eq!(failure.source, UNPARSEABLE_SRC);
+    assert!(
+        session.geometry_derived_cache_for_test().is_empty(),
+        "the previous document's geometry-derived values must be dropped"
+    );
+    assert!(!session.is_stale(), "the previous document's reload error must be dropped");
+    assert!(session.consumed_idents_cache_for_test().is_none());
+    assert_eq!(
+        log.take(),
+        Vec::<&str>::new(),
+        "a rejected compile must neither solve nor emit"
+    );
+}
+
+#[test]
+fn a_repaired_buffer_compiles_as_the_opened_file() {
+    let mut session = mock_session();
+    session
+        .load_file(&super::examples_path("bracket.ri"))
+        .expect("load bracket");
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Length = 10mm }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.ri");
+    std::fs::write(&main, format!("import helper\n{UNPARSEABLE_SRC}\n")).unwrap();
+    let main_str = main.to_str().unwrap();
+
+    let opened = session.open_document(&main).expect("open the rejected main.ri");
+    assert!(
+        !opened.compile_diagnostics.is_empty()
+            && opened.compile_diagnostics.iter().all(|d| d.severity == "Error"),
+        "the open carries the rejection's errors, got {:?}",
+        opened.compile_diagnostics
+    );
+
+    session
+        .update_source(main_str, "import helper\nstructure {\n")
+        .expect_err("a still-broken edit is rejected");
+    let still_broken = session.build_gui_state().expect("build after a rejected edit");
+    assert!(
+        still_broken.meshes.is_empty(),
+        "a second rejected edit must not serve the bracket's meshes"
+    );
+    assert!(
+        !still_broken.compile_diagnostics.is_empty()
+            && still_broken
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path == "main.ri"),
+        "the rejected edit is a cold start of main.ri, got {:?}",
+        still_broken.compile_diagnostics
+    );
+
+    let repaired = session
+        .update_source(main_str, "import helper\nstructure Top { sub h = Helper() }\n")
+        .expect("the repaired buffer compiles");
+    let x = repaired
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("the import resolves from main.ri's directory");
+    assert_eq!((x.value.as_str(), x.unit.as_str()), ("10", "mm"));
+    assert!(
+        repaired
+            .values
+            .iter()
+            .all(|v| !v.entity_path.starts_with("Bracket")),
+        "the repaired buffer compiles as main.ri, not as the bracket"
+    );
+}
+
+#[test]
+fn opening_an_unreadable_file_leaves_the_loaded_document() {
+    let mut session = mock_session();
+    session
+        .load_file(&super::examples_path("bracket.ri"))
+        .expect("load bracket");
+    let bracket_values = session.build_gui_state().expect("bracket state").values;
+    assert!(!bracket_values.is_empty(), "precondition: the bracket has values");
+    let dir = tempfile::tempdir().unwrap();
+
+    let err = session
+        .open_document(&dir.path().join("missing.ri"))
+        .expect_err("an unreadable file does not open");
+
+    assert!(err.starts_with("Error reading"), "got {err:?}");
+    assert!(session.compile_failure_for_test().is_none());
+    assert_eq!(
+        session.build_gui_state().expect("bracket state").values,
+        bracket_values,
+        "the loaded document is untouched"
+    );
 }
