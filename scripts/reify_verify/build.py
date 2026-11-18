@@ -43,7 +43,7 @@ from reify_verify import (
     testregion,
 )
 from reify_verify.bashcall import BashCall, BashExport
-from reify_verify.diagnostics import ERROR, WARNING
+from reify_verify.diagnostics import ERROR, WARNING, error_from
 from reify_verify.environment import (
     NextestAvailable,
     NextestBroken,
@@ -89,19 +89,34 @@ from reify_verify.testregion import PassWalls, RegionInputs, TestRegion
 
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
 HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
-# The libs verify.sh sources at load, in its order; the first missing one refuses the run.
-LOAD_TIME_LIBS = tuple(
-    f"scripts/{name}"
-    for name in (
-        "occt-scope-lib.sh",
-        "release-scope-lib.sh",
-        "affected-crates-lib.sh",
-        "lib_test_semaphore.sh",
-        "cpu-admit.sh",
-        "lib_proc_reaper.sh",
-        "heavy-test-filter-lib.sh",
-        "lib_git_env_scrub.sh",
-    )
+
+
+@dataclass(frozen=True)
+class LoadTimeLib:
+    """A lib verify.sh sources at load, and how the bash guard that finds it missing first refuses."""
+
+    path: str
+    guard: str = "verify.sh"
+    exit_code: int = 1
+
+    def refusal(self) -> Refused:
+        return Refused(
+            (f"{error_from(self.guard)}{self.path} not found next to {self.guard}",),
+            self.exit_code,
+        )
+
+
+# The libs verify.sh sources at load, in its order. The first missing one refuses the run as the bash
+# guard that finds it first does: release-scope-lib.sh checks affected-crates-lib.sh before verify.sh does.
+LOAD_TIME_LIBS = (
+    LoadTimeLib("scripts/occt-scope-lib.sh"),
+    LoadTimeLib("scripts/release-scope-lib.sh"),
+    LoadTimeLib("scripts/affected-crates-lib.sh", guard="release-scope-lib.sh", exit_code=2),
+    LoadTimeLib("scripts/lib_test_semaphore.sh"),
+    LoadTimeLib("scripts/cpu-admit.sh"),
+    LoadTimeLib("scripts/lib_proc_reaper.sh"),
+    LoadTimeLib("scripts/heavy-test-filter-lib.sh"),
+    LoadTimeLib("scripts/lib_git_env_scrub.sh"),
 )
 EMPTY_HEAVY_FILTER = (
     f"{ERROR}{HEAVY_FILTER.name} empty after sourcing {Path(HEAVY_FILTER.lib).name}"
@@ -164,8 +179,8 @@ class Decided:
 def _start(invocation: Invocation, env: Mapping[str, str], repo_root: Path) -> Started | Refused:
     """bash's load-time checks, then the timeout knobs and the priority, under the raw env."""
     for lib in LOAD_TIME_LIBS:
-        if not os.path.isfile(repo_root / lib):
-            return Refused((f"{ERROR}{lib} not found next to verify.sh",), 1)
+        if not os.path.isfile(repo_root / lib.path):
+            return lib.refusal()
     heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
     if not heavy_filter:
         return Refused((EMPTY_HEAVY_FILTER,), 1)
