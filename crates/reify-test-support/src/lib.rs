@@ -61,6 +61,7 @@ pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
 pub use orphan_audit::*;
+pub use panic_capture::*;
 pub use skip_sets::*;
 pub use temp_dirs::*;
 pub use tolerance_fixtures::*;

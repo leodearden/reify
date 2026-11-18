@@ -1,6 +1,24 @@
 //! Captures the message a closure panics with, for tests that assert several
 //! substrings of one panic — which `#[should_panic(expected = ..)]` cannot.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+/// Run `f`, which must panic, and return its panic message. Panics if `f`
+/// returns, or if the payload is neither `&str` nor `String`, so no
+/// placeholder text can satisfy a caller's `contains` check.
+#[track_caller]
+pub fn panic_message_of<R>(f: impl FnOnce() -> R) -> String {
+    let Err(payload) = catch_unwind(AssertUnwindSafe(f)) else {
+        panic!("expected a panic, but the call returned normally");
+    };
+    let Some(message) = reify_core::panic_payload_str(payload.as_ref()) else {
+        panic!(
+            "the panic payload is neither a &str nor a String, so it carries no message to assert on"
+        );
+    };
+    message.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::panic_message_of;
