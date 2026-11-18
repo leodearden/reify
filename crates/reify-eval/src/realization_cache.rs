@@ -112,7 +112,8 @@ pub enum ConversionSlot {
 
 /// The engine's cached value per realization: the terminal handle and the swept
 /// kind its cold build classified, which a hit restores. A conversion
-/// intermediate carries `swept_kind: None`.
+/// intermediate carries `swept_kind: None`. S2 κ #9263 folds this field into
+/// its own cache value type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealizationCacheEntry {
     pub handle: KernelHandle,

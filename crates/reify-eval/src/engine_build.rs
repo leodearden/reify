@@ -7193,7 +7193,7 @@ impl Engine {
     /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
     ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
     ///    miss) returns `false` with zero side effects on `outputs` — no
-    ///    push/insert on any output view, and the fail-closed
+    ///    push/insert on any output view (`swept_kind_table` included), and the fail-closed
     ///    `topology_attribute_table` debug_assert (invariant #4) never runs.
     ///    Pinned by
     ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
@@ -7206,11 +7206,13 @@ impl Engine {
     /// 3. **On a hit, the FULL cold-path side-effect set — and nothing
     ///    else.** `step_handles` push, `named_steps` + `named_step_reprs`
     ///    insert, `produced_repr_out` write, the `debug_assert_eq!`
-    ///    consistency guard; dispatch counters are left at their entry
-    ///    values, and the function returns before the op loop ever runs.
-    ///    Pinned by
+    ///    consistency guard, and the entry's swept kind (if any) recorded into
+    ///    `swept_kind_table` under the cached handle's id; dispatch counters
+    ///    are left at their entry values, and the function returns before the
+    ///    op loop ever runs. Pinned by
     ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
-    ///    (single hit) and, cold-vs-warm,
+    ///    and `probe_realization_cache_hit_on_entry_without_swept_kind_records_none`
+    ///    (single hit) and, cold-vs-warm over a Box and a swept fixture,
     ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
     /// 4. **On a hit, the cache-served handle has NO `topology_attribute_table`
     ///    entry — enforced fail-closed.** After #4351's `KernelHandle`
@@ -7250,7 +7252,8 @@ impl Engine {
         // requires a name to write into the map), probe the per-engine
         // `RealizationCache` at `(entity_id, cache_repr, demanded_tol)`. On
         // hit we push the cached terminal handle, write
-        // `named_steps[name] = cached_handle`, and return `true` —
+        // `named_steps[name] = cached_handle`, record the entry's swept kind,
+        // and return `true` —
         // preserving the post-condition the success path establishes in the
         // caller, [`Self::execute_realization_ops`]. On miss (or when either
         // guard is `None`) we return `false`; the caller then falls through
@@ -7473,8 +7476,8 @@ impl Engine {
     /// helper delegates to [`Self::probe_realization_cache`], which — on a
     /// hit — applies the realization's cold-path success side effects
     /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
-    /// `produced_repr_out` write, and the fail-closed
-    /// `topology_attribute_table` debug_assert) and returns early, before
+    /// `produced_repr_out` write, the cached swept-kind record, and the
+    /// fail-closed `topology_attribute_table` debug_assert) and returns early, before
     /// this helper's `RealizationOutputs` destructure ever runs. See that
     /// method's `# Invariants` doc (INV-BUILD-3) for the full
     /// guard/fallback/side-effect/assert contract and its pinning tests.
@@ -9046,7 +9049,9 @@ impl Engine {
             //    tolerance was threaded in. The bucket's partial-order rule
             //    may reject this insert if a tighter or equal entry is
             //    already cached; either way the post-condition "a satisfying
-            //    entry exists at `(entity, BRep, tol)`" holds.
+            //    entry exists at `(entity, BRep, tol)`" holds. The entry carries
+            //    the terminal's own swept kind from (1), and None when a
+            //    post-loop VolumeMesh/Voxel edge replaced that terminal.
             //
             //    **Symmetric insert↔lookup gate (task 3176)**: we only insert
             //    when BOTH `demanded_tol.is_some()` AND
