@@ -626,3 +626,60 @@ fn rejected_default_never_displaces_earlier_accepted_one() {
     );
     assert_material_is_steel(&module, "Bracket");
 }
+
+// ─── where a value's non-error diagnostics are reported ─────────────────────
+
+/// How many `UnresolvedFunction` diagnostics name `fn_name`. Filtered by name
+/// because `compile_source_with_stdlib` also carries prelude diagnostics.
+fn unresolved_function_count(module: &CompiledModule, fn_name: &str) -> usize {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::UnresolvedFunction) && d.message.contains(fn_name)
+        })
+        .count()
+}
+
+/// A rejected value is compiled only at its declaration, so that is where its
+/// warning must be reported.
+#[test]
+fn rejected_default_reports_its_value_warning_at_declaration() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = nosuch_ambient_fn(1.0)\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        unresolved_function_count(&module, "nosuch_ambient_fn"),
+        1,
+        "the rejected value's warning explains the mismatch; got: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "got: {:?}",
+        module.diagnostics
+    );
+}
+
+/// An accepted value's warnings are reported by its injection site; the
+/// declaration site does not report them a second time.
+#[test]
+fn accepted_default_value_warning_is_not_doubled() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = Material(name: \"s\", density: nosuch_density_fn(1.0) * 1kg/m^3, \
+         youngs_modulus: 200GPa)\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        unresolved_function_count(&module, "nosuch_density_fn"),
+        1,
+        "got: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        cell(&module, "Bracket", "material").default_expr.is_some(),
+        "the accepted value is injected"
+    );
+}
