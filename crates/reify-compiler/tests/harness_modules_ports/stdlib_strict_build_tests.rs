@@ -162,8 +162,7 @@ fn fingerprint(modules: &[CompiledModule]) -> Vec<ModuleFingerprint> {
 /// cells, trait type params and requirements, function signatures and type
 /// aliases. `content_hash` does not cover value-cell types, so a resolution
 /// that registration order could change would slip past it alone. Type
-/// aliases are a set keyed by name whose `Vec` order follows a `HashMap`, and
-/// so differs between any two builds; they are rendered sorted by name.
+/// aliases are rendered in their `Vec` order.
 fn declared_types(module: &CompiledModule) -> String {
     let cells: Vec<_> = module
         .templates
@@ -194,12 +193,11 @@ fn declared_types(module: &CompiledModule) -> String {
         .iter()
         .map(|f| (&f.name, &f.params, &f.return_type))
         .collect();
-    let mut aliases: Vec<_> = module
+    let aliases: Vec<_> = module
         .type_aliases
         .iter()
         .map(|a| (&a.name, &a.type_params, &a.resolved_type))
         .collect();
-    aliases.sort_by_key(|(name, _, _)| *name);
     format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}")
 }
 
@@ -266,6 +264,25 @@ fn stdlib_build_output_is_identical_under_any_registration_order() {
             panic!("the {label} registration order changes the stdlib build at {difference}");
         }
     }
+}
+
+#[test]
+fn a_stdlib_modules_type_aliases_come_out_in_name_order() {
+    let names_in_reverse = ('a'..='z').rev().map(|c| format!("T{c}"));
+    let source: String = std::iter::once("module std.zz_aliases\n".to_string())
+        .chain(names_in_reverse.map(|name| format!("pub type {name} = Real\n")))
+        .collect();
+    let built = build_stdlib_modules(&[("std.zz_aliases", &source)]);
+    let names: Vec<&str> = built[0]
+        .type_aliases
+        .iter()
+        .map(|alias| alias.name.as_str())
+        .collect();
+    let expected: Vec<String> = ('a'..='z').map(|c| format!("T{c}")).collect();
+    assert_eq!(
+        names, expected,
+        "a module's type aliases come out in name order, whatever their source order"
+    );
 }
 
 #[test]
