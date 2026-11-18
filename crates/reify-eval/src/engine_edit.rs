@@ -1379,8 +1379,9 @@ impl Engine {
                 //
                 // A sub-instance cell mints in its instance's scope through
                 // `symbolic_cell_mint::InstanceMintScope` (#8102), which also
-                // serves the collection resize and grown-instance reseed below;
-                // its doc lists every site, and it owns the order and
+                // serves the resolution reseed, collection resize and
+                // grown-instance reseed below; its doc lists every site and
+                // the one non-minting writer, and it owns the order and
                 // diagnostics policy. Only a cell it answers
                 // `InstanceMint::NotAnInstanceCell` for takes the inline
                 // template-scope arm, geometry handle first, then topology
@@ -2275,6 +2276,8 @@ impl Engine {
                                 // and this is a behavioural no-op today. If a future
                                 // edit-path solver ever advances new_snapshot.version,
                                 // the invariant is already upheld without a code change.
+                                //
+                                // No instance mint here: see `InstanceMintScope`'s doc.
                                 self.reeval_cone_cell(
                                     node,
                                     mid,
