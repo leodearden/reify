@@ -101,7 +101,7 @@ fn check_parse_error_exits_failure() {
         !status.success(),
         "reify check should exit non-zero for file with parse errors.\nstderr: {stderr}"
     );
-    assert_parse_error_reports_fault_position(fixture, &stderr);
+    common::assert_parse_error_reports_fault_position(fixture, &stderr);
 }
 
 #[test]

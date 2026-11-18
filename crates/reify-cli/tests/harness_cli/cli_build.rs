@@ -10,7 +10,7 @@ fn build_parse_error_exits_failure() {
         "reify build should exit non-zero for file with parse errors.\nstderr: {}",
         result.stderr
     );
-    crate::cli_check::assert_parse_error_reports_fault_position(fixture, &result.stderr);
+    common::assert_parse_error_reports_fault_position(fixture, &result.stderr);
     assert!(
         !result.output_path.exists(),
         "no output file should be written on parse error"
