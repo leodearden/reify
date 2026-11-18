@@ -25,8 +25,8 @@ the UNPATCHED extra binaries instead: linuxdeploy deploys their dependencies
 itself, by the binary's own RUNPATH.
 
 Contract with scripts/build-bundle.sh: stdout stays empty; every diagnostic goes
-to stderr; exit 0 means the overlay was written and the staged layout resolves
-in the reference image.
+to stderr; exit 0 means the overlay was written and the staged layout resolves,
+with every symbol bound, in the reference image.
 
 Usage:
   bundle_closure.py --tauri-conf gui/src-tauri/tauri.conf.json --stage DIR \\
@@ -363,11 +363,14 @@ def _copy_writable(source: str | Path, dest: Path, mode: int) -> None:
     dest.chmod(mode)
 
 
+def _ldd_command(bind_symbols: bool) -> str:
+    return "ldd -r" if bind_symbols else "ldd"
+
+
 def probe_script(product_name: str, *, bind_symbols: bool) -> str:
     """bind_symbols makes ldd process every relocation and report each symbol no
     loaded object defines."""
     lib_dir = "/probe" + installed_lib_dir(product_name)
-    ldd = "ldd -r" if bind_symbols else "ldd"
     return (
         "set -eu\n"
         f"for f in {shlex.quote(lib_dir)}/*; do\n"
@@ -377,7 +380,7 @@ def probe_script(product_name: str, *, bind_symbols: bool) -> str:
         "for f in /probe/usr/bin/*; do\n"
         f"  patchelf --set-rpath {shlex.quote(executable_runpath(product_name))} \"$f\"\n"
         "done\n"
-        f"{ldd} /probe/usr/bin/*\n")
+        f"{_ldd_command(bind_symbols)} /probe/usr/bin/*\n")
 
 
 def docker_probe(image: str, stage: Path, product_name: str,
@@ -388,7 +391,7 @@ def docker_probe(image: str, stage: Path, product_name: str,
     bind_symbols it runs `ldd -r`, which also reports each undefined symbol, but
     exits non-zero while any library is not found: use it on a converged layout."""
     script = probe_script(product_name, bind_symbols=bind_symbols)
-    mode = "ldd -r" if bind_symbols else "ldd"
+    ldd = _ldd_command(bind_symbols)
 
     def probe(staged: frozenset) -> LddReport:
         for name, path in binaries.items():
@@ -399,7 +402,7 @@ def docker_probe(image: str, stage: Path, product_name: str,
             dest = staged_lib_dir(stage, product_name) / soname
             if not dest.exists():
                 _copy_writable(host_resolved[soname], dest, 0o644)
-        _log(f"probing {image} with {len(staged)} staged libraries ({mode})")
+        _log(f"probing {image} with {len(staged)} staged libraries ({ldd})")
         return parse_ldd(_run([
             "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{stage}:/probe", image, "sh", "-c", script]))
