@@ -4306,6 +4306,12 @@ impl Engine {
                 );
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &new_demand, &new_trace_map);
+                let wave2_ctx = EditSourceWalkCtx {
+                    graph: &new_snapshot.graph,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    runtime_sink: &runtime_sink,
+                };
 
                 for node_id in &wave2_eval {
                     if let NodeId::Value(vcid) = node_id
@@ -4313,18 +4319,17 @@ impl Engine {
                         && let Some(ref expr) = node.default_expr
                     {
                         let start = Instant::now();
-                        // Determinacy view now matches edit_param's wave2
-                        // twin (#7114). Containment stays out of reach here,
-                        // as at every edit_source eval site: cell_eval_ctx's
-                        // `containment: self` is E0502 while
+                        // Evaluated as the main walk evaluates a cell, so a
+                        // sub-instance cell mints in its instance's scope
+                        // (#8102); the determinacy view matches edit_param's
+                        // wave2 twin (#7114). Containment stays out of reach
+                        // here, as at every edit_source eval site:
+                        // cell_eval_ctx's `containment: self` is E0502 while
                         // `pending_warm_seeds` (step 4c) holds `&mut
                         // self.warm_pool` until the (14b) drain below.
-                        let val = reify_expr::eval_expr(
-                            expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                .with_determinacy(&new_snapshot.values)
-                                .with_runtime_diagnostics(&runtime_sink),
-                        );
+                        let val = wave2_ctx
+                            .eval_cell(&values, &new_snapshot.values, vcid, node.kind, expr)
+                            .value;
 
                         // Commit via the cell-commit primitive (task #6423):
                         // atomically writes values/snapshot/cache/journal
@@ -4336,7 +4341,7 @@ impl Engine {
                         //
                         // `commit_cell_result_at(start, ..)`, not the plain
                         // `commit_cell_result`: `start` is captured above,
-                        // before `reify_expr::eval_expr`, so the emitted
+                        // before `eval_cell`, so the emitted
                         // Started/Completed pair brackets the full
                         // resolution rather than just the commit itself —
                         // see `commit_cell_result_at`'s doc (#5238
