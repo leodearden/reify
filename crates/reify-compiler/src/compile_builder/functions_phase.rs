@@ -254,9 +254,7 @@ mod early_default_recheck {
     /// Each default slot's identity, for comparing two compilations of the same
     /// defaults: its `content_hash` (what the engine caches by) and its
     /// `result_type` (which a literal's hash leaves out).
-    pub(super) fn default_fingerprints(
-        defaults: &[Option<CompiledExpr>],
-    ) -> Vec<Option<(ContentHash, Type)>> {
+    fn default_fingerprints(defaults: &[Option<CompiledExpr>]) -> Vec<Option<(ContentHash, Type)>> {
         defaults
             .iter()
             .map(|slot| {
