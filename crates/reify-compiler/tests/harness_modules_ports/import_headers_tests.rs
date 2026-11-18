@@ -1011,15 +1011,14 @@ fn inserting_the_missing_imports_under_a_cfg_leaves_nothing_missing_under_it() {
 #[test]
 fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off() {
     let parsed = parse_clean(
-        "import std.fake.a
-         #cfg(wide)
-import std.fake.b.Thing
-         #cfg(wide)
-#cfg(tall)
-import std.fake.c
-
-         structure def S {}
-",
+        "import std.fake.a\n\
+         #cfg(wide)\n\
+         import std.fake.b.Thing\n\
+         #cfg(wide)\n\
+         #cfg(tall)\n\
+         import std.fake.c\n\
+         \n\
+         structure def S {}\n",
         SUBJECT_PATH,
     );
     let split = |cfg: &CfgSet| {
