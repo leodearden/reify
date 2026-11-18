@@ -18,7 +18,9 @@
 #     - empty / whitespace-only override           => rc1  (empty set, skip)
 #     - mixed set containing one sensitive crate   => rc0  (required)
 #     - strict prefix/suffix of a declared crate   => rc1  (whole-line match)
+#     - glob metacharacter in a word               => rc1  (matched literally)
 #     - affected_crates fails (real-merge arm)     => rc0  (fail-wide)
+#     - declared set unreadable (file missing)     => rc0  (fail-wide)
 #   The sensitive crate name is read from release_declared_set (the single source
 #   of truth), never hard-coded, so this test cannot drift from
 #   scripts/release-sensitive-crates.txt.
@@ -144,6 +146,16 @@ assert "strict prefix of a release-sensitive crate (${_SENSITIVE_CRATE%?}) => SK
 assert "strict suffix of a release-sensitive crate (${_SENSITIVE_CRATE#?}) => SKIPPABLE (rc1, whole-line match)" \
     _predicate_skips "${_SENSITIVE_CRATE#?}"
 
+# A word is matched literally, never as a pattern. The matcher's quoted "$1" keeps it so: unquoted,
+# the `?` below would stand for the dropped last character, the word would read as the declared
+# crate, and the answer would be REQUIRED. Pathname expansion is off for this case, because the
+# predicate's word loop would otherwise rewrite the word into any file the working directory holds
+# under that pattern (from crates/, the declared crate's own directory).
+_no_pathname_expansion() { ( set -f; "$@" ); }  # CHECK <arg>...
+
+assert "glob metacharacter in a word (${_SENSITIVE_CRATE%?}?) is matched literally => SKIPPABLE (rc1)" \
+    _no_pathname_expansion _predicate_skips "${_SENSITIVE_CRATE%?}?"
+
 echo ""
 echo "--- UNIT: the real-merge arm fails wide when affected_crates fails (task 10086) ---"
 
@@ -177,6 +189,23 @@ assert "affected_crates killed after answering $_NONSENSITIVE_CRATE => REQUIRED 
 
 assert "affected_crates answers $_NONSENSITIVE_CRATE (control) => SKIPPABLE (rc1)" \
     _skippable _run_delta_predicate _affected_crates_answers "$_REAL_ARM_CHANGED_FILE"
+
+echo ""
+echo "--- UNIT: the declared-set read fails wide (task 10086) ---"
+
+# Both arms read the declared set after the affected set. A read that fails, here a missing file,
+# which release_declared_set answers with status 1, must answer REQUIRED. Taken for an empty
+# declared set it would answer SKIPPABLE for every non-ALL crate. The control reads a declared file
+# that exists, so the two cases differ only in whether the file is there.
+_DECLARED_FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-declared-fixture.XXXXXX")"
+_TMPDIRS+=("$_DECLARED_FIXTURE_DIR")
+echo "reify-declared-fixture" > "$_DECLARED_FIXTURE_DIR/present.txt"
+
+assert "declared file missing => REQUIRED (rc0, fail-wide)" \
+    _predicate_requires "$_NONSENSITIVE_CRATE" "$_DECLARED_FIXTURE_DIR/absent.txt"
+
+assert "declared file present (control): the same crate => SKIPPABLE (rc1)" \
+    _predicate_skips "$_NONSENSITIVE_CRATE" "$_DECLARED_FIXTURE_DIR/present.txt"
 
 echo ""
 echo "--- UNIT: SIGPIPE regression (task 9911) ---"
