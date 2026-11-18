@@ -324,6 +324,7 @@ pub fn compile_source_with_stdlib_allow_parse_errors(
 ///
 /// # Panics
 /// Panics if there are parse errors or if the compiled module has no templates.
+#[track_caller]
 pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
@@ -340,14 +341,14 @@ pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic
 ///
 /// # Panics
 /// Panics if there are parse errors or if no template with `name` is found.
+#[track_caller]
 pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
-    let template = compiled
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("compile_template: template {:?} not found", name));
+    // let-else, not a closure: see tests/track_caller_panic_location.rs
+    let Some(template) = compiled.templates.into_iter().find(|t| t.name == name) else {
+        panic!("compile_template: template {:?} not found", name);
+    };
     (template, diagnostics)
 }
 
