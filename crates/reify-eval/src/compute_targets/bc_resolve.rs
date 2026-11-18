@@ -146,11 +146,10 @@ pub fn build_face_anchors(
     anchors
 }
 
-/// Test-only builder for the `Value::Selector(Leaf{Named(name)})` shape the
-/// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
-/// eval time, targeting a kernel-less `TestBody` geometry cell.
+/// Test-only `Value::Selector` leaf of `kind` running `query`, targeting a
+/// kernel-less `TestBody` geometry cell — the one home for that target shape.
 #[cfg(test)]
-pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> Value {
+pub(crate) fn leaf_selector(kind: reify_core::ty::SelectorKind, query: LeafQuery) -> Value {
     use reify_core::identity::RealizationNodeId;
     use reify_ir::value::GeometryHandleRef;
     let target = GeometryHandleRef {
@@ -159,9 +158,17 @@ pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str
         kernel_handle: None,
     };
     Value::Selector(
-        SelectorValue::leaf(kind, target, LeafQuery::Named(name.into()))
-            .expect("LeafQuery::Named accepts any SelectorKind"),
+        SelectorValue::leaf(kind, target, query)
+            .unwrap_or_else(|e| panic!("leaf_selector: {kind:?} leaf rejected its query: {e:?}")),
     )
+}
+
+/// Test-only builder for the `Value::Selector(Leaf{Named(name)})` shape the
+/// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
+/// eval time, targeting a kernel-less `TestBody` geometry cell.
+#[cfg(test)]
+pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> Value {
+    leaf_selector(kind, LeafQuery::Named(name.into()))
 }
 
 #[cfg(test)]
