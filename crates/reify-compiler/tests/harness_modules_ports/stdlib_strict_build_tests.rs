@@ -135,6 +135,11 @@ fn a_stdlib_import_of_a_module_outside_the_set_fails_the_stdlib_build() {
 }
 
 // ─── boundary #8 (NS-M3): registration order is unobservable ───────────────
+//
+// Precondition: the fingerprint compares `type_aliases` in `Vec` order, so it
+// relies on the general compile contract that `CompiledModule.type_aliases`
+// comes out in name order. That contract is pinned here, by
+// `a_stdlib_modules_type_aliases_come_out_in_name_order`.
 
 /// One module of a build, as far as NS-M3 is concerned. A build's fingerprint
 /// is the Vec of these in OUTPUT order, so module order is part of it.

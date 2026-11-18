@@ -352,9 +352,9 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
 ///
 ///    Note what is NOT a reason: `type_expr` being `None`. Every entry in
 ///    `compiled.type_aliases` has `type_expr == Some(..)`, parameterized or
-///    not — both `resolve_alias_dfs` registration sites clone it
-///    unconditionally (`crates/reify-compiler/src/type_resolution.rs:3790`
-///    and `:3827`) and `into_compiled` carries it through verbatim. The `None`
+///    not — `resolve_alias_dfs` clones it unconditionally at both of its
+///    registrations, the cycle placeholder and the resolved path, and
+///    `into_compiled` carries it through verbatim. The `None`
 ///    arm arises only for NON-PARAMETRIC PRELUDE entries built by
 ///    `from_compiled_for_prelude`, and those are excluded from
 ///    `type_aliases` by `seeded_names`. So `type_expr.is_none()` is not a
