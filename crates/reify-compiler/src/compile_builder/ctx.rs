@@ -132,13 +132,6 @@ pub(crate) struct CompilationCtx {
     /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
     /// and `phase_entities`.
     pub(crate) resolution_structure_names: HashSet<String>,
-    /// The module's own `structure def` names, top-level and purpose-nested
-    /// (first definition only; occurrences excluded). Recorded by
-    /// `pre_pass::collect_decl_refs`. The fn-body declaration-order rule
-    /// (task #5494) is keyed on this set: unlike `resolution_structure_names` it
-    /// holds no prelude or occurrence names, which never enter the ctor view the
-    /// way a local structure does.
-    pub(crate) local_structure_def_names: HashSet<String>,
     /// Names this module DECLARES as functions: every local `fn` declaration +
     /// every prelude function. Populated by `names_phase::build_resolution_names`
     /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
@@ -191,7 +184,6 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
-            local_structure_def_names: HashSet::new(),
             declared_fn_names: HashSet::new(),
         }
     }
@@ -225,9 +217,20 @@ impl CompilationCtx {
     /// structures (top-level and purpose-nested) and occurrences —
     /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
     pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+        self.local_names_of_kinds(&["structure", "occurrence"])
+    }
+
+    /// The module's own `structure def` names, top-level and purpose-nested,
+    /// first definition only, with no occurrence or prelude names: the key of
+    /// the fn-body declaration-order rule (task #5494).
+    pub(crate) fn local_structure_def_names(&self) -> HashSet<String> {
+        self.local_names_of_kinds(&["structure"])
+    }
+
+    fn local_names_of_kinds(&self, kinds: &[&str]) -> HashSet<String> {
         self.seen_entity_names
             .iter()
-            .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+            .filter(|(_, (_, kind))| kinds.contains(kind))
             .map(|(name, _)| name.clone())
             .collect()
     }

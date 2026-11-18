@@ -186,8 +186,7 @@ pub(crate) struct DeclRefs<'a> {
 /// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
 ///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
 ///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
-///   namespace), and records each `Structure` name — top-level or nested in a
-///   `Purpose` — in `ctx.local_structure_def_names`,
+///   namespace); a `Structure` nested in a `Purpose` reserves its name too,
 /// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
 ///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
 ///
@@ -235,9 +234,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 }
             }
             Declaration::Structure(structure) => {
-                if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
-                    ctx.local_structure_def_names.insert(structure.name.clone());
-                }
+                ctx.record_or_report_duplicate(&structure.name, structure.span, "structure");
             }
             Declaration::Occurrence(occurrence) => {
                 ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");
@@ -260,9 +257,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 // rule as a top-level structure def
                 // (`DiagnosticCode::StructureDeclaredAfterFunction`).
                 for s in &p.structures {
-                    if ctx.record_or_report_duplicate(&s.name, s.span, "structure") {
-                        ctx.local_structure_def_names.insert(s.name.clone());
-                    }
+                    ctx.record_or_report_duplicate(&s.name, s.span, "structure");
                 }
             }
             // Import handled in pass 2
