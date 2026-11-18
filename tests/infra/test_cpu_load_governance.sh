@@ -392,6 +392,9 @@ printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.
 export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 
 _cleanup_all() {
+    # Acts only in the shell that installed the EXIT trap: a launch clone TERMed before exec runs it too (task 10124).
+    # Keep this a [[ ]] or-list: [ ] and if-forms run the body anyway in some clones; see Cycle CLEANUP-CLONE.
+    [[ "${BASHPID:-$$}" == "$$" ]] || return 0
     # Kill any lingering ROW2_3 mix background processes (crash-path reap).
     if [ -n "${_ALL_MIX_PIDS:-}" ]; then
         for _cpid in ${_ALL_MIX_PIDS}; do
