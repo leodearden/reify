@@ -163,8 +163,8 @@ _release_scope_absent() {
 #
 #   rc 0  REQUIRED   — the affected crate set intersects the declared
 #                      release-sensitive set, OR is the fail-wide ALL sentinel,
-#                      OR the declared set could not be read. Emit the release
-#                      pass exactly as today.
+#                      OR the affected set or the declared set could not be
+#                      captured. Emit the release pass exactly as today.
 #   rc 1  SKIPPABLE  — delta-clean: the affected crate set is non-ALL and disjoint
 #                      from the release-sensitive set (or empty). The caller may
 #                      omit the release pass and emit the frozen plan marker
@@ -186,9 +186,10 @@ _release_scope_absent() {
 #     empty override / empty delta is hermetically delta-clean.
 #
 # Fail-wide/fail-open ladder (§5.1): the ALL sentinel (C4 global / C5 unmappable),
-# an unreadable declared set and a membership test grep could not answer all
-# resolve to REQUIRED; only a provably delta-clean affected set returns
-# SKIPPABLE. Safe under `set -euo pipefail`: affected_crates always returns 0,
+# an affected set or a declared set whose capture fails (a non-zero status from its
+# helper, a killed subshell included) and a membership test grep could not answer
+# all resolve to REQUIRED; only a provably delta-clean affected set returns
+# SKIPPABLE. Safe under `set -euo pipefail`: both captures end in `|| return 0`,
 # and no membership test reads a `producer | grep -q` pipeline — each grep reads
 # a captured string through a here-string, so its status is its own answer and
 # never a producer's SIGPIPE.
@@ -198,8 +199,9 @@ release_delta_requires_pass() {
         # Operator/testability override: verbatim whitespace/newline-separated set.
         affected="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     else
-        # Real run: map the derived merge-delta files to the reverse-closed crate set.
-        affected="$(affected_crates "$@")"
+        # Real run: map the derived merge-delta files to the reverse-closed crate set;
+        # fail-wide to RUN on any capture failure, as the declared read below does.
+        affected="$(affected_crates "$@")" || return 0
     fi
 
     # Fail-wide: an ALL sentinel anywhere in the (word-split) affected set forces RUN.
