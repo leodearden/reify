@@ -323,3 +323,21 @@ fn parse_compile_expect_err_clean_source_panic_reports_caller_not_helpers_rs() {
 
     assert_attributed_here(&site, "expected at least one compile error");
 }
+
+#[test]
+fn compile_first_template_no_template_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_first_template("");
+    });
+
+    assert_attributed_here(&site, "no templates");
+}
+
+#[test]
+fn compile_template_missing_name_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_template("structure S { let x = 1.0 }", "Nope");
+    });
+
+    assert_attributed_here(&site, "not found");
+}
