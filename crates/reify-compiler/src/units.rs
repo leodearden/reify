@@ -2915,7 +2915,15 @@ mod tests {
         let reg = make_resolver_registry();
         let (factor, _) = resolve_unit_expr(&rational_pow("mm", 1, 2), &reg, SourceSpan::new(0, 7))
             .expect("mm^1/2 must resolve");
-        assert_eq!(factor.to_bits(), 0.001f64.powf(0.5).to_bits());
+        // A value check, not a bit-for-bit one: a libm `pow` and a correctly rounded
+        // `sqrt` may differ by an ULP (~2e-16 relative here), so allow 1e-15.
+        let expected = 0.001f64.sqrt();
+        let rel_err = ((factor - expected) / expected).abs();
+        assert!(
+            rel_err < 1e-15,
+            "mm^1/2: factor must be sqrt(1e-3) = {expected} within 1e-15 relative, \
+             got {factor} (rel err {rel_err:e})"
+        );
     }
 
     #[test]
