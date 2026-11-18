@@ -3296,19 +3296,19 @@ describe('App launcher Start view (alpha-spine β)', () => {
     );
   });
 
-  it('a launch whose failing buffer still opened leaves no start-view error behind', async () => {
+  it('a launch that recorded a failure but still opened its document leaves no start-view error behind', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(
-      published(makeGuiState({ files: [{ path: 'broken.ri', content: 'structure {' }] })),
+      published(makeGuiState({ files: [{ path: 'bolt.ri', content: 'structure Bolt {}' }] })),
     );
     vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue({
-      path: '/designs/broken.ri',
-      error: 'Parse errors: x',
+      path: '/designs/bolt.ri',
+      error: 'engine panicked during check',
     });
 
     await renderAndWaitForReady();
     expect(screen.queryByTestId('start-view')).toBeNull();
 
-    capturedEditorStore.closeFile('broken.ri');
+    capturedEditorStore.closeFile('bolt.ri');
 
     await waitFor(() => expect(screen.getByTestId('start-view')).toBeTruthy());
     expect(screen.queryByTestId('start-document-error')).toBeNull();

@@ -256,12 +256,14 @@ fn both_compile_helpers_reject_compile_errors_alike() {
     );
 }
 
-/// A rigid-body session that has also rejected a live edit and recorded a
-/// reload error, so every reset-list entry has something to clear.
+/// A rigid-body session that has also read its mechanism descriptors,
+/// rejected a live edit and recorded a reload error, so each reset-list entry
+/// the tests observe has something to clear.
 fn primed_rigid_session() -> EngineSession {
     let fixture = rigid_mass_props_fixture_path();
     let mut session = rigid_mass_props_session();
     session.load_file(&fixture).expect("load rigid fixture");
+    session.get_mechanism_descriptors();
     session
         .update_source(fixture.to_str().unwrap(), UNPARSEABLE_SRC)
         .expect_err("update_source of unparseable text");
@@ -346,6 +348,15 @@ fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() 
         !session.geometry_derived_cache_for_test().is_empty(),
         "precondition: the rigid fixture must leave mass-prop values retained"
     );
+    assert!(
+        session.consumed_idents_cache_for_test().is_some(),
+        "precondition: the mechanism-descriptor read must leave consumed idents cached"
+    );
+    assert!(
+        session.parsed_cache_for_test().is_some()
+            && session.line_offsets_cache_for_test().is_some(),
+        "precondition: the loaded document's parse-derived caches must be installed"
+    );
     let log = TelemetryLog::default();
     log.install_on(&mut session);
     log.take();
@@ -396,7 +407,15 @@ fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() 
         !session.is_stale(),
         "the previous document's reload error must be dropped"
     );
-    assert!(session.consumed_idents_cache_for_test().is_none());
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "the previous document's consumed idents must be dropped"
+    );
+    assert!(
+        session.parsed_cache_for_test().is_none()
+            && session.line_offsets_cache_for_test().is_none(),
+        "the previous document's parse-derived caches must be dropped"
+    );
     assert_eq!(
         log.take(),
         Vec::<&str>::new(),
