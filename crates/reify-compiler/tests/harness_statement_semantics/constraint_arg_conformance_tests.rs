@@ -4,24 +4,13 @@
 //! (src/type_compat.rs). This file is the one home for the helpers that count that code.
 
 use reify_core::*;
-use reify_test_support::{compile_source, compile_template};
+use reify_test_support::{compile_source, compile_template, diags_with_code, error_diags};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Collect only error diagnostics.
-fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
-    diags
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-/// Collect only the diagnostics carrying `DiagnosticCode::ConstraintArgTypeMismatch`.
+/// [`diags_with_code`] specialised to `ConstraintArgTypeMismatch`.
 fn constraint_arg_type_mismatches(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
-    diags
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
-        .collect()
+    diags_with_code(diags, DiagnosticCode::ConstraintArgTypeMismatch)
 }
 
 /// Assert the binding-site rejection is the module's ONLY error: exactly one
@@ -93,13 +82,6 @@ fn assert_arg_type_mismatches(source: &str, expected: usize, what: &str) {
 /// code alone. Since task 5762 the rejected binding short-circuits the
 /// instantiation, so the substituted predicate `true > 0mm` is no longer
 /// compiled and task 4490's `CmpOperandKind` is not co-emitted.
-///
-/// `DiagnosticCode` is in scope via `use reify_core::*` at the top of this file.
-///
-/// RED (before step-6): `ConstraintArgTypeMismatch` variant does not yet exist
-/// on `DiagnosticCode` — this test won't compile. After step-6 adds the variant
-/// AND wires `.with_code(DiagnosticCode::ConstraintArgTypeMismatch)` at the
-/// emission site in entity.rs, the test will be GREEN.
 #[test]
 fn constraint_arg_type_mismatch_carries_code() {
     let source = r#"
@@ -111,14 +93,7 @@ structure S {
     constraint MinWall(w: true)
 }
 "#;
-    let module = compile_source(source);
-    let code_count = constraint_arg_type_mismatches(&module.diagnostics).len();
-    assert_eq!(
-        code_count, 1,
-        "expected exactly 1 diagnostic with code ConstraintArgTypeMismatch, \
-         got {}; diagnostics: {:?}",
-        code_count, module.diagnostics
-    );
+    assert_arg_type_mismatches(source, 1, "a Bool literal at a Length param");
 }
 
 /// Guard: a Length-typed arg passed where a Length param is declared must NOT
@@ -140,14 +115,7 @@ structure S {
     constraint MinWall(w: 5mm)
 }
 "#;
-    let module = compile_source(source);
-    let code_count = constraint_arg_type_mismatches(&module.diagnostics).len();
-    assert_eq!(
-        code_count, 0,
-        "expected zero ConstraintArgTypeMismatch diagnostics for a valid 5mm arg, \
-         got {}; diagnostics: {:?}",
-        code_count, module.diagnostics
-    );
+    assert_arg_type_mismatches(source, 0, "a valid 5mm arg at a Length param");
 }
 
 // ── Task 5762 (δ₂): cross-dimension constraint args are rejected at the binding site ──
@@ -224,19 +192,7 @@ structure S {
     constraint Positive(w: t)
 }
 "#;
-    let module = compile_source(source);
-    let mismatches = constraint_arg_type_mismatches(&module.diagnostics);
-    assert!(
-        mismatches.is_empty(),
-        "expected zero ConstraintArgTypeMismatch for same-dimension args, got: {:?}",
-        mismatches
-    );
-    let errors = error_diags(&module.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "expected zero errors for same-dimension args, got: {:?}",
-        errors
-    );
+    assert_arg_type_mismatches(source, 0, "same-dimension args");
 }
 
 /// A rejected binding REPLACES the predicate-body diagnostic rather than adding
@@ -528,7 +484,7 @@ structure S {
 /// declared produced ZERO diagnostics. Now `ty` is `Some(Enum("Zq"))` and Rule 5
 /// of `constraint_arg_type_conforms` rejects it.
 ///
-/// This is the user-visible defect in the task title, pinned independently of
+/// This is the user-visible defect in task 6416's title, pinned independently of
 /// the def-side structural assertion in `constraint_def_compile_tests.rs`.
 #[test]
 fn int_arg_for_enum_param_is_rejected() {
