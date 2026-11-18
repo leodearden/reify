@@ -27,9 +27,13 @@ set -euo pipefail
 fail() { echo "release-alpha: $*" >&2; exit 2; }
 
 TAG="${1:?usage: scripts/release-alpha.sh <tag>}"
-VERSION_TAG='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?(-[0-9A-Za-z.-]+)?$'
+# Semver's grammar: no leading zeros; the prerelease is dot-separated non-empty
+# identifiers, each numeric without a leading zero or alphanumeric with a letter or `-`.
+NUMBER='(0|[1-9][0-9]*)'
+PRERELEASE_ID="($NUMBER|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION_TAG="^v$NUMBER\\.$NUMBER(\\.$NUMBER)?(-$PRERELEASE_ID(\\.$PRERELEASE_ID)*)?\$"
 [[ "$TAG" =~ $VERSION_TAG ]] \
-    || fail "tag $TAG does not name a version: expected v<major>.<minor>[.<patch>][-<prerelease>]"
+    || fail "tag $TAG does not name a version: expected v<major>.<minor>[.<patch>][-<prerelease>] (semver)"
 BUNDLE_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[4]:-0}${BASH_REMATCH[5]}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

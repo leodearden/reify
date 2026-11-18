@@ -317,7 +317,8 @@ class Preflight(ReleaseCase):
 
 
     def test_a_tag_that_names_no_version_is_refused_before_the_build(self):
-        for tag in ("latest", "v1", "0.2-alpha", "v01.2"):
+        for tag in ("latest", "v1", "0.2-alpha", "v01.2", "v0.2-", "v0.2-alpha.",
+                    "v0.2-alpha..1", "v0.2-alpha.01"):
             with self.subTest(tag=tag):
                 self.fx.write_note(tag)
                 proc = self.fx.run_release(tag)
