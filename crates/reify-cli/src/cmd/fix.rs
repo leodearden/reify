@@ -1,6 +1,5 @@
-//! `reify fix --imports [--check] [--cfg <key=value|flag>]... <file>...`: add
-//! the `import std.X` lines each file needs, as derived by
-//! `reify_compiler::import_headers`.
+//! `reify fix --imports`: add the `import std.X` lines each file needs, as
+//! derived by `reify_compiler::import_headers`; usage banner: [`FIX_USAGE`].
 
 use std::collections::BTreeSet;
 use std::io::Write;

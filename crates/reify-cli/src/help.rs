@@ -7,31 +7,70 @@ use std::io::Write;
 use crate::cache::{CACHE_SUBCOMMANDS, CACHE_USAGE, CacheSubcommand};
 use crate::dev::DEV_USAGE;
 
-pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+/// The one home of `--cfg` with its argument form, as typed.
+macro_rules! cfg_synopsis {
+    () => {
+        "--cfg <key=value|flag>"
+    };
+}
 
-pub(crate) const TEST_USAGE: &str = "Usage: reify test [--cfg <key=value|flag>]... <file>";
+/// `--cfg` as a usage banner lists it: optional and repeatable.
+macro_rules! cfg_usage_fragment {
+    () => {
+        concat!("[", cfg_synopsis!(), "]...")
+    };
+}
 
-pub(crate) const BUILD_USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose] [--cfg <key=value|flag>]...\n  \
+pub(crate) const CFG_SYNOPSIS: &str = cfg_synopsis!();
+
+pub(crate) const CHECK_USAGE: &str = concat!(
+    "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... ",
+    cfg_usage_fragment!(),
+    " <file>"
+);
+
+pub(crate) const TEST_USAGE: &str = concat!("Usage: reify test ", cfg_usage_fragment!(), " <file>");
+
+pub(crate) const BUILD_USAGE: &str = concat!(
+    "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose] ",
+    cfg_usage_fragment!(),
+    "\n  \
     With -o:    write a single file in that format (imperative).\n  \
     Without -o: every `: Output` occurrence in the design drives its own file\n              \
     (declarative); each relative path resolves against the .ri file's\n              \
-    directory, or against --out-dir when given.";
+    directory, or against --out-dir when given."
+);
 
-pub(crate) const EVAL_USAGE: &str = "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] [--cfg <key=value|flag>]... <file>";
+pub(crate) const EVAL_USAGE: &str = concat!(
+    "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] ",
+    cfg_usage_fragment!(),
+    " <file>"
+);
 
-pub(crate) const REPORT_USAGE: &str =
-    "Usage: reify report --bom [--cfg <key=value|flag>]... <file>";
+pub(crate) const REPORT_USAGE: &str = concat!(
+    "Usage: reify report --bom ",
+    cfg_usage_fragment!(),
+    " <file>"
+);
 
-pub(crate) const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact] [--cfg <key=value|flag>]...\n       reify doc --stdlib --out <dir>";
+pub(crate) const DOC_USAGE: &str = concat!(
+    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact] ",
+    cfg_usage_fragment!(),
+    "\n       reify doc --stdlib --out <dir>"
+);
 
 const LSP_USAGE: &str = "Usage: reify lsp";
 
 pub(crate) const GUI_USAGE: &str = "Usage: reify gui [--debug] <file>";
 
-pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain [--cfg <key=value|flag>]... <file>";
+pub(crate) const EXPLAIN_USAGE: &str =
+    concat!("Usage: reify explain ", cfg_usage_fragment!(), " <file>");
 
-pub(crate) const FIX_USAGE: &str =
-    "Usage: reify fix --imports [--check] [--cfg <key=value|flag>]... <file>...";
+pub(crate) const FIX_USAGE: &str = concat!(
+    "Usage: reify fix --imports [--check] ",
+    cfg_usage_fragment!(),
+    " <file>..."
+);
 
 /// What `main` runs for a subcommand. Only a [`SUBCOMMANDS`] entry constructs one, so a
 /// command with no help entry is a never-constructed variant rather than a silent gap.
@@ -60,7 +99,7 @@ struct FlagHelp {
 
 /// The one home of the `--cfg` row: a command that takes the flag lists this, never a copy.
 const CFG_FLAG: FlagHelp = FlagHelp {
-    synopsis: "--cfg <key=value|flag>",
+    synopsis: CFG_SYNOPSIS,
     summary: "Set a cfg key or flag (`target=<v>` overrides the host target); repeatable",
 };
 
