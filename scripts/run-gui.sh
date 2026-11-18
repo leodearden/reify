@@ -28,9 +28,6 @@
 #                     caller path naming /usr/lib/x86_64-linux-gnu would
 #                     otherwise bind system libtbb 12.11 over the deps 12.18
 #                     and defeat #5192's pin.
-#   WEBKIT_DISABLE_DMABUF_RENDERER   reify-gui itself defaults it to 1
-#                     (gui/src-tauri/src/webkit_env.rs); export 0 to restore
-#                     the DMABUF path on a host where it works.
 #   REIFY_GUI_SKIP_PREFLIGHT         set to 1 to skip the display preflight.
 #
 # For dev-mode (vite dev server, configurable debug MCP port, devtools)

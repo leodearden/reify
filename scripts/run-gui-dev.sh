@@ -38,12 +38,7 @@
 #                  mechanism A''. A one-line notice is emitted only when a
 #                  non-empty value was actually inherited.
 #
-# WEBKIT_DISABLE_DMABUF_RENDERER
-#                  reify-gui itself defaults it to 1 when unset or empty
-#                  (gui/src-tauri/src/webkit_env.rs); this script does not
-#                  touch it. Without it, WebKitGTK aborts on an NVIDIA host
-#                  with "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
-#                  Export 0 to restore the DMABUF path where it works.
+# WebKit renderer defaults: reify-gui's own, gui/src-tauri/src/webkit_env.rs.
 #
 # REIFY_VITE_PORT  Defaults to 1420. The port vite serves on AND the page
 #                  reify-gui loads: the launched binary retargets
