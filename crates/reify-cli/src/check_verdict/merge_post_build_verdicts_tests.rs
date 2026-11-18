@@ -1,11 +1,12 @@
 //! Prefix-collision coverage for the INWARD leg — the sibling of
-//! `drop_falsified_indeterminate_diagnostics_tests` (task 5748, esc-5748-4).
+//! `drop_falsified_constraint_diagnostics_tests` (task 5748, esc-5748-4).
 //!
 //! `merge_post_build_verdicts`'s retain used a bare
 //! `d.message.contains(label_or_id)` while the outward leg was already anchored.
-//! Both now share [`is_falsified_indeterminacy`] (over [`indeterminacy_subject`]
-//! and [`indeterminacy_subject_in`]); these tests pin that the inward leg really
-//! is anchored, so the two matchers cannot drift apart again.
+//! Both now read claims through [`constraint_claim_in`] (over
+//! [`constraint_subject`]) and decide them by the same every-holder rule; these
+//! tests pin that the inward leg really is anchored and applies that rule, so
+//! the two legs cannot drift apart again.
 
 use super::merge_post_build_verdicts;
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity, ValueCellId};
@@ -349,9 +350,81 @@ fn anchored_matcher_survives_a_short_label_collision() {
     );
 }
 
-/// A non-`ConstraintIndeterminate` diagnostic naming the upgraded
-/// constraint survives: the verdict falsifies the INDETERMINACY claim and
-/// nothing else. Mirrors the outward leg's same-named contract.
+/// Compiler labels are unique per entity, not per module, so one subject can
+/// name several constraints.  The twin of the outward leg's
+/// `every_holder_rule_also_applies_to_the_indeterminate_word`: upgrading one
+/// `wall_thick` holder does not retract a claim the other still makes true.
+#[test]
+fn keeps_a_shared_label_claim_while_any_holder_stays_indeterminate() {
+    let warnings = vec![
+        indeterminate_warning("wall_thick", "Bracket.t"),
+        indeterminate_warning("wall_thick", "Lid.t"),
+    ];
+    let mut result = check_result(
+        vec![
+            entry(
+                "Bracket",
+                3,
+                Some("wall_thick"),
+                Satisfaction::Indeterminate,
+            ),
+            entry("Lid", 0, Some("wall_thick"), Satisfaction::Indeterminate),
+        ],
+        warnings.clone(),
+    );
+    let build = build_result(vec![
+        entry("Bracket", 3, Some("wall_thick"), Satisfaction::Satisfied),
+        entry("Lid", 0, Some("wall_thick"), Satisfaction::Indeterminate),
+    ]);
+
+    merge_post_build_verdicts(&mut result, Some(&build));
+
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "the upgrade itself still happens"
+    );
+    assert_eq!(
+        keys(&result.diagnostics),
+        keys(&warnings),
+        "an indeterminacy claim survives while any same-label holder is still \
+         Indeterminate"
+    );
+}
+
+/// The other half of the every-holder rule: once every holder is definite —
+/// one upgraded here, one already definite under check() — the shared-label
+/// claim is false and is dropped.
+#[test]
+fn drops_a_shared_label_claim_once_every_holder_is_definite() {
+    let mut result = check_result(
+        vec![
+            entry("Bracket", 3, Some("wall_thick"), Satisfaction::Satisfied),
+            entry("Lid", 0, Some("wall_thick"), Satisfaction::Indeterminate),
+        ],
+        vec![indeterminate_warning("wall_thick", "Lid.t")],
+    );
+    let build = build_result(vec![entry(
+        "Lid",
+        0,
+        Some("wall_thick"),
+        Satisfaction::Violated,
+    )]);
+
+    merge_post_build_verdicts(&mut result, Some(&build));
+
+    assert!(
+        result.diagnostics.is_empty(),
+        "every wall_thick holder is definite, so the claim is false, got {:?}",
+        keys(&result.diagnostics)
+    );
+}
+
+/// The upgrade only ever settles an indeterminacy, so an indeterminacy claim is
+/// the only line this leg can retract: anything else naming the upgraded
+/// constraint survives, here an uncoded line off the claim grammar.  The
+/// outward leg's grammar boundary is pinned separately, by
+/// `never_drops_a_diagnostic_off_the_coded_claim_grammar`.
 #[test]
 fn leaves_other_codes_about_the_same_constraint_alone() {
     let other = Diagnostic::error(
