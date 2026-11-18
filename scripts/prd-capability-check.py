@@ -89,9 +89,10 @@ Harness exit codes:
     1   ≥1 FAIL
     2   ≥1 UNPROVABLE, 0 FAIL
     64  usage / argument error (sysexits EX_USAGE)
-    70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
-    75  grammar substrate unavailable (grammar never generated, or tree-sitter
-        cannot load it) — callers should SKIP, not FAIL
+    70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict, or
+        the grammar a grammar probe needs could not be generated
+    75  grammar substrate unavailable (grammar could not be generated or never
+        was, or tree-sitter cannot load it) — callers should SKIP, not FAIL
         (sysexits EX_TEMPFAIL; only ever returned by --grammar-substrate-status,
         which runs at most one substrate probe but evaluates no probe set, and
         so can never affect a verdict)
@@ -1724,7 +1725,7 @@ def _grammar_not_generated_reason(parser_c: str) -> str:
     return (
         f"the reify tree-sitter grammar was never generated ({parser_c} is "
         "missing), so no grammar probe can run here; generate it with "
-        "`tree-sitter generate` in tree-sitter-reify/"
+        "`bash scripts/tree-sitter-generate.sh`"
     )
 
 
@@ -2062,15 +2063,18 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
     Reads the committed probe-set JSON from PROBE_SET_JSON, evaluates every
     probe through `runner` (a ProbeRunner; run_probe by default), prints
     per-probe evidence (or --json), and returns harness_exit_code(results).
+    A set holding a grammar probe first has its grammar brought up to date
+    (ensure_grammar_current()).
     `ctx` defaults to ProbeContext.from_environment(), built once per
     invocation; a test passes its own runner and ctx.
 
     --grammar-substrate-status is a separate mode: it reports whether a grammar
     probe could run here at all, so a shell caller can print a clean SKIP
-    instead of reporting an unrunnable probe as a gate FAIL.  It answers with
-    both halves of that question — grammar_generated() (is there a parser.c to
-    load?) and then, only if so, ONE substrate probe through the same runner
-    seam (with the real runner, a `tree-sitter parse` subprocess bounded by
+    instead of reporting an unrunnable probe as a gate FAIL.  It answers in three
+    ordered parts — ensure_grammar_current() (bring src/ up to date with
+    grammar.js), grammar_generated() (is there a parser.c to load?) and then,
+    only if both hold, ONE substrate probe through the same runner seam (with
+    the real runner, a `tree-sitter parse` subprocess bounded by
     ctx.substrate_timeout_s).  It evaluates no probe
     set, so it cannot affect any verdict.  --json does not apply to it: the finding is carried by
     the exit code (0 / 75), with a one-line human reason on stdout.  A
@@ -2086,8 +2090,10 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
         2   ≥1 UNPROVABLE, 0 FAIL
         64  usage / argument / IO error, or no trusted reify binary for a probe
             set that needs one (EX_USAGE)
-        70  tool / runtime error — missing binary, grammar load failure (EX_SOFTWARE)
-        75  grammar substrate unavailable — SKIP, do not FAIL (EX_TEMPFAIL)
+        70  tool / runtime error — missing binary, grammar load failure, or the
+            grammar could not be generated (EX_SOFTWARE)
+        75  grammar substrate unavailable, or the grammar could not be
+            generated — SKIP, do not FAIL (EX_TEMPFAIL)
     """
     parser = argparse.ArgumentParser(
         description="Run capability probes from a committed probe-set JSON file.",
@@ -2113,10 +2119,12 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
         dest="grammar_substrate_status",
         help=(
             "Report whether tree-sitter can run a grammar probe here; "
-            "exit 0 if usable, 75 if not (grammar not generated, cache/lock "
-            "unwritable, CLI unlaunchable, or no answer within the bound).  "
-            "Runs at most one substrate probe (a real tree-sitter subprocess, "
-            "time-bounded); evaluates no probe set and affects no verdict.  "
+            "exit 0 if usable, 75 if not (grammar could not be generated, "
+            "cache/lock unwritable, CLI unlaunchable, or no answer within the "
+            "bound).  First brings the grammar up to date via "
+            "scripts/tree-sitter-generate.sh, then runs at most one substrate "
+            "probe (a real tree-sitter subprocess, time-bounded); evaluates no "
+            "probe set and affects no verdict.  "
             "Ignores --json and any PROBE_SET_JSON."
         ),
     )
@@ -2145,12 +2153,17 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
 
     # --- Substrate status mode: report and return, without running probes ---
     if args.grammar_substrate_status:
-        # Ordered, not merged: an ungenerated grammar is a precondition failure
-        # that grammar_substrate_usable() reports usable by design (see its
-        # docstring).  Without this the shell caller is told "usable" and then
-        # still collects exit 70 from the probe run — the one answer this mode
-        # exists to spare it.  Cheap first, so a lane with no grammar pays no
-        # subprocess.
+        # Ordered, not merged.  A grammar that cannot be brought up to date is
+        # never probed, so a src/ older than grammar.js is never reported
+        # usable.  An ungenerated grammar is a precondition failure that
+        # grammar_substrate_usable() reports usable by design (see its
+        # docstring); without that check the shell caller is told "usable" and
+        # then still collects exit 70 from the probe run — the one answer this
+        # mode exists to spare it.
+        current, reason = ensure_grammar_current(ctx)
+        if not current:
+            sys.stdout.write(f"grammar substrate: unusable: {reason}\n")
+            return 75  # EX_TEMPFAIL — a missing CLI or a held lock is environmental
         generated, parser_c = grammar_generated(ctx)
         if not generated:
             sys.stdout.write(
@@ -2203,6 +2216,14 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
     except ReifyBinaryRefused as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 64  # EX_USAGE — REIFY_BIN must pick the binary
+
+    # Refused before any probe runs, so no verdict comes from a grammar that
+    # could not be brought current.
+    if any(probe.probe_kind is ProbeKind.GRAMMAR for probe in probes):
+        current, reason = ensure_grammar_current(ctx)
+        if not current:
+            sys.stderr.write(f"error: {reason}\n")
+            return 70  # EX_SOFTWARE
 
     # --- Evaluate each probe through the runner seam ---
     results = [evaluate(probe, ctx, runner) for probe in probes]
