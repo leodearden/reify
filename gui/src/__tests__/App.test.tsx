@@ -17,198 +17,15 @@ import { splitGridTracks } from './test_utils/gridTracks';
 import { formatEigenvalue } from '../panels/BucklingPanel';
 import { createViewportStore } from '../stores/viewportStore';
 
-// Mock Tauri APIs before any component imports
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
-}));
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
-}));
-
-// Capture Viewport props for navigation tests
-let capturedViewportProps: any = {};
-let capturedDualViewportProps: any = {};
-let capturedMultiViewportProps: any = {};
-const mockViewportFitToView = vi.fn();
-const mockFlyToEntity = vi.fn();
-vi.mock('../viewport', () => ({
-  Viewport: (props: any) => {
-    capturedViewportProps = props;
-    // Invoke flyToEntityRef with a trackable mock function if provided
-    if (props.flyToEntityRef) {
-      props.flyToEntityRef(mockFlyToEntity);
-    }
-    // Invoke fitToViewRef with a trackable mock function if provided
-    if (props.fitToViewRef) {
-      props.fitToViewRef(mockViewportFitToView);
-    }
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'viewport-container');
-    el.textContent = 'Viewport Mock';
-    return el;
-  },
-  DualViewport: (props: any) => {
-    capturedDualViewportProps = props;
-    // Invoke flyToEntityRef with a trackable mock function if provided
-    if (props.flyToEntityRef) {
-      props.flyToEntityRef(mockFlyToEntity);
-    }
-    // Invoke fitToViewRef with a trackable mock function if provided
-    if (props.fitToViewRef) {
-      props.fitToViewRef(mockViewportFitToView);
-    }
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'dual-viewport');
-    el.textContent = 'DualViewport Mock';
-    return el;
-  },
-  MultiViewport: (props: any) => {
-    capturedMultiViewportProps = props;
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'multi-viewport');
-    el.textContent = 'MultiViewport Mock';
-    return el;
-  },
-}));
-
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, liveContentRef, and onShowReferences for tests
-let capturedEditorStore: any = null;
-let capturedEditorOnOpen: (() => void) | undefined = undefined;
-let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
-let capturedEditorCompileDiagnostics: any = undefined;
-let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
-let capturedEditorOnShowReferences: ((results: ReferenceResult[]) => void) | undefined = undefined;
-vi.mock('../editor/Editor', () => ({
-  Editor: (props: any) => {
-    capturedEditorStore = props.store;
-    capturedEditorOnOpen = props.onOpen;
-    capturedEditorScrollToLocation = props.scrollToLocation;
-    capturedEditorCompileDiagnostics = props.compileDiagnostics;
-    capturedEditorLiveContentRef = props.liveContentRef;
-    capturedEditorOnShowReferences = props.onShowReferences;
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'editor-container');
-    el.textContent = 'Editor Mock';
-    return el;
-  },
-}));
-
-// Mock FileTabs
-vi.mock('../editor/FileTabs', () => ({
-  FileTabs: (_props: any) => {
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'file-tabs');
-    el.textContent = 'FileTabs Mock';
-    return el;
-  },
-}));
-
-const oneFileState = (): GuiState => makeGuiState({ files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }] });
-
-// --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
-//
-// STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
-// bridgeMockCoverage.test.ts's `omissions` allowlist with the reason it is
-// unreachable from a rendered <App />. Do NOT convert this factory to
-// importOriginal / a partial mock.
-//
-// bridgeMockCoverage.test.ts is both the mechanical detector and the single
-// source of truth for the rules above, for why an omitted key fails SILENTLY
-// rather than loudly, and for the measured truth table that makes the beforeEach
-// restore below load-bearing rather than cosmetic. Deliberately not restated
-// here: unlike the key sets, prose has nothing to detect it going stale.
-vi.mock('../bridge', () => ({
-  getInitialState: vi.fn(),
-  getEntityTree: vi.fn().mockResolvedValue([]),
-  setParameter: vi.fn().mockResolvedValue(undefined),
-  previewParameter: vi.fn().mockResolvedValue(undefined),
-  exportGeometry: vi.fn().mockResolvedValue(undefined),
-  pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
-  pickOpenPath: vi.fn().mockResolvedValue(null),
-  updateSource: vi.fn().mockResolvedValue(undefined),
-  saveFile: vi.fn().mockResolvedValue(undefined),
-  openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
-  createNewFile: vi.fn().mockResolvedValue({ path: '/new/untitled.ri', content: '' }),
-  listRecent: vi.fn().mockResolvedValue([]),
-  recordRecent: vi.fn().mockResolvedValue([]),
-  takeInitialFileLoadFailure: vi.fn().mockResolvedValue(null),
-  openFileEngine: vi.fn(),
-  getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
-  focusEntity: vi.fn().mockResolvedValue(undefined),
-  onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
-  onValueUpdate: vi.fn().mockResolvedValue(() => {}),
-  onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
-  onEvaluationStatus: vi.fn().mockResolvedValue(() => {}),
-  onEvalGeneration: vi.fn().mockResolvedValue(() => {}),
-  onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
-  onValueRemoved: vi.fn().mockResolvedValue(() => {}),
-  onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
-  onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
-  onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
-  onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
-  onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
-  // Not reached by <App /> today — Viewport-only, and ../viewport is mocked
-  // wholesale. Mocked anyway rather than allowlisted: one line each is cheaper
-  // than a premise the coverage guard cannot check, and either could become
-  // reachable silently.
-  setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
-  subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
-  onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),
-  onTensegritySurfacesUpdate: vi.fn().mockResolvedValue(() => {}),
-  onDisplayPanesUpdate: vi.fn().mockResolvedValue(() => {}),
-  onDisplayAppearanceUpdate: vi.fn().mockResolvedValue(() => {}),
-  onFileChanged: vi.fn().mockResolvedValue(() => {}),
-  onFileRemoved: vi.fn().mockResolvedValue(() => {}),
-  onSerializationError: vi.fn().mockResolvedValue(() => {}),
-  onFocusEntity: vi.fn().mockResolvedValue(() => {}),
-  onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
-  claudeSendMessage: vi.fn().mockResolvedValue(undefined),
-  claudeAbort: vi.fn().mockResolvedValue(undefined),
-  claudeClearSession: vi.fn().mockResolvedValue(undefined),
-  claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
-  subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
-  isDebugEnabled: vi.fn().mockResolvedValue(false),
-  setMode: vi.fn().mockResolvedValue({ mode: 'design', debug_port: null }),
-  onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
-  getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
-  onKernelStatus: vi.fn().mockResolvedValue(() => {}),
-  getContainingDefinition: vi.fn().mockResolvedValue(null),
-  getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn(),
-  readViewSidecar: vi.fn().mockResolvedValue(null),
-  writeViewSidecar: vi.fn().mockResolvedValue(undefined),
-  getMechanismDescriptors: vi.fn().mockResolvedValue([]),
-  getUnitLadders: vi.fn().mockResolvedValue([]),
-  subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
-  onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
-  onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
-  onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
-  onSolverProgress: vi.fn().mockResolvedValue(() => {}),
-  onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
-  cancelSolve: vi.fn().mockResolvedValue(undefined),
-  syncObservedDemand: vi.fn().mockResolvedValue(undefined),
-  syncDemand: vi.fn().mockResolvedValue(undefined),
-  ask: vi.fn().mockResolvedValue(false),
-}));
-
-// Mock debug module so dynamic import('./debug') in App.tsx resolves without invoking the real bridge.
-vi.mock('../debug', () => ({ initDebugBridge: vi.fn().mockResolvedValue(() => {}) }));
-
-// Mock persistence modules so App.tsx's persistence calls can be intercepted.
-vi.mock('../stores/sidecarPersistence', () => ({
-  loadSidecar: vi.fn().mockResolvedValue(null),
-  saveSidecar: vi.fn().mockResolvedValue(undefined),
-}));
-
-// Partial mock: keep createDebouncedSaver + saveViewPersistence real so debounce
-// behaviour (step-31) can be tested via localStorage and vi.useFakeTimers.
-vi.mock('../stores/viewPersistence', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../stores/viewPersistence')>();
-  return {
-    ...actual,
-    loadViewPersistence: vi.fn().mockReturnValue(null),
-  };
-});
+vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
+vi.mock('@tauri-apps/api/event', async () => (await import('./appHarness/moduleMocks')).tauriEventMock());
+vi.mock('../viewport', async () => (await import('./appHarness/renderStubs')).viewportStub());
+vi.mock('../editor/Editor', async () => (await import('./appHarness/renderStubs')).editorStub());
+vi.mock('../editor/FileTabs', async () => (await import('./appHarness/renderStubs')).fileTabsStub());
+vi.mock('../bridge', async () => (await import('./appHarness/moduleMocks')).appBridgeMock());
+vi.mock('../debug', async () => (await import('./appHarness/moduleMocks')).debugMock());
+vi.mock('../stores/sidecarPersistence', async () => (await import('./appHarness/moduleMocks')).sidecarPersistenceMock());
+vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./appHarness/moduleMocks')).viewPersistenceMock(await importOriginal()));
 
 import App, { computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
@@ -218,102 +35,25 @@ import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import { initDebugBridge as mockedInitDebugBridge } from '../debug';
+import { primeAppHarness, renderAndWaitForReady, oneFileState } from './appHarness/harness';
+import {
+  capturedViewportProps,
+  capturedDualViewportProps,
+  capturedMultiViewportProps,
+  mockViewportFitToView,
+  mockFlyToEntity,
+  capturedEditorStore,
+  capturedEditorOnOpen,
+  capturedEditorScrollToLocation,
+  capturedEditorCompileDiagnostics,
+  capturedEditorLiveContentRef,
+  capturedEditorOnShowReferences,
+} from './appHarness/renderStubs';
+import { makeMesh } from './test_utils/meshData';
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  capturedViewportProps = {};
-  capturedDualViewportProps = {};
-  capturedMultiViewportProps = {};
-  mockViewportFitToView.mockClear();
-  localStorage.clear();
-  capturedEditorStore = null;
-  capturedEditorOnOpen = undefined;
-  capturedEditorScrollToLocation = undefined;
-  capturedEditorCompileDiagnostics = undefined;
-  capturedEditorLiveContentRef = undefined;
-  capturedEditorOnShowReferences = undefined;
-  mockFlyToEntity.mockClear();
-  // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue(published(makeGuiState()));
-  vi.mocked(bridge.openFileEngine).mockResolvedValue(published(makeGuiState()));
-  vi.mocked(bridge.getDefPreview).mockResolvedValue(makeGuiState());
-  vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
-  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
-  vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
-  vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
-  vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onEvalGeneration).mockResolvedValue(() => {});
-  vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
-  vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
-  vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
-  vi.mocked(bridge.onTessellationDiagnostics).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onCompileDiagnostics).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onFeaDiagnosticsChanged).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onFeaConvergenceChanged).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onTensegrityWiresUpdate).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onTensegritySurfacesUpdate).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onDisplayPanesUpdate).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onDisplayAppearanceUpdate).mockResolvedValue(() => {});
-  vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onFileRemoved).mockResolvedValue(() => {});
-  vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
-  vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
-  vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
-  vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
-  vi.mocked(bridge.claudePermissionDecision).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValue(() => {});
-  vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
-  // Persistence module mocks
-  vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
-  vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
-  vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
-  vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
-  vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
-  vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onModeShapeFrame).mockResolvedValue(() => {});
-  vi.mocked(bridge.syncDemand).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
-  vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
-  vi.mocked(bridge.setMode).mockResolvedValue({ mode: 'design', debug_port: null });
-  vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/new/untitled.ri', content: '' });
-  vi.mocked(bridge.listRecent).mockResolvedValue([]);
-  vi.mocked(bridge.recordRecent).mockResolvedValue([]);
-  vi.mocked(bridge.takeInitialFileLoadFailure).mockResolvedValue(null);
-  vi.mocked((bridge as any).ask).mockResolvedValue(false);
-  // Below: names some test overrides persistently but nothing used to restore,
-  // so the override leaked into every later test (truth table row 3). Added
-  // with task 6053's check (d), which fails on any override without a restore.
-  // Each restores its factory entry's value, so behaviour is identical.
-  vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).previewParameter).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
-  vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
-  vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
-  vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
-  vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
-  vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
-  vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
-  vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onAutoResolveIteration).mockResolvedValue(() => {});
-  vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
-});
-
-afterEach(() => {
-  cleanup();
-});
-
-/** Helper: render App and wait for init to complete (ready state). */
-async function renderAndWaitForReady() {
-  const result = render(() => <App />);
-  await waitFor(() => {
-    expect(screen.getByTestId('app-layout')).toBeTruthy();
-  });
-  return result;
-}
+beforeEach(primeAppHarness);
 
 describe('App layout wiring', () => {
   it('renders app-layout container', async () => {
@@ -8522,15 +8262,6 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
 });
 
 // ── computePaneGroups unit tests (task-4767 δ) ───────────────────────────────
-
-function makeMesh(entityPath: string): MeshData {
-  return {
-    entity_path: entityPath,
-    vertices: new Float32Array([0, 0, 0]),
-    indices: new Uint32Array([0]),
-    normals: null,
-  };
-}
 
 describe('computePaneGroups unit tests (task-4767 δ)', () => {
   it('case 1: empty displayPanes → all meshes land in pane 0, dropped empty', () => {

@@ -187,13 +187,14 @@ describe('bridge-mock coverage: bridge.ts runtime exports ↔ the shared App har
  *
  * This is the construction-time half of the enforcement. The use-time half is
  * harness.tsx's import-time check that the installed mocks are the harness's
- * own, so a file that renders <App /> through renderAndWaitForReady without
- * importing App is held by that check instead.
+ * own, so a file that renders <App /> only through renderAndWaitForReady, and
+ * so never imports App (contextIntegration.test.tsx), is held by that check.
  */
 describe('App harness membership', () => {
   const testsRoot = __dirname;
   const harnessModule = join(testsRoot, 'appHarness', 'harness');
   const DEFAULT_APP_IMPORT = /^import App\b[^;]*from '(\.\.\/)+App'/m;
+  const DIRECT_APP_RENDER = /render\(\(\) => <App \/>\)/;
 
   function testFilesUnder(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -208,15 +209,15 @@ describe('App harness membership', () => {
     return specifier.startsWith('.') ? specifier : `./${specifier}`;
   }
 
-  const appRenderingFiles = testFilesUnder(testsRoot).filter((file) =>
-    DEFAULT_APP_IMPORT.test(readFileSync(file, 'utf-8')),
-  );
+  const testFiles = testFilesUnder(testsRoot);
+  const appRenderingFiles = testFiles.filter((file) => DEFAULT_APP_IMPORT.test(readFileSync(file, 'utf-8')));
   const relativeName = (file: string) => relative(testsRoot, file);
 
-  it('selects the known App-rendering files', () => {
-    const names = appRenderingFiles.map(relativeName);
-    expect(names).toContain('App.test.tsx');
-    expect(names).toContain('contextIntegration.test.tsx');
+  it('selects every test file that renders <App /> directly, App.test.tsx among them', () => {
+    const directRenderers = testFiles.filter((file) => DIRECT_APP_RENDER.test(readFileSync(file, 'utf-8')));
+    const selected = appRenderingFiles.map(relativeName);
+    expect(selected).toContain('App.test.tsx');
+    expect(selected).toEqual(expect.arrayContaining(directRenderers.map(relativeName)));
   });
 
   it('every test file that renders <App /> installs the shared App harness', () => {
