@@ -23,3 +23,17 @@ pub fn defaults_to_apply(
         .filter(|(name, _)| current(name).is_none_or(|value| value.is_empty()))
         .collect()
 }
+
+/// Sets every [`defaults_to_apply`] pair in this process's environment.
+///
+/// # Safety
+///
+/// No other thread may exist yet: [`std::env::set_var`] is unsound while
+/// another thread reads or writes the environment. reify-gui calls this as
+/// the first statement of `main`.
+pub unsafe fn apply_process_defaults() {
+    for (name, value) in defaults_to_apply(|name| std::env::var_os(name)) {
+        // SAFETY: the caller guarantees no other thread exists.
+        unsafe { std::env::set_var(name, value) }
+    }
+}

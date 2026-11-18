@@ -756,7 +756,12 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    let gui_exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
+    let gui_exe = tauri::utils::platform::current_exe().map_err(|e| {
+        format!(
+            "cannot resolve reify-gui's own executable to locate {}: {e}",
+            reify_gui::claude_bridge::SIDECAR_EXECUTABLE
+        )
+    })?;
     let sidecar_path = reify_gui::claude_bridge::sidecar_executable_beside(&gui_exe)?;
 
     // Resolve the writable workspace directory for the landlock sandbox.
@@ -914,10 +919,8 @@ async fn set_active_fea_case(
 }
 
 fn main() {
-    for (name, value) in reify_gui::webkit_env::defaults_to_apply(|n| std::env::var_os(n)) {
-        // SAFETY: runs first in main, before any thread exists.
-        unsafe { std::env::set_var(name, value) }
-    }
+    // SAFETY: the first statement of main, before any thread exists.
+    unsafe { reify_gui::webkit_env::apply_process_defaults() }
     let mut context = tauri::generate_context!();
     if let Err(e) =
         reify_gui::dev_url::retarget_to_vite_port_from_env(&mut context.config_mut().build)
