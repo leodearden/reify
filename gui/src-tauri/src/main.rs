@@ -800,14 +800,18 @@ async fn claude_send_message(
             let le = landlock_exec_path;
             let url = debug_mcp_url;
             async move {
-                reify_gui::claude_bridge::spawn_sidecar_impl(
-                    &path,
-                    move |name, payload| {
-                        app_c.emit(&name, payload).ok();
-                    },
-                    &ws,
-                    le.as_deref(),
-                    url.as_deref(),
+                let path_var = std::env::var_os("PATH");
+                reify_gui::sidecar_runtime::spawn_if_interpreter_found(
+                    path_var.as_deref(),
+                    reify_gui::claude_bridge::spawn_sidecar_impl(
+                        &path,
+                        move |name, payload| {
+                            app_c.emit(&name, payload).ok();
+                        },
+                        &ws,
+                        le.as_deref(),
+                        url.as_deref(),
+                    ),
                 )
                 .await
             }
