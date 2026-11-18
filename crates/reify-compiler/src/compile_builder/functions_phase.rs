@@ -64,7 +64,7 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 /// Each fn's defaults are probed against what the unified pass would give them
 /// minus the module's own templates: the signature stubs of the fns above it
 /// (carrying the outcomes decided so far), the prelude ctor view, and every
-/// module-local ctor-view name marked as declared later.  The probe's
+/// module-local ctor-view name marked unavailable.  The probe's
 /// diagnostics go to a scratch buffer:
 ///
 /// * holding a `StructureDeclaredAfterFunction` or `FnDefaultNotYetAvailable`,
@@ -100,7 +100,7 @@ pub(crate) fn phase_fn_param_defaults(
                 enum_defs: &ctx.resolution_enums,
                 calls: CallTable::with_pending(table.functions(), &pending),
                 template_registry: Some(&prelude_ctor_view),
-                later_declared_structure_names: Some(&local_ctor_names),
+                unavailable_local_template_names: Some(&local_ctor_names),
                 declared_callable_names: &declared_callables,
             };
             let mut scratch = Vec::new();
@@ -211,7 +211,7 @@ impl<'a> SourceOrderFnEnv<'a> {
             // #5371's forward references.
             calls: CallTable::complete(calls_above.functions()),
             template_registry: Some(&template_registry),
-            later_declared_structure_names: Some(&declared_below),
+            unavailable_local_template_names: Some(&declared_below),
             declared_callable_names: &self.declared_callable_names,
         };
         let param_defaults = match defaults {
@@ -319,7 +319,7 @@ mod early_default_recheck {
 /// prelude function that wins its `(name, param types)` key under NS-P1
 /// ([`name_env`]: imports before std modules, first wins). A prelude function
 /// sharing a user function's key is shadowed.
-pub(crate) fn build_resolution_functions(
+fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {

@@ -10,6 +10,7 @@ use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIden
 
 mod detached_unit;
 mod fault_diagnosis;
+mod unit_exponent;
 
 use fault_diagnosis::{
     MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
@@ -4356,6 +4357,13 @@ impl<'a> Lowering<'a> {
         let left = self.lower_expr(left_node)?;
         let right = self.lower_expr(right_node)?;
         let op = self.node_text(op_node).to_string();
+        // A refused `/` still lowers as a BinOp, so the member survives carrying the error.
+        if op == "/"
+            && let Some(message) =
+                unit_exponent::slash_touching_unit_exponent(left_node, op_node, self.source)
+        {
+            self.push_error(message, self.span(op_node));
+        }
 
         Some(Expr {
             kind: ExprKind::BinOp {
@@ -4987,9 +4995,18 @@ impl<'a> Lowering<'a> {
             node.child_by_field_name("exponent"),
         ) {
             let base = self.lower_unit_expr(base_node)?;
-            // grammar's `signed_integer` is `-?\d+`, so this parse is total in practice.
-            let exponent: i32 = self.node_text(exp_node).parse().ok()?;
-            return Some(UnitExpr::Pow(Box::new(base), exponent));
+            // A refused exponent is a located error, and the binding is recovered on
+            // its base unit so the member survives carrying it: a dropped member is the
+            // INV-SF-7 silent-drop shape.
+            return Some(
+                match unit_exponent::parse_unit_exponent(self.node_text(exp_node)) {
+                    Ok(exponent) => UnitExpr::Pow(Box::new(base), exponent),
+                    Err(message) => {
+                        self.push_error(message, self.span(exp_node));
+                        base
+                    }
+                },
+            );
         }
 
         // 2. Mul/Div: `left op right`; the operator is the `op` node's kind.

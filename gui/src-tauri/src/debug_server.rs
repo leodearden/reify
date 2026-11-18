@@ -2525,7 +2525,7 @@ async fn handle_reify_set_parameter(
 /// `FilePathUpdate::Preserve` (engine.rs, task 3370). That is right for the
 /// editor, which only ever edits the active buffer — but this surface takes
 /// `file_path` from an AI client, and on a multi-file project
-/// (`compile_entry_with_imports` is live) `reify_update_source(file_path =
+/// (the file-backed compile resolves imports) `reify_update_source(file_path =
 /// "…/lib.ri")` would silently overwrite the ACTIVE buffer with lib.ri's text
 /// and answer `success: true`. The damage compounds: the diagnostics filter
 /// then matches nothing, the pushed `file` member opens a tab whose content

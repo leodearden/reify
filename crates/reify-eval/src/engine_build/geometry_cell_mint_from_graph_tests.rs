@@ -20,12 +20,10 @@ use reify_test_support::parse_and_compile;
 
 use super::Engine;
 use crate::graph::EvaluationGraph;
-
-const SRC: &str = r#"structure S {
-    let a = box(10mm, 10mm, 10mm)
-    let one = generate(1, |i| cylinder(5mm, 20mm))
-    let holes = generate(3, |i| cylinder(5mm, 20mm))
-}"#;
+use crate::graph::geometry_cell_link_fixture::{
+    GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, TEMPLATE, assert_some_realization_links,
+    compiled_realization_named,
+};
 
 fn mint_from_graph(cell: &ValueCellId, graph: &EvaluationGraph) -> Option<Value> {
     Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
@@ -42,16 +40,9 @@ fn from_graph_mint_never_writes_a_scalar_handle_into_a_geometry_list_cell() {
     let module = parse_and_compile(SRC);
     let graph = EvaluationGraph::from_templates(&module.templates);
 
-    for member in ["one", "holes"] {
-        let cell = ValueCellId::new("S", member);
-        assert!(
-            graph
-                .realizations
-                .values()
-                .any(|r| r.geometry_cell.as_ref() == Some(&cell)),
-            "precondition: some realization must link `{cell}` (task #5385's list \
-             link), or the mint cannot reach the cell and this test is vacuous"
-        );
+    for member in GEOMETRY_LIST_MEMBERS {
+        let cell = ValueCellId::new(TEMPLATE, member);
+        assert_some_realization_links(&graph, &cell);
         assert_eq!(
             mint_from_graph(&cell, &graph),
             None,
@@ -60,25 +51,22 @@ fn from_graph_mint_never_writes_a_scalar_handle_into_a_geometry_list_cell() {
         );
     }
 
-    let a_realization = module
-        .templates
-        .iter()
-        .flat_map(|t| &t.realizations)
-        .find(|r| r.name.as_deref() == Some("a"))
-        .map(|r| r.id.clone())
-        .expect("SRC must compile a realization named `a`");
-    match mint_from_graph(&ValueCellId::new("S", "a"), &graph) {
-        Some(Value::GeometryHandle {
-            realization_ref,
-            kernel_handle: None,
-            ..
-        }) => assert_eq!(
-            realization_ref, a_realization,
-            "control: the scalar let `a` must mint a handle for its OWN realization"
-        ),
-        other => panic!(
-            "control: the scalar geometry let `a` must still mint a symbolic handle; \
-             got {other:?}"
-        ),
+    for member in SCALAR_GEOMETRY_MEMBERS {
+        let cell = ValueCellId::new(TEMPLATE, member);
+        let own_realization = compiled_realization_named(&module, member);
+        match mint_from_graph(&cell, &graph) {
+            Some(Value::GeometryHandle {
+                realization_ref,
+                kernel_handle: None,
+                ..
+            }) => assert_eq!(
+                realization_ref, own_realization,
+                "control: the scalar let `{cell}` must mint a handle for its OWN realization"
+            ),
+            other => panic!(
+                "control: the scalar geometry let `{cell}` must still mint a symbolic handle; \
+                 got {other:?}"
+            ),
+        }
     }
 }

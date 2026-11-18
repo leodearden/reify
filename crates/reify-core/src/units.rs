@@ -67,7 +67,7 @@
 //! `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`
 //! in `reify-compiler/tests/builtin_arg_signature_tests.rs`.
 
-use crate::DimensionVector;
+use crate::{DimensionVector, Rational};
 
 /// The migration hint appended to a rejection at a LENGTH argument slot.
 ///
@@ -314,9 +314,22 @@ pub const RI_NAMED_DERIVED_SYMBOLS: &[(&str, DimensionVector)] = &[
     ("W", DimensionVector::POWER),
 ];
 
-/// Render one factor of a compound unit expression, omitting `^1`.
-fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
-    if exponent == 1 {
+/// THE definition of which exponents a unit expression may carry: numerator and
+/// denominator each fit `i8`.
+///
+/// Both reify-compiler's `resolve_unit_expr` (the use site) and
+/// [`ri_compound_unit_expr`] (the emitter's acceptance set) call this one
+/// predicate, so the emitter can never write an exponent the compiler answers
+/// with `ExponentOutOfRange`.
+pub fn unit_exponent_in_range(exponent: Rational) -> bool {
+    i8::try_from(exponent.num()).is_ok() && i8::try_from(exponent.den()).is_ok()
+}
+
+/// Render one factor of a compound unit expression, omitting `^1`. A rational
+/// exponent uses `Rational`'s `p/q` spelling (`m^1/2`), which the unit grammar
+/// reads back as one exponent.
+fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
+    if exponent == Rational::ONE {
         symbol.to_owned()
     } else {
         format!("{symbol}^{exponent}")
@@ -357,7 +370,8 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 ///
 /// Only symbols with registry factor exactly `1.0` are ever written. For ANY
 /// tree shape the compiler folds them to exactly 1.0 — `Unit → 1.0`,
-/// `Pow: 1.0.powi(n) == 1.0`, `Mul: 1.0 * 1.0 == 1.0`, `Div: 1.0 / 1.0 == 1.0`
+/// `Pow: 1.0.powi(n) == 1.0` (and `1.0.powf(p/q) == 1.0` for a rational
+/// exponent), `Mul: 1.0 * 1.0 == 1.0`, `Div: 1.0 / 1.0 == 1.0`
 /// — so `expr.rs`'s single `si_value = value * factor` multiply is the IEEE
 /// identity and the caller can write the SI value VERBATIM as the magnitude.
 /// No ladder search and no fold-order matching: the emitter is independent of
@@ -378,8 +392,9 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// one symbol (`Pa`, never `kg/m/s^2`). Otherwise factors appear in
 /// [`crate::dimension::BASE_UNIT_SYMBOLS`] index order: positive exponents
 /// first joined by `*`, then each negative exponent introduced by its own `/`
-/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`); `^n` is
-/// omitted when `n == 1`. That is the same partition and ordering
+/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`,
+/// `kg/m^1/2/s^2`); `^n` is omitted when `n == 1`. That is the same partition
+/// and ordering
 /// `impl Display for DimensionVector` uses, so the two renderers share one
 /// convention.
 ///
@@ -391,13 +406,10 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// # Returns `None` for
 ///
 /// - a dimensionless vector — nothing to emit;
-/// - a FRACTIONAL exponent, since `UnitExpr::Pow` is integral;
-/// - an exponent outside `i8`. [`crate::Rational::as_i8`] is deliberately the
-///   whole integrality-and-range test: it is exactly the bound
-///   `resolve_unit_expr` enforces via `i8::try_from`, so the emitter's
-///   acceptance set cannot drift from the compiler's by construction;
-/// - a negative exponent whose ABSOLUTE value is outside `i8` — a tighter bound
-///   than `as_i8` alone, because the denominator form writes `|n|`;
+/// - an exponent (or, in the denominator form, its negation) outside
+///   [`unit_exponent_in_range`] — the one predicate `resolve_unit_expr` also
+///   enforces, so the emitter's acceptance set cannot drift from the
+///   compiler's;
 /// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
     RI_NAMED_DERIVED_SYMBOLS
@@ -411,17 +423,16 @@ pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
 /// [`RI_COMPOUND_BASE_SYMBOLS`].
 fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
-    // a property of the WHOLE vector, and the two forms accept different
-    // exponents (the signed form can write `s^-128`, the denominator form
-    // cannot write `/s^128`).
-    let mut factors: Vec<(&'static str, i8)> = Vec::new();
-    for (i, r) in dim.0.iter().enumerate() {
-        // TODO(#9236): this `?` is the fracture-toughness carve-out. `Rational::as_i8` is
-        // None for a rational exponent, so DimensionVector::FRACTURE_TOUGHNESS is dropped
-        // here silently. #9236 owns retiring the carve-out and its sibling assertions.
-        let exponent = r.as_i8()?;
-        if exponent == 0 {
+    // a property of the WHOLE vector, and the two forms write different
+    // exponents (the signed form writes `s^-128`, the denominator form would
+    // have to write `/s^128`, which is out of range).
+    let mut factors: Vec<(&'static str, Rational)> = Vec::new();
+    for (i, &exponent) in dim.0.iter().enumerate() {
+        if exponent.is_zero() {
             continue;
+        }
+        if !unit_exponent_in_range(exponent) {
+            return None;
         }
         factors.push((RI_COMPOUND_BASE_SYMBOLS[i]?, exponent));
     }
@@ -429,11 +440,11 @@ fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
         return None;
     }
 
-    if factors.iter().all(|&(_, n)| n < 0) {
+    if factors.iter().all(|&(_, r)| r.num() < 0) {
         return Some(
             factors
                 .iter()
-                .map(|&(sym, n)| ri_unit_factor(sym, n))
+                .map(|&(sym, r)| ri_unit_factor(sym, r))
                 .collect::<Vec<_>>()
                 .join("*"),
         );
@@ -441,16 +452,17 @@ fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
 
     let mut out = factors
         .iter()
-        .filter(|&&(_, n)| n > 0)
-        .map(|&(sym, n)| ri_unit_factor(sym, n))
+        .filter(|&&(_, r)| r.num() > 0)
+        .map(|&(sym, r)| ri_unit_factor(sym, r))
         .collect::<Vec<_>>()
         .join("*");
-    for &(sym, n) in factors.iter().filter(|&&(_, n)| n < 0) {
-        // The denominator writes the ABSOLUTE exponent, so `|n|` must itself be
-        // an exponent `resolve_unit_expr` accepts. `checked_neg` is that test
-        // and nothing more: it returns `None` only for `i8::MIN`, which would
-        // otherwise be written `^128` and answered with `ExponentOutOfRange`.
-        let magnitude = n.checked_neg()?;
+    for &(sym, r) in factors.iter().filter(|&&(_, r)| r.num() < 0) {
+        // The denominator writes the NEGATED exponent, which must itself be in
+        // range: `-128` is, `128` is not.
+        let magnitude = -r;
+        if !unit_exponent_in_range(magnitude) {
+            return None;
+        }
         out.push('/');
         out.push_str(&ri_unit_factor(sym, magnitude));
     }
@@ -883,6 +895,11 @@ mod tests {
             // policy layer (`80mm`, never `0.08m`) — this function is pure and
             // has no opinion about that; containment lives at the call site.
             (DimensionVector::LENGTH, "m"),
+            // Rational exponents (task #9236), in `Rational`'s `p/q` spelling.
+            (DimensionVector::FRACTURE_TOUGHNESS, "kg/m^1/2/s^2"),
+            (DimensionVector::LENGTH.root(2), "m^1/2"),
+            // All-negative: the signed-power form, with a rational exponent.
+            (one_slot(0, crate::Rational::new(-1, 2)), "m^-1/2"),
         ];
         for &(dim, expected) in cases {
             assert_eq!(
@@ -914,14 +931,6 @@ mod tests {
         // Nothing to emit.
         assert_eq!(ri_compound_unit_expr(&DimensionVector::DIMENSIONLESS), None);
 
-        // A fractional exponent: `UnitExpr::Pow` is integral, so `m^(1/2)` has
-        // no spelling at all.
-        assert_eq!(
-            ri_compound_unit_expr(&DimensionVector::LENGTH.root(2)),
-            None,
-            "a fractional exponent has no integral `UnitExpr::Pow` spelling"
-        );
-
         // An exponent outside `i8` — exactly the bound `resolve_unit_expr`
         // enforces via `i8::try_from`, so accepting one here would emit a
         // literal the compiler answers with `ExponentOutOfRange`.
@@ -929,6 +938,24 @@ mod tests {
             ri_compound_unit_expr(&one_slot(0, crate::Rational::new(200, 1))),
             None,
             "an exponent outside i8 is what `resolve_unit_expr` rejects"
+        );
+
+        // A denominator outside `unit_exponent_in_range`.
+        assert_eq!(
+            ri_compound_unit_expr(&one_slot(0, crate::Rational::new(1, 200))),
+            None,
+            "a denominator outside i8 is what `resolve_unit_expr` rejects"
+        );
+
+        // A positive slot forces the DENOMINATOR form, which writes the negated
+        // exponent: `kg/m^128/3`, whose numerator is outside the range.
+        let mut exps = [crate::Rational::ZERO; 10];
+        exps[0] = crate::Rational::new(-128, 3);
+        exps[1] = crate::Rational::ONE;
+        assert_eq!(
+            ri_compound_unit_expr(&DimensionVector(exps)),
+            None,
+            "the denominator form must not write `/m^128/3`"
         );
     }
 
@@ -956,6 +983,7 @@ mod tests {
             DimensionVector::CHARGE,
             DimensionVector::POWER,
             DimensionVector::DYNAMIC_VISCOSITY,
+            DimensionVector::FRACTURE_TOUGHNESS,
         ];
         let is_cross_guarded = |atom: &str| {
             RI_COMPOUND_BASE_SYMBOLS.contains(&Some(atom))
@@ -1042,4 +1070,58 @@ mod tests {
         }
     }
 
+    /// Every named dimension has a `.ri` compound spelling, so no rational
+    /// (or otherwise awkward) dimension can be silently carved out of the
+    /// emitter again.
+    #[test]
+    fn every_named_dimension_has_a_compound_spelling() {
+        let mut checked = 0;
+        for &(dim, name) in crate::NAMED_DIMENSIONS {
+            if dim.is_dimensionless() {
+                continue;
+            }
+            assert!(
+                ri_compound_unit_expr(&dim).is_some(),
+                "named dimension {name} ({dim}) has no `.ri` compound spelling"
+            );
+            checked += 1;
+        }
+        const DIMENSIONED_ROWS_FLOOR: usize = 52;
+        assert!(
+            checked >= DIMENSIONED_ROWS_FLOOR,
+            "expected to check at least {DIMENSIONED_ROWS_FLOOR} dimensioned \
+             NAMED_DIMENSIONS rows, saw {checked} — did the table lose entries?"
+        );
+    }
+
+    /// The one bound on a unit-expression exponent: numerator and denominator
+    /// each fit `i8`. For an integer exponent that is exactly the
+    /// `i8::try_from` bound `resolve_unit_expr` has always enforced; a rational
+    /// exponent extends it to the denominator.
+    #[test]
+    fn unit_exponent_in_range_accepts_exactly_i8_numerators_and_denominators() {
+        let accepted = [
+            Rational::new(2, 1),
+            Rational::new(-2, 1),
+            Rational::ZERO,
+            Rational::new(1, 2),
+            Rational::new(-1, 2),
+            Rational::new(127, 1),
+            Rational::new(-128, 1),
+            Rational::new(3, 127),
+        ];
+        for r in accepted {
+            assert!(unit_exponent_in_range(r), "{r} must be in range");
+        }
+        let rejected = [
+            Rational::new(128, 1),
+            Rational::new(-129, 1),
+            Rational::new(200, 1),
+            Rational::new(1, 128),
+            Rational::new(1, 200),
+        ];
+        for r in rejected {
+            assert!(!unit_exponent_in_range(r), "{r} must be out of range");
+        }
+    }
 }

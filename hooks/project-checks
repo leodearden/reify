@@ -2,9 +2,12 @@
 # reify project-specific checks (called from hooks/pre-commit, main branch only).
 #
 # Thin delegation to scripts/verify.sh — the single source of truth shared with
-# dark-factory-orchestrator.yaml. --scope staged scopes the gate by `git diff --cached`, so a
-# docs-only or empty stage produces an empty plan and exits 0 (the previous
-# "no source changes — skipping" fast path is now subsumed by the scope picker).
+# dark-factory-orchestrator.yaml. --scope staged scopes the gate by `git diff --cached`.
+# An empty stage gets an empty plan and exits 0. A docs-only stage does not: it is
+# classified inert (no Rust or GUI phase), but any non-empty stage still gets the
+# whole-tree infra gates of verify.sh's select_staged_whole_tree_gate plus any matching
+# rows of scripts/verify-pipeline-infra-tests.txt, so a docs commit runs a small
+# infra_selective-only plan (pinned by tests/infra/test_verify_scope.sh Scenario 1).
 # --profile debug keeps the per-commit gate fast. Release coverage is the
 # MERGE GATE's job (hooks/pre-merge-commit runs --profile both --scope all);
 # per-task verify (dark-factory-orchestrator.yaml) and this per-commit gate both stay

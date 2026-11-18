@@ -1,0 +1,10 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// Rows B1 and B5. Today: mirror fails "expected a Plane value, got undef".
+module realized_world_datum_plane_inline
+
+structure P {
+    let b = box(10mm, 20mm, 30mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let r = mirror(b, top.plane)
+    let r2 = mirror(b, single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg)).plane)
+}

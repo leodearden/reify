@@ -6,58 +6,14 @@
 //! like any other dimensionless initializer (see
 //! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{compile_source, errors_only};
-
-/// Assert `source` yields exactly ONE error: a `LetAnnotationTypeMismatch` that
-/// names `name` and is anchored at its `let <name>` declaration. Returns its
-/// message for callers that pin the rendered types.
-fn assert_single_let_annotation_type_mismatch(source: &str, name: &str) -> String {
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
-
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one error for let '{name}', got: {shapes:?}"
-    );
-    let diag = errors[0];
-    assert_eq!(
-        diag.code,
-        Some(DiagnosticCode::LetAnnotationTypeMismatch),
-        "let '{name}': got: {shapes:?}"
-    );
-    assert_eq!(
-        diag.severity,
-        Severity::Error,
-        "let '{name}': got: {shapes:?}"
-    );
-    assert!(
-        diag.message.contains(&format!("'{name}'")),
-        "message must quote '{name}', got: {:?}",
-        diag.message
-    );
-    let span = diag
-        .labels
-        .first()
-        .unwrap_or_else(|| panic!("let '{name}': diagnostic has no label: {diag:?}"))
-        .span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains(&format!("let {name}")),
-        "label must cover the 'let {name}' declaration, covers: {sliced:?}"
-    );
-    diag.message.clone()
-}
+use reify_core::DiagnosticCode;
+use reify_test_support::{assert_single_declaration_error, compile_source, errors_only};
 
 // ─── Step-1 tests ─────────────────────────────────────────────────────────────
 
-/// A structure-body `let a : Length = 5kg` must produce ≥1 error whose message
-/// mentions the let name `a`, the word "declared", and the word "initializer";
-/// the first label span must cover the `let a` declaration.
-///
-/// RED until step-2 wires `check_let_annotation_type` at the structure-body let site.
+/// A structure-body `let a : Length = 5kg` must produce exactly one
+/// `LetAnnotationTypeMismatch` anchored at `let a`, whose message also says
+/// "declared" and "initializer".
 #[test]
 fn let_annotation_dimension_mismatch_errors_at_declaration() {
     let source = r#"
@@ -66,94 +22,35 @@ structure S {
 }
 "#;
 
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    assert!(
-        !errors.is_empty(),
-        "expected at least one error for let annotation dimension mismatch, got none; \
-         diagnostics: {:?}",
-        module.diagnostics
+    let message = assert_single_declaration_error(
+        source,
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "a",
     );
-
-    // Some error must mention the let name 'a' (quoted), "declared", and "initializer".
-    // Assert on the quoted token "'a'" rather than the bare letter 'a' so the check
-    // genuinely pins the binding name and would catch a regression that dropped the
-    // name from the message (the word "declared" also contains 'a', making a bare
-    // `contains('a')` tautologically true).
-    let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains("'a'")
-            && d.message.contains("declared")
-            && d.message.contains("initializer")
-    });
     assert!(
-        mismatch_diag.is_some(),
-        "expected an error mentioning \"'a'\", 'declared', and 'initializer'; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // The first label span must cover the `let a` declaration.
-    let diag = mismatch_diag.unwrap();
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("let a"),
-        "expected label span to cover the let declaration containing 'let a', \
-         but span covers: {:?}",
-        sliced
+        message.contains("declared") && message.contains("initializer"),
+        "message must say 'declared' and 'initializer', got: {message:?}"
     );
 }
 
-/// Cross-dimension variant: `let a : Length = 5N` (Newtons ≠ meters) must also
-/// produce ≥1 "declared"/"initializer" error anchored at the `let a` declaration.
-///
-/// RED until step-2.
+/// A force-dimensioned initializer at a `Length` let produces exactly one
+/// `LetAnnotationTypeMismatch` anchored at `let a`. The force is built from
+/// built-in units (kg·m·s^-2) because `N` lives only in the stdlib unit
+/// registry. Force shares Length's m^1 exponent, so only a full-dimension
+/// comparison rejects it.
 #[test]
-fn let_annotation_dimension_mismatch_force_unit_errors_at_declaration() {
-    let source = r#"
-structure S {
-    let a : Length = 5N
-}
-"#;
-
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    assert!(
-        !errors.is_empty(),
-        "expected at least one error for 'let a : Length = 5N' (force ≠ length), got none; \
-         diagnostics: {:?}",
-        module.diagnostics
+fn let_annotation_force_dimension_mismatch_errors_at_declaration() {
+    let message = assert_single_declaration_error(
+        "structure S { let a : Length = 5kg * 1m / (1s * 1s) }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "a",
     );
-
-    let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains("'a'")
-            && d.message.contains("declared")
-            && d.message.contains("initializer")
-    });
     assert!(
-        mismatch_diag.is_some(),
-        "expected an error mentioning \"'a'\", 'declared', and 'initializer' for 5N case; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let diag = mismatch_diag.unwrap();
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label for 5N case; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("let a"),
-        "expected label span to cover 'let a' for 5N case, but span covers: {:?}",
-        sliced
+        message.contains("`Scalar[m]`") && message.contains("`Scalar[m·kg·s^-2]`"),
+        "message must name declared `Scalar[m]` and found force `Scalar[m·kg·s^-2]`, \
+         got: {message:?}"
     );
 }
 
@@ -205,7 +102,12 @@ fn let_annotation_int_and_real_literal_on_dimensioned_scalar_errors() {
         ("structure S { let z : Length = -5.0 }", "z"),
         ("structure S { let t : Length = 1.0 }", "t"),
     ] {
-        assert_single_let_annotation_type_mismatch(source, name);
+        assert_single_declaration_error(
+            source,
+            DiagnosticCode::LetAnnotationTypeMismatch,
+            "let",
+            name,
+        );
     }
 }
 
@@ -218,50 +120,23 @@ fn let_annotation_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
         ("structure S { let a : Length = 2 + 3 }", "a", "`Int`"),
         ("structure S { let b : Length = 2.0 * 3.0 }", "b", "`Real`"),
     ] {
-        let message = assert_single_let_annotation_type_mismatch(source, name);
+        let message = assert_single_declaration_error(
+            source,
+            DiagnosticCode::LetAnnotationTypeMismatch,
+            "let",
+            name,
+        );
         assert!(
             message.contains("`Scalar[m]`") && message.contains(found),
             "let '{name}': message must name declared `Scalar[m]` and found {found}, \
              got: {message:?}"
         );
     }
-    assert_single_let_annotation_type_mismatch(
+    assert_single_declaration_error(
         "trait T { }\nstructure S { port p : out T { let c : Length = 2 + 3 } }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
         "c",
-    );
-}
-
-/// The headline `let a : Length = 5kg` must carry
-/// `code == DiagnosticCode::LetAnnotationTypeMismatch`.
-///
-/// Already GREEN after step-2. Registers the canonical code assertion.
-#[test]
-fn let_annotation_mismatch_carries_correct_diagnostic_code() {
-    let source = r#"
-structure S {
-    let a : Length = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch error for 'let a : Length = 5kg'; got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
-    );
-
-    let diag = mismatch.unwrap();
-    assert!(
-        diag.message.contains("'a'"),
-        "error message should mention the quoted let name \"'a'\"; got: {:?}",
-        diag.message
     );
 }
 
@@ -449,8 +324,6 @@ structure S {
 /// covers both the structure-body site and the port-member site).
 ///
 /// Mirrors `port_member_param_dimension_mismatch_errors_at_declaration`.
-///
-/// RED until step-6 wires `check_let_annotation_type` at the port-member let site.
 #[test]
 fn port_member_let_annotation_dimension_mismatch_errors_at_declaration() {
     let source = r#"
@@ -462,43 +335,11 @@ structure S {
 }
 "#;
 
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    // Must have at least one error with code LetAnnotationTypeMismatch.
-    let mismatch_diag = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch_diag.is_some(),
-        "expected a LetAnnotationTypeMismatch error for port-member 'let d : Length = 5kg'; \
-         got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
-    );
-
-    let diag = mismatch_diag.unwrap();
-    assert!(
-        diag.message.contains("'d'"),
-        "error message should mention the quoted let name \"'d'\"; got: {:?}",
-        diag.message
-    );
-
-    // The label span must cover the port-member let declaration.
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("let d"),
-        "expected label span to cover the port-member let declaration containing 'let d', \
-         but span covers: {:?}",
-        sliced
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "d",
     );
 }
 
@@ -616,6 +457,11 @@ fn port_member_let_annotation_numeric_literal_on_dimensioned_scalar_errors() {
             "e",
         ),
     ] {
-        assert_single_let_annotation_type_mismatch(source, name);
+        assert_single_declaration_error(
+            source,
+            DiagnosticCode::LetAnnotationTypeMismatch,
+            "let",
+            name,
+        );
     }
 }

@@ -69,7 +69,7 @@ struct RehomedDiagnostic {
 impl CompiledProgram {
     /// The entry's diagnostics re-homed from the user module `module_key` (a
     /// direct or transitive import), in the order they were raised.
-    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ε #5519
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
     pub fn rehomed_from(&self, module_key: &str) -> impl Iterator<Item = &Diagnostic> {
         self.rehomed
             .iter()
@@ -79,7 +79,7 @@ impl CompiledProgram {
 
     /// The entry's diagnostics that are not re-homed copies: those raised
     /// compiling the entry itself, and the failures of its imports.
-    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ε #5519
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
     pub fn entry_own_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
         self.entry
             .diagnostics
@@ -162,7 +162,9 @@ pub fn compile_program(
 /// key is `parsed.path`, dotted.
 ///
 /// The seam exists for callers that already hold the entry's parse (the CLI's
-/// `reify check` parses it for its own module-path gate first), and for callers
+/// `reify check` parses it for its own module-path gate first, and the GUI's
+/// file-backed reload parses it to route the compile and keeps the parse for
+/// source write-back), and for callers
 /// that must seed extra enum names into the parse — an import's enums, which
 /// `parse_with_stdlib` does not know — until task #5522 (θ) moves that fixup
 /// into the resolution phase.
@@ -180,7 +182,10 @@ pub fn compile_program_with_parsed_entry(
 
     // Computed once and shared by the compile loop, the prelude, the merge and
     // the returned units, so they cannot drift.
-    let followed = followed_direct_imports(parsed, &dag);
+    let followed: Vec<&str> = followed_direct_imports(parsed, &dag)
+        .into_iter()
+        .map(|import| import.path.as_str())
+        .collect();
 
     // Collect, never early-return on, import failures: a broken import still
     // lets the entry compile, with the failure attached below.
@@ -244,7 +249,25 @@ pub fn compile_program_with_parsed_entry(
 /// one import. An entry that follows none compiles as the single-file stdlib
 /// compile does, plus the module-header check (I1).
 pub fn entry_follows_imports(parsed: &reify_ast::ParsedModule, cfg: &CfgSet) -> bool {
-    !followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone())).is_empty()
+    !followed_imports(parsed, cfg).is_empty()
+}
+
+/// The entry imports [`compile_program`] follows under `cfg` (cfg-satisfied,
+/// not `std.*`), in declaration order, one per path.
+pub fn followed_imports<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    cfg: &CfgSet,
+) -> Vec<&'p reify_ast::ImportDecl> {
+    followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone()))
+}
+
+/// The resolver a program compile of the entry file `entry_path` takes: user
+/// imports resolve from the entry's directory. Its stdlib root,
+/// `<dir>/crates/reify-compiler/stdlib`, is never read, because a program
+/// compile never walks `std.*` (I4).
+pub fn entry_dir_resolver(entry_path: &Path) -> ModuleResolver {
+    let dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+    ModuleResolver::new(dir, dir.join("crates/reify-compiler/stdlib"))
 }
 
 /// Append each of `diags` that `reported` does not already hold.
@@ -268,15 +291,15 @@ fn push_unreported(reported: &mut Vec<Diagnostic>, diags: Vec<Diagnostic>) {
 fn followed_direct_imports<'p>(
     parsed: &'p reify_ast::ParsedModule,
     dag: &ModuleDag,
-) -> Vec<&'p str> {
-    let mut followed: Vec<&str> = Vec::new();
+) -> Vec<&'p reify_ast::ImportDecl> {
+    let mut followed: Vec<&reify_ast::ImportDecl> = Vec::new();
     for import in parsed.declarations.iter().filter_map(|decl| match decl {
         reify_ast::Declaration::Import(import) => Some(import),
         _ => None,
     }) {
-        let path = import.path.as_str();
-        if dag.follows_import(import) && !followed.contains(&path) {
-            followed.push(path);
+        let already = followed.iter().any(|seen| seen.path == import.path);
+        if dag.follows_import(import) && !already {
+            followed.push(import);
         }
     }
     followed

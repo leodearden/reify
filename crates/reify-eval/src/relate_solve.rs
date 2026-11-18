@@ -1860,7 +1860,7 @@ mod tests_mounted_joint_cell {
     //!   (d) `mounted_joint_cell("DoesNotExist", "link", &module) == None` — unknown scope → None
 
     use reify_core::ValueCellId;
-    use reify_test_support::compile_source_with_stdlib;
+    use reify_test_support::parse_and_compile_with_stdlib;
 
     use super::mounted_joint_cell;
 
@@ -1893,14 +1893,7 @@ structure Mech {
 "#;
 
     fn compiled_module() -> reify_compiler::CompiledModule {
-        let module = compile_source_with_stdlib(SOURCE);
-        // Sanity: must compile without errors.
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "test fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
-        module
+        parse_and_compile_with_stdlib(SOURCE)
     }
 
     /// (a) RED test — mounted_joint_cell returns the joint cell that references the
@@ -1969,12 +1962,7 @@ structure Mech2 {
     let j2 = revolute(link.hub_point, 0rad..2rad)
 }
 "#;
-        let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "multi-joint fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
+        let module = parse_and_compile_with_stdlib(MULTI_JOINT_SOURCE);
         let j_id = ValueCellId::new("Mech2", "j");
         let result = mounted_joint_cell("Mech2", "link", &module);
         assert_eq!(
@@ -2086,6 +2074,7 @@ structure Mech2 {
         /// Compile a structure with `sub link : Hub` and one joint of the given
         /// `ctor_call`, then assert `mounted_joint_cell("Mech", "link")` returns
         /// `Some(ValueCellId::new("Mech", "j"))`.
+        #[track_caller]
         fn check_kind(ctor_call: &str, kind_label: &str) {
             // Use a fresh structure name per kind to avoid name collisions when
             // all fixtures are compiled in the same module.
@@ -2101,12 +2090,7 @@ structure {mech_name} {{
 }}
 "#
             );
-            let module = compile_source_with_stdlib(&source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixture for {kind_label} must compile without Error diagnostics; got: {:#?}",
-                module.diagnostics
-            );
+            let module = parse_and_compile_with_stdlib(&source);
             let j_id = ValueCellId::new(&mech_name, "j");
             let result = mounted_joint_cell(&mech_name, "link", &module);
             assert_eq!(
@@ -2148,11 +2132,7 @@ structure MechFixed {
     let j = fixed()
 }
 "#;
-            let module = compile_source_with_stdlib(source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixed() fixture must compile without Error diagnostics"
-            );
+            let module = parse_and_compile_with_stdlib(source);
             let result = mounted_joint_cell("MechFixed", "link", &module);
             assert_eq!(
                 result,
@@ -2169,7 +2149,7 @@ mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
-    use reify_test_support::parse_and_compile_with_stdlib;
+    use reify_test_support::{direction_val, parse_and_compile_with_stdlib};
 
     use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
@@ -2177,21 +2157,17 @@ mod test_fixtures {
         Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
     }
 
-    fn vec3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-    }
-
     pub(super) fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
         Value::Axis {
             origin: Box::new(point3v(o.0, o.1, o.2)),
-            direction: Box::new(vec3v(d.0, d.1, d.2)),
+            direction: Box::new(direction_val(d.0, d.1, d.2)),
         }
     }
 
     pub(super) fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
         Value::Plane {
             origin: Box::new(point3v(o.0, o.1, o.2)),
-            normal: Box::new(vec3v(n.0, n.1, n.2)),
+            normal: Box::new(direction_val(n.0, n.1, n.2)),
         }
     }
 

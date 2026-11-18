@@ -2667,6 +2667,28 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
     /// (severity convention: `E_*` → Error).
     ExponentOutOfRange,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `BinOp::Mul`/`BinOp::Div`
+    /// arm), via `type_compat::infer_mul_div_result` returning
+    /// `MulDivRefusal::DimensionOverflow`.
+    ///
+    /// Emitted as a `Severity::Error` when the combined dimension of a
+    /// value-level `*` or `/` has an exponent that does not fit `Rational`
+    /// (`i16/i16`). Example: `1m^1/31 * 1m^1/37 * 1m^1/41`, whose Length
+    /// exponent needs denominator 47027.
+    ///
+    /// Canonical message form:
+    ///   `"the combined dimension of `<left>` <op> `<right>` has an exponent out of range"`
+    /// with a label `"combined dimension out of range"` on the operator node.
+    ///
+    /// The result type is poisoned to `Type::Error` (anti-cascade); the runtime
+    /// `eval_mul`/`eval_div` arm yields `Undef`.
+    ///
+    /// Distinct from [`ExponentOutOfRange`], which is a WRITTEN `^` literal
+    /// outside `i8`; this code is a COMPUTED exponent outside `Rational`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSION_EXPONENT_OVERFLOW`
+    /// (severity convention: `E_*` → Error).
+    DimensionExponentOverflow,
     /// Origin: `crates/reify-compiler/src/expr.rs`
     /// (`ExprKind::FunctionCall` arm — semantic gate for VALUE-position `auto`).
     ///
@@ -4981,6 +5003,19 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     FnDeclTablesMisaligned,
+    /// Origin: `gui/src-tauri/src/engine.rs::unanchored_import_warning`, the GUI's
+    /// buffer-only compile (task #5519, PRD resolution-unification D-10).
+    ///
+    /// Emitted when a compile with no file anchor (GUI `load_from_source`, or
+    /// `update_source` before any `load_file`) contains imports a file-backed
+    /// compile would follow, which it therefore cannot resolve. One per buffer,
+    /// naming every such import, located at the first.
+    ///
+    /// Canonical message: `"import \"<a>\", \"<b>\" not resolved: imports
+    /// require a file-backed buffer — open the .ri file to resolve them"`.
+    ///
+    /// Severity: Warning.
+    ImportRequiresFileBackedBuffer,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -8154,10 +8189,12 @@ pub struct DiagnosticInfo {
     /// Whether this diagnostic carries a real, line-tied source span.
     ///
     /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
-    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// actual span from the compiled source (a first `Diagnostic::labels` entry
+    /// whose span is not [`SourceSpan::prelude`]).
     /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
     /// point at a meaningful source location — e.g. module-level hot-reload staleness
-    /// errors where no span is available.
+    /// errors where no span is available, or a diagnostic re-homed from an
+    /// imported module, whose spans index that module, not this source.
     ///
     /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
     /// navigating the editor to a fake line 1 for span-less diagnostics.

@@ -77,19 +77,21 @@ lock_depth: 10
 # 5467), switched on by reify task 9995 after reify task 5099 waited 24.4 h on
 # docs/debug-mcp-contract.md (esc-5099-8). The keys stay in every task's lock list; only their
 # capacity changes.
-# EXCLUSIVE, via an exact module_overrides entry at 1, which beats the rule: code under docs/,
-# and files a gate-run test takes as its input. That means compiled in, parsed, imported or
-# replayed, checked as a generated artifact, or bound as a normative table that code must
-# match. A concurrent edit to those can break a test, not merely conflict as text. Every
-# ancestor directory key of an exclusive file is pinned too; otherwise a task declaring the
-# directory takes the unlimited limit and co-holds with that file's holder.
+# EXCLUSIVE, via an exact module_overrides entry at 1, which beats the rule: files a gate-run
+# test takes as its input. That means compiled in, parsed, imported or replayed, checked as a
+# generated artifact, or bound as a normative table that code must match. A concurrent edit to
+# those can break a test, not merely conflict as text. Every ancestor directory key of an
+# exclusive file is pinned too; otherwise a task declaring the directory takes the unlimited
+# limit and co-holds with that file's holder.
 # Guard: tests/infra/test_unlimited_holder_lock_pins.py.
-# SHARED: every other key under docs/ plus root *.md. That includes docs that a test checks
-# only as a description of code: the ones reify-audit's live-tree tests and the doc-sync infra
-# tests read (reify-stdlib-reference.md, invariants.md, PRD status and citations, capability
-# manifests, verify-pipeline-knobs.md), and gui-event-channels.md, whose rows the GUI
-# event-channel contract vitest checks. The merge gate re-runs those checks on the merged tree,
-# and these are the most contended files.
+# SHARED: every other key under docs/ plus root *.md. That includes code no gate test runs,
+# such as the older e3-granularity analysis scripts and the step-assembly-import.evidence C++
+# sources: a concurrent edit to those conflicts only as text. It also includes docs that a test
+# checks only as a description of code: the ones reify-audit's live-tree tests and the doc-sync
+# infra tests read (reify-stdlib-reference.md, invariants.md, PRD status and citations,
+# capability manifests, verify-pipeline-knobs.md), and gui-event-channels.md, whose rows the
+# GUI event-channel contract vitest checks. The merge gate re-runs those checks on the merged
+# tree, and these are the most contended files.
 # Keys are exact lock keys at lock_depth 10. Red tier: takes effect at the next orchestrator
 # restart. Reference: dark-factory skills/orchestrate/references/project-setup.md
 # "Per-subproject module overrides".
@@ -162,24 +164,12 @@ module_overrides:
   docs/prds/struct-ctor-field-type-conformance.survey.md: 1
   # Jobserver tuning measurements: test_jobserver_tuning_harness.sh runs --check against it.
   docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json: 1
-  # e3 analysis code: tests/infra/test_e3_* import the e3_*.py modules; the other .py are
-  # pinned as code under docs/.
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_analysis.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_cadence.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_inspect.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_m3.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_models.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/e2_df_widening.py: 1
+  # e3 analysis code: tests/infra/test_e3_* import these modules and run e3_analysis.py.
   docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_model.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_sources.py: 1
   docs/prds/v0_6/e3-granularity/analysis/e3_stats.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/refine2.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/reify_e2.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/reify_refine.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/reify_task_size_analysis.py: 1
-  docs/prds/v0_6/e3-granularity/analysis/task_size_analysis.py: 1
   # Committed e3 records: CommittedRecordTests reads every results/*/tasks-snapshot.json, so
   # pin each new record's snapshot and its results/<as-of> directory. A record's report.txt
   # and endpoints.json stay shared: no gate test reads the committed copies.
@@ -357,8 +347,9 @@ verify_admission_order: arrival
 # frontend-only task skips the Rust pipeline, etc.
 #
 # The merge path (DF_VERIFY_ROLE=merge) keeps full scope: hooks/pre-merge-commit
-# uses --scope all explicitly, and the orchestrator merge pipeline does not
-# invoke test_command / lint_command below.
+# uses --scope all explicitly, and the orchestrator merge pipeline runs
+# test_command / lint_command below with DF_VERIFY_ROLE=merge, under which
+# verify.sh forces --scope all (contract C2).
 #
 # No --profile here: verify.sh derives the profile from DF_VERIFY_ROLE (task 4078).
 # Per-task verifies run with DF_VERIFY_ROLE=task => profile=debug (fast feedback).
@@ -402,6 +393,12 @@ lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # Acceptable: clippy is the stricter signal and catches everything cargo check does.
 # verify.sh's `typecheck` action remains a valid standalone/manual entry point unchanged.
 type_check_command: "true"
+# The merge role runs the three commands above verbatim (force_workspace), not
+# file-scoped: DF's fallback otherwise drops test_command for a diff touching a
+# non-test .py (DF task 7041; incident 9761). Red tier: restart-only, inert until
+# the next orchestrator restart. See docs/notes/verify-pipeline-knobs.md; guard:
+# tests/infra/test_merge_verify_workspace_seam.sh.
+merge_verify_workspace: true
 
 # Run test/lint/type sequentially in one verify invocation.
 # Rust workspaces take an advisory lock on target/.cargo-lock, so the three
@@ -1114,6 +1111,16 @@ verify_cross_check_remote_green: false
 # (24 -> 16) said to raise it again once remote task legs reach this project (red tier).
 verify_task_host_policy: remote_all
 verify_task_remote_cross_check_every_n: 10
+
+# Task verifies stay narrow (scoped to the touched modules); the merge verify is full,
+# the way dark-factory runs it (Leo, 2026-11-17, ruling 3 of the warm-base 6696 study,
+# plans/warm-base-6696-study-2026-11-17/REPORT.md in dark-factory). "full" runs every
+# registered module's suite at merge, and it also tells
+# merge_lane/gates.py::_reverify_rebased_tree that the gate is whole-tree, so the
+# disjoint-delta skip is unsound: every rebased landing is re-verified before it lands
+# instead of being cleared as disjoint unverified. Restart-only (not in
+# RELOADABLE_FIELDS); live from the next orchestrator restart.
+merge_verify_breadth: "full"
 
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge

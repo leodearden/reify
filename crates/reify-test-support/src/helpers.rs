@@ -1359,21 +1359,8 @@ pub fn scalar_si(value: &reify_ir::Value, what: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
+    use crate::panic_capture::panic_message_of;
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
-
-    /// Run `f` and return the message it panicked with.
-    ///
-    /// `#[should_panic(expected = ...)]` matches exactly ONE substring, which
-    /// otherwise forces a second byte-identical test per expectation. Capturing
-    /// the message instead lets one test assert every substring that makes a
-    /// panic diagnosable. Reuses `reify_core::panic_payload_to_string` rather
-    /// than open-coding the downcast chain.
-    fn panic_message(f: impl FnOnce()) -> String {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            Ok(()) => panic!("expected a panic, but the call returned normally"),
-            Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
-        }
-    }
 
     /// Build a `reify_eval::EvalResult` from the only two fields these unit
     /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
@@ -1618,11 +1605,11 @@ mod tests {
     /// A non-`Scalar` value panics with a message naming BOTH the caller's
     /// `what` label and the value that was actually there — the two facts
     /// that make the failure diagnosable without a rerun. Asserting both is
-    /// why `panic_message` is used here instead of
+    /// why `panic_message_of` is used here instead of
     /// `#[should_panic(expected = ..)]`.
     #[test]
     fn scalar_si_panics_naming_label_and_observed_value() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let _ = super::scalar_si(&reify_ir::Value::Undef, "E.__connector_0.gain");
         });
         assert!(message.contains("E.__connector_0.gain"), "{message}");
@@ -2198,7 +2185,7 @@ mod tests {
     /// only the shared helper.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::compile_expecting_only_arg_type_mismatch(bracket_source(), "pattern spacing");
         });
 
@@ -2225,7 +2212,7 @@ mod tests {
     /// reason the assertion exists, and only a mixed fixture can see it.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_panics_on_a_second_unrelated_error() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::compile_expecting_only_arg_type_mismatch(
                 BARE_FILLET_PLUS_UNRELATED_ERROR_SRC,
                 "pattern spacing",
@@ -2507,7 +2494,7 @@ mod tests {
     /// diagnostic, so a failure is diagnosable without a rerun.
     #[test]
     fn test_assert_error_code_absent_panic_names_context_and_offender() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let diags = vec![
                 Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
                     .with_code(DiagnosticCode::StructureMemberNotFound),
@@ -2527,7 +2514,7 @@ mod tests {
     /// author can see what happened instead of the expected code.
     #[test]
     fn test_assert_error_code_present_panic_lists_observed_errors() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let diags = vec![
                 Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
             ];
@@ -3045,7 +3032,7 @@ mod tests {
         let module = super::compile_source(source);
         super::assert_no_diagnostics(&module.diagnostics, "two-subs Vent/Manifold fixture");
 
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_let_expr_in(&module, "Manifold", "area");
         });
 
@@ -3224,7 +3211,7 @@ mod tests {
     #[test]
     fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
         let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_function_in(&module, "quadruple");
         });
         for expected in [
@@ -3247,7 +3234,7 @@ mod tests {
         let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
         let module = super::compile_source_named(source, "fn_lookup");
         super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_function_in(&module, "convert");
         });
         let real_param = format!(

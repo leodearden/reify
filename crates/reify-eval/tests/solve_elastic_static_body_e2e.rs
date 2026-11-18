@@ -896,12 +896,16 @@ fn multi_case_body_solve_survives_a_preceding_template() {
 ///
 /// ## Why `ElasticOptions(deterministic: true)` — shared by all three cylinder fixtures
 ///
-/// The fixtures pin the single-threaded `Deterministic` execution mode (no
-/// thread team, no CG warm start) that
-/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes universal,
-/// because at the realized cylinder's DOF count the default `Parallel` mode is
-/// amplified by host load and was half the root cause of this file's 1800s B9
-/// timeouts. Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
+/// The fixtures pin the `Deterministic` execution mode: a single-threaded CG
+/// and assembly, and a cold start. They do so because at the realized
+/// cylinder's DOF count the default `Parallel` mode is amplified by host load
+/// and was half the root cause of this file's 1800s B9 timeouts.
+/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes every linear
+/// solve single-threaded (`threads` still sets assembly parallelism) and
+/// deletes the `Parallel` mode, but keeps warm start under the default
+/// `deterministic: false`. The cold start is incidental: no test here
+/// exercises warm start.
+/// Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
 #[cfg(has_gmsh)]
 const NON_PRISMATIC_BODY_SOURCE: &str = r#"
 structure FeaBodyNonPrismatic {

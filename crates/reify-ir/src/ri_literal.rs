@@ -1204,20 +1204,32 @@ mod tests {
         }
     }
 
-    /// (c) REJECTIONS THAT SURVIVE THE UNLOCK. Each is a case where emitting
-    /// something would produce a literal that does not re-parse.
+    /// (b2) RATIONAL EXPONENTS are written in `Rational`'s `p/q` spelling,
+    /// which the unit grammar reads back (task #9236).
     #[test]
-    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
-        // A fractional exponent has no integral `UnitExpr::Pow` spelling.
-        assert!(matches!(
+    fn rational_exponent_dimensions_emit_their_p_over_q_spelling() {
+        assert_eq!(
             value_to_ri_literal_in_scope(
                 &compound(1.5, DimensionVector::LENGTH.root(2)),
                 None,
                 UnitScope::SiBaseUnitsSeeded
             ),
-            Err(RiLiteralError::UnrepresentableDimension { .. })
-        ));
+            Ok("1.5m^1/2".to_string())
+        );
+        assert_eq!(
+            value_to_ri_literal_in_scope(
+                &compound(5e7, DimensionVector::FRACTURE_TOUGHNESS),
+                None,
+                UnitScope::SiBaseUnitsSeeded
+            ),
+            Ok("50000000kg/m^1/2/s^2".to_string())
+        );
+    }
 
+    /// (c) REJECTIONS THAT SURVIVE THE UNLOCK. Each is a case where emitting
+    /// something would produce a literal that does not re-parse.
+    #[test]
+    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
         // Finiteness is checked BEFORE any formatting, so a non-finite
         // compound value is `NonFiniteNumber` — never a partially-formed
         // `NaNm^2`.

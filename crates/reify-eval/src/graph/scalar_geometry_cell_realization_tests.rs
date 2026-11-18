@@ -22,9 +22,6 @@ const GUARDED_SAME_NAME_PARAM_SRC: &str = r#"
             param body : Solid = cylinder(5mm, size)
         }
     }
-    structure P {
-        sub s = T()
-    }
 "#;
 
 #[test]
@@ -37,9 +34,9 @@ fn a_scalar_geometry_let_resolves_to_its_own_realization() {
             .templates
             .iter()
             .flat_map(|t| &t.realizations)
-            .find(|r| r.name.as_deref() == Some(member))
+            .find(|r| r.id.entity == "T" && r.name.as_deref() == Some(member))
             .map(|r| r.id.clone())
-            .unwrap_or_else(|| panic!("SRC must compile a realization named `{member}`"));
+            .unwrap_or_else(|| panic!("SRC must compile a realization of `T` named `{member}`"));
         let cell = ValueCellId::new("T", member);
 
         let realization = graph

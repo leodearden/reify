@@ -1345,6 +1345,17 @@ fn eval_scratch_let(
     }
 }
 
+/// The template's guarded-group cells: each group's guard cell, members and
+/// else members. No sub instance is stamped with one, because cell_contributions
+/// stamps an instance from the child's value_cells only.
+fn guarded_group_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellId> {
+    template.guarded_groups.iter().flat_map(|group| {
+        std::iter::once(&group.guard_value_cell)
+            .chain(group.members.iter().map(|decl| &decl.id))
+            .chain(group.else_members.iter().map(|decl| &decl.id))
+    })
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Cells are visited in [`phase1_walk`] order, so a default that reads a sibling
@@ -1352,7 +1363,10 @@ fn eval_scratch_let(
 /// in scope. A let a default reads is evaluated as a scratch value only: it is
 /// never committed or returned here, and phase 2 commits it.
 ///
-/// Returns the template-scoped child_values map (params only) for use in phase 2.
+/// Returns the template-scoped child_values map for use in phase 2: the params,
+/// plus the template's guarded-group cells at their template values. An instance
+/// holds no cell of its own for a guarded-group cell, so its read resolves at
+/// the template's value.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_params_only<'f>(
@@ -1369,10 +1383,15 @@ fn elaborate_child_params_only<'f>(
     diagnostics: &mut Vec<Diagnostic>,
     optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
-    // What defaults are evaluated against: the params so far plus the scratch
-    // lets. The scratch lets are removed before return, so the caller gets
-    // params only and phase 2 stays the sole committer of every let.
+    // What defaults are evaluated against: the guarded-group seeds, the params
+    // so far and the scratch lets. The scratch lets are removed before return,
+    // so phase 2 stays the sole committer of every let.
     let mut scope = ValueMap::new();
+    for id in guarded_group_cells(child_template) {
+        if let Some(value) = values.get(id) {
+            scope.insert(id.clone(), value.clone());
+        }
+    }
     let mut scratch_lets: Vec<&ValueCellId> = Vec::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than surfaced — pre-migration this path never surfaced
@@ -1574,7 +1593,8 @@ fn elaborate_child_params_only<'f>(
 
 /// Phase 2: Evaluate and store the let-binding cells for a child instance.
 ///
-/// `child_values` should contain the template-scoped params from phase 1.
+/// `child_values` should contain the template-scoped params from phase 1, and
+/// its guarded-group seeds at their template values.
 /// Before evaluating lets, this function enriches `child_values` with sub-component
 /// values projected from the global `values` map — this enables cross-level let
 /// expressions like `let total = if n > 0 then n + S.child.total else n` to see

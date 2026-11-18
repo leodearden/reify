@@ -100,7 +100,7 @@ Every CLI command that evaluates a design, `check` (including `--strict`), `test
 
 Launch **Reify** from your desktop's application menu, or run `reify-gui` in a terminal (AppImage: run the downloaded file). With no file argument it opens on the **Start view**, which has three parts:
 
-- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js 18+ on your `PATH` (the `.deb` brings it; AppImage: `sudo apt install nodejs`; see the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
+- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js on your `PATH` (the version is in the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
 - **Document** — **Open…** picks an existing `.ri` file; **New…** asks for a path and writes a minimal module template there, then opens it. You can also type a path and press Open or Create. A file that cannot be opened or created shows an error on the Start view instead of leaving it.
 - **Recent** — files you opened before; click one to reopen it.
 
@@ -152,8 +152,6 @@ If one fails to parse or check, that's a real bug — please report it (see [REA
 **GUI fails to launch with a webkit/gtk linker error** — from a source build, Tauri 2 webview deps are missing: re-run `scripts/setup-dev.sh`. From the AppImage, install GTK 3 and the GL libraries (`sudo apt install libgtk-3-0t64 libopengl0 libegl1 libgles2 libgl1`) or use the `.deb`.
 
 **The AppImage won't start (FUSE error)** — install `libfuse2t64`, or run it with `APPIMAGE_EXTRACT_AND_RUN=1 ./Reify_*_amd64.AppImage`.
-
-**The assistant's first message fails with `E_GUI_SIDECAR_NODE_MISSING`** — Assistant mode found no `node` on the `PATH` the GUI was launched with. Install Node.js (`sudo apt install nodejs`) and send the message again. A desktop launch does not read your shell's rc files, so a `node` from nvm is invisible to it: install the system `nodejs`, or start `reify-gui` from a terminal where `node` works.
 
 **(Source builds) `reify build` hangs for minutes** — first run on a fresh checkout includes a tree-sitter generate (60s) and OCCT C++ compile (a few minutes). Subsequent runs are fast.
 

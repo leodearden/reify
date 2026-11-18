@@ -182,9 +182,23 @@ pub(crate) struct InstanceMintScope<'a> {
     pub(crate) meta_map: &'a HashMap<String, HashMap<String, String>>,
 }
 
+/// The outcome of [`InstanceMintScope::mint_undef_instance_cell`].
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub(crate) enum InstanceMint {
+    /// The cell is not a sub-instance cell of the graph, so its mint is the
+    /// caller's.
+    NotAnInstanceCell,
+    /// The value the cell takes in its instance's scope: the minted value, or
+    /// `Undef` when nothing mints or the mint declines over a read the
+    /// instance has not committed yet.
+    InstanceCell(Value),
+}
+
 impl InstanceMintScope<'_> {
-    /// The value an `Undef` cell takes when `instance_cell`, an INSTANCE-scoped
-    /// id such as `P.s.body`, is a sub-instance cell of `self.graph`; `None`
+    /// [`InstanceMint::InstanceCell`] with the value an `Undef` cell takes when
+    /// `instance_cell`, an INSTANCE-scoped id such as `P.s.body`, is a
+    /// sub-instance cell of `self.graph`; [`InstanceMint::NotAnInstanceCell`]
     /// when it is not one. `kind` and `expr` are the cell's.
     ///
     /// It mints as `unfold` mints it at `eval()`. An instance cell's expression
@@ -194,27 +208,30 @@ impl InstanceMintScope<'_> {
     /// reads: the expression's reads, plus, for a geometry cell, the reads of
     /// its realization's operations, which the handle's hash folds. The two
     /// sets differ when the compiler inlines a guarded geometry let into the
-    /// operations. `Undef` when nothing mints, and when the template holds a
-    /// read the instance has not committed yet, which declines the mint.
+    /// operations. `InstanceCell(Undef)` when nothing mints, and when the
+    /// template holds a read the instance has not committed yet, which declines
+    /// the mint.
     pub(crate) fn mint_undef_instance_cell(
         &self,
         instance_cell: &ValueCellId,
         kind: ValueCellKind,
         expr: &CompiledExpr,
-    ) -> Option<Value> {
-        let template = self.graph.sub_instance_template(&instance_cell.entity)?;
+    ) -> InstanceMint {
+        let Some(template) = self.graph.sub_instance_template(&instance_cell.entity) else {
+            return InstanceMint::NotAnInstanceCell;
+        };
         let template_cell = ValueCellId::new(template, &instance_cell.member);
         let realization = self.graph.scalar_geometry_cell_realization(&template_cell);
         if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
-            return Some(Value::Undef);
+            return InstanceMint::InstanceCell(Value::Undef);
         }
         let reads = instance_mint_reads(realization, expr);
         let Ok(instance_values) =
             project_instance_reads(self.values, &instance_cell.entity, template, &reads)
         else {
-            return Some(Value::Undef);
+            return InstanceMint::InstanceCell(Value::Undef);
         };
-        Some(mint_template_keyed_instance_cell(
+        InstanceMint::InstanceCell(mint_template_keyed_instance_cell(
             Value::Undef,
             kind,
             &template_cell,
@@ -228,9 +245,11 @@ impl InstanceMintScope<'_> {
         ))
     }
 
-    /// `evaluated`, unless it is `Undef` and `instance_cell` is a sub-instance
-    /// cell of `self.graph`; then the cell minted by
-    /// [`Self::mint_undef_instance_cell`].
+    /// `evaluated`, unless it is `Undef`; then the cell minted by
+    /// [`Self::mint_undef_instance_cell`]. `instance_cell` must be a
+    /// sub-instance cell of `self.graph`, as every caller's slot cell is
+    /// stamped through `EvaluationGraph::insert_sub_instance_cell`. A debug
+    /// build panics on one that is not; a release build leaves it `Undef`.
     pub(crate) fn mint_instance_cell_if_undef(
         &self,
         evaluated: Value,
@@ -239,9 +258,18 @@ impl InstanceMintScope<'_> {
         expr: &CompiledExpr,
     ) -> Value {
         match evaluated {
-            Value::Undef => self
-                .mint_undef_instance_cell(instance_cell, kind, expr)
-                .unwrap_or(Value::Undef),
+            Value::Undef => match self.mint_undef_instance_cell(instance_cell, kind, expr) {
+                InstanceMint::InstanceCell(value) => value,
+                InstanceMint::NotAnInstanceCell => {
+                    debug_assert!(
+                        false,
+                        "{instance_cell} is not a sub-instance cell: a resized or reseeded \
+                         slot cell must be stamped through \
+                         EvaluationGraph::insert_sub_instance_cell"
+                    );
+                    Value::Undef
+                }
+            },
             evaluated => evaluated,
         }
     }
@@ -352,8 +380,8 @@ mod tests {
     use reify_test_support::parse_and_compile;
 
     use super::{
-        InstanceMintScope, SymbolicMintOrder, instance_mint_reads, project_instance_reads,
-        slot_commit_order,
+        InstanceMint, InstanceMintScope, SymbolicMintOrder, instance_mint_reads,
+        project_instance_reads, slot_commit_order,
     };
     use crate::deps::extract_dependency_trace;
     use crate::geometry_ops::try_eval_symbolic_topology_selector;
@@ -495,15 +523,15 @@ mod tests {
         )
     }
 
-    /// What the instance arm answers at `cell` over `values`, for the kind and
-    /// expression of `like`. Two calls whose answers are compared fix `like` and
-    /// vary `cell`, so the difference is the cell's and not the expression's.
+    /// The instance arm's outcome at `cell` over `values`, for the kind and
+    /// expression of `like`. Two calls whose outcomes are compared fix `like`
+    /// and vary `cell`, so the difference is the cell's and not the expression's.
     fn mint_instance_at(
         graph: &EvaluationGraph,
         values: &ValueMap,
         like: &ValueCellId,
         cell: &ValueCellId,
-    ) -> Option<Value> {
+    ) -> InstanceMint {
         InstanceMintScope {
             graph,
             values,
@@ -685,7 +713,7 @@ structure Shelf {
 
             assert_eq!(
                 mint_instance_at(&graph, &values, &instance_cell, &instance_cell),
-                Some(
+                InstanceMint::InstanceCell(
                     graph_mint(&graph, &id("T", member), &instance_values_at_template_scope)
                         .unwrap_or(Value::Undef)
                 ),
@@ -813,25 +841,57 @@ structure Shelf {
     }
 
     /// The edit path asks the instance arm about every `Undef` cell, and takes
-    /// its own template-scope arm for the ones the instance arm declines.
+    /// its own template-scope arm only for a cell that is not a sub-instance
+    /// cell. A decline is a separate outcome: an instance cell whose value is
+    /// `Undef`.
     #[test]
-    fn the_instance_mint_answers_none_for_a_cell_outside_every_sub_instance() {
+    fn a_template_cell_is_not_an_instance_cell() {
         let graph = fixture_graph();
         let values = fixture_param_values();
         let instance_b = id("P.s", "b");
 
         assert_eq!(
             mint_instance_at(&graph, &values, &instance_b, &id("T", "b")),
-            None,
-            "`T` is a template, not a sub instance: the instance arm must decline \
-             `T.b` rather than mint it, so the caller's template-scope arm runs"
+            InstanceMint::NotAnInstanceCell,
+            "`T` is a template, not a sub instance: `T.b` is no sub-instance cell, \
+             so the instance arm must leave its mint to the caller's template-scope \
+             arm"
         );
         let minted = mint_instance_at(&graph, &values, &instance_b, &instance_b);
         assert!(
-            matches!(minted, Some(Value::GeometryHandle { .. })),
+            matches!(
+                minted,
+                InstanceMint::InstanceCell(Value::GeometryHandle { .. })
+            ),
             "control: the same kind and expression at the sub instance's `P.s.b` \
-             must mint, so the None comes from the cell's entity and not its \
-             expression: {minted:?}"
+             must mint, so NotAnInstanceCell comes from the cell's entity and not \
+             its expression: {minted:?}"
+        );
+    }
+
+    /// Every caller of `mint_instance_cell_if_undef` passes a slot cell it
+    /// stamped through `EvaluationGraph::insert_sub_instance_cell`, so a cell
+    /// that is not a sub-instance cell breaches the sub-instance registry. A
+    /// debug build reports the breach rather than leaving the cell `Undef`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "T.b is not a sub-instance cell")]
+    fn the_if_undef_mint_of_a_template_cell_panics_in_a_debug_build() {
+        let graph = fixture_graph();
+        let values = fixture_param_values();
+        let instance_b = id("P.s", "b");
+
+        InstanceMintScope {
+            graph: &graph,
+            values: &values,
+            functions: &[],
+            meta_map: &HashMap::new(),
+        }
+        .mint_instance_cell_if_undef(
+            Value::Undef,
+            &id("T", "b"),
+            node_of(&graph, &instance_b).kind,
+            expr_of(&graph, &instance_b),
         );
     }
 
@@ -847,16 +907,18 @@ structure Shelf {
 
         assert_eq!(
             mint_instance_at(&graph, &without_instance_w, &instance_b, &instance_b),
-            Some(Value::Undef),
+            InstanceMint::InstanceCell(Value::Undef),
             "`T.w` is held but `P.s.w` is not committed yet: minting `P.s.b` over \
              the instance's values would fold a `w` it has not evaluated, so the \
-             instance arm must decline to Undef"
+             instance arm must decline to Undef. A decline is still an instance \
+             cell: read as NotAnInstanceCell, it would send the edit_param walk \
+             into its template-scope mint over the full value map"
         );
         let minted = mint_instance_at(&graph, &with_instance_w, &instance_b, &instance_b);
         assert!(
             matches!(
                 minted,
-                Some(Value::GeometryHandle {
+                InstanceMint::InstanceCell(Value::GeometryHandle {
                     kernel_handle: None,
                     ..
                 })
@@ -881,18 +943,23 @@ structure Shelf {
         let minted = mint_instance_at(&graph, &values, &side, &side);
 
         assert!(
-            matches!(minted, Some(Value::Selector(_))),
+            matches!(minted, InstanceMint::InstanceCell(Value::Selector(_))),
             "a selector constructor must mint through the instance arm, not \
              early-out to Undef for want of a realization: {minted:?}"
         );
+        let selector_over = |body| {
+            side_selector_over(&graph, body)
+                .map(InstanceMint::InstanceCell)
+                .unwrap_or_else(|| panic!("precondition: `Block.side` must select over {body:?}"))
+        };
         assert_eq!(
             minted,
-            side_selector_over(&graph, &instance_body),
+            selector_over(&instance_body),
             "`Shelf.block.side` must select over the instance's `body`"
         );
         assert_ne!(
             minted,
-            side_selector_over(&graph, &template_body),
+            selector_over(&template_body),
             "control: a selector over the template's `body` must differ, or the \
              instance's own `body` is not pinned"
         );
@@ -910,7 +977,7 @@ structure Shelf {
 
         assert_eq!(
             mint_instance_at(&graph, &values, &side, &side),
-            Some(Value::Undef),
+            InstanceMint::InstanceCell(Value::Undef),
             "`Block.body` is held but `Shelf.block.body` is not committed yet: \
              minting `Shelf.block.side` would select over a `body` the instance \
              has not evaluated, so the instance arm must decline to Undef"
@@ -918,7 +985,7 @@ structure Shelf {
         values.insert(id("Shelf.block", "body"), instance_body);
         let minted = mint_instance_at(&graph, &values, &side, &side);
         assert!(
-            matches!(minted, Some(Value::Selector(_))),
+            matches!(minted, InstanceMint::InstanceCell(Value::Selector(_))),
             "control: once `Shelf.block.body` is committed `Shelf.block.side` must \
              mint, so the decline comes from the missing read: {minted:?}"
         );

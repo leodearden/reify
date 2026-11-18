@@ -184,6 +184,10 @@ pub fn __validate_annotations_for_parity_test(
 /// Expose `infer_mul_div_result` to the static-vs-runtime Mul/Div parity
 /// integration test without widening the compiler's public API.
 ///
+/// `None` means no static result type, which a runtime `Undef` mirrors for
+/// both refusals: unsupported operand kinds, and a combined dimension whose
+/// exponent overflows `Rational`.
+///
 /// # Stability
 ///
 /// This function is intentionally named with `__` prefix to signal that it is
@@ -200,7 +204,7 @@ pub fn __infer_mul_div_result_for_parity_test(
     left: &reify_core::Type,
     right: &reify_core::Type,
 ) -> Option<reify_core::Type> {
-    type_compat::infer_mul_div_result(op, left, right)
+    type_compat::infer_mul_div_result(op, left, right).ok()
 }
 
 /// Test-visible mirror of the `pub(crate)` `OverloadResolution` discriminants.

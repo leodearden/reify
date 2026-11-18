@@ -380,17 +380,22 @@ class TestReifyBinaryTrustFreshRepo(unittest.TestCase):
         """The home answers in one stdout line; a root holding a newline makes it two.
 
         The one-line sibling is the control: the same vouched binary is trusted
-        there, so the newline alone turns trust into refusal.
+        there, so the newline alone turns trust into refusal.  "No readable
+        verdict" also names a home that exits outside its verdicts, so the
+        refusal must show the trusted exit and the two-line stdout it refused.
         """
         tmp = self._fresh_root()
         release, control = trust_ctx(os.path.join(tmp, "one-line"), "target/release/reify",
                                      lambda head: head + "\n")
         self.assertEqual(control.reify_bin, release, control.reify_bin_refusal)
-        _, ctx = trust_ctx(os.path.join(tmp, "two\nlines"), "target/release/reify",
-                           lambda head: head + "\n")
+        newline_release, ctx = trust_ctx(os.path.join(tmp, "two\nlines"), "target/release/reify",
+                                         lambda head: head + "\n")
         self.assertIsNone(ctx.reify_bin)
         self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
         self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+        self.assertIn("no readable verdict", ctx.reify_bin_refusal)
+        self.assertIn("(exit 0,", ctx.reify_bin_refusal)
+        self.assertIn(repr(newline_release + "\n"), ctx.reify_bin_refusal)
 
 
 if __name__ == "__main__":

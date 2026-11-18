@@ -19,6 +19,14 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # _rgs_free_port below.
 # shellcheck source=scripts/lib_portable.sh
 source "$REPO_ROOT/scripts/lib_portable.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+# reify-gui's locked registry inputs for this host, fetched before the first
+# assertion: Test 36 reads them with --offline --filter-platform <host>.
+_RGS_HOST=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') || _RGS_HOST=""
+_rgs_fetch_cargo_inputs() {
+    cargo_inputs_fetch --target "$_RGS_HOST" --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml"
+}
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
@@ -57,6 +65,11 @@ export DISPLAY=:99
 unset WAYLAND_DISPLAY
 
 echo "=== run-gui.sh launcher tests ==="
+
+echo ""
+echo "--- Cargo inputs ---"
+assert_infra_input "the registry holds reify-gui's locked inputs for $_RGS_HOST (cargo fetch --locked)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
 
 # -- Test 1: file exists + is executable -------------------------------------
 echo ""
@@ -526,15 +539,13 @@ _rgs_cargo_build_features() {
 # line, as the REAL cargo resolves reify-gui under --features <features>.
 # <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
 # $(...), where a registration would be lost. Silent and non-zero if cargo
-# cannot resolve (e.g. a cold registry). --filter-platform keeps --offline from
-# needing other targets' crates (macOS-only block2 etc.), which a Linux host
-# never downloads.
+# cannot resolve. Its inputs are fetched at suite start for $_RGS_HOST only, and
+# --filter-platform matches that host-only fetch.
 _rgs_tauri_features_under() {
-    local _json="$1/cargo-metadata.json" _rc=0 _host
-    _host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
-    [ -n "$_host" ] || return 1
+    local _json="$1/cargo-metadata.json" _rc=0
+    [ -n "$_RGS_HOST" ] || return 1
     ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
-        --filter-platform "$_host" \
+        --filter-platform "$_RGS_HOST" \
         --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
         --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
     [ "$_rc" -eq 0 ] || return 1
@@ -1651,7 +1662,7 @@ _t36_resolve() {
     assert "$1: its cargo build of reify-gui passes a --features value" \
         test -n "$_t36_features"
 
-    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc; on a cold registry warm it with \`cargo fetch --locked\`, or run scripts/setup-dev.sh)" \
+    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc)" \
         test "$_rc" -eq 0
 
     # Non-empty iff tauri is in the resolve: the workspace dep always enables devtools.
@@ -1673,6 +1684,7 @@ env DISPLAY=:99 \
     bash "$_t36rel_tmpdir/scripts/run-gui.sh" "$_t36rel_tmpdir/test.ri" >/dev/null 2>&1 || true
 
 _t36_resolve run-gui.sh "$_t36rel_tmpdir"
+_t36rel_features=$_t36_features _t36rel_tauri=$_t36_tauri
 
 assert "run-gui.sh: tauri resolves WITH custom-protocol under --features '$_t36_features', so the window serves gui/dist (tauri features: ${_t36_tauri//$'\n'/,})" \
     bash -c 'grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
@@ -1695,6 +1707,7 @@ env DISPLAY=:99 \
     bash "$_t36dev_tmpdir/scripts/run-gui-dev.sh" "$_t36dev_tmpdir/test.ri" >/dev/null 2>&1 || true
 
 _t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
+_t36dev_features=$_t36_features _t36dev_tauri=$_t36_tauri
 
 assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
     bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
@@ -1970,6 +1983,35 @@ _t42b_rc=0
     PATH="$_t42b_tmpdir/bin:$PATH" \
     bash "$_t42b_tmpdir/scripts/run-gui.sh" sub/design.ri) >/dev/null 2>&1 || _t42b_rc=$?
 _t42_check run-gui.sh "$_t42b_tmpdir" "$_t42b_rc"
+
+# -- Test 43: Test 36's verdict does not depend on the registry cache --------
+echo ""
+echo "--- Test 43: Test 36's verdict does not depend on the registry cache (task 9993) ---"
+
+# An empty CARGO_HOME, once the suite's own fetch has run, must resolve exactly
+# Test 36's warm answers. The negative control proves the reads consult it.
+_rgs_mktemp _t43_home
+_rgs_mktemp _t43_scratch
+
+_t43_rc=0
+CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$_t36rel_features" >/dev/null || _t43_rc=$?
+assert "an empty CARGO_HOME cannot resolve reify-gui before the fetch (rc $_t43_rc)" \
+    test "$_t43_rc" -ne 0
+
+CARGO_HOME="$_t43_home" assert_infra_input "the suite's cargo fetch fills an empty CARGO_HOME" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
+
+# _t43_same_as_warm <label> <features> <warm-tauri>
+_t43_same_as_warm() {
+    local _cold _rc=0
+    _cold=$(CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$2") || _rc=$?
+    assert "$1: the fetched empty CARGO_HOME resolves reify-gui under --features '$2' (rc $_rc)" \
+        test "$_rc" -eq 0
+    assert "$1: tauri's features there equal Test 36's warm ones (cold: ${_cold//$'\n'/,}; warm: ${3//$'\n'/,})" \
+        test "$_cold" = "$3"
+}
+_t43_same_as_warm run-gui.sh "$_t36rel_features" "$_t36rel_tauri"
+_t43_same_as_warm run-gui-dev.sh "$_t36dev_features" "$_t36dev_tauri"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""

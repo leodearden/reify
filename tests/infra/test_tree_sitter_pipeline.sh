@@ -3708,6 +3708,52 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     fi
 }
 
+test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
+    # fs::copy carries src/scanner.c's mode onto build.rs's $OUT_DIR copy, so a
+    # read-only checkout (0444) leaves a copy the next run cannot reopen for
+    # writing. The script removes and rewrites the copy instead (#9896); a rerun
+    # over a copy made from a 0444 scanner.c must still succeed.
+    require_tree_sitter_cli || return 0
+
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+
+    # Read-only before the FIRST build: chmod moves only ctime and cargo's
+    # rerun-if-changed compares mtimes, so a later chmod would rerun nothing.
+    chmod 0444 "$fix/src/scanner.c" || return 1
+    if [ -w "$fix/src/scanner.c" ]; then
+        echo "  SKIP: mode 0444 does not deny this user a write (running as root?), so no copy can block a rerun"
+        return 0
+    fi
+
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+
+    local out marker
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    assert_file_exists "$out/src/scanner.c" || return 1
+    marker=$(ts_fixture_marker "$fix") || return 1
+
+    touch "$fix/grammar.js" || return 1
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+        echo "  (the rerun over the first run's copy of a 0444 src/scanner.c failed)"
+        return 1 ;;
+    esac
+    if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: touching grammar.js did not rerun the build script, so"
+        echo "  no run replaced an existing copy of the read-only scanner.c and this"
+        echo "  proved nothing."
+        return 1
+    fi
+}
+
 test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
     # build.rs watches nothing in OUT_DIR (#9896), so damage there is repaired
     # whenever the script next runs. The `touch` of grammar.js, content

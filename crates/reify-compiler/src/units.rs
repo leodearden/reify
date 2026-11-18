@@ -1814,19 +1814,26 @@ pub enum UnitResolveError {
     /// affine literals (e.g. `20degC`) through the existing
     /// `lookup_unit_in_registry` / `unit_to_scalar` standalone path.
     AffineUnitInCompound { name: String, span: SourceSpan },
-    /// The exponent in a `Pow` node is outside the `i8` range accepted by
-    /// [`DimensionVector::pow`].  Realistic unit exponents are ≤ ±10; values
-    /// beyond `i8::MIN..=i8::MAX` (±127) are rejected rather than silently
-    /// wrapping or panicking.
-    ExponentOutOfRange { exponent: i32, span: SourceSpan },
+    /// The exponent in a `Pow` node fails [`reify_core::unit_exponent_in_range`]
+    /// (numerator and denominator each within `i8`), the one bound a unit
+    /// expression's exponent may carry, shared with the `.ri` emitter.
+    ExponentOutOfRange {
+        exponent: reify_core::Rational,
+        span: SourceSpan,
+    },
+    /// Folding the expression overflows a slot of the resulting
+    /// [`DimensionVector`] even though each written exponent is in range
+    /// (`m^127^127^127`, or `m^1/127*m^1/126*m^1/125` whose Length exponent
+    /// needs a denominator of 2000250).
+    DimensionOverflow { span: SourceSpan },
 }
 
 /// Convert a [`UnitResolveError`] into a user-facing [`Diagnostic`].
 ///
 /// Centralises diagnostic messaging for compound unit resolution failures so
 /// that both call sites (`expr.rs` and `type_resolution.rs`) emit consistent
-/// error messages, and a future fourth `UnitResolveError` variant is handled in
-/// exactly one place.
+/// error messages, and each `UnitResolveError` variant is handled in exactly
+/// one place.
 ///
 /// The span embedded in each error variant is used as the diagnostic label
 /// location — it equals the `expr.span` threaded into `resolve_unit_expr` at
@@ -1848,6 +1855,14 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
             Diagnostic::error(format!("unit exponent {} out of range", exponent))
                 .with_label(DiagnosticLabel::new(*span, "exponent out of range"))
         }
+
+        UnitResolveError::DimensionOverflow { span } => Diagnostic::error( // pdiag:allow — #9755 mints codes for all four UnitResolveError arms together
+            "the unit expression's combined dimension has an exponent out of range",
+        )
+        .with_label(DiagnosticLabel::new(
+            *span,
+            "dimension exponent out of range",
+        )),
     }
 }
 
@@ -1865,7 +1880,9 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
 /// # Errors
 /// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
 /// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
-/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside `i8` range
+/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside
+///   [`reify_core::unit_exponent_in_range`]
+/// - [`UnitResolveError::DimensionOverflow`]    — the folded dimension overflows
 ///
 /// # Standalone affine path
 /// Bare affine literals like `20degC` must be routed through
@@ -1895,23 +1912,38 @@ pub fn resolve_unit_expr(
         reify_ast::UnitExpr::Mul(a, b) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
             let (fb, db) = resolve_unit_expr(b, registry, span)?;
-            Ok((fa * fb, da.mul(&db)))
+            let dimension = da
+                .checked_mul(&db)
+                .ok_or(UnitResolveError::DimensionOverflow { span })?;
+            Ok((fa * fb, dimension))
         }
         reify_ast::UnitExpr::Div(a, b) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
             let (fb, db) = resolve_unit_expr(b, registry, span)?;
-            Ok((fa / fb, da.div(&db)))
+            let dimension = da
+                .checked_div(&db)
+                .ok_or(UnitResolveError::DimensionOverflow { span })?;
+            Ok((fa / fb, dimension))
         }
-        reify_ast::UnitExpr::Pow(a, n) => {
+        reify_ast::UnitExpr::Pow(a, exponent) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
-            // `f64::powi` takes i32 natively — no narrowing needed for the factor.
-            // `DimensionVector::pow` takes i8, so the exponent must be narrowed.
-            // Guard the conversion so an out-of-range exponent surfaces as a
-            // resolve error rather than a panic or silent wrap.  Realistic unit
-            // exponents are ≤ ±10 (per the UnitExpr::Pow doc-comment).
-            let n_i8 = i8::try_from(*n)
-                .map_err(|_| UnitResolveError::ExponentOutOfRange { exponent: *n, span })?;
-            Ok((fa.powi(*n), da.pow(n_i8)))
+            if !reify_core::unit_exponent_in_range(*exponent) {
+                return Err(UnitResolveError::ExponentOutOfRange {
+                    exponent: *exponent,
+                    span,
+                });
+            }
+            // `powi` keeps the integer path bit-identical to before #9236; a
+            // factor-1.0 atom folds to exactly 1.0 either way (`1.0.powf(y)`).
+            let factor = if exponent.den() == 1 {
+                fa.powi(i32::from(exponent.num()))
+            } else {
+                fa.powf(f64::from(exponent.num()) / f64::from(exponent.den()))
+            };
+            let dimension = da
+                .checked_pow_rational(*exponent)
+                .ok_or(UnitResolveError::DimensionOverflow { span })?;
+            Ok((factor, dimension))
         }
     }
 }
@@ -2768,8 +2800,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(60, 64);
         // mm^2 = Pow(Unit("mm"), 2)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("mm".to_string())), 2);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("mm".to_string())),
+            reify_core::Rational::new(2, 1),
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("mm^2 must resolve successfully");
         // 0.001.powi(2) = 1e-6
@@ -2786,8 +2820,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(70, 74);
         // s^-2 = Pow(Unit("s"), -2)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("s".to_string())), -2);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
+            reify_core::Rational::new(-2, 1),
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("s^-2 must resolve successfully");
         assert!(
@@ -2804,8 +2840,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(80, 83);
         // m^0 = Pow(Unit("m"), 0)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("m".to_string())), 0);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+            reify_core::Rational::ZERO,
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("m^0 must resolve successfully");
         assert!(
@@ -2829,7 +2867,7 @@ mod tests {
             Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
             Box::new(reify_ast::UnitExpr::Pow(
                 Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
-                3,
+                reify_core::Rational::new(3, 1),
             )),
         );
         let (factor, dim) =
@@ -2843,6 +2881,126 @@ mod tests {
             dim,
             DimensionVector::MASS_DENSITY,
             "kg/m^3: dimension must be MASS_DENSITY"
+        );
+    }
+
+    // --- Task #9236: rational exponents fold through the Pow arm ---
+
+    /// `Pow(Unit(name), num/den)`.
+    fn rational_pow(name: &str, num: i16, den: i16) -> reify_ast::UnitExpr {
+        reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit(name.to_string())),
+            reify_core::Rational::new(num, den),
+        )
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_half_of_m_is_root_length_at_factor_exactly_one() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let (factor, dim) =
+            resolve_unit_expr(&rational_pow("m", 1, 2), &reg, SourceSpan::new(0, 6))
+                .expect("m^1/2 must resolve");
+        assert_eq!(
+            factor.to_bits(),
+            1.0f64.to_bits(),
+            "m^1/2: a factor-1.0 atom must fold to exactly 1.0, got {factor}"
+        );
+        assert_eq!(dim, DimensionVector::LENGTH.root(2));
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_half_of_mm_takes_the_real_square_root_of_the_factor() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let (factor, _) = resolve_unit_expr(&rational_pow("mm", 1, 2), &reg, SourceSpan::new(0, 7))
+            .expect("mm^1/2 must resolve");
+        assert_eq!(factor.to_bits(), 0.001f64.powf(0.5).to_bits());
+    }
+
+    #[test]
+    fn resolve_unit_expr_mpa_times_root_m_is_fracture_toughness() {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = make_resolver_registry();
+        reg.register(UnitEntry {
+            name: "MPa".to_string(),
+            dimension: DimensionVector::PRESSURE,
+            factor: 1e6,
+            offset: None,
+            is_pub: true,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash::of_str("MPa"),
+            source_module: None,
+        })
+        .unwrap();
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("MPa".to_string())),
+            Box::new(rational_pow("m", 1, 2)),
+        );
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, SourceSpan::new(0, 9)).expect("MPa*m^1/2 must resolve");
+        assert_eq!(factor, 1e6, "MPa*m^1/2: factor must be 1e6");
+        assert_eq!(dim, DimensionVector::FRACTURE_TOUGHNESS);
+    }
+
+    /// Each written exponent is in range, but the folded Length exponent is
+    /// 127^3: an error, never a debug panic or a release wrap.
+    #[test]
+    fn resolve_unit_expr_nested_pow_that_overflows_the_dimension_is_an_error() {
+        use reify_core::{Rational, SourceSpan};
+        let reg = make_resolver_registry();
+        let pow = |base: reify_ast::UnitExpr, num: i16, den: i16| {
+            reify_ast::UnitExpr::Pow(Box::new(base), Rational::new(num, den))
+        };
+        for (num, den) in [(127, 1), (1, 127)] {
+            let expr = pow(pow(rational_pow("m", num, den), num, den), num, den);
+            let err = resolve_unit_expr(&expr, &reg, SourceSpan::new(0, 12))
+                .expect_err("a dimension exponent beyond i16 must be refused");
+            assert!(
+                matches!(err, UnitResolveError::DimensionOverflow { .. }),
+                "m^{num}/{den} cubed: expected DimensionOverflow, got {err:?}"
+            );
+        }
+    }
+
+    /// `m^1/127*m^1/126*m^1/125` (and the `/` spelling) sums to a Length
+    /// exponent whose denominator is 2000250: an error, never a panic or wrap.
+    #[test]
+    fn resolve_unit_expr_product_that_overflows_the_dimension_is_an_error() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        type Combine =
+            fn(Box<reify_ast::UnitExpr>, Box<reify_ast::UnitExpr>) -> reify_ast::UnitExpr;
+        for combine in [
+            reify_ast::UnitExpr::Mul as Combine,
+            reify_ast::UnitExpr::Div,
+        ] {
+            let expr = combine(
+                Box::new(combine(
+                    Box::new(rational_pow("m", 1, 127)),
+                    Box::new(rational_pow("m", 1, 126)),
+                )),
+                Box::new(rational_pow("m", 1, 125)),
+            );
+            let err = resolve_unit_expr(&expr, &reg, SourceSpan::new(0, 20))
+                .expect_err("a dimension exponent beyond i16 must be refused");
+            assert!(
+                matches!(err, UnitResolveError::DimensionOverflow { .. }),
+                "expected DimensionOverflow, got {err:?}"
+            );
+        }
+    }
+
+    /// The denominator is bounded too: `reify_core::unit_exponent_in_range`.
+    #[test]
+    fn resolve_unit_expr_pow_denominator_outside_i8_is_out_of_range() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let err = resolve_unit_expr(&rational_pow("m", 1, 200), &reg, SourceSpan::new(0, 8))
+            .expect_err("m^1/200 must be rejected");
+        assert!(
+            matches!(err, UnitResolveError::ExponentOutOfRange { .. }),
+            "expected ExponentOutOfRange, got {err:?}"
         );
     }
 

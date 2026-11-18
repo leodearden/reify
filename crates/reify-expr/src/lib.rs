@@ -3769,6 +3769,16 @@ fn int_or_undef(checked: Option<i64>) -> Value {
     checked.map_or(Value::Undef, Value::Int)
 }
 
+/// A result whose dimension overflows `Rational` (a `None` from a checked
+/// dimension op) is `Undef`, never a panic.
+#[inline]
+fn dimensioned_or_undef(
+    dimension: Option<DimensionVector>,
+    build: impl FnOnce(DimensionVector) -> Value,
+) -> Value {
+    dimension.map_or(Value::Undef, build)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
@@ -4225,11 +4235,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im: bi,
                 dimension: bd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| Value::Complex {
             re: ar * br - ai * bi,
             im: ar * bi + ai * br,
-            dimension: ad.mul(bd),
-        },
+            dimension,
+        }),
         // Scalar * Scalar: multiply values, add dimension exponents
         (
             Value::Scalar {
@@ -4240,7 +4250,9 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| {
+            Value::from_real_scalar(a * b, dimension)
+        }),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -4292,11 +4304,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im,
                 dimension: cd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_mul(sd), |dimension| Value::Complex {
             re: re * si_value,
             im: im * si_value,
-            dimension: cd.mul(sd),
-        },
+            dimension,
+        }),
         // Complex * Int | Int * Complex: dimensionless multiplier preserves dimension
         (Value::Complex { re, im, dimension }, Value::Int(n))
         | (Value::Int(n), Value::Complex { re, im, dimension }) => Value::Complex {
@@ -4511,10 +4523,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension: bd,
             },
         ) => {
-            let result_dim = ad.div(bd);
             // Route through the value-layer chokepoint: a dimension-cancelling
             // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
-            Value::from_real_scalar(a / b, result_dim)
+            dimensioned_or_undef(ad.checked_div(bd), |dimension| {
+                Value::from_real_scalar(a / b, dimension)
+            })
         }
         // Scalar / dimensionless
         (
@@ -4541,11 +4554,14 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
         // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
         // fully-cancelling reciprocal still collapses to Real (Invariant V).
         (Value::Real(a), Value::Scalar { si_value, dimension }) => {
-            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| Value::from_real_scalar(a / si_value, d))
         }
         (Value::Int(a), Value::Scalar { si_value, dimension }) => {
-            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
-            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| {
+                Value::from_real_scalar(*a as f64 / si_value, d)
+            })
         }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
@@ -4568,11 +4584,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
             if denom == 0.0 {
                 Value::Undef
             } else {
-                Value::Complex {
+                dimensioned_or_undef(ad.checked_div(bd), |dimension| Value::Complex {
                     re: (ar * br + ai * bi) / denom,
                     im: (ai * br - ar * bi) / denom,
-                    dimension: ad.div(bd),
-                }
+                    dimension,
+                })
             }
         }
         // Complex / Scalar: divide re/im, combine dimensions
@@ -4586,11 +4602,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension: sd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_div(sd), |dimension| Value::Complex {
             re: re / si_value,
             im: im / si_value,
-            dimension: cd.div(sd),
-        },
+            dimension,
+        }),
         // Complex / Int: preserve dimension
         (Value::Complex { re, im, dimension }, Value::Int(n)) => Value::Complex {
             re: re / *n as f64,

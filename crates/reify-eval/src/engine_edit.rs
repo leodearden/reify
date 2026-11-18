@@ -158,7 +158,7 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::geometry_ops::symbolic_cell_mint::{InstanceMintScope, slot_commit_order};
+use crate::geometry_ops::symbolic_cell_mint::{InstanceMint, InstanceMintScope, slot_commit_order};
 use crate::graph::{CollectionSubInfo, ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
@@ -1381,7 +1381,8 @@ impl Engine {
                 // `symbolic_cell_mint::InstanceMintScope` (#8102), which also
                 // serves the collection resize and grown-instance reseed below;
                 // its doc lists every site, and it owns the order and
-                // diagnostics policy. Any other cell takes the inline
+                // diagnostics policy. Only a cell it answers
+                // `InstanceMint::NotAnInstanceCell` for takes the inline
                 // template-scope arm, geometry handle first, then topology
                 // selector, over the graph's RealizationNodeData (same
                 // operations, same upstream_values_hash fold) because
@@ -1400,30 +1401,30 @@ impl Engine {
                 };
                 let val = if !was_undef {
                     val
-                } else if let Some(minted) =
-                    instance_scope.mint_undef_instance_cell(vcid, node.kind, expr)
-                {
-                    minted
                 } else {
-                    let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
-                        vcid,
-                        &new_snapshot.graph,
-                        &values,
-                        &functions,
-                        &self.meta_map,
-                    );
-                    if let Some(v) = geom {
-                        v
-                    } else {
-                        let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr,
-                            &values,
-                            &mut sel_diags,
-                        )
-                        .unwrap_or(val);
-                        selector_mint_diagnostics.extend(sel_diags);
-                        selector_val
+                    match instance_scope.mint_undef_instance_cell(vcid, node.kind, expr) {
+                        InstanceMint::InstanceCell(minted) => minted,
+                        InstanceMint::NotAnInstanceCell => {
+                            Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                                vcid,
+                                &new_snapshot.graph,
+                                &values,
+                                &functions,
+                                &self.meta_map,
+                            )
+                            .unwrap_or_else(|| {
+                                let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
+                                let selector_val =
+                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                        expr,
+                                        &values,
+                                        &mut sel_diags,
+                                    )
+                                    .unwrap_or(val);
+                                selector_mint_diagnostics.extend(sel_diags);
+                                selector_val
+                            })
+                        }
                     }
                 };
                 // R3e (#4907): record cells the in-walk mint actually
@@ -2780,6 +2781,9 @@ impl Engine {
         // the gap by re-evaluating grown instances within the same pass that
         // grows them.
         if structural_mutation {
+            new_snapshot
+                .graph
+                .debug_assert_sub_instance_registry_agrees();
             let compiled_fields = Arc::clone(&self.compiled_fields);
             let new_reverse_index =
                 crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
@@ -4441,6 +4445,7 @@ impl Engine {
         // pre-edit snapshot, add/remove instances to match the new count.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            let mut resized = false;
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -4456,6 +4461,7 @@ impl Engine {
                 if new_count_val == old_count_val {
                     continue;
                 }
+                resized = true;
 
                 // Helper closure: resolve a collection count value to an integer.
                 let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
@@ -4563,6 +4569,11 @@ impl Engine {
                     .graph
                     .topology_fingerprint()
                     .combine(count_state_hash);
+            }
+            if resized {
+                new_snapshot
+                    .graph
+                    .debug_assert_sub_instance_registry_agrees();
             }
         }
 

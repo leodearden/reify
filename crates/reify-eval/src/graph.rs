@@ -218,7 +218,7 @@ impl CollectionSubInfo {
     /// The scoped entity of this collection's `index`th instance slot,
     /// `P.s[i]`.
     pub(crate) fn slot_entity(&self, index: i64) -> String {
-        format!("{}.{}[{}]", self.parent_entity, self.sub_name, index)
+        cell_contributions::positional_slot_entity(&self.parent_entity, &self.sub_name, index)
     }
 }
 
@@ -249,6 +249,40 @@ pub struct KeyedSubInfo {
     pub count_cell: Option<ValueCellId>,
     /// The author-assigned member keys, in declaration order.
     pub member_keys: Vec<MemberKey>,
+}
+
+impl KeyedSubInfo {
+    /// The scoped entity of this keyed sub's `key` instance slot, `P.s["k"]`.
+    pub(crate) fn slot_entity(&self, key: &MemberKey) -> String {
+        cell_contributions::keyed_slot_entity(&self.parent_entity, &self.sub_name, key)
+    }
+}
+
+/// A sub-instance slot holding cells in `value_cells` whose registry entry
+/// does not name the template its sub stamps from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubSlotRegistryMismatch {
+    pub(crate) slot: String,
+    pub(crate) sub_template: String,
+    pub(crate) registry_template: Option<String>,
+}
+
+impl std::fmt::Display for SubSlotRegistryMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            slot,
+            sub_template,
+            registry_template,
+        } = self;
+        write!(
+            f,
+            "`{slot}` (a slot of a `{sub_template}` sub) holds cells but the registry records "
+        )?;
+        match registry_template {
+            Some(template) => write!(f, "`{template}`"),
+            None => write!(f, "none"),
+        }
+    }
 }
 
 /// The evaluation graph: holds all typed nodes in PersistentMaps
@@ -288,8 +322,9 @@ pub struct EvaluationGraph {
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
     /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
-    /// remove through [`Self::remove_collection_slots`], so the registry and
-    /// `value_cells` do not drift.
+    /// remove through [`Self::remove_collection_slots`].
+    /// [`Self::debug_assert_sub_instance_registry_agrees`] checks the registry
+    /// against `value_cells` at construction and after each collection resize.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -576,6 +611,7 @@ impl EvaluationGraph {
         for (entity, template) in cell_contributions::sub_instances(templates) {
             graph.record_sub_instance(entity, template.to_string());
         }
+        graph.debug_assert_sub_instance_registry_agrees();
 
         graph
     }
@@ -624,6 +660,69 @@ impl EvaluationGraph {
     /// when `entity` is not a sub instance in this graph.
     pub(crate) fn sub_instance_template(&self, entity: &str) -> Option<&str> {
         self.sub_instance_templates.get(entity).map(String::as_str)
+    }
+
+    /// Every collection- or keyed-sub slot holding a cell in `value_cells`
+    /// whose registry entry does not name the template its sub stamps from.
+    pub(crate) fn sub_slot_registry_mismatches(&self) -> Vec<SubSlotRegistryMismatch> {
+        let stamped: HashSet<&str> = self
+            .value_cells
+            .keys()
+            .map(|id| id.entity.as_str())
+            .collect();
+        self.stamped_sub_slots(&stamped)
+            .filter_map(|(slot, sub_template)| {
+                let registry_template = self.sub_instance_template(&slot);
+                (registry_template != Some(sub_template)).then(|| SubSlotRegistryMismatch {
+                    registry_template: registry_template.map(str::to_string),
+                    sub_template: sub_template.to_string(),
+                    slot,
+                })
+            })
+            .collect()
+    }
+
+    /// In a debug build, panic naming every
+    /// [`Self::sub_slot_registry_mismatches`] slot.
+    pub(crate) fn debug_assert_sub_instance_registry_agrees(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let mismatches = self.sub_slot_registry_mismatches();
+        assert!(
+            mismatches.is_empty(),
+            "sub-instance registry disagrees with value_cells (stamp sub-instance cells \
+             through EvaluationGraph::insert_sub_instance_cell): {}",
+            mismatches
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+
+    /// Each sub slot whose entity is in `stamped`, paired with the template
+    /// its sub stamps from. A collection's slots are a contiguous prefix, so
+    /// its walk stops at the first slot holding no cell.
+    fn stamped_sub_slots<'a>(
+        &'a self,
+        stamped: &'a HashSet<&str>,
+    ) -> impl Iterator<Item = (String, &'a str)> + 'a {
+        let positional = self.collection_subs.iter().flat_map(move |col_sub| {
+            (0_i64..)
+                .map(|index| col_sub.slot_entity(index))
+                .take_while(|slot| stamped.contains(slot.as_str()))
+                .map(|slot| (slot, col_sub.structure_name.as_str()))
+        });
+        let keyed = self.keyed_subs.iter().flat_map(move |keyed_sub| {
+            keyed_sub
+                .member_keys
+                .iter()
+                .map(|key| keyed_sub.slot_entity(key))
+                .filter(|slot| stamped.contains(slot.as_str()))
+                .map(|slot| (slot, keyed_sub.structure_name.as_str()))
+        });
+        positional.chain(keyed)
     }
 
     /// The realization whose handle the scalar geometry cell `cell` holds: the
@@ -694,18 +793,35 @@ impl EvaluationGraph {
         for entity in &entities {
             self.sub_instance_templates.remove(entity);
         }
-        debug_assert!(
-            {
-                let forgotten: HashSet<&String> = entities.iter().collect();
-                self.value_cells
-                    .keys()
-                    .all(|id| !forgotten.contains(&id.entity))
-            },
-            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name",
+        self.debug_assert_forgotten_slots_hold_no_cell(col_sub, &entities);
+        removed
+    }
+
+    /// In a debug build, panic naming every cell `value_cells` still holds in
+    /// one of `col_sub`'s forgotten slots `entities`.
+    fn debug_assert_forgotten_slots_hold_no_cell(
+        &self,
+        col_sub: &CollectionSubInfo,
+        entities: &[String],
+    ) {
+        if !cfg!(debug_assertions) || entities.is_empty() {
+            return;
+        }
+        let forgotten: HashSet<&str> = entities.iter().map(String::as_str).collect();
+        let mut strays: Vec<String> = self
+            .value_cells
+            .keys()
+            .filter(|id| forgotten.contains(id.entity.as_str()))
+            .map(|id| format!("`{id}`"))
+            .collect();
+        strays.sort();
+        assert!(
+            strays.is_empty(),
+            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name: {}",
             col_sub.parent_entity,
             col_sub.sub_name,
+            strays.join("; "),
         );
-        removed
     }
 
     /// Determine which constraint IDs are active given the current values.

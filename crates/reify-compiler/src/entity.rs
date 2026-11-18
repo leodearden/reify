@@ -1356,24 +1356,12 @@ pub(crate) fn compile_entity(
     };
 
     let entity_name = structure.name;
-    // task 3540 (SIR-α): make `structure def` templates reachable at the
-    // expression-lowering site so `Foo()` can lower to a
-    // `StructureInstanceCtor` (esc-3540-177 RULING 1). Composition: prelude
-    // structure-defs first, then local already-compiled structure-defs
-    // (later entries shadow earlier — local definitions shadow prelude,
-    // matching Reify scoping). Declared BEFORE `scope` so it outlives the
-    // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .ctor
-        .iter()
-        .map(|(k, v)| (k.clone(), *v))
-        .chain(
-            compiled_templates
-                .iter()
-                .filter(|t| t.entity_kind == EntityKind::Structure)
-                .map(|t| (t.name.clone(), t)),
-        )
-        .collect();
+    // task 3540 (SIR-α): the ctor view `Foo()` lowers against
+    // (esc-3540-177 RULING 1), by the rule fn bodies use too:
+    // `name_env::overlay_local_templates`. Declared BEFORE `scope` so it
+    // outlives the scope's borrow (drop order is reverse-declaration).
+    let entity_template_registry: HashMap<String, &TopologyTemplate> =
+        crate::name_env::overlay_local_templates(prelude.ctor, compiled_templates);
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;

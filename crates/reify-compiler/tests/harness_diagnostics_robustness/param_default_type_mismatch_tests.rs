@@ -5,14 +5,12 @@
 //! like any other dimensionless initializer (D5 reinstated; see
 //! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{compile_source, errors_only};
+use reify_core::DiagnosticCode;
+use reify_test_support::{assert_single_declaration_error, compile_source, errors_only};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
-/// declared type `Length` (Scalar[m]) must produce an error anchored at the param
-/// declaration, not at a downstream consumer.
-///
-/// RED until step-2 wires the check at the top-level structure-param arm.
+/// declared type `Length` (Scalar[m]) must produce exactly one `ParamDefaultTypeMismatch`
+/// anchored at `param drum_d`, not at a downstream consumer.
 #[test]
 fn top_level_param_dimension_mismatch_errors_at_declaration() {
     let source = r#"
@@ -23,42 +21,15 @@ structure T {
 }
 "#;
 
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    assert!(
-        !errors.is_empty(),
-        "expected at least one error for param dimension mismatch, got none; diagnostics: {:?}",
-        module.diagnostics
+    let message = assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "drum_d",
     );
-
-    // Some error must mention drum_d, Real, and Scalar[m].
-    let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains("drum_d")
-            && d.message.contains("Real")
-            && d.message.contains("Scalar[m]")
-    });
     assert!(
-        mismatch_diag.is_some(),
-        "expected an error mentioning drum_d, Real, and Scalar[m]; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // The diagnostic must be anchored at the param declaration (first label span
-    // contains "drum_d").
-    let diag = mismatch_diag.unwrap();
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("drum_d"),
-        "expected label span to cover the param declaration containing 'drum_d', \
-         but span covers: {:?}",
-        sliced
+        message.contains("Real") && message.contains("Scalar[m]"),
+        "message must mention 'Real' and 'Scalar[m]', got: {message:?}"
     );
 }
 
@@ -96,8 +67,6 @@ structure Valid {
 /// A port-member `param d : Real = rope_dia * 2.0` where `rope_dia : Length` must
 /// produce a `ParamDefaultTypeMismatch` error anchored at the port-member param
 /// declaration ("`param d`"), not at a downstream consumer.
-///
-/// RED until step-4 wires the check at the port-member param arm (site 2).
 #[test]
 fn port_member_param_dimension_mismatch_errors_at_declaration() {
     let source = r#"
@@ -108,42 +77,15 @@ structure S {
 }
 "#;
 
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    // Must have at least one error with code ParamDefaultTypeMismatch.
-    let mismatch_diag = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch_diag.is_some(),
-        "expected a ParamDefaultTypeMismatch error for port-member param 'd'; got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    let message = assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "d",
     );
-
-    let diag = mismatch_diag.unwrap();
     assert!(
-        diag.message.contains("Real") && diag.message.contains("Scalar[m]"),
-        "expected error message to mention 'Real' and 'Scalar[m]'; got: {:?}",
-        diag.message
-    );
-
-    // The label span must cover the port-member param declaration.
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("param d"),
-        "expected label span to cover the port-member param declaration containing \
-         'param d', but span covers: {:?}",
-        sliced
+        message.contains("Real") && message.contains("Scalar[m]"),
+        "expected error message to mention 'Real' and 'Scalar[m]'; got: {message:?}"
     );
 }
 
@@ -166,7 +108,12 @@ fn param_int_and_real_literal_on_dimensioned_scalar_errors() {
             "large_real",
         ),
     ] {
-        assert_single_param_default_type_mismatch(source, param);
+        assert_single_declaration_error(
+            source,
+            DiagnosticCode::ParamDefaultTypeMismatch,
+            "param",
+            param,
+        );
     }
 }
 
@@ -179,7 +126,12 @@ fn param_negative_literal_on_dimensioned_scalar_errors() {
         ("structure S { param neg_real : Length = -5.0 }", "neg_real"),
         ("structure S { param neg_int : Length = -1 }", "neg_int"),
     ] {
-        assert_single_param_default_type_mismatch(source, param);
+        assert_single_declaration_error(
+            source,
+            DiagnosticCode::ParamDefaultTypeMismatch,
+            "param",
+            param,
+        );
     }
 }
 
@@ -189,32 +141,11 @@ fn param_negative_literal_on_dimensioned_scalar_errors() {
 /// the check.  Scalar[m] and Scalar[kg] are incompatible under `type_compatible`.
 #[test]
 fn param_different_scalar_dimensions_error() {
-    let source = r#"
-structure S {
-    param bad_mass : Length = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param bad_mass : Length = 5kg' \
-         (Scalar[m] ≠ Scalar[kg]); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
-    );
-
-    let diag = mismatch.unwrap();
-    assert!(
-        diag.message.contains("bad_mass"),
-        "error message should mention 'bad_mass'; got: {:?}",
-        diag.message
+    assert_single_declaration_error(
+        "structure S { param bad_mass : Length = 5kg }",
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "bad_mass",
     );
 }
 
@@ -492,63 +423,27 @@ structure S {
 
 // ─── D4-4: one authoring mistake, one diagnostic ─────────────────────────────
 
-/// Assert `source` yields exactly ONE error: a `ParamDefaultTypeMismatch` that
-/// names `param` and is anchored at its `param <name>` declaration. Returns its
-/// message for callers that pin the rendered types.
-///
-/// Pins code identity and the quoted name only, never other message prose
-/// (PRD D4-8).
-fn assert_single_param_default_type_mismatch(source: &str, param: &str) -> String {
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
-
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one error for param '{param}', got: {shapes:?}"
-    );
-    let diag = errors[0];
-    assert_eq!(
-        diag.code,
-        Some(DiagnosticCode::ParamDefaultTypeMismatch),
-        "param '{param}': got: {shapes:?}"
-    );
-    assert_eq!(
-        diag.severity,
-        Severity::Error,
-        "param '{param}': got: {shapes:?}"
-    );
-    assert!(
-        diag.message.contains(&format!("'{param}'")),
-        "message must quote '{param}', got: {:?}",
-        diag.message
-    );
-    let span = diag
-        .labels
-        .first()
-        .unwrap_or_else(|| panic!("param '{param}': diagnostic has no label: {diag:?}"))
-        .span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains(&format!("param {param}")),
-        "label must cover the 'param {param}' declaration, covers: {sliced:?}"
-    );
-    diag.message.clone()
-}
-
 /// A default the declaration-site check rejects is reported once, by that check:
 /// the conformance pass does not re-judge it (PRD D4-4).
 #[test]
 fn param_default_mismatch_is_reported_once() {
-    assert_single_param_default_type_mismatch("structure S { param i2 : Int = \"no\" }", "i2");
-    assert_single_param_default_type_mismatch("structure S { param r2 : Real = \"nope\" }", "r2");
-    assert_single_param_default_type_mismatch("structure S { param m : Length = 5kg }", "m");
-    assert_single_param_default_type_mismatch(
-        "trait T { param d : Length }\n\
-         structure S { port p : out T { param d : Length = 5kg } }",
-        "d",
-    );
+    for (source, param) in [
+        ("structure S { param i2 : Int = \"no\" }", "i2"),
+        ("structure S { param r2 : Real = \"nope\" }", "r2"),
+        ("structure S { param m : Length = 5kg }", "m"),
+        (
+            "trait T { param d : Length }\n\
+             structure S { port p : out T { param d : Length = 5kg } }",
+            "d",
+        ),
+    ] {
+        assert_single_declaration_error(
+            source,
+            DiagnosticCode::ParamDefaultTypeMismatch,
+            "param",
+            param,
+        );
+    }
 }
 
 /// Assert `source` yields exactly ONE error: a conformance `ArgTypeMismatch`.
@@ -567,7 +462,6 @@ fn assert_single_conformance_arg_type_mismatch(source: &str) {
         Some(DiagnosticCode::ArgTypeMismatch),
         "got: {shapes:?}"
     );
-    assert_eq!(errors[0].severity, Severity::Error, "got: {shapes:?}");
 }
 
 /// A trait-injected default never reaches the declaration-site check, so the
@@ -634,7 +528,12 @@ fn param_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
             "`Real`",
         ),
     ] {
-        let message = assert_single_param_default_type_mismatch(source, param);
+        let message = assert_single_declaration_error(
+            source,
+            DiagnosticCode::ParamDefaultTypeMismatch,
+            "param",
+            param,
+        );
         assert!(
             message.contains("`Scalar[m]`") && message.contains(found),
             "param '{param}': message must name declared `Scalar[m]` and found {found}, \
