@@ -324,6 +324,22 @@ LIBC6_SONAMES = (
 )
 
 
+class RequireBoundSymbols(unittest.TestCase):
+
+    def test_undefined_symbols_are_an_error_naming_each_symbol_and_referrer(self):
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.require_bound_symbols(bc.parse_ldd(PROBE_LDD_R))
+        message = str(caught.exception)
+        for expected in ("libraw_open_buffer",
+                         "/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3",
+                         "prov_bar", "VER_1", "/probe/usr/bin/reify-gui"):
+            with self.subTest(expected):
+                self.assertIn(expected, message)
+
+    def test_a_report_with_no_undefined_symbol_passes(self):
+        self.assertIsNone(bc.require_bound_symbols(_report(missing={"libA.so.1"})))
+
+
 class DeriveClosure(unittest.TestCase):
 
     def test_fixed_point_stages_transitive_and_version_short_libraries(self):
@@ -370,6 +386,21 @@ class DeriveClosure(unittest.TestCase):
                 self.assertIn("newer glibc", str(caught.exception))
                 self.assertIn(glibc_soname, str(caught.exception))
                 self.assertEqual(calls, [frozenset()])
+
+    def test_an_undefined_symbol_is_an_immediate_error_and_is_never_staged(self):
+        calls = []
+        undefined = bc.UndefinedSymbol(
+            "prov_bar", None, "/probe/usr/lib/Reify/lib/libmid.so.1")
+
+        def target(staged):
+            calls.append(staged)
+            return _report(missing={"libA.so.1"}, undefined={undefined})
+
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_closure(HOST, target)
+        self.assertIn("prov_bar", str(caught.exception))
+        self.assertIn("/probe/usr/lib/Reify/lib/libmid.so.1", str(caught.exception))
+        self.assertEqual(calls, [frozenset()])
 
 
 class TauriOverlay(unittest.TestCase):
