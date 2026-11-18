@@ -26,13 +26,14 @@ scripts/release-alpha.sh must close.
 
 With a reify binary vouched for by scripts/reify-bin-freshness.sh (REIFY_BIN
 is honoured there), each before fixture must fail `reify check` printing
-exactly the quoted error lines, and each after fixture must pass printing
-none. With no vouched binary those tests skip and print why.
+exactly the quoted error lines, each as many times as it is quoted (order is
+free), and each after fixture must pass printing none. With no vouched binary those tests skip and print why.
 """
 
 import re
 import subprocess
 import unittest
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,15 +150,15 @@ def parse_entries(text):
 
 
 def error_lines(output):
-    """The error lines of `reify check` output, location prefix stripped."""
-    found = set()
+    """The error lines of `reify check` output, location prefix stripped, repeats kept."""
+    found = []
     for raw in output.splitlines():
         line = raw.rstrip()
         if not line.startswith(ERROR_PREFIXES):
             located = LOCATION_PREFIX.match(line)
             line = line[located.end():] if located else ""
         if line.startswith(ERROR_PREFIXES):
-            found.add(line)
+            found.append(line)
     return found
 
 
@@ -238,21 +239,27 @@ ignored
 """
 
 
-class MatcherTests(unittest.TestCase):
+class ErrorLineMatcherTests(unittest.TestCase):
     def test_located_and_bare_error_lines_match(self):
-        self.assertEqual(error_lines("x.ri:3:5: error: m\n"), {"error: m"})
-        self.assertEqual(error_lines("error: m\n"), {"error: m"})
-        self.assertEqual(error_lines("/a b/x.ri: error: m\n"), {"error: m"})
+        self.assertEqual(error_lines("x.ri:3:5: error: m\n"), ["error: m"])
+        self.assertEqual(error_lines("error: m\n"), ["error: m"])
+        self.assertEqual(error_lines("/a b/x.ri: error: m\n"), ["error: m"])
 
     def test_parse_error_line_is_kept(self):
         line = "Parse error: 4:13: syntax error in trait body"
-        self.assertEqual(error_lines(line + "\n"), {line})
+        self.assertEqual(error_lines(line + "\n"), [line])
+
+    def test_repeated_error_lines_are_all_kept(self):
+        self.assertEqual(Counter(error_lines("error: a\nx.ri:2:1: error: a\nerror: b\n")),
+                         Counter({"error: a": 2, "error: b": 1}))
 
     def test_warnings_and_mid_text_errors_are_ignored(self):
-        self.assertEqual(error_lines("warning: W_X: error: m\n"), set())
-        self.assertEqual(error_lines("note: saw error: m\n"), set())
-        self.assertEqual(error_lines("x.ri:1:1: warning: error: m\n"), set())
+        self.assertEqual(error_lines("warning: W_X: error: m\n"), [])
+        self.assertEqual(error_lines("note: saw error: m\n"), [])
+        self.assertEqual(error_lines("x.ri:1:1: warning: error: m\n"), [])
 
+
+class NoteGrammarTests(unittest.TestCase):
     def test_closes_lines_are_read_case_insensitively(self):
         self.assertEqual(closes_issue_numbers("closes: #1, #22\n Closes: #3\nCloses: #4"),
                          [{1, 22}, {4}])
@@ -312,14 +319,14 @@ class FixtureBehaviourTests(unittest.TestCase):
             with self.subTest(fixture=str(entry.before_path)):
                 rc, errors, context = self._check(entry.before_path)
                 self.assertNotEqual(rc, 0, context)
-                self.assertEqual(errors, set(entry.expected_errors), context)
+                self.assertEqual(Counter(errors), Counter(entry.expected_errors), context)
 
     def test_after_fixtures_pass_without_errors(self):
         for entry in parse_entries(NOTE.read_text(encoding="utf-8")):
             with self.subTest(fixture=str(entry.after_path)):
                 rc, errors, context = self._check(entry.after_path)
                 self.assertEqual(rc, 0, context)
-                self.assertEqual(errors, set(), context)
+                self.assertEqual(errors, [], context)
 
 
 if __name__ == "__main__":
