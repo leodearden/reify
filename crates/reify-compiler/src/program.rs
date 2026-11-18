@@ -93,8 +93,8 @@ impl CompiledProgram {
             rehomed,
             declared_templates,
         };
-        program.rehomed.range_in(&program.entry.diagnostics);
-        program.entry_declared_templates();
+        let _ = program.rehomed.range_in(&program.entry.diagnostics);
+        let _ = program.entry_declared_templates();
         program
     }
 
@@ -417,8 +417,7 @@ mod tests {
             "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
             &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
             &CfgSet::default(),
-            &reify_test_support::mocks::MockConstraintChecker::new()
-                .with_default(reify_ir::Satisfaction::Indeterminate),
+            &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
         )
     }
 
@@ -455,6 +454,21 @@ mod tests {
 
     /// The invariants are checked where a program is built, not only where it
     /// is read.
+    #[test]
+    #[should_panic(expected = "CompiledProgram invariant: the re-homed copies")]
+    fn compiled_program_new_rejects_a_rehomed_block_past_the_diagnostics() {
+        let program = compile_one_template_entry();
+        let len = program.entry.diagnostics.len();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(len + 1, &["a"]),
+            1,
+        );
+    }
+
     #[test]
     #[should_panic(
         expected = "CompiledProgram invariant: the entry's 2 declared templates must be \
