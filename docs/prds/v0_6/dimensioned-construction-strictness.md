@@ -1356,6 +1356,16 @@ needs a NEW test binary, its registration must land same-diff or as a hard upstr
    (cross-dimension scalars, and `Int`-for-`Length`). **Suggested resolution:** remove the
    cross-dimension half; keep `Int`-widening unless α shows it is cheap to remove too, and
    name a follow-up for whatever is deferred. Decide during **α → δ₂**.
+   **Decided (δ₂, task #5762; follow-up task #10029):** all of it — both tolerances are gone.
+   δ₂ removed the cross-dimension half and deferred the `Int` half to its named follow-up,
+   #10029, which removed both `Int` directions: an `Int` arg at a dimensioned scalar param,
+   and a scalar arg (dimensioned or dimensionless) at an `Int` param. Rule 4 of
+   `constraint_arg_type_conforms` (`crates/reify-compiler/src/type_compat.rs`) is now the
+   D4-5 `ScalarParam` fence alone; every other numeric pairing past Rule 3 is rejected with
+   `ConstraintArgTypeMismatch`. An `Int` at a dimensionless (`Real`) param is still accepted,
+   through Rule 3's `type_compatible` widening rather than Rule 4. The reversed
+   `Int`-for-`Length` ruling is restated (per §0.3) at
+   `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch`.
 2. **Whether `is_numeric_literal_expr` (`entity.rs:390-404`) is fully dead after δ₁.**
    **Suggested resolution:** delete if α finds no other consumer; otherwise leave with a
    comment naming the survivor. Decide during **δ₁**.
