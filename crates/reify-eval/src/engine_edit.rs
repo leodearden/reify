@@ -1381,7 +1381,7 @@ impl Engine {
                 // `symbolic_cell_mint::InstanceMintScope` (#8102), which also
                 // serves the resolution reseed, collection resize and
                 // grown-instance reseed below; its doc lists every site and
-                // the one non-minting writer, and it owns the order and
+                // the non-minting writers, and it owns the order and
                 // diagnostics policy. Only a cell it answers
                 // `InstanceMint::NotAnInstanceCell` for takes the inline
                 // template-scope arm, geometry handle first, then topology

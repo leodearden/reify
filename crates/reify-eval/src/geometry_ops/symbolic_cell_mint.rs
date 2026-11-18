@@ -173,15 +173,20 @@ fn mint_symbolic(
 /// The graph-backed scope the edit path mints a sub-instance cell in, since
 /// none of its sites has a template: the `edit_param` walk, `edit_param`'s
 /// collection resize, grown-instance reseed and resolution reseed (wave2), and
-/// `edit_source`'s main walk, collection resize and resolution reseed (wave2).
-/// A caller creating an instance's cells one at a time commits them in
-/// [`slot_commit_order`].
+/// `edit_source`'s main walk and its settle pass, collection resize and
+/// resolution reseed (wave2). A caller creating an instance's cells one at a
+/// time commits them in [`slot_commit_order`].
 ///
-/// The one edit-path writer of sub-instance cells that deliberately does not
-/// mint is `edit_param`'s post-wave2 guard-member reseed cone arm
-/// (`Engine::reeval_cone_cell`): cold eval's guarded-cone pass runs the same
-/// function, so the two agree, and minting both is #10081's (pinned by
-/// `edit_param_guard_flip_leaves_instance_cells_below_a_guarded_member_as_a_cold_eval_does`).
+/// Two edit-path writers re-evaluate a sub-instance cell through
+/// `Engine::reeval_cone_cell`, which does not mint:
+/// - the post-walk consumer re-evals (`edit_param`'s R3e and `edit_source`'s
+///   R3f, `Engine::re_eval_consumers_of_in_walk_mints_from_graph`) fill only
+///   an `Undef` cell, so they never overwrite a minted one;
+/// - `edit_param`'s post-wave2 guard-member reseed cone arm is the one writer
+///   that can overwrite a minted sub-instance cell without minting. Cold
+///   eval's guarded-cone pass runs the same function, so the two agree, and
+///   minting both is #10081's (pinned by
+///   `edit_param_guard_flip_leaves_instance_cells_below_a_guarded_member_as_a_cold_eval_does`).
 pub(crate) struct InstanceMintScope<'a> {
     pub(crate) graph: &'a EvaluationGraph,
     pub(crate) values: &'a ValueMap,
