@@ -333,7 +333,7 @@ pub(crate) fn bind_resolution_enums(ctx: &mut CompilationCtx, prelude: &[&Compil
 /// Called once, by [`crate::compile_with_prelude_context_checked_with_config`], whose
 /// install-site comment states where the scope is installed and why it is module-wide.
 pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
-    let local_structure_names: HashSet<&str> = ctx.local_entity_name_iter().collect();
+    let local_structure_names: HashSet<&str> = ctx.local_template_name_iter().collect();
     ctx.enum_defs
         .iter()
         .map(|e| e.name.clone())

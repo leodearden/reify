@@ -150,8 +150,7 @@ pub(crate) struct CompilationCtx {
     /// occurrence declarations + prelude templates. Populated by
     /// `names_phase::build_resolution_names` BEFORE `phase_fn_signatures` so
     /// fn-signature type resolution can resolve structure names to
-    /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
-    /// and `phase_entities`.
+    /// `Type::StructureRef`.
     pub(crate) resolution_structure_names: HashSet<String>,
     /// The module's own `structure def` names, top-level and purpose-nested
     /// (first definition only; occurrences excluded). Recorded by
@@ -245,16 +244,16 @@ impl CompilationCtx {
     /// Every module-local name that can win a ctor-view slot: the module's own
     /// structures (top-level and purpose-nested) and occurrences —
     /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
-    pub(crate) fn local_entity_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
+    pub(crate) fn local_template_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.seen_entity_names
             .iter()
             .filter(|(_, (_, kind))| matches!(kind, EntityNameKind::Template(_)))
             .map(|(name, _)| name.as_str())
     }
 
-    /// Owned collect of [`Self::local_entity_name_iter`].
+    /// Owned collect of [`Self::local_template_name_iter`].
     pub(crate) fn local_entity_names(&self) -> HashSet<String> {
-        self.local_entity_name_iter().map(str::to_owned).collect()
+        self.local_template_name_iter().map(str::to_owned).collect()
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
@@ -484,10 +483,10 @@ mod tests {
             "exactly one diagnostic on duplicate"
         );
 
-        // Anchor the shape of the duplicate diagnostic — label count, span
-        // ordering, and `{kind}` interpolation — so structural regressions
-        // (swapped label order, missing second label, un-interpolated `{kind}`)
-        // are caught at the unit level.
+        // Anchor the shape of the duplicate diagnostic — label count and span
+        // ordering — so structural regressions (swapped label order, missing
+        // second label) are caught at the unit level. Label text is pinned
+        // per kind by `duplicate_entity_diagnostic_labels_name_each_kind`.
         let diag = &ctx.diagnostics[0];
 
         // 1. Top-level message contains the stable substring.
@@ -505,28 +504,16 @@ mod tests {
             "duplicate diagnostic must have exactly two labels"
         );
 
-        // 3. labels[0] = duplicate site (span_b, "structure defined here").
+        // 3. labels[0] = duplicate site (span_b).
         assert_eq!(
             diag.labels[0].span, span_b,
             "labels[0] should point to the duplicate site (span_b)"
         );
-        assert!(
-            diag.labels[0].message.contains("structure defined here"),
-            "labels[0] message should interpolate the `{{kind}}` token into the '... defined here' template, got: {:?}",
-            diag.labels[0].message,
-        );
 
-        // 4. labels[1] = first-seen site (span_a, "first defined as structure here").
+        // 4. labels[1] = first-seen site (span_a).
         assert_eq!(
             diag.labels[1].span, span_a,
             "labels[1] should point to the first-seen site (span_a)"
-        );
-        assert!(
-            diag.labels[1]
-                .message
-                .contains("first defined as structure"),
-            "labels[1] message should interpolate the `{{first_kind}}` token into the 'first defined as ... here' template, got: {:?}",
-            diag.labels[1].message,
         );
     }
 
@@ -550,7 +537,7 @@ mod tests {
         ctx.record_or_report_duplicate("C", SourceSpan::new(6, 7), EntityNameKind::Constraint);
 
         assert_eq!(
-            ctx.local_entity_name_iter().collect::<HashSet<&str>>(),
+            ctx.local_template_name_iter().collect::<HashSet<&str>>(),
             HashSet::from(["S", "O"]),
         );
         assert_eq!(

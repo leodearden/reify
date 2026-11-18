@@ -71,12 +71,12 @@ pub(crate) fn build_resolution_names(
         .collect();
 
     // Structure/occurrence names: local structure and occurrence declarations
-    // (`ctx.local_entity_name_iter()`, complete after
+    // (`ctx.local_template_name_iter()`, complete after
     // pre_pass::collect_decl_refs) + every prelude module's exported templates
     // (topology templates == structure instances whose names are also valid
     // StructureRef targets).
     ctx.resolution_structure_names = ctx
-        .local_entity_name_iter()
+        .local_template_name_iter()
         .map(str::to_owned)
         .chain(
             prelude
