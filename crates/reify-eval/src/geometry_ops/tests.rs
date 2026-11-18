@@ -25793,33 +25793,20 @@
         );
     }
 
-    /// A `Value::Direction` normal — the shape every datum producer mints —
-    /// decodes to its exact unit components beside a LENGTH origin.
-    #[test]
-    fn decode_plane_accepts_a_direction_bearing_plane() {
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let plane = plane_of(length_point3(0.0, 0.0, 0.01), unit_dir(0.0, 0.0, 1.0));
-        assert_eq!(
-            decode_plane(&plane, "mirror", &mut diagnostics),
-            Ok(([0.0, 0.0, 0.01], [0.0, 0.0, 1.0]))
-        );
-        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
-    }
-
     /// A `Vector` normal is not a direction: the decoder rejects it with
     /// `decode_direction`'s own message behind the kind label, ending in the
     /// shared `dir(..)` migration hint, rather than normalising it silently.
+    /// Not a units fault, so it pushes no diagnostic.
     #[test]
     fn decode_plane_rejects_a_vector_normal_with_the_direction_hint() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let plane = plane_of(length_point3(0.0, 0.0, 0.0), bare_real_vector3(0.0, 0.0, 1.0));
-        let err = decode_plane(&plane, "mirror", &mut diagnostics)
-            .expect_err("a Vector normal must be rejected");
-        assert!(err.starts_with("mirror:"), "got: {err}");
-        assert!(err.contains("Vector"), "got: {err}");
-        assert!(
-            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
-            "got: {err}"
+        assert_eq!(
+            decode_plane(&plane, "mirror", &mut diagnostics),
+            Err(format!(
+                "mirror: Plane normal: expected a Direction, got Vector; {}",
+                reify_core::direction::DIRECTION_MIGRATION_HINT
+            ))
         );
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
@@ -25865,11 +25852,11 @@
         }
     }
 
-    /// Every `decode_plane` rejection that is not a units fault keeps its EXACT
-    /// wording and pushes no units diagnostic. δ replaced `point3_components`'
-    /// acceptance policy for the origin, not the decoder's variant check; ε
-    /// (task 9638) replaced the normal read with `decode_direction`, so a
-    /// `Vector` normal is now rejected with that decoder's own message.
+    /// Every PRE-EXISTING `decode_plane` rejection keeps its EXACT wording, and
+    /// pushes no units diagnostic. δ replaced `point3_components`' acceptance
+    /// policy for the origin, not the decoder's variant check or its origin
+    /// shape check — so a reader who knew these messages before still
+    /// recognises them.
     #[test]
     fn decode_plane_pre_existing_rejections_are_unchanged() {
         let axis = reify_ir::Value::Axis {
@@ -25901,17 +25888,6 @@
                 ),
                 PLANE_ORIGIN_SHAPE_ERR.to_string(),
             ),
-            // A `Vector` normal over a clean LENGTH origin: not a Direction.
-            (
-                plane_of(
-                    length_point3(0.0, 0.0, 0.0),
-                    bare_real_vector3(0.0, 0.0, 1.0),
-                ),
-                format!(
-                    "mirror: Plane normal: expected a Direction, got Vector; {}",
-                    reify_core::direction::DIRECTION_MIGRATION_HINT
-                ),
-            ),
         ];
 
         for (value, expected) in cases {
@@ -25919,7 +25895,7 @@
             assert_eq!(
                 decode_plane(&value, "mirror", &mut diagnostics),
                 Err(expected.clone()),
-                "the decoder's wording must survive byte-identical for {:?}",
+                "pre-δ wording must survive byte-identical for {:?}",
                 value
             );
             assert!(
@@ -25936,10 +25912,10 @@
     ///
     /// This is deliberately NOT a row in the table above. Every row there
     /// asserts `diagnostics.is_empty()`, and that emptiness is itself the
-    /// assertion — "a wrong shape / wrong variant / degenerate normal is not a
-    /// units rejection". A NaN LENGTH is the opposite: it DOES push exactly one
-    /// diagnostic, so folding it in would have meant giving every row an
-    /// expected-diagnostics column and diluting the emptiness claim to a count.
+    /// assertion — "a wrong shape / wrong variant is not a units rejection".
+    /// A NaN LENGTH is the opposite: it DOES push exactly one diagnostic, so
+    /// folding it in would have meant giving every row an expected-diagnostics
+    /// column and diluting the emptiness claim to a count.
     ///
     /// The behaviour it pins, and why both halves matter:
     ///   - PRE-δ this input returned `PLANE_ORIGIN_SHAPE_ERR` and pushed
@@ -26014,7 +25990,8 @@
 
     /// The ANTI-OVER-GATING half: a dimensioned LENGTH origin beside a
     /// `Direction` is the fully clean path — the exact shape
-    /// `axis_z(point3(0mm, 0mm, 0mm))` produces — and must emit NOTHING.
+    /// `axis_z(point3(0mm, 0mm, 0mm))` and the kernel's analytic axes
+    /// (`feature_datum.rs`) produce — and must emit NOTHING.
     #[test]
     fn decode_axis_accepts_length_origin_beside_a_direction() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -26041,13 +26018,12 @@
     fn decode_axis_rejects_a_vector_direction_with_the_direction_hint() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let axis = axis_of(length_point3(0.0, 0.0, 0.0), bare_real_vector3(0.0, 0.0, 1.0));
-        let err = decode_axis(&axis, "circular_pattern", &mut diagnostics)
-            .expect_err("a Vector direction must be rejected");
-        assert!(err.starts_with("circular_pattern:"), "got: {err}");
-        assert!(err.contains("Vector"), "got: {err}");
-        assert!(
-            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
-            "got: {err}"
+        assert_eq!(
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
+            Err(format!(
+                "circular_pattern: Axis direction: expected a Direction, got Vector; {}",
+                reify_core::direction::DIRECTION_MIGRATION_HINT
+            ))
         );
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
@@ -26090,23 +26066,8 @@
         }
     }
 
-    /// A `Value::Direction` direction — the shape every datum producer mints,
-    /// the kernel's analytic axes included — decodes to its exact unit
-    /// components beside a LENGTH origin.
-    #[test]
-    fn decode_axis_accepts_a_direction_bearing_axis() {
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let axis = axis_of(length_point3(0.0, 0.0, 0.01), unit_dir(0.0, 0.0, 1.0));
-        assert_eq!(
-            decode_axis(&axis, "circular_pattern", &mut diagnostics),
-            Ok(([0.0, 0.0, 0.01], [0.0, 0.0, 1.0]))
-        );
-        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
-    }
-
-    /// Every `decode_axis` rejection that is not a units fault keeps its EXACT
-    /// wording and pushes no units diagnostic; a `Vector` direction is rejected
-    /// with `decode_direction`'s own message (ε, task 9638).
+    /// Every PRE-EXISTING `decode_axis` rejection keeps its EXACT wording and
+    /// pushes no units diagnostic.
     #[test]
     fn decode_axis_pre_existing_rejections_are_unchanged() {
         let plane = reify_ir::Value::Plane {
@@ -26135,16 +26096,6 @@
                 ),
                 AXIS_ORIGIN_SHAPE_ERR.to_string(),
             ),
-            (
-                axis_of(
-                    length_point3(0.0, 0.0, 0.0),
-                    bare_real_vector3(0.0, 0.0, 1.0),
-                ),
-                format!(
-                    "circular_pattern: Axis direction: expected a Direction, got Vector; {}",
-                    reify_core::direction::DIRECTION_MIGRATION_HINT
-                ),
-            ),
         ];
 
         for (value, expected) in cases {
@@ -26152,7 +26103,7 @@
             assert_eq!(
                 decode_axis(&value, "circular_pattern", &mut diagnostics),
                 Err(expected.clone()),
-                "the decoder's wording must survive byte-identical for {:?}",
+                "pre-δ wording must survive byte-identical for {:?}",
                 value
             );
             assert!(

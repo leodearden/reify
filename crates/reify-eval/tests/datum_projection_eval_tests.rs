@@ -73,17 +73,10 @@ fn assert_point(v: &Value, expected: [f64; 3]) {
 
 // ─── Axis projections ────────────────────────────────────────────────────────
 
-#[test]
-fn axis_dir_projects_to_direction() {
-    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0));
-    let result = project(axis, Type::Axis, "dir", Type::Direction);
-    assert_direction(&result, [1.0, 0.0, 0.0]);
-}
-
 /// Every datum producer mints `Axis.direction` as a `Value::Direction`; `.dir`
 /// hands that direction back unchanged.
 #[test]
-fn axis_dir_of_a_direction_bearing_axis_is_that_direction() {
+fn axis_dir_projects_to_direction() {
     let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(0.0, 1.0, 0.0));
     let result = project(axis, Type::Axis, "dir", Type::Direction);
     assert_eq!(result, direction_val(0.0, 1.0, 0.0));
@@ -98,17 +91,10 @@ fn axis_origin_projects_to_point() {
 
 // ─── Plane projections ───────────────────────────────────────────────────────
 
-#[test]
-fn plane_normal_projects_to_direction() {
-    let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0));
-    let result = project(plane, Type::Plane, "normal", Type::Direction);
-    assert_direction(&result, [0.0, 0.0, 1.0]);
-}
-
 /// Every datum producer mints `Plane.normal` as a `Value::Direction`; `.normal`
 /// hands that direction back unchanged.
 #[test]
-fn plane_normal_of_a_direction_bearing_plane_is_that_direction() {
+fn plane_normal_projects_to_direction() {
     let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(1.0, 0.0, 0.0));
     let result = project(plane, Type::Plane, "normal", Type::Direction);
     assert_eq!(result, direction_val(1.0, 0.0, 0.0));

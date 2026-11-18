@@ -453,12 +453,6 @@ fn z_plane_at(x: f64, y: f64, z: f64) -> Value {
     plane_val(point3(x, y, z), direction_val(0.0, 0.0, 1.0))
 }
 
-fn direction(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction(
-        reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
-    )
-}
-
 fn translated(translation: [f64; 3]) -> Pose {
     Pose {
         translation,
@@ -597,8 +591,8 @@ fn direction_only_relation_sets_floor_at_kernel_local() {
     let relations = [rel(
         "parallel",
         vec![
-            moving(direction(0.0, 0.0, 1.0)),
-            anchor(direction(0.0, 0.0, 1.0)),
+            moving(direction_val(0.0, 0.0, 1.0)),
+            anchor(direction_val(0.0, 0.0, 1.0)),
         ],
     )];
     assert_eq!(
