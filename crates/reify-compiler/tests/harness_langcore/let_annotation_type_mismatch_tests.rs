@@ -145,24 +145,11 @@ fn let_annotation_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
 /// (one-directional widening: Int→dimensionless, not the reverse).
 #[test]
 fn let_int_declared_with_real_initializer_errors() {
-    let source = r#"
-structure S {
-    let i : Int = 0.5
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let i : Int = 0.5' (Int ≠ Real); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let i : Int = 0.5 }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "i",
     );
 }
 
@@ -170,25 +157,11 @@ structure S {
 /// `LetAnnotationTypeMismatch`. `type_compatible(Int, Scalar[kg])` is false.
 #[test]
 fn let_int_declared_with_dimensioned_initializer_errors() {
-    let source = r#"
-structure S {
-    let j : Int = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let j : Int = 5kg' (Int ≠ Scalar[kg]); \
-         got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let j : Int = 5kg }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "j",
     );
 }
 
@@ -197,25 +170,11 @@ structure S {
 /// Tests the "wrong-type" path (non-scalar RHS with scalar declared type).
 #[test]
 fn let_scalar_declared_with_bool_initializer_errors() {
-    let source = r#"
-structure S {
-    let a : Length = true
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let a : Length = true' \
-         (scalar declared, Bool RHS); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let a : Length = true }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "a",
     );
 }
 
