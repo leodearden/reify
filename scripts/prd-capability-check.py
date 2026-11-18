@@ -322,6 +322,15 @@ def _resolve_tree_sitter_bin(environ: Mapping[str, str]) -> str:
     return environ.get("TREE_SITTER_BIN") or "tree-sitter"
 
 
+_GRAMMAR_GENERATOR_RELPATH = os.path.join("scripts", "tree-sitter-generate.sh")
+
+
+def _resolve_grammar_generator(repo_root: str) -> Optional[str]:
+    """<repo_root>/scripts/tree-sitter-generate.sh if that file exists, else None."""
+    path = os.path.join(repo_root, _GRAMMAR_GENERATOR_RELPATH)
+    return path if os.path.isfile(path) else None
+
+
 # Operator/debug escape hatch: pin the grammar cache dir explicitly, e.g. to
 # inspect the compiled reify.so or to share one warm cache across a manual
 # session, without having to reverse the derived hash.
@@ -346,8 +355,10 @@ class ProbeContext:
     repo_root roots every relative fixture, the grammar directory and the
     grammar cache key; reify_bin and tree_sitter_bin are the binaries the argv
     names; cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
-    substrate_timeout_s bounds grammar_substrate_usable()'s one probe.
-    Exactly one of reify_bin and reify_bin_refusal is set: a refusal is data,
+    substrate_timeout_s bounds grammar_substrate_usable()'s one probe;
+    grammar_generator is the script that brings <repo_root>/tree-sitter-reify/src
+    up to date with grammar.js before a grammar probe, or None to probe src/ as
+    found.  Exactly one of reify_bin and reify_bin_refusal is set: a refusal is data,
     so a mode that never runs reify still works, and require_reify_bin() is
     where it is enforced.
     main() builds one per invocation with from_environment(); a test builds
@@ -359,6 +370,7 @@ class ProbeContext:
     cache_home_override: Optional[str] = None
     substrate_timeout_s: float = _SUBSTRATE_PROBE_TIMEOUT_S
     reify_bin_refusal: Optional[str] = None
+    grammar_generator: Optional[str] = None
 
     def __post_init__(self) -> None:
         def refuse(field_name: str, value: Any, requirement: str) -> None:
@@ -385,6 +397,10 @@ class ProbeContext:
         if (not _is_number(timeout) or not math.isfinite(timeout)
                 or timeout <= 0):
             refuse("substrate_timeout_s", timeout, "a finite number of seconds > 0")
+        generator = self.grammar_generator
+        if generator is not None and (not isinstance(generator, str)
+                                      or not os.path.isabs(generator)):
+            refuse("grammar_generator", generator, "None or an absolute path")
 
     @classmethod
     def from_environment(
@@ -399,6 +415,8 @@ class ProbeContext:
         _find_repo_root().  Prints nothing: a reify binary that
         scripts/reify-bin-freshness.sh does not vouch for, or no built binary
         at all, is recorded as reify_bin_refusal (see _resolve_reify_bin).
+        A root without scripts/tree-sitter-generate.sh (a fixture root) gets
+        grammar_generator None.
         """
         env = os.environ if environ is None else environ
         root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
@@ -409,6 +427,7 @@ class ProbeContext:
             reify_bin_refusal=reify_bin_refusal,
             tree_sitter_bin=_resolve_tree_sitter_bin(env),
             cache_home_override=env.get(_CACHE_HOME_OVERRIDE_ENV) or None,
+            grammar_generator=_resolve_grammar_generator(root),
         )
 
     def require_reify_bin(self) -> str:
