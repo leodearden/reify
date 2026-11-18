@@ -113,7 +113,10 @@ exponent    := '-'? /[0-9]+/ ('/' /[0-9]+/)?          // signed integer or ratio
   lexed only after the unit-pow `^`, so a contiguous `^p/q` is ONE exponent.
 - A rational exponent must be in lowest terms with denominator ≥ 2. Otherwise
   (`^2/4`, `^2/2`, `^2/1`, `^0/2`, `^1/0`) it is a located parse error, never a silent
-  reread (the legacy reading of `1m^2/2` was 0.5 m²).
+  reread (the legacy reading of `1m^2/2` was 0.5 m²). A canonical one is a deliberate
+  reread: before #9236 the contiguous `1m^2/3` was a value division, (1/3)·m², and it
+  is now 1·m^(2/3). The dimension changes too, so a typed consumer or a `+`/`-`
+  catches it. To divide, write `1m^2 / 3`.
 - A value-level `/` touching a unit exponent (`1m^1/ 2`, `1m^1/-2`, `1m^1/2/3`) is a
   located parse error at the `/`. To divide, put a space before it: `1m^2 / 2`.
 - A `^p/q` directly followed by a unit name (`1m^2/3s`, `1m^1/2kg`) is a parse error,
