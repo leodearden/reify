@@ -41,18 +41,29 @@ SOURCES_LIB = re.compile(r"^\s*(source|\.)\s+\S*cargo_inputs_lib\.sh", re.M)
 FAIL_LINE = re.compile(r"^\s*FAIL:", re.M)
 
 # A broken-infrastructure backstop, not a timing assertion.
-MEMBER_BACKSTOP_SECS = 1200
+SUBPROCESS_BACKSTOP_SECS = 1200
 
-# Measured cargo 1.96 output with no network (dead proxy).
-NO_NETWORK_TEXT = (
-    "error: failed to get `serde` as a dependency of package `reify-core v0.1.0`\n"
-    "\n"
-    "Caused by:\n"
-    "  unable to update registry `crates-io`\n"
-    "\n"
-    "Caused by:\n"
-    "  download of config.json failed\n"
-)
+# One cargo line per network/offline signature cargo_inputs_lib.sh recognises,
+# each carrying that signature and no other, so a typo in any one alternative
+# reds its own subtest. The first two are cargo 1.96's no-network output (dead
+# proxy), the third its CARGO_NET_OFFLINE note on an empty home; the last two
+# are its crate-download wrappers.
+NETWORK_SIGNATURE_LINES = {
+    "unable to update registry": "  unable to update registry `crates-io`",
+    "download of .* failed": "  download of config.json failed",
+    "offline mode (via": (
+        "note: offline mode (via `--offline`) can sometimes cause surprising "
+        "resolution failures"
+    ),
+    "failed to download": (
+        "error: failed to download from "
+        "`https://static.crates.io/crates/serde/1.0.228/download`"
+    ),
+    "spurious network error": (
+        "warning: spurious network error (2 tries remaining): [6] Couldn't "
+        "resolve host name"
+    ),
+}
 
 STALE_LOCK_TEXT = (
     "error: cannot update the lock file /x/Cargo.lock because --locked was "
@@ -69,7 +80,7 @@ def run_fetch(args, env=None, cwd=None):
     return subprocess.run(
         ["bash", "-c", FETCH_SCRIPT, "_", str(LIB), *args],
         capture_output=True, text=True, env=env, cwd=cwd,
-        timeout=MEMBER_BACKSTOP_SECS,
+        timeout=SUBPROCESS_BACKSTOP_SECS,
     )
 
 
@@ -119,17 +130,18 @@ class StubCargoTest(unittest.TestCase):
             ["fetch", "--locked", "--target", "T", "--manifest-path", "M"],
         )
 
-    def test_network_failure_is_infrastructure(self):
-        env = self.stub(NO_NETWORK_TEXT, 101)
-        r = run_fetch(["--manifest-path", "M"], env=env)
-        self.assertEqual(r.returncode, UNAVAILABLE_RC, r.stderr)
-        self.assertRegex(
-            r.stderr.splitlines()[0],
-            rf"^{re.escape(MARKER)} kind=cargo_fetch rc=101 ",
-        )
-        self.assertIn("unable to update registry `crates-io`", r.stderr)
-        self.assertIn("download of config.json failed", r.stderr)
-        self.assertEqual(r.stdout, "")
+    def test_each_network_signature_alone_is_infrastructure(self):
+        for signature, line in NETWORK_SIGNATURE_LINES.items():
+            with self.subTest(signature=signature):
+                env = self.stub(line + "\n", 101)
+                r = run_fetch(["--manifest-path", "M"], env=env)
+                self.assertEqual(r.returncode, UNAVAILABLE_RC, r.stderr)
+                self.assertRegex(
+                    r.stderr.splitlines()[0],
+                    rf"^{re.escape(MARKER)} kind=cargo_fetch rc=101 ",
+                )
+                self.assertIn(line.strip(), r.stderr)
+                self.assertEqual(r.stdout, "")
 
     def test_refusal_is_a_tree_defect_not_infrastructure(self):
         env = self.stub(STALE_LOCK_TEXT, 101)
@@ -176,7 +188,7 @@ class RealCargoTest(unittest.TestCase):
         lock = subprocess.run(
             ["cargo", "generate-lockfile", "--offline", "--manifest-path", manifest],
             capture_output=True, text=True, env=env, cwd=self.tmp,
-            timeout=MEMBER_BACKSTOP_SECS,
+            timeout=SUBPROCESS_BACKSTOP_SECS,
         )
         self.assertEqual(lock.returncode, 0, lock.stderr)
         with open(ws / "a" / "Cargo.toml", "a") as f:
@@ -207,7 +219,7 @@ class AdoptersTest(unittest.TestCase):
                     ["bash", str(INFRA_DIR / name)],
                     capture_output=True, text=True,
                     env=cold_offline_env(home), cwd=REPO_ROOT,
-                    timeout=MEMBER_BACKSTOP_SECS,
+                    timeout=SUBPROCESS_BACKSTOP_SECS,
                 )
                 log = r.stdout + r.stderr
                 self.assertEqual(r.returncode, UNAVAILABLE_RC, log[-4000:])
