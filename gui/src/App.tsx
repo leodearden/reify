@@ -1177,10 +1177,14 @@ const App: Component = () => {
    * their stores and restores persisted view state atomically.
    *
    * This is the one open funnel behind `launcherActions.loadDocument`: the
-   * Start view, File→Open, File→New. It rejects only before its first store
-   * write, so a failure leaves the editor, the engine store and the current
-   * path on the previous document and reaches a caller that can still present
-   * it (the Start view stays up until the editor write dismisses it). Keeping
+   * Start view, File→Open, File→New. A source the engine rejects is not a
+   * failure: open_file_engine resolves with the cold-start state, its buffer
+   * and diagnostics with no geometry, so the file opens for repair. It
+   * rejects when the file is unreadable or the engine fails, and only before
+   * its first store write, so a failure leaves the editor, the engine store
+   * and the current path on the previous document and reaches a caller that
+   * can still present it (the Start view stays up until the editor write
+   * dismisses it). Keeping
    * this in one place also ensures the batch() ordering invariant is never
    * accidentally diverged between callers — the subtle race it prevents is
    * documented in the batch() block below. Once `signal` is aborted (an
@@ -1552,8 +1556,9 @@ const App: Component = () => {
   /**
    * Show why the launch file failed to load. The backend records it before
    * getInitialState replies, so it is read after that, and hands it out once.
-   * A failure that still opened a document (a compile error opens the failing
-   * buffer with its diagnostics) is already presented by the editor.
+   * A source the engine rejects records no failure, because it opens: the
+   * editor presents the failing buffer with its diagnostics. Once a document
+   * is open, the Start view presents no launch failure at all.
    */
   async function presentInitialFileLoadFailure(): Promise<void> {
     try {
