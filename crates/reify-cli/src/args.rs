@@ -207,7 +207,7 @@ pub(crate) fn split_cfg_args_or_usage(
 ///
 /// The path is returned as an owned [`String`] so it safely outlives the argument slice.
 ///
-/// Used by `cmd_explain` (and available for other no-flag subcommands).  Commands with
+/// For subcommands that take one file and no flags of their own.  Commands with
 /// their own optional flags (e.g. `cmd_eval` with `--explain-undef`) extract those flags
 /// first, then delegate the remainder to this helper or handle the tail themselves.
 pub(crate) fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> Result<String, ExitCode> {
