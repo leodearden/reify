@@ -639,19 +639,21 @@ _clone_probe_run() {
 #   TERMed wait leaves a non-zero $? for the next fork, then <launches> launches back to back, where every
 #   clone after the first inherits an earlier launch in its job table.  errexit is off for the helper alone
 #   (`local -`) because that non-zero $? must survive until the next fork.
+#   The payload is short because only a clone that absorbs its TERM, or gets it late, runs it to the end,
+#   and the probe waits that out.
 #   Clears the trap before returning, so only the clones, never the probing shell, can run it.
 _clone_probe_terms() {
     local - trap_cmd="$1" rounds="$2" launches="$3" round launch pid pids
     set +e
     trap "$trap_cmd" EXIT
     for (( round = 0; round < rounds; round++ )); do
-        GOVTEST_CLONE_PROBE=1 sleep 1 &
+        GOVTEST_CLONE_PROBE=1 sleep 0.2 &
         pid=$!
         kill -TERM "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
         pids=""
         for (( launch = 0; launch < launches; launch++ )); do
-            GOVTEST_CLONE_PROBE=1 sleep 1 &
+            GOVTEST_CLONE_PROBE=1 sleep 0.2 &
             pids="$pids $!"
         done
         for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
