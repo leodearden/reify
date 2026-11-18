@@ -1,11 +1,13 @@
 //! Cross-surface resolution parity: PRD docs/prds/v0_6/resolution-unification.md η, boundaries
 //! #2, #3 and #4. `reify check`, `reify eval`, the GUI's `EngineSession` and the LSP must each
-//! report the canonical program compile's diagnostics, compared as (severity, message) multisets.
+//! report the canonical program compile's diagnostics, compared as (severity, message) multisets
+//! of Errors and Warnings.
 //!
-//! The parity rule: when the canonical compile raises no Error, every surface's Errors and
-//! Warnings equal its Errors and Warnings. When it raises one, only Errors are compared: a surface
-//! that stops at a compile Error reports exactly the canonical Errors, and the LSP, which
-//! evaluates through compile Errors, reports at least those.
+//! The parity rule: `reify check` and `reify eval` report exactly the canonical Errors and
+//! Warnings, and so do the GUI and the LSP when the canonical compile raises no Error. When it
+//! raises one, the GUI, whose rejected load carries Errors alone, reports exactly the canonical
+//! Errors, and the LSP, which evaluates through compile Errors, reports at least the canonical
+//! Errors and Warnings.
 //!
 //! D-11: exit codes are never compared across commands; each command's own outcome is pinned on
 //! its own.
@@ -16,24 +18,20 @@ use std::process::{Command, Output, Stdio};
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::program::{self, CompiledProgram};
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::Severity;
+use reify_core::{ModulePath, Severity};
 use reify_gui::engine::EngineSession;
 use reify_gui::types::GuiState;
 use reify_lsp::diagnostics::{DiagnosticsResult, EvalState, compute_diagnostics_with_state};
 use tempfile::TempDir;
 use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
-    Error,
-    Warning,
-}
+const SEVERITIES: [Severity; 3] = [Severity::Error, Severity::Warning, Severity::Info];
 
-/// One diagnostic as a surface reported it. A row is a sorted `Vec` of these: a multiset, so a
-/// surface that reports a diagnostic twice differs from one that reports it once.
+/// One Error or Warning as a surface reported it. A row is a sorted `Vec` of these: a multiset,
+/// so a surface that reports a diagnostic twice differs from one that reports it once.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Reported {
-    level: Level,
+    severity: Severity,
     message: String,
 }
 
@@ -55,10 +53,49 @@ impl Surface {
         Surface::Lsp,
     ];
 
-    /// Whether the surface stops at a compile Error. The LSP evaluates through one by design
-    /// (reify-lsp's `compute_diagnostics_with_state`), so it may append eval-time diagnostics.
-    fn stops_at_compile_error(self) -> bool {
-        self != Surface::Lsp
+    /// What the surface must report of the canonical row, given whether the canonical compile
+    /// raised an Error.
+    fn obligation(self, canonical_has_error: bool) -> (Scope, Comparison) {
+        match (self, canonical_has_error) {
+            // reify-gui's `reject_compile_errors` keeps a rejected compile's Errors alone.
+            (Surface::Gui, true) => (Scope::ErrorsOnly, Comparison::Equals),
+            // reify-lsp's `compute_diagnostics_with_state` evaluates through compile Errors, so it
+            // may append eval-time diagnostics.
+            (Surface::Lsp, true) => (Scope::ErrorsAndWarnings, Comparison::Contains),
+            _ => (Scope::ErrorsAndWarnings, Comparison::Equals),
+        }
+    }
+}
+
+/// Which of a row's diagnostics a surface is held to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    ErrorsAndWarnings,
+    ErrorsOnly,
+}
+
+impl Scope {
+    fn select(self, row: &[Reported]) -> Vec<Reported> {
+        row.iter()
+            .filter(|r| self == Scope::ErrorsAndWarnings || r.severity == Severity::Error)
+            .cloned()
+            .collect()
+    }
+}
+
+/// How a surface's selected diagnostics must relate to the canonical row's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Comparison {
+    Equals,
+    Contains,
+}
+
+impl Comparison {
+    fn holds(self, got: &[Reported], canonical: &[Reported]) -> bool {
+        match self {
+            Comparison::Equals => got == canonical,
+            Comparison::Contains => contains_multiset(got, canonical),
+        }
     }
 }
 
@@ -72,7 +109,8 @@ fn project(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 
-/// Every row's raw observation of one entry, for the scenarios' own postconditions.
+/// Every row's raw observation of one entry, for the parity rule and the scenarios' own
+/// postconditions.
 struct Observed {
     program: CompiledProgram,
     check: Output,
@@ -88,17 +126,15 @@ struct GuiObservation {
     state: GuiState,
 }
 
-/// Observe `entry` on all five surfaces and assert the parity rule over them.
+/// Observe `entry` on all five surfaces.
 fn observe(entry: &Path) -> Observed {
-    let observed = Observed {
+    Observed {
         program: compile_canonically(entry),
         check: reify(&["check"], entry),
         eval: reify(&["eval"], entry),
         gui: load_in_gui(entry),
         lsp: diagnose_in_lsp(entry),
-    };
-    assert_parity(entry, &observed);
-    observed
+    }
 }
 
 fn compile_canonically(entry: &Path) -> CompiledProgram {
@@ -111,10 +147,13 @@ fn compile_canonically(entry: &Path) -> CompiledProgram {
     )
 }
 
+/// Run the built `reify` on `entry` with a cache of its own, so no ambient cache reaches it.
 fn reify(argv: &[&str], entry: &Path) -> Output {
+    let cache_dir = reify_test_support::prefixed_tempdir("reify-resolution-parity-cache-");
     Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(argv)
         .arg(entry)
+        .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -148,14 +187,16 @@ fn read(path: &Path) -> String {
 }
 
 impl Observed {
-    fn row(&self, surface: Surface) -> Vec<Reported> {
-        let mut row: Vec<Reported> = match surface {
+    /// Every text the surface produced, with the severity it reported it at: each diagnostic, and
+    /// for a command each stderr line, which has no severity unless it is a diagnostic.
+    fn raw(&self, surface: Surface) -> Vec<(Option<Severity>, String)> {
+        match surface {
             Surface::Program => self
                 .program
                 .entry
                 .diagnostics
                 .iter()
-                .filter_map(|d| from_core(d.severity, &d.message))
+                .map(|d| (Some(d.severity), d.message.clone()))
                 .collect(),
             Surface::Check => from_cli_stderr(&self.check),
             Surface::Eval => from_cli_stderr(&self.eval),
@@ -164,152 +205,100 @@ impl Observed {
                 .state
                 .compile_diagnostics
                 .iter()
-                .filter_map(|d| from_gui_wire(&d.severity, &d.message))
+                .map(|d| (Some(from_gui_wire(&d.severity)), d.message.clone()))
                 .collect(),
             Surface::Lsp => self
                 .lsp
                 .diagnostics
                 .iter()
-                .filter_map(|d| from_lsp(d.severity, &d.message))
-                .collect(),
-        };
-        row.sort();
-        row
-    }
-
-    /// Every diagnostic text the surface produced, whatever its severity; for a command, every
-    /// stderr line.
-    fn all_diagnostic_text(&self, surface: Surface) -> Vec<String> {
-        match surface {
-            Surface::Program => self
-                .program
-                .entry
-                .diagnostics
-                .iter()
-                .map(|d| d.message.clone())
-                .collect(),
-            Surface::Check => stderr_lines(&self.check),
-            Surface::Eval => stderr_lines(&self.eval),
-            Surface::Gui => self
-                .gui
-                .state
-                .compile_diagnostics
-                .iter()
-                .map(|d| d.message.clone())
-                .collect(),
-            Surface::Lsp => self
-                .lsp
-                .diagnostics
-                .iter()
-                .map(|d| d.message.clone())
+                .map(|d| (from_lsp(d.severity), d.message.clone()))
                 .collect(),
         }
     }
 
-    /// The surfaces whose diagnostic text mentions any of `needles`.
+    /// The surface's Errors and Warnings, sorted.
+    fn row(&self, surface: Surface) -> Vec<Reported> {
+        let mut row: Vec<Reported> = self
+            .raw(surface)
+            .into_iter()
+            .filter_map(|(severity, message)| match severity {
+                Some(severity @ (Severity::Error | Severity::Warning)) => {
+                    Some(Reported { severity, message })
+                }
+                _ => None,
+            })
+            .collect();
+        row.sort();
+        row
+    }
+
+    /// The surfaces whose text mentions any of `needles`, whatever its severity.
     fn surfaces_mentioning(&self, needles: &[&str]) -> Vec<Surface> {
         Surface::ALL
             .into_iter()
             .filter(|&surface| {
-                self.all_diagnostic_text(surface)
+                self.raw(surface)
                     .iter()
-                    .any(|text| needles.iter().any(|needle| text.contains(needle)))
+                    .any(|(_, text)| needles.iter().any(|needle| text.contains(needle)))
             })
             .collect()
     }
 }
 
-fn stderr_lines(output: &Output) -> Vec<String> {
+/// `reify check` and `reify eval` print each diagnostic as `{severity}: {message}`, `Severity`'s
+/// `Display` before the message; any other stderr line is not a diagnostic.
+fn from_cli_stderr(output: &Output) -> Vec<(Option<Severity>, String)> {
     String::from_utf8_lossy(&output.stderr)
         .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn reported(level: Level, message: &str) -> Reported {
-    Reported {
-        level,
-        message: message.to_owned(),
-    }
-}
-
-fn from_core(severity: Severity, message: &str) -> Option<Reported> {
-    match severity {
-        Severity::Error => Some(reported(Level::Error, message)),
-        Severity::Warning => Some(reported(Level::Warning, message)),
-        Severity::Info => None,
-    }
-}
-
-/// `reify check` and `reify eval` print each diagnostic as `{severity}: {message}`; every other
-/// stderr line is not a diagnostic.
-fn from_cli_stderr(output: &Output) -> Vec<Reported> {
-    String::from_utf8_lossy(&output.stderr)
-        .lines()
-        .filter_map(|line| {
-            if let Some(message) = line.strip_prefix("error: ") {
-                Some(reported(Level::Error, message))
-            } else {
-                line.strip_prefix("warning: ")
-                    .map(|message| reported(Level::Warning, message))
-            }
+        .map(|line| {
+            SEVERITIES
+                .into_iter()
+                .find_map(|severity| {
+                    line.strip_prefix(&format!("{severity}: "))
+                        .map(|message| (Some(severity), message.to_owned()))
+                })
+                .unwrap_or_else(|| (None, line.to_owned()))
         })
         .collect()
 }
 
-fn from_gui_wire(severity: &str, message: &str) -> Option<Reported> {
-    match severity {
-        "Error" => Some(reported(Level::Error, message)),
-        "Warning" => Some(reported(Level::Warning, message)),
-        "Info" => None,
-        other => panic!("GuiState severity {other:?} is not a wire severity"),
-    }
+fn from_gui_wire(wire: &str) -> Severity {
+    SEVERITIES
+        .into_iter()
+        .find(|severity| severity.as_wire_str() == wire)
+        .unwrap_or_else(|| panic!("GuiState severity {wire:?} is not a wire severity"))
 }
 
-fn from_lsp(severity: Option<DiagnosticSeverity>, message: &str) -> Option<Reported> {
+fn from_lsp(severity: Option<DiagnosticSeverity>) -> Option<Severity> {
     match severity {
-        Some(DiagnosticSeverity::ERROR) => Some(reported(Level::Error, message)),
-        Some(DiagnosticSeverity::WARNING) => Some(reported(Level::Warning, message)),
+        Some(DiagnosticSeverity::ERROR) => Some(Severity::Error),
+        Some(DiagnosticSeverity::WARNING) => Some(Severity::Warning),
+        Some(DiagnosticSeverity::INFORMATION) => Some(Severity::Info),
         _ => None,
     }
 }
 
+/// Assert the parity rule over `observed`, every surface's observation of `entry`.
 fn assert_parity(entry: &Path, observed: &Observed) {
     let rows: Vec<(Surface, Vec<Reported>)> = Surface::ALL
         .iter()
         .map(|&surface| (surface, observed.row(surface)))
         .collect();
     let canonical = observed.row(Surface::Program);
-    let error_scope = canonical.iter().any(|r| r.level == Level::Error);
-    let in_scope = |row: &[Reported]| -> Vec<Reported> {
-        row.iter()
-            .filter(|r| !error_scope || r.level == Level::Error)
-            .cloned()
-            .collect()
-    };
-    let expected = in_scope(&canonical);
-    let divergent: Vec<Surface> = rows
+    let canonical_has_error = canonical.iter().any(|r| r.severity == Severity::Error);
+    let broken: Vec<String> = rows
         .iter()
-        .filter(|(surface, row)| {
-            let got = in_scope(row);
-            if error_scope && !surface.stops_at_compile_error() {
-                !contains_multiset(&got, &expected)
-            } else {
-                got != expected
-            }
+        .filter_map(|(surface, row)| {
+            let (scope, comparison) = surface.obligation(canonical_has_error);
+            (!comparison.holds(&scope.select(row), &scope.select(&canonical)))
+                .then(|| format!("{surface:?} must {comparison:?} the canonical {scope:?}"))
         })
-        .map(|(surface, _)| *surface)
         .collect();
     assert!(
-        divergent.is_empty(),
-        "resolution parity broken for {} on {divergent:?} (scope: {}; the Program row is the \
-         canonical compile_program)\n{}",
+        broken.is_empty(),
+        "resolution parity broken for {}: {broken:?} (the Program row is the canonical \
+         compile_program)\n{}",
         entry.display(),
-        if error_scope {
-            "Errors only — the canonical compile raised an Error"
-        } else {
-            "Errors and Warnings"
-        },
         table(&rows)
     );
 }
@@ -333,7 +322,7 @@ fn table(rows: &[(Surface, Vec<Reported>)]) -> String {
         .map(|(surface, row)| {
             let lines: Vec<String> = row
                 .iter()
-                .map(|r| format!("    {:?}: {}", r.level, r.message))
+                .map(|r| format!("    {:?}: {}", r.severity, r.message))
                 .collect();
             format!("  {surface:?} ({}):\n{}", row.len(), lines.join("\n"))
         })
@@ -343,6 +332,25 @@ fn table(rows: &[(Surface, Vec<Reported>)]) -> String {
 
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn contains_multiset_counts_repeats_and_severity() {
+    let error = |message: &str| Reported {
+        severity: Severity::Error,
+        message: message.to_owned(),
+    };
+    let warning_a = Reported {
+        severity: Severity::Warning,
+        message: "a".to_owned(),
+    };
+    assert!(contains_multiset(
+        &[error("a"), error("a"), error("b")],
+        &[error("a"), error("a")]
+    ));
+    assert!(!contains_multiset(&[error("a")], &[error("a"), error("a")]));
+    assert!(!contains_multiset(&[error("b")], &[error("a")]));
+    assert!(!contains_multiset(&[warning_a], &[error("a")]));
 }
 
 #[test]
@@ -370,6 +378,7 @@ fn importing_entry_reports_one_diagnostic_set_on_every_surface() {
     let entry = dir.path().join("rig.ri");
 
     let observed = observe(&entry);
+    assert_parity(&entry, &observed);
 
     let canonical = &observed.program.entry.diagnostics;
     assert!(
@@ -471,7 +480,9 @@ fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
         let dir = project(&files);
         let broken_path = dir.path().join(&broken_name).display().to_string();
 
-        let observed = observe(&dir.path().join(&entry_name));
+        let entry = dir.path().join(&entry_name);
+        let observed = observe(&entry);
+        assert_parity(&entry, &observed);
 
         let program = &observed.program;
         assert!(
@@ -553,7 +564,9 @@ fn cfg_unsatisfied_import_is_inert_on_every_surface() {
         .map(|name| dir.path().join(name).display().to_string())
         .collect();
 
-    let observed = observe(&dir.path().join("gated_import.ri"));
+    let entry = dir.path().join("gated_import.ri");
+    let observed = observe(&entry);
+    assert_parity(&entry, &observed);
 
     let program = &observed.program;
     assert!(
@@ -610,13 +623,20 @@ fn cfg_unsatisfied_import_is_inert_on_every_surface() {
     );
 }
 
-/// The entry follows no import here, so the GUI and the LSP take their single-file route while
-/// `reify check` and `reify eval` take the program compile: the parity spans both routes.
 #[test]
 fn cfg_unsatisfied_import_lends_the_entry_no_definitions() {
     let dir = cfg_gated_project();
+    let entry = dir.path().join("gated_ref.ri");
+    let parsed = reify_compiler::parse_with_stdlib(&read(&entry), ModulePath::single("gated_ref"));
+    assert!(
+        !program::entry_follows_imports(&parsed, &CfgSet::host_default()),
+        "precondition: the entry follows no import, so the GUI and the LSP compile it single-file \
+         while `reify check` and `reify eval` take the program compile, and the parity below spans \
+         both routes"
+    );
 
-    let observed = observe(&dir.path().join("gated_ref.ri"));
+    let observed = observe(&entry);
+    assert_parity(&entry, &observed);
 
     let program = &observed.program;
     assert!(
