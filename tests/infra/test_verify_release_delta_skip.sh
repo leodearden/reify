@@ -17,6 +17,7 @@
 #     - ALL sentinel (C4 global / C5 unmappable)   => rc0  (fail-wide)
 #     - empty / whitespace-only override           => rc1  (empty set, skip)
 #     - mixed set containing one sensitive crate   => rc0  (required)
+#     - affected_crates fails (real-merge arm)     => rc0  (fail-wide)
 #     - a membership grep that fails (2, 126)      => rc0  (fail-wide)
 #   The sensitive crate name is read from release_declared_set (the single source
 #   of truth), never hard-coded, so this test cannot drift from
@@ -99,11 +100,12 @@ _run_predicate() {  # <override> [declared_file]
     )
 }
 _predicate_requires() { _run_predicate "$@"; }  # asserts rc0 — release pass REQUIRED
-_predicate_skips() {                            # asserts exactly rc1 — SKIPPABLE, never another failure
+_skippable() {                                  # asserts <cmd> exits exactly rc1 — SKIPPABLE, never another failure
     local _rc=0
-    _run_predicate "$@" || _rc=$?
+    "$@" || _rc=$?
     [ "$_rc" -eq 1 ]
 }
+_predicate_skips() { _skippable _run_predicate "$@"; }
 
 # Clean RED signal in step-1: the predicate does not exist until step-2.
 assert "release_delta_requires_pass is defined" \
@@ -126,6 +128,40 @@ assert "whitespace-only override => SKIPPABLE (rc1, word-splits to nothing)" \
 
 assert "mixed set with one sensitive crate ($_NONSENSITIVE_CRATE $_SENSITIVE_CRATE) => REQUIRED (rc0)" \
     _predicate_requires "$_NONSENSITIVE_CRATE $_SENSITIVE_CRATE"
+
+echo ""
+echo "--- UNIT: the real-merge arm fails wide when affected_crates fails (task 10086) ---"
+
+# The no-override arm captures affected_crates's stdout. A killed capture leaves an empty or
+# partial set that reads like a clean answer, so only its status says it failed, and the
+# predicate must answer REQUIRED. affected_crates is the predicate's documented dependency and
+# the real one runs `cargo metadata`, so a stand-in answers for it here (no git, no cargo).
+# It is redefined inside each case's subshell, so the redefinition cannot leak. The control
+# prints what the second failing case prints but exits 0: the three cases differ only in
+# exit status, which proves the stand-in is reached and nothing else in the arm fails wide.
+_run_delta_predicate() {  # <stand-in> <changed-file>...
+    (
+        unset REIFY_AFFECTED_CRATES_OVERRIDE
+        _stand_in="$1"
+        shift
+        affected_crates() { "$_stand_in" "$@"; }
+        release_delta_requires_pass "$@"
+    )
+}
+_affected_crates_killed() { kill -9 "$BASHPID"; }
+_affected_crates_answers_then_killed() { echo "$_NONSENSITIVE_CRATE"; kill -9 "$BASHPID"; }
+_affected_crates_answers() { echo "$_NONSENSITIVE_CRATE"; }
+
+_REAL_ARM_CHANGED_FILE="crates/$_NONSENSITIVE_CRATE/src/main.rs"
+
+assert "affected_crates killed before answering => REQUIRED (rc0, fail-wide)" \
+    _run_delta_predicate _affected_crates_killed "$_REAL_ARM_CHANGED_FILE"
+
+assert "affected_crates killed after answering $_NONSENSITIVE_CRATE => REQUIRED (rc0, fail-wide)" \
+    _run_delta_predicate _affected_crates_answers_then_killed "$_REAL_ARM_CHANGED_FILE"
+
+assert "affected_crates answers $_NONSENSITIVE_CRATE (control) => SKIPPABLE (rc1)" \
+    _skippable _run_delta_predicate _affected_crates_answers "$_REAL_ARM_CHANGED_FILE"
 
 echo ""
 echo "--- UNIT: SIGPIPE regression (task 9911) ---"
