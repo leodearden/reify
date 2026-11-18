@@ -319,7 +319,7 @@ mod early_default_recheck {
 /// prelude function that wins its `(name, param types)` key under NS-P1
 /// ([`name_env`]: imports before std modules, first wins). A prelude function
 /// sharing a user function's key is shadowed.
-pub(crate) fn build_resolution_functions(
+fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {
