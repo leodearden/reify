@@ -1,6 +1,7 @@
 # Agent-confusion codebook — persistent cause registry for legibility surveys.
-# version 2. MERGER-OWNED FILE: written solely by scripts/legibility/codebook.py
-# (plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
+# version 2. MERGER-OWNED FILE: written solely by dark-factory's
+# scripts/legibility/codebook.py (dark-factory's
+# plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
 # entries are never deleted (retire via status: retired); sightings/candidates
 # are appended by the deterministic merger's apply_coding_records(). Hand edits
 # will be normalized/overwritten on the next merge.
@@ -4085,6 +4086,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Turn 103: ''sleep 60; wc -l <task output file>'' blocked by the guard, which directs the agent to Monitor or run_in_background.'
+  - date: '2026-11-17'
+    project: reify
+    session: 43bcc46d-ff45-4d5f-bd36-1fc4d62ea62c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent chained sleep 60 with tail on a background task's output file, and the sandbox guard blocked the command. The digest's guard message points to Monitor or run_in_background as the required alternative.
+    evidence_quote: sleep 60; tail -5 /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-19/43bcc46d-ff45-4d5f-bd36-1fc4d62ea62c/tasks/bk3wd5jrt.output
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260723-4
@@ -4930,6 +4938,13 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The Bash watcher-rearm bounded wait (--timeout 3600, timeout 3660000) was re-issued three times with identical arguments. The digest does not show the timeout ceiling being hit, so this is a partial match on the identical-reissue pattern.
+  - date: '2026-11-17'
+    project: reify
+    session: 857db5fa-9bc7-4c19-93cb-9a4f4cff9c87
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The bounded watcher-rearm wait hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING), and the identical command was re-issued at turns 112 and 123 without any change to its arguments.'
+    evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9692,6 +9707,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: A Bash call chaining sleep 25 with ls/grep/reap commands was blocked by the sandbox, and the guard message directed the agent to Monitor or run_in_background instead of shorter sleeps.
+  - date: '2026-11-17'
+    project: reify
+    session: 83d07921-d3f0-493b-b93d-52248e996021
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A sleep+check polling chain (sleep 45 then cat|tail) was blocked by the sandbox anti-chaining guard, which told the agent to use Monitor or run_in_background instead.
+    evidence_quote: 'Blocked: sleep 45 followed by: cat /home/leo/.claude/fleet/sessions/warm-base-reify-10046-3079289/breakglass.log tail -20. To wait for a condition, use Monitor with an until-loop'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
