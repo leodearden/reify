@@ -8806,6 +8806,15 @@ structure Assembly {
         }
     }
 
+    /// The swept kind a cold build would classify for a 5mm +Z extrude.
+    fn seeded_extrude_kind() -> SweptKind {
+        SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: reify_ir::Value::length(0.005),
+            profile: GeometryHandleId(3),
+        }
+    }
+
     /// step-1 (RED): a primary cache hit must apply the FULL side-effect set
     /// documented on `probe_realization_cache` — not just push a handle.
     ///
@@ -8813,7 +8822,8 @@ structure Assembly {
     /// handle, then probes at the SAME repr/tol with the terminal+named+tol
     /// guard satisfied. Asserts every write the cold path's success branch
     /// would have made: `step_handles`, `named_steps`, `named_step_reprs`,
-    /// and `produced_repr_out` — plus the `true` return itself.
+    /// `produced_repr_out` and the entry's swept kind in `swept_kind_table`
+    /// — plus the `true` return itself.
     #[test]
     fn probe_realization_cache_primary_hit_applies_full_side_effect_set() {
         let realization_id = RealizationNodeId::new("PrimaryHit", 0);
@@ -8829,7 +8839,10 @@ structure Assembly {
             ReprKind::BRep,
             tol,
             NO_OPTIONS,
-            entry_without_swept_kind(seeded),
+            RealizationCacheEntry {
+                handle: seeded,
+                swept_kind: Some(seeded_extrude_kind()),
+            },
         );
 
         let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8883,6 +8896,73 @@ structure Assembly {
             Some(ReprKind::BRep),
             "produced_repr_out must surface the resolved repr"
         );
+        assert_eq!(
+            swept_kind_table.lookup(seeded.id),
+            Some(&seeded_extrude_kind()),
+            "the entry's swept kind must be recorded under the cached handle"
+        );
+        assert_eq!(
+            swept_kind_table.len(),
+            1,
+            "a hit records exactly the cached terminal's swept kind"
+        );
+    }
+
+    /// A primary hit on an entry whose cold build classified no swept kind
+    /// returns `true` and records nothing into `swept_kind_table`.
+    #[test]
+    fn probe_realization_cache_hit_on_entry_without_swept_kind_records_none() {
+        let realization_id = RealizationNodeId::new("UnsweptHit", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(8),
+        };
+        let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+        cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            entry_without_swept_kind(seeded),
+        );
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut produced_repr_out: Option<ReprKind> = None;
+
+        let mut outputs = RealizationOutputs::new(
+            &mut step_handles,
+            &mut named_steps,
+            &mut named_step_reprs,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut produced_repr_out,
+        );
+
+        let hit = Engine::probe_realization_cache(
+            &cache,
+            &realization_id,
+            Some("part"),
+            ReprKind::BRep,
+            Some(tol),
+            true,
+            &mut outputs,
+        );
+
+        assert!(hit, "a primary hit must return true");
+        assert_eq!(
+            step_handles,
+            vec![seeded],
+            "premise: the hit pushed the cached handle"
+        );
+        assert!(
+            swept_kind_table.is_empty(),
+            "an entry without a swept kind must leave swept_kind_table empty"
+        );
     }
 
     /// step-3: pin invariant #1 (probes ONLY when `is_terminal_realization &&
@@ -8920,7 +9000,10 @@ structure Assembly {
                 ReprKind::BRep,
                 tol,
                 NO_OPTIONS,
-                entry_without_swept_kind(seeded),
+                RealizationCacheEntry {
+                    handle: seeded,
+                    swept_kind: Some(seeded_extrude_kind()),
+                },
             );
 
             let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8975,6 +9058,10 @@ structure Assembly {
             assert_eq!(
                 produced_repr_out, None,
                 "guard case [{label}] must not write produced_repr_out"
+            );
+            assert!(
+                swept_kind_table.is_empty(),
+                "guard case [{label}] must not record the entry's swept kind"
             );
             assert!(
                 topology_attribute_table.lookup(seeded).is_some(),
