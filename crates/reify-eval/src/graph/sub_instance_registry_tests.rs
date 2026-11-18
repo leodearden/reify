@@ -124,7 +124,9 @@ fn a_removed_slot_restamped_from_another_template_records_the_new_one() {
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "a removed slot of `P.s` still holds a cell")]
+#[should_panic(
+    expected = "a removed slot of `P.s` still holds a cell its collection's shape does not name: `P.s[0].stray`"
+)]
 fn remove_collection_slots_refuses_to_forget_a_slot_holding_a_cell_outside_its_shape() {
     let bolts = bolts_collection(&["d"]);
     let mut graph = EvaluationGraph::default();
@@ -132,6 +134,42 @@ fn remove_collection_slots_refuses_to_forget_a_slot_holding_a_cell_outside_its_s
     graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "stray"));
 
     graph.remove_collection_slots(&bolts, 0..1);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(
+    expected = "does not name: `P.s[0].stray`; `P.s[1].stray`; `P.s[2].stray`; `P.s[3].stray`"
+)]
+fn remove_collection_slots_names_every_stray_cell_in_sorted_order() {
+    let bolts = bolts_collection(&["d"]);
+    let mut graph = EvaluationGraph::default();
+    for index in (0..4).rev() {
+        let slot = format!("P.s[{index}]");
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "d"));
+        graph.insert_sub_instance_cell("Bolt", cell(&slot, "stray"));
+    }
+
+    graph.remove_collection_slots(&bolts, 0..4);
+}
+
+#[test]
+fn remove_collection_slots_ignores_a_stray_cell_in_a_slot_it_keeps() {
+    let bolts = bolts_collection(&["d"]);
+    let mut graph = EvaluationGraph::default();
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[1]", "d"));
+    graph.insert_sub_instance_cell("Bolt", cell("P.s[1]", "stray"));
+
+    graph.remove_collection_slots(&bolts, 0..1);
+
+    assert!(
+        graph
+            .value_cells
+            .contains_key(&ValueCellId::new("P.s[1]", "stray")),
+        "a slot outside the removed range keeps every cell it holds",
+    );
+    assert_eq!(graph.sub_instance_template("P.s[1]"), Some("Bolt"));
 }
 
 fn graph_with_bolts_collection() -> EvaluationGraph {

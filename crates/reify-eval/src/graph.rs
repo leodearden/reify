@@ -793,18 +793,35 @@ impl EvaluationGraph {
         for entity in &entities {
             self.sub_instance_templates.remove(entity);
         }
-        debug_assert!(
-            {
-                let forgotten: HashSet<&String> = entities.iter().collect();
-                self.value_cells
-                    .keys()
-                    .all(|id| !forgotten.contains(&id.entity))
-            },
-            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name",
+        self.debug_assert_forgotten_slots_hold_no_cell(col_sub, &entities);
+        removed
+    }
+
+    /// In a debug build, panic naming every cell `value_cells` still holds in
+    /// one of `col_sub`'s forgotten slots `entities`.
+    fn debug_assert_forgotten_slots_hold_no_cell(
+        &self,
+        col_sub: &CollectionSubInfo,
+        entities: &[String],
+    ) {
+        if !cfg!(debug_assertions) || entities.is_empty() {
+            return;
+        }
+        let forgotten: HashSet<&str> = entities.iter().map(String::as_str).collect();
+        let mut strays: Vec<String> = self
+            .value_cells
+            .keys()
+            .filter(|id| forgotten.contains(id.entity.as_str()))
+            .map(|id| format!("`{id}`"))
+            .collect();
+        strays.sort();
+        assert!(
+            strays.is_empty(),
+            "a removed slot of `{}.{}` still holds a cell its collection's shape does not name: {}",
             col_sub.parent_entity,
             col_sub.sub_name,
+            strays.join("; "),
         );
-        removed
     }
 
     /// Determine which constraint IDs are active given the current values.
