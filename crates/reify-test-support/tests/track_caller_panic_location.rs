@@ -19,7 +19,15 @@
 //!   template"), each driven through the longest public chain that reaches it;
 //! - `assert_single_declaration_error`, called directly;
 //! - `panic_message_of`'s two strict-failure panics ("returned normally",
-//!   "neither a &str nor a String"), called directly.
+//!   "neither a &str nor a String"), called directly;
+//! - the parse/compile chains (`parse_and_compile`, `compile_source` and
+//!   `compile_source_named`, plus the `_with_stdlib` twins of the first two),
+//!   each parse or compile failure driven through the longest public chain
+//!   that reaches it;
+//! - `parse_compile_expect_err`, called directly;
+//! - `compile_first_template` and `compile_template`, called directly;
+//! - the `eval-helpers` wrappers `eval_source`, `check_source` and
+//!   `check_source_with_stdlib`, on the compile-error panic they forward.
 //!
 //! Each guard asserts the reported location plus a SHORT payload substring —
 //! never full message prose, per the wording rule `dimensioned_assertions.rs`

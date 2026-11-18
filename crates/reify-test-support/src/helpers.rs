@@ -79,6 +79,7 @@ pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
 /// # Panics
 /// Panics on parse errors, compile errors, or eval-phase diagnostics.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_engine();
@@ -101,6 +102,7 @@ pub fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_simple_engine();
@@ -116,6 +118,7 @@ pub fn check_source(source: &str) -> reify_eval::CheckResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
