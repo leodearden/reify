@@ -16,7 +16,8 @@ that closure EMPIRICALLY, against the target rather than from host metadata:
     the target cannot resolve, or resolves short of a required symbol version,
     at <stage>/usr/lib/<productName>/lib, sets their RUNPATHs (patchelf, run in
     the reference image as the caller's uid), and re-runs `ldd` there on the
-    as-installed layout until it reports nothing missing.
+    as-installed layout until it reports nothing missing; a final `ldd -r` on
+    that converged layout must then report no undefined symbol.
 
 The staged tree is then what the .deb ships, through the tauri config overlay
 this tool writes (`cargo tauri bundle --config <overlay>`). The AppImage gets
@@ -300,11 +301,11 @@ def merge_host_reports(main: tuple[Path, LddReport],
     Precedence is `main` first, then `extras` in order: the first binary that
     resolves a soname supplies its copy, and each later binary that resolves
     it to a different file (by realpath) is recorded as shadowed. On the
-    target, the reference-image probe checks that copy only as far as plain
-    ldd does: derive_closure stops if any binary is left missing a library or
-    short of a symbol version. An unversioned symbol the copy lacks surfaces
-    only when a binary binds it, which the armed (opt-in) clean-install proof
-    exercises by running both binaries on stock Ubuntu."""
+    target, the reference-image probe checks the chosen copy for every binary:
+    the plain-ldd fixed point stops on a missing library or a missing symbol
+    version, and derive_bound_closure's final `ldd -r` stops on any symbol,
+    unversioned included, that the copy lacks and a shadowed binary's
+    dependency chain references."""
     resolved: dict[str, str] = {}
     shadowed: dict[str, list[tuple[Path, str]]] = {}
     for binary, report in (main, *extras):
@@ -362,8 +363,11 @@ def _copy_writable(source: str | Path, dest: Path, mode: int) -> None:
     dest.chmod(mode)
 
 
-def _patch_and_ldd_script(product_name: str) -> str:
+def probe_script(product_name: str, *, bind_symbols: bool) -> str:
+    """bind_symbols makes ldd process every relocation and report each symbol no
+    loaded object defines."""
     lib_dir = "/probe" + installed_lib_dir(product_name)
+    ldd = "ldd -r" if bind_symbols else "ldd"
     return (
         "set -eu\n"
         f"for f in {shlex.quote(lib_dir)}/*; do\n"
@@ -373,14 +377,18 @@ def _patch_and_ldd_script(product_name: str) -> str:
         "for f in /probe/usr/bin/*; do\n"
         f"  patchelf --set-rpath {shlex.quote(executable_runpath(product_name))} \"$f\"\n"
         "done\n"
-        "ldd /probe/usr/bin/*\n")
+        f"{ldd} /probe/usr/bin/*\n")
 
 
 def docker_probe(image: str, stage: Path, product_name: str,
-                 binaries: Mapping[str, Path], host_resolved: Mapping[str, str]) -> Probe:
+                 binaries: Mapping[str, Path], host_resolved: Mapping[str, str],
+                 *, bind_symbols: bool = False) -> Probe:
     """A probe that stages onto `stage` and runs ldd on it in `image`. ldd runs
-    with no LD_LIBRARY_PATH, so it checks the as-installed layout."""
-    script = _patch_and_ldd_script(product_name)
+    with no LD_LIBRARY_PATH, so it checks the as-installed layout. With
+    bind_symbols it runs `ldd -r`, which also reports each undefined symbol, but
+    exits non-zero while any library is not found: use it on a converged layout."""
+    script = probe_script(product_name, bind_symbols=bind_symbols)
+    mode = "ldd -r" if bind_symbols else "ldd"
 
     def probe(staged: frozenset) -> LddReport:
         for name, path in binaries.items():
@@ -391,7 +399,7 @@ def docker_probe(image: str, stage: Path, product_name: str,
             dest = staged_lib_dir(stage, product_name) / soname
             if not dest.exists():
                 _copy_writable(host_resolved[soname], dest, 0o644)
-        _log(f"probing {image} with {len(staged)} staged libraries")
+        _log(f"probing {image} with {len(staged)} staged libraries ({mode})")
         return parse_ldd(_run([
             "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{stage}:/probe", image, "sh", "-c", script]))
@@ -451,8 +459,11 @@ def _run_derivation(args: argparse.Namespace) -> None:
 
     host = host_resolution(args.main_binary[1], extras.values())
     image = ensure_reference_image(reference_dockerfile(depends))
-    probe = docker_probe(image, stage, product_name, binaries, host.resolved)
-    closure = derive_closure(host.resolved, probe)
+    probe = docker_probe(
+        image, stage, product_name, binaries, host.resolved, bind_symbols=False)
+    bind_probe = docker_probe(
+        image, stage, product_name, binaries, host.resolved, bind_symbols=True)
+    closure = derive_bound_closure(host.resolved, probe, bind_probe)
     for line in describe_closure(host, closure):
         _log(line)
     _log(f"closure: {len(closure)} libraries; staged at {stage}")
