@@ -38,6 +38,7 @@ mod path_key_tests;
 mod recent_files_tests;
 mod screenshot_save_tests;
 mod sidecar_env_tests;
+mod sidecar_location_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
