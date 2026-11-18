@@ -441,6 +441,10 @@ mod tests {
         for token in ["--cfg=target=wasm", "--cfg="] {
             let err = split_cfg_args(&strings(&[token, "f.ri"])).expect_err("inline --cfg=");
             assert!(err.contains("next argument"), "{token}: got: {err}");
+            assert!(
+                err.contains(crate::help::CFG_SYNOPSIS),
+                "{token}: the refusal must name the spelling `--help` documents, got: {err}"
+            );
         }
     }
 
