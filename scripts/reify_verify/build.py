@@ -43,7 +43,7 @@ from reify_verify import (
     testregion,
 )
 from reify_verify.bashcall import BashCall, BashExport
-from reify_verify.diagnostics import ERROR, WARNING, error_from
+from reify_verify.diagnostics import ERROR, WARNING, error_prefix
 from reify_verify.environment import (
     NextestAvailable,
     NextestBroken,
@@ -96,12 +96,12 @@ class LoadTimeLib:
     """A lib verify.sh sources at load, and how the bash guard that finds it missing first refuses."""
 
     path: str
-    guard: str = "verify.sh"
+    guarded_by: str = "verify.sh"
     exit_code: int = 1
 
     def refusal(self) -> Refused:
         return Refused(
-            (f"{error_from(self.guard)}{self.path} not found next to {self.guard}",),
+            (f"{error_prefix(self.guarded_by)}{self.path} not found next to {self.guarded_by}",),
             self.exit_code,
         )
 
@@ -111,7 +111,7 @@ class LoadTimeLib:
 LOAD_TIME_LIBS = (
     LoadTimeLib("scripts/occt-scope-lib.sh"),
     LoadTimeLib("scripts/release-scope-lib.sh"),
-    LoadTimeLib("scripts/affected-crates-lib.sh", guard="release-scope-lib.sh", exit_code=2),
+    LoadTimeLib("scripts/affected-crates-lib.sh", guarded_by="release-scope-lib.sh", exit_code=2),
     LoadTimeLib("scripts/lib_test_semaphore.sh"),
     LoadTimeLib("scripts/cpu-admit.sh"),
     LoadTimeLib("scripts/lib_proc_reaper.sh"),

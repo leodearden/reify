@@ -7,10 +7,10 @@ keep bash's colon form byte for byte and do not use WARNING.
 """
 
 
-def error_from(script: str) -> str:
+def error_prefix(script: str) -> str:
     """The prefix `script` prints before an error."""
     return f"{script}: ERROR — "
 
 
 WARNING = "verify.sh: WARNING — "
-ERROR = error_from("verify.sh")
+ERROR = error_prefix("verify.sh")
