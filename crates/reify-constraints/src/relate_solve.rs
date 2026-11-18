@@ -630,16 +630,11 @@ fn residual_dispatch(
             (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
-        // `dot(da, db)` is the SINE of the misalignment only for unit operands. Every
-        // direction `dir_of` reads is a `Direction`, unit by construction, and
-        // `unit3` keeps the file's one normalisation convention (as
-        // `direction_alignment_residual` does), so the row the static verifier
-        // compares against a FIXED dimensionless rung never scales with magnitude.
+        // `dot(da, db)` is the SINE of the misalignment because `dir_of` reads only
+        // unit `Direction`s, so the row the static verifier compares against a FIXED
+        // dimensionless rung never scales with operand magnitude.
         "perpendicular" => match (dir_of(a), dir_of(b)) {
-            (Some(da), Some(db)) => match (unit3(da), unit3(db)) {
-                (Some(ua), Some(ub)) => vec![ResidualRow::dimensionless(dot3(ua, ub))],
-                _ => Vec::new(),
-            },
+            (Some(da), Some(db)) => vec![ResidualRow::dimensionless(dot3(da, db))],
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
@@ -651,15 +646,11 @@ fn residual_dispatch(
         "fasten" => coincident_residual(a, b),
         "distance" => distance_residual(a, b, scalar),
         "angle" => match (dir_of(a), dir_of(b), scalar) {
-            // `dot(da, db)` is the cosine of the angle between the operands only for
-            // unit operands, which every `Direction` `dir_of` reads is; `unit3` keeps
-            // the convention of the `perpendicular` arm above.
-            (Some(da), Some(db), Some(theta)) => match (unit3(da), unit3(db)) {
-                (Some(ua), Some(ub)) => {
-                    vec![ResidualRow::dimensionless(dot3(ua, ub) - theta.cos())]
-                }
-                _ => Vec::new(),
-            },
+            // `dot(da, db)` is the cosine of the angle between the operands because
+            // `dir_of` reads only unit `Direction`s.
+            (Some(da), Some(db), Some(theta)) => {
+                vec![ResidualRow::dimensionless(dot3(da, db) - theta.cos())]
+            }
             _ => Vec::new(),
         },
         "offset" => offset_residual(a, b, scalar),
@@ -886,20 +877,17 @@ fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
 /// not tell parallel from antiparallel. The unit-difference form keeps the same codim:
 /// `â` rides a unit sphere, so its Jacobian w.r.t. the Frame rotation has rank 2 at
 /// EVERY config (the third component carries only the sense/radial information, whose
-/// gradient is degenerate at the aligned solution). A degenerate (zero-length) operand
-/// has no defined direction ⇒ no residual rows.
+/// gradient is degenerate at the aligned solution). `da` and `db` are [`dir_of`]
+/// reads, so they are already unit.
 fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<ResidualRow> {
-    match (unit3(da), unit3(db)) {
-        (Some(ua), Some(ub)) => rows_of(
-            [
-                ua[0] - sign * ub[0],
-                ua[1] - sign * ub[1],
-                ua[2] - sign * ub[2],
-            ],
-            ResidualUnit::Dimensionless,
-        ),
-        _ => Vec::new(),
-    }
+    rows_of(
+        [
+            da[0] - sign * db[0],
+            da[1] - sign * db[1],
+            da[2] - sign * db[2],
+        ],
+        ResidualUnit::Dimensionless,
+    )
 }
 
 /// `coincident(D, D)` dispatched by datum kind (Direction 2 / Point 3 / Plane 3 /
@@ -1153,9 +1141,8 @@ fn tangent_combo(a: &Value, b: &Value) -> Option<TangentCombo> {
 /// which side of the plane the surface rests on and the residual stays
 /// differentiable through zero.
 ///
-/// Direction operands are unit-normalized before the perpendicularity dot, so that
-/// row is scale-free for a non-unit axis direction or plane normal — the same
-/// reason [`direction_alignment_residual`] and the `angle` arm normalize.
+/// The axis direction and plane normal are unit (read through [`axis_parts`] /
+/// [`plane_parts`]), so the perpendicularity row is scale-free.
 ///
 /// Returns no rows when the combo is unsupported or a required radius is absent.
 /// Both are unreachable from `.ri`: `check_relation_arg_types` rejects the operand
@@ -1190,13 +1177,10 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<ResidualRo
             } else {
                 (b, a)
             };
-            let (Some((oa, ua)), Some((op, np)), Some(&r)) =
+            let (Some((oa, uhat)), Some((op, nhat)), Some(&r)) =
                 (axis_parts(axis_v), plane_parts(plane_v), scalars.first())
             else {
                 return Vec::new();
-            };
-            let (Some(uhat), Some(nhat)) = (unit3(ua), unit3(np)) else {
-                return Vec::new(); // a degenerate direction has no defined tangency
             };
             vec![
                 ResidualRow::dimensionless(dot3(uhat, nhat)),
@@ -1209,12 +1193,9 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<ResidualRo
             } else {
                 (b, a)
             };
-            let (Some(c), Some((op, np)), Some(&r)) =
+            let (Some(c), Some((op, nhat)), Some(&r)) =
                 (origin_of(centre_v), plane_parts(plane_v), scalars.first())
             else {
-                return Vec::new();
-            };
-            let Some(nhat) = unit3(np) else {
                 return Vec::new();
             };
             vec![ResidualRow::length(dot3(sub3(c, op), nhat) - r)]
@@ -1670,19 +1651,6 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
-}
-
-/// Normalize a 3-vector to unit length, or `None` if it is degenerately short (no
-/// defined direction). Used by the `angle` residual, which — unlike the
-/// magnitude-invariant dot/projection residuals — compares a dot product directly
-/// against `cos(theta)` and so requires unit operands.
-fn unit3(a: [f64; 3]) -> Option<[f64; 3]> {
-    let n = norm3(a);
-    if n < 1e-12 {
-        None
-    } else {
-        Some(scale3(a, 1.0 / n))
-    }
 }
 
 /// An orthonormal pair spanning the plane perpendicular to unit-ish vector `n`.

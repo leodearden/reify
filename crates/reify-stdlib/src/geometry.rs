@@ -1561,7 +1561,7 @@ fn classify_datum_point(arg_name: &'static str, v: &Value) -> Result<[f64; 3], D
 }
 
 /// Classify a `Value::Plane` operand whose ORIGIN must be a `Point3<Length>`,
-/// returning its origin and normal components.
+/// returning its origin components and its unit normal.
 ///
 /// The whole SHAPE question — the `Plane` variant, the origin triple AND the
 /// `Direction` normal — is read through [`decode_plane`], the SAME decoder the
@@ -1758,9 +1758,10 @@ fn classify_transform_operand_args(
 /// The verdict is reached through [`classify_midplane_args`], the SAME predicate
 /// [`diagnose`]'s `midplane` arm reads; the degeneracy guard is ordered AFTER
 /// it, so a bare-origin call is attributed to its dimension rather than to a
-/// degeneracy. The two NORMALS stay dimension-agnostic (decision D3), the
-/// bisector's normal is a `Value::Direction` minted by [`direction_value`], and
-/// its origin is minted at LENGTH because both inputs now are.
+/// degeneracy. The two input NORMALS are `Value::Direction`s, dimensionless by
+/// type (decision D3); the bisector's normal is a `Value::Direction` minted by
+/// [`direction_value`], and its origin is minted at LENGTH because both inputs
+/// now are.
 fn eval_midplane(args: &[Value]) -> Value {
     let Ok(((oa, na), (ob, nb))) = classify_midplane_args(args) else {
         return Value::Undef;
@@ -2118,8 +2119,8 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   several offend the FIRST in argument order is named, deterministically,
 ///   because the order lives in that one classifier (the
 ///   [`diagnose_bbox_corners`] `min`-before-`max` precedent). `frame_at`'s x/z
-///   and every plane NORMAL stay UNGATED and therefore never named: a unit
-///   vector legitimately has bare components (decision D3). The arity-3
+///   and every plane NORMAL are `Value::Direction`s, dimensionless by type
+///   (decision D3), so they stay UNGATED and are never named. The arity-3
 ///   `offset` — the γ RELATION — is never served, which its classifier enforces
 ///   rather than this list.
 /// - **`affine_from_transform`** / **`transform_inverse`** (exactly 1 arg) — a
@@ -4257,9 +4258,8 @@ mod tests {
     /// It also VERIFIES, rather than re-deriving from the code, the two dimension
     /// claims `make_plane`'s doc makes: the offset's dimension is MIRRORED into
     /// the whole origin triple (a zero offset yields three LENGTH zeros, never
-    /// bare `Real(0.0)`), while the synthesized normal stays DIMENSIONLESS —
-    /// decision D3's scope lock, since a unit vector legitimately has bare
-    /// components.
+    /// bare `Real(0.0)`), while the synthesized normal is a `Value::Direction`,
+    /// dimensionless by type — decision D3's scope lock.
     #[test]
     fn plane_xy_length_zero_mirrors_length_into_origin_and_mints_a_direction_normal() {
         let result = eval_builtin("plane_xy", &[Value::length(0.0)]);
@@ -4477,10 +4477,9 @@ mod tests {
     // datum and exited 0 — the same R11 hole ε shut at `plane_xy` / `axis_x`, one
     // family over (units-length η, task 6591).
     //
-    // DIRECTION / unit-vector operands are NOT gated: `frame_at`'s x/z arrive as
-    // `Value::Direction` (three plain f64 fields — no dimension to gate) and plane
-    // NORMALS keep their dimension-agnostic decode, because a unit vector
-    // legitimately has bare components (decision D3).
+    // DIRECTION operands are NOT gated: `frame_at`'s x/z and every plane NORMAL
+    // arrive as `Value::Direction` (three plain f64 fields — no dimension to
+    // gate), dimensionless by type (decision D3).
 
     /// A `Value::Plane` whose ORIGIN carries `dim`, with the +z `Direction` normal.
     ///
