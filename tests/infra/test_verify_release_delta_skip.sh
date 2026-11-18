@@ -23,6 +23,8 @@
 #   of truth), never hard-coded, so this test cannot drift from
 #   scripts/release-sensitive-crates.txt.
 #   SIGPIPE regression sub-block (task 9911): 1 MiB payloads pin both here-string arms.
+#   no-file-writes sub-block (task 10086): ulimit -f 0 pins both membership arms against
+#   a here-string that cannot be buffered.
 #   grep-failure sub-block (task 10080): a PATH-shimmed grep pins both arms fail-wide.
 #
 # SCENARIO block (step-3): five hermetic `verify.sh --print-plan` scenarios that
@@ -192,6 +194,32 @@ assert "SIGPIPE intersect arm: $_SIGPIPE_PROBE_CRATE on line 1 of a 1 MiB declar
 
 assert "SIGPIPE intersect arm control: a crate absent from the 1 MiB declared set => SKIPPABLE (rc1)" \
     _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
+
+echo ""
+echo "--- UNIT: membership tests need no file writes (task 10086) ---"
+
+# A here-string over the pipe buffer is staged in a temp file. When that write fails, as on a
+# full TMPDIR, bash skips the command and reports status 1, which a test that reads status 1 as
+# "absent" takes for an answer. RLIMIT_FSIZE 0 fails every regular-file write the same way,
+# deterministically; pipes are not subject to it, so release_declared_set's grep|grep|sed
+# capture still works. Ignoring SIGXFSZ turns the failure into an EFBIG write error instead of
+# a killed shell with a core dump (status 153); `ulimit -c 0` keeps a regression from leaving
+# cores behind. The 1 MiB fixtures above are over the pipe buffer, so each arm needs a temp
+# file under the limit. The failing cases expect REQUIRED, which every fail-wide path also
+# returns, so each is paired with a same-payload control that must answer SKIPPABLE.
+_no_file_writes() { ( trap '' XFSZ; ulimit -c 0; ulimit -f 0; "$@" ); }  # CHECK <arg>...
+
+assert "no file writes: ALL followed by 1 MiB of fillers => REQUIRED (rc0)" \
+    _no_file_writes _predicate_requires "ALL$_SIGPIPE_FILLERS"
+
+assert "no file writes: the same 1 MiB without ALL (control) => SKIPPABLE (rc1)" \
+    _no_file_writes _predicate_skips "$_SIGPIPE_FILLERS"
+
+assert "no file writes: $_SIGPIPE_PROBE_CRATE on line 1 of the 1 MiB declared set => REQUIRED (rc0)" \
+    _no_file_writes _predicate_requires "$_SIGPIPE_PROBE_CRATE" "$_SIGPIPE_DECLARED_FILE"
+
+assert "no file writes: a crate absent from the 1 MiB declared set (control) => SKIPPABLE (rc1)" \
+    _no_file_writes _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
 
 echo ""
 echo "--- UNIT: a membership test grep cannot answer fails wide (task 10080) ---"
