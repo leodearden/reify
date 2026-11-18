@@ -113,8 +113,8 @@ describe('App handleSetParameter error handling', () => {
  * genuinely belongs, on the bare-number case below, which is refused and does
  * keep the text.
  *
- * Mocking discipline is unchanged (see the standing rule on the `vi.mock('../bridge')`
- * factory): no conversion to a partial mock, per-test overrides via `vi.mocked`,
+ * Mocking discipline is unchanged (see the standing rules in
+ * bridgeMockCoverage.test.ts): no conversion to a partial mock, per-test overrides via `vi.mocked`,
  * and the `waitFor` on the unit picker stays the synchronization point because
  * the ladder fetch is fire-and-forget.
  */

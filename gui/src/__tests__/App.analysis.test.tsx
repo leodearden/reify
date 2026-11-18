@@ -550,9 +550,9 @@ describe('App buckling mode-shape-frame subscription — failure path (task 6035
     // literal — it would keep reporting green while asserting nothing — and it
     // is already subsumed by case (a): if `onModeShapeFrame` is ever dropped
     // from the `../bridge` mock factory again (the original task-6035 defect,
-    // which emitted this stderr line 148 times in one App.test.tsx run), the
-    // global beforeEach's `mockResolvedValue` throws on `undefined` before any
-    // test in this file runs.
+    // which emitted this stderr line 148 times in one App.test.tsx run),
+    // bridgeMockCoverage.test.ts check (b) names it, and the describe above
+    // fails in its own beforeEach, which configures that mock.
     await withSuppressedRejectionsAndErrorSpy(async () => {
       vi.mocked((bridge as any).onModeShapeFrame).mockRejectedValue(
         new Error('mode-shape channel unavailable'),
@@ -748,9 +748,9 @@ describe('App selective-demand enforcement sync — failure path (task 6045)', (
     // the design decision recorded for this task: an argument-matched
     // assertion is unfalsifiable on a reword of the log literal and is
     // already subsumed by (i) case (a) above, which fails outright if
-    // `syncDemand` is missing from the factory, and (ii) the
-    // global-beforeEach `mockResolvedValue`, which throws before any test in
-    // this file runs if the factory entry is ever dropped again.
+    // `syncDemand` is missing from the factory, and (ii)
+    // bridgeMockCoverage.test.ts check (b), which names it if the factory
+    // entry is ever dropped again.
     await expectNoUnhandledRejections(async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
