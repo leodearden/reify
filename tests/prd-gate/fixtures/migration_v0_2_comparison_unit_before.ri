@@ -1,0 +1,4 @@
+structure def Box {
+    param thickness: Length = 3mm
+    constraint thickness > 0.002
+}
