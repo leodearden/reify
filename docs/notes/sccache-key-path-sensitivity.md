@@ -40,7 +40,8 @@ Source files are hashed by content only. Cargo's `-C metadata` hash is the same 
   (`multiple input files`). With `RUSTC=rustc` in the environment cargo passes the literal `rustc`, which
   sccache recognises, and workspace libraries become cacheable under clippy. In a toy workspace the lint
   output was replayed on a hit, clippy and `cargo check` entries stayed separate, and adding
-  `-- -D warnings` produced a different key. Not adopted in `verify.sh`.
+  `-- -D warnings` produced a different key. Measured on reify it saves about 1.2 CPU-minutes per
+  cold-target verify (37 library units), so it is not adopted in `verify.sh`.
 - C and C++ objects built by `cc` with `-g` carry the working directory in their preprocessed output, so
   a workspace build script's objects miss at a new path.
 
@@ -65,10 +66,14 @@ hashes the member names. Most of the workspace depends on one of those three.
   cold `target/`; keeping the `target/` as well is better still, because cargo then skips the compile
   without asking sccache.
 - **One canonical path for every worktree**, by binding the worktree at a fixed path in a mount namespace.
-  In a toy workspace this gave full hits from two different real paths. The sccache server reads sources
+  Measured on reify on 2026-11-18: a task verify's four build steps from a never-built real path, bound at
+  the canonical path with an empty `target/`, gave 1,150 hits and 0 misses, the same as a same-path build,
+  and the tests of three packages that read files through baked paths passed inside the namespace (a test
+  binary built there fails with a missing-file error when run outside it). The sccache server reads sources
   and writes outputs itself, so it has to run inside the same namespace; servers in different namespaces
   cannot share a local disk cache live, because each only knows the entries present when it started plus
-  its own. Not adopted.
+  its own. From the host, a namespaced process's working directory reads as the canonical path, so
+  anything that identifies a lane's processes by path has to change first. Not adopted.
 
 ## Soundness
 
