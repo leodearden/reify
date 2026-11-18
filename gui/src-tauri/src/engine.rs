@@ -577,15 +577,17 @@ pub struct EngineSession {
     solver_progress_sink: Option<Arc<dyn reify_eval::SolverProgressSink>>,
     /// Error message from the most recent failed hot-reload attempt, or `None`
     /// when no failure is recorded (after construction, after a successful
-    /// `commit_state` cycle, or before any reload has been attempted).
+    /// `commit_state` cycle or a rejected `open_document`, or before any
+    /// reload has been attempted).
     ///
     /// Set by `record_reload_error` at the `commands::update_source_impl`
     /// chokepoint: inside the failing reload's own lock for a compile error,
     /// and in a second acquisition — after `with_engine_lock` has converted it
     /// to `Err` — for a `check()` panic.  Covers both paths uniformly.
     ///
-    /// Cleared in `commit_state` (alongside `compile_failure`) so any
-    /// successful reeval auto-resets staleness.
+    /// Cleared by `reset_document_state` (alongside `compile_failure`), which
+    /// every document change runs, so any successful reeval auto-resets
+    /// staleness.
     ///
     /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
     /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
@@ -631,7 +633,9 @@ pub struct EngineSession {
     /// `Undef` on a no-edit re-render.
     ///
     /// Three invalidation triggers, and only three:
-    /// * `commit_state` — unconditional `clear()` on every recompile;
+    /// * `reset_document_state` — unconditional `clear()` on every document
+    ///   change: every recompile (`commit_state`) and `open_document`'s
+    ///   adoption of a rejected file;
     /// * `sync_demand` — drops entries for entities the frontend no longer
     ///   declares visible. This is where arch §8 ("a pruned realization's cached
     ///   result is never served as Final") is discharged, so every entry reaching
@@ -3215,13 +3219,18 @@ impl EngineSession {
         self.reload(compiled, module_name, content, FilePathUpdate::Preserve)
     }
 
-    /// The one reload pipeline, shared by every whole-file entry point
-    /// (`load_from_source`, `load_file`, `update_source`).
+    /// The reload pipeline of the whole-file entry points that refuse a
+    /// rejected source (`load_from_source`, `load_file`, `update_source`).
     ///
     /// A rejected compile is recorded for the diagnostics panel (see
     /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
     /// nothing else is touched — no check, no commit, no telemetry. An accepted
     /// compile runs [`Self::reload_compiled`], then builds the new state.
+    ///
+    /// [`Self::open_document`] does not come through here: it shares
+    /// [`Self::reload_compiled`] for an accepted source but handles a rejection
+    /// itself, by adopting the file. A step added to either arm here must be
+    /// weighed for `open_document` too.
     fn reload(
         &mut self,
         compiled: Result<CompiledSource, CompileRejection>,
@@ -3303,8 +3312,8 @@ impl EngineSession {
     /// `check()` panic, which `with_engine_lock` converts to `Err` — in a second
     /// acquisition. Covers the compile-error and check-panic paths uniformly.
     ///
-    /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
-    /// the staleness flag.
+    /// Cleared by `reset_document_state` so a subsequent successful reeval
+    /// auto-resets the staleness flag.
     pub fn record_reload_error(&mut self, message: String) {
         self.last_reload_error = Some(message);
     }
@@ -3465,7 +3474,8 @@ impl EngineSession {
         // banner no longer describes the session's source.
         // Mirrors the compile_failure clear immediately above.
         self.last_reload_error = None;
-        // Task #5338: drop the geometry-derived value retention on every recompile.
+        // Task #5338: drop the geometry-derived value retention on every document
+        // change — every recompile, and a rejected open, which compiles nothing.
         //
         // Deliberately UNCONDITIONAL, i.e. not narrowed to `FilePathUpdate::Set`.
         // Clearing here cannot re-open the delta gap, because a recompile also
