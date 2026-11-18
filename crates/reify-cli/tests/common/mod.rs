@@ -102,10 +102,10 @@ pub fn run_with_args(args: &[&str]) -> (ExitStatus, String, String) {
 /// Run `reify <args...>` with the child process's working directory pinned to
 /// `cwd`, returning `(status, stdout, stderr)`.
 ///
-/// The cwd-pinned twin of [`run_with_args`]. Every test module here compiles
-/// into the SAME `harness_cli` binary, so this is the module-shared place for a
-/// cwd-pinned spawn — a per-module copy would be duplication rather than
-/// isolation.
+/// The cwd-pinned twin of [`run_with_args`]. Every test module that consumes
+/// this file reaches it through its harness's single `mod common;`, so this is
+/// the module-shared place for a cwd-pinned spawn — a per-module copy would be
+/// duplication rather than isolation.
 ///
 /// Pinning matters whenever a test asserts on DESIGN-FILE-relative artifact
 /// paths (io-export B7): it keeps every artifact inside the caller's tempdir and

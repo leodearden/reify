@@ -14,9 +14,9 @@
 //! THE SEAM is a rule you can check, not a theme you have to judge: a test belongs here iff
 //! it consumes NONE of the shared `tests/common/` helpers. `grep -rn 'common::'
 //! crates/reify-cli/tests/harness_cli_surface/` is empty today and must stay empty. That
-//! rule is also what the split buys — this root deliberately has NO `mod common;`, so the
-//! 312-line external include stays charged to `harness_cli` alone instead of being compiled
-//! into a second unit and counted twice under the C2 cap (measured: `external_files = 0`).
+//! rule is also what the split buys — this root deliberately has NO `mod common;`, so
+//! `tests/common/` is never compiled into this unit and never charged to it under the C2 cap
+//! (measured: `external_files = 0`).
 //!
 //! What the rule selects, descriptively: the tests that exercise the `reify` executable's
 //! external surface — how it is linked, what argv and help output it accepts and prints, and
