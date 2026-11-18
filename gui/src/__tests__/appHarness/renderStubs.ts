@@ -84,13 +84,13 @@ export function FileTabsStub(_props: unknown): HTMLElement {
   return stubElement('file-tabs', 'FileTabs Mock');
 }
 
-export const viewportStub = () =>
+export const viewportStubModule = () =>
   ({
     Viewport: ViewportStub,
     DualViewport: DualViewportStub,
     MultiViewport: MultiViewportStub,
   }) satisfies Partial<Record<keyof typeof ViewportModule, unknown>>;
 
-export const editorStub = () => ({ Editor: EditorStub }) satisfies Partial<Record<keyof typeof EditorModule, unknown>>;
+export const editorStubModule = () => ({ Editor: EditorStub }) satisfies Partial<Record<keyof typeof EditorModule, unknown>>;
 
-export const fileTabsStub = () => ({ FileTabs: FileTabsStub }) satisfies Partial<Record<keyof typeof FileTabsModule, unknown>>;
+export const fileTabsStubModule = () => ({ FileTabs: FileTabsStub }) satisfies Partial<Record<keyof typeof FileTabsModule, unknown>>;

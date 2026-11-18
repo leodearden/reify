@@ -125,22 +125,3 @@ export const viewPersistenceMock = (actual: typeof ViewPersistence) => ({
   ...actual,
   ...mocksFrom(VIEW_PERSISTENCE_DEFAULTS),
 });
-
-const moduleMocksInstall = (specifier: string, factory: string) =>
-  `vi.mock('${specifier}', async () => (await import('./appHarness/moduleMocks')).${factory}());`;
-const renderStubsInstall = (specifier: string, factory: string) =>
-  `vi.mock('${specifier}', async () => (await import('./appHarness/renderStubs')).${factory}());`;
-
-/** The nine lines a test file in gui/src/__tests__/ writes to install the harness, keyed by mocked specifier. */
-export const APP_HARNESS_INSTALL_LINES = {
-  '@tauri-apps/api/core': moduleMocksInstall('@tauri-apps/api/core', 'tauriCoreMock'),
-  '@tauri-apps/api/event': moduleMocksInstall('@tauri-apps/api/event', 'tauriEventMock'),
-  '../viewport': renderStubsInstall('../viewport', 'viewportStub'),
-  '../editor/Editor': renderStubsInstall('../editor/Editor', 'editorStub'),
-  '../editor/FileTabs': renderStubsInstall('../editor/FileTabs', 'fileTabsStub'),
-  '../bridge': moduleMocksInstall('../bridge', 'appBridgeMock'),
-  '../debug': moduleMocksInstall('../debug', 'debugMock'),
-  '../stores/sidecarPersistence': moduleMocksInstall('../stores/sidecarPersistence', 'sidecarPersistenceMock'),
-  '../stores/viewPersistence':
-    "vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./appHarness/moduleMocks')).viewPersistenceMock(await importOriginal()));",
-} as const;

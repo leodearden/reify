@@ -6,9 +6,9 @@ import { makeGuiState } from './test_utils/guiState';
 
 vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
 vi.mock('@tauri-apps/api/event', async () => (await import('./appHarness/moduleMocks')).tauriEventMock());
-vi.mock('../viewport', async () => (await import('./appHarness/renderStubs')).viewportStub());
-vi.mock('../editor/Editor', async () => (await import('./appHarness/renderStubs')).editorStub());
-vi.mock('../editor/FileTabs', async () => (await import('./appHarness/renderStubs')).fileTabsStub());
+vi.mock('../viewport', async () => (await import('./appHarness/renderStubs')).viewportStubModule());
+vi.mock('../editor/Editor', async () => (await import('./appHarness/renderStubs')).editorStubModule());
+vi.mock('../editor/FileTabs', async () => (await import('./appHarness/renderStubs')).fileTabsStubModule());
 vi.mock('../bridge', async () => (await import('./appHarness/moduleMocks')).appBridgeMock());
 vi.mock('../debug', async () => (await import('./appHarness/moduleMocks')).debugMock());
 vi.mock('../stores/sidecarPersistence', async () => (await import('./appHarness/moduleMocks')).sidecarPersistenceMock());

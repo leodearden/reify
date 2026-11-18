@@ -1,34 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@solidjs/testing-library';
+import { readFileSync } from 'node:fs';
 
 vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
 vi.mock('@tauri-apps/api/event', async () => (await import('./appHarness/moduleMocks')).tauriEventMock());
-vi.mock('../viewport', async () => (await import('./appHarness/renderStubs')).viewportStub());
-vi.mock('../editor/Editor', async () => (await import('./appHarness/renderStubs')).editorStub());
-vi.mock('../editor/FileTabs', async () => (await import('./appHarness/renderStubs')).fileTabsStub());
+vi.mock('../viewport', async () => (await import('./appHarness/renderStubs')).viewportStubModule());
+vi.mock('../editor/Editor', async () => (await import('./appHarness/renderStubs')).editorStubModule());
+vi.mock('../editor/FileTabs', async () => (await import('./appHarness/renderStubs')).fileTabsStubModule());
 vi.mock('../bridge', async () => (await import('./appHarness/moduleMocks')).appBridgeMock());
 vi.mock('../debug', async () => (await import('./appHarness/moduleMocks')).debugMock());
 vi.mock('../stores/sidecarPersistence', async () => (await import('./appHarness/moduleMocks')).sidecarPersistenceMock());
 vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./appHarness/moduleMocks')).viewPersistenceMock(await importOriginal()));
 
-import * as tauriCore from '@tauri-apps/api/core';
-import * as tauriEvent from '@tauri-apps/api/event';
-import * as bridge from '../bridge';
-import * as debug from '../debug';
-import * as sidecarPersistence from '../stores/sidecarPersistence';
-import * as viewPersistence from '../stores/viewPersistence';
 import { Viewport, DualViewport, MultiViewport } from '../viewport';
 import { Editor } from '../editor/Editor';
 import { FileTabs } from '../editor/FileTabs';
+import { APP_BRIDGE_DEFAULTS } from './appHarness/moduleMocks';
+import { APP_HARNESS_INSTALL_LINES } from './appHarness/installLines';
 import {
-  APP_BRIDGE_DEFAULTS,
-  DEBUG_DEFAULTS,
-  SIDECAR_PERSISTENCE_DEFAULTS,
-  TAURI_CORE_DEFAULTS,
-  TAURI_EVENT_DEFAULTS,
-  VIEW_PERSISTENCE_DEFAULTS,
-} from './appHarness/moduleMocks';
-import { assertMockedModule, primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+  PRIMED_MODULES,
+  assertEveryInstallBound,
+  assertMockedModule,
+  primeAppHarness,
+  renderAndWaitForReady,
+} from './appHarness/harness';
 import * as stubs from './appHarness/renderStubs';
 
 beforeEach(primeAppHarness);
@@ -36,22 +31,14 @@ beforeEach(primeAppHarness);
 const SENTINEL = Symbol('persistent override');
 const ONCE = Symbol('queued once');
 
-const MOCKED_MODULES: ReadonlyArray<{ specifier: string; namespace: object; defaults: Record<string, unknown> }> = [
-  { specifier: '../bridge', namespace: bridge, defaults: APP_BRIDGE_DEFAULTS },
-  { specifier: '../stores/sidecarPersistence', namespace: sidecarPersistence, defaults: SIDECAR_PERSISTENCE_DEFAULTS },
-  { specifier: '../stores/viewPersistence', namespace: viewPersistence, defaults: VIEW_PERSISTENCE_DEFAULTS },
-  { specifier: '../debug', namespace: debug, defaults: DEBUG_DEFAULTS },
-  { specifier: '@tauri-apps/api/core', namespace: tauriCore, defaults: TAURI_CORE_DEFAULTS },
-  { specifier: '@tauri-apps/api/event', namespace: tauriEvent, defaults: TAURI_EVENT_DEFAULTS },
-];
-
-const mockedCases = MOCKED_MODULES.flatMap(({ specifier, namespace, defaults }) =>
+const mockedCases = PRIMED_MODULES.flatMap(({ specifier, namespace, defaults }) =>
   Object.keys(defaults).map((name) => ({ specifier, name, namespace, defaults })),
 );
 
 describe('primeAppHarness resets every harness-mocked export to its table default', () => {
   it('covers a non-empty set of exports, the bridge table included', () => {
     expect(Object.keys(APP_BRIDGE_DEFAULTS).length).toBeGreaterThanOrEqual(55);
+    expect(PRIMED_MODULES.map(({ specifier }) => specifier)).toContain('../bridge');
     expect(mockedCases.length).toBeGreaterThan(Object.keys(APP_BRIDGE_DEFAULTS).length);
   });
 
@@ -193,5 +180,23 @@ describe('assertMockedModule', () => {
       exactKeys: true,
     };
     expect(() => assertMockedModule(descriptor)).not.toThrow();
+  });
+});
+
+describe('assertEveryInstallBound', () => {
+  it('names an install specifier that no harness table binds', () => {
+    const check = () => assertEveryInstallBound(['../bridge', '../newlyMocked'], ['../bridge']);
+    expect(check).toThrow(/'\.\.\/newlyMocked'/);
+    expect(check).toThrow(/APP_HARNESS_INSTALL_LINES/);
+  });
+
+  it('accepts install specifiers that are all bound', () => {
+    expect(() => assertEveryInstallBound(['../bridge'], ['../bridge', '../viewport'])).not.toThrow();
+  });
+
+  it('quotes, as each install line, the exact line this file is installed under', () => {
+    const ownSource = readFileSync(__filename, 'utf-8');
+    const notWritten = Object.values(APP_HARNESS_INSTALL_LINES).filter((line) => !ownSource.includes(line));
+    expect(notWritten).toStrictEqual([]);
   });
 });

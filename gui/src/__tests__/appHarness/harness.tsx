@@ -18,7 +18,6 @@ import type { GuiState } from '../../types';
 import { makeGuiState } from '../test_utils/guiState';
 import {
   APP_BRIDGE_DEFAULTS,
-  APP_HARNESS_INSTALL_LINES,
   DEBUG_DEFAULTS,
   SIDECAR_PERSISTENCE_DEFAULTS,
   TAURI_CORE_DEFAULTS,
@@ -26,14 +25,8 @@ import {
   VIEW_PERSISTENCE_DEFAULTS,
   type MockImplementation,
 } from './moduleMocks';
-import {
-  DualViewportStub,
-  EditorStub,
-  FileTabsStub,
-  MultiViewportStub,
-  ViewportStub,
-  resetRenderStubCaptures,
-} from './renderStubs';
+import { editorStubModule, fileTabsStubModule, resetRenderStubCaptures, viewportStubModule } from './renderStubs';
+import { APP_HARNESS_INSTALL_LINES, type HarnessSpecifier } from './installLines';
 
 export interface PrimedModule {
   specifier: string;
@@ -44,7 +37,7 @@ export interface PrimedModule {
   exactKeys: boolean;
 }
 
-const PRIMED_MODULES: readonly PrimedModule[] = [
+export const PRIMED_MODULES: readonly PrimedModule[] = [
   primed('../bridge', bridge, APP_BRIDGE_DEFAULTS, true),
   primed('../stores/sidecarPersistence', sidecarPersistence, SIDECAR_PERSISTENCE_DEFAULTS, false),
   primed('../stores/viewPersistence', viewPersistence, VIEW_PERSISTENCE_DEFAULTS, false),
@@ -54,7 +47,7 @@ const PRIMED_MODULES: readonly PrimedModule[] = [
 ];
 
 function primed(
-  specifier: keyof typeof APP_HARNESS_INSTALL_LINES,
+  specifier: HarnessSpecifier,
   namespace: object,
   defaults: PrimedModule['defaults'],
   exactKeys: boolean,
@@ -62,37 +55,53 @@ function primed(
   return { specifier, namespace, defaults, installLine: APP_HARNESS_INSTALL_LINES[specifier], exactKeys };
 }
 
-const RENDER_STUB_MODULES = [
-  {
-    specifier: '../viewport',
-    namespace: viewport,
-    stubs: { Viewport: ViewportStub, DualViewport: DualViewportStub, MultiViewport: MultiViewportStub },
-  },
-  { specifier: '../editor/Editor', namespace: editor, stubs: { Editor: EditorStub } },
-  { specifier: '../editor/FileTabs', namespace: fileTabs, stubs: { FileTabs: FileTabsStub } },
-] as const;
+const RENDER_STUB_MODULES: ReadonlyArray<{ specifier: HarnessSpecifier; namespace: object; stubs: object }> = [
+  { specifier: '../viewport', namespace: viewport, stubs: viewportStubModule() },
+  { specifier: '../editor/Editor', namespace: editor, stubs: editorStubModule() },
+  { specifier: '../editor/FileTabs', namespace: fileTabs, stubs: fileTabsStubModule() },
+];
 
-function harnessInvariantError(specifier: string, invariant: string, offending: string[], installLine: string): Error {
+function harnessInvariantError(subject: string, invariant: string, offending: string[], remedy: string): Error {
   return new Error(
-    `appHarness: '${specifier}' breaks the harness invariant "${invariant}" for ` +
-      `${offending.map((name) => `'${name}'`).join(', ')}. The importing test file must install ` +
-      `the shared mock for it, and no other factory:\n  ${installLine}`,
+    `appHarness: '${subject}' breaks the harness invariant "${invariant}" for ` +
+      `${offending.map((name) => `'${name}'`).join(', ')}. ${remedy}`,
   );
+}
+
+const installRemedy = (installLine: string) =>
+  `The importing test file must install the shared mock for it, and no other factory:\n  ${installLine}`;
+
+/** Every install line must name a module this file checks at import and primes before each test. */
+export function assertEveryInstallBound(installSpecifiers: readonly string[], boundSpecifiers: readonly string[]): void {
+  const unbound = installSpecifiers.filter((specifier) => !boundSpecifiers.includes(specifier));
+  if (unbound.length > 0) {
+    throw harnessInvariantError(
+      'APP_HARNESS_INSTALL_LINES',
+      'each install line has a PRIMED_MODULES or RENDER_STUB_MODULES entry in harness.tsx',
+      unbound,
+      'Add an entry for each, so its mock is checked at import and reset before every test.',
+    );
+  }
 }
 
 export function assertMockedModule(entry: PrimedModule): void {
   const exports = entry.namespace as Record<string, unknown>;
   const notMocked = Object.keys(entry.defaults).filter((name) => !vi.isMockFunction(exports[name]));
   if (notMocked.length > 0) {
-    throw harnessInvariantError(entry.specifier, 'every table default is a vi mock export', notMocked, entry.installLine);
+    throw harnessInvariantError(entry.specifier, 'every table default is a vi mock export', notMocked, installRemedy(entry.installLine));
   }
   if (entry.exactKeys) {
     const untabled = Object.keys(exports).filter((name) => !Object.hasOwn(entry.defaults, name));
     if (untabled.length > 0) {
-      throw harnessInvariantError(entry.specifier, 'its exports are exactly its table keys', untabled, entry.installLine);
+      throw harnessInvariantError(entry.specifier, 'its exports are exactly its table keys', untabled, installRemedy(entry.installLine));
     }
   }
 }
+
+assertEveryInstallBound(
+  Object.keys(APP_HARNESS_INSTALL_LINES),
+  [...PRIMED_MODULES, ...RENDER_STUB_MODULES].map(({ specifier }) => specifier),
+);
 
 for (const entry of PRIMED_MODULES) assertMockedModule(entry);
 
@@ -102,7 +111,12 @@ for (const { specifier, namespace, stubs } of RENDER_STUB_MODULES) {
     .filter(([name, stub]) => exports[name] !== stub)
     .map(([name]) => name);
   if (notStubbed.length > 0) {
-    throw harnessInvariantError(specifier, 'each export is its renderStubs component', notStubbed, APP_HARNESS_INSTALL_LINES[specifier]);
+    throw harnessInvariantError(
+      specifier,
+      'each export is its renderStubs component',
+      notStubbed,
+      installRemedy(APP_HARNESS_INSTALL_LINES[specifier]),
+    );
   }
 }
 
@@ -122,7 +136,12 @@ export function primeAppHarness(): void {
     for (const [name, impl] of Object.entries(entry.defaults)) {
       const exported = exports[name];
       if (!vi.isMockFunction(exported)) {
-        throw harnessInvariantError(entry.specifier, 'every table default is a vi mock export', [name], entry.installLine);
+        throw harnessInvariantError(
+          entry.specifier,
+          'every table default is a vi mock export',
+          [name],
+          installRemedy(entry.installLine),
+        );
       }
       exported.mockReset().mockImplementation(impl);
     }

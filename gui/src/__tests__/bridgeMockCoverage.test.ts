@@ -83,7 +83,8 @@ import { dirname, join, relative } from 'node:path';
 // REAL module (the three mocks above only stub its Tauri dependencies).
 import * as bridge from '../bridge';
 
-import { APP_BRIDGE_DEFAULTS, APP_HARNESS_INSTALL_LINES } from './appHarness/moduleMocks';
+import { APP_BRIDGE_DEFAULTS } from './appHarness/moduleMocks';
+import { APP_HARNESS_INSTALL_LINES } from './appHarness/installLines';
 import { missingFactoryKeys, staleOmissions } from './bridgeMockContract';
 
 /**
