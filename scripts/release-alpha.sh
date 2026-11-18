@@ -36,7 +36,7 @@ fail() { echo "release-alpha: $*" >&2; exit 2; }
 require_tag_absent_or_at_head() {
     git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || return 0
     local at
-    at="$(git rev-parse "refs/tags/$TAG^{commit}")"
+    at="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || echo "no commit")"
     [ "$at" = "$HEAD_SHA" ] || fail "tag $TAG exists and does not point at HEAD $HEAD_SHA (it points at $at)"
 }
 

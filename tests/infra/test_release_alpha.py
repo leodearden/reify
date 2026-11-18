@@ -282,16 +282,23 @@ class Preflight(ReleaseCase):
         self.assert_refused(self.fx.run_release(), "test_bundle_clean_install.py missing")
         self.assertEqual(self.fx.proof_calls(), [])
 
-    def test_a_tag_not_at_head_is_refused_before_the_build_and_the_proof(self):
-        self.fx.git("tag", "-a", TAG, "-m", TAG)
-        self.fx.git("commit", "-q", "--allow-empty", "-m", "after the tag")
-        proc = self.fx.run_release()
+    def assert_tag_refused_before_the_build_and_the_proof(self, proc):
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn(f"tag {TAG} exists and does not point at HEAD", proc.stderr)
         self.assertNotIn(BUILD_BUNDLE_BANNER, proc.stderr)
         self.assertEqual(self.fx.proof_calls(), [])
         self.assertIsNone(self.fx.remote_tag_type())
         self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
+
+    def test_a_tag_not_at_head_is_refused_before_the_build_and_the_proof(self):
+        self.fx.git("tag", "-a", TAG, "-m", TAG)
+        self.fx.git("commit", "-q", "--allow-empty", "-m", "after the tag")
+        self.assert_tag_refused_before_the_build_and_the_proof(self.fx.run_release())
+
+    def test_a_tag_that_names_no_commit_is_refused_before_the_build_and_the_proof(self):
+        note_blob = self.fx.git("rev-parse", f"HEAD:{NOTE}")
+        self.fx.git("tag", "-a", TAG, "-m", TAG, note_blob)
+        self.assert_tag_refused_before_the_build_and_the_proof(self.fx.run_release())
 
 
 class Release(ReleaseCase):
