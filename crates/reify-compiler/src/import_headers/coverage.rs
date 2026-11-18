@@ -14,9 +14,9 @@ use reify_core::ModulePath;
 use crate::cfg::CfgSet;
 use crate::module_dag::import_cfg_satisfied;
 
-/// Every `import` `parsed` declares whose `#cfg` predicates `cfg` satisfies,
-/// in declaration order, with the module it names.
-pub(crate) fn imports<'p>(
+/// Every `import` `parsed` declares that is in effect under `cfg` (its `#cfg`
+/// predicates are satisfied), in declaration order, with the module it names.
+pub(crate) fn in_effect<'p>(
     parsed: &'p ParsedModule,
     cfg: &CfgSet,
 ) -> impl Iterator<Item = (ModulePath, &'p ImportKind)> {
@@ -26,7 +26,7 @@ pub(crate) fn imports<'p>(
 }
 
 /// The module of every `import` `parsed` declares whose `#cfg` predicates
-/// `cfg` does not satisfy, in declaration order: the imports [`imports`]
+/// `cfg` does not satisfy, in declaration order: the imports [`in_effect`]
 /// leaves out.
 pub(crate) fn gated_off(parsed: &ParsedModule, cfg: &CfgSet) -> impl Iterator<Item = ModulePath> {
     declared(parsed)
@@ -72,7 +72,7 @@ enum Coverage<'p> {
 impl<'p> ImportCoverage<'p> {
     pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
         let mut by_module = HashMap::new();
-        for (module, kind) in imports(parsed, cfg) {
+        for (module, kind) in in_effect(parsed, cfg) {
             match kind.binding() {
                 ImportBinding::Namespace { .. } => {
                     by_module.insert(module, Coverage::WholeSurface);

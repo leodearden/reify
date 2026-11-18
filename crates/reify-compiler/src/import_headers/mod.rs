@@ -218,7 +218,7 @@ pub fn derive_std_imports<'u>(
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
 pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
-    coverage::imports(parsed, cfg)
+    coverage::in_effect(parsed, cfg)
         .map(|(module, _)| module)
         .collect()
 }
