@@ -508,6 +508,11 @@ class ReferenceImage(unittest.TestCase):
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS + ["libfuse2t64"])))
 
 
+def _write_fake_command(path, body):
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
 class ProbeScript(unittest.TestCase):
     """The real generated probe script, run under `sh` with recording fakes for
     ldd and patchelf, so the commands the container would run are asserted
@@ -521,11 +526,8 @@ class ProbeScript(unittest.TestCase):
         self.fakes.mkdir()
         self.log = Path(tmp.name) / "commands.log"
         for command in ("ldd", "patchelf"):
-            fake = self.fakes / command
-            fake.write_text(
-                '#!/bin/sh\necho "$(basename "$0") $*" >> "$FAKE_LOG"\n',
-                encoding="utf-8")
-            fake.chmod(0o755)
+            _write_fake_command(
+                self.fakes / command, 'echo "$(basename "$0") $*" >> "$FAKE_LOG"')
 
     def _commands_run(self, name, *, bind_symbols):
         self.log.write_text("", encoding="utf-8")
@@ -609,6 +611,82 @@ class CommandLineRefusals(unittest.TestCase):
         code, stderr = self._main("{")
         self.assertEqual(code, 1)
         self.assertIn(f"{self.conf} is not JSON", stderr)
+
+
+FAKE_HOST_LDD_BODY = (
+    r"""printf '\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f0a10000000)\n'""")
+
+# `docker image inspect` succeeds (the reference image exists). `docker run ...
+# sh -c SCRIPT` plays the container: it logs which kind of probe the script is,
+# and only a script that runs `ldd -r` is answered with an undefined symbol, and
+# only when FAKE_UNDEFINED names the referring object.
+FAKE_DOCKER_BODY = r"""case "$1" in
+image) exit 0 ;;
+run)
+  for script; do :; done
+  echo "/probe/usr/bin/reify:"
+  case "$script" in
+  *'ldd -r '*)
+    echo bind >> "$FAKE_LOG"
+    [ -z "${FAKE_UNDEFINED:-}" ] ||
+      printf 'undefined symbol: libraw_open_buffer\t(%s)\n' "$FAKE_UNDEFINED" ;;
+  *) echo plain >> "$FAKE_LOG" ;;
+  esac ;;
+*) echo "fake docker: unexpected: $*" >&2; exit 2 ;;
+esac"""
+
+
+class CommandLineDerivation(unittest.TestCase):
+    """bc as scripts/build-bundle.sh runs it, with a fake docker and ldd on PATH.
+    These hold the whole chain from the command line to the command the
+    container runs: a bind probe that never passed `-r` would fail them."""
+
+    REFERRER = "/probe/usr/lib/Reify/lib/libfreeimage.so.3"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.fakes = self.tmp / "fakes"
+        self.fakes.mkdir()
+        self.log = self.tmp / "probes.log"
+        self.stage = self.tmp / "stage"
+        self.overlay = self.tmp / "overlay.json"
+        self.conf = self.tmp / "tauri.conf.json"
+        self.conf.write_text(json.dumps(VALID_CONF), encoding="utf-8")
+        for binary in ("reify-gui", "reify"):
+            (self.tmp / binary).write_bytes(b"")
+        _write_fake_command(self.fakes / "ldd", FAKE_HOST_LDD_BODY)
+        _write_fake_command(self.fakes / "docker", FAKE_DOCKER_BODY)
+
+    def _derive(self, **fake_env):
+        self.log.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(TOOL_PATH),
+             "--tauri-conf", str(self.conf), "--stage", str(self.stage),
+             "--overlay", str(self.overlay),
+             "--main-binary", f"reify-gui={self.tmp / 'reify-gui'}",
+             "--extra-binary", f"reify={self.tmp / 'reify'}"],
+            env={"PATH": f"{self.fakes}:/usr/bin:/bin", "FAKE_LOG": str(self.log),
+                 **fake_env},
+            capture_output=True, text=True, check=False)
+        return proc, self.log.read_text(encoding="utf-8").split()
+
+    def test_an_undefined_symbol_only_ldd_r_reports_fails_the_derivation(self):
+        proc, probes = self._derive(FAKE_UNDEFINED=self.REFERRER)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("libraw_open_buffer", proc.stderr)
+        self.assertIn(self.REFERRER, proc.stderr)
+        self.assertEqual(probes, ["plain", "bind"])
+        self.assertFalse(self.overlay.exists())
+
+    def test_a_converged_layout_that_binds_every_symbol_writes_the_overlay(self):
+        proc, probes = self._derive()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(probes, ["plain", "bind"])
+        self.assertTrue(self.overlay.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
