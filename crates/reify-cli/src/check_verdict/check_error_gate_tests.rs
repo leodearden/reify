@@ -181,7 +181,7 @@ fn retired_allowlist_families_now_gate() {
 /// shape.  `ArgTypeMismatch` is guarded whole because a `Code` matcher cannot
 /// be scoped to relate call sites.  Code-less relate Errors (the conflict
 /// family) can only be swallowed by a `MessageContains` entry and are pinned
-/// end to end by `crates/reify-cli/tests/harness_cli/cli_check_relate_family_exit.rs`
+/// end to end by `crates/reify-cli/tests/harness_cli_check/cli_check_relate_family_exit.rs`
 /// `check_exits_nonzero_on_engine_phase_relate_conflict`.
 #[test]
 fn relate_family_errors_are_never_excused() {
