@@ -2,9 +2,12 @@
 //! `ArgTypeMismatch`, a Direction-typed value checks clean (PRD
 //! `docs/prds/v0_6/direction-typing.md` B23 / C7, task σ #9636).
 
-use reify_core::direction::DIRECTION_MIGRATION_HINT;
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
+
+/// The user-visible fix hint, hard-coded on purpose: this file is the DRIFT
+/// PIN, so reading `DIRECTION_MIGRATION_HINT` here would make it a tautology.
+const DIRECTION_HINT: &str = "write dir(x, y, z)";
 
 fn frame_at_source(body: &str) -> String {
     format!("structure def FrameAtX {{\n    let o = point3(0mm, 0mm, 0mm)\n    {body}\n}}\n")
@@ -30,7 +33,7 @@ fn vector_axes_are_two_arg_type_mismatches_naming_direction() {
         );
         assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
         assert!(
-            diagnostic.message.ends_with(DIRECTION_MIGRATION_HINT),
+            diagnostic.message.ends_with(DIRECTION_HINT),
             "a Vector3 axis must carry the dir(...) fix hint: {diagnostic:?}"
         );
     }

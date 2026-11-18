@@ -415,8 +415,8 @@ const fn direction_arg(index: usize, name: &'static str) -> CheckableArg {
     }
 }
 
-/// Return the checkable dimensioned-scalar argument slots for a named builtin
-/// call of a given arity.
+/// Return the checkable argument slots for a named builtin call of a given
+/// arity.
 ///
 /// Returns an empty slice for:
 /// - Unrecognized names.
@@ -1529,10 +1529,11 @@ fn direction_mismatch_hint(actual: &Type) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::units::{
-        AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES, DYNAMICS_CONSTRUCTOR_NAMES,
-        DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES, GEOMETRY_FUNCTION_NAMES,
-        GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES, GEOMETRY_QUERY_NAMES,
-        GEOMETRY_TOPOLOGY_SELECTOR_NAMES, TOLERANCING_MARKER_NAMES,
+        AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
+        DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
+        GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
+        GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, SELECTOR_COMPOSITION_NAMES,
+        TOLERANCING_MARKER_NAMES, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES,
     };
     use reify_core::direction::DIRECTION_MIGRATION_HINT;
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
@@ -1564,6 +1565,9 @@ mod tests {
         FEA_ENVELOPE_NAMES,
         FIELD_OP_NAMES,
         DATUM_CONSTRUCTOR_NAMES,
+        SELECTOR_COMPOSITION_NAMES,
+        AFFINE_ALGEBRA_NAMES,
+        WHOLE_HANDLE_GEOMETRY_QUERY_NAMES,
     ];
 
     /// [`builtin_arg_slots`] keys that belong to NO [`BUILTIN_NAME_FAMILIES`]
@@ -3193,7 +3197,7 @@ mod tests {
     }
 
     #[test]
-    fn direction_slot_rejects_non_vector_kinds_without_hint() {
+    fn direction_slot_rejects_every_non_vector3_kind_without_hint() {
         for ty in [
             Type::String,
             Type::Int,
@@ -3201,6 +3205,14 @@ mod tests {
             Type::ScalarParam("Q".into()),
             Type::Axis,
             Type::Plane,
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Int),
+            },
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::length()),
+            },
         ] {
             let diags = frame_at_diagnostics(ty.clone(), Type::Direction);
             assert_eq!(
@@ -4414,21 +4426,24 @@ mod tests {
     /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
     /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
     /// finding — and NOT task 4493/3994's selector family, nor task #6082's two
-    /// Euler builtins. Nobody should read the guard as broader than that. The
-    /// nine selectors plus `generate` are also the names least exposed to the
-    /// hazard: none is overloaded today, and a value-form overload is a
-    /// producer-side notion (task 5351).
+    /// Euler builtins, nor direction-typing σ's `frame_at`. Nobody should read
+    /// the guard as broader than that. The nine selectors plus `generate` are
+    /// also the names least exposed to the hazard: none is overloaded today,
+    /// and a value-form overload is a producer-side notion (task 5351).
     ///
-    /// The two Euler builtins are unobservable for a DIFFERENT reason worth
-    /// stating, because it is not the selectors': they have no lowering arm at
-    /// all. Both are pure eval-builtins dispatched through
+    /// The two Euler builtins and `frame_at` are unobservable for a DIFFERENT
+    /// reason worth stating, because it is not the selectors': they have no
+    /// lowering arm at all. All three are pure eval-builtins dispatched through
     /// `reify_stdlib::eval_builtin`, which answers a wrong-arity call with
     /// `Value::Undef` at EVAL time rather than a compile diagnostic — so there
-    /// is no arity check for the probe to observe. They are also the one pair
-    /// here that does NOT rely on this exemption for its safety: both arms carry
-    /// an explicit `if arg_count ==` guard (4 and 2), which is the stronger fix
-    /// the agnostic-arm rule asks for, so their slot indices cannot fire on the
-    /// wrong argument even if a future overload appears.
+    /// is no arity check for the probe to observe. The Euler pair is the one
+    /// pair here that does NOT rely on this exemption for its safety: both arms
+    /// carry an explicit `if arg_count ==` guard (4 and 2), which is the
+    /// stronger fix the agnostic-arm rule asks for, so their slot indices cannot
+    /// fire on the wrong argument even if a future overload appears. `frame_at`
+    /// is the unguarded eval-only entry: single-form, so its arm carries no
+    /// guard, and it DOES rely on this exemption — an overload must add the
+    /// guard in the same change.
     const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
         // The nine geometry topology selectors (task 4493).
         "center_of_mass",
@@ -4453,8 +4468,10 @@ mod tests {
         // arm, so the probe sees the same full-window signature as the Euler
         // pair. Unlike that pair its arm is UNGUARDED (single-form); a future
         // overload must land an `if arg_count ==` guard in the same change,
-        // since this ledger cannot observe one. Eval-side single-arity pin:
-        // reify-stdlib geometry.rs's `frame_at_wrong_arity_undef`.
+        // since this ledger cannot observe one. Nothing pins the single form:
+        // reify-stdlib geometry.rs's `frame_at_wrong_arity_undef` checks only
+        // that a 1-arg call is Undef, and stays green if a 2- or 4-arg
+        // overload lands.
         "frame_at",
     ];
 
