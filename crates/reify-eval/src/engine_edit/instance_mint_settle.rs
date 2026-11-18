@@ -13,7 +13,7 @@ use crate::cache::NodeId;
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result_at};
 use crate::deps::{ReverseDependencyIndex, extract_dependency_trace};
 use crate::eval_ctx_with_meta;
-use crate::geometry_ops::symbolic_cell_mint::InstanceMintScope;
+use crate::geometry_ops::symbolic_cell_mint::{InstanceMint, InstanceMintScope};
 use crate::graph::EvaluationGraph;
 use crate::journal::TraceSource;
 
@@ -67,11 +67,11 @@ impl EditSourceWalkCtx<'_> {
             meta_map: self.meta_map,
         };
         match instance_scope.mint_undef_instance_cell(vcid, kind, expr) {
-            Some(minted) => WalkCellValue {
+            InstanceMint::InstanceCell(minted) => WalkCellValue {
                 value: minted,
                 took_instance_mint_path: true,
             },
-            None => WalkCellValue {
+            InstanceMint::NotAnInstanceCell => WalkCellValue {
                 value: Value::Undef,
                 took_instance_mint_path: false,
             },
