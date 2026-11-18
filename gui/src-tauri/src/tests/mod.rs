@@ -44,6 +44,7 @@ mod test_helpers_tests;
 mod types_tests;
 mod unmeasured_attribution_tests;
 mod watcher_tests;
+mod webkit_env_tests;
 mod write_confinement_tests;
 
 use std::sync::{Arc, Mutex};
