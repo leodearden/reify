@@ -17,7 +17,9 @@
 //! - the value-cell lookup family's own panics ("no template named", "no
 //!   value cell named", "ambiguous cell name", "expected at least one
 //!   template"), each driven through the longest public chain that reaches it;
-//! - `assert_single_declaration_error`, called directly.
+//! - `assert_single_declaration_error`, called directly;
+//! - `panic_message_of`'s two strict-failure panics ("returned normally",
+//!   "neither a &str nor a String"), called directly.
 //!
 //! Each guard asserts the reported location plus a SHORT payload substring —
 //! never full message prose, per the wording rule `dimensioned_assertions.rs`
@@ -231,4 +233,22 @@ fn assert_single_declaration_error_panic_reports_caller_not_its_module() {
     });
 
     assert_attributed_here(&site, "expected exactly one error");
+}
+
+#[test]
+fn panic_message_of_returned_normally_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::panic_message_of(|| ());
+    });
+
+    assert_attributed_here(&site, "returned normally");
+}
+
+#[test]
+fn panic_message_of_non_string_payload_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::panic_message_of(|| std::panic::panic_any(42_i32));
+    });
+
+    assert_attributed_here(&site, "neither a &str nor a String");
 }

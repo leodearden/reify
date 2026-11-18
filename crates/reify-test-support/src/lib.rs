@@ -20,6 +20,7 @@ pub mod lsp_fixtures;
 pub mod mesh_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
+pub mod panic_capture;
 pub mod prd_gate_probe_set;
 pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
