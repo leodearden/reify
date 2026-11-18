@@ -986,3 +986,46 @@ fn edit_param_resolution_reseed_mints_an_override_free_instance_like_a_cold_eval
     assert_edited_body_like_cold(&after_edit, &cold, "ResOuter.same");
     assert_edited_selector_like_cold(&after_edit, &cold, "ResOuter.same");
 }
+
+/// `edit_source` changing the constraint re-resolves `len`, and its resolution
+/// reseed ("Second propagation wave") is then the only edit-path writer of the
+/// instance's `body` and `s`. The reseed must mint them as `eval()` does.
+#[test]
+fn edit_source_resolution_reseed_mints_an_override_free_instance_like_a_cold_eval() {
+    let source = r#"
+        structure SrcInner {
+            param len : Length = auto
+            constraint len == 20mm
+            let body = box(len, 10mm, 10mm)
+            let s = face(body, "x_max")
+        }
+
+        structure SrcOuter {
+            sub same = SrcInner()
+        }
+    "#;
+    let edited_source = source.replace("len == 20mm", "len == 30mm");
+    assert_ne!(
+        edited_source, source,
+        "premise: the source edit must change the constraint"
+    );
+    let edited = parse_and_compile_with_stdlib(&edited_source);
+    let mut warm = solver_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(source));
+    let after_edit = warm
+        .edit_source(&edited)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = solver_engine().eval(&edited);
+
+    assert!(
+        after_edit
+            .resolved_params
+            .contains_key(&ValueCellId::new("SrcInner", "len")),
+        "premise: the edit must re-resolve SrcInner.len, so the resolution \
+         reseed runs, got resolved_params {:?}",
+        after_edit.resolved_params
+    );
+    assert_minted_at_eval(&before, "SrcOuter.same");
+    assert_edited_body_like_cold(&after_edit, &cold, "SrcOuter.same");
+    assert_edited_selector_like_cold(&after_edit, &cold, "SrcOuter.same");
+}
