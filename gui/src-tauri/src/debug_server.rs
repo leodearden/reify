@@ -1809,12 +1809,14 @@ async fn open_path_into_engine(
 /// lock is released), then refreshes the delta baseline — see the
 /// INV-GUI-2 note above for why/how. Routes through
 /// `crate::commands::load_file_into_engine` and its returned
-/// `UnresolvedGuiState::resolve` — the same `EngineSession::load_file` and
-/// abs-path-rewrite pair the normal `open_file_engine_impl` command uses —
-/// so the debug bridge's open_file/load_fixture funnel ADOPTS the
-/// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
-/// whatever file was previously loaded, which `update_source` would do (task
-/// #5193). `load_file` already routes through `post_engine_call_telemetry`
+/// `UnresolvedGuiState::resolve`. It shares the identity adoption and the
+/// abs-path rewrite with the normal `open_file_engine_impl` command, so the
+/// debug bridge's open_file/load_fixture funnel ADOPTS the newly-opened
+/// file's identity (`FilePathUpdate::Set`) instead of preserving whatever
+/// file was previously loaded, which `update_source` would do (task #5193).
+/// Unlike that GUI funnel, which opens a source the engine rejects as an
+/// uncompiled document, this one refuses it (`EngineSession::load_file`), so
+/// the MCP open tools report it as an error. `load_file` already routes through `post_engine_call_telemetry`
 /// (the L4 emission choke-point) by construction. The abs-path rewrite runs
 /// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
 /// so the lock is not held across `std::fs::canonicalize` filesystem I/O
