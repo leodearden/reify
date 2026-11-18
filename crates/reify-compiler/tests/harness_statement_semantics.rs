@@ -48,6 +48,8 @@ mod ad_hoc_selector_compile_tests;
 mod analysis_stress_fn_compile;
 #[path = "harness_statement_semantics/aspect_massive_tests.rs"]
 mod aspect_massive_tests;
+#[path = "harness_statement_semantics/constraint_arg_conformance_tests.rs"]
+mod constraint_arg_conformance_tests;
 #[path = "harness_statement_semantics/constraint_def_compile_tests.rs"]
 mod constraint_def_compile_tests;
 #[path = "harness_statement_semantics/constraint_inst_tests.rs"]
