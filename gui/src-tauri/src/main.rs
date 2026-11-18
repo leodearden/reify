@@ -756,16 +756,8 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    // Resolve the sidecar binary path. Tauri's externalBin (declared in
-    // tauri.conf.json) copies the sidecar binary to `<resource_dir>/<basename>`
-    // in both dev (`target/<profile>/reify-sidecar`) and bundled builds —
-    // it does NOT place it in a `sidecar/` subdirectory of resource_dir,
-    // despite the source layout being `gui/src-tauri/sidecar/...`.
-    let sidecar_path = app
-        .path()
-        .resource_dir()
-        .map(|p| p.join("reify-sidecar"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("reify-sidecar"));
+    let gui_exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
+    let sidecar_path = reify_gui::claude_bridge::sidecar_executable_beside(&gui_exe)?;
 
     // Resolve the writable workspace directory for the landlock sandbox.
     let initial_file_opt: Option<std::path::PathBuf> =
