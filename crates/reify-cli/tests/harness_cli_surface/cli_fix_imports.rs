@@ -29,6 +29,10 @@ const GATED_HEADER: &str =
 /// leaves unsatisfied.
 const GATED_OFF_NOTE: &str = "; a #cfg-gated import of it is not in effect under the active cfg";
 
+/// The stderr line a refused fix adds, naming the file's gated-off imports.
+const GATED_OFF_REFUSAL_NOTE: &str =
+    "note: #cfg-gated imports not in effect under the active cfg: ";
+
 /// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
 /// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
 /// to withhold. If the binders become scope-aware, re-point this at another fixture that leaves a
@@ -437,8 +441,11 @@ fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
 
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not writing"), "{}", describe(&output));
+    let refusal_note = format!("{file}: {GATED_OFF_REFUSAL_NOTE}std.materials.appearance");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("not writing"),
+        stderr.lines().any(|line| line == refusal_note),
         "{}",
         describe(&output)
     );
@@ -446,6 +453,11 @@ fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
 
     let output = run_reify(&["fix", "--imports", "--cfg", "appearance", &file]);
     assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains(GATED_OFF_REFUSAL_NOTE),
+        "{}",
+        describe(&output)
+    );
     assert_eq!(
         fs::read_to_string(&file).expect("read fixed file"),
         format!(
