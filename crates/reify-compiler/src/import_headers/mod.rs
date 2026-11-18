@@ -253,9 +253,8 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// entity import, or a gated import `cfg` does not satisfy, does not count),
 /// in the order given: after the last import, else after the `module`
 /// declaration, else after the leading module pragmas above the line holding
-/// the first leading `#cfg` (which stays pending until the next declaration,
-/// so a new import below it would be gated by it), else after the leading
-/// comment block's last blank line.
+/// the first leading `#cfg`, else after the leading comment block's last blank
+/// line.
 ///
 /// # Panics
 ///

@@ -867,6 +867,10 @@ fn a_new_import_never_lands_where_a_pending_cfg_would_gate_it() {
             "#no_prelude\n#cfg(wide)\nstructure def S {}\n",
             "#no_prelude\n\nimport std.fake.c\n#cfg(wide)\nstructure def S {}\n",
         ),
+        (
+            "// header\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "// header\n\nimport std.fake.c\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
     ] {
         let fixed = insert(source, &["std.fake.c"]);
         let reparsed = parse_clean(&fixed, SUBJECT_PATH);

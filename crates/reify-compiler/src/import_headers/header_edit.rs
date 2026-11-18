@@ -10,9 +10,10 @@ use reify_core::ModulePath;
 use super::coverage::ImportCoverage;
 use crate::cfg::CfgSet;
 
-/// A `#cfg(…)` pragma stays pending, gating the next declaration however many
-/// pragmas follow it, so a module's leading pragma header ends at the line
-/// holding the first one.
+/// A `#cfg(…)` pragma stays pending across pragmas until the next
+/// declaration, which it gates only if that declaration is an import; so a
+/// new import written below a leading `#cfg` would be gated by it, and a
+/// module's leading pragma header ends at the line holding the first one.
 const CFG_PRAGMA: &str = "cfg";
 
 /// [`super::insert_imports`], which states the contract; [`header_anchor`]
@@ -115,16 +116,16 @@ fn pragma_header_end(source: &str, parsed: &ParsedModule) -> usize {
 /// The offset just past the last blank line of the run of blank and `//`
 /// lines that opens `source`; 0 when that run has no blank line.
 fn leading_comment_block_end(source: &str) -> usize {
-    let mut line_start = 0;
+    let mut offset = 0;
     let mut block_end = 0;
     for line in source.split_inclusive('\n') {
         let content = line.trim();
         if content.is_empty() {
-            block_end = line_start + line.len();
+            block_end = offset + line.len();
         } else if !content.starts_with("//") {
             break;
         }
-        line_start += line.len();
+        offset += line.len();
     }
     block_end
 }
