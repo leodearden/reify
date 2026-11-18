@@ -275,9 +275,52 @@ pub(crate) fn collect_decl_refs<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use reify_core::{ModulePath, Severity};
 
-    use super::check_module_path_decl;
+    use super::{check_module_path_decl, collect_decl_refs};
+    use crate::compile_builder::ctx::CompilationCtx;
+
+    fn names(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn collect_decl_refs_local_structure_def_names_are_first_def_structures_top_level_and_purpose_nested()
+     {
+        let src = "\
+structure def Top { param a : Real = 1.0 }
+occurrence def Op { param p : Real = 0 }
+purpose Explore() { structure def InP { param a : Real = 1.0 } }
+occurrence def Taken { param p : Real = 0 }
+structure def Taken { param b : Real = 2.0 }
+";
+        let parsed = reify_syntax::parse(src, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        let mut ctx = CompilationCtx::new();
+        collect_decl_refs(&mut ctx, &parsed);
+
+        assert_eq!(
+            ctx.local_structure_def_names(),
+            names(&["Top", "InP"]),
+            "top-level and purpose-nested structures are in; the occurrence `Op` and \
+             the structure `Taken` that loses to an earlier occurrence are out"
+        );
+        assert!(
+            ctx.local_structure_def_names()
+                .is_subset(&ctx.local_entity_names()),
+            "every local structure def is a local entity"
+        );
+        assert_eq!(
+            ctx.local_entity_names(),
+            names(&["Top", "InP", "Op", "Taken"])
+        );
+    }
 
     #[test]
     fn absent_decl_returns_warning_with_expected_path() {
