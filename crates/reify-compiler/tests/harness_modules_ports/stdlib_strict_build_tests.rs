@@ -159,10 +159,11 @@ fn fingerprint(modules: &[CompiledModule]) -> Vec<ModuleFingerprint> {
 }
 
 /// The types `module`'s definitions declare, as resolved: template value
-/// cells, trait type params and requirements, function signatures and type
-/// aliases. `content_hash` does not cover value-cell types, so a resolution
-/// that registration order could change would slip past it alone. Type
-/// aliases are rendered in their `Vec` order.
+/// cells, trait type params and requirements, function signatures, type
+/// aliases, and enum definitions with their variant payload types.
+/// `content_hash` covers neither value-cell types nor enum payload types, so a
+/// resolution that registration order could change would slip past it alone.
+/// Type aliases and enums are rendered in their `Vec` order.
 fn declared_types(module: &CompiledModule) -> String {
     let cells: Vec<_> = module
         .templates
@@ -198,7 +199,8 @@ fn declared_types(module: &CompiledModule) -> String {
         .iter()
         .map(|a| (&a.name, &a.type_params, &a.resolved_type))
         .collect();
-    format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}")
+    let enums = &module.enum_defs;
+    format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}\n{enums:?}")
 }
 
 fn build_permuted(permute: impl FnOnce(&mut Vec<(&'static str, String)>)) -> Vec<CompiledModule> {
@@ -287,18 +289,21 @@ fn a_stdlib_modules_type_aliases_come_out_in_name_order() {
 
 #[test]
 fn the_build_fingerprint_sees_a_change_in_a_declared_type_alone() {
-    let cases: [(&str, fn(&str) -> String); 2] = [
-        ("a param's declared type", |ty| {
-            format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n")
-        }),
-        ("an enum variant's payload type", |ty| {
-            format!("module std.zz_typed\npub enum E {{\n    V {{ w: {ty} }},\n}}\n")
-        }),
-    ];
+    let param =
+        |ty: &str| format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n");
+    let payload =
+        |ty: &str| format!("module std.zz_typed\npub enum E {{\n    V {{ w: {ty} }},\n}}\n");
     let build = |source: &str| fingerprint(&build_stdlib_modules(&[("std.zz_typed", source)]));
-    for (what, typed) in cases {
+    for (what, as_real, as_int) in [
+        ("a param's declared type", param("Real"), param("Int")),
+        (
+            "an enum variant's payload type",
+            payload("Real"),
+            payload("Int"),
+        ),
+    ] {
         assert!(
-            first_difference(&build(&typed("Real")), &build(&typed("Int"))).is_some(),
+            first_difference(&build(&as_real), &build(&as_int)).is_some(),
             "two builds that differ only in {what} must fingerprint differently"
         );
     }
