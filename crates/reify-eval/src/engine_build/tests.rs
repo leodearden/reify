@@ -9118,28 +9118,28 @@ structure Assembly {
 
     /// step-6: pin INV-BUILD-3 — cold/warm side-effect-set parity.
     ///
-    /// Drives ONE `DispatchTestState` through a COLD pass (a real primitive
-    /// `Box` op dispatches through the op loop, populating
-    /// `realization_cache` and writing the full output side-effect set) and,
-    /// after resetting only the per-build OUTPUT state (mirroring the
+    /// Drives a COLD pass (the fixture's ops dispatch through the op loop,
+    /// populating `realization_cache` and writing the full output side-effect
+    /// set) and, after resetting only the per-build OUTPUT state (mirroring the
     /// production per-build reset) while KEEPING the shared
-    /// `realization_cache`, a WARM pass with the identical demand. Asserts
-    /// the warm pass's observable side-effect set — `step_handles`,
-    /// `named_steps`, `named_step_reprs`, `produced_repr_out` — is IDENTICAL
-    /// to the cold snapshot, and that `dispatch_count` does not increase
-    /// across the warm pass (the cache-hit short-circuit returns before the
-    /// op loop). This is INV-BUILD-3's contract directly: the short-circuit
-    /// produces "the same observable side-effect set as the path it
-    /// short-circuits."
+    /// `realization_cache`, a WARM pass with the identical demand. Asserts the
+    /// warm pass's observable side-effect set — the terminal in
+    /// `step_handles`, `named_steps`, `named_step_reprs`, `produced_repr_out`
+    /// and the terminal's `swept_kind_table` entry — equals the cold snapshot,
+    /// and that `dispatch_count` does not increase across the warm pass (the
+    /// cache-hit short-circuit returns before the op loop). This is
+    /// INV-BUILD-3's contract directly: the short-circuit produces "the same
+    /// observable side-effect set as the path it short-circuits."
+    ///
+    /// Two fixtures: a 1-op Box (no swept kind) and a Sphere + Extrude swept
+    /// body, whose cold pass classifies the terminal as an extrude (task 10153).
     #[test]
     fn probe_realization_cache_cold_warm_side_effect_set_parity() {
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::CompiledExpr;
-        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
-        let ops = vec![CompiledGeometryOp::Primitive {
+        let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
                 ("size_x".into(), mm_lit(10.0)),
@@ -9147,22 +9147,57 @@ structure Assembly {
                 ("size_z".into(), mm_lit(5.0)),
             ],
         }];
+        assert_cold_warm_side_effect_set_parity("ColdWarmParity", &box_ops, |cold_step_handles, cold_swept| {
+            assert_eq!(cold_step_handles.len(), 1, "premise: the 1-op Box pushes one cold handle");
+            assert!(cold_swept.is_none(), "premise: a Box has no swept kind, got {cold_swept:?}");
+        });
+
+        let swept_ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                args: vec![("radius".into(), mm_lit(5.0))],
+            },
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![("profile".into(), mm_lit(5.0)), ("distance".into(), mm_lit(10.0))],
+            },
+        ];
+        assert_cold_warm_side_effect_set_parity("ColdWarmParitySwept", &swept_ops, |_, cold_swept| {
+            assert!(
+                matches!(cold_swept, Some(SweptKind::Extrude { .. })),
+                "premise: the cold pass classifies the extrude terminal, got {cold_swept:?}"
+            );
+        });
+    }
+
+    /// The cold → per-build reset → warm cycle of
+    /// [`probe_realization_cache_cold_warm_side_effect_set_parity`] over one
+    /// fixture, with a fresh state and kernels. `cold_premise` sees the cold
+    /// `step_handles` and the cold terminal's swept kind before any warm
+    /// assertion runs.
+    fn assert_cold_warm_side_effect_set_parity(
+        entity: &str,
+        ops: &[CompiledGeometryOp],
+        cold_premise: impl FnOnce(&[KernelHandle], Option<&SweptKind>),
+    ) {
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let desc = dispatch_test_descriptor_all_brep();
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let registry = dispatch_test_single_default_registry(&desc);
 
-        let realization_id = RealizationNodeId::new("ColdWarmParity", 0);
+        let realization_id = RealizationNodeId::new(entity, 0);
         let tol = 1e-3;
         let mut state = DispatchTestState::default();
 
-        // COLD pass: the op loop dispatches the primitive Box op, producing a
-        // terminal handle and populating realization_cache + the output views.
+        // COLD pass: the op loop dispatches every op, producing a terminal
+        // handle and populating realization_cache + the output views.
         state.run_demand(
             &mut kernels,
             &registry,
             "default",
-            &ops,
+            ops,
             &realization_id,
             Some("part"),
             SourceSpan::new(0, 0),
@@ -9172,11 +9207,17 @@ structure Assembly {
         );
         assert!(
             state.dispatch_count > 0,
-            "cold pass must dispatch through the op loop"
+            "{entity}: cold pass must dispatch through the op loop"
         );
 
         // Snapshot the cold side-effect set and the post-cold dispatch count.
-        let cold_step_handles = state.step_handles.clone();
+        let cold_terminal = *state
+            .step_handles
+            .last()
+            .expect("premise: the cold pass pushes a terminal handle");
+        let cold_swept = state.swept_kind_table.lookup(cold_terminal.id).cloned();
+        let cold_swept_len = state.swept_kind_table.len();
+        cold_premise(&state.step_handles, cold_swept.as_ref());
         let cold_named_steps = state.named_steps.clone();
         let cold_named_step_reprs = state.named_step_reprs.clone();
         let cold_produced_repr_out = state.produced_repr_out;
@@ -9198,7 +9239,7 @@ structure Assembly {
             &mut kernels,
             &registry,
             "default",
-            &ops,
+            ops,
             &realization_id,
             Some("part"),
             SourceSpan::new(0, 0),
@@ -9207,26 +9248,39 @@ structure Assembly {
             None,
         );
 
+        // A hit pushes only the cached terminal; production reads only the
+        // terminal of a realization's `step_handles` range.
         assert_eq!(
-            state.step_handles, cold_step_handles,
-            "warm step_handles must be IDENTICAL to the cold snapshot"
+            state.step_handles,
+            vec![cold_terminal],
+            "{entity}: warm step_handles must be exactly the cold terminal"
         );
         assert_eq!(
             state.named_steps, cold_named_steps,
-            "warm named_steps must be IDENTICAL to the cold snapshot"
+            "{entity}: warm named_steps must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.named_step_reprs, cold_named_step_reprs,
-            "warm named_step_reprs must be IDENTICAL to the cold snapshot"
+            "{entity}: warm named_step_reprs must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.produced_repr_out, cold_produced_repr_out,
-            "warm produced_repr_out must be IDENTICAL to the cold snapshot"
+            "{entity}: warm produced_repr_out must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.dispatch_count, dispatch_count_after_cold,
-            "dispatch_count must not increase across the warm pass — the \
+            "{entity}: dispatch_count must not increase across the warm pass — the \
              cache-hit short-circuit returns before the op loop"
+        );
+        assert_eq!(
+            state.swept_kind_table.lookup(cold_terminal.id).cloned(),
+            cold_swept,
+            "{entity}: a warm hit must restore the cold terminal's swept kind"
+        );
+        assert_eq!(
+            state.swept_kind_table.len(),
+            cold_swept_len,
+            "{entity}: a warm hit must write the same swept-kind entries as the cold pass"
         );
     }
 
