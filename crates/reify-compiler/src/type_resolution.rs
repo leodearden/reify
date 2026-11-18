@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
@@ -310,9 +310,11 @@ impl TypeAliasEntry {
 
 /// Registry mapping type alias names to compiled alias entries.
 /// Built during the pre-pass so type resolution can check aliases.
+/// Entries iterate in ascending name order, so `CompiledModule.type_aliases`
+/// and the `iter()`-driven diagnostics are deterministic across builds.
 #[derive(Clone)]
 pub(crate) struct TypeAliasRegistry {
-    entries: HashMap<String, TypeAliasEntry>,
+    entries: BTreeMap<String, TypeAliasEntry>,
     /// Names of entries seeded from prelude modules (not user-declared).
     ///
     /// `into_compiled()` and `iter()` exclude these so the user module's
@@ -326,7 +328,7 @@ impl TypeAliasRegistry {
     /// Create an empty registry.
     pub(crate) fn new() -> Self {
         TypeAliasRegistry {
-            entries: HashMap::new(),
+            entries: BTreeMap::new(),
             seeded_names: HashSet::new(),
         }
     }
@@ -368,7 +370,8 @@ impl TypeAliasRegistry {
         self.entries.get(name)
     }
 
-    /// Iterate over user-declared alias entries (excluding prelude-seeded entries).
+    /// Iterate over user-declared alias entries (excluding prelude-seeded entries),
+    /// in ascending name order.
     ///
     /// Used by `compute_module_hash` to ensure only user-declared aliases influence
     /// the module's content hash — changes to prelude aliases must not invalidate
@@ -379,7 +382,8 @@ impl TypeAliasRegistry {
             .filter(|e| !self.seeded_names.contains(&e.name))
     }
 
-    /// Consume the registry, returning compiled entries for user-declared aliases only.
+    /// Consume the registry, returning compiled entries for user-declared aliases only,
+    /// in ascending name order.
     ///
     /// Excludes prelude-seeded entries (registered via `register_as_prelude_seed`) so
     /// the user module's exported `type_aliases` only contains its own declarations —
