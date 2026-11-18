@@ -316,6 +316,7 @@ pub fn compute_eval_set(
 ///   been built but wasn't scheduled at all).
 /// - `BackwardEdge`: a realization-to-realization edge where the producer
 ///   is scheduled *after* its consumer (producer_pos >= consumer_pos).
+#[cfg(any(debug_assertions, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DagViolation {
     /// A consumer depends on a producer realization that is not present in
@@ -333,6 +334,10 @@ pub(crate) enum DagViolation {
     },
 }
 
+// Narrower than the enum's gate on purpose: only the debug-only wrapper calls
+// `describe`, so also compiling it under `test` would leave it dead in release
+// test builds.
+#[cfg(debug_assertions)]
 impl DagViolation {
     /// Human-readable description of the violation, used in `panic!` messages.
     pub(crate) fn describe(&self) -> String {
@@ -388,6 +393,7 @@ impl DagViolation {
 /// returns `Ok(())` with zero allocation beyond the `pos` map.
 ///
 /// Returns `Ok(())` when no violation is found.
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn check_dag_complete(
     traces: &HashMap<NodeId, DependencyTrace>,
     exec_order: &[RealizationNodeId],
