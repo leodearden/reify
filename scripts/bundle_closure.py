@@ -75,15 +75,26 @@ class CommandError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class UndefinedSymbol:
+    """A symbol a loaded object (`referrer`, as ldd printed its path) references
+    that no loaded object defines; not a soname to stage."""
+    symbol: str
+    version: str | None
+    referrer: str
+
+
+@dataclass(frozen=True)
 class LddReport:
     resolved: Mapping[str, str]
     missing: frozenset[str]
     version_short: frozenset[str]
+    undefined: frozenset[UndefinedSymbol] = frozenset()
 
     def __post_init__(self):
         object.__setattr__(self, "resolved", MappingProxyType(dict(self.resolved)))
         object.__setattr__(self, "missing", frozenset(self.missing))
         object.__setattr__(self, "version_short", frozenset(self.version_short))
+        object.__setattr__(self, "undefined", frozenset(self.undefined))
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,9 @@ _VERSION_SHORT = re.compile(
     r"^.+: (?P<path>/\S+): version `[^']+' not found \(required by .+\)$")
 _NO_VERSION_INFO = re.compile(
     r"^.+: /\S+: no version information available \(required by .+\)$")
+_UNDEFINED = re.compile(
+    r"^undefined symbol: (?P<symbol>[^\s,]+)(?:, version (?P<version>\S+))?"
+    r"\t\((?P<referrer>.+)\)$")
 
 
 def _is_file_header(raw_line: str) -> bool:
@@ -122,12 +136,16 @@ def parse_ldd(text: str) -> LddReport:
     resolved: dict[str, str] = {}
     missing: set[str] = set()
     version_short: set[str] = set()
+    undefined: set[UndefinedSymbol] = set()
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or _NO_VERSION_INFO.match(line) or _UNMAPPED.match(line):
             continue
         if match := _VERSION_SHORT.match(line):
             version_short.add(os.path.basename(match["path"]))
+        elif match := _UNDEFINED.match(line):
+            undefined.add(UndefinedSymbol(
+                match["symbol"], match["version"], match["referrer"]))
         elif _is_file_header(raw_line):
             continue
         elif match := _RESOLVED.match(line):
@@ -137,7 +155,8 @@ def parse_ldd(text: str) -> LddReport:
         else:
             raise ValueError(f"unrecognised ldd line: {raw_line!r}")
     return LddReport(resolved=resolved, missing=frozenset(missing),
-                     version_short=frozenset(version_short))
+                     version_short=frozenset(version_short),
+                     undefined=frozenset(undefined))
 
 
 Probe = Callable[[frozenset], LddReport]
