@@ -589,11 +589,14 @@ fi
 # Task 10124: a launch clone TERMed before exec runs this script's EXIT trap,
 # so _cleanup_all must act only when BASHPID == $$.
 #   Case 1 pins that for any non-owning caller, deterministically.
-#   Case 2 reproduces the real fork-before-exec TERM, because case 1 cannot
-#   catch an `if ... then return 0; fi` guard: in a TERMed clone that form's
-#   then-branch is skipped and the body runs (391 of 400 clones, bash 5.2.21).
-#   The probe's trap string must be exactly `_cleanup_all`: any command placed
-#   before it masks that failure.
+#   Case 2 reproduces the real fork-before-exec TERM, because case 1 passes
+#   guards that fail in a real clone (bash 5.2.21).  In a clone forked while an
+#   earlier background job is in the job table it inherits (the merge burn, the
+#   later ROW2_3 sources), `[ ... ] || return 0` runs the body anyway, and so
+#   does `if [ ... ]; then return 0; fi`, which also does in a clone forked
+#   right after a TERMed `wait`.  `[[ ... ]] || return 0` holds in both.  So
+#   case 2 forks clones in both contexts, and its trap string is exactly
+#   production's, `_cleanup_all`.
 #   Case 2 is gated by a liveness control and SKIPs, never FAILs, where no TERM
 #   lands before exec.
 # No assertion bounds an elapsed time (technique T).  Every scratch dir lives
@@ -626,21 +629,37 @@ _clone_probe_run() {
     ) 2>/dev/null || true
 }
 
-# _clone_probe_terms <trap_cmd> <n>: installs <trap_cmd> as the EXIT trap, then <n> times backgrounds an
-#   env-prefixed external command and TERMs it at once (the launch/stop shape of _row4_launch_role_burn +
-#   _row4_stop_burns at a 0 s ready deadline), so most TERMs land in a clone that has not exec'd yet.
+# _clone_probe_terms <trap_cmd> <rounds> <launches>: installs <trap_cmd> as the EXIT trap, then <rounds> times
+#   backgrounds env-prefixed external commands and TERMs them at once (the launch/stop shape of
+#   _row4_launch_role_burn + _row4_stop_burns at a 0 s ready deadline), so most TERMs land in clones that have
+#   not exec'd yet.  Each round forks them in both contexts a `[ ]`-based guard fails in: ONE launch, whose
+#   TERMed wait leaves a non-zero $? for the next fork, then <launches> launches back to back, where every
+#   clone after the first inherits an earlier launch in its job table.  errexit is off for the helper alone
+#   (`local -`) because that non-zero $? must survive until the next fork.
 #   Clears the trap before returning, so only the clones, never the probing shell, can run it.
 _clone_probe_terms() {
-    local trap_cmd="$1" n="$2" i pid
+    local - trap_cmd="$1" rounds="$2" launches="$3" round launch pid pids
+    set +e
     trap "$trap_cmd" EXIT
-    for (( i = 0; i < n; i++ )); do
+    for (( round = 0; round < rounds; round++ )); do
         GOVTEST_CLONE_PROBE=1 sleep 1 &
         pid=$!
-        kill -TERM "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        pids=""
+        for (( launch = 0; launch < launches; launch++ )); do
+            GOVTEST_CLONE_PROBE=1 sleep 1 &
+            pids="$pids $!"
+        done
+        for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
+        for pid in $pids; do wait "$pid" 2>/dev/null; done
     done
     trap - EXIT
 }
+
+# The probe's size, in one place: <rounds> and <launches> of _clone_probe_terms.
+_clone_probe_rounds=20
+_clone_probe_launches=3
 
 # _clone_probe_unguarded_cleanup: the liveness control's trap, i.e. what an unguarded _cleanup_all does to WORK.
 _clone_probe_unguarded_cleanup() { rm -rf "$WORK"; }
@@ -656,15 +675,17 @@ assert "CLEANUP-CLONE-1b: _cleanup_all called in a subshell (BASHPID != \$\$) st
 # (2) The same under a real fork-before-exec TERM.  The control runs first: it must lose its WORK,
 #     or no TERM landed in a pre-exec clone and the probe would pass vacuously.
 _cleanup_clone_ctl_box="$(_clone_probe_box)"
-_clone_probe_run "$_cleanup_clone_ctl_box" _clone_probe_terms _clone_probe_unguarded_cleanup 20
+_clone_probe_run "$_cleanup_clone_ctl_box" _clone_probe_terms _clone_probe_unguarded_cleanup \
+    "$_clone_probe_rounds" "$_clone_probe_launches"
 if [ -d "$_cleanup_clone_ctl_box/work" ]; then
-    echo "  SKIP CLEANUP-CLONE-2: no TERM landed in a pre-exec clone in 20 launches on this host — the clone probe is inconclusive"
+    echo "  SKIP CLEANUP-CLONE-2: no TERM landed in a pre-exec clone in ${_clone_probe_rounds} rounds on this host — the clone probe is inconclusive"
 else
     _cleanup_clone2_box="$(_clone_probe_box)"
-    _clone_probe_run "$_cleanup_clone2_box" _clone_probe_terms _cleanup_all 20
-    assert "CLEANUP-CLONE-2a: launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, leave WORK in place" \
+    _clone_probe_run "$_cleanup_clone2_box" _clone_probe_terms _cleanup_all \
+        "$_clone_probe_rounds" "$_clone_probe_launches"
+    assert "CLEANUP-CLONE-2a: back-to-back launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, leave WORK in place" \
         test -d "$_cleanup_clone2_box/work"
-    assert "CLEANUP-CLONE-2b: launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, stop no slice" \
+    assert "CLEANUP-CLONE-2b: back-to-back launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, stop no slice" \
         test ! -e "$_cleanup_clone2_box/work.teardown-called"
 fi
 
