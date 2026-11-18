@@ -684,17 +684,16 @@ fn resolve_ambient_default(
     //     (anti-cascade) and reject the entry.
     //
     //     This compile is TYPE-CHECK-ONLY: the resulting `CompiledExpr` is
-    //     discarded (only `decl.value`'s AST is stored), and every real
-    //     injection site recompiles the value via `check_phase_inject_defaults`
-    //     (checker.rs). A default consumed by N structures therefore compiles
-    //     its value N+1 times. To keep a NON-error diagnostic of the value
-    //     (e.g. a lossy/precision warning) from being double-reported — once
-    //     here and once per consuming structure — scope this throwaway compile's
-    //     diagnostics into a temp buffer and forward only genuine
-    //     `Severity::Error`s. An Error-typed value is rejected and never
-    //     recompiled, so the pre-pass is the sole report site of its errors;
-    //     non-error diagnostics re-surface at the injection site where an
-    //     accepted value is actually used.
+    //     discarded (only `decl.value`'s AST is stored). Its diagnostics are
+    //     scoped into a temp buffer and forwarded by the two-way rule below,
+    //     so each is reported exactly once:
+    //       * a REJECTED value is never recompiled, so this is its only report
+    //         site — forward ALL of its diagnostics, warnings included;
+    //       * an ACCEPTED value is recompiled at every injection site via
+    //         `check_phase_inject_defaults` (checker.rs), where its non-error
+    //         diagnostics (e.g. a lossy/precision warning) re-surface —
+    //         forward only its `Severity::Error`s, or each warning would be
+    //         reported once here and once per consuming structure.
     let mut value_diagnostics = Vec::new();
     let value_type = compile_expr(
         &decl.value,
@@ -704,14 +703,18 @@ fn resolve_ambient_default(
         &mut value_diagnostics,
     )
     .result_type;
-    diagnostics.extend(
-        value_diagnostics
-            .into_iter()
-            .filter(|d| d.severity == reify_core::Severity::Error),
-    );
     let mismatched =
         value_type != Type::Error && !crate::implicitly_converts_to(&value_type, &declared_type);
     let rejected = value_type == Type::Error || mismatched;
+    if rejected {
+        diagnostics.extend(value_diagnostics);
+    } else {
+        diagnostics.extend(
+            value_diagnostics
+                .into_iter()
+                .filter(|d| d.severity == reify_core::Severity::Error),
+        );
+    }
     if mismatched {
         diagnostics.push(crate::diagnostics::ambient_default_type_mismatch_error(
             &type_name, decl.span,
