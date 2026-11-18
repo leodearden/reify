@@ -245,9 +245,11 @@ impl InstanceMintScope<'_> {
         ))
     }
 
-    /// `evaluated`, unless it is `Undef` and `instance_cell` is a sub-instance
-    /// cell of `self.graph`; then the cell minted by
-    /// [`Self::mint_undef_instance_cell`].
+    /// `evaluated`, unless it is `Undef`; then the cell minted by
+    /// [`Self::mint_undef_instance_cell`]. `instance_cell` must be a
+    /// sub-instance cell of `self.graph`, as every caller's slot cell is
+    /// stamped through `EvaluationGraph::insert_sub_instance_cell`. A debug
+    /// build panics on one that is not; a release build leaves it `Undef`.
     pub(crate) fn mint_instance_cell_if_undef(
         &self,
         evaluated: Value,
@@ -258,7 +260,15 @@ impl InstanceMintScope<'_> {
         match evaluated {
             Value::Undef => match self.mint_undef_instance_cell(instance_cell, kind, expr) {
                 InstanceMint::InstanceCell(value) => value,
-                InstanceMint::NotAnInstanceCell => Value::Undef,
+                InstanceMint::NotAnInstanceCell => {
+                    debug_assert!(
+                        false,
+                        "{instance_cell} is not a sub-instance cell: a resized or reseeded \
+                         slot cell must be stamped through \
+                         EvaluationGraph::insert_sub_instance_cell"
+                    );
+                    Value::Undef
+                }
             },
             evaluated => evaluated,
         }
@@ -856,6 +866,32 @@ structure Shelf {
             "control: the same kind and expression at the sub instance's `P.s.b` \
              must mint, so NotAnInstanceCell comes from the cell's entity and not \
              its expression: {minted:?}"
+        );
+    }
+
+    /// Every caller of `mint_instance_cell_if_undef` passes a slot cell it
+    /// stamped through `EvaluationGraph::insert_sub_instance_cell`, so a cell
+    /// that is not a sub-instance cell breaches the sub-instance registry. A
+    /// debug build reports the breach rather than leaving the cell `Undef`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "T.b is not a sub-instance cell")]
+    fn the_if_undef_mint_of_a_template_cell_panics_in_a_debug_build() {
+        let graph = fixture_graph();
+        let values = fixture_param_values();
+        let instance_b = id("P.s", "b");
+
+        InstanceMintScope {
+            graph: &graph,
+            values: &values,
+            functions: &[],
+            meta_map: &HashMap::new(),
+        }
+        .mint_instance_cell_if_undef(
+            Value::Undef,
+            &id("T", "b"),
+            node_of(&graph, &instance_b).kind,
+            expr_of(&graph, &instance_b),
         );
     }
 
