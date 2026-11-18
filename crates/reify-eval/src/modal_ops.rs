@@ -6914,20 +6914,12 @@ mod tests {
     /// naming it, never silently; a Named-leaf target stays quiet.
     #[test]
     fn support_targets_warns_when_it_drops_a_non_named_target() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::value::LeafQuery;
         use reify_test_support::warn_capturing_subscriber;
 
-        let beam = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let all_faces = Value::Selector(
-            SelectorValue::leaf(SelectorKind::Face, beam, LeafQuery::All)
-                .expect("LeafQuery::All accepts a Face kind"),
-        );
+        let all_faces =
+            crate::compute_targets::bc_resolve::leaf_selector(SelectorKind::Face, LeafQuery::All);
         let unread = struct_instance("PinnedSupport", vec![("target".to_string(), all_faces)]);
 
         let (subscriber, capture) = warn_capturing_subscriber();

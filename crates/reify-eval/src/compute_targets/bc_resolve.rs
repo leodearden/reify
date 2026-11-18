@@ -338,7 +338,7 @@ mod tests {
 
     // ── named_leaf_target (Bmig2 #5312 interim typed-target read) ────────────
 
-    use super::{named_leaf_selector, named_leaf_target};
+    use super::{leaf_selector, named_leaf_selector, named_leaf_target};
 
     #[test]
     fn named_leaf_target_reads_a_named_face_leaf() {
@@ -372,14 +372,8 @@ mod tests {
 
     #[test]
     fn named_leaf_target_rejects_non_named_and_composed_selectors() {
-        let ghr = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let all = SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
-            .expect("valid Face/All leaf");
-        assert_eq!(named_leaf_target(&Value::Selector(all)), None);
+        let all = leaf_selector(SelectorKind::Face, LeafQuery::All);
+        assert_eq!(named_leaf_target(&all), None);
 
         let leaf = |name: &str| match named_leaf_selector(SelectorKind::Face, name) {
             Value::Selector(sv) => sv,
