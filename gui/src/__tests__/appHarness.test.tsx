@@ -56,7 +56,7 @@ describe('primeAppHarness resets every harness-mocked export to its table defaul
   });
 
   it.each(mockedCases)('$specifier $name', ({ name, namespace, defaults }) => {
-    const exported = (namespace as Record<string, unknown>)[name];
+    const exported = (namespace as Record<string, () => unknown>)[name];
     if (!vi.isMockFunction(exported)) throw new Error(`${name} is not a vi mock`);
     exported.mockImplementation(() => SENTINEL);
     exported.mockReturnValueOnce(ONCE);
