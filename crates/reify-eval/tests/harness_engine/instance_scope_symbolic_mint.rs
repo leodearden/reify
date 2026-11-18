@@ -1070,10 +1070,9 @@ fn edit_param_guard_flip_leaves_instance_cells_below_a_guarded_member_as_a_cold_
          re-evaluated the instance cells below the guarded member"
     );
     for member in ["w2", "body", "s"] {
-        let id = ValueCellId::new("HOuter.same", member);
         assert_eq!(
-            after_edit.values.get(&id),
-            cold.values.get(&id),
+            cell(&after_edit, "HOuter.same", member),
+            cell(&cold, "HOuter.same", member),
             "HOuter.same.{member} after the guard flip must equal a cold eval's"
         );
     }
