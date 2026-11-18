@@ -151,6 +151,7 @@ fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
     assert!(
@@ -196,6 +197,7 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_with_stdlib_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
@@ -492,6 +494,7 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source_with_stdlib(source);
     let errors = collect_errors(&compiled.diagnostics);
