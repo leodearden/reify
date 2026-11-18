@@ -265,6 +265,18 @@ HOST = {
     "libD.so.4": "/usr/lib/libD.so.4",
 }
 
+# The versioned sonames noble's libc6 ships that a binary can list as DT_NEEDED
+# (`dpkg -L libc6` in ubuntu:24.04). Literal on purpose: a list read from
+# bc.GLIBC_SONAMES could not go red when an entry is dropped from it.
+LIBC6_SONAMES = (
+    "ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6", "libmvec.so.1",
+    "libpthread.so.0", "libdl.so.2", "librt.so.1", "libutil.so.1",
+    "libresolv.so.2", "libanl.so.1", "libBrokenLocale.so.1",
+    "libthread_db.so.1", "libc_malloc_debug.so.0", "libnsl.so.1",
+    "libnss_compat.so.2", "libnss_dns.so.2", "libnss_files.so.2",
+    "libnss_hesiod.so.2",
+)
+
 
 class DeriveClosure(unittest.TestCase):
 
@@ -297,9 +309,9 @@ class DeriveClosure(unittest.TestCase):
         self.assertIn("libA.so.1", str(caught.exception))
 
     def test_a_glibc_gap_is_an_immediate_error_naming_glibc(self):
-        host = {**HOST, "libc.so.6": "/lib/x86_64-linux-gnu/libc.so.6",
-                "ld-linux-x86-64.so.2": "/lib64/ld-linux-x86-64.so.2"}
-        for glibc_soname in ("libc.so.6", "ld-linux-x86-64.so.2"):
+        host = {**HOST, **{soname: f"/lib/x86_64-linux-gnu/{soname}"
+                           for soname in LIBC6_SONAMES}}
+        for glibc_soname in LIBC6_SONAMES:
             with self.subTest(glibc_soname):
                 calls = []
 
