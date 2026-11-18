@@ -17,7 +17,7 @@ use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 use reify_test_support::{
-    axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+    axis_val, direction_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
 };
 
 const EPS: f64 = 1e-12;
@@ -49,25 +49,6 @@ fn assert_direction(v: &Value, expected: [f64; 3]) {
     }
 }
 
-/// Assert `v` is a plane normal in the shape `decode_plane` requires — a
-/// 3-component `Value::Vector`, NOT a `Value::Direction` — close to `expected`.
-fn assert_vector_normal(v: &Value, expected: [f64; 3]) {
-    let comps = match v {
-        Value::Vector(comps) if comps.len() == 3 => [
-            comps[0].as_f64().expect("normal component 0 is numeric"),
-            comps[1].as_f64().expect("normal component 1 is numeric"),
-            comps[2].as_f64().expect("normal component 2 is numeric"),
-        ],
-        other => panic!("expected a 3-component Value::Vector normal, got {other:?}"),
-    };
-    assert!(
-        (comps[0] - expected[0]).abs() < EPS
-            && (comps[1] - expected[1]).abs() < EPS
-            && (comps[2] - expected[2]).abs() < EPS,
-        "expected normal {expected:?}, got {comps:?}",
-    );
-}
-
 /// Extract the three numeric components of a 3-component `Value::Point`.
 fn point_components(v: &Value) -> [f64; 3] {
     match v {
@@ -92,27 +73,47 @@ fn assert_point(v: &Value, expected: [f64; 3]) {
 
 // ─── Axis projections ────────────────────────────────────────────────────────
 
+/// Every datum producer mints `Axis.direction` as a `Value::Direction`; `.dir`
+/// hands that direction back unchanged.
 #[test]
 fn axis_dir_projects_to_direction() {
-    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(0.0, 1.0, 0.0));
     let result = project(axis, Type::Axis, "dir", Type::Direction);
-    assert_direction(&result, [1.0, 0.0, 0.0]);
+    assert_eq!(result, direction_val(0.0, 1.0, 0.0));
 }
 
 #[test]
 fn axis_origin_projects_to_point() {
-    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    let axis = axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0));
     let result = project(axis, Type::Axis, "origin", Type::point3(Type::length()));
     assert_point(&result, [1.0, 2.0, 3.0]);
 }
 
 // ─── Plane projections ───────────────────────────────────────────────────────
 
+/// Every datum producer mints `Plane.normal` as a `Value::Direction`; `.normal`
+/// hands that direction back unchanged.
 #[test]
 fn plane_normal_projects_to_direction() {
-    let plane = plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0));
+    let plane = plane_val(point3(0.0, 0.0, 0.0), direction_val(1.0, 0.0, 0.0));
     let result = project(plane, Type::Plane, "normal", Type::Direction);
-    assert_direction(&result, [0.0, 0.0, 1.0]);
+    assert_eq!(result, direction_val(1.0, 0.0, 0.0));
+}
+
+/// A raw `Vector` is not a direction: `.dir` / `.normal` of a datum built with
+/// one projects to `Undef` rather than being normalised into a Direction.
+#[test]
+fn a_vector_bearing_axis_or_plane_projects_to_undef() {
+    let axis = axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0));
+    assert_eq!(
+        project(axis, Type::Axis, "dir", Type::Direction),
+        Value::Undef
+    );
+    let plane = plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0));
+    assert_eq!(
+        project(plane, Type::Plane, "normal", Type::Direction),
+        Value::Undef
+    );
 }
 
 // ─── Frame projections ───────────────────────────────────────────────────────
@@ -165,7 +166,7 @@ fn frame_principal_planes_project_on_a_rotated_frame() {
         match &result {
             Value::Plane { origin, normal } => {
                 assert_point(origin, [4.0, 5.0, 6.0]);
-                assert_vector_normal(normal, expected_normal);
+                assert_direction(normal, expected_normal);
             }
             other => panic!("frame.{member}: expected Value::Plane, got {other:?}"),
         }
@@ -249,7 +250,7 @@ fn self_datum_projections_evaluate_to_the_identity_frame_constants() {
         match project_self(member, Type::Plane) {
             Value::Plane { origin, normal } => {
                 assert_point(&origin, [0.0, 0.0, 0.0]);
-                assert_vector_normal(&normal, expected_normal);
+                assert_direction(&normal, expected_normal);
             }
             other => panic!("self.{member}: expected Value::Plane, got {other:?}"),
         }

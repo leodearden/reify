@@ -8,8 +8,8 @@
 //
 // `reify eval` exits 0 and prints the output measured against the real
 // `target/debug/reify` binary and reproduced in cli_eval_datum_units.rs:
-//   plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))
-//   axis(point(0 m, 0 m, 0 m), vec(1, 0, 0))
+//   plane(point(0 m, 0 m, 0.005 m), dir(0, 0, 1))
+//   axis(point(0 m, 0 m, 0 m), dir(1, 0, 0))
 //
 // The plane offset is deliberately NON-ZERO. With `plane_xy(0mm)` the whole
 // origin triple is three indistinguishable zeros, so the row cannot tell a
@@ -18,9 +18,8 @@
 // legible rather than merely present: the two SYNTHESIZED components print as
 // `0 m`, not a bare `0`, beside a distinct dimensioned third.
 //
-// Both rows show the SCOPE LOCK — the synthesized unit normal / direction stays
-// dimensionless (`vec(0, 0, 1)` / `vec(1, 0, 0)`), because a unit vector
-// legitimately has bare components (D3).
+// Both rows show the SCOPE LOCK — the synthesized unit normal / direction is a
+// Direction (`dir(0, 0, 1)` / `dir(1, 0, 0)`), dimensionless by type (D3).
 //
 // Declares its module explicitly, matching its two sibling fixtures.
 

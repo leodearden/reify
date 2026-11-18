@@ -1,0 +1,13 @@
+// direction_display_kernel_datum.ri — CLI eval fixture for direction-typing ε:
+// a kernel-minted Axis/Plane projects `.dir`/`.normal` as a Direction.
+
+module direction_display_kernel_datum
+
+structure def KernelDatumDirections {
+    let c = cylinder(3mm, 20mm)
+    let a : Axis = c.axis
+    let d = a.dir
+    let r = rectangle(40mm, 40mm)
+    let p : Plane = r.plane
+    let n = p.normal
+}
