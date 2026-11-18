@@ -922,6 +922,10 @@ async fn set_active_fea_case(
 }
 
 fn main() {
+    for (name, value) in reify_gui::webkit_env::defaults_to_apply(|n| std::env::var_os(n)) {
+        // SAFETY: runs first in main, before any thread exists.
+        unsafe { std::env::set_var(name, value) }
+    }
     let mut context = tauri::generate_context!();
     if let Err(e) =
         reify_gui::dev_url::retarget_to_vite_port_from_env(&mut context.config_mut().build)

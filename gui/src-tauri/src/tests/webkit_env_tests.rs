@@ -19,15 +19,24 @@ fn unset_variable_gets_the_default() {
 
 #[test]
 fn empty_value_counts_as_unset() {
-    assert_eq!(defaults_to_apply(lookup_with(DMABUF, "")), vec![(DMABUF, "1")]);
+    assert_eq!(
+        defaults_to_apply(lookup_with(DMABUF, "")),
+        vec![(DMABUF, "1")]
+    );
 }
 
 #[test]
 fn explicit_zero_is_never_overridden() {
-    assert_eq!(defaults_to_apply(lookup_with(DMABUF, "0")), Vec::<(&str, &str)>::new());
+    assert_eq!(
+        defaults_to_apply(lookup_with(DMABUF, "0")),
+        Vec::<(&str, &str)>::new()
+    );
 }
 
 #[test]
 fn explicit_one_needs_no_default() {
-    assert_eq!(defaults_to_apply(lookup_with(DMABUF, "1")), Vec::<(&str, &str)>::new());
+    assert_eq!(
+        defaults_to_apply(lookup_with(DMABUF, "1")),
+        Vec::<(&str, &str)>::new()
+    );
 }
