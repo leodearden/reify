@@ -1,13 +1,15 @@
 /**
- * Pure set helpers for the bridge-mock coverage guard: which bridge.ts runtime
- * exports the shared App factory neither mocks nor allowlists, and which
- * allowlist entries have rotted. The invariant they enforce, and why a gap in
- * it fails silently, are documented once in the consumer —
+ * Pure helpers for the bridge-mock coverage guard: which bridge.ts runtime
+ * exports the shared App factory neither mocks nor allowlists, which
+ * allowlist entries have rotted, and which App-rendering test files do not
+ * import the App harness. The invariant they enforce, and why a gap in it
+ * fails silently, are documented once in the consumer —
  * `bridgeMockCoverage.test.ts`. Not restated here.
  *
  * This file has no `.test.` segment, so vitest does not collect it as a suite
  * (same convention as `debugBridgeTestHelpers.ts`).
  */
+import { dirname, relative } from 'node:path';
 
 /**
  * Runtime exports covered by neither the factory nor the allowlist — i.e. the
@@ -43,5 +45,39 @@ export function staleOmissions(
   const covered = new Set(factoryKeys);
   return Object.keys(omissions)
     .filter((n) => !exported.has(n) || covered.has(n))
+    .sort();
+}
+
+/** A test file's path and its source text, read once by the caller. */
+export interface TestSource {
+  path: string;
+  source: string;
+}
+
+const DEFAULT_APP_IMPORT = /^import App\b[^;]*from '(\.\.\/)+App'/m;
+
+/** The membership criterion: a default import of App. A named-only import renders nothing. */
+export function defaultImportsApp(source: string): boolean {
+  return DEFAULT_APP_IMPORT.test(source);
+}
+
+function importSpecifier(fromFile: string, module: string): string {
+  const specifier = relative(dirname(fromFile), module);
+  return specifier.startsWith('.') ? specifier : `./${specifier}`;
+}
+
+/**
+ * Paths of the files that default-import App but import nothing from
+ * `harnessModule` (an absolute path without extension), by a named or a bare
+ * import. Sorted.
+ */
+export function harnessOffenders(files: readonly TestSource[], harnessModule: string): string[] {
+  return files
+    .filter(({ path, source }) => {
+      if (!defaultImportsApp(source)) return false;
+      const specifier = importSpecifier(path, harnessModule);
+      return !source.includes(`from '${specifier}'`) && !source.includes(`import '${specifier}'`);
+    })
+    .map(({ path }) => path)
     .sort();
 }

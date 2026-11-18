@@ -18,7 +18,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness, renderAndWaitForReady, oneFileState } from './appHarness/harness';
+import { renderAndWaitForReady, oneFileState } from './appHarness/harness';
 import {
   capturedDualViewportProps,
   mockFlyToEntity,
@@ -26,8 +26,6 @@ import {
   capturedEditorScrollToLocation,
   capturedEditorOnShowReferences,
 } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 describe('App navigation wiring', () => {
   const testState = makeGuiState({

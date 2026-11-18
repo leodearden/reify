@@ -19,14 +19,12 @@ import App from '../App';
 import * as bridge from '../bridge';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import { initDebugBridge as mockedInitDebugBridge } from '../debug';
-import { primeAppHarness, renderAndWaitForReady, oneFileState } from './appHarness/harness';
+import { renderAndWaitForReady, oneFileState } from './appHarness/harness';
 import {
   capturedDualViewportProps,
   capturedEditorStore,
   capturedEditorOnOpen,
 } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 describe('App launcher Start view (alpha-spine β)', () => {
   beforeEach(() => {

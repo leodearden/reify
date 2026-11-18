@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen } from '@solidjs/testing-library';
 import { readFileSync } from 'node:fs';
 
@@ -12,6 +12,7 @@ vi.mock('../debug', async () => (await import('./appHarness/moduleMocks')).debug
 vi.mock('../stores/sidecarPersistence', async () => (await import('./appHarness/moduleMocks')).sidecarPersistenceMock());
 vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./appHarness/moduleMocks')).viewPersistenceMock(await importOriginal()));
 
+import * as bridge from '../bridge';
 import { Viewport, DualViewport, MultiViewport } from '../viewport';
 import { Editor } from '../editor/Editor';
 import { FileTabs } from '../editor/FileTabs';
@@ -25,8 +26,6 @@ import {
   renderAndWaitForReady,
 } from './appHarness/harness';
 import * as stubs from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 const SENTINEL = Symbol('persistent override');
 const ONCE = Symbol('queued once');
@@ -54,6 +53,24 @@ describe('primeAppHarness resets every harness-mocked export to its table defaul
     const first = exported();
     expect(first).not.toBe(ONCE);
     expect(first).not.toBe(SENTINEL);
+  });
+});
+
+describe('importing the harness primes every test of the importing file', () => {
+  const PLANTED_KEY = 'appHarness.planted';
+
+  afterEach(() => {
+    localStorage.setItem(PLANTED_KEY, 'leaked');
+    vi.mocked(bridge.getEntityTree)
+      .mockImplementation(() => SENTINEL as never)
+      .mockReturnValueOnce(ONCE as never);
+  });
+
+  // The two runs are adjacent in any order, so the second always starts after the first's plant.
+  it.each(['one', 'two'])('run %s starts from the table defaults, with no beforeEach in this file', () => {
+    expect(localStorage.getItem(PLANTED_KEY)).toBeNull();
+    expect(vi.mocked(bridge.getEntityTree).getMockImplementation()).toBe(APP_BRIDGE_DEFAULTS.getEntityTree);
+    expect(bridge.getEntityTree()).not.toBe(ONCE);
   });
 });
 

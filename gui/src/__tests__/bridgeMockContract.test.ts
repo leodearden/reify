@@ -1,8 +1,9 @@
 /**
- * Unit tests for the pure set helpers in `bridgeMockContract` — the
- * set-difference logic behind the `bridgeMockCoverage` structural guard.
+ * Unit tests for the pure helpers in `bridgeMockContract` — the set-difference
+ * and harness-membership logic behind the `bridgeMockCoverage` structural
+ * guard.
  *
- * Synthetic array input only: no vitest module mocks, no App render, no
+ * Synthetic input only: no vitest module mocks, no App render, no
  * filesystem. "The detector actually fires" is asserted MECHANICALLY here, by
  * replaying the three historical defects it exists to prevent —
  * `onModeShapeFrame` dropped from App.test.tsx's then-inline factory
@@ -11,7 +12,7 @@
  * `syncDemand` dropped (task 6045) — rather than being claimed in a comment.
  */
 import { describe, it, expect } from 'vitest';
-import { missingFactoryKeys, staleOmissions } from './bridgeMockContract';
+import { harnessOffenders, missingFactoryKeys, staleOmissions } from './bridgeMockContract';
 
 /** An export universe shaped like the shared App factory's, trimmed to the names under test. */
 const APP_SHAPED_EXPORTS = [
@@ -132,5 +133,40 @@ describe('staleOmissions', () => {
 
   it('returns [] for an empty allowlist', () => {
     expect(staleOmissions(runtimeExports, ['ask'], {})).toStrictEqual([]);
+  });
+});
+
+describe('harnessOffenders', () => {
+  const harnessModule = '/gui/src/__tests__/appHarness/harness';
+  const appImport = "import App from '../App';\n";
+
+  it('reports a file that default-imports App without importing the harness', () => {
+    const files = [{ path: '/gui/src/__tests__/App.x.test.tsx', source: appImport }];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual(['/gui/src/__tests__/App.x.test.tsx']);
+  });
+
+  it('ignores a file whose App import is named-only, since it renders nothing', () => {
+    const files = [{ path: '/gui/src/__tests__/autoView.test.ts', source: "import { computePaneGroups } from '../App';\n" }];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([]);
+  });
+
+  it('accepts a named or a bare harness import, resolved from the file\'s own directory', () => {
+    const files = [
+      { path: '/gui/src/__tests__/App.named.test.tsx', source: `${appImport}import { renderAndWaitForReady } from './appHarness/harness';\n` },
+      { path: '/gui/src/__tests__/App.bare.test.tsx', source: `${appImport}import './appHarness/harness';\n` },
+      { path: '/gui/src/__tests__/nested/App.deep.test.tsx', source: "import App from '../../App';\nimport '../appHarness/harness';\n" },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([]);
+  });
+
+  it('reports a nested file whose harness specifier does not resolve from its directory, sorted with the rest', () => {
+    const files = [
+      { path: '/gui/src/__tests__/nested/App.deep.test.tsx', source: "import App from '../../App';\nimport './appHarness/harness';\n" },
+      { path: '/gui/src/__tests__/App.a.test.tsx', source: appImport },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([
+      '/gui/src/__tests__/App.a.test.tsx',
+      '/gui/src/__tests__/nested/App.deep.test.tsx',
+    ]);
   });
 });

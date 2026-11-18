@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
 import { flushMacrotasks, deferred, withSuppressedRejectionsAndErrorSpy } from './test-utils';
@@ -17,9 +17,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
-
-beforeEach(primeAppHarness);
+import { renderAndWaitForReady } from './appHarness/harness';
 
 describe('App handleSetParameter error handling', () => {
   it('shows error toast when bridge.setParameter rejects', async () => {

@@ -30,12 +30,15 @@
  * the per-test priming alike, so nothing else notices it.
  *
  * ── Why no override can leak ─────────────────────────────────────────────────
- * `primeAppHarness` resets EVERY factory key to its table default before each
- * test (`mockReset().mockImplementation(default)`), dropping persistent and
- * queued *Once overrides alike. The old truth-table row "factory key present,
- * beforeEach restore missing -> an override leaks into every later test" can
- * therefore not occur, and needs no per-override detector.
- * appHarness.test.tsx pins that behaviour.
+ * Importing appHarness/harness registers `beforeEach(primeAppHarness)` in the
+ * importing file, and `primeAppHarness` resets EVERY factory key to its table
+ * default (`mockReset().mockImplementation(default)`), dropping persistent and
+ * queued *Once overrides alike. So in every file that imports the harness —
+ * which the membership check below requires of every file that renders <App />
+ * — the old truth-table row "factory key present, beforeEach restore missing
+ * -> an override leaks into every later test" cannot occur, and needs no
+ * per-override detector. appHarness.test.tsx pins both the reset and the
+ * import-time registration.
  *
  * ── Standing rules ───────────────────────────────────────────────────────────
  * 1. A new bridge.ts runtime export gets a key in APP_BRIDGE_DEFAULTS, OR an
@@ -51,7 +54,8 @@
  *    default in its own body or its describe's beforeEach, never by editing
  *    the table for one test.
  * 4. A test file that renders <App /> writes the nine APP_HARNESS_INSTALL_LINES
- *    and `beforeEach(primeAppHarness)`.
+ *    and imports appHarness/harness; a bare `import './appHarness/harness';`
+ *    is enough, because the import itself registers the priming.
  *
  * Shape mirrors `debugParity.test.ts` — the house pattern for "two artifacts
  * must stay in lockstep, with documented legitimate asymmetries": mock the
@@ -78,14 +82,14 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
 
 // REAL module (the three mocks above only stub its Tauri dependencies).
 import * as bridge from '../bridge';
 
 import { APP_BRIDGE_DEFAULTS } from './appHarness/moduleMocks';
 import { APP_HARNESS_INSTALL_LINES } from './appHarness/installLines';
-import { missingFactoryKeys, staleOmissions } from './bridgeMockContract';
+import { defaultImportsApp, harnessOffenders, missingFactoryKeys, staleOmissions } from './bridgeMockContract';
 
 /**
  * Authoritative export list. `Object.keys` on the real ESM namespace needs no
@@ -194,7 +198,6 @@ describe('bridge-mock coverage: bridge.ts runtime exports ↔ the shared App har
 describe('App harness membership', () => {
   const testsRoot = __dirname;
   const harnessModule = join(testsRoot, 'appHarness', 'harness');
-  const DEFAULT_APP_IMPORT = /^import App\b[^;]*from '(\.\.\/)+App'/m;
   const DIRECT_APP_RENDER = /render\(\(\) => <App \/>\)/;
 
   function testFilesUnder(dir: string): string[] {
@@ -205,32 +208,24 @@ describe('App harness membership', () => {
     });
   }
 
-  function harnessSpecifierFrom(file: string): string {
-    const specifier = relative(dirname(file), harnessModule);
-    return specifier.startsWith('.') ? specifier : `./${specifier}`;
-  }
-
-  const testFiles = testFilesUnder(testsRoot);
-  const appRenderingFiles = testFiles.filter((file) => DEFAULT_APP_IMPORT.test(readFileSync(file, 'utf-8')));
+  const testSources = testFilesUnder(testsRoot).map((path) => ({ path, source: readFileSync(path, 'utf-8') }));
   const relativeName = (file: string) => relative(testsRoot, file);
+  const namesWhere = (keep: (source: string) => boolean) =>
+    testSources.filter(({ source }) => keep(source)).map(({ path }) => relativeName(path));
 
   it('selects every test file that renders <App /> directly, App.test.tsx among them', () => {
-    const directRenderers = testFiles.filter((file) => DIRECT_APP_RENDER.test(readFileSync(file, 'utf-8')));
-    const selected = appRenderingFiles.map(relativeName);
+    const selected = namesWhere(defaultImportsApp);
     expect(selected).toContain('App.test.tsx');
-    expect(selected).toEqual(expect.arrayContaining(directRenderers.map(relativeName)));
+    expect(selected).toEqual(expect.arrayContaining(namesWhere((source) => DIRECT_APP_RENDER.test(source))));
   });
 
   it('every test file that renders <App /> installs the shared App harness', () => {
-    const offenders = appRenderingFiles
-      .filter((file) => !readFileSync(file, 'utf-8').includes(`from '${harnessSpecifierFrom(file)}'`))
-      .map(relativeName);
     expect(
-      offenders,
+      harnessOffenders(testSources, harnessModule).map(relativeName),
       'These files render <App /> without the shared App harness. Write these nine lines in each ' +
-        '(specifiers as seen from gui/src/__tests__/), import from the harness, and prime it:\n  ' +
-        Object.values(APP_HARNESS_INSTALL_LINES).join('\n  ') +
-        '\n  beforeEach(primeAppHarness);',
+        '(specifiers as seen from gui/src/__tests__/), then import the harness; a bare ' +
+        "`import './appHarness/harness';` is enough, as the import registers the per-test priming:\n  " +
+        Object.values(APP_HARNESS_INSTALL_LINES).join('\n  '),
     ).toStrictEqual([]);
   });
 });

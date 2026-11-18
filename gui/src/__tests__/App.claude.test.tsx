@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import { withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 import { published } from './test_utils/publishedState';
@@ -16,9 +16,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness } from './appHarness/harness';
-
-beforeEach(primeAppHarness);
+import './appHarness/harness';
 
 describe('App Claude error handling', () => {
   let consoleSpy: ReturnType<typeof vi.spyOn> | undefined;

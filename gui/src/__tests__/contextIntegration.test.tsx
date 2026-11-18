@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 
 vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
@@ -19,7 +19,7 @@ import * as bridge from '../bridge';
 import type { ConstraintData, ValueData, EvaluationStatus } from '../types';
 import { published } from './test_utils/publishedState';
 import { makeGuiState } from './test_utils/guiState';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 
 function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
   return createClaudeStore({
@@ -51,8 +51,6 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     freshness: overrides.freshness ?? 'final',
   };
 }
-
-beforeEach(primeAppHarness);
 
 describe('Context integration', () => {
   it('ChatPanel with violated constraints enables "Violated constraints" context picker option', () => {

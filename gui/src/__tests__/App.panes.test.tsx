@@ -19,11 +19,9 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import { computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedMultiViewportProps } from './appHarness/renderStubs';
 import { makeMesh } from './test_utils/meshData';
-
-beforeEach(primeAppHarness);
 
 // ── computePaneGroups unit tests (task-4767 δ) ───────────────────────────────
 

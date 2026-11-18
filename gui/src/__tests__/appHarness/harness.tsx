@@ -1,8 +1,9 @@
 // Binds a test file that renders <App /> to the shared App harness mocks: the
-// import-time check that they are installed, the per-test priming, and the
-// render helpers. Import it only from a file that writes the nine
-// APP_HARNESS_INSTALL_LINES; the rules live in bridgeMockCoverage.test.ts.
-import { vi, expect } from 'vitest';
+// import-time check that they are installed, the per-test priming that
+// importing this module registers, and the render helpers. Import it only from
+// a file that writes the nine APP_HARNESS_INSTALL_LINES; the rules live in
+// bridgeMockCoverage.test.ts.
+import { vi, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@solidjs/testing-library';
 import * as tauriCore from '@tauri-apps/api/core';
 import * as tauriEvent from '@tauri-apps/api/event';
@@ -121,10 +122,10 @@ for (const { specifier, namespace, stubs } of RENDER_STUB_MODULES) {
 }
 
 /**
- * Per-test reset, run as `beforeEach(primeAppHarness)`: clears call history,
- * localStorage, fake timers and the render-stub captures, then resets every
- * export of every harness-mocked module to its table default. The reset drops
- * persistent and queued *Once overrides alike.
+ * Per-test reset, which importing this module registers as a `beforeEach`:
+ * clears call history, localStorage, fake timers and the render-stub captures,
+ * then resets every export of every harness-mocked module to its table
+ * default. The reset drops persistent and queued *Once overrides alike.
  */
 export function primeAppHarness(): void {
   vi.clearAllMocks();
@@ -147,6 +148,11 @@ export function primeAppHarness(): void {
     }
   }
 }
+
+// The import-time checks above throw unless the importer installed the mocks
+// with vi.mock, which places it in the fresh-modules project. There each test
+// file evaluates this module afresh, so this registers once per importing file.
+beforeEach(primeAppHarness);
 
 /** Helper: render App and wait for init to complete (ready state). */
 export async function renderAndWaitForReady() {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import { flushMacrotasks } from './test-utils';
 
@@ -17,10 +17,8 @@ import * as bridge from '../bridge';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedDualViewportProps } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 // ---------------------------------------------------------------------------
 // Persistence wiring tests (steps 29–38)

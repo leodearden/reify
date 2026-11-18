@@ -22,15 +22,13 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 import App from '../App';
 import * as bridge from '../bridge';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 import {
   capturedDualViewportProps,
   capturedMultiViewportProps,
   mockViewportFitToView,
 } from './appHarness/renderStubs';
 import { makeMesh } from './test_utils/meshData';
-
-beforeEach(primeAppHarness);
 
 // ── MechanismPanel integration (step-21) ─────────────────────────────────────
 

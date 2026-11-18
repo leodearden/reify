@@ -17,14 +17,12 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 import {
   capturedEditorStore,
   capturedEditorScrollToLocation,
   capturedEditorCompileDiagnostics,
 } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 describe('App serialization-error subscription', () => {
   let serializationErrorCallback: ((data: { item_type: string; item_id: string; error: string }) => void) | undefined;

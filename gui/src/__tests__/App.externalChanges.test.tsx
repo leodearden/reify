@@ -20,10 +20,8 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness } from './appHarness/harness';
+import './appHarness/harness';
 import { capturedEditorStore, capturedEditorLiveContentRef } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 // ─── externallyChanged wiring in App.tsx ─────────────────────────────────────
 

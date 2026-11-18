@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import type { GuiState, PublishedState, ValueData } from '../types';
 import { flushMacrotasks, deferred, withSuppressedRejectionsAndErrorSpy } from './test-utils';
@@ -20,9 +20,7 @@ import * as bridge from '../bridge';
 import { listen } from '@tauri-apps/api/event';
 import { initDebugBridge } from '../debug/bridge';
 import { initDebugBridge as mockedInitDebugBridge } from '../debug';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
-
-beforeEach(primeAppHarness);
+import { renderAndWaitForReady } from './appHarness/harness';
 
 describe('App initial state loading', () => {
   it('calls getInitialState on mount and populates store values into PropertyEditor', async () => {

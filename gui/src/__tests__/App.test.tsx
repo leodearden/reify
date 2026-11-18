@@ -19,15 +19,13 @@ import App from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import { VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
-import { primeAppHarness, renderAndWaitForReady, oneFileState } from './appHarness/harness';
+import { renderAndWaitForReady, oneFileState } from './appHarness/harness';
 import {
   capturedDualViewportProps,
   capturedMultiViewportProps,
   mockViewportFitToView,
 } from './appHarness/renderStubs';
 import { makeMesh } from './test_utils/meshData';
-
-beforeEach(primeAppHarness);
 
 describe('App layout wiring', () => {
   it('renders app-layout container', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@solidjs/testing-library';
 import { flushMacrotasks, withSuppressedRejections } from './test-utils';
 import { published } from './test_utils/publishedState';
@@ -16,10 +16,8 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
-import { primeAppHarness, renderAndWaitForReady } from './appHarness/harness';
+import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedEditorStore, capturedEditorOnOpen } from './appHarness/renderStubs';
-
-beforeEach(primeAppHarness);
 
 describe('App file picker integration (E-6)', () => {
   it('calls pickSavePath then exportGeometry with the chosen path', async () => {
