@@ -347,6 +347,10 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
    `UnitResolveError::DimensionOverflow`, never a panic or a wrapped dimension.
    A value-level `*` or `/` whose combined dimension does not fit `Rational`
    (`1m^1/31 * 1m^1/37 * 1m^1/41`) is the compile error `DimensionExponentOverflow` and
-   evaluates to `Undef`. The value-level `^` (#9696) and the builtin dimension
-   combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`; #9796) do not have this
-   guarantee yet.
+   evaluates to `Undef`. That guarantee covers only those two paths. Any other caller of
+   the panicking `DimensionVector::mul`/`div`/`pow`/`root` (or of `Rational`'s `+`/`-`)
+   panics on such an overflow, in release builds as well as debug, instead of reporting
+   a diagnostic or `Undef`. Examples, not a complete list: the value-level `^` (#9696);
+   the builtin dimension combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`, the
+   stress invariants; #9796); `determinant`; and the `*`/`/` folds of type-level
+   dimension aliases.
