@@ -22,6 +22,10 @@ armed over exactly the one .deb and one .AppImage it publishes, and a red proof
 leaves no tag, release or closed issue, on a re-run too. ProofArmChain drives
 the REAL proof with the same arm env and a failing stub docker, so a renamed arm
 variable reds instead of shipping behind an all-skipped green.
+
+The tag invariant (task 10104): a tag that already exists must name the HEAD the
+release built and proved, in preflight and again just before the push. TagAtPush
+moves the tag during the build, a window only the second check can see.
 """
 
 import json
@@ -377,6 +381,26 @@ class ProofGate(ReleaseCase):
                         .replace("@APPIMAGE@", str(self.fx.deb)), encoding="utf-8")
         self.assert_refused(self.fx.run_release(), "expected one .deb and one .AppImage")
         self.assertEqual(self.fx.proof_calls(), [])
+
+
+class TagAtPush(ReleaseCase):
+    """The tag pushed and released is re-checked against the HEAD that was
+    built and proved immediately before the push, not only in preflight."""
+
+    def test_a_tag_moved_off_head_during_the_build_is_refused_before_the_push(self):
+        moved_to = self.fx.git("rev-parse", "HEAD")
+        self.fx.git("commit", "-q", "--allow-empty", "-m", "built and proved")
+        stub = self.fx.repo / "scripts" / "build-bundle.sh"
+        tag_during_build = f"git tag -a {TAG} -m {TAG} {moved_to}\n"
+        stub.write_text(stub.read_text(encoding="utf-8") + tag_during_build, encoding="utf-8")
+        proc = self.fx.run_release()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn(f"tag {TAG} exists and does not point at HEAD", proc.stderr)
+        # One proof call: preflight passed and the window was crossed, so the check
+        # just before the push is what refused.
+        self.assertEqual(len(self.fx.proof_calls()), 1)
+        self.assertIsNone(self.fx.remote_tag_type())
+        self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
 
 
 class RealTree(unittest.TestCase):
