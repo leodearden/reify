@@ -246,7 +246,7 @@ fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
 }
 
 #[test]
-fn each_parse_error_line_names_the_file_it_is_in_when_several_are_fixed() {
+fn each_parse_error_line_leads_with_its_file_line_and_column_when_several_are_fixed() {
     let dir = tempdir().expect("tempdir");
     let broken = write_ri(dir.path(), "broken.ri", BROKEN);
     let plate = write_ri(dir.path(), "plate.ri", PLATE);
@@ -258,12 +258,42 @@ fn each_parse_error_line_names_the_file_it_is_in_when_several_are_fixed() {
         .filter(|line| line.contains("Parse error"))
         .collect();
     assert!(!parse_errors.is_empty(), "{}", describe(&output));
-    let lead = format!("{broken}: Parse error: ");
-    assert!(
-        parse_errors.iter().all(|line| line.starts_with(&lead)),
-        "{}",
-        describe(&output)
-    );
+    let last_line = BROKEN.matches('\n').count() + 1;
+    for reported in parse_errors {
+        let located = reported
+            .strip_prefix(&format!("{broken}:"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{reported:?} must lead with its file\n{}",
+                    describe(&output)
+                )
+            });
+        let (line, col, message) = located
+            .split_once(':')
+            .and_then(|(line, rest)| {
+                let (col, message) = rest.split_once(':')?;
+                Some((
+                    line.parse::<usize>().ok()?,
+                    col.parse::<usize>().ok()?,
+                    message,
+                ))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{reported:?} must give a line and column after its file\n{}",
+                    describe(&output)
+                )
+            });
+        assert!(
+            (1..=last_line).contains(&line) && col >= 1,
+            "{reported:?} must locate a position in the file\n{}",
+            describe(&output)
+        );
+        let message = message.strip_prefix(" Parse error: ").unwrap_or_else(|| {
+            panic!("{reported:?} must label its message\n{}", describe(&output))
+        });
+        assert!(!message.is_empty(), "{}", describe(&output));
+    }
 }
 
 #[test]

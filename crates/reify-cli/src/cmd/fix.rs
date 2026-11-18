@@ -70,7 +70,9 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     };
     let parsed = reify_compiler::parse_with_stdlib(&source, crate::module_path_for_file(path));
     if !parsed.errors.is_empty() {
-        crate::report_parse_errors_in(path, parsed.render_errors(&source), &mut std::io::stderr());
+        for line in parsed.render_errors_in(path, crate::PARSE_ERROR_LABEL, &source) {
+            eprintln!("{line}");
+        }
         return false;
     }
 

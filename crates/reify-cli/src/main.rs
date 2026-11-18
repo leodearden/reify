@@ -107,12 +107,15 @@ fn main() -> ExitCode {
     }
 }
 
-/// The label on every parse-error line the CLI writes.
+/// The label on every parse-error line the CLI writes: the single-file lines
+/// `report_parse_errors` writes, and the GNU `path:line:col:` lines `cmd::fix` renders through
+/// `ParsedModule::render_errors_in`.
 const PARSE_ERROR_LABEL: &str = "Parse error";
 
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
 /// gets, so every program-compiling command writes the same prefix and exits the same way.
-/// The label in that prefix is `PARSE_ERROR_LABEL`, shared with `report_parse_errors_in`.
+/// The label in that prefix is `PARSE_ERROR_LABEL`, shared with the GNU `path:line:col:` lines
+/// `cmd::fix` renders through `ParsedModule::render_errors_in`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
@@ -132,14 +135,6 @@ fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> 
         let _ = writeln!(out, "{PARSE_ERROR_LABEL}: {error}");
     }
     ExitCode::FAILURE
-}
-
-/// Writes `report_parse_errors`' lines, each led by `path`, for a command that reports on
-/// several files in one run; the caller owns the failure.
-fn report_parse_errors_in(path: &str, rendered: Vec<String>, out: &mut impl std::io::Write) {
-    for error in rendered {
-        let _ = writeln!(out, "{path}: {PARSE_ERROR_LABEL}: {error}");
-    }
 }
 
 /// The module path a file's own name gives it: its stem as a single segment.
@@ -424,20 +419,6 @@ mod tests {
             printed.lines().any(|l| l.starts_with(&expected_prefix)),
             "at least one report must land on line {fault_line}, where the fixture's `@@@` \
              fault sits; got {printed:?}"
-        );
-    }
-
-    #[test]
-    fn report_parse_errors_in_leads_each_rendered_error_with_its_file() {
-        let mut out = Vec::new();
-        report_parse_errors_in(
-            "f.ri",
-            vec!["2:20: a".to_string(), "5:1: b".to_string()],
-            &mut out,
-        );
-        assert_eq!(
-            String::from_utf8(out).expect("CLI output must be UTF-8"),
-            "f.ri: Parse error: 2:20: a\nf.ri: Parse error: 5:1: b\n"
         );
     }
 
