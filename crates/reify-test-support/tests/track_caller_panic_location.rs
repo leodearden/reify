@@ -341,3 +341,33 @@ fn compile_template_missing_name_panic_reports_caller_not_helpers_rs() {
 
     assert_attributed_here(&site, "not found");
 }
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn eval_source_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::eval_source(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn check_source_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::check_source(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn check_source_with_stdlib_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::check_source_with_stdlib(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
