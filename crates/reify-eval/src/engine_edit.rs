@@ -1997,6 +1997,22 @@ impl Engine {
                                 self,
                             ),
                         );
+                        // #8102: a sub-instance cell mints in its instance's scope.
+                        let val = if !matches!(val, Value::Undef) {
+                            val
+                        } else {
+                            match (InstanceMintScope {
+                                graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            })
+                            .mint_undef_instance_cell(vcid, node.kind, expr)
+                            {
+                                InstanceMint::InstanceCell(minted) => minted,
+                                InstanceMint::NotAnInstanceCell => Value::Undef,
+                            }
+                        };
 
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
