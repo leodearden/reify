@@ -166,14 +166,36 @@ def is_glibc(soname: str) -> bool:
     return soname in GLIBC_SONAMES or soname.startswith("ld-linux")
 
 
+def _describe_undefined(undefined: UndefinedSymbol) -> str:
+    symbol = (undefined.symbol if undefined.version is None
+              else f"{undefined.symbol}, version {undefined.version}")
+    return f"{symbol} (referenced by {undefined.referrer})"
+
+
+def require_bound_symbols(report: LddReport) -> None:
+    """Raise ClosureError if the report names any undefined symbol."""
+    if not report.undefined:
+        return
+    raise ClosureError(
+        "the bundled layout leaves symbols that no loaded object defines: "
+        + "; ".join(sorted(map(_describe_undefined, report.undefined)))
+        + ". The usual cause is a bundled copy of a library, taken from the first "
+        "binary in precedence order, that lacks a symbol which a later binary's "
+        "dependency chain imports, because that binary resolves the library to a "
+        "different host file")
+
+
 def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[str]:
     """Stage sonames until the target reports none missing or version-short.
 
     probe(staged) stages exactly `staged` on the target and returns its ldd
-    report; host_resolved says which sonames the host can supply."""
+    report; host_resolved says which sonames the host can supply. An undefined
+    symbol in any round's report is a ClosureError, never a gap: it names the
+    object referencing it, so there is no soname to stage."""
     staged: frozenset[str] = frozenset()
     while True:
         report = probe(staged)
+        require_bound_symbols(report)
         gap = report.missing | report.version_short
         if not gap:
             return staged
