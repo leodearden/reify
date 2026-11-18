@@ -1029,3 +1029,52 @@ fn edit_source_resolution_reseed_mints_an_override_free_instance_like_a_cold_eva
     assert_edited_body_like_cold(&after_edit, &cold, "SrcOuter.same");
     assert_edited_selector_like_cold(&after_edit, &cold, "SrcOuter.same");
 }
+
+/// A template whose `body` reads, through `w2`, a member of a guarded group.
+const GUARDED_WIDTH: &str = r#"
+    structure HInner {
+        param thick : Bool = true
+        param len : Length = 10mm
+        where thick {
+            let w = len * 2.0
+        } else {
+            let w = len
+        }
+        let w2 = w * 1.0
+        let body = box(w2, 10mm, 10mm)
+        let s = face(body, "x_max")
+    }
+
+    structure HOuter {
+        sub same = HInner()
+    }
+"#;
+
+/// Flipping the guard re-evaluates the instance cells below `w` in
+/// `edit_param`'s post-wave2 guard-member reseed, which commits them as cold
+/// eval's guarded-cone pass does: minting there alone would commit a handle
+/// cold does not.
+#[test]
+fn edit_param_guard_flip_leaves_instance_cells_below_a_guarded_member_as_a_cold_eval_does() {
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
+        GUARDED_WIDTH,
+        &ValueCellId::new("HInner", "thick"),
+        Value::Bool(false),
+    );
+
+    assert_ne!(
+        cell(&before, "HOuter.same", "w2"),
+        cell(&after_edit, "HOuter.same", "w2"),
+        "premise: the guard flip must change HOuter.same.w2, or the edit never \
+         re-evaluated the instance cells below the guarded member"
+    );
+    for member in ["w2", "body", "s"] {
+        let id = ValueCellId::new("HOuter.same", member);
+        assert_eq!(
+            after_edit.values.get(&id),
+            cold.values.get(&id),
+            "HOuter.same.{member} after the guard flip must equal a cold eval's"
+        );
+    }
+}
