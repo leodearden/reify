@@ -140,6 +140,8 @@ mod core_state {
     ///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
     ///   leaves it unchanged)
     /// - `commit_check` — single-field commit for `last_check` (used by `preview_parameter`)
+    /// - `adopt_uncompiled_file` — the session's file with no module compiled (used by
+    ///   `EngineSession::open_document` for a source the engine rejected)
     ///
     /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
     /// invariant-bearing fields.  The `#[cfg(test)]` mutators (`break_module_name`,
@@ -293,6 +295,20 @@ mod core_state {
             }
         }
 
+        /// Make `path` the session's file with no module compiled: the open
+        /// of a file whose source the engine rejected.
+        ///
+        /// Clears `compiled`, `last_check`, `module_name` and `source_map`, so
+        /// nothing of the previous document survives, and sets `file_path` so
+        /// the next compile is anchored at — and named after — `path`.
+        pub(crate) fn adopt_uncompiled_file(&mut self, path: PathBuf) {
+            self.compiled = None;
+            self.last_check = None;
+            self.module_name = None;
+            self.source_map.clear();
+            self.file_path = Some(path);
+        }
+
         // ---- Test-only mutators (cfg(test)) ---------------------------------
         //
         // Each method mirrors an existing `EngineSession::*_for_test` helper,
@@ -436,8 +452,9 @@ pub(crate) struct CompileFailure {
 /// field assignment from outside `CoreState`'s impl fails to compile.  The only
 /// commit points that touch the five invariant-bearing fields are `commit_state`
 /// (five-field atomic commit, `file_path` updated via `FilePathUpdate::Set` /
-/// preserved via `FilePathUpdate::Preserve`) and `commit_check`
-/// (single-field `last_check`); `engine_mut()` does not touch those fields,
+/// preserved via `FilePathUpdate::Preserve`), `commit_check`
+/// (single-field `last_check`) and `adopt_uncompiled_file` (the file with no
+/// module compiled); `engine_mut()` does not touch those fields,
 /// and the `#[cfg(test)]` mutators are intentional invariant-breakers absent from
 /// production builds — the poison-recovery property holds in production.
 /// See `engine_lock.rs` for the rationale.
@@ -446,9 +463,9 @@ pub struct EngineSession {
     ///
     /// Fields are strictly private — direct assignment from outside `CoreState`'s
     /// impl fails to compile.  Use `commit_state` (five-field atomic commit,
-    /// `file_path` updated via `FilePathUpdate::Set` / preserved via `FilePathUpdate::Preserve`)
-    /// or `commit_check` (single-field
-    /// `last_check`) to commit the invariant-bearing fields atomically.
+    /// `file_path` updated via `FilePathUpdate::Set` / preserved via `FilePathUpdate::Preserve`),
+    /// `commit_check` (single-field `last_check`) or `adopt_uncompiled_file`
+    /// (the file with no module compiled) to commit the invariant-bearing fields.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
@@ -560,15 +577,17 @@ pub struct EngineSession {
     solver_progress_sink: Option<Arc<dyn reify_eval::SolverProgressSink>>,
     /// Error message from the most recent failed hot-reload attempt, or `None`
     /// when no failure is recorded (after construction, after a successful
-    /// `commit_state` cycle, or before any reload has been attempted).
+    /// `commit_state` cycle or a rejected `open_document`, or before any
+    /// reload has been attempted).
     ///
     /// Set by `record_reload_error` at the `commands::update_source_impl`
     /// chokepoint: inside the failing reload's own lock for a compile error,
     /// and in a second acquisition — after `with_engine_lock` has converted it
     /// to `Err` — for a `check()` panic.  Covers both paths uniformly.
     ///
-    /// Cleared in `commit_state` (alongside `compile_failure`) so any
-    /// successful reeval auto-resets staleness.
+    /// Cleared by `reset_document_state` (alongside `compile_failure`), which
+    /// every document change runs, so any successful reeval auto-resets
+    /// staleness.
     ///
     /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
     /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
@@ -614,7 +633,9 @@ pub struct EngineSession {
     /// `Undef` on a no-edit re-render.
     ///
     /// Three invalidation triggers, and only three:
-    /// * `commit_state` — unconditional `clear()` on every recompile;
+    /// * `reset_document_state` — unconditional `clear()` on every document
+    ///   change: every recompile (`commit_state`) and `open_document`'s
+    ///   adoption of a rejected file;
     /// * `sync_demand` — drops entries for entities the frontend no longer
     ///   declares visible. This is where arch §8 ("a pruned realization's cached
     ///   result is never served as Final") is discharged, so every entry reaching
@@ -945,6 +966,17 @@ fn parse_entry(
         ));
     }
     Ok(parsed)
+}
+
+/// A `.ri` file's text and the module name its stem gives it.
+fn read_module_file(path: &Path) -> Result<(String, &str), String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
+    let module_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+    Ok((source, module_name))
 }
 
 /// The GUI's one active cfg: the compiling host's (PRD resolution-unification
@@ -3095,14 +3127,12 @@ impl EngineSession {
     /// Unlike `load_from_source`, the file anchors the compile: an entry that
     /// follows an import compiles as a program whose imports resolve from the
     /// file's directory (see [`compile_buffer`]).
+    ///
+    /// A source the engine rejects is refused: the `Err` carries the rejection
+    /// and the previous document stays loaded. The GUI's open, which adopts
+    /// such a file instead, is [`Self::open_document`].
     pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
-
-        let module_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unnamed");
+        let (source, module_name) = read_module_file(path)?;
 
         // `path.to_path_buf()` is evaluated as a call argument — before reload
         // runs — so a panic in it lands in the pre-commit window: nothing is written.
@@ -3112,6 +3142,39 @@ impl EngineSession {
             &source,
             FilePathUpdate::Set(path.to_path_buf()),
         )
+    }
+
+    /// Open a .ri file as the session's document: the GUI's open.
+    ///
+    /// `Err` only when the file cannot be read; the session is then unchanged.
+    /// A source the engine accepts loads exactly as in [`Self::load_file`]. A
+    /// source it rejects still becomes the session's document, so the editor
+    /// can repair it in place: the previous document is dropped, `path`
+    /// becomes the session's file with no module compiled, and the rejection
+    /// is recorded as a cold start. The returned state is then the failing
+    /// buffer and its diagnostics with no geometry, and a later
+    /// [`Self::update_source`] compiles the repaired text as this file,
+    /// anchored at its directory.
+    pub fn open_document(&mut self, path: &Path) -> Result<GuiState, String> {
+        let (source, module_name) = read_module_file(path)?;
+        match compile_buffer(Some(path), &source, module_name) {
+            Ok(compiled) => self.reload_compiled(
+                compiled,
+                module_name,
+                &source,
+                FilePathUpdate::Set(path.to_path_buf()),
+            ),
+            Err(rejection) => {
+                // Adopt before recording: `record_compile_failure` classifies
+                // by `compiled`, which the adoption clears, so the failure is
+                // a ColdStart — the only kind `build_gui_state`'s
+                // nothing-compiled branch accepts.
+                self.core.adopt_uncompiled_file(path.to_path_buf());
+                self.reset_document_state();
+                self.record_compile_failure(rejection.diags, &source, module_name);
+            }
+        }
+        self.build_gui_state()
     }
 
     /// Update source code and re-evaluate from scratch.
@@ -3156,13 +3219,18 @@ impl EngineSession {
         self.reload(compiled, module_name, content, FilePathUpdate::Preserve)
     }
 
-    /// The one reload pipeline, shared by every whole-file entry point
-    /// (`load_from_source`, `load_file`, `update_source`).
+    /// The reload pipeline of the whole-file entry points that refuse a
+    /// rejected source (`load_from_source`, `load_file`, `update_source`).
     ///
     /// A rejected compile is recorded for the diagnostics panel (see
     /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
     /// nothing else is touched — no check, no commit, no telemetry. An accepted
     /// compile runs [`Self::reload_compiled`], then builds the new state.
+    ///
+    /// [`Self::open_document`] does not come through here: it shares
+    /// [`Self::reload_compiled`] for an accepted source but handles a rejection
+    /// itself, by adopting the file. A step added to either arm here must be
+    /// weighed for `open_document` too.
     fn reload(
         &mut self,
         compiled: Result<CompiledSource, CompileRejection>,
@@ -3244,8 +3312,8 @@ impl EngineSession {
     /// `check()` panic, which `with_engine_lock` converts to `Err` — in a second
     /// acquisition. Covers the compile-error and check-panic paths uniformly.
     ///
-    /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
-    /// the staleness flag.
+    /// Cleared by `reset_document_state` so a subsequent successful reeval
+    /// auto-resets the staleness flag.
     pub fn record_reload_error(&mut self, message: String) {
         self.last_reload_error = Some(message);
     }
@@ -3371,8 +3439,7 @@ impl EngineSession {
         // consistent (at new values) while caches may be stale — that is tolerated per
         // engine_lock.rs:30-34 ("other fields are caches that tolerate partial state").
         self.core.commit_state(compiled, check_result, module_name, source, file_path);
-        // Invalidate def preview cache — new module may have different content hashes.
-        self.def_preview_cache.clear();
+        self.reset_document_state();
         // Cache the parse result so get_containing_definition can avoid re-parsing
         // on every cursor/hover call.  Unconditionally overwrites any prior value
         // (never appends) — this is an invalidation, not an accumulation.
@@ -3380,23 +3447,35 @@ impl EngineSession {
         // Cache the line-offset table so get_containing_definition can skip the O(M)
         // newline scan on each call.  Unconditionally overwrites any prior value.
         self.line_offsets_cache = Some(build_line_offsets(source));
+    }
+
+    /// Forget everything the session derived from its previous document: the
+    /// one reset list every document change runs — [`Self::commit_state`] and
+    /// [`Self::open_document`]'s adoption of a rejected file alike.
+    fn reset_document_state(&mut self) {
+        // Invalidate def preview cache — new module may have different content hashes.
+        self.def_preview_cache.clear();
+        // Parse-derived caches describe the previous source; a commit installs
+        // the new ones after this reset.
+        self.parsed_cache = None;
+        self.line_offsets_cache = None;
         // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
         // it on the next call for the new module.  Same lifecycle as parsed_cache.
         self.consumed_idents_cache = None;
         // Clear the reserved-param-name warn-dedup set so a new module load
         // starts fresh — same lifecycle as consumed_idents_cache.
         self.reserved_param_warned.clear();
-        // Clear stored compile failure — the compile succeeded, so any stale failure
-        // diagnostics from a prior failed load must not appear in subsequent
-        // build_gui_state calls.  `Option<CompileFailure>` means one field covers
-        // both the cold-start and live-edit cases; setting it to `None` atomically
-        // satisfies the invariant that all fields listed in the doc comment move together.
+        // Clear stored compile failure — any stale failure diagnostics from a prior
+        // failed load must not appear in subsequent build_gui_state calls.
+        // `Option<CompileFailure>` means one field covers both the cold-start and
+        // live-edit cases.  A rejected open records its own failure after this reset.
         self.compile_failure = None;
-        // Clear hot-reload staleness signal — a successful commit means the user's
-        // source was fully evaluated, so any prior reload-error banner is now stale.
+        // Clear hot-reload staleness signal — the previous document's reload-error
+        // banner no longer describes the session's source.
         // Mirrors the compile_failure clear immediately above.
         self.last_reload_error = None;
-        // Task #5338: drop the geometry-derived value retention on every recompile.
+        // Task #5338: drop the geometry-derived value retention on every document
+        // change — every recompile, and a rejected open, which compiles nothing.
         //
         // Deliberately UNCONDITIONAL, i.e. not narrowed to `FilePathUpdate::Set`.
         // Clearing here cannot re-open the delta gap, because a recompile also
@@ -3760,8 +3839,8 @@ impl EngineSession {
         // empty viewport.
         //
         // `compile_failure` is populated by `load_from_source`, `update_source`,
-        // and `load_file` on the failure path and cleared to `None` by
-        // `commit_state` on every successful cycle — so here it always reflects
+        // `load_file` and `open_document` on the failure path and cleared to
+        // `None` by `commit_state` on every successful cycle — so here it always reflects
         // exactly the most-recent failed-load error (or is `None` when no load has
         // been attempted yet).
         //
@@ -3772,7 +3851,8 @@ impl EngineSession {
         //
         // `last_check is None` while `compiled is Some` cannot occur with the
         // current `commit_state` atomic-commit (both fields are assigned together),
-        // so this branch is reached only when `compiled` has never been set.
+        // so this branch is reached only when no module is compiled: `compiled`
+        // was never set, or `open_document` cleared it to adopt a rejected file.
         if self.core.compiled().is_none() || self.core.last_check().is_none() {
             // Build compile_diagnostics for the cold-start / never-committed path.
             // Factor out the construction so we can append the last_reload_error
