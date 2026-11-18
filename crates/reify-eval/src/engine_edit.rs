@@ -1405,16 +1405,14 @@ impl Engine {
                     match instance_scope.mint_undef_instance_cell(vcid, node.kind, expr) {
                         InstanceMint::InstanceCell(minted) => minted,
                         InstanceMint::NotAnInstanceCell => {
-                            let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                            Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
                                 vcid,
                                 &new_snapshot.graph,
                                 &values,
                                 &functions,
                                 &self.meta_map,
-                            );
-                            if let Some(v) = geom {
-                                v
-                            } else {
+                            )
+                            .unwrap_or_else(|| {
                                 let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
                                 let selector_val =
                                     crate::geometry_ops::try_eval_symbolic_topology_selector(
@@ -1425,7 +1423,7 @@ impl Engine {
                                     .unwrap_or(val);
                                 selector_mint_diagnostics.extend(sel_diags);
                                 selector_val
-                            }
+                            })
                         }
                     }
                 };
