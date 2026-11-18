@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{self, RequiredImport};
-use reify_core::ModulePath;
+use reify_core::{Diagnostic, ModulePath};
 
 use crate::args::split_cfg_args_or_usage;
 use crate::diagnostic_line::render_diagnostic_line;
@@ -81,18 +81,13 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         .unwrap_or_else(|| parsed.path.clone());
     let universe = import_headers::stdlib_universe_excluding(&own_module);
     let plan = import_headers::derive_std_imports(&parsed, &universe);
+    let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
 
     let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
-        eprintln!(
-            "{path}: the derived imports leave diagnostics the full standard library does not; \
-             not writing"
-        );
-        for diagnostic in &residual {
-            eprintln!("{}", render_diagnostic_line(path, &source, diagnostic));
-        }
+        report_refusal(path, &source, &residual, &gated_off);
         return false;
     }
 
@@ -100,7 +95,6 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     if missing.is_empty() {
         return true;
     }
-    let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
     if check_only {
         for required in &missing {
             println!("{path}: missing import {}", describe(required, &gated_off));
@@ -120,6 +114,27 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         println!("{path}: added import {}", describe(required, &gated_off));
     }
     true
+}
+
+/// Why `path` is not written: the residual diagnostics, plus a note naming any `#cfg`-gated
+/// imports the active cfg leaves out of effect.
+fn report_refusal(path: &str, source: &str, residual: &[Diagnostic], gated_off: &[ModulePath]) {
+    eprintln!(
+        "{path}: the derived imports leave diagnostics the full standard library does not; \
+         not writing"
+    );
+    for diagnostic in residual {
+        eprintln!("{}", render_diagnostic_line(path, source, diagnostic));
+    }
+    if gated_off.is_empty() {
+        return;
+    }
+    let modules: BTreeSet<String> = gated_off.iter().map(ModulePath::to_dotted).collect();
+    let modules: Vec<String> = modules.into_iter().collect();
+    eprintln!(
+        "{path}: note: #cfg-gated imports not in effect under the active cfg: {}",
+        modules.join(", ")
+    );
 }
 
 /// Writes a sibling temp file and renames it over `path`'s target, so a failure leaves the

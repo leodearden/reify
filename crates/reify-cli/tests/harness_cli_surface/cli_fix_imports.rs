@@ -468,6 +468,30 @@ fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
 }
 
 #[test]
+fn the_refusal_note_names_each_gated_off_module_once_in_sorted_order() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!(
+        "#cfg(extra)\nimport std.si_units\n\n\
+         #cfg(appearance)\nimport std.materials.appearance\n\n\
+         #cfg(appearance)\nimport std.materials.appearance.Finish\n\n{TYPE_PARAM_HIDES_COLOR}"
+    );
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let refusal_note =
+        format!("{file}: {GATED_OFF_REFUSAL_NOTE}std.materials.appearance, std.si_units");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line == refusal_note),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
 fn a_malformed_cfg_prints_the_usage_and_leaves_the_file_alone() {
     let dir = tempdir().expect("tempdir");
     let file = write_ri(dir.path(), "plate.ri", PLATE);
