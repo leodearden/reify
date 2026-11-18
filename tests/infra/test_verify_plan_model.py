@@ -343,6 +343,17 @@ class TestNotCalled(unittest.TestCase):
     def test_a_lib_with_a_syntax_error_is_not_called(self):
         self.assert_not_called(self.ask("if then\n"), 2)
 
+    def test_a_lib_without_the_function_is_not_called(self):
+        answer = self.ask("g(){ :; }\n")
+        self.assert_not_called(answer, 127)
+        self.assertIn("f: not a function", answer.result.stderr)
+
+    def test_bash_that_cannot_start_is_not_called(self):
+        no_bash = self.repo_root / "no-bash"
+        no_bash.mkdir()
+        self.env["PATH"] = str(no_bash)
+        self.assert_not_called(self.ask("f(){ :; }\n"), 127)
+
     def test_the_functions_1_is_its_answer(self):
         answer = self.ask("f(){ echo out; echo err >&2; return 1; }\n")
         self.assert_called(answer)
@@ -371,8 +382,9 @@ class TestReleaseDeclaredNotCalled(unittest.TestCase):
     """releasescope.release_declared refuses when release_declared_set never ran.
 
     verify.sh sources release-scope-lib.sh at top level under `set -e`, so a
-    lib that does not source ends the run with source's own status; a lib
-    that ends the shell is never an empty declared set.
+    lib that does not source ends the run with source's own status and
+    stderr, even a 0; a lib that ends the shell is never an empty declared
+    set.
     """
 
     def setUp(self):
@@ -386,8 +398,9 @@ class TestReleaseDeclaredNotCalled(unittest.TestCase):
             (self.repo_root / "scripts" / "release-scope-lib.sh").write_text(lib_text, encoding="utf-8")
         return releasescope.release_declared(self.repo_root, base_env())
 
-    def test_a_lib_that_ends_the_shell_is_refused_not_empty(self):
-        self.assertIsInstance(self.declared("exit 0\nrelease_declared_set(){ echo some-crate; }\n"), Refused)
+    def test_a_lib_that_ends_the_shell_with_0_is_refused_with_0_not_empty(self):
+        declared = self.declared("echo gave-up >&2\nexit 0\nrelease_declared_set(){ echo some-crate; }\n")
+        self.assertEqual(declared, Refused(("gave-up",), 0))
 
     def test_a_missing_lib_is_refused_with_1(self):
         declared = self.declared(None)

@@ -24,9 +24,13 @@ from reify_verify import childproc
 from reify_verify.childproc import CallResult
 
 _VERIFY_LIB_OPTIONS = "set -uo pipefail; "
-_SOURCED_RECORD = "@@bashcall:sourced@@"
+_CALLING_RECORD = "@@bashcall:calling@@"
 _SOURCE_AND_CALL = (
-    _VERIFY_LIB_OPTIONS + f'source "$1" || exit; builtin printf "\\0{_SOURCED_RECORD}\\0" >&2; shift; "$@"'
+    _VERIFY_LIB_OPTIONS
+    + 'source "$1" || exit; '
+    + 'builtin declare -F -- "$2" >/dev/null '
+    + '|| { builtin printf "%s: not a function of %s\\n" "$2" "$1" >&2; exit 127; }; '
+    + f'builtin printf "\\0{_CALLING_RECORD}\\0" >&2; shift; "$@"'
 )
 _SOURCE_AND_PRINT = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; printenv -- "$2" || exit 0'
 _ENV_AROUND_SOURCE_END = "@@source_delta:end@@"
@@ -118,7 +122,7 @@ class EnvDelta:
 
 @dataclass(frozen=True)
 class NotCalled:
-    """The function never ran: bash did not start, or sourcing its lib failed or ended the shell.
+    """The function never ran: bash did not start, its lib did not finish sourcing, or the lib does not define it.
 
     `result` is the shell's status and stderr, never the function's answer.
     """
@@ -162,19 +166,21 @@ def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, 
 def ask(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult | NotCalled:
     """The function's result, whatever its status: for a function whose exit status is its answer.
 
-    A returned CallResult's status is always the function's own. Once the lib
-    is sourced, the shell writes a NUL-wrapped record to stderr before it
-    calls the function; without that record the function never ran, which
-    is a NotCalled. The record is removed, so the stderr is the lib's and
-    the function's, byte for byte.
+    Once the lib is sourced and defines the function, the shell writes a
+    NUL-wrapped record to stderr and calls it. Without that record the
+    function never ran, which is a NotCalled, so a returned CallResult's
+    status is the function's own. The record is removed, so the stderr is
+    the lib's and the function's, byte for byte. A lib that redirects the
+    shell's stderr while it loads, or defines a function named `builtin`,
+    loses the record: its function reads as a NotCalled even when it ran.
     """
     result = childproc.run(
         ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
         repo_root,
         _seam_env(env),
     )
-    before, sourced, after = result.stderr.partition(f"\0{_SOURCED_RECORD}\0")
-    if not sourced:
+    before, calling, after = result.stderr.partition(f"\0{_CALLING_RECORD}\0")
+    if not calling:
         return NotCalled(result)
     return CallResult(result.returncode, result.stdout, before + after)
 

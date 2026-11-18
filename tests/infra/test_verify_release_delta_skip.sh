@@ -714,6 +714,7 @@ _port_decide() {
 _port_skips() { [[ "$1" == "True "* ]]; }
 _port_keeps() { [[ "$1" == "False "* ]]; }
 _port_warns() { [[ "$1" =~ exited\ "$2"([^0-9]|$) ]]; }
+_port_says() { [[ "$1" == *"$2"* ]]; }
 
 _port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 1; }'
 _port_decide _PORT_DECISION "$_PORT_ROOT"
@@ -767,6 +768,8 @@ assert "PORT no release-scope-lib.sh (source exits 1, predicate never ran) => re
     _port_keeps "$_PORT_DECISION"
 assert "PORT no release-scope-lib.sh => warning names status 1" \
     _port_warns "$_PORT_DECISION" 1
+assert "PORT no release-scope-lib.sh => bash's own stderr comes just before the warning" \
+    _port_says "$_PORT_DECISION" "No such file or directory|verify.sh: WARNING"
 
 _port_stub_root _PORT_ROOT 'return 1'
 _port_decide _PORT_DECISION "$_PORT_ROOT"

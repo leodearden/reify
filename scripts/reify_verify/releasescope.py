@@ -60,27 +60,28 @@ def decide_release_delta(
     changed = () if overridden else _merge_delta(repo_root, planning)
     if changed is None:
         return False, ()
-    return _answer_skips(bashcall.ask(RELEASE_DELTA_REQUIRES_PASS, changed, repo_root, planning))
+    return _decision_from_answer(bashcall.ask(RELEASE_DELTA_REQUIRES_PASS, changed, repo_root, planning))
 
 
-def _answer_skips(answer: CallResult | NotCalled) -> tuple[bool, tuple[str, ...]]:
+def _decision_from_answer(answer: CallResult | NotCalled) -> tuple[bool, tuple[str, ...]]:
     """Whether the predicate's answer skips the release pass, and its stderr lines with any warning."""
     if isinstance(answer, NotCalled):
-        warning = (
-            f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} never ran "
-            f"(exited {answer.result.returncode}): the release pass runs"
-        )
-        return False, (*answer.result.stderr_lines, warning)
+        return _kept_pass(answer.result, "never ran")
     try:
         status = PredicateStatus(answer.returncode)
     except ValueError:
-        answers = " or ".join(str(int(known)) for known in PredicateStatus)
-        warning = (
-            f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} exited {answer.returncode}, "
-            f"not {answers}: the release pass runs"
-        )
-        return False, (*answer.stderr_lines, warning)
+        answers = " nor ".join(str(int(known)) for known in PredicateStatus)
+        return _kept_pass(answer, f"answered neither {answers}")
     return status is PredicateStatus.SKIPPABLE, answer.stderr_lines
+
+
+def _kept_pass(failed: CallResult, what_happened: str) -> tuple[bool, tuple[str, ...]]:
+    """The release pass kept: the failed call's stderr lines, then a warning naming its status."""
+    warning = (
+        f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} {what_happened} "
+        f"(exited {failed.returncode}): the release pass runs"
+    )
+    return False, (*failed.stderr_lines, warning)
 
 
 def _merge_delta(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | None:
