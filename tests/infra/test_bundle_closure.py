@@ -74,6 +74,26 @@ PROBE_LDD = """\
 \tlibfoo.so.1 => not found
 """
 
+# DERIVED from the 2026-11-18 glibc 2.39 controls: a libmid.so.1 importing
+# prov_bar from a libprov.so.1 copy that lacks it, unversioned and under a
+# version script whose VER_1 node lacks it. `ldd -r` printed an unindented
+# `undefined symbol: <sym>[, version <V>]<TAB>(<referencing object>)` line after
+# that file's dependency list, with exit status 0; plain ldd printed nothing for
+# the versioned case. The sonames and paths here are the probe layout's.
+PROBE_LDD_R = """\
+/probe/usr/bin/reify:
+\tlinux-vdso.so.1 (0x00007ffd3f1e2000)
+\tlibfreeimage.so.3 => /probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3 (0x00007f0a10000000)
+\tlibraw.so.23 => /probe/usr/bin/../lib/Reify/lib/libraw.so.23 (0x00007f0a0fe00000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0a12a00000)
+undefined symbol: libraw_open_buffer\t(/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3)
+/probe/usr/bin/reify-gui:
+\tlinux-vdso.so.1 (0x00007ffd3f1e3000)
+\tlibprov.so.1 => /probe/usr/bin/../lib/Reify/lib/libprov.so.1 (0x00007f0a0fa00000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0a12a00000)
+undefined symbol: prov_bar, version VER_1\t(/probe/usr/bin/reify-gui)
+"""
+
 
 class ParseLdd(unittest.TestCase):
 
@@ -106,6 +126,27 @@ class ParseLdd(unittest.TestCase):
         report = bc.parse_ldd(PROBE_LDD)
         self.assertEqual(set(report.resolved), {"libgmsh.so.4.15", "libstdc++.so.6"})
 
+    def test_undefined_symbol_lines_name_the_symbol_and_its_referencing_object(self):
+        report = bc.parse_ldd(PROBE_LDD_R)
+        self.assertEqual(report.undefined, frozenset({
+            bc.UndefinedSymbol(
+                symbol="libraw_open_buffer", version=None,
+                referrer="/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3"),
+            bc.UndefinedSymbol(
+                symbol="prov_bar", version="VER_1",
+                referrer="/probe/usr/bin/reify-gui")}))
+
+    def test_an_undefined_symbol_is_not_a_missing_or_version_short_soname(self):
+        report = bc.parse_ldd(PROBE_LDD_R)
+        self.assertEqual(report.missing, frozenset())
+        self.assertEqual(report.version_short, frozenset())
+        self.assertEqual(
+            set(report.resolved), {"libfreeimage.so.3", "libraw.so.23", "libprov.so.1"})
+
+    def test_reports_without_undefined_lines_have_none(self):
+        self.assertEqual(bc.parse_ldd(HOST_LDD).undefined, frozenset())
+        self.assertEqual(bc.parse_ldd(PROBE_LDD).undefined, frozenset())
+
     def test_an_unrecognised_line_is_an_error_naming_it(self):
         with self.assertRaises(ValueError) as caught:
             bc.parse_ldd("\tnot a dynamic executable\n")
@@ -117,12 +158,17 @@ class ParseLdd(unittest.TestCase):
             report.missing = frozenset({"x"})
         with self.assertRaises(TypeError):
             report.resolved["x"] = "/y"
+        self.assertIsInstance(report.undefined, frozenset)
+        given = [bc.UndefinedSymbol("prov_bar", None, "/probe/usr/bin/reify")]
+        built = bc.LddReport(resolved={}, missing=frozenset(), version_short=frozenset(),
+                             undefined=given)
+        self.assertIsInstance(built.undefined, frozenset)
 
 
-def _report(missing=(), version_short=(), resolved=None):
+def _report(missing=(), version_short=(), resolved=None, undefined=()):
     return bc.LddReport(
         resolved=resolved or {}, missing=frozenset(missing),
-        version_short=frozenset(version_short))
+        version_short=frozenset(version_short), undefined=frozenset(undefined))
 
 
 GUI = Path("/t/release/reify-gui")
