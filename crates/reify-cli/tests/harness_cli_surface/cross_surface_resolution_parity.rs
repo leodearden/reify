@@ -176,6 +176,54 @@ impl Observed {
         row.sort();
         row
     }
+
+    /// Every diagnostic text the surface produced, whatever its severity; for a command, every
+    /// stderr line.
+    fn all_diagnostic_text(&self, surface: Surface) -> Vec<String> {
+        match surface {
+            Surface::Program => self
+                .program
+                .entry
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect(),
+            Surface::Check => stderr_lines(&self.check),
+            Surface::Eval => stderr_lines(&self.eval),
+            Surface::Gui => self
+                .gui
+                .state
+                .compile_diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect(),
+            Surface::Lsp => self
+                .lsp
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect(),
+        }
+    }
+
+    /// The surfaces whose diagnostic text mentions any of `needles`.
+    fn surfaces_mentioning(&self, needles: &[&str]) -> Vec<Surface> {
+        Surface::ALL
+            .into_iter()
+            .filter(|&surface| {
+                self.all_diagnostic_text(surface)
+                    .iter()
+                    .any(|text| needles.iter().any(|needle| text.contains(needle)))
+            })
+            .collect()
+    }
+}
+
+fn stderr_lines(output: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn reported(level: Level, message: &str) -> Reported {
@@ -395,16 +443,15 @@ const HEALTHY_PARTS: (&str, &str) = (
     "module parts\npub structure def Pulley {\n    param diameter : Length = 40mm\n}\n",
 );
 
+/// A module that fails to parse: anything that resolved it would report a parse error.
+const UNPARSABLE_SOURCE: &str = "module unparsable\npub structure def Gear { param = }\n";
+
 #[test]
 fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
     // (entry stem, broken import, the broken import's source — `None` writes no file)
     let shapes: &[(&str, &str, Option<&str>)] = &[
         ("missing_import", "nosuch", None),
-        (
-            "parse_error_import",
-            "unparsable",
-            Some("module unparsable\npub structure def Gear { param = }\n"),
-        ),
+        ("parse_error_import", "unparsable", Some(UNPARSABLE_SOURCE)),
         (
             "type_error_import",
             "ill_typed",
@@ -469,4 +516,123 @@ fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
             );
         }
     }
+}
+
+/// Boundary #4's project: a healthy import, and two imports only a wasm target follows — one that
+/// fails to parse, one defining `WasmOnly`. No surface is given a cfg, so each takes the host's.
+fn cfg_gated_project() -> TempDir {
+    project(&[
+        HEALTHY_PARTS,
+        ("unparsable.ri", UNPARSABLE_SOURCE),
+        (
+            "wasm_parts.ri",
+            "module wasm_parts\npub structure def WasmOnly {\n    param size : Length = 20mm\n}\n",
+        ),
+        (
+            "gated_import.ri",
+            "module gated_import\n\
+             #cfg(target = \"wasm\")\nimport unparsable\n\
+             #cfg(target = \"wasm\")\nimport wasm_parts\n\
+             import parts\n\
+             structure def Rig { sub p = Pulley() }\n",
+        ),
+        (
+            "gated_ref.ri",
+            "module gated_ref\n\
+             #cfg(target = \"wasm\")\nimport wasm_parts\n\
+             structure def Rig { sub w = WasmOnly() }\n",
+        ),
+    ])
+}
+
+#[test]
+fn cfg_unsatisfied_import_is_inert_on_every_surface() {
+    let dir = cfg_gated_project();
+    let gated_paths: Vec<String> = ["unparsable.ri", "wasm_parts.ri"]
+        .iter()
+        .map(|name| dir.path().join(name).display().to_string())
+        .collect();
+
+    let observed = observe(&dir.path().join("gated_import.ri"));
+
+    let program = &observed.program;
+    assert!(
+        program
+            .entry
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "precondition: the canonical compile raises no Error, so the parity above compared \
+         Errors and Warnings\n{:#?}",
+        program.entry.diagnostics
+    );
+    let mut needles: Vec<&str> = gated_paths.iter().map(String::as_str).collect();
+    needles.extend([
+        "imported module 'unparsable'",
+        "imported module 'wasm_parts'",
+    ]);
+    let mentioning = observed.surfaces_mentioning(&needles);
+    assert!(
+        mentioning.is_empty(),
+        "a gated-out import must be inert: no surface may report a diagnostic attributed to it; \
+         {mentioning:?} did"
+    );
+    let import_keys: Vec<&str> = program
+        .imports
+        .iter()
+        .map(|unit| unit.import_path.as_str())
+        .collect();
+    assert_eq!(
+        import_keys,
+        ["parts"],
+        "the program's imports must be the followed `parts` alone"
+    );
+    let gated_sources: Vec<&str> = program
+        .sources
+        .iter()
+        .map(|source| source.module_key.as_str())
+        .filter(|key| ["unparsable", "wasm_parts"].contains(key))
+        .collect();
+    assert!(
+        gated_sources.is_empty(),
+        "the program's sources must name no gated module; found {gated_sources:?}"
+    );
+    assert!(
+        program.entry.templates.iter().all(|t| t.name != "WasmOnly"),
+        "the I5 merge must not take WasmOnly from a gated-out import"
+    );
+    let env = reify_eval::DefEnv::from_program(program);
+    assert!(
+        env.resolve_template("WasmOnly").is_none()
+            && env.resolve_template_in("wasm_parts", "WasmOnly").is_none(),
+        "the DefEnv must resolve WasmOnly neither through its precedence view nor through \
+         `wasm_parts`"
+    );
+}
+
+/// The entry follows no import here, so the GUI and the LSP take their single-file route while
+/// `reify check` and `reify eval` take the program compile: the parity spans both routes.
+#[test]
+fn cfg_unsatisfied_import_lends_the_entry_no_definitions() {
+    let dir = cfg_gated_project();
+
+    let observed = observe(&dir.path().join("gated_ref.ri"));
+
+    let program = &observed.program;
+    assert!(
+        program
+            .entry
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("WasmOnly")),
+        "the canonical compile must reject Rig's WasmOnly, which only a gated-out import defines\n\
+         {:#?}",
+        program.entry.diagnostics
+    );
+    assert!(
+        reify_eval::DefEnv::from_program(program)
+            .resolve_template("WasmOnly")
+            .is_none(),
+        "the DefEnv must not resolve WasmOnly"
+    );
 }
