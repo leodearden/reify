@@ -126,6 +126,7 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedModule {
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
     assert!(
@@ -140,6 +141,7 @@ fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedMod
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
     parse_or_panic_named(source, "test")
 }
@@ -170,6 +172,7 @@ fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic(source);
     reify_compiler::compile(&parsed)
@@ -183,6 +186,7 @@ pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic_named(source, module_name);
     reify_compiler::compile(&parsed)
@@ -476,6 +480,7 @@ pub fn assert_eval_clean(result: &reify_eval::EvalResult) {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -509,6 +514,7 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
 /// # Panics
 /// Panics if there are parse errors, if no compile errors are produced, or
 /// if `needle` is non-empty and no error message contains it.
+#[track_caller]
 pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
