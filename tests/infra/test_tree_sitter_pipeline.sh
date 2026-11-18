@@ -254,38 +254,22 @@ provision_fixture_headers() {
 }
 
 # --- Guard Helper ---
-# run_guarded_cargo_check [--skip-on-unresolved] <out_file> <cmd...>
+# run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
 # Returns a tri-state code safe under `set -euo pipefail`:
 #   0 — success              (caller continues to parser.c existence checks)
 #   1 — hard fail            (diagnostic already printed; caller returns 1)
-#   2 — timeout / env gap    (SKIP message printed; caller returns 0 to skip asserts)
+#   2 — timeout              (SKIP message printed; caller returns 0 to skip asserts)
 #
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
 #
-# --skip-on-unresolved IS OPT-IN, AND MUST STAY THAT WAY (#6992 amendment pass).
-# It adds one arm: a cargo resolver/registry diagnostic maps to SKIP rather than
-# FAIL. That is right ONLY for the mk_ts_build_fixture callers, which write a
-# standalone crate outside the workspace, with no Cargo.lock and `cc = "1"` as a
-# build-dependency, and build it --offline — so resolution succeeds only if the
-# host's shared registry cache already holds a compatible cc 1.x, and a host
-# without it has an environment gap, not a defect (the inconsistency
-# require_tree_sitter_cli and the `SKIP: no hasher` arms exist to avoid).
-#
-# It is WRONG for the callers that run against the REAL workspace
-# (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`), which have a
-# committed Cargo.lock and no --offline: there, `no matching package` / `failed
-# to select a version` mean a genuinely broken manifest or lockfile, and a
-# blanket arm would print SKIP and return 0 over exactly the breakage those
-# tests exist to catch. Hence the flag rather than a shared arm — the default
-# stays the pre-existing 0/1/124 tri-state.
+# Any other non-zero exit, a cargo resolver or registry diagnostic included, is a
+# FAIL for every caller: the real-workspace checks have a committed Cargo.lock, and
+# the mk_ts_build_fixture crates resolve against the inputs ts_require_cargo_inputs
+# fetched before any test ran (#10001; tests/infra/README.md, "Cargo registry
+# inputs: a verdict never depends on the cache").
 run_guarded_cargo_check() {
-    local skip_on_unresolved=false
-    if [ "${1:-}" = "--skip-on-unresolved" ]; then
-        skip_on_unresolved=true
-        shift
-    fi
     local out_file="$1"; shift
     local rc=0
     "$@" >"$out_file" 2>&1 || rc=$?
@@ -293,9 +277,6 @@ run_guarded_cargo_check() {
         return 0
     elif [ "$rc" -eq 124 ]; then
         echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
-        return 2
-    elif [ "$skip_on_unresolved" = true ] && grep -qE 'no matching package|failed to select a version|registry index was not found|not found in registry|failed to download|attempting to make an HTTP request' "$out_file"; then
-        echo "  SKIP: cargo could not resolve dependencies offline (host registry cache lacks them)"
         return 2
     else
         echo ""
@@ -629,11 +610,11 @@ ts_reference_parser() {
 #
 # One offline `cargo build` of a mk_ts_build_fixture crate, through
 # run_guarded_cargo_check's tri-state: 0 built, 1 failed (diagnostic printed),
-# 2 SKIP (message printed). Callers map 2 to `return 0`. CARGO_TARGET_DIR is
+# 2 timed out (SKIP printed). Callers map 2 to `return 0`. CARGO_TARGET_DIR is
 # pinned to <fixture>/target, where ts_fixture_out_dir looks, so an ambient one
 # can neither hide the build nor make fixtures share a target dir.
 ts_cargo_build_fixture() {
-    run_guarded_cargo_check --skip-on-unresolved "$2" timeout 300 \
+    run_guarded_cargo_check "$2" timeout 300 \
         env CARGO_TARGET_DIR="$1/target" \
         cargo build --offline --manifest-path "$1/Cargo.toml"
 }
@@ -1149,14 +1130,9 @@ test_timeout_guard_passes_on_exit_0() {
     fi
 }
 
-test_timeout_guard_fails_on_unresolved_without_optin() {
-    # Regression guard (`#6992` amendment pass): a cargo resolver diagnostic is a
-    # hard FAIL by DEFAULT. The real-workspace callers here
-    # (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`) have a
-    # committed Cargo.lock and no --offline, so `no matching package` there means
-    # a broken manifest or lockfile — the very breakage those tests exist to
-    # catch. If this case ever goes green at 2, that breakage now reports SKIP
-    # and returns 0.
+test_timeout_guard_fails_on_unresolved() {
+    # A cargo resolver diagnostic is a hard FAIL from run_guarded_cargo_check,
+    # whatever the caller.
     local out rc
     out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$out'")
@@ -1167,27 +1143,7 @@ test_timeout_guard_fails_on_unresolved_without_optin() {
     if [ "$rc" -ne 1 ]; then
         echo ""
         echo "  ASSERTION FAILED: expected 1 (FAIL) for an unresolved-dependency"
-        echo "  diagnostic with no --skip-on-unresolved opt-in, got $rc"
-        return 1
-    fi
-}
-
-test_timeout_guard_skips_on_unresolved_when_opted_in() {
-    # The other half: WITH the opt-in, the same output is an environment gap.
-    # Only the mk_ts_build_fixture callers pass the flag — they build a
-    # standalone crate --offline with no Cargo.lock, so resolution depends on
-    # what the host's shared registry cache happens to hold.
-    local out rc
-    out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$out'")
-    rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$out" \
-        bash -c 'echo "error: no matching package named \`cc\` found" >&2; exit 101' \
-        >/dev/null 2>&1 || rc=$?
-    if [ "$rc" -ne 2 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: expected 2 (SKIP) for an unresolved-dependency"
-        echo "  diagnostic under --skip-on-unresolved, got $rc"
+        echo "  diagnostic, got $rc"
         return 1
     fi
 }
