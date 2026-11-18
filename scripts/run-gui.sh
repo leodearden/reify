@@ -16,21 +16,21 @@
 #   4. Build the reify-gui cargo binary in release mode with features `gui` +
 #      `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the window serves
 #      step 3's gui/dist, never devUrl.
-#   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin) and the
-#      WebKit renderer default.
+#   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin).
 #   6. exec target/release/reify-gui [file.ri].
 #
 # Environment contract (full version in scripts/run-gui-dev.sh's header; the
-# mechanism for all three is scripts/lib_gui_launch.sh, sourced by BOTH
-# launchers so they cannot drift apart on it):
+# mechanism for LD_LIBRARY_PATH and the preflight is scripts/lib_gui_launch.sh,
+# sourced by BOTH launchers so they cannot drift apart on it):
 #   LD_LIBRARY_PATH   an inherited value is PRESERVED, but
 #                     /opt/reify-deps/tbb-pin is prepended ahead of it — the
 #                     loader searches LD_LIBRARY_PATH before DT_RUNPATH, so a
 #                     caller path naming /usr/lib/x86_64-linux-gnu would
 #                     otherwise bind system libtbb 12.11 over the deps 12.18
 #                     and defeat #5192's pin.
-#   WEBKIT_DISABLE_DMABUF_RENDERER   defaults to 1; export 0 to restore the
-#                     DMABUF path on a host where it works.
+#   WEBKIT_DISABLE_DMABUF_RENDERER   reify-gui itself defaults it to 1
+#                     (gui/src-tauri/src/webkit_env.rs); export 0 to restore
+#                     the DMABUF path on a host where it works.
 #   REIFY_GUI_SKIP_PREFLIGHT         set to 1 to skip the display preflight.
 #
 # For dev-mode (vite dev server, configurable debug MCP port, devtools)
@@ -95,8 +95,8 @@ echo "==> Building reify-gui (release)..."
 cargo build -p reify-gui --bin reify-gui --features gui,embedded-frontend --release
 
 # -- 5. Launch environment -----------------------------------------------------
-# The whole launch loader path and the WebKit renderer default, shared with
-# scripts/run-gui-dev.sh: scripts/lib_gui_launch.sh.
+# The whole launch loader path, shared with scripts/run-gui-dev.sh:
+# scripts/lib_gui_launch.sh.
 gui_launch_env_pin
 
 # -- 6. Launch ----------------------------------------------------------------

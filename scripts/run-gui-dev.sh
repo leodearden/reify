@@ -16,8 +16,7 @@
 #      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
 #   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`;
 #      no `embedded-frontend`, so the window loads devUrl).
-#   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
-#      renderer default.
+#   7. Export REIFY_DEBUG=1 and the OCCT/tbb LD_LIBRARY_PATH.
 #   8. Run target/debug/reify-gui [file.ri] as a backgrounded child and
 #      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
 #      both the vite process GROUP and reify-gui.
@@ -25,7 +24,7 @@
 # ---------------------------------------------------------------------------
 # Environment contract
 # ---------------------------------------------------------------------------
-# The display preflight and the two env defaults below are IMPLEMENTED in
+# The display preflight and the LD_LIBRARY_PATH pin below are IMPLEMENTED in
 # scripts/lib_gui_launch.sh, sourced by this script and by run-gui.sh so the
 # two launchers cannot drift apart on them. This block is the contract; that
 # lib is the mechanism.
@@ -40,9 +39,10 @@
 #                  non-empty value was actually inherited.
 #
 # WEBKIT_DISABLE_DMABUF_RENDERER
-#                  Defaults to 1 (mirrors gui/test/visual/lib_e2e_smoke.sh
-#                  §2b). Without it, WebKitGTK aborts on an NVIDIA host with
-#                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
+#                  reify-gui itself defaults it to 1 when unset or empty
+#                  (gui/src-tauri/src/webkit_env.rs); this script does not
+#                  touch it. Without it, WebKitGTK aborts on an NVIDIA host
+#                  with "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
 #                  Export 0 to restore the DMABUF path where it works.
 #
 # REIFY_VITE_PORT  Defaults to 1420. The port vite serves on AND the page
@@ -351,8 +351,8 @@ cargo build -p reify-gui --bin reify-gui --features gui
 # (see gui/src-tauri/src/main.rs).
 export REIFY_DEBUG=1
 
-# The whole launch loader path and the WebKit renderer default, shared with
-# scripts/run-gui.sh: scripts/lib_gui_launch.sh.
+# The whole launch loader path, shared with scripts/run-gui.sh:
+# scripts/lib_gui_launch.sh.
 gui_launch_env_pin
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------

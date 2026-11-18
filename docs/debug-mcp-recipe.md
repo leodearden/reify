@@ -30,8 +30,9 @@ The launcher now self-defends against a hostile environment, so the
 prefix that used to be required is no longer needed: it preserves an inherited
 `LD_LIBRARY_PATH` but prepends `/opt/reify-deps/tbb-pin` ahead of it (the loader
 searches `LD_LIBRARY_PATH` before `DT_RUNPATH`, so an inherited `/usr/lib` path
-would otherwise bind system libtbb 12.11 over the deps 12.18), and it defaults
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. It also preflights the display and
+would otherwise bind system libtbb 12.11 over the deps 12.18), and reify-gui
+defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself (export `0` to opt out). The
+launcher also preflights the display and
 the vite port *before* the build, so a headless shell or a port another worktree
 already serves fails in milliseconds instead of after a multi-minute cargo
 build — set `REIFY_GUI_SKIP_PREFLIGHT=1` to bypass those two checks. An
