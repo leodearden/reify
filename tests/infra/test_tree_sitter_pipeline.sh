@@ -3618,6 +3618,34 @@ STUB
     fi
 }
 
+test_fixture_build_fails_on_a_cold_registry() {
+    # A fixture crate whose cc cannot resolve is a FAIL, never a SKIP (#10001): the
+    # suite fetched the workspace's locked inputs before any test ran, so an
+    # unresolved fixture dependency means that fetch no longer covers what the
+    # fixture reads. Resolution fails before build.rs runs, so this needs neither
+    # network nor the tree-sitter CLI.
+    local va fix home cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    home=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$home'")
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null 2>&1 || guard_rc=$?
+    if [ "$guard_rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a fixture build on an empty CARGO_HOME must FAIL (1), got $guard_rc"
+        echo "  --- captured output ---"; cat "$cargo_out"; echo "  --- end output ---"
+        return 1
+    fi
+    if ! grep -q 'no matching package' "$cargo_out"; then
+        echo ""
+        echo "  ASSERTION FAILED: the build failed for some reason other than an unresolved dependency"
+        echo "  --- captured output ---"; cat "$cargo_out"; echo "  --- end output ---"
+        return 1
+    fi
+}
+
 test_build_rs_generates_into_out_dir_and_leaves_src_untouched() {
     # build.rs generates into $OUT_DIR/src and compiles from there (#9896), so
     # the package's src/ holds only tracked files and the acquire's git clean
