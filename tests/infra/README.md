@@ -731,14 +731,24 @@ online and download on a cold registry, so a host with no network and a cold
 registry already fails the gate's Rust steps. The member's job is to report
 that case honestly.
 
-**run_all.sh still counts exit 75 as FAIL.** Classifying it end to end
-(`RESULT:` and the event schema dark-factory reads) is follow-up #10002.
+**The cold pins need network on every run, even on a warm host.** The
+in-suite cold pins (`test_run_gui_scripts.sh` Test 43 and
+`test_affected_crates_lib.sh`'s cold-registry pin) each fetch from crates.io
+into an empty private `CARGO_HOME`: ~432MB (host target) plus ~1.3GB (all
+targets), about 1.7GB per run, paid again when run_all's serial retry reruns a
+failed member. Before task 9993 neither member needed network once the shared
+registry was warm. Now a host with no network and a WARM registry, or a
+crates.io outage, ends each of them with exit 75 at its pin.
+`test_affected_crates_lib.sh`'s pin sits mid-suite, so its later sections do
+not run.
+
+**run_all.sh still counts exit 75 as FAIL.** So until follow-up #10002 lands
+(`RESULT:` and the event schema dark-factory reads), a network blip during a
+cold pin reads as a gate FAIL rather than as INFRASTRUCTURE.
 
 **Cost.** A warm `cargo fetch --locked` needs no network and takes 0.6-2s.
 Measured cold (cargo 1.96): host target only, ~432MB and 18-38s; all targets,
-~1.3GB and ~26s. The in-suite cold pins in `test_run_gui_scripts.sh` and
-`test_affected_crates_lib.sh` pay that into a private temporary `CARGO_HOME`
-on every run. `test_cargo_inputs_lib.py` pins the lib's classification and
+~1.3GB and ~26s. `test_cargo_inputs_lib.py` pins the lib's classification and
 runs every adopting member with an empty `CARGO_HOME` and
 `CARGO_NET_OFFLINE=true`: each must stop at its fetch with exit 75.
 
