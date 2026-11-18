@@ -445,19 +445,17 @@ def grammar_fingerprint(ctx: ProbeContext) -> str:
     nothing else.  grammar.json is what `tree-sitter parse` actually compiles,
     and every generator rewrites it.
 
-    DELIBERATELY NOT src/.grammar_hash.stamp, which an earlier revision of this
-    function preferred for its cheaper 64-byte read.  That stamp is written ONLY
-    by scripts/tree-sitter-generate.sh.  tree-sitter-reify/build.rs regenerates
-    the grammar through its own run_tree_sitter_generate() — a direct
-    `tree-sitter generate` — and writes its staleness stamp to $OUT_DIR instead,
-    never refreshing src/.grammar_hash.stamp.  So the ordinary sequence
-    `edit grammar.js` -> `cargo build` -> run the PRD gate rewrites parser.c and
-    grammar.json while leaving a STALE stamp behind, which would leave the cache
-    key unchanged and hand this lane the reify.so compiled from the PREVIOUS
-    grammar.  That is precisely the stale hit this key exists to make impossible
-    — and it cannot be left to tree-sitter's own mtime backstop, since warm-lane
-    seeding stamps mtimes (see grammar_cache_home).  Hashing the artifact
-    removes a branch rather than adding one.
+    DELIBERATELY NOT src/.grammar_hash.stamp: the stamp attests grammar.js only
+    when scripts/tree-sitter-generate.sh wrote src/.  Any other writer moves
+    grammar.json under an unchanged stamp — a bare `tree-sitter generate`, or
+    the script itself when its never-fatal stamp write fails and leaves the
+    outputs unstamped — and with grammar_generator None this checker probes
+    whatever src/ such a writer left.  Before #9896 every cargo build was such
+    a writer, because tree-sitter-reify/build.rs regenerated src/ itself; since
+    #9896 it writes only $OUT_DIR/src.  Keyed on the stamp, the cache would
+    hand this lane the reify.so compiled from the PREVIOUS grammar, and
+    tree-sitter's own mtime backstop cannot catch that, since warm-lane seeding
+    stamps mtimes (see grammar_cache_home).
 
     Cost is a sha256 over ~170 KB (sub-millisecond), against a subprocess launch.
 
