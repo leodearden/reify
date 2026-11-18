@@ -287,14 +287,21 @@ fn a_stdlib_modules_type_aliases_come_out_in_name_order() {
 
 #[test]
 fn the_build_fingerprint_sees_a_change_in_a_declared_type_alone() {
-    let typed =
-        |ty: &str| format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n");
-    let (as_real, as_int) = (typed("Real"), typed("Int"));
+    let cases: [(&str, fn(&str) -> String); 2] = [
+        ("a param's declared type", |ty| {
+            format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n")
+        }),
+        ("an enum variant's payload type", |ty| {
+            format!("module std.zz_typed\npub enum E {{\n    V {{ w: {ty} }},\n}}\n")
+        }),
+    ];
     let build = |source: &str| fingerprint(&build_stdlib_modules(&[("std.zz_typed", source)]));
-    assert!(
-        first_difference(&build(&as_real), &build(&as_int)).is_some(),
-        "two builds that differ only in a param's declared type must fingerprint differently"
-    );
+    for (what, typed) in cases {
+        assert!(
+            first_difference(&build(&typed("Real")), &build(&typed("Int"))).is_some(),
+            "two builds that differ only in {what} must fingerprint differently"
+        );
+    }
 }
 
 #[test]
