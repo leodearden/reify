@@ -147,7 +147,8 @@ pub fn build_face_anchors(
 }
 
 /// Test-only `Value::Selector` leaf of `kind` running `query`, targeting a
-/// kernel-less `TestBody` geometry cell — the one home for that target shape.
+/// kernel-less `TestBody` geometry cell — the one home for that selector-leaf
+/// target within reify-eval's lib unit tests.
 #[cfg(test)]
 pub(crate) fn leaf_selector(kind: reify_core::ty::SelectorKind, query: LeafQuery) -> Value {
     use reify_core::identity::RealizationNodeId;
