@@ -8,10 +8,11 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered
 member is the thin wrapper tests/infra/test_bundle_closure.sh, which invokes
 this file.
 
-Hermetic: no docker, no ldd and no build. The derivation's docker probe is a
-callable, so the fixed point is driven here by a fake target. ldd fixtures are
-trimmed from real output (`env -u LD_LIBRARY_PATH ldd target/release/reify` on
-the dev host, 2026-11-15) unless labelled DERIVED.
+Hermetic: no docker and no build, and ldd and patchelf appear only as recording
+fakes on PATH (ProbeScript). The derivation's docker probe is a callable, so the
+fixed point is driven here by a fake target. ldd fixtures are trimmed from real
+output (`env -u LD_LIBRARY_PATH ldd target/release/reify` on the dev host,
+2026-11-15) unless labelled DERIVED.
 """
 
 import contextlib
@@ -22,6 +23,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -504,6 +506,53 @@ class ReferenceImage(unittest.TestCase):
         self.assertNotEqual(
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS)),
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS + ["libfuse2t64"])))
+
+
+class ProbeScript(unittest.TestCase):
+    """The real generated probe script, run under `sh` with recording fakes for
+    ldd and patchelf, so the commands the container would run are asserted
+    without docker. /probe does not exist here, so each unmatched glob reaches
+    the fake literally."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fakes = Path(tmp.name) / "fakes"
+        self.fakes.mkdir()
+        self.log = Path(tmp.name) / "commands.log"
+        for command in ("ldd", "patchelf"):
+            fake = self.fakes / command
+            fake.write_text(
+                '#!/bin/sh\necho "$(basename "$0") $*" >> "$FAKE_LOG"\n',
+                encoding="utf-8")
+            fake.chmod(0o755)
+
+    def _commands_run(self, name, *, bind_symbols):
+        self.log.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            ["sh", "-c", bc.probe_script("Reify", bind_symbols=bind_symbols)],
+            env={"PATH": f"{self.fakes}:/usr/bin:/bin", "FAKE_LOG": str(self.log)},
+            capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return [shlex.split(line)
+                for line in self.log.read_text(encoding="utf-8").splitlines()
+                if line.startswith(f"{name} ")]
+
+    def test_the_bind_probe_runs_ldd_with_r(self):
+        self.assertEqual(self._commands_run("ldd", bind_symbols=True),
+                         [["ldd", "-r", "/probe/usr/bin/*"]])
+
+    def test_the_fixed_point_probe_runs_plain_ldd(self):
+        self.assertEqual(self._commands_run("ldd", bind_symbols=False),
+                         [["ldd", "/probe/usr/bin/*"]])
+
+    def test_both_probes_patch_the_binaries_runpath(self):
+        runpath = bc.executable_runpath("Reify")
+        for bind_symbols in (False, True):
+            with self.subTest(bind_symbols=bind_symbols):
+                self.assertIn(
+                    ["patchelf", "--set-rpath", runpath, "/probe/usr/bin/*"],
+                    self._commands_run("patchelf", bind_symbols=bind_symbols))
 
 
 VALID_CONF = {"productName": "Reify", "bundle": {"linux": {"deb": {"depends": DEPENDS}}}}
