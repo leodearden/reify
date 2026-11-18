@@ -169,8 +169,9 @@ pub(crate) fn phase_entities(
     // (defaults apply file-wide and may appear lexically after the structures
     // they fill). This pass also emits the per-scope duplicate (DD5) and
     // declaration-site type-mismatch (DD4) diagnostics. The table is threaded
-    // into each top-level structure's conformance check below (DD6: file-scope
-    // injection → top-level structures only; `purpose = None`).
+    // into each structure's conformance check below: top-level structures
+    // resolve at file scope (`purpose = None`), purpose-nested ones at their
+    // purpose (task 4639).
     let ambient_defaults = collect_ambient_defaults(
         parsed,
         &prelude_template_registry,
@@ -494,19 +495,21 @@ fn fn_tables_misaligned(fn_def: &reify_ast::FnDef, idx: usize, mismatch: &str) -
 /// loop — because file defaults apply file-wide and may appear lexically after
 /// the structures they fill.
 ///
-/// Duplicate detection is keyed by resolved type name within file scope: the
-/// FIRST well-typed declaration of a type is retained as the table entry, and
-/// each later declaration of the same type emits one `dup_ambient_default_error`
-/// (DD5). A type-mismatched value (DD4) draws its declaration-site error and is
-/// NOT inserted, so a later top-level structure is never injected with an
-/// ill-typed value (no cascade past the single declaration-site error).
+/// Duplicate detection is keyed by resolved type name within each scope and
+/// counts accepted declarations only: the FIRST accepted declaration of a type
+/// is retained as the table entry, and each later accepted declaration of the
+/// same type emits one `dup_ambient_default_error` (DD5). A rejected
+/// declaration (an Error value, or a DD4 mismatch) has already drawn its
+/// declaration-site diagnostic and goes into the table as
+/// [`AmbientValue::Rejected`]: it fills a consumer's member with no default
+/// expression, and holds the slot only until an accepted declaration of the
+/// type arrives. So no consumer is injected with an ill-typed value, and none
+/// reports the member missing.
 ///
 /// Purpose-nested defaults (`PurposeDef.defaults`) are collected into the
-/// purpose-level map with the SAME per-scope duplicate (DD5) and declaration-site
-/// type (DD4) checks, keyed under their purpose name (duplicate detection is
-/// per-purpose). Per DD6 they are NEVER injected into a structure (structures
-/// cannot nest in a purpose) — the purpose-level map is purely the
-/// forward-compatible seam a later task layers structure-in-purpose overrides on.
+/// purpose-level map with the SAME per-scope checks, keyed under their purpose
+/// name (duplicate detection is per purpose body). Structures nested in that
+/// purpose resolve against it first (task 4639).
 #[allow(clippy::too_many_arguments)]
 fn collect_ambient_defaults(
     parsed: &ParsedModule,
@@ -551,23 +554,14 @@ fn collect_ambient_defaults(
                 ) else {
                     continue;
                 };
-                match file_first_seen.get(&type_name) {
-                    Some(&first_span) => {
-                        // Same type already declared at file scope — ambiguity (DD5).
-                        diagnostics.push(crate::diagnostics::dup_ambient_default_error(
-                            &type_name, first_span, decl.span,
-                        ));
-                    }
-                    None => {
-                        file_first_seen.insert(type_name.clone(), decl.span);
-                        table.insert_file_level(type_name, entry);
-                    }
+                if admit_ambient_entry(&mut file_first_seen, &type_name, &entry, diagnostics) {
+                    table.insert_file_level(type_name, entry);
                 }
             }
             // ── Purpose scope: `default`s nested directly in a purpose body. ──
-            // DD6: same per-scope dup (DD5) + decl-site type (DD4) checks, keyed
-            // under the purpose name, but NEVER injected into a structure.
-            // Duplicate detection is per-purpose — a fresh first-seen map per body.
+            // Same per-scope dup (DD5) + decl-site type (DD4) checks, keyed under
+            // the purpose name. Duplicate detection is per-purpose — a fresh
+            // first-seen map per body.
             // The value expr is compiled at the shared file scope: the v1 surface
             // is literal `Material(...)` ctors, which need no purpose-param scope.
             reify_ast::Declaration::Purpose(p) => {
@@ -585,17 +579,9 @@ fn collect_ambient_defaults(
                     ) else {
                         continue;
                     };
-                    match purpose_first_seen.get(&type_name) {
-                        Some(&first_span) => {
-                            // Same type twice in THIS purpose body — ambiguity (DD5).
-                            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
-                                &type_name, first_span, d.span,
-                            ));
-                        }
-                        None => {
-                            purpose_first_seen.insert(type_name.clone(), d.span);
-                            table.insert_purpose_level(p.name.clone(), type_name, entry);
-                        }
+                    if admit_ambient_entry(&mut purpose_first_seen, &type_name, &entry, diagnostics)
+                    {
+                        table.insert_purpose_level(p.name.clone(), type_name, entry);
                     }
                 }
             }
@@ -606,23 +592,54 @@ fn collect_ambient_defaults(
     table
 }
 
+/// DD5 within one scope: whether `entry` goes into the table. A rejected entry
+/// always does, uncounted (the table keeps it only in a vacant slot). The first
+/// accepted declaration of a type is recorded in `first_seen`; each later one
+/// draws a duplicate error and is skipped.
+fn admit_ambient_entry(
+    first_seen: &mut HashMap<String, SourceSpan>,
+    type_name: &str,
+    entry: &ResolvedAmbientDefault,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if matches!(entry.value, AmbientValue::Rejected) {
+        return true;
+    }
+    match first_seen.get(type_name) {
+        Some(&first_span) => {
+            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                type_name, first_span, entry.span,
+            ));
+            false
+        }
+        None => {
+            first_seen.insert(type_name.to_string(), entry.span);
+            true
+        }
+    }
+}
+
 /// Resolve, compile, and declaration-site type-check a single ambient-default
-/// declaration (DD4). Returns `Some((type_name, entry))` for a well-typed
-/// default ready to be inserted into an [`AmbientDefaults`] table.
+/// declaration (DD4). Returns `Some((type_name, entry))` ready to be inserted
+/// into an [`AmbientDefaults`] table.
 ///
-/// Returns `None` (caller skips the declaration) when:
-///   * the declared type is unresolved — the resolver already emitted a
-///     diagnostic, so we stay silent (anti-cascade); or
-///   * the value's type does not `implicitly_converts_to` the declared type —
-///     the `E_AMBIENT_DEFAULT_TYPE_MISMATCH` diagnostic is pushed here and the
-///     entry dropped, so no structure is later filled with an ill-typed value.
+/// Returns `None` (caller skips the declaration) only when the declared type is
+/// unresolved or `Type::Error`: the resolver already emitted a diagnostic, and
+/// there is no type to fill a member with (anti-cascade).
+///
+/// The entry's value is [`AmbientValue::Rejected`] when the value compiles to
+/// `Type::Error` (it already drew its own diagnostic) or does not
+/// `implicitly_converts_to` the declared type (the
+/// `E_AMBIENT_DEFAULT_TYPE_MISMATCH` diagnostic is pushed here). A rejected
+/// entry fills consumers' members with the declared type and no default
+/// expression, so the value is never recompiled.
 ///
 /// The table key + diagnostic type name is the resolved `StructureRef` name (so
 /// it matches the conformance-phase injection lookup key, DD1), falling back to
 /// the written type name for non-`StructureRef` declared types.
 ///
-/// Shared seam for file-scope collection and (later) purpose-scope collection;
-/// the caller owns scope-specific duplicate detection + table insertion.
+/// Shared by both scope arms of [`collect_ambient_defaults`]; the caller owns
+/// scope-specific duplicate detection + table insertion.
 #[allow(clippy::too_many_arguments)]
 fn resolve_ambient_default(
     decl: &reify_ast::DefaultDecl,
@@ -664,7 +681,7 @@ fn resolve_ambient_default(
     // (2) Compile the value expression at this scope and apply the
     //     declaration-site type check (DD4). A poisoned value (`Type::Error`)
     //     already drew its own diagnostic — skip the conversion check
-    //     (anti-cascade) and drop the entry.
+    //     (anti-cascade) and reject the entry.
     //
     //     This compile is TYPE-CHECK-ONLY: the resulting `CompiledExpr` is
     //     discarded (only `decl.value`'s AST is stored), and every real
@@ -674,9 +691,10 @@ fn resolve_ambient_default(
     //     (e.g. a lossy/precision warning) from being double-reported — once
     //     here and once per consuming structure — scope this throwaway compile's
     //     diagnostics into a temp buffer and forward only genuine
-    //     `Severity::Error`s. Those errors drop the entry (it is never injected),
-    //     so the pre-pass is their sole report site; non-error diagnostics
-    //     re-surface at the injection site where the value is actually used.
+    //     `Severity::Error`s. An Error-typed value is rejected and never
+    //     recompiled, so the pre-pass is the sole report site of its errors;
+    //     non-error diagnostics re-surface at the injection site where an
+    //     accepted value is actually used.
     let mut value_diagnostics = Vec::new();
     let value_type = compile_expr(
         &decl.value,
@@ -691,20 +709,24 @@ fn resolve_ambient_default(
             .into_iter()
             .filter(|d| d.severity == reify_core::Severity::Error),
     );
-    if value_type == Type::Error {
-        return None;
-    }
-    if !crate::implicitly_converts_to(&value_type, &declared_type) {
+    let mismatched =
+        value_type != Type::Error && !crate::implicitly_converts_to(&value_type, &declared_type);
+    let rejected = value_type == Type::Error || mismatched;
+    if mismatched {
         diagnostics.push(crate::diagnostics::ambient_default_type_mismatch_error(
             &type_name, decl.span,
         ));
-        return None;
     }
 
+    let value = if rejected {
+        AmbientValue::Rejected
+    } else {
+        AmbientValue::Accepted(decl.value.clone())
+    };
     Some((
         type_name,
         ResolvedAmbientDefault {
-            value: AmbientValue::Accepted(decl.value.clone()),
+            value,
             declared_type,
             span: decl.span,
         },
