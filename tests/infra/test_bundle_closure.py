@@ -8,10 +8,12 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered
 member is the thin wrapper tests/infra/test_bundle_closure.sh, which invokes
 this file.
 
-Hermetic: no docker, no ldd and no build. The derivation's docker probe is a
-callable, so the fixed point is driven here by a fake target. ldd fixtures are
-trimmed from real output (`env -u LD_LIBRARY_PATH ldd target/release/reify` on
-the dev host, 2026-11-15) unless labelled DERIVED.
+Hermetic: no docker daemon and no build; docker, ldd and patchelf appear only
+as fakes on PATH (ProbeScript, CommandLineDerivation). The derivation's docker
+probe is a callable, so the fixed point is driven here by a fake target. ldd
+fixtures are trimmed from real output
+(`env -u LD_LIBRARY_PATH ldd target/release/reify` on the dev host, 2026-11-15)
+unless labelled DERIVED.
 """
 
 import contextlib
@@ -22,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,6 +77,26 @@ PROBE_LDD = """\
 \tlibfoo.so.1 => not found
 """
 
+# DERIVED from the 2026-11-18 glibc 2.39 controls: a libmid.so.1 importing
+# prov_bar from a libprov.so.1 copy that lacks it, unversioned and under a
+# version script whose VER_1 node lacks it. `ldd -r` printed an unindented
+# `undefined symbol: <sym>[, version <V>]<TAB>(<referencing object>)` line after
+# that file's dependency list, with exit status 0; plain ldd printed nothing for
+# the versioned case. The sonames and paths here are the probe layout's.
+PROBE_LDD_R = """\
+/probe/usr/bin/reify:
+\tlinux-vdso.so.1 (0x00007ffd3f1e2000)
+\tlibfreeimage.so.3 => /probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3 (0x00007f0a10000000)
+\tlibraw.so.23 => /probe/usr/bin/../lib/Reify/lib/libraw.so.23 (0x00007f0a0fe00000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0a12a00000)
+undefined symbol: libraw_open_buffer\t(/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3)
+/probe/usr/bin/reify-gui:
+\tlinux-vdso.so.1 (0x00007ffd3f1e3000)
+\tlibprov.so.1 => /probe/usr/bin/../lib/Reify/lib/libprov.so.1 (0x00007f0a0fa00000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0a12a00000)
+undefined symbol: prov_bar, version VER_1\t(/probe/usr/bin/reify-gui)
+"""
+
 
 class ParseLdd(unittest.TestCase):
 
@@ -106,6 +129,27 @@ class ParseLdd(unittest.TestCase):
         report = bc.parse_ldd(PROBE_LDD)
         self.assertEqual(set(report.resolved), {"libgmsh.so.4.15", "libstdc++.so.6"})
 
+    def test_undefined_symbol_lines_name_the_symbol_and_its_referencing_object(self):
+        report = bc.parse_ldd(PROBE_LDD_R)
+        self.assertEqual(report.undefined, frozenset({
+            bc.UndefinedSymbol(
+                symbol="libraw_open_buffer", version=None,
+                referrer="/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3"),
+            bc.UndefinedSymbol(
+                symbol="prov_bar", version="VER_1",
+                referrer="/probe/usr/bin/reify-gui")}))
+
+    def test_an_undefined_symbol_is_not_a_missing_or_version_short_soname(self):
+        report = bc.parse_ldd(PROBE_LDD_R)
+        self.assertEqual(report.missing, frozenset())
+        self.assertEqual(report.version_short, frozenset())
+        self.assertEqual(
+            set(report.resolved), {"libfreeimage.so.3", "libraw.so.23", "libprov.so.1"})
+
+    def test_reports_without_undefined_lines_have_none(self):
+        self.assertEqual(bc.parse_ldd(HOST_LDD).undefined, frozenset())
+        self.assertEqual(bc.parse_ldd(PROBE_LDD).undefined, frozenset())
+
     def test_an_unrecognised_line_is_an_error_naming_it(self):
         with self.assertRaises(ValueError) as caught:
             bc.parse_ldd("\tnot a dynamic executable\n")
@@ -117,12 +161,17 @@ class ParseLdd(unittest.TestCase):
             report.missing = frozenset({"x"})
         with self.assertRaises(TypeError):
             report.resolved["x"] = "/y"
+        self.assertIsInstance(report.undefined, frozenset)
+        given = [bc.UndefinedSymbol("prov_bar", None, "/probe/usr/bin/reify")]
+        built = bc.LddReport(resolved={}, missing=frozenset(), version_short=frozenset(),
+                             undefined=given)
+        self.assertIsInstance(built.undefined, frozenset)
 
 
-def _report(missing=(), version_short=(), resolved=None):
+def _report(missing=(), version_short=(), resolved=None, undefined=()):
     return bc.LddReport(
         resolved=resolved or {}, missing=frozenset(missing),
-        version_short=frozenset(version_short))
+        version_short=frozenset(version_short), undefined=frozenset(undefined))
 
 
 GUI = Path("/t/release/reify-gui")
@@ -278,6 +327,22 @@ LIBC6_SONAMES = (
 )
 
 
+class RequireBoundSymbols(unittest.TestCase):
+
+    def test_undefined_symbols_are_an_error_naming_each_symbol_and_referrer(self):
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.require_bound_symbols(bc.parse_ldd(PROBE_LDD_R))
+        message = str(caught.exception)
+        for expected in ("libraw_open_buffer",
+                         "/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3",
+                         "prov_bar", "VER_1", "/probe/usr/bin/reify-gui"):
+            with self.subTest(expected):
+                self.assertIn(expected, message)
+
+    def test_a_report_with_no_undefined_symbol_passes(self):
+        self.assertIsNone(bc.require_bound_symbols(_report(missing={"libA.so.1"})))
+
+
 class DeriveClosure(unittest.TestCase):
 
     def test_fixed_point_stages_transitive_and_version_short_libraries(self):
@@ -324,6 +389,58 @@ class DeriveClosure(unittest.TestCase):
                 self.assertIn("newer glibc", str(caught.exception))
                 self.assertIn(glibc_soname, str(caught.exception))
                 self.assertEqual(calls, [frozenset()])
+
+    def test_an_undefined_symbol_is_an_immediate_error_and_is_never_staged(self):
+        calls = []
+        undefined = bc.UndefinedSymbol(
+            "prov_bar", None, "/probe/usr/lib/Reify/lib/libmid.so.1")
+
+        def target(staged):
+            calls.append(staged)
+            return _report(missing={"libA.so.1"}, undefined={undefined})
+
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_closure(HOST, target)
+        self.assertIn("prov_bar", str(caught.exception))
+        self.assertIn("/probe/usr/lib/Reify/lib/libmid.so.1", str(caught.exception))
+        self.assertEqual(calls, [frozenset()])
+
+
+class DeriveBoundClosure(unittest.TestCase):
+
+    def test_the_bind_probe_checks_the_converged_closure_once(self):
+        bind_calls = []
+
+        def bind_probe(staged):
+            bind_calls.append(staged)
+            return _report()
+
+        closure = bc.derive_bound_closure(HOST, FakeTarget(), bind_probe)
+        converged = frozenset({"libA.so.1", "libB.so.2", "libC.so.3"})
+        self.assertEqual(closure, converged)
+        self.assertEqual(bind_calls, [converged])
+
+    def test_an_undefined_symbol_on_the_converged_layout_is_an_error_naming_it(self):
+        referrer = "/probe/usr/bin/../lib/Reify/lib/libfreeimage.so.3"
+        undefined = bc.UndefinedSymbol("libraw_open_buffer", None, referrer)
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_bound_closure(
+                HOST, FakeTarget(), lambda staged: _report(undefined={undefined}))
+        self.assertIn("libraw_open_buffer", str(caught.exception))
+        self.assertIn(referrer, str(caught.exception))
+
+    def test_the_bind_probe_is_not_run_when_the_fixed_point_fails(self):
+        bind_calls = []
+
+        def bind_probe(staged):
+            bind_calls.append(staged)
+            return _report()
+
+        with self.assertRaises(bc.ClosureError) as caught:
+            bc.derive_bound_closure(
+                HOST, lambda staged: _report(missing={"libZ.so.9"}), bind_probe)
+        self.assertIn("libZ.so.9", str(caught.exception))
+        self.assertEqual(bind_calls, [])
 
 
 class TauriOverlay(unittest.TestCase):
@@ -392,11 +509,61 @@ class ReferenceImage(unittest.TestCase):
             bc.reference_image_tag(bc.reference_dockerfile(DEPENDS + ["libfuse2t64"])))
 
 
+def _write_fake_command(path, body):
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+class ProbeScript(unittest.TestCase):
+    """The real generated probe script, run under `sh` with recording fakes for
+    ldd and patchelf, so the commands the container would run are asserted
+    without docker. /probe does not exist here, so each unmatched glob reaches
+    the fake literally."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fakes = Path(tmp.name) / "fakes"
+        self.fakes.mkdir()
+        self.log = Path(tmp.name) / "commands.log"
+        for command in ("ldd", "patchelf"):
+            _write_fake_command(
+                self.fakes / command, 'echo "$(basename "$0") $*" >> "$FAKE_LOG"')
+
+    def _commands_run(self, name, *, bind_symbols):
+        self.log.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            ["sh", "-c", bc.probe_script("Reify", bind_symbols=bind_symbols)],
+            env={"PATH": f"{self.fakes}:/usr/bin:/bin", "FAKE_LOG": str(self.log)},
+            capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return [shlex.split(line)
+                for line in self.log.read_text(encoding="utf-8").splitlines()
+                if line.startswith(f"{name} ")]
+
+    def test_the_bind_probe_runs_ldd_with_r(self):
+        self.assertEqual(self._commands_run("ldd", bind_symbols=True),
+                         [["ldd", "-r", "/probe/usr/bin/*"]])
+
+    def test_the_fixed_point_probe_runs_plain_ldd(self):
+        self.assertEqual(self._commands_run("ldd", bind_symbols=False),
+                         [["ldd", "/probe/usr/bin/*"]])
+
+    def test_both_probes_patch_the_binaries_runpath(self):
+        runpath = bc.executable_runpath("Reify")
+        for bind_symbols in (False, True):
+            with self.subTest(bind_symbols=bind_symbols):
+                self.assertIn(
+                    ["patchelf", "--set-rpath", runpath, "/probe/usr/bin/*"],
+                    self._commands_run("patchelf", bind_symbols=bind_symbols))
+
+
 VALID_CONF = {"productName": "Reify", "bundle": {"linux": {"deb": {"depends": DEPENDS}}}}
 
 
-class CommandLineRefusals(unittest.TestCase):
-    """bc.main's refusals, each reached before any ldd or docker call."""
+class CommandLineCase(unittest.TestCase):
+    """A scratch dir with the tauri conf, stage and overlay paths of one
+    command-line run of bc; none of the three exists until a test writes it."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -405,6 +572,10 @@ class CommandLineRefusals(unittest.TestCase):
         self.conf = self.tmp / "tauri.conf.json"
         self.stage = self.tmp / "stage"
         self.overlay = self.tmp / "overlay.json"
+
+
+class CommandLineRefusals(CommandLineCase):
+    """bc.main's refusals, each reached before any ldd or docker call."""
 
     def _main(self, conf_text, *extra_args):
         self.conf.write_text(conf_text, encoding="utf-8")
@@ -446,6 +617,77 @@ class CommandLineRefusals(unittest.TestCase):
         code, stderr = self._main("{")
         self.assertEqual(code, 1)
         self.assertIn(f"{self.conf} is not JSON", stderr)
+
+
+FAKE_HOST_LDD_BODY = (
+    r"""printf '\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f0a10000000)\n'""")
+
+# `docker image inspect` succeeds (the reference image exists). `docker run ...
+# sh -c SCRIPT` plays the container: it logs which kind of probe the script is,
+# and only a script that runs `ldd -r` is answered with an undefined symbol, and
+# only when FAKE_UNDEFINED names the referring object.
+FAKE_DOCKER_BODY = r"""case "$1" in
+image) exit 0 ;;
+run)
+  for script; do :; done
+  echo "/probe/usr/bin/reify:"
+  case "$script" in
+  *'ldd -r '*)
+    echo bind >> "$FAKE_LOG"
+    [ -z "${FAKE_UNDEFINED:-}" ] ||
+      printf 'undefined symbol: libraw_open_buffer\t(%s)\n' "$FAKE_UNDEFINED" ;;
+  *) echo plain >> "$FAKE_LOG" ;;
+  esac ;;
+*) echo "fake docker: unexpected: $*" >&2; exit 2 ;;
+esac"""
+
+
+class CommandLineDerivation(CommandLineCase):
+    """bc as scripts/build-bundle.sh runs it, with a fake docker and ldd on PATH.
+    These hold the whole chain from the command line to the command the
+    container runs: a bind probe that never passed `-r` would fail them."""
+
+    REFERRER = "/probe/usr/lib/Reify/lib/libfreeimage.so.3"
+
+    def setUp(self):
+        super().setUp()
+        self.fakes = self.tmp / "fakes"
+        self.fakes.mkdir()
+        self.log = self.tmp / "probes.log"
+        self.conf.write_text(json.dumps(VALID_CONF), encoding="utf-8")
+        for binary in ("reify-gui", "reify"):
+            (self.tmp / binary).write_bytes(b"")
+        _write_fake_command(self.fakes / "ldd", FAKE_HOST_LDD_BODY)
+        _write_fake_command(self.fakes / "docker", FAKE_DOCKER_BODY)
+
+    def _derive(self, **fake_env):
+        self.log.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(TOOL_PATH),
+             "--tauri-conf", str(self.conf), "--stage", str(self.stage),
+             "--overlay", str(self.overlay),
+             "--main-binary", f"reify-gui={self.tmp / 'reify-gui'}",
+             "--extra-binary", f"reify={self.tmp / 'reify'}"],
+            env={"PATH": f"{self.fakes}:/usr/bin:/bin", "FAKE_LOG": str(self.log),
+                 **fake_env},
+            capture_output=True, text=True, check=False)
+        return proc, self.log.read_text(encoding="utf-8").split()
+
+    def test_an_undefined_symbol_only_ldd_r_reports_fails_the_derivation(self):
+        proc, probes = self._derive(FAKE_UNDEFINED=self.REFERRER)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("libraw_open_buffer", proc.stderr)
+        self.assertIn(self.REFERRER, proc.stderr)
+        self.assertEqual(probes, ["plain", "bind"])
+        self.assertFalse(self.overlay.exists())
+
+    def test_a_converged_layout_that_binds_every_symbol_writes_the_overlay(self):
+        proc, probes = self._derive()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(probes, ["plain", "bind"])
+        self.assertTrue(self.overlay.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

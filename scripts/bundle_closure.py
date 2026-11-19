@@ -16,7 +16,8 @@ that closure EMPIRICALLY, against the target rather than from host metadata:
     the target cannot resolve, or resolves short of a required symbol version,
     at <stage>/usr/lib/<productName>/lib, sets their RUNPATHs (patchelf, run in
     the reference image as the caller's uid), and re-runs `ldd` there on the
-    as-installed layout until it reports nothing missing.
+    as-installed layout until it reports nothing missing; a final `ldd -r` on
+    that converged layout must then report no undefined symbol.
 
 The staged tree is then what the .deb ships, through the tauri config overlay
 this tool writes (`cargo tauri bundle --config <overlay>`). The AppImage gets
@@ -24,8 +25,8 @@ the UNPATCHED extra binaries instead: linuxdeploy deploys their dependencies
 itself, by the binary's own RUNPATH.
 
 Contract with scripts/build-bundle.sh: stdout stays empty; every diagnostic goes
-to stderr; exit 0 means the overlay was written and the staged layout resolves
-in the reference image.
+to stderr; exit 0 means the overlay was written and the staged layout resolves,
+with every symbol bound, in the reference image.
 
 Usage:
   bundle_closure.py --tauri-conf gui/src-tauri/tauri.conf.json --stage DIR \\
@@ -75,15 +76,26 @@ class CommandError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class UndefinedSymbol:
+    """A symbol a loaded object (`referrer`, as ldd printed its path) references
+    that no loaded object defines; not a soname to stage."""
+    symbol: str
+    version: str | None
+    referrer: str
+
+
+@dataclass(frozen=True)
 class LddReport:
     resolved: Mapping[str, str]
     missing: frozenset[str]
     version_short: frozenset[str]
+    undefined: frozenset[UndefinedSymbol] = frozenset()
 
     def __post_init__(self):
         object.__setattr__(self, "resolved", MappingProxyType(dict(self.resolved)))
         object.__setattr__(self, "missing", frozenset(self.missing))
         object.__setattr__(self, "version_short", frozenset(self.version_short))
+        object.__setattr__(self, "undefined", frozenset(self.undefined))
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,9 @@ _VERSION_SHORT = re.compile(
     r"^.+: (?P<path>/\S+): version `[^']+' not found \(required by .+\)$")
 _NO_VERSION_INFO = re.compile(
     r"^.+: /\S+: no version information available \(required by .+\)$")
+_UNDEFINED = re.compile(
+    r"^undefined symbol: (?P<symbol>[^\s,]+)(?:, version (?P<version>\S+))?"
+    r"\t\((?P<referrer>.+)\)$")
 
 
 def _is_file_header(raw_line: str) -> bool:
@@ -122,12 +137,16 @@ def parse_ldd(text: str) -> LddReport:
     resolved: dict[str, str] = {}
     missing: set[str] = set()
     version_short: set[str] = set()
+    undefined: set[UndefinedSymbol] = set()
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or _NO_VERSION_INFO.match(line) or _UNMAPPED.match(line):
             continue
         if match := _VERSION_SHORT.match(line):
             version_short.add(os.path.basename(match["path"]))
+        elif match := _UNDEFINED.match(line):
+            undefined.add(UndefinedSymbol(
+                match["symbol"], match["version"], match["referrer"]))
         elif _is_file_header(raw_line):
             continue
         elif match := _RESOLVED.match(line):
@@ -137,7 +156,8 @@ def parse_ldd(text: str) -> LddReport:
         else:
             raise ValueError(f"unrecognised ldd line: {raw_line!r}")
     return LddReport(resolved=resolved, missing=frozenset(missing),
-                     version_short=frozenset(version_short))
+                     version_short=frozenset(version_short),
+                     undefined=frozenset(undefined))
 
 
 Probe = Callable[[frozenset], LddReport]
@@ -147,14 +167,36 @@ def is_glibc(soname: str) -> bool:
     return soname in GLIBC_SONAMES or soname.startswith("ld-linux")
 
 
+def _describe_undefined(undefined: UndefinedSymbol) -> str:
+    symbol = (undefined.symbol if undefined.version is None
+              else f"{undefined.symbol}, version {undefined.version}")
+    return f"{symbol} (referenced by {undefined.referrer})"
+
+
+def require_bound_symbols(report: LddReport) -> None:
+    """Raise ClosureError if the report names any undefined symbol."""
+    if not report.undefined:
+        return
+    raise ClosureError(
+        "the bundled layout leaves symbols that no loaded object defines: "
+        + "; ".join(sorted(map(_describe_undefined, report.undefined)))
+        + ". The usual cause is a bundled copy of a library, taken from the first "
+        "binary in precedence order, that lacks a symbol which a later binary's "
+        "dependency chain imports, because that binary resolves the library to a "
+        "different host file")
+
+
 def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[str]:
     """Stage sonames until the target reports none missing or version-short.
 
     probe(staged) stages exactly `staged` on the target and returns its ldd
-    report; host_resolved says which sonames the host can supply."""
+    report; host_resolved says which sonames the host can supply. An undefined
+    symbol in any round's report is a ClosureError, never a gap: it names the
+    object referencing it, so there is no soname to stage."""
     staged: frozenset[str] = frozenset()
     while True:
         report = probe(staged)
+        require_bound_symbols(report)
         gap = report.missing | report.version_short
         if not gap:
             return staged
@@ -176,6 +218,20 @@ def derive_closure(host_resolved: Mapping[str, str], probe: Probe) -> frozenset[
                 "staging made no progress; the target still reports missing or "
                 "version-short: " + ", ".join(sorted(gap)))
         staged = staged | new
+
+
+def derive_bound_closure(host_resolved: Mapping[str, str], probe: Probe,
+                         bind_probe: Probe) -> frozenset[str]:
+    """derive_closure, then a check that the converged layout binds every symbol.
+
+    The fixed point runs on plain-ldd `probe`s, because `ldd -r` exits non-zero
+    while any library is still not found. bind_probe(staged) stages exactly
+    `staged` and returns `ldd -r`'s report; it runs once, on the converged
+    layout, so a symbol that no loaded object defines, unversioned or not, is a
+    ClosureError."""
+    closure = derive_closure(host_resolved, probe)
+    require_bound_symbols(bind_probe(closure))
+    return closure
 
 
 def installed_lib_dir(product_name: str) -> str:
@@ -245,11 +301,11 @@ def merge_host_reports(main: tuple[Path, LddReport],
     Precedence is `main` first, then `extras` in order: the first binary that
     resolves a soname supplies its copy, and each later binary that resolves
     it to a different file (by realpath) is recorded as shadowed. On the
-    target, the reference-image probe checks that copy only as far as plain
-    ldd does: derive_closure stops if any binary is left missing a library or
-    short of a symbol version. An unversioned symbol the copy lacks surfaces
-    only when a binary binds it, which the armed (opt-in) clean-install proof
-    exercises by running both binaries on stock Ubuntu."""
+    target, the reference-image probe checks the chosen copy for every binary:
+    the plain-ldd fixed point stops on a missing library or a missing symbol
+    version, and derive_bound_closure's final `ldd -r` stops on any symbol,
+    unversioned included, that the copy lacks and a shadowed binary's
+    dependency chain references."""
     resolved: dict[str, str] = {}
     shadowed: dict[str, list[tuple[Path, str]]] = {}
     for binary, report in (main, *extras):
@@ -307,7 +363,13 @@ def _copy_writable(source: str | Path, dest: Path, mode: int) -> None:
     dest.chmod(mode)
 
 
-def _patch_and_ldd_script(product_name: str) -> str:
+def _ldd_command(bind_symbols: bool) -> str:
+    return "ldd -r" if bind_symbols else "ldd"
+
+
+def probe_script(product_name: str, *, bind_symbols: bool) -> str:
+    """bind_symbols makes ldd process every relocation and report each symbol no
+    loaded object defines."""
     lib_dir = "/probe" + installed_lib_dir(product_name)
     return (
         "set -eu\n"
@@ -318,14 +380,18 @@ def _patch_and_ldd_script(product_name: str) -> str:
         "for f in /probe/usr/bin/*; do\n"
         f"  patchelf --set-rpath {shlex.quote(executable_runpath(product_name))} \"$f\"\n"
         "done\n"
-        "ldd /probe/usr/bin/*\n")
+        f"{_ldd_command(bind_symbols)} /probe/usr/bin/*\n")
 
 
 def docker_probe(image: str, stage: Path, product_name: str,
-                 binaries: Mapping[str, Path], host_resolved: Mapping[str, str]) -> Probe:
+                 binaries: Mapping[str, Path], host_resolved: Mapping[str, str],
+                 *, bind_symbols: bool) -> Probe:
     """A probe that stages onto `stage` and runs ldd on it in `image`. ldd runs
-    with no LD_LIBRARY_PATH, so it checks the as-installed layout."""
-    script = _patch_and_ldd_script(product_name)
+    with no LD_LIBRARY_PATH, so it checks the as-installed layout. With
+    bind_symbols it runs `ldd -r`, which also reports each undefined symbol, but
+    exits non-zero while any library is not found: use it on a converged layout."""
+    script = probe_script(product_name, bind_symbols=bind_symbols)
+    ldd = _ldd_command(bind_symbols)
 
     def probe(staged: frozenset) -> LddReport:
         for name, path in binaries.items():
@@ -336,7 +402,7 @@ def docker_probe(image: str, stage: Path, product_name: str,
             dest = staged_lib_dir(stage, product_name) / soname
             if not dest.exists():
                 _copy_writable(host_resolved[soname], dest, 0o644)
-        _log(f"probing {image} with {len(staged)} staged libraries")
+        _log(f"probing {image} with {len(staged)} staged libraries ({ldd})")
         return parse_ldd(_run([
             "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{stage}:/probe", image, "sh", "-c", script]))
@@ -396,8 +462,11 @@ def _run_derivation(args: argparse.Namespace) -> None:
 
     host = host_resolution(args.main_binary[1], extras.values())
     image = ensure_reference_image(reference_dockerfile(depends))
-    probe = docker_probe(image, stage, product_name, binaries, host.resolved)
-    closure = derive_closure(host.resolved, probe)
+    probe = docker_probe(
+        image, stage, product_name, binaries, host.resolved, bind_symbols=False)
+    bind_probe = docker_probe(
+        image, stage, product_name, binaries, host.resolved, bind_symbols=True)
+    closure = derive_bound_closure(host.resolved, probe, bind_probe)
     for line in describe_closure(host, closure):
         _log(line)
     _log(f"closure: {len(closure)} libraries; staged at {stage}")
