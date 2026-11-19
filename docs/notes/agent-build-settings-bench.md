@@ -358,8 +358,8 @@ Pooled over the three edits (six readings per arm), median `cpu_s` / `wall_s`:
 
 | edit-rebuild | (a) | (b) | (b) over (a) |
 |---|---:|---:|---:|
-| `Ek-S2` (`--test T` after an edit) | 10.0 / 8.1 | 83.3 / 60.3 | 8.3x CPU, 7.4x wall |
-| `Ek-S1` (`--lib` after an edit) | 6.4 / 6.1 | 34.9 / 25.4 | 5.5x CPU, 4.2x wall |
+| `Ek-S2` (`--test T` after an edit) | 10.0 / 8.1 | 83.3 / 60.3 | 8.4x CPU, 7.4x wall |
+| `Ek-S1` (`--lib` after an edit) | 6.4 / 6.1 | 34.9 / 25.4 | 5.4x CPU, 4.2x wall |
 
 Rep spread, `|rep1 - rep2|` over the mean of `cpu_s`: first build 5.2% (a) and 11.7% (b); S2 10% (a) and 13%
 (b); clippy 1.4% (a) and 4.3% (b); edit-rebuild steps 0.2% to 9% (a) and 6% to 18% (b).
