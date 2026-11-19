@@ -28,6 +28,7 @@ mod builtin_signatures;
 mod call_table;
 mod datum_projection;
 mod diagnostics;
+mod direction_operators;
 mod entity;
 mod expr;
 mod flexure_signatures;
