@@ -86,6 +86,7 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
   (`main.rs:1661` region) and `build_is_success` (`main.rs:2286`, task 4458)
   — ε converges check on the same rule via a shared helper. **[Amended 2026-10-20, τ #8758 BLK-1]**
   delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `CHECK_ERROR_EXIT_ALLOWLIST` moved to `crates/reify-cli/src/check_verdict.rs`.
+  **[Amended 2026-11-19, #10201]** delivered check re-pointed from `CHECK_ERROR_EXIT_ALLOWLIST` (deleted per Leo's 2026-11-18 ruling, esc-10174-1) to `fn check_gating_error\(`; task 5403's metadata row was updated to match.
 - `outlier-baseline-real` (signal premise) → PASS. `finish_check`
   (`main.rs:2719`) decides exit from constraint outcome alone; #5386's
   probe-anchored repro: `error: sub-component "j" references unknown
