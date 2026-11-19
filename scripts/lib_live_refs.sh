@@ -22,6 +22,15 @@
 #       Single-candidate predicate: return 0 iff DIR (or a descendant) is
 #       referenced by a live process; 1 otherwise. Short-circuits: the cheaper
 #       verdict wins, see below.
+#   Both also see a same-user process in ANOTHER mount namespace that reaches a
+#   candidate through that namespace's own mount of it (dark-factory
+#   plans/canonical-build-path-shared-cache-prd.md decision 16 / C11): a mount
+#   whose root, stat'd through /proc/<pid>/root, has the candidate's dev:ino
+#   gives an alias, and that namespace's cwd/fd/mmap paths are translated back
+#   through it before the same match. Each namespace is resolved once per scan.
+#   A namespace whose mountinfo or root is unreadable is skipped, never counted
+#   (browser sandboxes are same-user foreign namespaces). An fd on a file moved
+#   OUT of the bound tree reads as "/" there and stays unattributable.
 #
 # MEASURED COST (this host, 2026-07-28: 1159 live processes, 11527 fd/cwd
 # symlinks, 93 entries under the warm-lane worktrees dir):
@@ -31,6 +40,10 @@
 #   mmap pass  (grep over /proc/*/maps) .... ~0.38s
 #   one live_ref_present call .............. ~1.9s (both passes) /
 #                                            ~1.5s (cwd-or-fd hit, short-circuit)
+#   namespace pass (2026-11-19) ............ ~0.12s CPU; 0.6-1.6s wall at load
+#                                            150-190 on 32 cores (fork latency),
+#                                            4 foreign namespaces present
+# A free candidate pays all three passes.
 # The awk early-exit only fires once EVERY candidate is accounted for, so a
 # free (about-to-be-reclaimed) candidate always pays the full walk — and that
 # is precisely the verdict that must be fresh. See the "cost reversal" note in
@@ -232,12 +245,19 @@ _live_refs_ns_aliases() {
       <(stat -L -c '%d:%i %n' "${roots[@]}" 2>/dev/null) 2>/dev/null || true
 }
 
-# _live_refs_ns_targets PID... — the cwd and open-fd link targets of exactly
-# the given pids, as those processes see them.
+# _live_refs_ns_targets PID... — the cwd and open-fd link targets and the mapped
+# file pathnames of exactly the given pids, as those processes see them. cat,
+# not awk, reads the maps files: mawk aborts on an unreadable input file.
 _live_refs_ns_targets() {
     [ $# -gt 0 ] || return 0
     find "${@/#//proc/}" -maxdepth 2 -path '*/task' -prune -o -type l \
             \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null || true
+
+    local -a maps=("${@/#//proc/}")
+    maps=("${maps[@]/%//maps}")
+    cat "${maps[@]}" 2>/dev/null \
+        | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ */, ""); if (substr($0, 1, 1) == "/") print }' \
+        || true
 }
 
 # _live_refs_translate PAIRS_FILE — PAIRS_FILE holds interleaved `M` and
@@ -285,11 +305,11 @@ _live_refs_scan_namespaces() {
 # live-consumer gate — task 5378, task 5572), print (one per line,
 # deduplicated) the subset that ANY live process references via its cwd
 # symlink, an open fd symlink, or a mmap'd region in /proc/<pid>/maps.
-# Performs exactly ONE /proc symlink walk and ONE /proc/*/maps grep for the
-# WHOLE candidate set — O(/proc) once, NOT once per entry: with N stranded
-# entries the older per-entry scan was O(N × /proc) (a single /proc walk
-# already cost ~84s on a ~1300-process host, and the ENOSPC strand that
-# motivates the reaper can leave many entries at once).
+# Performs exactly ONE /proc symlink walk, ONE /proc/*/maps grep and ONE
+# namespace pass for the WHOLE candidate set — O(/proc) once, NOT once per
+# entry: with N stranded entries the older per-entry scan was O(N × /proc) (a
+# single /proc walk already cost ~84s on a ~1300-process host, and the ENOSPC
+# strand that motivates the reaper can leave many entries at once).
 #
 # The verdict is read from captured OUTPUT, never a pipeline exit status:
 # find/grep over /proc return non-zero on the unavoidable permission-denied
@@ -301,25 +321,26 @@ live_referenced_paths() {
     [ $# -gt 0 ] || return 0
     _live_refs_env_probe || true
 
-    # Both halves, unconditionally: a BATCH caller needs the full matched subset,
+    # Every pass, unconditionally: a BATCH caller needs the full matched subset,
     # so there is nothing to short-circuit on (unlike live_ref_present, which
-    # needs only a yes/no). Duplicates across the two passes are possible and
+    # needs only a yes/no). Duplicates across the passes are possible and
     # always were — every caller keys the output into a set.
     _live_refs_scan_fdcwd "$@"
     _live_refs_scan_maps "$@"
     _live_refs_scan_namespaces "$@"
 }
 
-# live_ref_present DIR — single-candidate predicate over the two scan halves.
+# live_ref_present DIR — single-candidate predicate over the three scan passes.
 # Returns 0 iff DIR itself, or anything under it, is referenced by a live
 # process (cwd / open fd / mmap); 1 otherwise.
 #
 # SHORT-CIRCUITS on the cwd/fd pass (task 5572 review): a single yes/no verdict
 # does not need the mmap pass once the cheaper-to-hit one has already answered
-# "yes", which cuts a live candidate's cost from ~1.9s to ~1.5s here. A NEGATIVE
-# verdict still pays both passes — unavoidably, since "not referenced" is only
-# established by exhausting every reference kind, and that negative is exactly
-# the verdict that authorises the reset.
+# "yes", which cuts a live candidate's cost from ~1.9s to ~1.5s here; the
+# namespace pass runs last on the same rule. A NEGATIVE verdict still pays every
+# pass — unavoidably, since "not referenced" is only established by exhausting
+# every reference kind, and that negative is exactly the verdict that
+# authorises the reset.
 #
 # DIR is resolved with `readlink -f` FIRST, and that is mandatory rather than
 # defensive: /proc cwd/fd symlink targets and /proc/*/maps paths are
