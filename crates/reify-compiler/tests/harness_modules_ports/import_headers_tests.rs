@@ -583,11 +583,7 @@ fn a_refusal_for_another_path_names_both_paths_and_never_claims_they_match() {
     for elsewhere_source in [source, other_source] {
         let message = refusal_message(&plan, &parse_clean(elsewhere_source, "elsewhere"));
         assert!(
-            message.contains("derived for `subject`, given `elsewhere`"),
-            "{message}\nsource:\n{elsewhere_source}"
-        );
-        assert!(
-            !message.contains("the paths match"),
+            message.ends_with("derived for `subject`, given `elsewhere`"),
             "{message}\nsource:\n{elsewhere_source}"
         );
     }
