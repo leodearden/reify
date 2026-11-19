@@ -55,7 +55,8 @@ pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[
 /// currently DRIFTS to the first-arg default (all are pure eval-builtins with
 /// no pub-fn signature). §1.2 trig is deliberately EXCLUDED — it is not in the
 /// §3 table this leaf implements; see esc-4182-74 for the (latent) trig
-/// compile-time-typing gap surfaced by the probe.
+/// compile-time-typing gap surfaced by the probe. One later member: `vector`,
+/// direction-typing C5's named `Direction -> Vector3<Dimensionless>` conversion.
 ///
 /// Case-sensitive snake_case, mirroring [`MATH_CONSTRUCTION_NAMES`].
 pub const MATH_OPERATION_NAMES: &[&str] = &[
@@ -72,6 +73,7 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
     "dot",
     "cross",
     "normalize",
+    "vector",
     "magnitude",
     "outer",
     // matrix ops
@@ -374,11 +376,19 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             )),
         },
         // `normalize` is dimensionless and preserves N (degrade n→0 if unknown,
-        // but STILL a Vector variant — never the first-arg type, D7).
-        "normalize" => Type::Vector {
-            n: first.map_or(0, |a| vector_n(&a.result_type)),
-            quantity: Box::new(Type::dimensionless_scalar()),
+        // but STILL a Vector variant — never the first-arg type, D7). A
+        // Direction is already unit: normalize is its identity (direction C6).
+        "normalize" => match first.map(|a| &a.result_type) {
+            Some(Type::Direction) => Type::Direction,
+            _ => Type::Vector {
+                n: first.map_or(0, |a| vector_n(&a.result_type)),
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
         },
+        // `vector(d)` is direction-typing C5's conversion; its codomain does not
+        // depend on the argument (a non-Direction argument is diagnosed by
+        // `direction_operators::check_math_direction_operands`).
+        "vector" => Type::vec3(Type::dimensionless_scalar()),
         // `magnitude` collapses a vector to its quantity scalar.
         "magnitude" => scalar_or_real(arg_vector_quantity(args, 0)),
         // `outer` is a rank-2 Tensor; n = column count = second-arg N (degrade
