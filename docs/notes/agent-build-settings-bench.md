@@ -1010,7 +1010,10 @@ that the spec's `verify_env` outranks the host config). The arm's single source,
   (b0) wrote exactly (b)'s units, and the S7 probe, run under a refusing wrapper after sequences that compiled
   under sccache, found those units clean. Shape (i) stays non-viable, because the incremental flag does change
   every workspace unit's hash (arm (a): 0 of 39 units found), but that is the reason, not the wrapper.
-  Hypothesis, not tested here: the re-fingerprint 7429 saw came with that flag.
+  Hypothesis, not tested here: the re-fingerprint 7429 saw came with that flag. A wrapper-only difference
+  (sccache on or off at one incremental setting) needs no cold rebuild, so its A/B could add that arm to
+  separate the two variables it moves together. Curator ticket tkt_0RX5AH8R5W73QSG966NTJC5F2M asks for the
+  annotation on 7429's text.
 
 ## Caveats
 
