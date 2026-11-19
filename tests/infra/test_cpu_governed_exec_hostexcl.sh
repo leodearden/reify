@@ -127,12 +127,12 @@ WORK="$(mktemp -d)"
 # apart — this file spells no slice literal of its own.
 #
 # D1-D6 use a shared-parent $$-scoped pair so cpu-governed-exec.sh's
-# slice-weight-set + scope placement never touch the live production
-# reify-governed-*.slice hierarchy (which the running orchestrator's governance
-# depends on). systemd dash-nesting (a-b-c.slice -> a.slice/a-b.slice/
-# a-b-c.slice) gives task+merge a COMMON parent (D_PARENT_SLICE), faithfully
-# mirroring the production reify-governed.slice/reify-governed-<agents|merge>
-# .slice two-level hierarchy that D1a/D3a assert.
+# slice-weight-set + scope placement never touch the live production role
+# slices that scripts/lib_cgroup.sh::cgroup_role_slice defaults to (the running
+# orchestrator's governance depends on them). systemd dash-nesting
+# (a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice) gives task+merge a COMMON
+# parent (D_PARENT_SLICE), faithfully mirroring the shared parent of those
+# production role slices that D1a/D3a assert.
 #
 # D7/D8 use two MORE $$-scoped children of that same parent (task 6386, the
 # rename: they were reify-test-task-$$.slice / reify-test-merge-$$.slice, whose
@@ -344,9 +344,11 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
         ' _ "$WORK/out_d8"
 
     # D-guard: none of the captured probe outputs may reference a production
-    # reify-governed-*.slice — deterministic proof that D1-D6 (and D7/D8) never
-    # touch the live orchestrator's governance hierarchy (task 4919). A live
-    # `systemctl --user list-units 'reify-governed*'` before/after diff would be
+    # governed slice — deterministic proof that D1-D6 (and D7/D8) never touch
+    # the live orchestrator's governance hierarchy (task 4919). The
+    # `reify-governed` substring matches both the current df-reify-governed-*
+    # production slices and the legacy reify-governed-* names. A live
+    # `systemctl --user list-units '*reify-governed*'` before/after diff would be
     # racy against a concurrently running orchestrator; grepping the captured
     # probe outputs is deterministic and stays in-process.
     for _f in out_task out_merge out_task_custom out_d7 out_d8; do
