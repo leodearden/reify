@@ -51,6 +51,14 @@ def _generator_stub_fails(tmpdir, marker):
     """)
 
 
+def _generator_stub_writes_nothing(tmpdir, marker):
+    """A generator that records its run in `marker` and exits 0 without writing parser.c."""
+    return _write_ts_stub(tmpdir, "generate_writes_nothing", f"""\
+        echo run >> {shlex.quote(marker)}
+        exit 0
+    """)
+
+
 def _marker_lines(marker):
     """The runs a generator stub recorded in `marker`; [] when it never ran."""
     if not os.path.exists(marker):
@@ -121,6 +129,18 @@ class TestEnsureGrammarCurrent(_GeneratorFixture, unittest.TestCase):
         self.assertIn(generator, reason)
         self.assertNotIn("\n", reason)
 
+    def test_a_generator_that_cannot_be_launched_is_reported_not_raised(self):
+        """No `bash` on the PATH the launch is handed: the launch itself fails."""
+        generator = _generator_stub_succeeds(self.tmp, self.root, self.marker)
+        empty_path = self.enterContext(tempfile.TemporaryDirectory(dir=self.tmp))
+        with unittest.mock.patch.dict(os.environ, {"PATH": empty_path}):
+            ok, reason = pcc.ensure_grammar_current(self._ctx(generator))
+        self.assertFalse(ok)
+        self.assertIn(generator, reason)
+        self.assertIn("could not be run", reason)
+        self.assertNotIn("\n", reason)
+        self.assertEqual(_marker_lines(self.marker), [])
+
 
 def _probe(capability, kind, fixture, match):
     return {"capability": capability, "probe_kind": kind, "fixture": fixture,
@@ -177,12 +197,25 @@ class TestMainBringsTheGrammarCurrentFirst(_GeneratorFixture, unittest.TestCase)
         self.assertIn("tree-sitter CLI not found", out)
         self.assertEqual(calls, [])
 
-    def test_the_never_generated_hint_names_the_generator(self):
+    def test_a_root_without_a_generator_is_not_told_to_run_one(self):
         ctx = self._ctx(None)
         runner, _ = recording_runner()
         rc, out, _ = self._run_main(["--grammar-substrate-status"], runner, ctx)
         self.assertEqual(rc, 75)
-        self.assertIn("tree-sitter-generate.sh", out)
+        self.assertIn(os.path.join(self.root, "scripts", "tree-sitter-generate.sh"), out)
+        self.assertNotIn("`bash", out)
+
+    def test_a_generator_that_wrote_no_parser_is_named_and_nothing_is_probed(self):
+        generator = _generator_stub_writes_nothing(self.tmp, self.marker)
+        ctx = self._ctx(generator)
+        runner, calls = recording_runner()
+        rc, out, _ = self._run_main(["--grammar-substrate-status"], runner, ctx)
+        self.assertEqual(rc, 75)
+        self.assertEqual(len(out.splitlines()), 1, out)
+        self.assertIn(generator, out)
+        self.assertIn(os.path.join(self.src, "parser.c"), out)
+        self.assertEqual(len(_marker_lines(self.marker)), 1)
+        self.assertEqual(calls, [])
 
     # -- probe-set mode ---------------------------------------------------------
 
