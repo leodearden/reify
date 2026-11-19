@@ -519,24 +519,6 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
             f"expected a mega-leaf/fan-out degradation warning in captured log; got {logs!r}",
         )
 
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_stringified_non_array_is_one_whole_string_leaf(self):
-        """A JSON string that parses to neither a leaf array nor an envelope is
-        ONE mega-leaf: the whole string, as the logged warning says. It holds as
-        the args themselves and as an envelope's `leaves` (task #9845). A JSON
-        string of a non-blank string is such a string too, while a JSON string
-        of a scalar or a blank string is refused (TestMjsTopLevelArgs, task
-        #10063).
-        """
-        solo_object = json.dumps({"signal": "solo"}, separators=(",", ":"))
-        for solo in (solo_object, json.dumps("solo")):
-            for args_js in (json.dumps(solo), f"{{ leaves: {json.dumps(solo)} }}"):
-                with self.subTest(args=args_js):
-                    verdict, logs = self._run_fanout(args_js)
-                    self.assertEqual(
-                        [v["leafLabel"] for v in verdict["leaf_verdicts"]], [solo])
-                    self.assertIn("mega-leaf", " ".join(logs))
-
 
 # ---------------------------------------------------------------------------
 # _HeadSliceHelperMixin — shared node harness for a single pure helper sliced
@@ -712,14 +694,15 @@ const L = [{ signal: "leaf-1" }, { signal: "leaf-2" }, { signal: "leaf-3" }];
             f"warning must name the mega-leaf/fan-out degradation; got {cases['non_json_string']['warnCalls']!r}",
         )
 
-        # edge: JSON string parsing to a non-array object -> single mega-leaf + warning.
+        # edge: a JSON string that decodes to one leaf object is that object's
+        # batch -> one leaf, and nothing degraded, so no warning (task #10188).
         self.assertEqual(
             cases["json_non_array_object"]["length"], 1,
-            f"non-array JSON must fall back to one mega-leaf; got {cases['json_non_array_object']!r}",
+            f"a JSON string of one leaf object must deliver one leaf; got {cases['json_non_array_object']!r}",
         )
-        self.assertTrue(
-            cases["json_non_array_object"]["warnCalls"],
-            "non-array JSON parse result must log a degradation warning",
+        self.assertEqual(
+            cases["json_non_array_object"]["warnCalls"], [],
+            "a JSON string that decodes to one leaf object must not log a degradation warning",
         )
 
         # edge: undefined / empty string -> zero leaves (unchanged pre-fix behavior).
@@ -2015,7 +1998,9 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
     rule an envelope's `leaves` follows (task #9946): an omitted, falsy, scalar
     or blank args is refused before any agent runs, not run as a vacuous PASS.
     A JSON string of such an args is refused too, judged by what it encodes,
-    and its refusal names what it decoded to (task #10063)."""
+    and its refusal names what it decoded to (task #10063).  A JSON string that
+    passes is delivered as what it decodes to, the value that was judged (task
+    #10188)."""
 
     # Each args that is no leaf batch, and how its refusal renders it.
     _NOT_A_LEAF_BATCH = (
@@ -2052,6 +2037,37 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
                                 envelope_message)
                 self.assertEqual(message.removeprefix(self._ARGS_SUBJECT),
                                  envelope_message.removeprefix(self._LEAVES_SUBJECT))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_a_json_string_leaf_is_delivered_as_its_decoded_value(self):
+        """The JSON string of one leaf runs exactly as that leaf passed directly
+        would: the same agent prompts and schemas, the same verdict.  Only a
+        leaf that is itself a string is a mega-leaf, and logs it, in either form.
+        """
+        batch_forms = (
+            ("top level", lambda js: js),
+            ("envelope", lambda js: f"{{ leaves: {js} }}"),
+        )
+        for leaf, warns in (({"signal": "solo"}, False), ("solo", True)):
+            direct = json.dumps(leaf)
+            stringified = json.dumps(direct)
+            for where, wrap in batch_forms:
+                with self.subTest(leaf=leaf, where=where):
+                    self.assertEqual(
+                        self._run_scenario_agent_calls(
+                            wrap(stringified), self.VERIFIED_RESPONSES),
+                        self._run_scenario_agent_calls(
+                            wrap(direct), self.VERIFIED_RESPONSES))
+                    verdict, _ = self._run_scenario(
+                        wrap(stringified), self.VERIFIED_RESPONSES)
+                    direct_verdict, _ = self._run_scenario(
+                        wrap(direct), self.VERIFIED_RESPONSES)
+                    self.assertEqual(verdict, direct_verdict)
+                    self.assertEqual(
+                        [v["leafLabel"] for v in verdict["leaf_verdicts"]], ["solo"])
+                    logs = self._run_scenario_logs(
+                        wrap(stringified), self.VERIFIED_RESPONSES)
+                    self.assertEqual("mega-leaf" in " ".join(logs), warns)
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_an_explicit_empty_batch_is_still_the_empty_batch(self):
