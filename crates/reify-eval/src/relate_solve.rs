@@ -3147,7 +3147,7 @@ mod tests_driving_set_failure {
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
         BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
-        ResidualSource, SolveFailureCause, SolveStall,
+        ResidualSource, SolveFailureCause, SolveResult, SolveStall,
     };
 
     use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
@@ -3440,6 +3440,53 @@ structure PairSearchScope {
             "{diagnostic:?}"
         );
         assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
+    }
+
+    /// The scope renderer and the `SolveResult` adapter agree on every cause: the
+    /// same code and Error severity, the same text wherever the scope adds nothing
+    /// (budget exhaustion keeps its seed guidance), and the cause's own figures
+    /// where it adds the conflict set or a relation label.
+    #[test]
+    fn the_scope_renderer_and_the_solve_result_adapter_agree() {
+        with_failure_context(SolveBudget::default(), |context| {
+            for cause in [certified(), exhausted(), stalled(), non_finite()] {
+                let live = failure_diagnostic(&cause, context);
+                let carried = match (FrameSolveOutcome {
+                    iterations: 0,
+                    result: Err(cause.clone()),
+                })
+                .into_solve_result(context.unknown)
+                {
+                    SolveResult::Infeasible { mut diagnostics } if diagnostics.len() == 1 => {
+                        diagnostics.remove(0)
+                    }
+                    other => panic!("expected Infeasible with one diagnostic, got {other:?}"),
+                };
+                assert_eq!(
+                    (live.severity, live.code),
+                    (carried.severity, carried.code),
+                    "{cause:?}"
+                );
+                assert_eq!(
+                    (live.severity, live.code),
+                    (Severity::Error, Some(cause.code())),
+                    "{cause:?}"
+                );
+                match cause {
+                    SolveFailureCause::BudgetExhausted(_) | SolveFailureCause::Stalled(_) => {
+                        assert_eq!(live.message, carried.message, "{cause:?}");
+                    }
+                    _ => {
+                        for message in [&live.message, &carried.message] {
+                            assert!(message.contains(&cause.to_string()), "{message}");
+                        }
+                    }
+                }
+                if let SolveFailureCause::BudgetExhausted(_) = cause {
+                    assert!(live.message.contains("auto(seed"), "{}", live.message);
+                }
+            }
+        });
     }
 
     /// The search walks the driving set's pairs i-before-j, in INSTANCE positions
