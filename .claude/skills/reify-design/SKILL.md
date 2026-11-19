@@ -124,7 +124,7 @@ When extending an existing `.ri` file:
 
 ### 2. Iterate visually
 
-Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`, and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
+Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`; `reify-gui` itself defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and exporting `0` opts out; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
 
 - **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh [file.ri]` — vite on `:${REIFY_VITE_PORT:-1420}`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions, and set `REIFY_VITE_PORT` to run a second dev session while :1420 is taken. Use this when iterating.
 - **Release:** `scripts/run-gui.sh [file.ri]` — what end users will see.

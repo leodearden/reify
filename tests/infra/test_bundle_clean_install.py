@@ -52,8 +52,6 @@ DEBUG_PORT = 3939
 GUI_ENV = {
     "REIFY_DEBUG": "1",
     "REIFY_DEBUG_PORT": str(DEBUG_PORT),
-    # scripts/lib_gui_launch.sh pins this: under Xvfb WebKitGTK aborts on GBM EGL.
-    "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
 }
 GUI_LOG = "/tmp/reify-gui.log"
 GUI_EXIT = "/tmp/reify-gui.exit"

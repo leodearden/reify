@@ -22,6 +22,12 @@ armed over exactly the one .deb and one .AppImage it publishes, and a red proof
 leaves no tag, release or closed issue, on a re-run too. ProofArmChain drives
 the REAL proof with the same arm env and a failing stub docker, so a renamed arm
 variable reds instead of shipping behind an all-skipped green.
+
+The version handoff (task 10021): the release builds its assets at the
+version its tag names. Release and Preflight pin the release's end;
+BuildBundleVersion pins build-bundle.sh's, running a copy of the real script
+with every tool it runs stubbed: the `--version` usage refusal, the version
+overlay on both `cargo tauri` calls, and the deb control-Version post-check.
 """
 
 import json
@@ -42,6 +48,7 @@ PROOF_ARM_ENV = {"REIFY_RUN_BUNDLE_CLEAN_INSTALL": "1"}
 PROOF_KNOBS = ("REIFY_RUN_BUNDLE_CLEAN_INSTALL", "REIFY_BUNDLE_DEB", "REIFY_BUNDLE_APPIMAGE")
 
 TAG = "v9.9-test"
+BUNDLE_VERSION = "9.9.0-test"
 NOTE = f"docs/releases/{TAG}.md"
 RELEASE_URL = f"https://github.com/fake/repo/releases/tag/{TAG}"
 
@@ -96,6 +103,7 @@ sys.exit(99)
 
 BUILD_BUNDLE_BANNER = "build-bundle (stub): building"
 BUILD_BUNDLE_STUB = '''#!/usr/bin/env bash
+for arg in "$@"; do printf '%s\\0' "$arg"; done > "@ARGV_LOG@"
 echo "@BANNER@" >&2
 printf '%s\\n' "@DEB@" "@APPIMAGE@"
 '''.replace("@BANNER@", BUILD_BUNDLE_BANNER)
@@ -118,6 +126,63 @@ sys.exit(int(exit_file.read_text(encoding="utf-8")) if exit_file.exists() else 0
 DOCKER_STUB = '''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "@LOG@"
 exit 1
+'''
+
+BUILD_BUNDLE_USAGE = "usage: scripts/build-bundle.sh [--version <semver>]"
+TAURI_CONF_VERSION = "4.5.6"
+
+# One stub for every tool build-bundle.sh runs; it dispatches on the name it was
+# invoked under and logs [name, *argv]. The tauri calls leave the files the
+# script checks for, bundle_closure.py stages one library and names it in the
+# overlay, and dpkg-deb extracts the members the post-check requires and reports
+# the control Version the fixture chose.
+BUNDLE_TOOL_STUB = r'''#!@PYTHON@
+import json
+import shutil
+import sys
+from pathlib import Path
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+state = Path("@STATE@")
+target = Path("@TARGET@")
+with open(state / "calls.jsonl", "a", encoding="utf-8") as log:
+    log.write(json.dumps([name, *args]) + "\n")
+
+
+def flag(option):
+    return args[args.index(option) + 1]
+
+
+def make(path, data=b"stub", mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(mode)
+
+
+if name == "cargo":
+    if args[:2] == ["tauri", "build"]:
+        make(target / "release" / "reify-gui", mode=0o755)
+    elif args[:1] == ["build"]:
+        make(target / "release" / "reify", mode=0o755)
+    elif args[:1] == ["metadata"]:
+        print(json.dumps({"target_directory": str(target)}))
+    elif args[:2] == ["tauri", "bundle"]:
+        make(target / "release" / "bundle" / "deb" / "Reify_amd64.deb")
+        make(target / "release" / "bundle" / "appimage" / "Reify_amd64.AppImage")
+elif name == "bundle_closure.py":
+    libs = Path(flag("--stage")) / "lib"
+    make(libs / "libstub.so.1", b"staged library")
+    Path(flag("--overlay")).write_text(json.dumps(
+        {"bundle": {"linux": {"deb": {"files": {"/usr/lib/Reify/lib": str(libs)}}}}}))
+elif name == "dpkg-deb":
+    if args[0] == "--extract":
+        root = Path(args[2])
+        for member in ("reify-gui", "reify", "reify-sidecar"):
+            make(root / "usr" / "bin" / member)
+        shutil.copytree(target / "bundle-stage" / "lib", root / "usr" / "lib" / "Reify" / "lib")
+    elif args[0] == "-f":
+        print((state / "deb-version").read_text(encoding="utf-8").strip())
 '''
 
 
@@ -148,8 +213,9 @@ class ReleaseFixture:
         self.remote = root / "github.com" / "fake" / "repo.git"
         self.state = root / "gh-state"
         self.proof_state = root / "proof-state"
-        self.deb = root / "assets" / "reify_0.1.0_amd64.deb"
-        self.appimage = root / "assets" / "Reify_0.1.0_amd64.AppImage"
+        self.deb = root / "assets" / f"Reify_{BUNDLE_VERSION}_amd64.deb"
+        self.appimage = root / "assets" / f"Reify_{BUNDLE_VERSION}_amd64.AppImage"
+        self.build_bundle_argv_log = root / "build-bundle-argv"
         self.env = _hermetic_env(root)
         for d in (root / "home", root / "bin", self.state / "issues", self.deb.parent,
                   self.proof_state):
@@ -169,21 +235,44 @@ class ReleaseFixture:
         scripts = self.repo / "scripts"
         scripts.mkdir()
         shutil.copy2(RELEASE_SCRIPT, scripts / "release-alpha.sh")
-        stub = scripts / "build-bundle.sh"
-        stub.write_text(BUILD_BUNDLE_STUB.replace("@DEB@", str(self.deb))
-                        .replace("@APPIMAGE@", str(self.appimage)), encoding="utf-8")
-        stub.chmod(0o755)
+        self.write_build_bundle_stub(self.deb, self.appimage)
         proof = self.repo / PROOF
         proof.parent.mkdir(parents=True)
         proof.write_text(PROOF_STUB.replace("@PYTHON@", sys.executable)
                          .replace("@STATE@", str(self.proof_state))
                          .replace("@KNOBS@", json.dumps(PROOF_KNOBS)), encoding="utf-8")
-        note = self.repo / NOTE
-        note.parent.mkdir(parents=True)
-        note.write_text(f"# {TAG}\n\nCloses: #1, #2\n", encoding="utf-8")
+        self.write_note(TAG)
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "fixture")
         self.git("remote", "add", "origin", str(self.remote))
+
+    def write_build_bundle_stub(self, deb, appimage):
+        """A stub build-bundle.sh that records its argv and prints these assets."""
+        stub = self.repo / "scripts" / "build-bundle.sh"
+        stub.write_text(BUILD_BUNDLE_STUB.replace("@DEB@", str(deb))
+                        .replace("@APPIMAGE@", str(appimage))
+                        .replace("@ARGV_LOG@", str(self.build_bundle_argv_log)),
+                        encoding="utf-8")
+        stub.chmod(0o755)
+
+    def use_assets(self, deb_name, appimage_name):
+        """Make the stub build print non-empty assets with these file names."""
+        deb, appimage = self.deb.parent / deb_name, self.deb.parent / appimage_name
+        deb.write_bytes(b"deb")
+        appimage.write_bytes(b"appimage")
+        self.write_build_bundle_stub(deb, appimage)
+        return deb, appimage
+
+    def write_note(self, tag):
+        note = self.repo / "docs" / "releases" / f"{tag}.md"
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text(f"# {tag}\n\nCloses: #1, #2\n", encoding="utf-8")
+
+    def build_bundle_argv(self):
+        """The argv build-bundle.sh last ran with, or None if it never ran."""
+        if not self.build_bundle_argv_log.exists():
+            return None
+        return self.build_bundle_argv_log.read_bytes().decode("utf-8").split("\0")[:-1]
 
     def git(self, *args, cwd=None):
         proc = subprocess.run(
@@ -194,9 +283,9 @@ class ReleaseFixture:
             raise AssertionError(f"git {args} failed:\n{proc.stderr}")
         return proc.stdout.strip()
 
-    def run_release(self):
+    def run_release(self, tag=TAG):
         return subprocess.run(
-            ["bash", str(self.repo / "scripts" / "release-alpha.sh"), TAG],
+            ["bash", str(self.repo / "scripts" / "release-alpha.sh"), tag],
             cwd=self.repo, env=self.env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
@@ -290,6 +379,26 @@ class Preflight(ReleaseCase):
         self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
 
 
+    def test_a_tag_that_names_no_version_is_refused_before_the_build(self):
+        for tag in ("latest", "v1", "0.2-alpha", "v01.2", "v0.2-", "v0.2-alpha.",
+                    "v0.2-alpha..1", "v0.2-alpha.01"):
+            with self.subTest(tag=tag):
+                self.fx.write_note(tag)
+                proc = self.fx.run_release(tag)
+                self.assert_refused(proc, f"tag {tag} does not name a version")
+                self.assertNotIn(BUILD_BUNDLE_BANNER, proc.stderr)
+                self.assertIsNone(self.fx.build_bundle_argv())
+                self.assertEqual(self.fx.proof_calls(), [])
+                self.assertEqual([c for c in self.fx.gh_calls() if c[:1] == ["release"]], [])
+
+    def test_a_full_patch_tag_builds_that_version(self):
+        self.fx.write_note("v1.2.3")
+        self.fx.use_assets("Reify_1.2.3_amd64.deb", "Reify_1.2.3_amd64.AppImage")
+        proc = self.fx.run_release("v1.2.3")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.fx.build_bundle_argv(), ["--version", "1.2.3"])
+
+
 class Release(ReleaseCase):
 
     def setUp(self):
@@ -299,6 +408,9 @@ class Release(ReleaseCase):
 
     def test_first_run_succeeds(self):
         self.assertEqual(self.first.returncode, 0, self.first.stderr)
+
+    def test_the_bundle_is_built_at_the_tag_version(self):
+        self.assertEqual(self.fx.build_bundle_argv(), ["--version", BUNDLE_VERSION])
 
     def test_the_proof_runs_once_armed_over_the_built_assets(self):
         (call,) = self.fx.proof_calls()
@@ -372,11 +484,131 @@ class ProofGate(ReleaseCase):
             self.assertEqual(_verb_calls(calls, group, verb), [], f"gh {group} {verb}")
 
     def test_a_bundle_that_is_not_one_deb_and_one_appimage_is_refused(self):
-        stub = self.fx.repo / "scripts" / "build-bundle.sh"
-        stub.write_text(BUILD_BUNDLE_STUB.replace("@DEB@", str(self.fx.deb))
-                        .replace("@APPIMAGE@", str(self.fx.deb)), encoding="utf-8")
+        self.fx.write_build_bundle_stub(self.fx.deb, self.fx.deb)
         self.assert_refused(self.fx.run_release(), "expected one .deb and one .AppImage")
         self.assertEqual(self.fx.proof_calls(), [])
+
+    def test_assets_not_named_for_the_tag_version_are_refused_before_the_proof(self):
+        self.fx.use_assets("Reify_0.1.0_amd64.deb", "Reify_0.1.0_amd64.AppImage")
+        self.assert_refused(self.fx.run_release(),
+                            f"is not named for version {BUNDLE_VERSION}")
+        self.assertEqual(self.fx.proof_calls(), [])
+        self.assertIsNone(self.fx.remote_tag_type())
+
+
+class BuildBundleFixture:
+    """A copy of the real build-bundle.sh in a scratch tree where every tool it
+    runs is BUNDLE_TOOL_STUB: cargo in $HOME/.cargo/bin, and docker, npm and
+    dpkg-deb in $HOME/.local/bin, both of which the script's own PATH prefix
+    puts first; the tree's check-manifold-deps.sh, build-sidecar.sh and
+    bundle_closure.py run it too."""
+
+    def __init__(self, root):
+        self.repo = root / "repo"
+        self.state = root / "tool-state"
+        self.target = root / "target"
+        tool = root / "tools" / "bundle-tool"
+        home = root / "home"
+        for d in (self.state, tool.parent, home / ".cargo" / "bin", home / ".local" / "bin",
+                  root / "tmp", self.repo / "scripts", self.repo / "gui" / "sidecar",
+                  self.repo / "gui" / "src-tauri"):
+            d.mkdir(parents=True)
+        tool.write_text(BUNDLE_TOOL_STUB.replace("@PYTHON@", sys.executable)
+                        .replace("@STATE@", str(self.state))
+                        .replace("@TARGET@", str(self.target)), encoding="utf-8")
+        tool.chmod(0o755)
+        for link in (home / ".cargo" / "bin" / "cargo",
+                     *(home / ".local" / "bin" / n for n in ("docker", "npm", "dpkg-deb")),
+                     self.repo / "scripts" / "bundle_closure.py"):
+            link.symlink_to(tool)
+        for script in ("scripts/check-manifold-deps.sh", "gui/sidecar/build-sidecar.sh"):
+            name = script.rsplit("/", 1)[1]
+            (tool.parent / name).symlink_to(tool)
+            (self.repo / script).write_text(
+                f'exec "{tool.parent / name}" "$@"\n', encoding="utf-8")
+        shutil.copy2(BUILD_BUNDLE, self.repo / "scripts" / "build-bundle.sh")
+        (self.repo / "gui" / "src-tauri" / "tauri.conf.json").write_text(
+            json.dumps({"version": TAURI_CONF_VERSION}), encoding="utf-8")
+        self.env = {**os.environ, "HOME": str(home), "TMPDIR": str(root / "tmp")}
+
+    def deb_reports_version(self, version):
+        (self.state / "deb-version").write_text(version + "\n", encoding="utf-8")
+
+    def run(self, *argv):
+        return subprocess.run(
+            ["bash", str(self.repo / "scripts" / "build-bundle.sh"), *argv],
+            cwd=self.repo, env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+
+    def calls(self):
+        log = self.state / "calls.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    def tauri_call(self, verb):
+        (call,) = [c for c in self.calls() if c[:3] == ["cargo", "tauri", verb]]
+        return call
+
+    def assets(self):
+        bundle = self.target / "release" / "bundle"
+        return [str(bundle / "deb" / "Reify_amd64.deb"),
+                str(bundle / "appimage" / "Reify_amd64.AppImage")]
+
+
+def _inline_configs(call):
+    """The JSON objects a cargo tauri call passes inline via --config; a value
+    not starting with `{` is a config file path."""
+    values = [value for option, value in zip(call, call[1:]) if option == "--config"]
+    return [json.loads(value) for value in values if value.startswith("{")]
+
+
+class BuildBundleVersion(unittest.TestCase):
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fx = BuildBundleFixture(Path(tmp.name))
+
+    def test_a_bad_argv_is_a_usage_error_before_any_step(self):
+        for argv in (["--bogus"], ["--version"], ["--version", ""],
+                     ["--version", "1.0.0", "extra"], ["-v", "1.0.0"]):
+            with self.subTest(argv=argv):
+                proc = self.fx.run(*argv)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn(BUILD_BUNDLE_USAGE, proc.stderr)
+                self.assertEqual(proc.stdout, "")
+                self.assertEqual(self.fx.calls(), [])
+
+    def test_the_version_overlays_both_tauri_calls(self):
+        self.fx.deb_reports_version(BUNDLE_VERSION)
+        proc = self.fx.run("--version", BUNDLE_VERSION)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for verb in ("build", "bundle"):
+            with self.subTest(verb=verb):
+                self.assertEqual(_inline_configs(self.fx.tauri_call(verb)),
+                                 [{"version": BUNDLE_VERSION}])
+        self.assertEqual(proc.stdout.splitlines(), self.fx.assets())
+
+    def test_a_deb_of_another_version_is_refused_naming_both(self):
+        self.fx.deb_reports_version("0.1.0")
+        proc = self.fx.run("--version", BUNDLE_VERSION)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn(f"has control Version 0.1.0; expected {BUNDLE_VERSION}", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    def test_without_a_version_tauri_conf_names_it(self):
+        self.fx.deb_reports_version(TAURI_CONF_VERSION)
+        proc = self.fx.run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for verb in ("build", "bundle"):
+            with self.subTest(verb=verb):
+                self.assertEqual(_inline_configs(self.fx.tauri_call(verb)), [])
+        self.fx.deb_reports_version(BUNDLE_VERSION)
+        refused = self.fx.run()
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn(f"expected {TAURI_CONF_VERSION}", refused.stderr)
 
 
 class RealTree(unittest.TestCase):
