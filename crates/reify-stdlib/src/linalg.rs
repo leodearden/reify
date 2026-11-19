@@ -5,8 +5,16 @@ use crate::helpers::{binary, complex_abs, sanitize_value, tensor_components_f64,
 
 pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
-        // --- Linear algebra: dot, cross, magnitude, normalize ---
+        // --- Linear algebra: dot, cross, magnitude, normalize, vector ---
+        "vector" => unary(args, |v| match v {
+            Value::Direction(u) => Value::Vector(u.components().map(Value::Real).to_vec()),
+            _ => Value::Undef,
+        }),
+
         "normalize" => unary(args, |v| {
+            if let Value::Direction(_) = v {
+                return v.clone();
+            }
             // Determine the output wrapper based on input variant.
             let wrap: fn(Vec<Value>) -> Value = match v {
                 Value::Vector(_) => Value::Vector,
@@ -54,6 +62,10 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
         }),
 
         "cross" => binary(args, |a, b| {
+            if let Some((a, b)) = direction_pair(a, b) {
+                let c = cross3(a, b);
+                return Value::Vector(c.map(|x| sanitize_value(Value::Real(x))).to_vec());
+            }
             // Cross product of two vectors → vector; point inputs are
             // semantically invalid (cross is only defined for vectors).
             let wrap: fn(Vec<Value>) -> Value = match (a, b) {
@@ -72,11 +84,10 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
             if a_vals.len() != 3 || b_vals.len() != 3 {
                 return Value::Undef;
             }
-            let (a0, a1, a2) = (a_vals[0], a_vals[1], a_vals[2]);
-            let (b0, b1, b2) = (b_vals[0], b_vals[1], b_vals[2]);
-            let cx = a1 * b2 - a2 * b1;
-            let cy = a2 * b0 - a0 * b2;
-            let cz = a0 * b1 - a1 * b0;
+            let [cx, cy, cz] = cross3(
+                [a_vals[0], a_vals[1], a_vals[2]],
+                [b_vals[0], b_vals[1], b_vals[2]],
+            );
             let result_dim = a_dim.mul(&b_dim);
             let make_component = |v: f64| -> Value {
                 if result_dim == DimensionVector::DIMENSIONLESS {
@@ -96,6 +107,10 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
         }),
 
         "dot" => binary(args, |a, b| {
+            if let Some((a, b)) = direction_pair(a, b) {
+                let cosine: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+                return sanitize_value(Value::Real(cosine));
+            }
             let (a_vals, a_dim) = match tensor_components_f64(a) {
                 Some(v) => v,
                 None => return Value::Undef,
@@ -121,6 +136,20 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
 
         _ => return None,
     })
+}
+
+/// The components of two `Value::Direction` operands; `None` unless both are
+/// Directions (a mixed Direction/vector pair is not coerced, direction-typing
+/// D2).
+fn direction_pair(a: &Value, b: &Value) -> Option<([f64; 3], [f64; 3])> {
+    match (a, b) {
+        (Value::Direction(a), Value::Direction(b)) => Some((a.components(), b.components())),
+        _ => None,
+    }
+}
+
+fn cross3([a0, a1, a2]: [f64; 3], [b0, b1, b2]: [f64; 3]) -> [f64; 3] {
+    [a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0]
 }
 
 #[cfg(test)]
