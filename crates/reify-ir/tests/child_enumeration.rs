@@ -168,9 +168,13 @@ fn child_labels(expr: &CompiledExpr) -> Vec<String> {
 /// What `labels` become when every child `ValueRef`'s cell goes through
 /// `prime_member`.
 fn primed(labels: &[&str]) -> Vec<String> {
-    labels.iter().map(|c| format!("{c}'")).collect()
+    labels
+        .iter()
+        .map(|c| prime_member(cell(c)).member)
+        .collect()
 }
 
+/// The one place that decides how a cell is marked as rewritten.
 fn prime_member(id: ValueCellId) -> ValueCellId {
     ValueCellId::new(id.entity, format!("{}'", id.member))
 }
@@ -429,7 +433,7 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
         case.expr.for_each_child_mut(&mut |child| {
             visited.push(label(child));
             if let CompiledExprKind::ValueRef(id) = &mut child.kind {
-                id.member.push('\'');
+                *id = prime_member(id.clone());
             }
         });
         assert_eq!(visited, case.children, "case `{}` visit order", case.name);
@@ -444,7 +448,7 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
     let mut ctor = structure_ctor_with_lets();
     ctor.for_each_child_mut(&mut |child| {
         if let CompiledExprKind::ValueRef(id) = &mut child.kind {
-            id.member.push('\'');
+            *id = prime_member(id.clone());
         }
     });
     assert_eq!(let_cell(&ctor), &struct_local_cell());
@@ -467,6 +471,21 @@ fn map_value_refs_rewrites_every_child_slot() {
             "case `{}`",
             case.name
         );
+    }
+}
+
+/// Priming changes every child's hash, so a node that rebuilds its hash from
+/// the rewritten children differs from the same node under the identity map;
+/// one that keeps, or re-combines, its old hash does not.
+#[test]
+fn map_value_refs_recomputes_the_hash_of_a_node_whose_children_change() {
+    for case in corpus() {
+        if case.children.is_empty() {
+            continue;
+        }
+        let unchanged_hash = case.expr.clone().map_value_refs(&mut |id| id).content_hash;
+        let rewritten_hash = case.expr.map_value_refs(&mut prime_member).content_hash;
+        assert_ne!(rewritten_hash, unchanged_hash, "case `{}`", case.name);
     }
 }
 
