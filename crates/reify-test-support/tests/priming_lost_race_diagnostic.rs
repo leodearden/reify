@@ -52,19 +52,10 @@ fn lost_priming_race_is_reported_in_the_assertion_panic() {
     // Primes internally; the install fails, which must set the process flag.
     let (_subscriber, counter) = reify_test_support::warn_counting_subscriber();
 
-    // Provoke the count-of-zero failure an operator would actually hit. The
-    // default hook is muted so the expected panic does not read as a real one
-    // in the test log; it is restored immediately afterwards.
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // Provoke the count-of-zero failure an operator would actually hit.
+    let message = reify_test_support::panic_message_of(|| {
         reify_test_support::assert_warn_count(&counter, 1, "provoked failure");
-    }))
-    .expect_err("assert_warn_count must panic when the counter is 0 but 1 is expected");
-    std::panic::set_hook(previous_hook);
-
-    let message =
-        reify_core::panic_payload_str(payload.as_ref()).expect("panic payload must be a string");
+    });
 
     assert!(
         message.contains("provoked failure"),
