@@ -63,6 +63,16 @@ BUILT_BINARY = "target/release/reify"
 SIDECAR = "target/.reify-bin-sha"
 BUILT_FROM = "reify built-from"
 
+# One tracked file under each build input the script guards: the path
+# dependencies of reify-cli (crates/ and tree-sitter-reify/), the workspace
+# manifest and lock, and cargo's own config.
+CRATES_FILE = "crates/reify-cli/src/main.rs"
+TREE_SITTER_FILE = "tree-sitter-reify/src/parser.c"
+CARGO_TOML = "Cargo.toml"
+CARGO_LOCK = "Cargo.lock"
+CARGO_CONFIG = ".cargo/config.toml"
+BUILD_INPUT_FILES = (CRATES_FILE, TREE_SITTER_FILE, CARGO_TOML, CARGO_LOCK, CARGO_CONFIG)
+
 HUMAN_NAME = "Human Tester"
 HUMAN_EMAIL = "human@example.test"
 
@@ -315,6 +325,15 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
             (self.main / SIDECAR).write_text(f"{built_from}\n")
         return built_from
 
+    def track_build_inputs(self):
+        """Commit a file under each build input, so HEAD tracks them all."""
+        for path in BUILD_INPUT_FILES:
+            build_input = self.main / path
+            build_input.parent.mkdir(parents=True, exist_ok=True)
+            build_input.write_text(f"{path} at HEAD\n")
+        self.git("add", "--", *BUILD_INPUT_FILES)
+        self.fixture_commit("fixture: track the build inputs")
+
     # ── the one way to run the script ────────────────────────────────────
     def run_script(self, *, claude_executable=True, **env_overrides):
         refused = _PINNED_KEYS & env_overrides.keys()
@@ -488,6 +507,46 @@ class PreflightTest(ReviewReadmeFixture):
         result = self.run_script()
         self.assertEqual(result.returncode, 1, _diag(result))
         self.assert_claude_never_invoked(result)
+
+    def assert_deferred_before_building(self, result):
+        self.assertEqual(result.returncode, self.EX_TEMPFAIL, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assertFalse(self.cargo_invoked(), _diag(result))
+        self.assertIsNone(self.sidecar(), _diag(result))
+
+    def assert_uncommitted_edit_to_a_build_input_defers(self, path):
+        self.track_build_inputs()
+        with (self.main / path).open("a") as build_input:
+            build_input.write("HUMAN-WIP\n")
+        self.assert_deferred_before_building(self.run_script())
+
+    def test_an_uncommitted_edit_under_crates_defers_with_75(self):
+        self.assert_uncommitted_edit_to_a_build_input_defers(CRATES_FILE)
+
+    def test_an_uncommitted_edit_under_tree_sitter_reify_defers_with_75(self):
+        self.assert_uncommitted_edit_to_a_build_input_defers(TREE_SITTER_FILE)
+
+    def test_an_uncommitted_edit_to_Cargo_toml_defers_with_75(self):
+        self.assert_uncommitted_edit_to_a_build_input_defers(CARGO_TOML)
+
+    def test_an_uncommitted_edit_to_Cargo_lock_defers_with_75(self):
+        self.assert_uncommitted_edit_to_a_build_input_defers(CARGO_LOCK)
+
+    def test_an_uncommitted_edit_to_the_cargo_config_defers_with_75(self):
+        self.assert_uncommitted_edit_to_a_build_input_defers(CARGO_CONFIG)
+
+    def test_an_untracked_file_under_crates_defers_even_when_git_hides_untracked_files(self):
+        self.track_build_inputs()
+        self.git("config", "status.showUntrackedFiles", "no")
+        (self.main / "crates/reify-cli/src/scratch.rs").write_text("// human WIP\n")
+        self.assert_deferred_before_building(self.run_script())
+
+    def test_tracked_and_clean_build_inputs_do_not_defer(self):
+        self.track_build_inputs()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, _diag(result))
+        self.assertTrue(self.cargo_invoked(), _diag(result))
+        self.assertEqual(self.stub_invoked_in(), str(self.main), _diag(result))
 
 
 class BinaryTrustTest(ReviewReadmeFixture):

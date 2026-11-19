@@ -18,7 +18,7 @@
 # Exit status:
 #   0   no drift, or the edit was committed
 #   1   refused: off main, a target untracked at HEAD, no claude CLI, no trusted ./target/release/reify could be built, or the commit was refused (edit kept in <log>.refused.patch)
-#   75  deferred: a target already differs from HEAD (human WIP), so claude was not run
+#   75  deferred: a target or a build input (BUILD_INPUTS) already differs from HEAD (human WIP), so claude was not run
 
 set -euo pipefail
 
@@ -34,6 +34,7 @@ BUILD_TIMEOUT="${REVIEW_README_BUILD_TIMEOUT:-20m}"
 # Audit only this checkout's ./target/release/reify: nothing inherited may name another binary or move where cargo writes it.
 unset REIFY_BIN CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_TARGET
 TARGET_FILES=(README.md docs/getting-started.md)
+BUILD_INPUTS=(crates tree-sitter-reify Cargo.toml Cargo.lock .cargo)
 readonly WRITER_ID=review-readme
 readonly WRITER_EMAIL="${WRITER_ID}@automation.reify.invalid"
 
@@ -43,10 +44,12 @@ mkdir -p logs
 LOG="logs/readme-review-$(date +%Y%m%d-%H%M%S).log"
 
 # Only a clean, gated state may reach the session: on any branch but main the
-# commit would skip hooks/pre-commit, and a target that is untracked or already
-# dirty would make the machine commit absorb (or the restore destroy) human WIP.
+# commit would skip hooks/pre-commit, a target that is untracked or already
+# dirty would make the machine commit absorb (or the restore destroy) human WIP,
+# and a dirty build input would make the binary under audit reflect that WIP
+# instead of HEAD.
 preflight() {
-    local f
+    local f dirty_inputs
     if [ "$(git symbolic-ref --short -q HEAD)" != main ]; then
         echo "REFUSE: main checkout is not on main (pre-commit gates only main)"
         exit 1
@@ -60,6 +63,12 @@ preflight() {
     if ! git diff --quiet HEAD -- "${TARGET_FILES[@]}" \
         || ! git diff --cached --quiet HEAD -- "${TARGET_FILES[@]}"; then
         echo "DEFER: uncommitted changes to target files; not overwriting human WIP"
+        exit 75
+    fi
+    dirty_inputs=$(git --no-optional-locks status --porcelain --untracked-files=normal -- "${BUILD_INPUTS[@]}")
+    if [ -n "$dirty_inputs" ]; then
+        echo "DEFER: uncommitted changes to the build inputs; not building from a tree that differs from HEAD"
+        echo "$dirty_inputs"
         exit 75
     fi
 }
