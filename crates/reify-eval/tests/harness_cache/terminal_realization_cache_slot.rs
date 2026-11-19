@@ -71,7 +71,7 @@ fn assert_second_call_serves_the_walk_final_realization(
 
     surface(&compiled, &mut engine);
     assert!(
-        engine.realization_cache().len() > 0,
+        !engine.realization_cache().is_empty(),
         "premise: the first call caches T3's terminal under the demanded tolerance"
     );
     for (name, rid) in [("p", p()), ("g", g())] {
