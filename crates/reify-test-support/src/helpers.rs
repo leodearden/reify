@@ -79,6 +79,7 @@ pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
 /// # Panics
 /// Panics on parse errors, compile errors, or eval-phase diagnostics.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_engine();
@@ -101,6 +102,7 @@ pub fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_simple_engine();
@@ -116,6 +118,7 @@ pub fn check_source(source: &str) -> reify_eval::CheckResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
@@ -126,6 +129,7 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedModule {
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
     assert!(
@@ -140,6 +144,7 @@ fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedMod
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
     parse_or_panic_named(source, "test")
 }
@@ -151,6 +156,7 @@ fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
     assert!(
@@ -169,6 +175,7 @@ fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic(source);
     reify_compiler::compile(&parsed)
@@ -182,6 +189,7 @@ pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic_named(source, module_name);
     reify_compiler::compile(&parsed)
@@ -196,6 +204,7 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_with_stdlib_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
@@ -318,6 +327,7 @@ pub fn compile_source_with_stdlib_allow_parse_errors(
 ///
 /// # Panics
 /// Panics if there are parse errors or if the compiled module has no templates.
+#[track_caller]
 pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
@@ -334,14 +344,14 @@ pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic
 ///
 /// # Panics
 /// Panics if there are parse errors or if no template with `name` is found.
+#[track_caller]
 pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
-    let template = compiled
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("compile_template: template {:?} not found", name));
+    // let-else, not a closure: see tests/track_caller_panic_location.rs
+    let Some(template) = compiled.templates.into_iter().find(|t| t.name == name) else {
+        panic!("compile_template: template {:?} not found", name);
+    };
     (template, diagnostics)
 }
 
@@ -474,6 +484,7 @@ pub fn assert_eval_clean(result: &reify_eval::EvalResult) {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -492,6 +503,7 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source_with_stdlib(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -506,6 +518,7 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
 /// # Panics
 /// Panics if there are parse errors, if no compile errors are produced, or
 /// if `needle` is non-empty and no error message contains it.
+#[track_caller]
 pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
