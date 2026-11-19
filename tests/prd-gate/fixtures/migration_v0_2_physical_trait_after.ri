@@ -1,0 +1,4 @@
+structure def Beam : Physical {
+    param geometry : Solid = box(100mm, 20mm, 1000mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}

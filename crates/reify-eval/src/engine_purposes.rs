@@ -772,8 +772,8 @@ fn purpose_binding_token(bindings: &[(String, String)]) -> String {
 /// so the placeholder rewrites to an empty list — matching today's
 /// vacuous-true behaviour for those members.
 ///
-/// The walk mirrors `CompiledExpr::remap_entity`'s arm-by-arm traversal so a
-/// future variant addition only touches the same places.
+/// Children come from `CompiledExpr::for_each_child_mut`, so a future variant
+/// is reached without touching this walk.
 ///
 /// Missing-cell branch (wiring inconsistency): when the resolved query
 /// references a `ValueCellId` that is absent from `value_cells`, the
@@ -812,300 +812,184 @@ fn expand_purpose_reflective_placeholders(
     bindings: &[(String, String)],
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) {
-    match &mut expr.kind {
-        CompiledExprKind::PurposeReflectiveAggregation {
+    if let CompiledExprKind::PurposeReflectiveAggregation {
+        param_name,
+        query_kind,
+    } = &expr.kind
+    {
+        *expr = reflective_cell_list_for_placeholder(
             param_name,
             query_kind,
-        } => {
-            // Resolve the entity_ref for this placeholder's param_name from
-            // the bindings slice. C2 validation guarantees every declared
-            // purpose param is bound, and the duplicate-param check guarantees
-            // it is bound exactly once, so this lookup ALWAYS finds a match in
-            // any valid activation. `debug_assert!` it: a miss means an upstream
-            // invariant broke (a future caller bypassed C2, or a new
-            // duplicate-handling path slipped through), and the silent
-            // first-binding fallback below would bind this reflective
-            // aggregation to the WRONG entity — a plausible-but-wrong constraint
-            // rather than a loud failure. Halt in debug builds; keep the
-            // anti-cascade fallback for release. The empty-slice case
-            // (`bindings.first()` → None) cannot occur today — a reflective
-            // placeholder requires a param, so `bindings` is non-empty — but the
-            // empty-string fallback means a future empty-bindings caller cannot
-            // panic.
-            let matched: Option<&str> = bindings
-                .iter()
-                .find(|(p, _)| p == param_name.as_str())
-                .map(|(_, e)| e.as_str());
-            debug_assert!(
-                matched.is_some(),
-                "expand_purpose_reflective_placeholders: param_name '{}' not found among \
-                 bindings {:?}; C2 validation should guarantee every purpose param is bound \
-                 exactly once — the silent first-binding fallback would bind this reflective \
-                 aggregation to the wrong entity",
-                param_name,
-                bindings
-            );
-            let entity_ref: &str =
-                matched.unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
-
-            // Resolve the member list for this placeholder. Prefer compile-
-            // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
-            // for the bound entity's params when the query is unresolved
-            // (wildcard-subject case).
-            //
-            // The lookup filters by *both* `param_name` and `query_kind` —
-            // the placeholder records which purpose param it was projected
-            // from (e.g. `subject` vs a hypothetical `part`), and so does
-            // each `ResolvedSchemaQuery`. Today's compiler only accepts a
-            // single StructureRef param (task-2201), so collisions are
-            // latent — but matching by query_kind alone would silently
-            // misbind in any future multi-param purpose. Defending now is
-            // cheaper than debugging that misbind later.
-            let members: Vec<String> = if let Some(q) = queries
-                .iter()
-                .find(|q| q.param_name == *param_name && q.query_kind == *query_kind)
-            {
-                q.resolved_ids.iter().map(|id| id.member.clone()).collect()
-            } else if query_kind == "params"
-                || query_kind == "geometric_params"
-                || query_kind == "material_params"
-            {
-                let mut members: Vec<String> = value_cells
-                    .iter()
-                    .filter(|(id, node)| {
-                        id.entity == entity_ref
-                            && matches!(
-                                node.kind,
-                                ValueCellKind::Param | ValueCellKind::Auto { .. }
-                            )
-                            && (query_kind == "params"
-                                || (query_kind == "geometric_params"
-                                    && is_geometric_param_type(&node.cell_type))
-                                || (query_kind == "material_params"
-                                    && is_material_param_type(&node.cell_type)))
-                    })
-                    .map(|(id, _)| id.member.clone())
-                    .collect();
-                // PersistentMap iteration order is not guaranteed stable
-                // across runs; sort for determinism. Downstream tests
-                // sort before comparison, so the surface order is not
-                // load-bearing — but a stable order keeps logs and
-                // hashes reproducible.
-                members.sort();
-                members
-            } else {
-                // Unknown query_kind — no resolution path. Empty list ⇒
-                // vacuous-true forall. (All known kinds — params,
-                // geometric_params, material_params — are handled above.)
-                Vec::new()
-            };
-
-            // Build ValueRef elements with cell-type lockstep.
-            // Extract string slices so the closure below can capture them
-            // by shared reference without fighting the &mut bindings from
-            // the outer match arm.
-            let param_name_str = param_name.as_str();
-            let query_kind_str = query_kind.as_str();
-            let elements: Vec<CompiledExpr> = members
-                .iter()
-                .map(|member| {
-                    let cell_id = ValueCellId::new(entity_ref, member);
-                    let elem_type = match value_cells.get(&cell_id) {
-                        Some(node) => node.cell_type.clone(),
-                        None => {
-                            // Graph-vs-resolved-query wiring inconsistency:
-                            // `resolved_ids` is populated by compile_purpose
-                            // against the template; the runtime entity_ref is
-                            // expected to expose the same members. A miss here
-                            // means the template and the runtime entity
-                            // diverged, or a wiring bug picked the wrong
-                            // entity_ref. Warn first (visible in release
-                            // builds), debug_assert second (halts in debug),
-                            // then fall back to Type::dimensionless_scalar() for anti-cascade
-                            // safety (matches the Value::Undef posture in the
-                            // PurposeReflectiveAggregation arm of eval_expr).
-                            tracing::warn!(
-                                target: "reify_eval::engine_purposes",
-                                entity = %entity_ref,
-                                param = %param_name_str,
-                                query = %query_kind_str,
-                                missing_cell = %cell_id,
-                                "graph-vs-resolved-query inconsistency: \
-                                 ResolvedSchemaQuery references a value cell \
-                                 missing from snapshot.graph.value_cells; \
-                                 falling back to Type::dimensionless_scalar()"
-                            );
-                            debug_assert!(
-                                false,
-                                "expand_purpose_reflective_placeholders: \
-                                 resolved-query cell {:?} missing from \
-                                 snapshot.graph.value_cells \
-                                 (purpose param={:?}, query_kind={:?}, \
-                                 entity={:?})",
-                                cell_id, param_name_str, query_kind_str, entity_ref
-                            );
-                            Type::dimensionless_scalar()
-                        }
-                    };
-                    CompiledExpr::value_ref(cell_id, elem_type)
-                })
-                .collect();
-
-            // Invariant: every element above is a `ValueRef` — enforced by
-            // `CompiledExpr::reflective_cell_list` (task-2552, follow-up to task-2544).
-            // The `ReflectiveCellList(_)` no-op arm below relies on this.
-
-            // Outer ReflectiveCellList type: inherit first element's type when
-            // populated; default to Type::Error on empty (anti-cascade poison).
-            // task-2458: emit ReflectiveCellList (not ListLiteral) so that
-            // eval_quantifier's cell-iteration trigger fires only on this
-            // placeholder-derived shape, not on user-written all-ValueRef
-            // ListLiterals that share the same surface structure.
-            // An empty ReflectiveCellList still triggers eval_quantifier's
-            // vacuous-true short-circuit before the element type is used for any
-            // arithmetic, so the Type::Error element type is never observed in the
-            // vacuous-true path; it is defense in depth for release-mode safety
-            // (task 3749 tightened the 3639 Shape-A G-allow carve-out).
-            // Verified: the sole caller (activate_purpose_constraints) stores the
-            // rewritten expr in the constraint graph without reading the outer
-            // result_type for type-compatibility — no non-eval consumer of the
-            // Type::List(Type::Error) shape exists between expansion and eval.
-            let element_type = elements
-                .first()
-                .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Error);
-            *expr =
-                CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
-        }
-        CompiledExprKind::ValueRef(_)
-        | CompiledExprKind::CrossSubGeometryRef(_)
-        | CompiledExprKind::Literal(_)
-        | CompiledExprKind::OptionNone
-        | CompiledExprKind::MetaAccess { .. }
-        | CompiledExprKind::DeterminacyPredicate { .. } => {
-            // No children carrying potential placeholders.
-            // CrossSubGeometryRef is a leaf consumed by entity.rs before
-            // activation — it never contains nested placeholders (task-3508).
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            expand_purpose_reflective_placeholders(left, queries, bindings, value_cells);
-            expand_purpose_reflective_placeholders(right, queries, bindings, value_cells);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            expand_purpose_reflective_placeholders(operand, queries, bindings, value_cells);
-        }
-        CompiledExprKind::FunctionCall { args, .. }
-        | CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            expand_purpose_reflective_placeholders(condition, queries, bindings, value_cells);
-            expand_purpose_reflective_placeholders(then_branch, queries, bindings, value_cells);
-            expand_purpose_reflective_placeholders(else_branch, queries, bindings, value_cells);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            expand_purpose_reflective_placeholders(discriminant, queries, bindings, value_cells);
-            for arm in arms {
-                expand_purpose_reflective_placeholders(
-                    &mut arm.body,
-                    queries,
-                    bindings,
-                    value_cells,
-                );
-            }
-        }
-        CompiledExprKind::Lambda { body, .. } => {
-            expand_purpose_reflective_placeholders(body, queries, bindings, value_cells);
-        }
-        CompiledExprKind::ListLiteral(elements) | CompiledExprKind::SetLiteral(elements) => {
-            for elem in elements {
-                expand_purpose_reflective_placeholders(elem, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::ReflectiveCellList(_) => {
-            // Invariant (task-2544): RCL elements are `ValueRef`s by construction —
-            // the only emission site is `CompiledExpr::reflective_cell_list(...)`
-            // built from `CompiledExpr::value_ref(cell_id, elem_type)` in this same
-            // function. Recursion would be a guaranteed no-op (`ValueRef` arm above
-            // is empty), so we elide the loop and document the trust explicitly.
-            // Originally task-2458 grouped RCL with the list/set traversal "for
-            // completeness"; task-2544 reverted that conflation after review.
-        }
-        CompiledExprKind::MapLiteral(entries) => {
-            for (key, val) in entries {
-                expand_purpose_reflective_placeholders(key, queries, bindings, value_cells);
-                expand_purpose_reflective_placeholders(val, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::IndexAccess { object, index } => {
-            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
-            expand_purpose_reflective_placeholders(index, queries, bindings, value_cells);
-        }
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
-            for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            expand_purpose_reflective_placeholders(collection, queries, bindings, value_cells);
-            expand_purpose_reflective_placeholders(predicate, queries, bindings, value_cells);
-        }
-        CompiledExprKind::OptionSome(inner) => {
-            expand_purpose_reflective_placeholders(inner, queries, bindings, value_cells);
-        }
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                expand_purpose_reflective_placeholders(lo, queries, bindings, value_cells);
-            }
-            if let Some(hi) = upper {
-                expand_purpose_reflective_placeholders(hi, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            expand_purpose_reflective_placeholders(base, queries, bindings, value_cells);
-            for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
-            }
-        }
-        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
-        // shared-enum variant (step-16). Recurse into the ctor's supplied
-        // args + captured defaults so nested purpose-reflective placeholders
-        // inside a structure constructor's argument expressions are still
-        // expanded — same posture as the FunctionCall/UserFunctionCall arms.
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
-            }
-            for (_, def) in defaults {
-                expand_purpose_reflective_placeholders(def, queries, bindings, value_cells);
-            }
-        }
-        CompiledExprKind::VariantCtor { payload, .. } => {
-            for (_, field) in payload {
-                expand_purpose_reflective_placeholders(field, queries, bindings, value_cells);
-            }
-        }
-        // task 4118 (γ): recurse into the wrapped selector so any reflective
-        // placeholders beneath the Selector→List<Geometry> coercion expand.
-        CompiledExprKind::ResolveSelector { selector } => {
-            expand_purpose_reflective_placeholders(selector, queries, bindings, value_cells);
-        }
+            queries,
+            bindings,
+            value_cells,
+        );
+        return;
     }
+    expr.for_each_child_mut(&mut |child| {
+        expand_purpose_reflective_placeholders(child, queries, bindings, value_cells)
+    });
+}
+
+/// The populated `ReflectiveCellList` that replaces one
+/// `PurposeReflectiveAggregation { param_name, query_kind }` placeholder; see
+/// `expand_purpose_reflective_placeholders` for the resolution rules.
+fn reflective_cell_list_for_placeholder(
+    param_name: &str,
+    query_kind: &str,
+    queries: &[ResolvedSchemaQuery],
+    bindings: &[(String, String)],
+    value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
+) -> CompiledExpr {
+    // Resolve the entity_ref for this placeholder's param_name from
+    // the bindings slice. C2 validation guarantees every declared
+    // purpose param is bound, and the duplicate-param check guarantees
+    // it is bound exactly once, so this lookup ALWAYS finds a match in
+    // any valid activation. `debug_assert!` it: a miss means an upstream
+    // invariant broke (a future caller bypassed C2, or a new
+    // duplicate-handling path slipped through), and the silent
+    // first-binding fallback below would bind this reflective
+    // aggregation to the WRONG entity — a plausible-but-wrong constraint
+    // rather than a loud failure. Halt in debug builds; keep the
+    // anti-cascade fallback for release. The empty-slice case
+    // (`bindings.first()` → None) cannot occur today — a reflective
+    // placeholder requires a param, so `bindings` is non-empty — but the
+    // empty-string fallback means a future empty-bindings caller cannot
+    // panic.
+    let matched: Option<&str> = bindings
+        .iter()
+        .find(|(p, _)| p == param_name)
+        .map(|(_, e)| e.as_str());
+    debug_assert!(
+        matched.is_some(),
+        "expand_purpose_reflective_placeholders: param_name '{}' not found among \
+         bindings {:?}; C2 validation should guarantee every purpose param is bound \
+         exactly once — the silent first-binding fallback would bind this reflective \
+         aggregation to the wrong entity",
+        param_name,
+        bindings
+    );
+    let entity_ref: &str =
+        matched.unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
+
+    // Resolve the member list for this placeholder. Prefer compile-
+    // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
+    // for the bound entity's params when the query is unresolved
+    // (wildcard-subject case).
+    //
+    // The lookup filters by *both* `param_name` and `query_kind` —
+    // the placeholder records which purpose param it was projected
+    // from (e.g. `subject` vs a hypothetical `part`), and so does
+    // each `ResolvedSchemaQuery`. Today's compiler only accepts a
+    // single StructureRef param (task-2201), so collisions are
+    // latent — but matching by query_kind alone would silently
+    // misbind in any future multi-param purpose. Defending now is
+    // cheaper than debugging that misbind later.
+    let members: Vec<String> = if let Some(q) = queries
+        .iter()
+        .find(|q| q.param_name == *param_name && q.query_kind == *query_kind)
+    {
+        q.resolved_ids.iter().map(|id| id.member.clone()).collect()
+    } else if query_kind == "params"
+        || query_kind == "geometric_params"
+        || query_kind == "material_params"
+    {
+        let mut members: Vec<String> = value_cells
+            .iter()
+            .filter(|(id, node)| {
+                id.entity == entity_ref
+                    && matches!(node.kind, ValueCellKind::Param | ValueCellKind::Auto { .. })
+                    && (query_kind == "params"
+                        || (query_kind == "geometric_params"
+                            && is_geometric_param_type(&node.cell_type))
+                        || (query_kind == "material_params"
+                            && is_material_param_type(&node.cell_type)))
+            })
+            .map(|(id, _)| id.member.clone())
+            .collect();
+        // PersistentMap iteration order is not guaranteed stable
+        // across runs; sort for determinism. Downstream tests
+        // sort before comparison, so the surface order is not
+        // load-bearing — but a stable order keeps logs and
+        // hashes reproducible.
+        members.sort();
+        members
+    } else {
+        // Unknown query_kind — no resolution path. Empty list ⇒
+        // vacuous-true forall. (All known kinds — params,
+        // geometric_params, material_params — are handled above.)
+        Vec::new()
+    };
+
+    // Build ValueRef elements with cell-type lockstep.
+    let elements: Vec<CompiledExpr> = members
+        .iter()
+        .map(|member| {
+            let cell_id = ValueCellId::new(entity_ref, member);
+            let elem_type = match value_cells.get(&cell_id) {
+                Some(node) => node.cell_type.clone(),
+                None => {
+                    // Graph-vs-resolved-query wiring inconsistency:
+                    // `resolved_ids` is populated by compile_purpose
+                    // against the template; the runtime entity_ref is
+                    // expected to expose the same members. A miss here
+                    // means the template and the runtime entity
+                    // diverged, or a wiring bug picked the wrong
+                    // entity_ref. Warn first (visible in release
+                    // builds), debug_assert second (halts in debug),
+                    // then fall back to Type::dimensionless_scalar() for anti-cascade
+                    // safety (matches the Value::Undef posture in the
+                    // PurposeReflectiveAggregation arm of eval_expr).
+                    tracing::warn!(
+                        target: "reify_eval::engine_purposes",
+                        entity = %entity_ref,
+                        param = %param_name,
+                        query = %query_kind,
+                        missing_cell = %cell_id,
+                        "graph-vs-resolved-query inconsistency: \
+                         ResolvedSchemaQuery references a value cell \
+                         missing from snapshot.graph.value_cells; \
+                         falling back to Type::dimensionless_scalar()"
+                    );
+                    debug_assert!(
+                        false,
+                        "expand_purpose_reflective_placeholders: \
+                         resolved-query cell {:?} missing from \
+                         snapshot.graph.value_cells \
+                         (purpose param={:?}, query_kind={:?}, \
+                         entity={:?})",
+                        cell_id, param_name, query_kind, entity_ref
+                    );
+                    Type::dimensionless_scalar()
+                }
+            };
+            CompiledExpr::value_ref(cell_id, elem_type)
+        })
+        .collect();
+
+    // Invariant: every element above is a `ValueRef` — enforced by
+    // `CompiledExpr::reflective_cell_list` (task-2552, follow-up to task-2544).
+
+    // Outer ReflectiveCellList type: inherit first element's type when
+    // populated; default to Type::Error on empty (anti-cascade poison).
+    // task-2458: emit ReflectiveCellList (not ListLiteral) so that
+    // eval_quantifier's cell-iteration trigger fires only on this
+    // placeholder-derived shape, not on user-written all-ValueRef
+    // ListLiterals that share the same surface structure.
+    // An empty ReflectiveCellList still triggers eval_quantifier's
+    // vacuous-true short-circuit before the element type is used for any
+    // arithmetic, so the Type::Error element type is never observed in the
+    // vacuous-true path; it is defense in depth for release-mode safety
+    // (task 3749 tightened the 3639 Shape-A G-allow carve-out).
+    // Verified: the sole caller (activate_purpose_constraints) stores the
+    // rewritten expr in the constraint graph without reading the outer
+    // result_type for type-compatibility — no non-eval consumer of the
+    // Type::List(Type::Error) shape exists between expansion and eval.
+    let element_type = elements
+        .first()
+        .map(|e| e.result_type.clone())
+        .unwrap_or(Type::Error);
+    CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)))
 }
 
 #[cfg(test)]

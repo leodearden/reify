@@ -63,6 +63,8 @@ mod cli_lsp_protocol;
 mod cli_smoke;
 #[path = "harness_cli_surface/cli_test_report_explain_doc_multi_file.rs"]
 mod cli_test_report_explain_doc_multi_file;
+#[path = "harness_cli_surface/cross_surface_resolution_parity.rs"]
+mod cross_surface_resolution_parity;
 #[cfg(target_os = "linux")]
 #[path = "harness_cli_surface/rpath_smoke.rs"]
 mod rpath_smoke;

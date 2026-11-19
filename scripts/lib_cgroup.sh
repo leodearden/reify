@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/lib_cgroup.sh — cgroup-v2 governance helpers for cpu.weight placement
 # (task 4632). Designed to be sourced by cpu-governed-exec.sh and tests.
+# Slice naming contract: dark-factory docs/cgroup-slice-topology.md (task 9998).
 #
 # Functions:
 #   cgroup_role_weight <role>       echo cpu.weight for task|merge role
@@ -12,8 +13,8 @@
 #   REIFY_CPU_GOVERN_DISABLE           set to 1 for total bypass (break-glass)
 #   REIFY_CPU_GOVERN_W_TASK            task role cpu.weight (default 100)
 #   REIFY_CPU_GOVERN_W_MERGE           merge role cpu.weight (default 300)
-#   REIFY_CPU_GOVERN_SLICE_TASK        task role slice (default reify-governed-agents.slice)
-#   REIFY_CPU_GOVERN_SLICE_MERGE       merge role slice (default reify-governed-merge.slice)
+#   REIFY_CPU_GOVERN_SLICE_TASK        task role slice (default df-reify-governed-agents.slice)
+#   REIFY_CPU_GOVERN_SLICE_MERGE       merge role slice (default df-reify-governed-merge.slice)
 #   REIFY_CPU_GOVERN_CONTROLLERS_PATH  override for delegation detection (test seam;
 #                                      mirrors REIFY_COMPILE_GATE_PROC_PATH pattern)
 
@@ -72,20 +73,22 @@ cgroup_role_weight() {
 # cgroup_role_slice <role>
 #   Echo the systemd slice name for the given role (task|merge).
 #   Honors REIFY_CPU_GOVERN_SLICE_TASK / REIFY_CPU_GOVERN_SLICE_MERGE overrides.
-#   Slice hierarchy (systemd dash-nesting):
-#     reify-governed.slice
-#       ├── reify-governed-agents.slice  (task, W_task)
-#       └── reify-governed-merge.slice   (merge, W_merge)
-#   Siblings of one parent → cpu.weight values are comparable (C-G2).
+#   Both defaults share one stem, so by systemd's dash-nesting rule they are
+#   siblings under df-reify-governed.slice, inside this project's slice
+#   df-reify.slice: their cpu.weight values are comparable (C-G2), on the same
+#   side of the seam as the orchestrator and its verify scopes (task 9998).
+#   The naming rule is dark-factory docs/cgroup-slice-topology.md
+#   §"Governed sub-slices"; cite it rather than restate the df.slice topology.
 # ---------------------------------------------------------------------------
 cgroup_role_slice() {
     local role="$1"
+    local governed_stem="df-reify-governed"
     case "$role" in
         task)
-            echo "${REIFY_CPU_GOVERN_SLICE_TASK:-reify-governed-agents.slice}"
+            echo "${REIFY_CPU_GOVERN_SLICE_TASK:-${governed_stem}-agents.slice}"
             ;;
         merge)
-            echo "${REIFY_CPU_GOVERN_SLICE_MERGE:-reify-governed-merge.slice}"
+            echo "${REIFY_CPU_GOVERN_SLICE_MERGE:-${governed_stem}-merge.slice}"
             ;;
         *)
             echo "lib_cgroup.sh: unknown role '${role}' (expected task|merge)" >&2
@@ -188,9 +191,9 @@ cgroup_set_slice_weight() {
     # non-existent transient unit silently no-ops.  Starting the slice first
     # guarantees the CPUWeight assignment takes effect at the first scope
     # placement rather than waiting for a second run to self-heal (without this,
-    # a fresh reify-governed-merge.slice is auto-vivified at systemd's default
-    # weight 100 instead of the intended 300, giving no cross-role differential
-    # on cold start).
+    # a fresh df-reify-governed-merge.slice is auto-vivified at systemd's
+    # default weight 100 instead of the intended 300, giving no cross-role
+    # differential on cold start).
     systemctl --user start "$slice" 2>/dev/null || true
     systemctl --user set-property "$slice" CPUWeight="$weight" 2>/dev/null || true
 }

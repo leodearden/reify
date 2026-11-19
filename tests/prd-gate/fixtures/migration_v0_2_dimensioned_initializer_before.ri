@@ -1,0 +1,4 @@
+structure def Seal {
+    param width: Length = 0.005
+    let depth: Length = 0.002
+}

@@ -146,11 +146,11 @@ pub fn build_face_anchors(
     anchors
 }
 
-/// Test-only builder for the `Value::Selector(Leaf{Named(name)})` shape the
-/// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
-/// eval time, targeting a kernel-less `TestBody` geometry cell.
+/// Test-only `Value::Selector` leaf of `kind` running `query`, targeting a
+/// kernel-less `TestBody` geometry cell — the one home for that selector-leaf
+/// target within reify-eval's lib unit tests.
 #[cfg(test)]
-pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> Value {
+pub(crate) fn leaf_selector(kind: reify_core::ty::SelectorKind, query: LeafQuery) -> Value {
     use reify_core::identity::RealizationNodeId;
     use reify_ir::value::GeometryHandleRef;
     let target = GeometryHandleRef {
@@ -159,9 +159,17 @@ pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str
         kernel_handle: None,
     };
     Value::Selector(
-        SelectorValue::leaf(kind, target, LeafQuery::Named(name.into()))
-            .expect("LeafQuery::Named accepts any SelectorKind"),
+        SelectorValue::leaf(kind, target, query)
+            .unwrap_or_else(|e| panic!("leaf_selector: {kind:?} leaf rejected its query: {e:?}")),
     )
+}
+
+/// Test-only builder for the `Value::Selector(Leaf{Named(name)})` shape the
+/// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
+/// eval time, targeting a kernel-less `TestBody` geometry cell.
+#[cfg(test)]
+pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> Value {
+    leaf_selector(kind, LeafQuery::Named(name.into()))
 }
 
 #[cfg(test)]
@@ -338,7 +346,7 @@ mod tests {
 
     // ── named_leaf_target (Bmig2 #5312 interim typed-target read) ────────────
 
-    use super::{named_leaf_selector, named_leaf_target};
+    use super::{leaf_selector, named_leaf_selector, named_leaf_target};
 
     #[test]
     fn named_leaf_target_reads_a_named_face_leaf() {
@@ -372,14 +380,8 @@ mod tests {
 
     #[test]
     fn named_leaf_target_rejects_non_named_and_composed_selectors() {
-        let ghr = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let all = SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
-            .expect("valid Face/All leaf");
-        assert_eq!(named_leaf_target(&Value::Selector(all)), None);
+        let all = leaf_selector(SelectorKind::Face, LeafQuery::All);
+        assert_eq!(named_leaf_target(&all), None);
 
         let leaf = |name: &str| match named_leaf_selector(SelectorKind::Face, name) {
             Value::Selector(sv) => sv,

@@ -135,6 +135,11 @@ fn a_stdlib_import_of_a_module_outside_the_set_fails_the_stdlib_build() {
 }
 
 // ─── boundary #8 (NS-M3): registration order is unobservable ───────────────
+//
+// Precondition: the fingerprint compares `type_aliases` in `Vec` order, so it
+// relies on the general compile contract that `CompiledModule.type_aliases`
+// comes out in name order. That contract is pinned here, by
+// `a_stdlib_modules_type_aliases_come_out_in_name_order`.
 
 /// One module of a build, as far as NS-M3 is concerned. A build's fingerprint
 /// is the Vec of these in OUTPUT order, so module order is part of it.
@@ -159,11 +164,11 @@ fn fingerprint(modules: &[CompiledModule]) -> Vec<ModuleFingerprint> {
 }
 
 /// The types `module`'s definitions declare, as resolved: template value
-/// cells, trait type params and requirements, function signatures and type
-/// aliases. `content_hash` does not cover value-cell types, so a resolution
-/// that registration order could change would slip past it alone. Type
-/// aliases are a set keyed by name whose `Vec` order follows a `HashMap`, and
-/// so differs between any two builds; they are rendered sorted by name.
+/// cells, trait type params and requirements, function signatures, type
+/// aliases, and enum definitions with their variant payload types.
+/// `content_hash` covers neither value-cell types nor enum payload types, so a
+/// resolution that registration order could change would slip past it alone.
+/// Type aliases and enums are rendered in their `Vec` order.
 fn declared_types(module: &CompiledModule) -> String {
     let cells: Vec<_> = module
         .templates
@@ -194,13 +199,13 @@ fn declared_types(module: &CompiledModule) -> String {
         .iter()
         .map(|f| (&f.name, &f.params, &f.return_type))
         .collect();
-    let mut aliases: Vec<_> = module
+    let aliases: Vec<_> = module
         .type_aliases
         .iter()
         .map(|a| (&a.name, &a.type_params, &a.resolved_type))
         .collect();
-    aliases.sort_by_key(|(name, _, _)| *name);
-    format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}")
+    let enums = &module.enum_defs;
+    format!("{cells:?}\n{traits:?}\n{functions:?}\n{aliases:?}\n{enums:?}")
 }
 
 fn build_permuted(permute: impl FnOnce(&mut Vec<(&'static str, String)>)) -> Vec<CompiledModule> {
@@ -269,15 +274,44 @@ fn stdlib_build_output_is_identical_under_any_registration_order() {
 }
 
 #[test]
-fn the_build_fingerprint_sees_a_change_in_a_declared_type_alone() {
-    let typed =
-        |ty: &str| format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n");
-    let (as_real, as_int) = (typed("Real"), typed("Int"));
-    let build = |source: &str| fingerprint(&build_stdlib_modules(&[("std.zz_typed", source)]));
-    assert!(
-        first_difference(&build(&as_real), &build(&as_int)).is_some(),
-        "two builds that differ only in a param's declared type must fingerprint differently"
+fn a_stdlib_modules_type_aliases_come_out_in_name_order() {
+    let names_in_reverse = ('a'..='z').rev().map(|c| format!("T{c}"));
+    let source: String = std::iter::once("module std.zz_aliases\n".to_string())
+        .chain(names_in_reverse.map(|name| format!("pub type {name} = Real\n")))
+        .collect();
+    let built = build_stdlib_modules(&[("std.zz_aliases", &source)]);
+    let names: Vec<&str> = built[0]
+        .type_aliases
+        .iter()
+        .map(|alias| alias.name.as_str())
+        .collect();
+    let expected: Vec<String> = ('a'..='z').map(|c| format!("T{c}")).collect();
+    assert_eq!(
+        names, expected,
+        "a module's type aliases come out in name order, whatever their source order"
     );
+}
+
+#[test]
+fn the_build_fingerprint_sees_a_change_in_a_declared_type_alone() {
+    let param =
+        |ty: &str| format!("module std.zz_typed\npub structure def S {{\n    param w : {ty}\n}}\n");
+    let payload =
+        |ty: &str| format!("module std.zz_typed\npub enum E {{\n    V {{ w: {ty} }},\n}}\n");
+    let build = |source: &str| fingerprint(&build_stdlib_modules(&[("std.zz_typed", source)]));
+    for (what, as_real, as_int) in [
+        ("a param's declared type", param("Real"), param("Int")),
+        (
+            "an enum variant's payload type",
+            payload("Real"),
+            payload("Int"),
+        ),
+    ] {
+        assert!(
+            first_difference(&build(&as_real), &build(&as_int)).is_some(),
+            "two builds that differ only in {what} must fingerprint differently"
+        );
+    }
 }
 
 #[test]

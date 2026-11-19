@@ -6654,7 +6654,8 @@ pub(crate) fn expand_constraint_inst(
     // def body. Predicate compilation and the guard group will no longer run, so
     // the diagnostics they were going to report are reported here instead: the
     // throwaway sink is flushed and the `where` condition is compiled for its
-    // diagnostics alone. Pinned by constraint_def_compile_tests.rs's
+    // diagnostics alone. Pinned by
+    // crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs's
     // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
     // does_not_swallow siblings.
     if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {

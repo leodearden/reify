@@ -14,6 +14,7 @@ from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     pcc,
     probe_context,
+    recording_runner,
 )
 
 
@@ -934,14 +935,11 @@ class TestEvaluateRecordsTheRunnersArgv(unittest.TestCase):
         )
 
     def test_the_runner_gets_the_ctx_and_its_argv_is_the_recorded_one(self):
-        calls = []
-
-        def fake(probe, ctx, timeout=None):
-            calls.append((probe, ctx, timeout))
-            return pcc.ProbeRun(0, "", "", command=self._RUNNERS_ARGV)
-
+        runner, calls = recording_runner(
+            pcc.ProbeRun(0, "", "", command=self._RUNNERS_ARGV)
+        )
         probe, ctx = self._probe(), probe_context()
-        result = pcc.evaluate(probe, ctx, runner=fake)
+        result = pcc.evaluate(probe, ctx, runner=runner)
         self.assertEqual(len(calls), 1)
         called_probe, called_ctx, called_timeout = calls[0]
         self.assertIs(called_probe, probe)

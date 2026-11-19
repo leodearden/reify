@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use reify_core::Diagnostic;
 use reify_ir::{
     CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
+    decode_direction,
 };
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
@@ -1250,17 +1251,17 @@ fn accept_variadic_length_args(
 /// | site                                   | bound to                  | class         | gated? |
 /// |----------------------------------------|---------------------------|---------------|--------|
 /// | [`decode_plane`]                       | plane ORIGIN              | **LENGTH**    | yes — a point in space |
-/// | [`decode_plane`]                       | plane NORMAL              | dimensionless | no — a unit vector, normalised by [`unit_vector3`] |
 /// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
-/// | [`decode_axis`]                        | axis DIRECTION            | dimensionless | no — a unit vector, normalised by [`unit_vector3`] |
 /// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
 /// | `modify_offset_curve`                  | `third` → `direction`     | dimensionless | no — its own production diagnostic already calls it "a direction vec3" |
 ///
-/// The three DIRECTION rows are the D3 adversary finding's ORIGIN-vs-DIRECTION
-/// split (2026-07-28, BINDING): gating them would reject correct `.ri` code,
-/// since a unit vector legitimately has bare components. [`point3_components`]
-/// therefore SURVIVES δ as the un-gated decoder for exactly those three
-/// positions — it is not dead, and must not be deleted or renamed.
+/// The DIRECTION row is the D3 adversary finding's ORIGIN-vs-DIRECTION split
+/// (2026-07-28, BINDING): gating it would reject correct `.ri` code, since a
+/// unit vector legitimately has bare components. [`point3_components`]
+/// therefore SURVIVES δ as the un-gated decoder for that position — it is not
+/// dead, and must not be deleted or renamed. The plane NORMAL and the axis
+/// DIRECTION are no longer rows: since ε (task 9638) both are
+/// `Value::Direction`s read through [`reify_ir::decode_direction`].
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
@@ -2048,16 +2049,12 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///   sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected — the 1000× hazard
 ///   arriving through the route an author is most likely to take (PRD decision
 ///   D3);
-/// - the NORMAL is a DIMENSIONLESS unit vector and stays on the bare
-///   [`point3_components`] read. Gating it would reject correct `.ri` code — a
-///   unit vector legitimately has bare components, and `plane_yz(10mm)` produces
-///   exactly that shape. This is the D3 adversary finding's ORIGIN-vs-DIRECTION
-///   split (2026-07-28, BINDING), the same split already drawn between
-///   `ox`/`oy`/`oz` and `nx`/`ny`/`nz` in the scalar form.
-///
-/// The normal is normalized to unit length.  Non-unit normals are accepted and
-/// normalized silently (the plane equation is invariant to normal scale).
-/// Zero-magnitude normals are always rejected.
+/// - the NORMAL is a `Value::Direction`, read through
+///   [`reify_ir::decode_direction`] (ε, task 9638). A Direction is
+///   dimensionless by type and unit by construction, so there is neither a
+///   units gate nor a normalisation or degeneracy branch here. This is the D3
+///   ORIGIN-vs-DIRECTION split (2026-07-28, BINDING), the same split already
+///   drawn between `ox`/`oy`/`oz` and `nx`/`ny`/`nz` in the scalar form.
 ///
 /// # Returns
 /// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
@@ -2079,11 +2076,12 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///     reads "missing or non-Length argument 'ox' for {kind}" beside that one
 ///     Warning (pinned by
 ///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
-///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
-///     or a normal with non-numeric / non-finite components — these keep their
-///     pre-δ wording behind the `kind_label` prefix and push no diagnostic,
+///   - an origin of the wrong SHAPE (not a 3-component `Point`/`Vector`) —
+///     its pre-δ wording behind the `kind_label` prefix, and no diagnostic,
 ///     because a wrong shape is not a units rejection;
-///   - zero-magnitude normal.
+///   - a normal that is not a `Value::Direction` — `decode_direction`'s own
+///     message behind `{kind_label}: Plane normal: `, ending in the shared
+///     `dir(..)` migration hint, and no diagnostic.
 ///
 /// # Visibility
 /// `pub(crate)` — co-located with the mirror/circular_pattern eval consumers
@@ -2118,22 +2116,9 @@ pub(crate) fn decode_plane(
         },
         diagnostics,
     )?;
-    // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
-    // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
-    // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
-    let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        labelled(
-            kind_label,
-            "Plane normal is not a valid 3-component numeric Point/Vector",
-        )
-    })?;
-    let unit_normal = unit_vector3(normal_raw).map_err(|e| {
-        labelled(
-            kind_label,
-            format_args!("Plane has a degenerate normal: {e}"),
-        )
-    })?;
-    Ok((origin_arr, unit_normal))
+    let unit_normal = decode_direction(normal_val)
+        .map_err(|e| labelled(kind_label, format_args!("Plane normal: {e}")))?;
+    Ok((origin_arr, unit_normal.components()))
 }
 
 /// Decode a [`Value::Axis`] into `(origin, unit_direction)` — an SI metre triple
@@ -2149,12 +2134,10 @@ pub(crate) fn decode_plane(
 ///   rotation axis 12 SI **metres** out with zero diagnostics — 1000× a
 ///   plausible 12 mm offset, and the scalar form's headline defect arriving
 ///   through a different door;
-/// - the DIRECTION is a DIMENSIONLESS unit vector and stays on the bare
-///   [`point3_components`] read, matching the scalar form's `ax`/`ay`/`az`. D3
-///   adversary finding, 2026-07-28, BINDING.
-///
-/// The direction vector is normalized to unit length.  Non-unit directions are
-/// accepted and normalized silently.  Zero-magnitude directions are rejected.
+/// - the DIRECTION is a `Value::Direction`, read through
+///   [`reify_ir::decode_direction`] (ε, task 9638): dimensionless by type and
+///   unit by construction, matching the scalar form's un-gated `ax`/`ay`/`az`.
+///   D3 adversary finding, 2026-07-28, BINDING.
 ///
 /// # Returns
 /// - `Ok((origin, unit_direction))` — origin in metres, direction a
@@ -2170,16 +2153,14 @@ pub(crate) fn decode_plane(
 ///     reason and with exactly its pre-δ delta (the SHAPE message and silence
 ///     become the units `Err` plus one Warning); pinned by
 ///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
-///   - origin or direction of the wrong SHAPE (not a 3-component
-///     `Point`/`Vector`), or a direction with non-numeric / non-finite
-///     components — these keep their pre-δ wording behind the `kind_label`
-///     prefix and push no diagnostic. A kernel-minted `Value::Direction` still
-///     lands here, unchanged;
-///   - zero-magnitude direction.
+///   - an origin of the wrong SHAPE (not a 3-component `Point`/`Vector`) —
+///     its pre-δ wording behind the `kind_label` prefix, and no diagnostic;
+///   - a direction that is not a `Value::Direction` — `decode_direction`'s own
+///     message behind `{kind_label}: Axis direction: `, ending in the shared
+///     `dir(..)` migration hint, and no diagnostic.
 ///
-/// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
-/// [`decode_plane`] — the single canonical decode surface for Axis values
-/// (task η, design decision A).
+/// The single canonical decode surface for Axis values (task η, design
+/// decision A).
 ///
 /// # Visibility
 /// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
@@ -2213,22 +2194,9 @@ pub(crate) fn decode_axis(
         },
         diagnostics,
     )?;
-    // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
-    // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
-    // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
-    let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        labelled(
-            kind_label,
-            "Axis direction is not a valid 3-component numeric Point/Vector",
-        )
-    })?;
-    let unit_dir = unit_vector3(dir_raw).map_err(|e| {
-        labelled(
-            kind_label,
-            format_args!("Axis has a degenerate direction: {e}"),
-        )
-    })?;
-    Ok((origin_arr, unit_dir))
+    let unit_dir = decode_direction(dir_val)
+        .map_err(|e| labelled(kind_label, format_args!("Axis direction: {e}")))?;
+    Ok((origin_arr, unit_dir.components()))
 }
 
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by

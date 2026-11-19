@@ -2149,7 +2149,7 @@ mod test_fixtures {
     use std::collections::HashMap;
 
     use reify_ir::Value;
-    use reify_test_support::parse_and_compile_with_stdlib;
+    use reify_test_support::{direction_val, parse_and_compile_with_stdlib};
 
     use super::{RealizedDatums, RelateScope, collect_relate_scope};
 
@@ -2157,21 +2157,17 @@ mod test_fixtures {
         Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
     }
 
-    fn vec3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-    }
-
     pub(super) fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
         Value::Axis {
             origin: Box::new(point3v(o.0, o.1, o.2)),
-            direction: Box::new(vec3v(d.0, d.1, d.2)),
+            direction: Box::new(direction_val(d.0, d.1, d.2)),
         }
     }
 
     pub(super) fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
         Value::Plane {
             origin: Box::new(point3v(o.0, o.1, o.2)),
-            normal: Box::new(vec3v(n.0, n.1, n.2)),
+            normal: Box::new(direction_val(n.0, n.1, n.2)),
         }
     }
 

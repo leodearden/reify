@@ -47,6 +47,7 @@ pub mod mcp_context;
 pub mod new_file_template;
 pub mod recent_files;
 pub mod screenshot_save;
+pub mod sidecar_runtime;
 pub mod tcp_port;
 pub mod types;
 pub mod watcher;

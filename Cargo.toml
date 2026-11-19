@@ -81,6 +81,7 @@ reify-git-env = { path = "crates/reify-git-env" }
 reify-test-support = { path = "crates/reify-test-support" }
 reify-builtins = { path = "crates/reify-builtins" }
 workspace-feature-union = { path = "crates/workspace-feature-union" }
+reify-gui = { path = "gui/src-tauri" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 strum = { version = "0.26", features = ["derive"] }

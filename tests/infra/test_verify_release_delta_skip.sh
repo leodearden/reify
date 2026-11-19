@@ -17,12 +17,16 @@
 #     - ALL sentinel (C4 global / C5 unmappable)   => rc0  (fail-wide)
 #     - empty / whitespace-only override           => rc1  (empty set, skip)
 #     - mixed set containing one sensitive crate   => rc0  (required)
-#     - a membership grep that fails (2, 126)      => rc0  (fail-wide)
+#     - strict prefix/suffix of a declared crate   => rc1  (whole-line match)
+#     - glob metacharacter in a word               => rc1  (matched literally)
+#     - affected_crates fails (real-merge arm)     => rc0  (fail-wide)
+#     - declared set unreadable (file missing)     => rc0  (fail-wide)
 #   The sensitive crate name is read from release_declared_set (the single source
 #   of truth), never hard-coded, so this test cannot drift from
 #   scripts/release-sensitive-crates.txt.
-#   SIGPIPE regression sub-block (task 9911): 1 MiB payloads pin both here-string arms.
-#   grep-failure sub-block (task 10080): a PATH-shimmed grep pins both arms fail-wide.
+#   SIGPIPE regression sub-block (task 9911): 1 MiB payloads pin both membership arms.
+#   no-file-writes sub-block (task 10086): ulimit -f 0 pins both membership arms against
+#   a here-string that cannot be buffered.
 #
 # SCENARIO block (step-3): five hermetic `verify.sh --print-plan` scenarios that
 # assert the plan marker `RELEASE-PASS: skipped (delta-clean)` and the presence /
@@ -99,11 +103,12 @@ _run_predicate() {  # <override> [declared_file]
     )
 }
 _predicate_requires() { _run_predicate "$@"; }  # asserts rc0 — release pass REQUIRED
-_predicate_skips() {                            # asserts exactly rc1 — SKIPPABLE, never another failure
+_skippable() {                                  # asserts <cmd> exits exactly rc1 — SKIPPABLE, never another failure
     local _rc=0
-    _run_predicate "$@" || _rc=$?
+    "$@" || _rc=$?
     [ "$_rc" -eq 1 ]
 }
+_predicate_skips() { _skippable _run_predicate "$@"; }
 
 # Clean RED signal in step-1: the predicate does not exist until step-2.
 assert "release_delta_requires_pass is defined" \
@@ -127,15 +132,90 @@ assert "whitespace-only override => SKIPPABLE (rc1, word-splits to nothing)" \
 assert "mixed set with one sensitive crate ($_NONSENSITIVE_CRATE $_SENSITIVE_CRATE) => REQUIRED (rc0)" \
     _predicate_requires "$_NONSENSITIVE_CRATE $_SENSITIVE_CRATE"
 
+# Membership is a whole-line match. The last declared line is the one a missing trailing newline
+# in the matcher would lose (a false SKIPPABLE), and a strict prefix or suffix of a declared
+# crate is the one a missing leading or trailing newline would find (a needless REQUIRED).
+_LAST_SENSITIVE_CRATE="${_DECLARED_SET##*$'\n'}"
+
+assert "last release-sensitive crate ($_LAST_SENSITIVE_CRATE) => REQUIRED (rc0)" \
+    _predicate_requires "$_LAST_SENSITIVE_CRATE"
+
+assert "strict prefix of a release-sensitive crate (${_SENSITIVE_CRATE%?}) => SKIPPABLE (rc1, whole-line match)" \
+    _predicate_skips "${_SENSITIVE_CRATE%?}"
+
+assert "strict suffix of a release-sensitive crate (${_SENSITIVE_CRATE#?}) => SKIPPABLE (rc1, whole-line match)" \
+    _predicate_skips "${_SENSITIVE_CRATE#?}"
+
+# A word is matched literally, never as a pattern. The matcher's quoted "$1" keeps it so: unquoted,
+# the `?` below would stand for the dropped last character, the word would read as the declared
+# crate, and the answer would be REQUIRED. Pathname expansion is off for this case, because the
+# predicate's word loop would otherwise rewrite the word into any file the working directory holds
+# under that pattern (from crates/, the declared crate's own directory).
+_no_pathname_expansion() { ( set -f; "$@" ); }  # CHECK <arg>...
+
+assert "glob metacharacter in a word (${_SENSITIVE_CRATE%?}?) is matched literally => SKIPPABLE (rc1)" \
+    _no_pathname_expansion _predicate_skips "${_SENSITIVE_CRATE%?}?"
+
+echo ""
+echo "--- UNIT: the real-merge arm fails wide when affected_crates fails (task 10086) ---"
+
+# The no-override arm captures affected_crates's stdout. A killed capture leaves an empty or
+# partial set that reads like a clean answer, so only its status says it failed, and the
+# predicate must answer REQUIRED. affected_crates is the predicate's documented dependency and
+# the real one runs `cargo metadata`, so a stand-in answers for it here (no git, no cargo).
+# It is redefined inside each case's subshell, so the redefinition cannot leak. The control
+# prints what the second failing case prints but exits 0: the three cases differ only in
+# exit status, which proves the stand-in is reached and nothing else in the arm fails wide.
+_run_delta_predicate() {  # <stand-in> <changed-file>...
+    (
+        unset REIFY_AFFECTED_CRATES_OVERRIDE
+        _stand_in="$1"
+        shift
+        affected_crates() { "$_stand_in" "$@"; }
+        release_delta_requires_pass "$@"
+    )
+}
+_affected_crates_killed() { kill -9 "$BASHPID"; }
+_affected_crates_answers_then_killed() { echo "$_NONSENSITIVE_CRATE"; kill -9 "$BASHPID"; }
+_affected_crates_answers() { echo "$_NONSENSITIVE_CRATE"; }
+
+_REAL_ARM_CHANGED_FILE="crates/$_NONSENSITIVE_CRATE/src/main.rs"
+
+assert "affected_crates killed before answering => REQUIRED (rc0, fail-wide)" \
+    _run_delta_predicate _affected_crates_killed "$_REAL_ARM_CHANGED_FILE"
+
+assert "affected_crates killed after answering $_NONSENSITIVE_CRATE => REQUIRED (rc0, fail-wide)" \
+    _run_delta_predicate _affected_crates_answers_then_killed "$_REAL_ARM_CHANGED_FILE"
+
+assert "affected_crates answers $_NONSENSITIVE_CRATE (control) => SKIPPABLE (rc1)" \
+    _skippable _run_delta_predicate _affected_crates_answers "$_REAL_ARM_CHANGED_FILE"
+
+echo ""
+echo "--- UNIT: the declared-set read fails wide (task 10086) ---"
+
+# Both arms read the declared set after the affected set. A read that fails, here a missing file,
+# which release_declared_set answers with status 1, must answer REQUIRED. Taken for an empty
+# declared set it would answer SKIPPABLE for every non-ALL crate. The control reads a declared file
+# that exists, so the two cases differ only in whether the file is there.
+_DECLARED_FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-declared-fixture.XXXXXX")"
+_TMPDIRS+=("$_DECLARED_FIXTURE_DIR")
+echo "reify-declared-fixture" > "$_DECLARED_FIXTURE_DIR/present.txt"
+
+assert "declared file missing => REQUIRED (rc0, fail-wide)" \
+    _predicate_requires "$_NONSENSITIVE_CRATE" "$_DECLARED_FIXTURE_DIR/absent.txt"
+
+assert "declared file present (control): the same crate => SKIPPABLE (rc1)" \
+    _predicate_skips "$_NONSENSITIVE_CRATE" "$_DECLARED_FIXTURE_DIR/present.txt"
+
 echo ""
 echo "--- UNIT: SIGPIPE regression (task 9911) ---"
 
 # Each regression payload is over 1 MiB with its trigger on line 1, far past the 64 KiB pipe
 # capacity plus grep's first read. A `producer | grep -q` condition under pipefail would always
 # lose that race: grep quits, the producer takes SIGPIPE (141), and the condition reads as a
-# non-match. The here-string forms answer from a captured string. Both regression asserts expect
-# REQUIRED, which every fail-wide path also returns, so each is paired with a same-payload control
-# that must answer SKIPPABLE: only that proves the payload was evaluated.
+# non-match. The membership test answers from a captured string, with no pipeline. Both regression
+# asserts expect REQUIRED, which every fail-wide path also returns, so each is paired with a
+# same-payload control that must answer SKIPPABLE: only that proves the payload was evaluated.
 printf -v _SIGPIPE_WORD '%0*d' 65536 0
 # 16 words of 64 KiB, never one 1 MiB word: a single exec argument over 128 KiB fails with E2BIG.
 _SIGPIPE_FILLERS=""
@@ -158,53 +238,30 @@ assert "SIGPIPE intersect arm control: a crate absent from the 1 MiB declared se
     _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
 
 echo ""
-echo "--- UNIT: a membership test grep cannot answer fails wide (task 10080) ---"
+echo "--- UNIT: membership tests need no file writes (task 10086) ---"
 
-# A grep that fails (its status 2, or 126/127 when the exec itself fails under host
-# pressure) gives no answer, so the predicate must not read it as "absent" and skip.
-# The shim fails only the `grep -qxF -- <word>` membership tests whose <word> matches a
-# glob, and runs the real grep for everything else, release_declared_set's filters
-# included. Every failing case expects REQUIRED, which every fail-wide path also returns,
-# so each is paired with a control whose shim answers a clean no-match (1) for the same
-# words: that run must skip, which proves the shim was reached and nothing else failed.
-_REAL_GREP="$(type -P grep)"
+# A here-string over the pipe buffer is staged in a temp file. When that write fails, as on a
+# full TMPDIR, bash skips the command and reports status 1, which a test that reads status 1 as
+# "absent" takes for an answer. RLIMIT_FSIZE 0 fails every regular-file write the same way,
+# deterministically; pipes are not subject to it, so release_declared_set's grep|grep|sed
+# capture still works. Ignoring SIGXFSZ turns the failure into an EFBIG write error instead of
+# a killed shell with a core dump (status 153); `ulimit -c 0` keeps a regression from leaving
+# cores behind. The 1 MiB fixtures above are over the pipe buffer, so each arm needs a temp
+# file under the limit. The failing cases expect REQUIRED, which every fail-wide path also
+# returns, so each is paired with a same-payload control that must answer SKIPPABLE.
+_no_file_writes() { ( trap '' XFSZ; ulimit -c 0; ulimit -f 0; "$@" ); }  # CHECK <arg>...
 
-# _grep_shim VARNAME <word-glob> <status> — sets VARNAME to a dir holding a grep that
-# exits <status> for a membership test of a word matching <word-glob>.
-_grep_shim() {
-    local _dir
-    _dir="$(mktemp -d)"
-    _TMPDIRS+=("$_dir")
-    cat > "$_dir/grep" <<SHIM
-#!/bin/sh
-if [ "\$1" = -qxF ] && [ "\$2" = -- ]; then
-    case "\$3" in $2) exit $3 ;; esac
-fi
-exec "$_REAL_GREP" "\$@"
-SHIM
-    chmod +x "$_dir/grep"
-    printf -v "$1" '%s' "$_dir"
-}
+assert "no file writes: ALL followed by 1 MiB of fillers => REQUIRED (rc0)" \
+    _no_file_writes _predicate_requires "ALL$_SIGPIPE_FILLERS"
 
-# _shimmed CHECK <shim-dir> <arg>... — runs CHECK with <shim-dir> first on PATH.
-_shimmed() { ( _check="$1"; PATH="$2:$PATH"; shift 2; "$_check" "$@" ); }
+assert "no file writes: the same 1 MiB without ALL (control) => SKIPPABLE (rc1)" \
+    _no_file_writes _predicate_skips "$_SIGPIPE_FILLERS"
 
-_grep_shim _SHIM_ALL_ARM ALL 2
-assert "grep exits 2 on the ALL test => REQUIRED (rc0, fail-wide)" \
-    _shimmed _predicate_requires "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
-_grep_shim _SHIM_ALL_ARM ALL 1
-assert "grep answers no-match on the ALL test (control) => SKIPPABLE (rc1)" \
-    _shimmed _predicate_skips "$_SHIM_ALL_ARM" "$_NONSENSITIVE_CRATE"
+assert "no file writes: $_SIGPIPE_PROBE_CRATE on line 1 of the 1 MiB declared set => REQUIRED (rc0)" \
+    _no_file_writes _predicate_requires "$_SIGPIPE_PROBE_CRATE" "$_SIGPIPE_DECLARED_FILE"
 
-_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 2
-assert "grep exits 2 on the $_NONSENSITIVE_CRATE intersect test => REQUIRED (rc0, fail-wide)" \
-    _shimmed _predicate_requires "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
-_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 126
-assert "grep exec fails (126) on the $_NONSENSITIVE_CRATE intersect test => REQUIRED (rc0, fail-wide)" \
-    _shimmed _predicate_requires "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
-_grep_shim _SHIM_INTERSECT_ARM "$_NONSENSITIVE_CRATE" 1
-assert "grep answers no-match on the $_NONSENSITIVE_CRATE intersect test (control) => SKIPPABLE (rc1)" \
-    _shimmed _predicate_skips "$_SHIM_INTERSECT_ARM" "$_NONSENSITIVE_CRATE"
+assert "no file writes: a crate absent from the 1 MiB declared set (control) => SKIPPABLE (rc1)" \
+    _no_file_writes _predicate_skips reify-sigpipe-absent "$_SIGPIPE_DECLARED_FILE"
 
 # ===========================================================================
 # SCENARIO block: five hermetic verify.sh --print-plan scenarios (§5.2).
@@ -637,13 +694,17 @@ assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling se
 #   never an answer, and fails WIDE: the release pass stays and a stderr warning
 #   names the status. Driven in process against a throwaway repo root, under the
 #   merge role with the knob armed and the non-sensitive crate as the affected
-#   override (no git). Two kinds of root:
+#   override (no git). Three kinds of root:
 #     - stub roots, whose release-scope-lib.sh is a one-line predicate returning
 #       a chosen status;
 #     - real-lib roots, holding the real lib's load closure minus one file. The
 #       full closure is the CONTROL and must skip, so each failure root differs
 #       from a skipping run by exactly that one missing file. If the closure
-#       grows, the CONTROL reds instead of the failure roots passing vacuously.
+#       grows, the CONTROL reds instead of the failure roots passing vacuously;
+#     - roots whose lib never finishes sourcing (task 10082): absent, returning
+#       at top level, or ending the shell. The predicate never runs, so the
+#       shell's status is not its answer: even a 1 or a 0 keeps the pass and
+#       warns.
 # ===========================================================================
 echo ""
 echo "--- PORT (task 10080): decide_release_delta skips only on rc 1 ---"
@@ -710,6 +771,7 @@ _port_decide() {
 _port_skips() { [[ "$1" == "True "* ]]; }
 _port_keeps() { [[ "$1" == "False "* ]]; }
 _port_warns() { [[ "$1" =~ exited\ "$2"([^0-9]|$) ]]; }
+_port_says() { [[ "$1" == *"$2"* ]]; }
 
 _port_stub_root _PORT_ROOT 'release_delta_requires_pass() { return 1; }'
 _port_decide _PORT_DECISION "$_PORT_ROOT"
@@ -756,5 +818,28 @@ assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_at
     _port_keeps "$_PORT_DECISION"
 assert "PORT real lib whose affected-crates-lib.sh cannot load (no reify_path_attribution.py) => warning names status 2" \
     _port_warns "$_PORT_DECISION" 2
+
+_port_root _PORT_ROOT
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT no release-scope-lib.sh (source exits 1, predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT no release-scope-lib.sh => warning names status 1" \
+    _port_warns "$_PORT_DECISION" 1
+assert "PORT no release-scope-lib.sh => bash's own stderr comes just before the warning" \
+    _port_says "$_PORT_DECISION" "No such file or directory|verify.sh: WARNING"
+
+_port_stub_root _PORT_ROOT 'return 1'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT lib returning 1 at top level (predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT lib returning 1 at top level => warning names status 1" \
+    _port_warns "$_PORT_DECISION" 1
+
+_port_stub_root _PORT_ROOT $'exit 0\nrelease_delta_requires_pass() { return 1; }'
+_port_decide _PORT_DECISION "$_PORT_ROOT"
+assert "PORT lib ending the shell with 0 while sourced (predicate never ran) => release pass kept" \
+    _port_keeps "$_PORT_DECISION"
+assert "PORT lib ending the shell with 0 while sourced => warning names status 0" \
+    _port_warns "$_PORT_DECISION" 0
 
 test_summary

@@ -152,13 +152,6 @@ pub(crate) struct CompilationCtx {
     /// fn-signature type resolution can resolve structure names to
     /// `Type::StructureRef`.
     pub(crate) resolution_structure_names: HashSet<String>,
-    /// The module's own `structure def` names, top-level and purpose-nested
-    /// (first definition only; occurrences excluded). Recorded by
-    /// `pre_pass::collect_decl_refs`. The fn-body declaration-order rule
-    /// (task #5494) is keyed on this set: unlike `resolution_structure_names` it
-    /// holds no prelude or occurrence names, which never enter the ctor view the
-    /// way a local structure does.
-    pub(crate) local_structure_def_names: HashSet<String>,
     /// Names this module DECLARES as functions: every local `fn` declaration +
     /// every prelude function. Populated by `names_phase::build_resolution_names`
     /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
@@ -211,7 +204,6 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
-            local_structure_def_names: HashSet::new(),
             declared_fn_names: HashSet::new(),
         }
     }
@@ -245,15 +237,31 @@ impl CompilationCtx {
     /// structures (top-level and purpose-nested) and occurrences —
     /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
     pub(crate) fn local_template_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
-        self.seen_entity_names
-            .iter()
-            .filter(|(_, (_, kind))| matches!(kind, EntityNameKind::Template(_)))
-            .map(|(name, _)| name.as_str())
+        self.local_names_where(|kind| matches!(kind, EntityNameKind::Template(_)))
     }
 
     /// Owned collect of [`Self::local_template_name_iter`].
     pub(crate) fn local_entity_names(&self) -> HashSet<String> {
         self.local_template_name_iter().map(str::to_owned).collect()
+    }
+
+    /// The module's own `structure def` names, top-level and purpose-nested,
+    /// first definition only, with no occurrence or prelude names: the key of
+    /// the fn-body declaration-order rule (task #5494).
+    pub(crate) fn local_structure_def_names(&self) -> HashSet<String> {
+        self.local_names_where(|kind| kind == EntityNameKind::Template(EntityKind::Structure))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn local_names_where(
+        &self,
+        keep: fn(EntityNameKind) -> bool,
+    ) -> impl Iterator<Item = &str> + '_ {
+        self.seen_entity_names
+            .iter()
+            .filter(move |(_, (_, kind))| keep(*kind))
+            .map(|(name, _)| name.as_str())
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
@@ -586,6 +594,38 @@ mod tests {
         let labels = &ctx.diagnostics[0].labels;
         assert_eq!(labels[0].message, "structure defined here");
         assert_eq!(labels[1].message, "first defined as field here");
+    }
+
+    /// Both name-set accessors filter `seen_entity_names` by kind: structures
+    /// only, and structures plus occurrences. Neither admits a field or a
+    /// constraint.
+    #[test]
+    fn local_name_accessors_filter_seen_entity_names_by_kind() {
+        let mut ctx = CompilationCtx::new();
+        let recorded = [
+            (
+                "TheStructure",
+                EntityNameKind::Template(EntityKind::Structure),
+            ),
+            (
+                "TheOccurrence",
+                EntityNameKind::Template(EntityKind::Occurrence),
+            ),
+            ("TheField", EntityNameKind::Field),
+            ("TheConstraint", EntityNameKind::Constraint),
+        ];
+        for (start, (name, kind)) in (0..).step_by(10).zip(recorded) {
+            assert!(ctx.record_or_report_duplicate(name, SourceSpan::new(start, start + 5), kind));
+        }
+
+        let names = |names: &[&str]| -> HashSet<String> {
+            names.iter().map(|name| name.to_string()).collect()
+        };
+        assert_eq!(ctx.local_structure_def_names(), names(&["TheStructure"]));
+        assert_eq!(
+            ctx.local_entity_names(),
+            names(&["TheStructure", "TheOccurrence"])
+        );
     }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec

@@ -1,0 +1,8 @@
+structure def Beam : Physical {
+    param name : String = "beam"
+    param density : Real = 7850.0
+    param volume : Real = 0.002
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+}

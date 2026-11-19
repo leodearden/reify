@@ -148,7 +148,7 @@ pub(crate) struct SourceOrderFnEnv<'a> {
     /// against. It changes nothing about which overload resolves; see
     /// `CompilationScope::declared_callable_names` for what it is for.
     declared_callable_names: HashSet<String>,
-    local_structure_def_names: &'a HashSet<String>,
+    local_structure_def_names: HashSet<String>,
 }
 
 impl<'a> SourceOrderFnEnv<'a> {
@@ -156,7 +156,7 @@ impl<'a> SourceOrderFnEnv<'a> {
         enum_defs: &'a [EnumDef],
         prelude_ctor_view: &'a HashMap<String, &'a TopologyTemplate>,
         declared_callable_names: HashSet<String>,
-        local_structure_def_names: &'a HashSet<String>,
+        local_structure_def_names: HashSet<String>,
     ) -> Self {
         Self {
             enum_defs,
@@ -319,7 +319,7 @@ mod early_default_recheck {
 /// prelude function that wins its `(name, param types)` key under NS-P1
 /// ([`name_env`]: imports before std modules, first wins). A prelude function
 /// sharing a user function's key is shadowed.
-pub(crate) fn build_resolution_functions(
+fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {
@@ -643,21 +643,15 @@ mod tests {
                 &mut Vec::new(),
             );
             let prelude_view = HashMap::new();
-            let local_structure_def_names = HashSet::new();
-            SourceOrderFnEnv::new(
-                &[],
-                &prelude_view,
-                HashSet::new(),
-                &local_structure_def_names,
-            )
-            .compile_function_decl(
-                fn_def,
-                &sig,
-                &FnParamDefaults::Compiled(early),
-                &ResolutionTable::new(Vec::new(), &[]),
-                &[],
-                &mut Vec::new(),
-            )
+            SourceOrderFnEnv::new(&[], &prelude_view, HashSet::new(), HashSet::new())
+                .compile_function_decl(
+                    fn_def,
+                    &sig,
+                    &FnParamDefaults::Compiled(early),
+                    &ResolutionTable::new(Vec::new(), &[]),
+                    &[],
+                    &mut Vec::new(),
+                )
         }
 
         /// What the unified pass compiles `source`'s defaults to.

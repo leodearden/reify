@@ -1,0 +1,3 @@
+structure def Ball {
+    let body = sphere(0.005)
+}

@@ -89,7 +89,8 @@ export function normalizeUnitLabel(label: string): string {
  * `PropertyEditor`'s `QUANTITY_RE` before the alphabet became ladder-derived.
  *
  * This is a FLOOR, not the alphabet: `get_unit_ladders` is a best-effort
- * one-shot fetch that can fail (`App.test.tsx` pins a toast for that path),
+ * one-shot fetch that can fail (`App.init.test.tsx`'s 'App unit ladders
+ * (task #5199)' pins a toast for that path),
  * and validation must not silently narrow when it does. Keeping exactly these
  * five also keeps every ladder-less caller byte-identical to the pre-#6028
  * behaviour.
@@ -136,8 +137,9 @@ export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
  * ladders unioned with {@link BASE_UNIT_LABELS} (task #6028).
  *
  * THE CANONICAL RATIONALE FOR THE WHOLE SEAM LIVES HERE. Callers
- * (`quantityReFor` in `../panels/PropertyEditor.tsx`, the `App.test.tsx`
- * block "ladder-derived units the backend cannot parse") point at this block
+ * (`quantityReFor` in `../panels/PropertyEditor.tsx`, the `App.parameters.test.tsx`
+ * block "App parameter input: the reconciled unit/bare-number contract
+ * (task #5757)") point at this block
  * rather than restating it — three copies of the same argument, each naming
  * its own Rust line numbers, was three sets of rot sites with no gate to catch
  * them. For the same reason everything below names Rust SYMBOLS, never line
@@ -190,9 +192,10 @@ export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
  *
  * Separately, {@link acceptsBareNumber} decides whether a cell may be given a
  * bare number at all — the same coverage question this alphabet asks, asked of
- * one cell; its own doc carries that rule. The `App.test.tsx` block that used
- * to pin the degradation above now pins the reconciled contract in both
- * directions.
+ * one cell; its own doc carries that rule. The `App.parameters.test.tsx`
+ * block "App parameter input: the reconciled unit/bare-number contract
+ * (task #5757)", which used to pin the degradation above, now pins the
+ * reconciled contract in both directions.
  *
  * Still deferred, and NOT this: compound unit EXPRESSIONS in .ri source at the
  * `bind(joint, <quantity>)` site (`UnitExpr::Mul`/`Div`/`Pow`), which are task
