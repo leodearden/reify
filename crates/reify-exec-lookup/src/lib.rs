@@ -8,7 +8,8 @@
 //! them against the current directory; this lookup never does.
 //!
 //! A candidate is executable when it is a regular file (symlinks followed)
-//! with at least one execute bit set on unix, and any regular file elsewhere.
+//! that, on unix, the current user may execute, per `access(2)` with `X_OK`,
+//! the check `execve` makes. Elsewhere any regular file counts.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -24,8 +25,15 @@ pub fn find_executable_on_path(names: &[&str], path_var: Option<&OsStr>) -> Opti
 
 #[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    use std::os::unix::ffi::OsStrExt;
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c_path` is a valid NUL-terminated string that outlives the call.
+    unsafe { libc::access(c_path.as_ptr(), libc::X_OK) == 0 }
 }
 
 #[cfg(not(unix))]

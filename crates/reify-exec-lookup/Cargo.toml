@@ -9,5 +9,8 @@ description = "The workspace's single PATH lookup for host executables, shared b
 # tree-sitter-reify, so it is host-side and must not reach the union
 # (docs/notes/workspace-feature-union.md, "Coverage").
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
