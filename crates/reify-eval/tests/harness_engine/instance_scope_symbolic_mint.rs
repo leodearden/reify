@@ -9,9 +9,10 @@
 //! uses: the trampoline returns 777, the `.ri` body returns 42, so the observed
 //! value names which path ran.
 
+use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{
-    CancellationHandle, ComputeFn, ComputeOutcome, EvalResult, RealizationReadHandle,
+    CancellationHandle, ComputeFn, ComputeOutcome, Engine, EvalResult, RealizationReadHandle,
 };
 use reify_ir::{OpaqueState, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -48,6 +49,25 @@ fn cell<'a>(result: &'a EvalResult, entity: &str, member: &str) -> &'a Value {
         .values
         .get(&ValueCellId::new(entity, member))
         .unwrap_or_else(|| panic!("cell {entity}.{member} not found in eval result"))
+}
+
+/// `entity.member` as the instance mint folds it: an absent cell reads Undef.
+fn folded_read<'a>(result: &'a EvalResult, entity: &str, member: &str) -> &'a Value {
+    result
+        .values
+        .get(&ValueCellId::new(entity, member))
+        .unwrap_or(&Value::Undef)
+}
+
+/// An engine with a solver, so an edit that re-resolves an `auto` reaches the
+/// edit path's resolution reseed.
+fn solver_engine() -> Engine {
+    Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+        Box::new(SimpleConstraintChecker),
+        None,
+    )
+    .with_solver(Box::new(DimensionalSolver))
 }
 
 /// The Warnings naming `target`, i.e. the reuse declines reported for it.
@@ -372,23 +392,24 @@ fn phase1_scratch_let_mints_so_a_param_default_reading_a_selector_let_reuses() {
     );
 }
 
-/// `source` with `template_param` set to `edited`, evaluated two ways: WARM
-/// (`eval`, then `edit_param`) and COLD (`set_param_and_invalidate`, then
-/// `eval`). Returns the warm engine's pre-edit eval, its `edit_param` result,
-/// and the cold eval.
+/// `source` with `template_param` set to `edited`, evaluated two ways on
+/// engines from `make_engine`: WARM (`eval`, then `edit_param`) and COLD
+/// (`set_param_and_invalidate`, then `eval`). Returns the warm engine's
+/// pre-edit eval, its `edit_param` result, and the cold eval.
 fn warm_edit_and_cold_eval(
+    make_engine: fn() -> Engine,
     source: &str,
     template_param: &ValueCellId,
     edited: Value,
 ) -> (EvalResult, EvalResult, EvalResult) {
     let compiled = parse_and_compile_with_stdlib(source);
-    let mut warm = make_simple_engine();
+    let mut warm = make_engine();
     let before = warm.eval(&compiled);
     let after_edit = warm
         .edit_param(template_param.clone(), edited.clone())
         .unwrap_or_else(|e| panic!("edit_param({template_param}) must succeed after eval: {e:?}"));
 
-    let mut cold = make_simple_engine();
+    let mut cold = make_engine();
     cold.set_param_and_invalidate(template_param, edited);
     let cold = cold.eval(&compiled);
     (before, after_edit, cold)
@@ -398,15 +419,16 @@ fn warm_edit_and_cold_eval(
 /// commits: a minted handle naming the template's realization decl, with the
 /// upstream hash folded over the instance's OWN committed values.
 ///
-/// Premise: the warm and cold engines commit the same `instance.len`, so the
-/// handles are compared like for like. Whether instance params follow a
-/// template param edit is #7184's question, not these tests'.
+/// Premise: the warm and cold engines leave the same `instance.len` as the
+/// mint folds it (absent reads Undef), so the handles are compared like for
+/// like. Whether instance params follow a template param edit is #7184's
+/// question, not these tests'.
 fn assert_edited_body_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
     assert_eq!(
-        cell(after_edit, instance, "len"),
-        cell(cold, instance, "len"),
-        "premise: the warm and cold engines must commit the same {instance}.len, \
-         or their instance cells are not comparable"
+        folded_read(after_edit, instance, "len"),
+        folded_read(cold, instance, "len"),
+        "premise: the warm and cold engines must leave the same {instance}.len \
+         as the mint folds it, or their instance cells are not comparable"
     );
     let edited_body = cell(after_edit, instance, "body");
     assert!(
@@ -468,6 +490,7 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
         }
     "#;
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
         source,
         &ValueCellId::new("EditInner", "len"),
         Value::length(0.03),
@@ -496,6 +519,7 @@ fn edit_param_on_a_template_param_keeps_an_overridden_instance_minted_over_its_o
         }
     "#;
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
         source,
         &ValueCellId::new("EditInner", "len"),
         Value::length(0.03),
@@ -543,6 +567,7 @@ const BOLT_RACK: &str = r#"
 #[test]
 fn edit_param_on_a_template_param_mints_static_collection_slots_like_a_cold_eval() {
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
         BOLT_RACK,
         &ValueCellId::new("CBolt", "len"),
         Value::length(0.03),
@@ -559,8 +584,12 @@ fn edit_param_on_a_template_param_mints_static_collection_slots_like_a_cold_eval
 /// the new one included, must still mint like a cold eval of the grown count.
 #[test]
 fn edit_param_growing_a_collection_mints_every_slot_like_a_cold_eval() {
-    let (before, after_edit, cold) =
-        warm_edit_and_cold_eval(BOLT_RACK, &ValueCellId::new("CRack", "n"), Value::Int(3));
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
+        BOLT_RACK,
+        &ValueCellId::new("CRack", "n"),
+        Value::Int(3),
+    );
 
     for slot in ["CRack.bolts[0]", "CRack.bolts[1]"] {
         assert_minted_at_eval(&before, slot);
@@ -783,6 +812,7 @@ fn assert_body_and_selector_minted_at_eval(before: &EvalResult, instance: &str) 
 #[test]
 fn edit_param_growing_a_collection_mints_cells_declared_before_their_reads_like_a_cold_eval() {
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
         DECL_ORDER_RACK,
         &ValueCellId::new("DRack", "n"),
         Value::Int(3),
@@ -849,6 +879,7 @@ const GUARDED_CORE_RACK: &str = r#"
 #[test]
 fn edit_param_growing_a_collection_mints_a_body_over_a_guarded_geometry_let_like_a_cold_eval() {
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
         GUARDED_CORE_RACK,
         &ValueCellId::new("GRack", "n"),
         Value::Int(3),
@@ -913,4 +944,136 @@ fn edit_param_over_a_solid_param_with_a_guarded_same_name_override_does_not_pani
         matches!(edited_body, Value::GeometryHandle { .. }),
         "T.body must stay a minted GeometryHandle after the edit, got {edited_body:?}"
     );
+}
+
+/// A template whose `len` the solver resolves from `target`, with an
+/// override-free sub over it.
+const RESOLVED_LEN: &str = r#"
+    structure ResInner {
+        param target : Length = 20mm
+        param len : Length = auto
+        constraint len == target
+        let body = box(len, 10mm, 10mm)
+        let s = face(body, "x_max")
+    }
+
+    structure ResOuter {
+        sub same = ResInner()
+    }
+"#;
+
+/// Editing `target` re-resolves `len`, and `edit_param`'s resolution reseed is
+/// then the only edit-path writer of the instance's `body` and `s` (the main
+/// walk's cone stops at `len`). The reseed must mint them as `eval()` does.
+#[test]
+fn edit_param_resolution_reseed_mints_an_override_free_instance_like_a_cold_eval() {
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        solver_engine,
+        RESOLVED_LEN,
+        &ValueCellId::new("ResInner", "target"),
+        Value::length(0.03),
+    );
+
+    assert!(
+        after_edit
+            .resolved_params
+            .contains_key(&ValueCellId::new("ResInner", "len")),
+        "premise: the edit must re-resolve ResInner.len, so the resolution \
+         reseed runs, got resolved_params {:?}",
+        after_edit.resolved_params
+    );
+    assert_minted_at_eval(&before, "ResOuter.same");
+    assert_edited_body_like_cold(&after_edit, &cold, "ResOuter.same");
+    assert_edited_selector_like_cold(&after_edit, &cold, "ResOuter.same");
+}
+
+/// `edit_source` changing the constraint re-resolves `len`, and its resolution
+/// reseed ("Second propagation wave") is then the only edit-path writer of the
+/// instance's `body` and `s`. The reseed must mint them as `eval()` does.
+#[test]
+fn edit_source_resolution_reseed_mints_an_override_free_instance_like_a_cold_eval() {
+    let source = r#"
+        structure SrcInner {
+            param len : Length = auto
+            constraint len == 20mm
+            let body = box(len, 10mm, 10mm)
+            let s = face(body, "x_max")
+        }
+
+        structure SrcOuter {
+            sub same = SrcInner()
+        }
+    "#;
+    let edited_source = source.replace("len == 20mm", "len == 30mm");
+    assert_ne!(
+        edited_source, source,
+        "premise: the source edit must change the constraint"
+    );
+    let edited = parse_and_compile_with_stdlib(&edited_source);
+    let mut warm = solver_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(source));
+    let after_edit = warm
+        .edit_source(&edited)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = solver_engine().eval(&edited);
+
+    assert!(
+        after_edit
+            .resolved_params
+            .contains_key(&ValueCellId::new("SrcInner", "len")),
+        "premise: the edit must re-resolve SrcInner.len, so the resolution \
+         reseed runs, got resolved_params {:?}",
+        after_edit.resolved_params
+    );
+    assert_minted_at_eval(&before, "SrcOuter.same");
+    assert_edited_body_like_cold(&after_edit, &cold, "SrcOuter.same");
+    assert_edited_selector_like_cold(&after_edit, &cold, "SrcOuter.same");
+}
+
+/// A template whose `body` reads, through `w2`, a member of a guarded group.
+const GUARDED_WIDTH: &str = r#"
+    structure HInner {
+        param thick : Bool = true
+        param len : Length = 10mm
+        where thick {
+            let w = len * 2.0
+        } else {
+            let w = len
+        }
+        let w2 = w * 1.0
+        let body = box(w2, 10mm, 10mm)
+        let s = face(body, "x_max")
+    }
+
+    structure HOuter {
+        sub same = HInner()
+    }
+"#;
+
+/// Flipping the guard re-evaluates the instance cells below `w` in
+/// `edit_param`'s post-wave2 guard-member reseed, which commits them as cold
+/// eval's guarded-cone pass does: minting there alone would commit a handle
+/// cold does not.
+#[test]
+fn edit_param_guard_flip_leaves_instance_cells_below_a_guarded_member_as_a_cold_eval_does() {
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        make_simple_engine,
+        GUARDED_WIDTH,
+        &ValueCellId::new("HInner", "thick"),
+        Value::Bool(false),
+    );
+
+    assert_ne!(
+        cell(&before, "HOuter.same", "w2"),
+        cell(&after_edit, "HOuter.same", "w2"),
+        "premise: the guard flip must change HOuter.same.w2, or the edit never \
+         re-evaluated the instance cells below the guarded member"
+    );
+    for member in ["w2", "body", "s"] {
+        assert_eq!(
+            cell(&after_edit, "HOuter.same", member),
+            cell(&cold, "HOuter.same", member),
+            "HOuter.same.{member} after the guard flip must equal a cold eval's"
+        );
+    }
 }
