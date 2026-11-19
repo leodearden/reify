@@ -835,7 +835,7 @@ mod tests {
     /// against an independent list rather than against itself (mirrors
     /// `EXPECTED_NAMES` for the construction family). §1.2 trig is deliberately
     /// EXCLUDED — see task-4182 / esc-4182-74.
-    const EXPECTED_OPERATION_NAMES: [&str; 26] = [
+    const EXPECTED_OPERATION_NAMES: [&str; 27] = [
         // scalar / element-wise
         "sqrt",
         "abs",
@@ -849,6 +849,7 @@ mod tests {
         "dot",
         "cross",
         "normalize",
+        "vector",
         "magnitude",
         "outer",
         // matrix ops

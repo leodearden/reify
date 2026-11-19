@@ -59,6 +59,8 @@ mod builtin_arg_signature_tests;
 mod chained_comparison_tests;
 #[path = "harness_type_checking/comparison_operand_guard_tests.rs"]
 mod comparison_operand_guard_tests;
+#[path = "harness_type_checking/direction_operator_table_tests.rs"]
+mod direction_operator_table_tests;
 #[path = "harness_type_checking/expr_error_sentinel_tests.rs"]
 mod expr_error_sentinel_tests;
 #[path = "harness_type_checking/field_op_typing_tests.rs"]
