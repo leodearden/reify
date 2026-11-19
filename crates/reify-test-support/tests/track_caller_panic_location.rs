@@ -27,7 +27,8 @@
 //! - `parse_compile_expect_err`, called directly;
 //! - `compile_first_template` and `compile_template`, called directly;
 //! - the `eval-helpers` wrappers `eval_source`, `check_source` and
-//!   `check_source_with_stdlib`, on the compile-error panic they forward.
+//!   `check_source_with_stdlib`, on the compile-error panic they forward, plus
+//!   `eval_source`'s own eval-phase panic.
 //!
 //! Each guard asserts the reported location plus a SHORT payload substring —
 //! never full message prose, per the wording rule `dimensioned_assertions.rs`
@@ -269,6 +270,12 @@ const COMPILE_ERROR_SOURCE: &str = "structure Bad { let x = unknown_variable }";
 /// Does not parse.
 const PARSE_ERROR_SOURCE: &str = "not valid {";
 
+/// Parses and compiles without an Error, but the two `let`s depend on each
+/// other, so evaluating it yields an Error-severity circular-dependency
+/// diagnostic.
+#[cfg(feature = "eval-helpers")]
+const EVAL_ERROR_SOURCE: &str = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+
 #[test]
 fn parse_and_compile_with_stdlib_compile_error_panic_reports_caller_not_helpers_rs() {
     let site = panic_site(|| {
@@ -358,6 +365,16 @@ fn eval_source_compile_error_panic_reports_caller_not_helpers_rs() {
     });
 
     assert_attributed_here(&site, "compile errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn eval_source_eval_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::eval_source(EVAL_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "eval-phase errors");
 }
 
 #[cfg(feature = "eval-helpers")]
