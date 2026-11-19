@@ -14,9 +14,9 @@
 //   1. `Directionality` mirrors the Rust `PortDirection` enum at
 //      reify-core/src/primitives.rs (In/Out/Bidi). The DSL enum is declared
 //      WITHOUT `pub`, matching the io.ri/process.ri convention.
-//   2. No `#no_prelude` pragma. The stdlib_loader_tests invariant allows it
-//      only on the bootstrap modules {std/units, std/materials/mechanical,
-//      std/analysis, std/tolerancing}, and std.ports is not one of them.
+//   2. No `#no_prelude` pragma. std.ports is not in the `targets` list of
+//      stdlib_loader_tests::prelude_modules_carry_no_prelude_pragma, whose
+//      bidirectional check rejects the pragma on any module outside that list.
 //      The pragma would also be wrong here: std.ports imports std.trajectory
 //      (for Vec3), a stdlib module's prelude is exactly its imports, and
 //      `#no_prelude` makes `effective_prelude` empty, discarding that import.
