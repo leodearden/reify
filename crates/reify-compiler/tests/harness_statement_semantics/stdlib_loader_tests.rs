@@ -322,13 +322,9 @@ fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
     ];
     let targets = ["std/units"];
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let msg = reify_test_support::panic_message_of(|| {
         assert_no_prelude_pragma_invariant_bidirectional(&modules, &targets);
-    }));
-
-    let err = result.expect_err("expected panic naming all offending paths");
-    let msg: &str = reify_core::panic_payload_str(err.as_ref())
-        .expect("panic payload was neither String nor &'static str");
+    });
 
     // Anchor: confirm the panic originates from the aggregated-violations code
     // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
