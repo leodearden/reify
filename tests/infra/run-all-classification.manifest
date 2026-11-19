@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (7) ----------------------------------------------------
+# --- intra-run-serial (8) ----------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -63,6 +63,10 @@ test_tree_sitter_pipeline.sh intra-run-serial
 # bucket; the classification itself is unchanged.
 test_verify_nextest_absent_suites.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
+# test_live_refs_namespace.sh (task #10228) enters mount namespaces with
+# /usr/bin/bwrap and runs whole-/proc liveness scans against holder processes it
+# starts; the canonical-build-path PRD §6 classifies such members intra-run-serial.
+test_live_refs_namespace.sh intra-run-serial
 
 # --- host-exclusive (5) ------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by

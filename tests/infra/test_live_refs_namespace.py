@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""
+test_live_refs_namespace.py — stdlib unittest for scripts/lib_live_refs.sh
+against processes that reach a lane through ANOTHER mount namespace
+(canonical-build-path PRD, dark-factory plans/canonical-build-path-shared-cache-prd.md:
+decision 16, C11, boundary row 19).
+
+A holder runs under /usr/bin/bwrap with a lane bound at a scratch canon path,
+so from the host its cwd and fd links read as that canon path, never the
+lane's. Its visible bwrap parent is killed once the holder is ready, leaving
+only the namespaced process alive.
+
+WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
+is the thin wrapper tests/infra/test_live_refs_namespace.sh.
+
+Where bwrap cannot create a mount namespace (a landlock sandbox, an absent
+binary), every test SKIPS with the named reason.
+"""
+
+import functools
+import os
+import select
+import signal
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LIB = REPO_ROOT / "scripts" / "lib_live_refs.sh"
+GC = REPO_ROOT / "scripts" / "warm-lane-gc.sh"
+BWRAP = "/usr/bin/bwrap"
+
+BLOCK = 'echo $$; exec sleep infinity </dev/null >/dev/null 2>&1'
+HOLD_FD3 = 'exec 3<"$1"; ' + BLOCK
+
+
+def clean_env():
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith(("GIT_", "REIFY_"))}
+
+
+@functools.lru_cache(maxsize=None)
+def namespace_unavailable_reason():
+    if not os.access(BWRAP, os.X_OK):
+        return f"{BWRAP} absent"
+    with tempfile.TemporaryDirectory(prefix="test-live-refs-ns-probe-") as scratch:
+        a, b = Path(scratch, "a"), Path(scratch, "b")
+        a.mkdir()
+        b.mkdir()
+        probe = subprocess.run(
+            [BWRAP, "--dev-bind", "/", "/", "--bind", str(a), str(b), "--", "/bin/true"],
+            capture_output=True, text=True, env=clean_env(), check=False)
+    if probe.returncode != 0:
+        return (f"bwrap cannot enter a mount namespace here "
+                f"(rc={probe.returncode}): {probe.stderr.strip()}")
+    return ""
+
+
+class LiveRefsAcrossMountNamespaces(unittest.TestCase):
+    def setUp(self):
+        reason = namespace_unavailable_reason()
+        if reason:
+            self.skipTest(reason)
+        tmp = tempfile.TemporaryDirectory(prefix="test-live-refs-ns-")
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(os.path.realpath(tmp.name))
+        self.canon = self.root / "canon"
+        self.canon.mkdir()
+        self.pidfds = {}
+
+    def lane(self, name):
+        lane = self.root / name
+        (lane / "sub").mkdir(parents=True)
+        (lane / "sub" / "f").write_text("lane content\n")
+        return lane
+
+    def bind_at_canon(self, lane):
+        return ["--dev-bind", "/", "/", "--bind", str(lane), str(self.canon)]
+
+    def unrelated_namespace_binds(self, nsroot):
+        return ["--bind", str(nsroot), "/", "--ro-bind", "/usr", "/usr",
+                "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+                "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev"]
+
+    def hold(self, binds, chdir, argv):
+        """Start a namespaced holder, wait until it has its reference, then
+        kill its visible bwrap parent. Returns the holder's pid."""
+        bw = subprocess.Popen([BWRAP, *binds, "--chdir", str(chdir), "--", *argv],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              cwd=self.root, env=clean_env())
+        line = bw.stdout.readline()
+        if not line:
+            bw.wait()
+            stderr = bw.stderr.read().decode(errors="replace")
+            bw.stdout.close()
+            bw.stderr.close()
+            self.fail(f"holder never started (bwrap rc={bw.returncode}): {stderr}")
+        pid = int(line)
+        self.pidfds[pid] = os.pidfd_open(pid)
+        self.addCleanup(self.reap, pid)
+        bw.kill()
+        bw.wait()
+        bw.stdout.close()
+        bw.stderr.close()
+        self.assertNotEqual(os.readlink(f"/proc/{pid}/ns/mnt"), os.readlink("/proc/self/ns/mnt"),
+                            "premise: the holder runs in a foreign mount namespace")
+        return pid
+
+    def hold_unrelated_unreadable_namespace(self):
+        nsroot = self.root / "nsroot"
+        nsroot.mkdir()
+        pid = self.hold(self.unrelated_namespace_binds(nsroot), "/", ["/bin/sh", "-c", BLOCK])
+        nsroot.chmod(0)
+        self.addCleanup(nsroot.chmod, 0o755)
+        with self.assertRaises(PermissionError, msg="premise: the namespace root is unreadable"):
+            os.stat(f"/proc/{pid}/root/usr")
+        return pid
+
+    def reap(self, pid):
+        pidfd = self.pidfds.pop(pid, None)
+        if pidfd is None:
+            return
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        select.select([pidfd], [], [])
+        os.close(pidfd)
+
+    def present(self, path):
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; live_ref_present "$2"', "_", str(LIB), str(path)],
+            capture_output=True, text=True, cwd=self.root, env=clean_env(), check=False)
+        return result.returncode == 0
+
+    def referenced(self, *paths):
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; shift; live_referenced_paths "$@"', "_", str(LIB),
+             *map(str, paths)],
+            capture_output=True, text=True, cwd=self.root, env=clean_env(), check=False)
+        return set(result.stdout.splitlines())
+
+    def test_cwd_inside_a_lane_bound_elsewhere_is_live(self):
+        lane = self.lane("lane")
+        pid = self.hold(self.bind_at_canon(lane), self.canon / "sub", ["/bin/sh", "-c", BLOCK])
+
+        self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), f"{self.canon}/sub",
+                         "premise: from the host the cwd reads as the canon path")
+        os.kill(pid, 0)
+        self.assertTrue(self.present(lane))
+
+    def test_open_file_inside_a_lane_bound_elsewhere_is_live(self):
+        lane = self.lane("lane")
+        free = self.lane("free")
+        pid = self.hold(self.bind_at_canon(lane), "/",
+                        ["/bin/sh", "-c", HOLD_FD3, "sh", f"{self.canon}/sub/f"])
+
+        self.assertEqual(os.readlink(f"/proc/{pid}/fd/3"), f"{self.canon}/sub/f",
+                         "premise: from the host fd 3 reads as the canon path")
+        self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), "/", "premise: cwd is outside the lane")
+        self.assertTrue(self.present(lane))
+        self.assertFalse(self.present(free))
+
+    def test_one_canon_path_in_two_namespaces_maps_to_each_namespaces_own_lane(self):
+        lane_a = self.lane("lane-a")
+        lane_b = self.lane("lane-b")
+        free = self.lane("free")
+        holder_a = self.hold(self.bind_at_canon(lane_a), "/",
+                             ["/bin/sh", "-c", HOLD_FD3, "sh", f"{self.canon}/sub/f"])
+        self.hold(self.bind_at_canon(lane_b), self.canon / "sub", ["/bin/sh", "-c", BLOCK])
+
+        self.assertEqual(self.referenced(lane_a, lane_b, free), {str(lane_a), str(lane_b)})
+
+        self.reap(holder_a)
+        self.assertFalse(self.present(lane_a))
+        self.assertTrue(self.present(lane_b))
+
+    def test_unrelated_namespace_with_unreadable_root_neither_counts_nor_breaks_the_scan(self):
+        lane = self.lane("lane")
+        self.hold_unrelated_unreadable_namespace()
+
+        self.assertFalse(self.present(lane))
+
+        self.hold(self.bind_at_canon(lane), "/",
+                  ["/bin/sh", "-c", HOLD_FD3, "sh", f"{self.canon}/sub/f"])
+        self.assertTrue(self.present(lane))
+
+    def gc_fixture(self):
+        root = self.root / "gc"
+        repo, worktrees, base = root / "repo", root / "worktrees", root / "base"
+        worktrees.mkdir(parents=True)
+        (base / "target.gen.1").mkdir(parents=True)
+        (base / "target.gen.1.lock").touch()
+        (base / "target").symlink_to(base / "target.gen.1")
+        self.git("init", "-q", "-b", "main", str(repo))
+        (repo / "README.md").touch()
+        self.git("-C", str(repo), "add", "README.md")
+        self.git("-C", str(repo), "-c", "user.email=test@test.local", "-c", "user.name=Test",
+                 "commit", "-q", "-m", "initial")
+        for name in ("_lane-1", "_lane-2"):
+            self.git("-C", str(repo), "worktree", "add", "-q", str(worktrees / name))
+            (worktrees / name / "target").mkdir()
+            (worktrees / name / "target" / "MARK").write_text("divergent\n")
+        return worktrees, base
+
+    def git(self, *args):
+        subprocess.run(["git", *args], capture_output=True, text=True, cwd=self.root,
+                       env=clean_env(), check=True)
+
+    def run_gc_disk_pressure(self, worktrees, base):
+        return subprocess.run(
+            ["bash", str(GC), "reclaim", "--worktrees-dir", str(worktrees),
+             "--base-target", str(base / "target"), "--disk-pressure"],
+            capture_output=True, text=True, cwd=self.root, env=clean_env(), check=False)
+
+    def test_gc_preserves_a_lane_whose_only_reference_is_through_another_namespace(self):
+        worktrees, base = self.gc_fixture()
+        self.hold_unrelated_unreadable_namespace()
+        self.hold(self.bind_at_canon(worktrees / "_lane-1"), "/",
+                  ["/bin/sh", "-c", HOLD_FD3, "sh", f"{self.canon}/target/MARK"])
+
+        result = self.run_gc_disk_pressure(worktrees, base)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((worktrees / "_lane-1" / "target" / "MARK").exists(),
+                        "gc deleted target/ under a live namespaced reference")
+        self.assertFalse((worktrees / "_lane-2" / "target").exists(),
+                         "gc kept the free lane's target/")
+        self.assertIn("preserving _lane-1: live consumer (process reference)", result.stderr)
+        self.assertIn("preserved_live_ref=1", result.stdout)
+
+    def test_gc_reclaims_every_lane_when_only_an_unrelated_namespace_is_alive(self):
+        worktrees, base = self.gc_fixture()
+        self.hold_unrelated_unreadable_namespace()
+
+        result = self.run_gc_disk_pressure(worktrees, base)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((worktrees / "_lane-1" / "target").exists())
+        self.assertFalse((worktrees / "_lane-2" / "target").exists())
+        self.assertIn("preserved_live_ref=0", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

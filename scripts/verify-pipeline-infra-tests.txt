@@ -168,6 +168,12 @@ scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc_sweep.sh
 # target/, exactly as before the gate existed).
 scripts/thin-warm-lane.sh            tests/infra/test_thin_warm_lane.sh
 scripts/lib_live_refs.sh             tests/infra/test_thin_warm_lane.sh
+# Task 10228: the lib's own mount-namespace suite. Its scenarios execute only
+# where bwrap can create a mount namespace (unsandboxed task verify), so a
+# lib-only diff must select it there.
+scripts/lib_live_refs.sh             tests/infra/test_live_refs_namespace.sh
+# Same exact-path SELECTION hole as the test_lane_lock_probe.py row below.
+tests/infra/test_live_refs_namespace.py    tests/infra/test_live_refs_namespace.sh
 # Task 5672: scripts/lib_lane_x_flock.sh is a shared lock-acquire lib sourced
 # TRANSITIVELY by tests/infra/run_all.sh under --scope host-infra; without
 # this row a task-scope diff touching only the lib selects zero infra tests,
