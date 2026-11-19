@@ -563,6 +563,52 @@ that carries an amendment record. That is the (c) ledger's rows plus #6898 (A5-R
 - *Scope:* part of the work they would have done (the measurement context and the check plan) now lands in S12 leaves. Their per-task size is smaller than at randomization, which biases the coarse arm toward the fine arm's granularity.
 - Treat #6898 and #6904 as amended units in §7's analysis, and report results with and without them.
 
+### Addendum 2026-11-19 — E3 stood down (Leo ruling); closing state
+
+**Ruling.** Leo ruled on 2026-11-19 to stand E3 down. This is not a §11 abort: no retired
+leaf is flipped and no coalesced task is cancelled. No confirmatory test will be run. This
+addendum supersedes the 2026-10-10 stop rule.
+
+**State at stand-down** (task store and main history, 2026-11-19):
+- Coarse arm: 2 of 25 done, both reused singletons excluded under (b)2 (#6706, #6768). No
+  coalesced task (#6898–#6913) landed. One was ever dispatched: #6907, one attempt on
+  2026-10-10, requeued on a plan-time lock conflict.
+- Standard arm: 11 of 59 done.
+- Qualifying landings under (a)(ii) and (f): solver-driver-parity 5,
+  geometry-algebra-solver-unification 1, driver-contract-implementation 1, every coarse PRD 0.
+  #6675 is done by a fast-forward landing (`ec8ad4f055`, 2026-11-04) that the analysis script
+  does not count; counting it would put geometry-algebra-solver-unification at 2.
+
+**Why it produced no comparison.**
+- 14 of the 16 coalesced tasks were never dependency-ready before 2026-11-02. Coalescing
+  merged the constituents' dependency sets (#6898 inherited waits that constituent #6740 never
+  had), and the 2026-10-14 amendment added further upstream tasks.
+- The two that were ready (#6907 for about 36 days, #6900 for under 2) were not selected from
+  a dispatch-eligible pool of more than 1,000 tasks.
+- On 2026-11-02 every unlanded arm task was parked behind the alpha-spine holder #9739. The
+  earliest date the stop rule could have been met was about late January 2027.
+- By then arm would coincide with era. Not recorded under §7.6 at the time: the opus alias
+  moved to claude-opus-5-5 on 2026-09-22; architect and implementer effort went from max to
+  xhigh on 2026-09-24; several orchestrator config reloads. Also unrecorded in the (c) ledger:
+  edges #6901←#9298, #6909←#9112, #5973→#6904 and the #9739 parking edges.
+- The arms depend on each other (driver-contract-implementation waits on coarse #6898, #6904
+  and #6906; coarse #6902, #6903 and #6913 wait on standard leaves), and #6898 and #6904 lost
+  scope on 2026-10-14.
+
+**What stands.**
+- The 16 coalesced tasks and the reused singletons remain ordinary backlog; their `x_e3_*`
+  tags are history only.
+- The 44 retired leaves stay deferred under their `carried_by` records (stamped 2026-11-19).
+  Their `x_e3_flip_condition` text no longer applies; they close when their carrier is done.
+- Milestones #7029 and #8456 are cancelled. The spent `e3-resolution-backstop` user timer is
+  disabled.
+- The forward amendment rule of 2026-10-10 lapses: E3-arm tasks may be amended without a
+  ledger line.
+- `e3-granularity/analysis/` stays as a descriptive tool.
+
+**Where the sizing question went.** dark-factory task 4827 recalibrates the sizing guidance
+from post-2026-08-28 operating data in both projects instead of from this experiment.
+
 ## 11. Abort / rollback procedure
 
 If E3 must be aborted before coarse landings: set the 16 coarse tasks (#6898–#6913) and, if
