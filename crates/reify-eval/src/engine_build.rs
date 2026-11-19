@@ -5912,6 +5912,7 @@ impl Engine {
                 &mut diagnostics,
                 &module.templates,
             );
+            let terminal_idx = terminal_realization_index(template);
             for (r_idx, realization) in template.realizations.iter().enumerate() {
                 let demanded_tol = demanded_tols
                     .get(t_idx)
@@ -5957,7 +5958,7 @@ impl Engine {
                     // Task #3443: the distance query path is outside the
                     // user's design pragma scope — pass None (lex-min default).
                     .with_prefer_kernel(None)
-                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                     // Task 4744 β step-16: distance query never demands
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
