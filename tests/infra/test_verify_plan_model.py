@@ -21,7 +21,9 @@ here:
 - bashcall.ask's NotCalled for a function that never ran, over a scratch
   lib, and release_declared's refusal of it;
 - policy's unknown-role refusal text, which no CLI run shows bare because the
-  CLI always prefixes it.
+  CLI always prefixes it;
+- diagnostics' internal-error line (PRD D8) for a multi-line message, which no
+  --print-plan run can provoke.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_model.sh.
@@ -47,6 +49,7 @@ from reify_verify import (  # noqa: E402
     bashcall,
     build,
     cli,
+    diagnostics,
     environment,
     gatepaths,
     narrowing,
@@ -867,6 +870,22 @@ class TestUnknownRoleText(unittest.TestCase):
             str(caught.exception),
             "unknown DF_VERIFY_ROLE 'bogus' (want task|merge|offline|background)",
         )
+
+
+class TestInternalErrorLine(unittest.TestCase):
+    """PRD D8: an internal Python error is one line naming its type and message (end to end: B1's
+    missing-path-attribution-is-internal-error divergence)."""
+
+    def test_the_line_names_type_and_message(self):
+        self.assertEqual(
+            diagnostics.internal_error(ModuleNotFoundError("No module named 'x'")),
+            "verify.sh: ERROR — internal: ModuleNotFoundError: No module named 'x'",
+        )
+
+    def test_a_multi_line_message_is_one_line(self):
+        line = diagnostics.internal_error(ValueError("first\nsecond"))
+        self.assertNotIn("\n", line)
+        self.assertEqual(line, "verify.sh: ERROR — internal: ValueError: first second")
 
 
 class TestQuotedPathKnobs(unittest.TestCase):
