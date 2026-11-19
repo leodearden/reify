@@ -16,10 +16,12 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
   * the .deb installs with apt alone, no OCCT/gmsh/OpenVDB/oneTBB package gets
     pulled in (the bundle, not a Depends, must carry them), `reify check` on
     examples/m5_geometry.ri exits 0, and `reify-gui` under xvfb answers a
-    debug-MCP store_state with at least one mesh;
+    debug-MCP store_state with at least one mesh; nodejs arrives as its
+    Depends and the installed reify-sidecar completes the ready handshake;
   * the AppImage does the same on a desktop-session stand-in (xvfb, xauth,
     curl, GTK 3 and the GL front-ends, but no WebKit, which the AppImage must
-    carry itself).
+    carry itself); it has no node, and after `apt install nodejs` (the
+    E_GUI_SIDECAR_NODE_MISSING remedy) its reify-sidecar completes the handshake.
 
 Knobs: REIFY_BUNDLE_DEB + REIFY_BUNDLE_APPIMAGE reuse a prior build instead of
 running scripts/build-bundle.sh; REIFY_BUNDLE_PROOF_READY_SECS (default 600) is
@@ -53,6 +55,9 @@ GUI_ENV = {
 }
 GUI_LOG = "/tmp/reify-gui.log"
 GUI_EXIT = "/tmp/reify-gui.exit"
+SIDECAR_ERR = "/tmp/reify-sidecar.err"
+# The readiness claude_bridge::ensure_sidecar_ready waits for.
+SIDECAR_READY = {"type": "ready"}
 STORE_STATE_BODY = json.dumps({
     "jsonrpc": "2.0", "id": 1, "method": "tools/call",
     "params": {"name": "store_state", "arguments": {}},
@@ -80,6 +85,15 @@ def _docker(*args):
         ["docker", *args],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
     )
+
+
+def _first_json_line(text):
+    """The first line of `text` parsed as JSON, or None when it is not JSON."""
+    first_line = next(iter(text.splitlines()), "")
+    try:
+        return json.loads(first_line)
+    except ValueError:
+        return None
 
 
 def _store_state_mesh_count(reply_text):
@@ -165,6 +179,20 @@ class Container:
             f"{_ready_secs():.0f}s hang guard; last reply: {last_reply[-2000:]!r}; "
             f"{self.gui_postmortem()}")
 
+    def assert_sidecar_ready(self, sidecar):
+        """Execs the installed sidecar directly, as the host does, from a dir
+        with no node_modules and with stdin closed, and asserts it answers
+        SIDECAR_READY and exits 0. `timeout` is a hang guard only."""
+        proc = self.run(
+            f'cd "$(mktemp -d)" && REIFY_WORKSPACE="$PWD" '
+            f"timeout {int(_ready_secs())} {shlex.quote(sidecar)} </dev/null 2>{SIDECAR_ERR}")
+        first = _first_json_line(proc.stdout)
+        stderr = self.run(f"cat {SIDECAR_ERR}").stdout
+        self.test.assertEqual(
+            (proc.returncode, first), (0, SIDECAR_READY),
+            f"in {self.name}: {sidecar}\nstdout:\n{proc.stdout[-4000:]}\nstderr:\n{stderr[-4000:]}")
+        _log(f"{self.name}: {sidecar} answered {json.dumps(first)}, exit {proc.returncode}")
+
     def gui_postmortem(self):
         proc = self.run(f"cat {GUI_EXIT} 2>/dev/null; tail -n 80 {GUI_LOG}")
         return f"GUI exit/log:\n{proc.stdout}"
@@ -233,6 +261,10 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.check(f"reify check {EXAMPLE}")
         box.assert_gui_renders(f"xvfb-run -a reify-gui {EXAMPLE}")
+        self.assertIn("nodejs", box.installed_packages(),
+                      "the deb's Depends must bring nodejs onto a stock image")
+        box.check("command -v node")
+        box.assert_sidecar_ready("/usr/bin/reify-sidecar")
 
     def test_appimage(self):
         appimage = f"/assets/{self.appimage.name}"
@@ -244,6 +276,10 @@ class BundleCleanInstall(unittest.TestCase):
         box.check(f"mkdir -p /tmp/extract && cd /tmp/extract && {appimage} --appimage-extract >/dev/null"
                   f" && squashfs-root/usr/bin/reify check {EXAMPLE}")
         box.assert_gui_renders(f"APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a {appimage} {EXAMPLE}")
+        # An AppImage can declare no Depends, so the user installs node as the refusal says.
+        box.check("! command -v node")
+        box.apt_install("nodejs")
+        box.assert_sidecar_ready("/tmp/extract/squashfs-root/usr/bin/reify-sidecar")
 
 
 if __name__ == "__main__":

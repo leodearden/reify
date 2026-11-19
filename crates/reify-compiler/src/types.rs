@@ -386,6 +386,7 @@ pub struct CompiledModule {
     /// Compiled unit declarations from this module.
     pub units: Vec<CompiledUnit>,
     /// Compiled type alias declarations from this module.
+    /// In ascending name order (see `TypeAliasRegistry::into_compiled`).
     pub type_aliases: Vec<CompiledTypeAlias>,
     /// Constraint definitions declared in this module — both pub and non-pub.
     ///

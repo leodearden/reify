@@ -1034,8 +1034,9 @@ describe('DualViewport tensegritySurfaces threading (β)', () => {
 // broken_end_to_end_wiring + false_green_test).
 //
 // Verifies that DualViewport threads the feaDiagnostics prop to the design-main
-// Viewport. App.test.tsx only checks the App→DualViewport hand-off
-// (capturedDualViewportProps), since DualViewport is fully stubbed there; THIS
+// Viewport. The App.*.test.tsx files only check the App→DualViewport hand-off
+// (capturedDualViewportProps, recorded by appHarness/renderStubs.ts), since
+// DualViewport is fully stubbed there; THIS
 // test is the authoritative owner of the inner-Viewport forwarding assertion.
 //
 // RED until DualViewport.tsx adds feaDiagnostics to PassthroughProps and

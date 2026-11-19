@@ -218,7 +218,7 @@ pub fn derive_std_imports<'u>(
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
 pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
-    coverage::imports(parsed, cfg)
+    coverage::in_effect(parsed, cfg)
         .map(|(module, _)| module)
         .collect()
 }
@@ -252,8 +252,9 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// does not already import whole under `cfg`, through a namespace import (an
 /// entity import, or a gated import `cfg` does not satisfy, does not count),
 /// in the order given: after the last import, else after the `module`
-/// declaration, else after the leading module pragmas, else after the leading
-/// comment block's last blank line.
+/// declaration, else after the leading module pragmas above the line holding
+/// the first leading `#cfg`, else after the leading comment block's last blank
+/// line.
 ///
 /// # Panics
 ///

@@ -1680,7 +1680,7 @@ _t37_assert_refused "build-sidecar.sh, node_modules without .bin/tsup"
 mkdir -p "$_t37_tmpdir/gui/sidecar/node_modules/.bin"
 cat > "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup" <<'TSUP_STUB'
 #!/usr/bin/env bash
-mkdir -p dist && printf '// t37 stub bundle argv: %s\n' "$*" > dist/cli.js
+mkdir -p dist && printf '// t37 stub bundle argv: %s\n' "$*" > dist/cli.cjs
 TSUP_STUB
 chmod +x "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup"
 _t37_run
