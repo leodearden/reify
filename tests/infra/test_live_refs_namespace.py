@@ -207,7 +207,17 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), "/", "premise: cwd is outside the lane")
         self.assertTrue(self.present(lane))
 
-    def test_one_canon_path_in_two_namespaces_maps_to_each_namespaces_own_lane(self):
+    def test_idle_lane_bound_at_the_canon_path_another_namespace_uses_is_not_referenced(self):
+        lane_a = self.lane("lane-a")
+        lane_b = self.lane("lane-b")
+        self.hold(self.bind_at_canon(lane_a), "/",
+                  ["/bin/sh", "-c", HOLD_FD3, "sh", f"{self.canon}/sub/f"])
+        self.hold(self.bind_at_canon(lane_b), "/", ["/bin/sh", "-c", BLOCK])
+
+        self.assertEqual(self.referenced(lane_a, lane_b), {str(lane_a)})
+        self.assertFalse(self.present(lane_b))
+
+    def test_two_namespaces_binding_lanes_at_one_canon_path_are_each_resolved_until_their_holder_dies(self):
         lane_a = self.lane("lane-a")
         lane_b = self.lane("lane-b")
         free = self.lane("free")
