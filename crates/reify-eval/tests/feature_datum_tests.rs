@@ -34,9 +34,14 @@ use reify_eval::feature_datum::{Datum, feature_datum_bundle, feature_datum_proje
 use reify_ir::{GeometryHandleId, Value};
 use reify_test_support::MockGeometryKernel;
 
-/// Build a `Value::Axis` from an origin point and a (possibly non-unit)
-/// direction, mirroring what the OCCT kernel's `EdgeAnalyticDatum` dispatch
-/// composes for a circle / line edge.
+/// A `Value::Direction` built through its only constructor.
+fn unit_dir(v: [f64; 3]) -> Value {
+    Value::Direction(reify_ir::UnitVec3::from_vector(v).expect("test direction is non-degenerate"))
+}
+
+/// Build a `Value::Axis` from an origin point and a direction, mirroring what
+/// the OCCT kernel's `EdgeAnalyticDatum` dispatch composes for a circle / line
+/// edge.
 fn axis_value(origin: [f64; 3], dir: [f64; 3]) -> Value {
     Value::Axis {
         origin: Box::new(Value::Point(vec![
@@ -44,11 +49,7 @@ fn axis_value(origin: [f64; 3], dir: [f64; 3]) -> Value {
             Value::length(origin[1]),
             Value::length(origin[2]),
         ])),
-        direction: Box::new(Value::Direction {
-            x: dir[0],
-            y: dir[1],
-            z: dir[2],
-        }),
+        direction: Box::new(unit_dir(dir)),
     }
 }
 
@@ -61,11 +62,7 @@ fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
             Value::length(origin[1]),
             Value::length(origin[2]),
         ])),
-        normal: Box::new(Value::Direction {
-            x: normal[0],
-            y: normal[1],
-            z: normal[2],
-        }),
+        normal: Box::new(unit_dir(normal)),
     }
 }
 
@@ -76,6 +73,7 @@ fn assert_axis_is_z_line(d: &Datum) {
         Datum::Axis {
             origin, direction, ..
         } => {
+            let direction = direction.components();
             assert!(
                 origin[0].abs() < 1e-9 && origin[1].abs() < 1e-9,
                 "surviving axis origin must lie on the world Z line, got {origin:?}"
@@ -259,6 +257,7 @@ fn extruded_solid_bundle_includes_extrude_direction_trait() {
     );
     match &bundle.directions[0] {
         Datum::Direction { direction } => {
+            let direction = direction.components();
             assert!(
                 direction[0].abs() < 1e-9
                     && direction[1].abs() < 1e-9
@@ -315,7 +314,7 @@ fn assert_value_axis_is_z_line(v: &Value) {
                 other => panic!("axis origin must be a 3-component Point, got {other:?}"),
             };
             let d = match direction.as_ref() {
-                Value::Direction { x, y, z } => [*x, *y, *z],
+                Value::Direction(u) => u.components(),
                 other => panic!("axis direction must be a Direction, got {other:?}"),
             };
             assert!(
@@ -434,6 +433,54 @@ fn box_axis_projection_is_ambiguous_select_a_subfeature() {
     );
 }
 
+/// A degenerate (zero) sweep direction is no datum: it never enters the bundle,
+/// so the projection reports the missing datum as a coded `FeatureDatumAmbiguous`
+/// error rather than resolving to a silent, uncoded `Undef` (or, for an axis, an
+/// `Axis` carrier whose direction is `Undef`).
+#[test]
+fn degenerate_sweep_direction_is_no_datum_and_projects_a_coded_error() {
+    let feature = GeometryHandleId(4);
+    let histories = [
+        (
+            "axis",
+            SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 0.0],
+                angle_rad: 2.0 * std::f64::consts::PI,
+                profile: GeometryHandleId(0),
+            },
+        ),
+        (
+            "dir",
+            SweptKind::Extrude {
+                axis: [0.0, 0.0, 0.0],
+                length: Value::length(0.01),
+                profile: GeometryHandleId(0),
+            },
+        ),
+    ];
+    for (member, history) in histories {
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(feature, vec![])
+            .with_extracted_edges(feature, vec![]);
+        let bundle = feature_datum_bundle(feature, &mut kernel, Some(&history));
+        assert!(
+            bundle.axes.is_empty() && bundle.directions.is_empty(),
+            "a zero sweep direction must contribute no datum; got {bundle:?}"
+        );
+
+        let mut diagnostics = Vec::new();
+        let projected = feature_datum_projection(&bundle, member, &mut diagnostics);
+        assert_eq!(projected, Value::Undef, "feature.{member}");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)),
+            "feature.{member} over a zero sweep direction must emit a coded error; \
+             got {diagnostics:?}"
+        );
+    }
+}
+
 // ─── B8 end-to-end over REAL OCCT geometry (step-17 / step-18) ────────────────
 //
 // The worked-example boundary test (PRD §7.2 / design §2.2): the
@@ -535,7 +582,7 @@ fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
                 other => panic!("axis origin must be a 3-component Point, got {other:?}"),
             };
             let d = match direction.as_ref() {
-                Value::Direction { x, y, z } => [*x, *y, *z],
+                Value::Direction(u) => u.components(),
                 other => panic!("axis direction must be a Direction, got {other:?}"),
             };
             // Direction parallel to ±Y (sign-insensitive coaxiality).

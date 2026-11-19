@@ -3,11 +3,14 @@
 //! full stdlib would not also report, the headed stdlib must still build,
 //! and re-deriving on the headed sources must find nothing missing.
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use reify_ast::ParsedModule;
+use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
-    ImportPlan, derive_std_imports, insert_imports, stdlib_universe_excluding,
+    ImportPlan, cfg_satisfied_imports, derive_std_imports, insert_imports,
+    stdlib_universe_excluding,
 };
 use reify_compiler::stdlib_loader::{build_stdlib_modules, stdlib_sources};
 use reify_core::ModulePath;
@@ -54,7 +57,12 @@ fn derived_stdlib() -> &'static [DerivedModule] {
 }
 
 fn headed_source(module: &DerivedModule) -> String {
-    insert_imports(&module.source, &module.parsed, &module.plan.modules())
+    insert_imports(
+        &module.source,
+        &module.parsed,
+        &CfgSet::host_default(),
+        &module.plan.modules(),
+    )
 }
 
 fn plan_of(name: &str) -> Vec<String> {
@@ -121,7 +129,7 @@ fn re_deriving_on_the_headed_stdlib_finds_nothing_missing() {
             let headed = headed_source(module);
             let (parsed, plan) = derive_for(module.name, &headed);
             let missing: Vec<String> = plan
-                .missing_from(&parsed)
+                .missing_from(&parsed, &CfgSet::host_default())
                 .iter()
                 .map(|required| required.module.to_dotted())
                 .collect();
@@ -167,4 +175,57 @@ fn a_builtin_geometry_type_does_not_import_the_geometry_traits() {
 fn registry_only_units_import_the_si_units() {
     let plan = plan_of("std.materials.fea");
     assert!(plan.contains(&"std.si_units".to_string()), "{plan:?}");
+}
+
+// ─── s5: the committed headers are the derived ones ────────────────────────
+
+fn dotted_set(paths: &[ModulePath]) -> BTreeSet<String> {
+    paths.iter().map(ModulePath::to_dotted).collect()
+}
+
+#[test]
+fn every_stdlib_module_declares_exactly_its_derived_imports() {
+    let offenders: Vec<String> = derived_stdlib()
+        .iter()
+        .filter_map(|module| {
+            let declared = dotted_set(&cfg_satisfied_imports(
+                &module.parsed,
+                &CfgSet::host_default(),
+            ));
+            let derived = dotted_set(&module.plan.modules());
+            let missing: Vec<&String> = derived.difference(&declared).collect();
+            let extra: Vec<&String> = declared.difference(&derived).collect();
+            (!missing.is_empty() || !extra.is_empty())
+                .then(|| format!("{}: missing {missing:?}, extra {extra:?}", module.name))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "stdlib import headers differ from the derived imports:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn every_stdlib_module_declares_its_registered_module_path() {
+    let offenders: Vec<String> = derived_stdlib()
+        .iter()
+        .filter(|module| module.parsed.declared_module_path != Some(module_path(module.name)))
+        .map(|module| {
+            format!(
+                "{}: declares {:?}",
+                module.name,
+                module
+                    .parsed
+                    .declared_module_path
+                    .as_ref()
+                    .map(ModulePath::to_dotted)
+            )
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "stdlib modules not declaring their registered module path:\n{}",
+        offenders.join("\n")
+    );
 }

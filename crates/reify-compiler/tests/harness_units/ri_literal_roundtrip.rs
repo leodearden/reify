@@ -148,8 +148,10 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::ILLUMINANCE => "Illuminance",
             DimensionVector::POWER => "Power",
             DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
+            DimensionVector::FRACTURE_TOUGHNESS => "FractureToughness",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
+        Value::Direction(_) => "Direction",
         other => panic!("no .ri type name wired for {other:?}"),
     }
 }
@@ -277,6 +279,20 @@ fn assert_identical(original: &Value, got: &Value, literal: &str, i: usize, labe
                  read    si = {b:?}  bits = {:#018x}",
                 a.to_bits(),
                 b.to_bits()
+            );
+        }
+        // Stricter than the derived numeric `==`: every component's raw bits.
+        Value::Direction(a) => {
+            let Value::Direction(b) = got else {
+                unreachable!("discriminants compared equal above")
+            };
+            assert_eq!(
+                a.components().map(f64::to_bits),
+                b.components().map(f64::to_bits),
+                "case {i} [{label}]: literal {literal:?} did not round-trip exactly: \
+                 wrote {:?}, read back {:?}",
+                a.components(),
+                b.components()
             );
         }
         _ => assert_eq!(
@@ -991,6 +1007,19 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         compound("tiny pressure", 1e-9, DimensionVector::PRESSURE),
         compound("huge force", 1.7976931348623157e308, DimensionVector::FORCE),
         compound("awkward density", -0.5566166674539299, DimensionVector::MASS_DENSITY),
+        // A RATIONAL exponent (task #9236): FractureToughness's Length^(-1/2)
+        // in `Rational`'s `p/q` spelling, read back by the unit grammar.
+        compound(
+            "fracture toughness",
+            5e7,
+            DimensionVector::FRACTURE_TOUGHNESS,
+        )
+        .emitting("50000000kg/m^1/2/s^2"),
+        compound(
+            "awkward fracture toughness",
+            -0.5566166674539299,
+            DimensionVector::FRACTURE_TOUGHNESS,
+        ),
     ];
     assert_round_trips_under(&cases, Prelude::Stdlib);
 }
@@ -1156,7 +1185,8 @@ fn basis_dimension(index: usize) -> DimensionVector {
 /// LOCALISING CANARY for the round-trip above: the arithmetic premise itself.
 ///
 /// `resolve_unit_expr` folds a `UnitExpr` with exactly three operations —
-/// `Pow: fa.powi(n)`, `Mul: fa * fb`, `Div: fa / fb`. When every leaf is
+/// `Pow: fa.powi(n)` (or `fa.powf(p/q)` for a rational exponent),
+/// `Mul: fa * fb`, `Div: fa / fb`. When every leaf is
 /// exactly 1.0, all three are the identity, so the folded factor is exactly 1.0
 /// REGARDLESS of tree shape or association, and `expr.rs`'s single
 /// `si_value = value * factor` multiply leaves the magnitude untouched.
@@ -1180,8 +1210,8 @@ fn the_ieee_fold_of_factor_one_atoms_is_exactly_one() {
         "UnitExpr::Div over factor-1.0 atoms must be exactly 1.0"
     );
     // Every exponent the emitter can possibly write: `ri_compound_unit_expr`
-    // accepts exactly what `Rational::as_i8` does, which is exactly the range
-    // `resolve_unit_expr` narrows to via `i8::try_from`.
+    // and `resolve_unit_expr` both accept exactly
+    // `reify_core::unit_exponent_in_range` — numerator and denominator in i8.
     for n in i8::MIN..=i8::MAX {
         assert_eq!(
             one.powi(i32::from(n)).to_bits(),
@@ -1189,6 +1219,17 @@ fn the_ieee_fold_of_factor_one_atoms_is_exactly_one() {
             "1.0f64.powi({n}) must be exactly 1.0 — the compound path's magnitude \
              is the SI value verbatim only because this holds for every exponent"
         );
+    }
+    // A rational exponent folds through `powf`, which is exact at base 1.0 too.
+    for p in i8::MIN..=i8::MAX {
+        for q in 2..=i8::MAX {
+            let y = f64::from(p) / f64::from(q);
+            assert_eq!(
+                one.powf(y).to_bits(),
+                one.to_bits(),
+                "1.0f64.powf({p}/{q}) must be exactly 1.0"
+            );
+        }
     }
 }
 
@@ -1298,4 +1339,45 @@ fn unrepresentable_values_are_refused_rather_than_written() {
         "a brace-bearing string must be refused — it would divert the token \
          to interpolated_string, which treats {{expr}} as a hole"
     );
+}
+
+// ─── (f) directions (direction-typing β) ─────────────────────────────────────
+
+/// A `Direction` is written as `dir(x, y, z)` and re-parses with identical
+/// component bits. This rests on `UnitVec3::from_vector` being a bit-level
+/// fixed point (docs/prds/v0_6/direction-typing.md C2): re-normalising an
+/// already-unit vector changes nothing.
+#[test]
+fn directions_round_trip_with_identical_bits() {
+    use reify_ir::UnitVec3;
+
+    let direction = |v: [f64; 3]| Value::Direction(UnitVec3::from_vector(v).unwrap());
+    let mut cases = vec![
+        Case::new("+x", direction([1.0, 0.0, 0.0])).emitting("dir(1, 0, 0)"),
+        Case::new("-x", direction([-1.0, 0.0, 0.0])).emitting("dir(-1, 0, 0)"),
+        Case::new("+y", direction([0.0, 1.0, 0.0])).emitting("dir(0, 1, 0)"),
+        Case::new("-y", direction([0.0, -1.0, 0.0])).emitting("dir(0, -1, 0)"),
+        Case::new("+z", direction([0.0, 0.0, 1.0])).emitting("dir(0, 0, 1)"),
+        Case::new("-z", direction([0.0, 0.0, -1.0])).emitting("dir(0, 0, -1)"),
+        Case::new("3-4-5", direction([0.6, 0.8, 0.0])),
+        Case::new("1-2-3", direction([1.0, 2.0, 3.0])),
+        Case::new("wide range", direction([1e-3, -2.5, 7e5])),
+    ];
+
+    // A sweep of arbitrary triplets; a draw from_vector refuses is skipped.
+    const SWEEP: usize = 256;
+    let fixed = cases.len();
+    let mut rng = XorShift64Star(0xD1EC_7104_B0E7_A5EE);
+    while cases.len() < fixed + SWEEP {
+        let v = [
+            rng.arbitrary_f64(),
+            rng.arbitrary_f64(),
+            rng.arbitrary_f64(),
+        ];
+        if let Ok(u) = UnitVec3::from_vector(v) {
+            let label = format!("sweep #{}", cases.len() - fixed);
+            cases.push(Case::new(label, Value::Direction(u)));
+        }
+    }
+    assert_round_trips(&cases);
 }

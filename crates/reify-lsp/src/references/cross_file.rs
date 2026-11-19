@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use reify_ast::{Declaration, ImportKind, ParsedModule};
+use reify_ast::{Declaration, ImportBinding, ParsedModule};
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{Location, Position, TextEdit, Url, WorkspaceEdit};
 
@@ -172,22 +172,16 @@ fn collect_importer_decl_name_references(
         if resolve_import(&import.path).is_none_or(|(uri, _)| uri != *home_uri) {
             continue;
         }
-        match &import.kind {
-            ImportKind::Entity(n) if n == name => {
-                spans.push(name_token_span(doc_source, import.span, name));
-                exposes_under_same_name = true;
-            }
-            ImportKind::Destructured(names) if names.iter().any(|n| n == name) => {
-                spans.push(name_token_span(doc_source, import.span, name));
-                exposes_under_same_name = true;
-            }
-            ImportKind::EntityAliased { entity, .. } if entity == name => {
-                // Entity token only — the alias is a distinct local binding, so
-                // its construction sites are NOT part of this entity's set.
-                spans.push(name_token_span(doc_source, import.span, name));
-            }
-            _ => {}
+        let ImportBinding::Entities(entities) = import.kind.binding() else {
+            continue;
+        };
+        if entities.iter().any(|b| b.entity == name) {
+            spans.push(name_token_span(doc_source, import.span, name));
         }
+        // An aliased import contributes its entity token only — the alias is a
+        // distinct local binding, so its construction sites are NOT part of
+        // this entity's set.
+        exposes_under_same_name |= import_exposes_entity(&import.kind, name);
     }
     // Use sites only when imported under the same (non-aliased) name — and then
     // the SAME fan-out the home document uses, so the two documents cannot

@@ -137,6 +137,12 @@ deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_tr
 tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
 scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
 scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
+# Task 9871: the merge_verify_workspace knob in the yaml, and the merge-role
+# test_command premise it relies on, pinned by a .py suite behind a .sh wrapper.
+dark-factory-orchestrator.yaml       tests/infra/test_merge_verify_workspace_seam.sh
+tests/infra/test_merge_verify_workspace_seam.py    tests/infra/test_merge_verify_workspace_seam.sh
+# Its premise check plans verify.sh's merge role, which the test_verify_*.sh glob misses.
+scripts/verify.sh                    tests/infra/test_merge_verify_workspace_seam.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
@@ -925,9 +931,11 @@ tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_parity*.sh
 scripts/verify-ledger.py    tests/infra/test_verify_plan_parity.sh
-# The plan-model unit member: its own .py and the env helper it imports select its wrapper; the
-# package modules select it through their tests/infra/test_verify_*.sh rows.
+# The plan-model unit member: its own .py and the helpers it imports, the clone harness included,
+# select its wrapper; the package modules select it through their tests/infra/test_verify_*.sh rows.
 tests/infra/test_verify_plan_model.py    tests/infra/test_verify_plan_model.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_model.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_plan_model.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_model.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_policy.sh
@@ -945,7 +953,11 @@ scripts/reify_verify/retry.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/retry.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/testregion.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/testregion.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/gatepaths.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/gatepaths.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_policy.sh
 # The plan-model member compares nextest_config_path's lines with the generator's own stderr.
 scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh

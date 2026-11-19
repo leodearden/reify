@@ -47,7 +47,7 @@ structure ShiftInvertModalUnshifted {
 
     let material = Steel_AISI_1045()
     let mi   = FEAMaterialInput(material: material)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     let opts = ModalOptions(
         n_modes: 2,
@@ -63,4 +63,5 @@ structure ShiftInvertModalUnshifted {
     let result = modal_analysis(mi.material, length, width, height, opts)
     let f1 = first_frequency(result)
     let f2 = mode_frequency(result, 1)
+    let beam = box(length, width, height)
 }

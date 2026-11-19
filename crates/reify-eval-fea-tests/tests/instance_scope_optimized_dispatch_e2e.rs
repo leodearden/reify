@@ -22,17 +22,14 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 /// Which loads the beam's solve carries.
 #[derive(Clone, Copy)]
 enum BeamLoads {
-    /// The String-targeted `tip` load only.
-    StringTarget,
+    /// The `tip` point load only.
+    TipOnly,
     /// `tip` plus `press`, whose `face` is a TYPED named-leaf selector over the
-    /// geometry let `body` — so the instance's solve can only equal the
+    /// geometry let `body` — a second typed target in the solve's direct read
+    /// set besides the support's, so the instance's solve can only equal the
     /// template's if the instance's `body` mints the same symbolic geometry
     /// handle the template's does.
-    ///
-    /// `FixedSupport.target` is still `String` (#5312 types it), so the typed
-    /// target rides `PressureLoad.face : Option<FaceSelector>` — the same
-    /// hoisted named-leaf selector mechanism.
-    WithTypedSelectorTarget,
+    WithTypedPressureFace,
 }
 
 /// The cantilever beam every fixture here reads through a `sub`, declared as
@@ -41,12 +38,14 @@ enum BeamLoads {
 /// Kept deliberately small and P1 (bare `ElasticOptions()`) — the assertions
 /// below are existence / determinacy / cross-scope-equality only, never a
 /// numeric tolerance, so there is nothing here that a coarser mesh can break.
+///
+/// `body` always exists: it anchors the support's typed `face(body, "root")`
+/// target (#5312), so every fixture's solve reads a selector over it.
 fn beam_structure(name: &str, loads: BeamLoads) -> String {
-    let (typed_target_lets, load_list) = match loads {
-        BeamLoads::StringTarget => ("", "[tip]"),
-        BeamLoads::WithTypedSelectorTarget => (
-            r#"let body     = box(span, w, h)
-            let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))"#,
+    let (pressure_let, load_list) = match loads {
+        BeamLoads::TipOnly => ("", "[tip]"),
+        BeamLoads::WithTypedPressureFace => (
+            r#"let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))"#,
             "[tip, press]",
         ),
     };
@@ -59,9 +58,10 @@ fn beam_structure(name: &str, loads: BeamLoads) -> String {
             param load : Real   = 1000.0
 
             let material = Steel_AISI_1045()
-            let tip      = PointLoad(point: "tip", force: load)
-            let mount    = FixedSupport(target: "root")
-            {typed_target_lets}
+            let body     = box(span, w, h)
+            let tip      = PointLoad(point: vertex(body, "tip"), force: load)
+            let mount    = FixedSupport(target: face(body, "root"))
+            {pressure_let}
 
             let r_static = solve_elastic_static(
                 material, span, w, h, {load_list}, [mount], ElasticOptions()
@@ -123,11 +123,11 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
 /// values, and the whole downstream chain stays determinate.
 #[test]
 fn instance_scope_fea_cells_equal_template_solved_values() {
-    assert_instance_fea_cells_equal_template(&instance_scope_fea_source(BeamLoads::StringTarget));
+    assert_instance_fea_cells_equal_template(&instance_scope_fea_source(BeamLoads::TipOnly));
 }
 
 /// Steps (1)-(5) of the `Beam`/`Asm` acceptance check, shared by the
-/// String-target fixture and the typed-selector-target one. Returns the check
+/// tip-only fixture and the typed-pressure-face one. Returns the check
 /// result so a caller can add fixture-specific cross-scope assertions without
 /// re-running the solve.
 fn assert_instance_fea_cells_equal_template(source: &str) -> CheckResult {
@@ -307,12 +307,12 @@ fn assert_instance_fea_cells_equal_template(source: &str) -> CheckResult {
 #[test]
 fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
     assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
-        BeamLoads::StringTarget,
+        BeamLoads::TipOnly,
     ));
 }
 
 /// Steps (a)-(c) of the `BeamAuto`/`AsmAuto` solver-visible guard, shared by
-/// the String-target fixture and the typed-selector-target one. Returns the
+/// the tip-only fixture and the typed-pressure-face one. Returns the
 /// check result so a caller can add fixture-specific assertions.
 ///
 /// # The inline engine is load-bearing — do not collapse it to `make_simple_engine()`
@@ -465,11 +465,11 @@ fn assert_solver_visible_instance_fea_cell_survives(source: &str) -> CheckResult
     result
 }
 
-/// The reuse gate's cross-scope preconditions for a typed selector target: the
+/// The reuse gate's cross-scope preconditions for the typed pressure face: the
 /// instance's geometry let and the load struct carrying the selector over it
 /// must EQUAL the template's. Either one differing makes the `@optimized` solve
 /// decline reuse and body-inline the `ElasticResult()` shell.
-fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str, instance: &str) {
+fn assert_pressure_face_cells_equal_template(result: &CheckResult, template: &str, instance: &str) {
     let cell = |entity: &str, member: &str| {
         result
             .values
@@ -510,21 +510,21 @@ fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str
     );
 }
 
-/// The acceptance check above with the typed selector target: the instance's
+/// The acceptance check above with the typed pressure face: the instance's
 /// solve must reuse the template's solved value through `press.face`.
 #[test]
-fn instance_scope_fea_cells_equal_template_solved_values_with_typed_selector_target() {
+fn instance_scope_fea_cells_equal_template_solved_values_with_typed_pressure_face() {
     let result = assert_instance_fea_cells_equal_template(&instance_scope_fea_source(
-        BeamLoads::WithTypedSelectorTarget,
+        BeamLoads::WithTypedPressureFace,
     ));
-    assert_typed_target_cells_equal_template(&result, "Beam", "Asm.beam");
+    assert_pressure_face_cells_equal_template(&result, "Beam", "Asm.beam");
 }
 
-/// The solver-visible guard above with the typed selector target.
+/// The solver-visible guard above with the typed pressure face.
 #[test]
-fn solver_visible_instance_scope_fea_cell_with_typed_selector_target_is_not_clobbered() {
+fn solver_visible_instance_scope_fea_cell_with_typed_pressure_face_is_not_clobbered() {
     let result = assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
-        BeamLoads::WithTypedSelectorTarget,
+        BeamLoads::WithTypedPressureFace,
     ));
-    assert_typed_target_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
+    assert_pressure_face_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
 }

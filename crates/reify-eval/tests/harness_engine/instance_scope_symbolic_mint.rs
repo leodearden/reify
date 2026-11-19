@@ -423,6 +423,24 @@ fn assert_edited_body_like_cold(after_edit: &EvalResult, cold: &EvalResult, inst
     );
 }
 
+/// `instance.s` after an edit must be the selector a cold eval commits.
+fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
+    let edited_selector = cell(after_edit, instance, "s");
+    assert!(
+        matches!(edited_selector, Value::Selector(_)),
+        "{instance}.s must be a minted Selector after the edit: Undef means the \
+         edit path minted `s` before the instance's `body` was committed, got \
+         {edited_selector:?}"
+    );
+    assert_eq!(
+        edited_selector,
+        cell(cold, instance, "s"),
+        "{instance}.s after the edit must equal a cold eval's: an unequal \
+         selector means the edit path minted `s` before the instance's `body` \
+         was committed"
+    );
+}
+
 /// The premise every edit-path pin starts from: `eval()` minted `instance.body`.
 fn assert_minted_at_eval(before: &EvalResult, instance: &str) {
     let minted_at_eval = cell(before, instance, "body");
@@ -457,6 +475,53 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
 
     assert_minted_at_eval(&before, "EditOuter.same");
     assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.same");
+}
+
+/// `edit_param` on a template param re-evaluates the body of a sub whose own
+/// `len` overrides it, because the body's template-scoped trace reads
+/// `EditInner.len`. The instance mint's projection must still read the
+/// instance's own `len`, so the body stays minted over the override: equal to a
+/// cold eval's, and unequal to the template's edited handle.
+#[test]
+fn edit_param_on_a_template_param_keeps_an_overridden_instance_minted_over_its_override() {
+    let source = r#"
+        structure EditInner {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+        }
+
+        structure EditOuter {
+            sub same = EditInner()
+            sub resized = EditInner(len: 20mm)
+        }
+    "#;
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        source,
+        &ValueCellId::new("EditInner", "len"),
+        Value::length(0.03),
+    );
+
+    assert_minted_at_eval(&before, "EditOuter.resized");
+    assert_eq!(
+        cell(&after_edit, "EditOuter.resized", "len"),
+        cell(&before, "EditOuter.resized", "len"),
+        "premise: the override must hold across the template param edit, or \
+         EditOuter.resized.len is not what its body is minted over"
+    );
+    assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.resized");
+    let template_body = cell(&after_edit, "EditInner", "body");
+    assert!(
+        matches!(template_body, Value::GeometryHandle { .. }),
+        "premise: the edited template's body must be a minted handle, or the \
+         comparison below is vacuous, got {template_body:?}"
+    );
+    assert_ne!(
+        cell(&after_edit, "EditOuter.resized", "body"),
+        template_body,
+        "EditOuter.resized.body must be minted over the instance's own 20mm: a \
+         mint that projected the template's edited 30mm instead would equal the \
+         template's edited handle"
+    );
 }
 
 /// A rack of two bolts whose count is static, so `eval()` stamps both slots.
@@ -567,12 +632,6 @@ fn edit_source_changing_a_template_default_mints_an_override_free_instance_like_
     assert_edited_selector_like_cold(&after_edit, &cold, "EditOuter.same");
 }
 
-/// An outer cell reading an override-free sub's minted cells must follow
-/// them through `edit_source`, as a cold eval's does. The walk can commit the
-/// instance cell unchanged before its re-mint, so a consumer it cut off early
-/// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
-/// `self.same.*`, which names the instance cells; a bare `same.*` reads the
-/// sub's `__self` alias instead, which `edit_source` does not rebuild.
 /// `edit_source` ADDING a geometry let and a selector over it to an
 /// override-free sub's template. The names put the selector (`a_sel`) ahead of
 /// the geometry (`z_body`), so the walk can reach the instance selector before
@@ -631,6 +690,12 @@ fn edit_source_adding_a_selector_over_a_new_geometry_let_settles_the_instance_li
     );
 }
 
+/// An outer cell reading an override-free sub's minted cells must follow
+/// them through `edit_source`, as a cold eval's does. The walk can commit the
+/// instance cell unchanged before its re-mint, so a consumer it cut off early
+/// keeps the pre-edit handle unless the re-mint reaches it. The consumers read
+/// `self.same.*`, which names the instance cells; a bare `same.*` reads the
+/// sub's `__self` alias instead, which `edit_source` does not rebuild.
 #[test]
 fn edit_source_changing_a_template_default_carries_the_instance_mint_into_outer_consumers() {
     let source = r#"
@@ -700,24 +765,6 @@ const DECL_ORDER_RACK: &str = r#"
         constraint bolts.count == n
     }
 "#;
-
-/// `instance.s` after an edit must be the selector a cold eval commits.
-fn assert_edited_selector_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
-    let edited_selector = cell(after_edit, instance, "s");
-    assert!(
-        matches!(edited_selector, Value::Selector(_)),
-        "{instance}.s must be a minted Selector after the edit: Undef means the \
-         resize minted `s` before the slot's `body` was committed, got \
-         {edited_selector:?}"
-    );
-    assert_eq!(
-        edited_selector,
-        cell(cold, instance, "s"),
-        "{instance}.s after the edit must equal a cold eval's: an unequal \
-         selector means the resize minted `s` before the slot's `body` was \
-         committed"
-    );
-}
 
 /// The premise both declaration-order pins start from: `eval()` minted the
 /// slot's `body` and `s`.
@@ -813,4 +860,57 @@ fn edit_param_growing_a_collection_mints_a_body_over_a_guarded_geometry_let_like
     for slot in ["GRack.bolts[0]", "GRack.bolts[1]", "GRack.bolts[2]"] {
         assert_edited_body_like_cold(&after_edit, &cold, slot);
     }
+}
+
+/// A Solid param with a guarded same-name override: the compiler links both
+/// realizations to the one cell `T.body`. An incremental edit over this valid
+/// compiler output must not crash, and `T.body` must stay a minted handle.
+/// Which of the two links the edit mints from is left to a follow-up.
+#[test]
+fn edit_param_over_a_solid_param_with_a_guarded_same_name_override_does_not_panic() {
+    let compiled = parse_and_compile_with_stdlib(
+        r#"
+        structure T {
+            param size : Length = 10mm
+            param on : Bool = true
+            param body : Solid = box(size, 10mm, 10mm)
+            where on {
+                param body : Solid = cylinder(5mm, size)
+            }
+        }
+        structure P {
+            sub s = T()
+        }
+    "#,
+    );
+    let body_realizations = compiled
+        .templates
+        .iter()
+        .flat_map(|t| &t.realizations)
+        .filter(|r| r.id.entity == "T" && r.name.as_deref() == Some("body"))
+        .count();
+    assert_eq!(
+        body_realizations, 2,
+        "premise: the compiler names both the top-level `T.body` param's and its \
+         guarded override's realizations `body`"
+    );
+    let mut engine = make_simple_engine();
+    let before = engine.eval(&compiled);
+    let minted_at_eval = cell(&before, "T", "body");
+    assert!(
+        matches!(minted_at_eval, Value::GeometryHandle { .. }),
+        "premise: eval() mints T.body, got {minted_at_eval:?}"
+    );
+
+    let after = engine
+        .edit_param(ValueCellId::new("T", "size"), Value::length(0.012))
+        .unwrap_or_else(|e| {
+            panic!("an incremental edit over valid compiler output must not fail: {e:?}")
+        });
+
+    let edited_body = cell(&after, "T", "body");
+    assert!(
+        matches!(edited_body, Value::GeometryHandle { .. }),
+        "T.body must stay a minted GeometryHandle after the edit, got {edited_body:?}"
+    );
 }

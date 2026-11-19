@@ -202,12 +202,7 @@ fn panicking_sibling_names_the_shift_not_the_stiffness() {
          entry point must panic",
     );
 
-    let message = panicked
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panicked.downcast_ref::<&str>().copied())
-        .unwrap_or("<non-string panic payload>")
-        .to_string();
+    let message = reify_core::panic_payload_to_string(panicked.as_ref());
 
     let lower = message.to_lowercase();
 

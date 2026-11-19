@@ -99,15 +99,30 @@ mechanics; the acceptance signal is the fixture table in §7.
 ```
 unit_expr   := unit_pow
              | unit_expr ('*' | '/') unit_pow        // left-assoc, prec 1
-unit_pow    := unit_atom ('^' integer)?              // prec 2 (tighter)
+unit_pow    := unit_atom ('^' exponent)?             // prec 2 (tighter)
 unit_atom   := unit_name | '(' unit_expr ')'
 unit_name   := /[A-Za-z_][A-Za-z0-9_]*/
-integer     := '-'? /[0-9]+/                          // signed
+exponent    := '-'? /[0-9]+/ ('/' /[0-9]+/)?          // signed integer or rational
 ```
 
 - `^` binds tighter than `*`/`/`; `*`/`/` are left-associative (so `kg/m/s` =
   `(kg/m)/s` = kg·m⁻¹·s⁻¹, the dynamic-viscosity case).
-- Exponents are signed integers (`s^-2` is legal; equivalent to `/s^2`).
+- Exponents are signed integers (`s^-2` is legal; equivalent to `/s^2`) or signed
+  rationals with no spaces (`m^1/2`, `m^-1/2`; amended by #9236, so FractureToughness's
+  `50MPa*m^1/2` and `Display`'s `kg·m^-1/2·s^-2` are readable). The exponent token is
+  lexed only after the unit-pow `^`, so a contiguous `^p/q` is ONE exponent.
+- A rational exponent must be in lowest terms with denominator ≥ 2. Otherwise
+  (`^2/4`, `^2/2`, `^2/1`, `^0/2`, `^1/0`) it is a located parse error, never a silent
+  reread (the legacy reading of `1m^2/2` was 0.5 m²). A canonical one is a deliberate
+  reread: before #9236 the contiguous `1m^2/3` was a value division, (1/3)·m², and it
+  is now 1·m^(2/3). The dimension changes too, so a typed consumer or a `+`/`-`
+  catches it. To divide, write `1m^2 / 3`.
+- A value-level `/` touching a unit exponent (`1m^1/ 2`, `1m^1/-2`, `1m^1/2/3`) is a
+  located parse error at the `/`. To divide, put a space before it: `1m^2 / 2`.
+- A `^p/q` directly followed by a unit name (`1m^2/3s`, `1m^1/2kg`) is a parse error,
+  because the exponent token takes `2/3`. To divide, write `1m^2 / 3s`.
+- `/` after a unit NAME followed by a digit stays value division (`25USD/1kg`,
+  `50MPa/2`).
 - Parentheses group sub-expressions and may be raised to a power (`(kg*m/s)^2`).
 
 ### 3.3 Value-level `^`
@@ -132,7 +147,7 @@ pub enum UnitExpr {
     Unit(String),                       // base/derived unit name, e.g. "kg"
     Mul(Box<UnitExpr>, Box<UnitExpr>),
     Div(Box<UnitExpr>, Box<UnitExpr>),
-    Pow(Box<UnitExpr>, i32),            // signed integer exponent
+    Pow(Box<UnitExpr>, Rational),       // integer or canonical rational exponent (#9236)
 }
 // QuantityLiteral.unit changes:  String  ->  UnitExpr
 // A bare `5mm` lowers to QuantityLiteral { value: 5.0, unit: UnitExpr::Unit("mm") }.
@@ -186,8 +201,10 @@ this as a diagnostic, not a silent mis-resolution.
    supported in v1 because disallowing them is surprising for readability (`W/(m*K)`).
 2. **Value-level `^` is in scope** (§5.1) alongside unit-literal `^`; they share the
    dimension-exponent algebra.
-3. **Signed integer exponents** everywhere (`s^-2`, `m^3`). Non-integer exponents on
-   dimensioned values are type errors (spec §5.1).
+3. **Integer or canonical rational exponents in unit literals** (`s^-2`, `m^3`,
+   `m^1/2`; amended by #9236, which retired the FractureToughness carve-out). The
+   value-level `^` keeps its integer-literal rule: a non-integer exponent on a
+   dimensioned value is a type error (spec §5.1; §3.3/§4.3).
 4. **`/` is left-associative** → `kg/m/s` means kg·m⁻¹·s⁻¹; multi-factor denominators
    need no parentheses, but parentheses are available.
 5. **Affine units rejected in compound expressions** (§4.4).
@@ -310,8 +327,9 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
   limitation noted in memory; separate concern).
 - **New units** — this PRD composes existing registry entries; it does not add base or
   derived units.
-- **Non-integer / symbolic exponents** on dimensioned quantities (spec keeps these type
-  errors in v0.1).
+- **Non-integer / symbolic exponents** on dimensioned quantities via the VALUE-level
+  `^` (spec keeps these type errors in v0.1). Rational exponents inside a unit
+  LITERAL (`m^1/2`) are in scope since #9236 (§3.2).
 
 ## 11. Open questions (tactical)
 
@@ -323,5 +341,20 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
    `E_*` code or mint `E_NONINT_EXP_ON_DIMENSIONED`. **Suggested resolution:** reuse the
    nearest existing dimensional-type-error code if one fits; otherwise mint. Decide
    during task δ.
-3. **`Pow` exponent storage width.** `i32` is proposed; confirm no realistic unit needs
-   beyond ±2³¹. **Suggested resolution:** `i32`. Decide during task β.
+3. **`Pow` exponent storage width.** **Resolved by #9236:** `reify_core::Rational`
+   (i16/i16). The range a unit expression may carry is the policy bound
+   `reify_core::unit_exponent_in_range` (numerator and denominator each within `i8`),
+   which both the resolver and the `.ri` emitter call. (Task β originally chose `i32`.)
+   That bound covers WRITTEN exponents. A fold whose resulting dimension does not fit
+   `Rational` (`m^127^127^127`, `m^1/127*m^1/126*m^1/125`) is the resolve error
+   `UnitResolveError::DimensionOverflow`, never a panic or a wrapped dimension.
+   A value-level `*` or `/` whose combined dimension does not fit `Rational`
+   (`1m^1/31 * 1m^1/37 * 1m^1/41`) is the compile error `DimensionExponentOverflow` and
+   evaluates to `Undef`. Only the unit-expression resolver fold and the value-level
+   `*`/`/` have that guarantee. Any other caller of the panicking
+   `DimensionVector::mul`/`div`/`pow`/`root` (or of `Rational`'s `+`/`-`) panics on such
+   an overflow, in release builds as well as debug, instead of reporting a diagnostic or
+   `Undef`. Examples, not a complete list: the value-level `^` (#9696); the builtin
+   dimension combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`, the stress
+   invariants; #9796); `determinant`; and the `*`/`/` folds of type-level dimension
+   aliases.

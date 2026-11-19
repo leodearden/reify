@@ -14,6 +14,7 @@ use std::ops::ControlFlow;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 use crate::ast::{Expr, TypeExpr};
+use crate::import_kind::ImportKind;
 
 /// A parsed module — the output of the parser.
 #[derive(Debug, Clone)]
@@ -40,10 +41,9 @@ impl ParsedModule {
     /// Render every parse error against `source` as `line:col: message`, in parse order.
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
-    /// The two production surfaces that print parse errors — the two loops in
-    /// `reify-cli/src/main.rs` — both want exactly this, and
-    /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
-    /// its own way.
+    /// The production surfaces that print parse errors — the CLI's single-file report in
+    /// `reify-cli/src/main.rs` among them — want exactly this, and this is where they get it,
+    /// so no caller has to rebuild the loop or re-derive positions its own way.
     ///
     /// `source` must be the string the spans index (the one handed to the parser); a different
     /// string yields wrong positions, never a panic. Batched via
@@ -59,6 +59,18 @@ impl ParsedModule {
     /// deletion would hand that sweep a breakage. Method resolution needs no crate path.
     pub fn render_errors(&self, source: &str) -> Vec<String> {
         ParseError::render_all(&self.errors, source)
+    }
+
+    /// Render every parse error against `source` as `path:line:col: label: message`, in parse
+    /// order — the GNU shape a multi-file report gives every located line.
+    ///
+    /// Task #10040. Positions follow the same rule as [`render_errors`](Self::render_errors),
+    /// degenerate inputs included, and are batched the same way. The caller supplies `label`,
+    /// so the CLI keeps a single label for both of its parse-error line shapes.
+    pub fn render_errors_in(&self, path: &str, label: &str, source: &str) -> Vec<String> {
+        ParseError::render_each(&self.errors, source, |e, line, col| {
+            format!("{path}:{line}:{col}: {label}: {}", e.message)
+        })
     }
 }
 
@@ -1398,21 +1410,6 @@ pub enum ForallConstraintBody {
     Instantiation(ConstraintInstDecl),
 }
 
-/// The kind of import (determines how names are brought into scope).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ImportKind {
-    /// `import std.math` — import entire module
-    Module,
-    /// `import std.math.sqrt` — import a single entity
-    Entity(String),
-    /// `import std.mech.{Bolt, Nut}` — import multiple entities
-    Destructured(Vec<String>),
-    /// `import std.mech as m` — import module with alias
-    Aliased { alias: String },
-    /// `import std.mech.Bolt as StdBolt` — import entity with alias
-    EntityAliased { entity: String, alias: String },
-}
-
 /// `import std.mechanical.fasteners`
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
@@ -1910,16 +1907,15 @@ impl ParseError {
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
     /// a parse error a user cannot locate is only marginally better than silence. `SourceSpan`
-    /// carries byte offsets only, and this — together with
-    /// [`render_with_offsets`](Self::render_with_offsets), which it delegates to — is the
-    /// single place that converts them for human output, so every caller reports positions the
-    /// same way.
+    /// carries byte offsets only, and this — like every parse-error renderer here — converts
+    /// them through `line_col_with_offsets`, the single home of that rule, so every caller
+    /// reports positions the same way.
     ///
     /// Degrades rather than aborting on a span that does not index `source`: the prelude
     /// sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) becomes the canonical
     /// "no user-file location" fallback `1:1`, and any other out-of-range offset (a stale
     /// span, or one belonging to a different file) is clamped to `source.len()`. See
-    /// [`render_with_offsets`](Self::render_with_offsets) for why each is handled that way.
+    /// `line_col_with_offsets` for why each is handled that way.
     ///
     /// This builds a newline table to serve ONE lookup, which is the same O(len(source)) it
     /// would cost to scan; rendering a whole list should go through
@@ -1939,9 +1935,19 @@ impl ParseError {
     /// parse), each of which would re-scan the whole source from byte 0.
     ///
     /// Same output as mapping [`render`](Self::render), one string per input error, in order —
-    /// by construction, since both go through
-    /// [`render_with_offsets`](Self::render_with_offsets).
+    /// by construction, since both resolve positions through `line_col_with_offsets` and
+    /// format through `render_at`.
     pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
+        Self::render_each(errors, source, Self::render_at)
+    }
+
+    /// The batching policy every list renderer shares: resolve each error's position against
+    /// ONE newline table for the whole list, then let `format_line` give it its line shape.
+    fn render_each(
+        errors: &[ParseError],
+        source: &str,
+        format_line: impl Fn(&ParseError, usize, usize) -> String,
+    ) -> Vec<String> {
         // The only short-circuit worth having: with nothing to render, the table would be a
         // scan of the whole source for no lookups at all. A SINGLE error is deliberately NOT
         // special-cased — `render` builds exactly this same table to serve its one lookup, so
@@ -1952,7 +1958,10 @@ impl ParseError {
         let line_offsets = reify_core::build_line_offsets(source);
         errors
             .iter()
-            .map(|e| e.render_with_offsets(source, &line_offsets))
+            .map(|e| {
+                let (line, col) = e.line_col_with_offsets(source, &line_offsets);
+                format_line(e, line, col)
+            })
             .collect()
     }
 
@@ -1960,8 +1969,21 @@ impl ParseError {
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
     /// `line_offsets` must be [`reify_core::build_line_offsets`] of the SAME `source`; passing
-    /// another file's table yields a wrong position, never a panic. O(log M) to find the line
-    /// plus O(column) to count the codepoints on it, against
+    /// another file's table yields a wrong position, never a panic. The position comes from
+    /// `line_col_with_offsets`, which documents the rule and its degenerate inputs.
+    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
+        let (line, col) = self.line_col_with_offsets(source, line_offsets);
+        self.render_at(line, col)
+    }
+
+    /// The `line:col: message` shape, at an already-resolved position.
+    fn render_at(&self, line: usize, col: usize) -> String {
+        format!("{line}:{col}: {}", self.message)
+    }
+
+    /// The 1-based `(line, col)` of this error's span start, against a pre-built newline table.
+    ///
+    /// O(log M) to find the line plus O(column) to count the codepoints on it, against
     /// [`reify_core::byte_offset_to_line_col`]'s O(len(source)) scan from byte 0.
     ///
     /// Deliberately reproduces that function's semantics exactly, including its two degenerate
@@ -1986,16 +2008,16 @@ impl ParseError {
     /// equivalence test — exists only to hold the two in lockstep. The conversion belongs in
     /// `reify_core` beside [`reify_core::build_line_offsets`] and its table-based INVERSE
     /// `line_col_to_byte_offset_with_offsets`, as the missing forward sibling of that pair,
-    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then be
-    /// a formatting wrapper and that test would collapse to a couple of unit cases. Only the
+    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then
+    /// reduce to a call to it and that test would collapse to a couple of unit cases. Only the
     /// PARSE-ERROR formatting has a reason to live here — `reify-cli` cannot name
     /// `reify_ast::ParseError` — and that reason does not extend to the line/col algorithm,
     /// since `reify-cli` depends on `reify-core` directly. Not done here: `reify-core` is
     /// outside task #5392's lock set.
-    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
+    fn line_col_with_offsets(&self, source: &str, line_offsets: &[usize]) -> (usize, usize) {
         let offset = self.span.start as usize;
         if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
-            return format!("1:1: {}", self.message);
+            return (1, 1);
         }
         let offset = offset.min(source.len());
 
@@ -2011,14 +2033,14 @@ impl ParseError {
             .take_while(|(i, _)| line_start + i < offset)
             .count()
             + 1;
-        format!("{line}:{col}: {}", self.message)
+        (line, col)
     }
 }
 
 #[cfg(test)]
 mod parse_error_render_tests {
-    use super::ParseError;
-    use reify_core::SourceSpan;
+    use super::{ParseError, ParsedModule};
+    use reify_core::{ContentHash, ModulePath, SourceSpan};
 
     /// A parse error a user cannot locate is only marginally better than silence.
     ///
@@ -2191,6 +2213,67 @@ mod parse_error_render_tests {
         assert_eq!(
             rendered[3], "1:1: prelude",
             "a prelude-sentinel span has no user-file location and must fall back to `1:1`",
+        );
+    }
+
+    /// A multi-file report names the file each parse error is in, in the GNU
+    /// `path:line:col: label: message` shape every other located diagnostic line uses.
+    ///
+    /// Task #10040. Positions come from the same rule as `render_errors`, degenerate inputs
+    /// included: an out-of-range offset clamps to the end of the source and the prelude
+    /// sentinel falls back to `1:1`, rather than dropping the position.
+    #[test]
+    fn render_errors_in_leads_each_error_with_its_path_line_and_column() {
+        let source = "fn f() -> Int {
+  let x = 1
+  x
+}
+";
+        let mk = |off: usize, msg: &str| ParseError {
+            message: msg.to_string(),
+            span: SourceSpan::new(off as u32, off as u32),
+        };
+        let mk_module = |errors: Vec<ParseError>| ParsedModule {
+            path: ModulePath::single("f"),
+            declarations: vec![],
+            errors,
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            declared_module_path: None,
+        };
+
+        let let_offset = source.find("let x").expect("fixture must contain 'let x'");
+        let module = mk_module(vec![
+            mk(let_offset, "missing ';'"),
+            mk(source.len() + 500, "past end"),
+            mk(SourceSpan::PRELUDE_SENTINEL_OFFSET, "prelude"),
+        ]);
+
+        // Derived, not hard-coded: every expected position is what the canonical scanning
+        // conversion reports.
+        let (line, col) = reify_core::byte_offset_to_line_col(source, let_offset);
+        assert!(
+            line > 1 && col > 1,
+            "the fixture error must sit past the first line and column to pin both; \
+             got {line}:{col}",
+        );
+        let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
+        // A label no production surface uses, so only a renderer that formats its `label`
+        // argument can match; the CLI's real label is pinned end to end in cli_fix_imports.rs.
+        assert_eq!(
+            module.render_errors_in("dir/f.ri", "L", source),
+            vec![
+                format!("dir/f.ri:{line}:{col}: L: missing ';'"),
+                format!("dir/f.ri:{end_line}:{end_col}: L: past end"),
+                "dir/f.ri:1:1: L: prelude".to_string(),
+            ],
+        );
+
+        assert!(
+            mk_module(vec![])
+                .render_errors_in("dir/f.ri", "L", source)
+                .is_empty(),
+            "a module with no parse errors must render no lines",
         );
     }
 }

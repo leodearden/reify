@@ -310,8 +310,8 @@ pub(crate) struct FnCompileEnv<'a> {
     /// lowers to `CompiledExprKind::StructureInstanceCtor` rather than a
     /// generic `FunctionCall` (esc-3851-32).
     pub(crate) template_registry: Option<&'a HashMap<String, &'a TopologyTemplate>>,
-    /// See [`CompilationScope::later_declared_structure_names`].
-    pub(crate) later_declared_structure_names: Option<&'a HashSet<String>>,
+    /// See [`CompilationScope::unavailable_local_template_names`].
+    pub(crate) unavailable_local_template_names: Option<&'a HashSet<String>>,
     /// The module's order-independent callable vocabulary (task #5371).
     pub(crate) declared_callable_names: &'a HashSet<String>,
 }
@@ -323,8 +323,8 @@ impl<'a> FnCompileEnv<'a> {
         if let Some(reg) = self.template_registry {
             scope.set_template_registry(reg);
         }
-        if let Some(names) = self.later_declared_structure_names {
-            scope.set_later_declared_structure_names(names);
+        if let Some(names) = self.unavailable_local_template_names {
+            scope.set_unavailable_local_template_names(names);
         }
         scope.mark_pending_stubs(self.calls);
         scope.declared_callable_names = Some(self.declared_callable_names);
@@ -560,7 +560,7 @@ pub(crate) fn compile_function(
         template_registry: prelude_template_registry,
         // Trait-static fns are not in the source-order pass, so the
         // declaration-order rule does not apply to them (#5371's ruling).
-        later_declared_structure_names: None,
+        unavailable_local_template_names: None,
         declared_callable_names,
     };
     let param_defaults = compile_fn_param_defaults(fn_def, &sig, &env, diagnostics);

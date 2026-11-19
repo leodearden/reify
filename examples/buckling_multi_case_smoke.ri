@@ -24,15 +24,15 @@ structure BucklingMultiCaseSmoke {
     // LoadCase "operating": 1 kN axial tip load.
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
 
     // LoadCase "overload": 2 kN axial tip load — twice the operating load.
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
 
     // Multi-load-case buckling solve.
@@ -55,4 +55,5 @@ structure BucklingMultiCaseSmoke {
     //
     // Here: min(λ) × 1kN = λ_overload × 1kN = critical_load(result_for(mcbr, "overload"), 1kN).
     let envelope = envelope_critical_load(mcbr, 1000.0 * 1N)
+    let body = box(length, width, height)
 }

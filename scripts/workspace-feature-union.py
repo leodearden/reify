@@ -45,7 +45,8 @@ Reading the output:
                                 as <path> shows; remove the dependency the
                                 line names from the named manifest. While
                                 such a finding stands, check reports it
-                                without resolving cargo tree or a unit graph.
+                                without fetching or resolving cargo tree or
+                                a unit graph.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -75,13 +76,15 @@ Reading the output:
 pin no member needs any more passes it. `generate` starts from an empty
 region, so it is what sheds a stale pin.
 
-`check` resolves with `--frozen`: it never writes Cargo.lock and never touches
-the network. Profiles come from `cargo test --unit-graph`, a cargo-unstable
-JSON format: check sets RUSTC_BOOTSTRAP=1 on that compile-free subprocess
-only, points it at a scratch CARGO_TARGET_DIR so it never touches the
-checkout's target/ or its build lock, and passes no `--target`, as verify's
-builds pass none; a format version other than 1 is exit 2. `generate`
-pins features only, never profiles. It rewrites the marked region of
+`check` first runs `cargo fetch --locked --target <host>`, so a cold cargo
+cache cannot change its verdict and a warm one makes no request, then
+resolves with `--frozen`; it never writes Cargo.lock. Profiles come from
+`cargo test --unit-graph`, a cargo-unstable JSON format: check sets
+RUSTC_BOOTSTRAP=1 on that compile-free subprocess only, points it at a
+scratch CARGO_TARGET_DIR so it never touches the checkout's target/ or its
+build lock, and passes no `--target`, as verify's builds pass none; a format
+version other than 1 is exit 2. `generate` pins features only, never
+profiles. It rewrites the marked region of
 crates/workspace-feature-union/Cargo.toml to a fixpoint and resolves with
 `--offline`, so the rewrite may update Cargo.lock; if an input fails part-way
 it puts both files back as it found them.
@@ -91,9 +94,9 @@ The gate runs from crates/reify-build-utils/tests/workspace_feature_union/
 limits and the probe procedure: docs/notes/workspace-feature-union.md.
 
 Exit codes: 0 every member resolves like the workspace; 1 a finding above;
-2 an input (cargo metadata, cargo tree, cargo test --unit-graph, the union
-manifest) could not be trusted, including a cargo tree output whose sides
-cannot be read.
+2 an input (cargo metadata, cargo fetch, cargo tree, cargo test --unit-graph,
+the union manifest) could not be obtained or trusted, including a cargo tree
+output whose sides cannot be read.
 """
 
 from __future__ import annotations
@@ -195,6 +198,14 @@ def host_triple(root: Path) -> str:
         if line.startswith("host: "):
             return line.removeprefix("host: ").strip()
     raise InputError("`cargo -vV` printed no `host:` line")
+
+
+def fetch_locked(root: Path, host: str) -> None:
+    """Downloads every locked package a build for `host` can read, so the
+    `--frozen` reads after it see the lockfile's packages whatever the
+    cargo cache holds; on a warm cache it makes no request. `--locked`:
+    Cargo.lock is never written."""
+    cargo(root, ["fetch", "--locked", "--target", host])
 
 
 # --- cargo tree -------------------------------------------------------------
@@ -610,9 +621,6 @@ class Workspace:
         """The members that must depend on the union crate."""
         return tuple(m for m in self.members if not m.host_side)
 
-    def member(self, name: str) -> Member | None:
-        return next((m for m in self.members if m.name == name), None)
-
 
 DEPENDENCY_SECTIONS = {None: Section.NORMAL, "build": Section.BUILD, "dev": Section.DEV}
 
@@ -766,13 +774,14 @@ def unit_profiles(root: Path, selection: Sequence[str], scratch: Path) -> UnitPr
     """The profiles of the units `cargo test <selection>` would compile, read
     from its unit graph without compiling: RUSTC_BOOTSTRAP unlocks
     `--unit-graph` for this one subprocess, and the scratch target dir keeps
-    it off the checkout's target/ and its build lock. No `--target`, like verify's builds, so host
-    and runtime units are shared exactly as they are there."""
+    it off the checkout's target/ and its build lock. No `--target`, like
+    verify's builds, so host and runtime units are shared exactly as they are
+    there."""
     args = ["test", LockMode.FROZEN.value, *selection, "--no-run", "--unit-graph",
             "-Z", "unstable-options"]
     env = {"RUSTC_BOOTSTRAP": "1", "CARGO_TARGET_DIR": str(scratch)}
     return parse_unit_profiles(cargo(root, args, env),
-                            f"`cargo test --unit-graph {' '.join(selection)}`")
+                               f"`cargo test --unit-graph {' '.join(selection)}`")
 
 
 # --- findings ---------------------------------------------------------------
@@ -804,22 +813,26 @@ def compiled_for_host(parent: Member, edge: Dependency) -> bool:
     return edge.section is not Section.DEV and (parent.host_side or edge.section is Section.BUILD)
 
 
-UNION_ON_HOST = (f"resolves {UNION_CRATE} on the host side, where its target pins would "
-                 f"become host units")
+UNION_TAIL = (f"{UNION_CRATE} resolves {UNION_CRATE} on the host side, where its target pins "
+              f"would become host units")
 
 
-def path_tail(ws: Workspace, edge: Dependency) -> str:
-    """The end of a HOST-UNION path from `edge` on, and what it puts on the
-    host side: the union itself, or a covered member, which reaches the union
-    once the coverage rule holds."""
-    child = ws.member(edge.name)
-    if child is None:
-        return f"{edge.name} {UNION_ON_HOST}"
-    if child.depends_on_union:
-        return f"{edge.name}{EDGE_ARROW[Section.NORMAL]}{UNION_CRATE} {UNION_ON_HOST}"
-    return (f"{edge.name} puts covered member {edge.name} on the host side, where the "
+def covered_tail(member: Member) -> str:
+    """The end of a HOST-UNION path at a covered member: through its dependency
+    on the union, or, while it has none, the dependency the coverage rule will
+    make it add."""
+    if member.depends_on_union:
+        return f"{member.name}{EDGE_ARROW[Section.NORMAL]}{UNION_TAIL}"
+    return (f"{member.name} puts covered member {member.name} on the host side, where the "
             f"dependency on {UNION_CRATE} it must add would make the union's target pins "
             f"host units")
+
+
+def host_union_tails(ws: Workspace) -> Mapping[str, str]:
+    """Every package that an edge compiled for the host must not reach: the
+    union, and each covered member, which reaches the union once the coverage
+    rule holds. Each maps to the end of the HOST-UNION path from that edge on."""
+    return {UNION_CRATE: UNION_TAIL, **{m.name: covered_tail(m) for m in ws.covered}}
 
 
 def host_union_findings(ws: Workspace) -> list[str]:
@@ -827,15 +840,16 @@ def host_union_findings(ws: Workspace) -> list[str]:
     member, onto the host side, read from the workspace's own dependency edges
     so that cargo tree's print order and its cross-root `(*)` dedupe cannot
     hide one."""
-    brings_union = {m.name for m in ws.covered} | {UNION_CRATE}
+    tails = host_union_tails(ws)
     found = []
     for parent in ws.members:
         for edge in sorted(parent.dependencies, key=lambda d: (d.name, d.section.value)):
-            if edge.name not in brings_union or not compiled_for_host(parent, edge):
+            tail = tails.get(edge.name)
+            if tail is None or not compiled_for_host(parent, edge):
                 continue
             found.append(
                 f"HOST-UNION {parent.name}: {path_head(parent)}{EDGE_ARROW[edge.section]}"
-                f"{path_tail(ws, edge)} — remove {parent.name}'s {EDGE_NOUN[edge.section]} "
+                f"{tail} — remove {parent.name}'s {EDGE_NOUN[edge.section]} "
                 f"on {edge.name} from {parent.manifest_path}")
     return found
 
@@ -1062,7 +1076,9 @@ def run_check(root: Path) -> Verdict:
     host_union = host_union_findings(ws)
     if host_union:
         return fail([*coverage, *host_union], HOST_UNION_TRAILER)
-    resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
+    host = host_triple(root)
+    fetch_locked(root, host)
+    resolution = resolve_splits(root, LockMode.FROZEN, host, ws)
     advisories = resolution.member_splits
     for advisory in advisories:
         print(advisory)

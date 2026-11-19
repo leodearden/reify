@@ -28,6 +28,7 @@ CLI subcommands (used by the bash harness):
   psi-avg10 [proc_path]         print avg10 float or "unavailable"
   psi-some-total [proc_path]    print some-line total int or "unavailable"
   cgroup-usage <path>           print usage_usec integer from cpu.stat
+  cgroup-usage-stamped <path>   print "usage_usec monotonic_usec" (stamp taken at the read)
   fair-share <active> <cores>   print fair_share_floor float
 """
 
@@ -35,6 +36,7 @@ import importlib.util
 import os
 import pathlib
 import sys
+import time
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Reuse ε primitives from scripts/jobserver-tuning-harness.py via importlib
@@ -455,6 +457,7 @@ def _usage() -> None:
         "  psi-avg10 [proc_path]      print avg10 float or 'unavailable'\n"
         "  psi-some-total [proc_path] print some-line total int or 'unavailable'\n"
         "  cgroup-usage <path>        print usage_usec from cpu.stat (cgroup rel or abs)\n"
+        "  cgroup-usage-stamped <path> print 'usage_usec monotonic_usec' (stamp taken at the read)\n"
         "  fair-share <active> <cores>  print fair_share_floor float\n",
         file=sys.stderr,
     )
@@ -524,6 +527,18 @@ def main(argv: list[str]) -> int:
             print("unavailable")
         else:
             print(val)
+        return 0
+
+    elif cmd == "cgroup-usage-stamped":
+        if len(args) != 1:
+            print("cgroup-usage-stamped: need <path>", file=sys.stderr)
+            return 64
+        val = read_cgroup_cpu_usage(args[0])
+        stamp_us = time.monotonic_ns() // 1000
+        if val is None:
+            print("unavailable")
+        else:
+            print(f"{val} {stamp_us}")
         return 0
 
     elif cmd == "fair-share":

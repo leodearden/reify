@@ -1,30 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createLauncherActions, LaunchFailure, type LauncherDeps } from '../app/launcherActions';
+import { createLauncherActions, LaunchFailure } from '../app/launcherActions';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
-import type { ModeState, RecentEntry } from '../types';
+import type { FileData, ModeState } from '../types';
 import { deferred, flushMacrotasks } from './test-utils';
-
-const RECENT: RecentEntry[] = [
-  { path: '/designs/bracket.ri', opened_at: 2000 },
-  { path: '/designs/flange.ri', opened_at: 1000 },
-];
-
-function makeDeps() {
-  return {
-    loadDocument: vi.fn<LauncherDeps['loadDocument']>().mockResolvedValue(undefined),
-    createNewFile: vi
-      .fn<LauncherDeps['createNewFile']>()
-      .mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' }),
-    recordRecent: vi.fn<LauncherDeps['recordRecent']>().mockResolvedValue(RECENT),
-    listRecent: vi.fn<LauncherDeps['listRecent']>().mockResolvedValue(RECENT),
-    setMode: vi
-      .fn<LauncherDeps['setMode']>()
-      .mockImplementation(async (mode) => ({ mode, debug_port: mode === 'debug' ? 3939 : null })),
-    showAssistant: vi.fn<LauncherDeps['showAssistant']>(),
-    ensureDebugBridge: vi.fn<LauncherDeps['ensureDebugBridge']>().mockResolvedValue(undefined),
-    notify: vi.fn<LauncherDeps['notify']>(),
-  };
-}
+import { FAKE_DEBUG_PORT, makeLauncherDeps, stubRecent } from './test_utils/launcherDeps';
 
 async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   const outcome = await promise.then(
@@ -35,12 +14,23 @@ async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   return outcome as LaunchFailure;
 }
 
+function thrownBy(fn: () => void): LaunchFailure {
+  let thrown: unknown;
+  try {
+    fn();
+  } catch (err) {
+    thrown = err;
+  }
+  expect(thrown).toBeInstanceOf(LaunchFailure);
+  return thrown as LaunchFailure;
+}
+
 let store: LauncherStore;
-let deps: ReturnType<typeof makeDeps>;
+let deps: ReturnType<typeof makeLauncherDeps>;
 
 beforeEach(() => {
   store = createLauncherStore();
-  deps = makeDeps();
+  deps = makeLauncherDeps();
 });
 
 describe('openDocument', () => {
@@ -49,12 +39,12 @@ describe('openDocument', () => {
 
     await actions.openDocument('/designs/bracket.ri');
 
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri');
     expect(deps.loadDocument.mock.invocationCallOrder[0]).toBeLessThan(
       deps.recordRecent.mock.invocationCallOrder[0],
     );
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 
   it('leaves the document error to its presenter', async () => {
@@ -91,6 +81,81 @@ describe('openDocument', () => {
     expect(deps.notify).toHaveBeenCalledTimes(1);
     expect(store.state.document.error).toBeNull();
   });
+
+  it('is pending on the requested path while the load is in flight and not once it settles', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+
+    const opened = actions.openDocument('/designs/bracket.ri');
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    held.resolve();
+    await opened;
+
+    expect(store.state.document.pending).toBeNull();
+  });
+
+  it('is no longer pending after a failed load', async () => {
+    deps.loadDocument.mockRejectedValue('No such file: /designs/missing.ri');
+    const actions = createLauncherActions(store, deps);
+
+    await failureOf(actions.openDocument('/designs/missing.ri'));
+
+    expect(store.state.document.pending).toBeNull();
+  });
+
+  it('a failed open does not shut the launcher: the next open loads', async () => {
+    deps.loadDocument.mockRejectedValueOnce('No such file: /designs/missing.ri');
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.openDocument('/designs/missing.ri'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
+    expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
+  });
+
+  it('a second open while one is in flight rejects with E_GUI_DOCUMENT_BUSY and loads nothing more', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+
+    const failure = await failureOf(actions.openDocument('/designs/flange.ri'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.message).toBe('/designs/bracket.ri is still opening');
+    expect(deps.loadDocument).toHaveBeenCalledTimes(1);
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/bracket.ri', expect.any(AbortSignal));
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    held.resolve();
+    await first;
+
+    expect(deps.recordRecent).toHaveBeenCalledTimes(1);
+    expect(deps.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri');
+  });
+
+  it('a refused open writes nothing to the store', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    store.setRecent(stubRecent());
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+    const errorBefore = store.state.document.error;
+    const recentBefore = store.state.document.recent;
+
+    await failureOf(actions.openDocument('/designs/flange.ri'));
+
+    expect(store.state.document.error).toBe(errorBefore);
+    expect(store.state.document.recent).toBe(recentBefore);
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    held.resolve();
+    await first;
+  });
 });
 
 describe('createDocument', () => {
@@ -111,9 +176,9 @@ describe('createDocument', () => {
     await actions.createDocument('/designs/created');
 
     expect(deps.createNewFile).toHaveBeenCalledWith('/designs/created');
-    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri');
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal));
     expect(deps.recordRecent).toHaveBeenCalledWith('/designs/created.ri');
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 
   it('rejects with E_GUI_OPEN_FAILED when the created file fails to load', async () => {
@@ -124,6 +189,227 @@ describe('createDocument', () => {
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
   });
+
+  it('a failed template write does not shut the launcher: the next open loads', async () => {
+    deps.createNewFile.mockRejectedValueOnce('File already exists: /designs/taken.ri');
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.createDocument('/designs/taken.ri'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenCalledWith('/designs/flange.ri', expect.any(AbortSignal));
+  });
+
+  it('a failed load of the created file does not shut the launcher: the next open loads', async () => {
+    deps.loadDocument.mockRejectedValueOnce(new Error('engine refused'));
+    const actions = createLauncherActions(store, deps);
+    await failureOf(actions.createDocument('/designs/created'));
+
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
+  });
+
+  it('is pending on the requested path from the template write through the load', async () => {
+    const written = deferred<FileData>();
+    const loaded = deferred<void>();
+    deps.createNewFile.mockReturnValueOnce(written.promise);
+    deps.loadDocument.mockReturnValueOnce(loaded.promise);
+    const actions = createLauncherActions(store, deps);
+
+    const created = actions.createDocument('/designs/created');
+    expect(store.state.document.pending).toBe('/designs/created');
+
+    written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
+    await vi.waitFor(() => expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal)));
+    expect(store.state.document.pending).toBe('/designs/created');
+
+    loaded.resolve();
+    await created;
+
+    expect(store.state.document.pending).toBeNull();
+  });
+
+  it('a create while an open is in flight rejects with E_GUI_DOCUMENT_BUSY, not a template-write failure, and writes no template', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+
+    const failure = await failureOf(actions.createDocument('/designs/created'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.code).not.toBe(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED);
+    expect(failure.message).toBe('/designs/bracket.ri is still opening');
+    expect(deps.createNewFile).not.toHaveBeenCalled();
+
+    held.resolve();
+    await opening;
+  });
+
+  it('an open while a create is in flight rejects with E_GUI_DOCUMENT_BUSY naming the path being created', async () => {
+    const written = deferred<FileData>();
+    deps.createNewFile.mockReturnValueOnce(written.promise);
+    const actions = createLauncherActions(store, deps);
+    const creating = actions.createDocument('/designs/created');
+
+    const failure = await failureOf(actions.openDocument('/designs/bracket.ri'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.message).toBe('/designs/created is still opening');
+    expect(deps.loadDocument).not.toHaveBeenCalled();
+
+    written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
+    await creating;
+  });
+});
+
+describe('refuseIfDocumentPending', () => {
+  it('does nothing while no document attempt is in flight', () => {
+    const actions = createLauncherActions(store, deps);
+
+    expect(() => actions.refuseIfDocumentPending()).not.toThrow();
+  });
+
+  it('while an open is in flight, throws E_GUI_DOCUMENT_BUSY naming the pending path', async () => {
+    const held = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(held.promise);
+    const actions = createLauncherActions(store, deps);
+    const opening = actions.openDocument('/designs/bracket.ri');
+
+    const refused = thrownBy(() => actions.refuseIfDocumentPending());
+
+    expect(refused.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(refused.message).toBe('/designs/bracket.ri is still opening');
+
+    held.resolve();
+    await opening;
+  });
+});
+
+type HeldLoad = ReturnType<typeof deferred<void>>;
+
+describe('abandonDocumentAttempt', () => {
+  it('a hung load can be abandoned and the next open loads', async () => {
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const actions = createLauncherActions(store, deps);
+    const hung = actions.openDocument('/designs/bracket.ri');
+
+    actions.abandonDocumentAttempt();
+
+    expect(store.state.document.pending).toBeNull();
+    await expect(hung).resolves.toBeUndefined();
+    await expect(actions.openDocument('/designs/flange.ri')).resolves.toBeUndefined();
+    expect(deps.loadDocument).toHaveBeenLastCalledWith('/designs/flange.ri', expect.any(AbortSignal));
+    expect(deps.recordRecent).toHaveBeenCalledTimes(1);
+    expect(deps.recordRecent).toHaveBeenCalledWith('/designs/flange.ri');
+  });
+
+  it('abandoning aborts the signal the load was given', async () => {
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise);
+    const actions = createLauncherActions(store, deps);
+    const hung = actions.openDocument('/designs/bracket.ri');
+    const signal = deps.loadDocument.mock.calls[0][1];
+    expect(signal.aborted).toBe(false);
+
+    actions.abandonDocumentAttempt();
+
+    expect(signal.aborted).toBe(true);
+    await hung;
+  });
+
+  it('an open started in the same turn as the abandon keeps its pending once the abandoned attempt settles', async () => {
+    const next = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(deferred<void>().promise).mockReturnValueOnce(next.promise);
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+
+    actions.abandonDocumentAttempt();
+    const second = actions.openDocument('/designs/flange.ri');
+    await first;
+
+    expect(store.state.document.pending).toBe('/designs/flange.ri');
+    const failure = await failureOf(actions.openDocument('/designs/created.ri'));
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DOCUMENT_BUSY);
+    expect(failure.message).toBe('/designs/flange.ri is still opening');
+
+    next.resolve();
+    await second;
+
+    expect(store.state.document.pending).toBeNull();
+  });
+
+  it.each([
+    ['a late success', (held: HeldLoad) => held.resolve()],
+    ['a late rejection', (held: HeldLoad) => held.reject(new Error('engine refused'))],
+  ])('an abandoned load that settles late changes nothing (%s)', async (_, settleLate) => {
+    const abandoned = deferred<void>();
+    const next = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(abandoned.promise).mockReturnValueOnce(next.promise);
+    const actions = createLauncherActions(store, deps);
+    const first = actions.openDocument('/designs/bracket.ri');
+    actions.abandonDocumentAttempt();
+    await first;
+    const second = actions.openDocument('/designs/flange.ri');
+
+    settleLate(abandoned);
+    await flushMacrotasks();
+
+    expect(store.state.document.pending).toBe('/designs/flange.ri');
+    expect(deps.recordRecent).not.toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(store.state.document.error).toBeNull();
+
+    next.resolve();
+    await second;
+  });
+
+  it('an abandoned create whose template write lands late loads nothing and leaves the written file out of Recent', async () => {
+    const written = deferred<FileData>();
+    deps.createNewFile.mockReturnValueOnce(written.promise);
+    const actions = createLauncherActions(store, deps);
+    const creating = actions.createDocument('/designs/created');
+
+    actions.abandonDocumentAttempt();
+    await expect(creating).resolves.toBeUndefined();
+    written.resolve({ path: '/designs/created.ri', content: '// New design\n' });
+    await flushMacrotasks();
+
+    expect(deps.loadDocument).not.toHaveBeenCalled();
+    expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.recent).toEqual([]);
+  });
+
+  it('a create abandoned while its written file is loading leaves that file out of Recent', async () => {
+    const loaded = deferred<void>();
+    deps.loadDocument.mockReturnValueOnce(loaded.promise);
+    const actions = createLauncherActions(store, deps);
+    const creating = actions.createDocument('/designs/created');
+    await vi.waitFor(() =>
+      expect(deps.loadDocument).toHaveBeenCalledWith('/designs/created.ri', expect.any(AbortSignal)),
+    );
+
+    actions.abandonDocumentAttempt();
+    await creating;
+    loaded.resolve();
+    await flushMacrotasks();
+
+    expect(deps.recordRecent).not.toHaveBeenCalled();
+    expect(store.state.document.recent).toEqual([]);
+  });
+
+  it('abandoning with no attempt in flight changes nothing', () => {
+    store.setRecent(stubRecent());
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'earlier' });
+    const actions = createLauncherActions(store, deps);
+    const errorBefore = store.state.document.error;
+    const recentBefore = store.state.document.recent;
+
+    actions.abandonDocumentAttempt();
+
+    expect(store.state.document.pending).toBeNull();
+    expect(store.state.document.error).toBe(errorBefore);
+    expect(store.state.document.recent).toBe(recentBefore);
+  });
 });
 
 describe('refreshRecent', () => {
@@ -133,7 +419,7 @@ describe('refreshRecent', () => {
     await actions.refreshRecent();
 
     expect(deps.listRecent).toHaveBeenCalledTimes(1);
-    expect(store.state.document.recent).toEqual(RECENT);
+    expect(store.state.document.recent).toEqual(stubRecent());
   });
 });
 
@@ -165,7 +451,7 @@ describe('selectMode', () => {
 
     await actions.selectMode('debug');
 
-    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: FAKE_DEBUG_PORT, error: null });
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
 
     await actions.selectMode('debug');
@@ -174,15 +460,15 @@ describe('selectMode', () => {
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(2);
   });
 
-  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED when the debug bridge fails to start', async () => {
+  it('debug: rejects with E_GUI_DEBUG_BRIDGE_FAILED when the debug bridge fails to start', async () => {
     deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
     const actions = createLauncherActions(store, deps);
 
     const failure = await failureOf(actions.selectMode('debug'));
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toContain('Failed to fetch dynamically imported module');
-    expect(store.state.mode.debugPort).toBe(3939);
+    expect(store.state.mode.debugPort).toBe(FAKE_DEBUG_PORT);
   });
 
   it('debug: two selections in flight together both settle with the one bridge start', async () => {
@@ -199,16 +485,16 @@ describe('selectMode', () => {
     await vi.waitFor(() => expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(2));
     expect(settled).toEqual([]);
 
-    failStart(new Error('listen failed'));
+    failStart(new Error('Failed to fetch dynamically imported module'));
     await Promise.all([first, second]);
 
     expect(settled).toEqual([
-      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
-      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED,
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED,
     ]);
   });
 
-  it('rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails', async () => {
+  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails before the listener is live', async () => {
     deps.setMode.mockRejectedValue('Address already in use (os error 98)');
     const actions = createLauncherActions(store, deps);
 
@@ -219,6 +505,63 @@ describe('selectMode', () => {
     expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
     expect(deps.showAssistant).not.toHaveBeenCalled();
   });
+
+  it('debug: a repeat selection whose set_mode fails once the listener is live rejects with E_GUI_MODE_FAILED, keeping the selection and the live port', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.selectMode('debug');
+
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: FAKE_DEBUG_PORT, error: null });
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
+    expect(deps.showAssistant).not.toHaveBeenCalled();
+  });
+
+  it('debug: a selection whose set_mode fails after adoptLiveDebugServer recorded the live port rejects with E_GUI_MODE_FAILED', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.adoptLiveDebugServer();
+
+    deps.setMode.mockRejectedValue('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+  });
+
+  it('debug: after Debug then Design, a Debug selection whose set_mode fails rejects with E_GUI_MODE_FAILED, keeping Design selected', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.selectMode('debug');
+    await actions.selectMode('design');
+    expect(store.state.mode).toEqual({ selected: 'design', debugPort: FAKE_DEBUG_PORT, error: null });
+
+    deps.setMode.mockRejectedValueOnce('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+    expect(store.state.mode.selected).toBe('design');
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['design', 'assistant'] as const)(
+    '%s: rejects with E_GUI_MODE_FAILED when set_mode fails, keeping the selection and the assistant panel as they were',
+    async (mode) => {
+      store.applyModeState({ mode: 'debug', debug_port: 3939 });
+      deps.setMode.mockRejectedValue('state not managed for field `debug_server`');
+      const actions = createLauncherActions(store, deps);
+
+      const failure = await failureOf(actions.selectMode(mode));
+
+      expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+      expect(failure.message).toBe('state not managed for field `debug_server`');
+      expect(store.state.mode.selected).toBe('debug');
+      expect(deps.showAssistant).not.toHaveBeenCalled();
+      expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('adoptLiveDebugServer', () => {
@@ -246,7 +589,7 @@ describe('adoptLiveDebugServer', () => {
 
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
     expect(store.state.mode.error).toEqual({
-      code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
       message: 'IPC channel closed',
     });
     expect(store.state.mode.selected).toBe('assistant');
@@ -255,7 +598,7 @@ describe('adoptLiveDebugServer', () => {
     expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
   });
 
-  it('rejects with E_GUI_DEBUG_LISTENER_FAILED when the bridge fails, only once set_mode has replied', async () => {
+  it('rejects with E_GUI_DEBUG_BRIDGE_FAILED when the bridge fails, only once set_mode has replied', async () => {
     const reply = deferred<ModeState>();
     deps.setMode.mockReturnValue(reply.promise);
     deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
@@ -272,19 +615,21 @@ describe('adoptLiveDebugServer', () => {
     reply.resolve({ mode: 'debug', debug_port: 3939 });
     const failure = await adopted;
 
-    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toContain('Failed to fetch dynamically imported module');
     expect(store.state.mode.debugPort).toBe(3939);
   });
 
   it('when both fail, rejects with the bridge failure and keeps the set_mode failure as the mode error', async () => {
-    deps.ensureDebugBridge.mockRejectedValue(new Error('listen failed'));
+    deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
     deps.setMode.mockRejectedValue('IPC channel closed');
     const actions = createLauncherActions(store, deps);
 
     const failure = await failureOf(actions.adoptLiveDebugServer());
 
-    expect(failure.message).toBe('listen failed');
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
+    expect(failure.message).toBe('Failed to fetch dynamically imported module');
+    expect(store.state.mode.error?.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
     expect(store.state.mode.error?.message).toBe('IPC channel closed');
     expect(deps.notify.mock.calls[0][0]).toContain('IPC channel closed');
   });

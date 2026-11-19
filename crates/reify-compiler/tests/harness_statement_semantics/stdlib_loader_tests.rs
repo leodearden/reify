@@ -1,5 +1,7 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
+use std::collections::BTreeSet;
+
 use reify_ast::Pragma;
 use reify_compiler::stdlib_loader;
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
@@ -37,57 +39,23 @@ fn all_stdlib_modules_have_no_errors() {
     }
 }
 
-// ─── task-4016 ζ: determinacy_purposes load-order invariant ─────────
+// ─── task-4016 ζ: the standard purposes stay out of sibling stdlib modules ─
 //
-// std.determinacy.purposes MUST be the last entry in the stdlib module list.
-// The sequential prelude build runs merge_prelude_purposes for every compile
-// including each intra-stdlib module compile, but no-ops because
-// std.determinacy.purposes is the only module with pub purposes and it is
-// registered last — no later stdlib module sees it as a prelude during
-// load_stdlib(), keeping stdlib-internal count/hash goldens byte-stable.
-//
-// These two tests make the prose invariant machine-checkable so that a future
-// contributor appending a module after std.determinacy.purposes is caught
-// immediately rather than by a silent golden drift.
-
-/// std.determinacy.purposes must be the last module compiled by load_stdlib().
-///
-/// If this fails it means a new stdlib module was appended AFTER
-/// std.determinacy.purposes in stdlib_loader.rs — move it before the
-/// determinacy module, or the sequential merge will leak standard purposes
-/// into that later module during intra-stdlib compilation.
-#[test]
-fn std_determinacy_purposes_is_last_stdlib_module() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        !modules.is_empty(),
-        "stdlib should have at least one module"
-    );
-    let last = modules.last().unwrap();
-    let path_str = format!("{}", last.path);
-    assert_eq!(
-        path_str,
-        "std/determinacy/purposes",
-        "std.determinacy.purposes must be the LAST stdlib module compiled \
-         (invariant: no later stdlib module may inherit its pub purposes \
-         via the sequential merge). \
-         Got last module: '{}'. \
-         Full order: {:?}",
-        path_str,
-        modules
-            .iter()
-            .map(|m| format!("{}", m.path))
-            .collect::<Vec<_>>()
-    );
-}
+// merge_prelude_purposes runs for every compile, intra-stdlib ones included,
+// but a stdlib module's prelude is only what it imports. No stdlib module
+// imports std.determinacy.purposes, so none inherits its pub purposes and the
+// stdlib-internal count/hash goldens stay byte-stable. Registration order plays
+// no part: harness_modules_ports/stdlib_strict_build_tests pins the same fact
+// with std.determinacy.purposes registered first.
 
 /// No stdlib module other than std.determinacy.purposes may have a compiled
 /// purpose named "simulation_ready" or "design_review" in its compiled_purposes.
 ///
-/// If this fails it means a module compiled AFTER std.determinacy.purposes
-/// (or one that somehow directly declares these names) is inheriting/re-declaring
-/// the standard purposes, which would break the 'stdlib-internal counts stay
-/// stable' assumption and could cause golden test churn across the stdlib.
+/// A stdlib module inherits pub purposes only from the modules it imports, and
+/// no stdlib module imports std.determinacy.purposes: the standard purposes are
+/// a prelude for user modules, not for sibling stdlib modules. If this fails,
+/// a stdlib module imports std.determinacy.purposes or re-declares one of the
+/// standard purposes.
 #[test]
 fn no_stdlib_module_inherits_standard_purposes() {
     let modules = stdlib_loader::load_stdlib();
@@ -105,9 +73,8 @@ fn no_stdlib_module_inherits_standard_purposes() {
                 "stdlib module '{}' unexpectedly has a purpose named '{}' in \
                  its compiled_purposes. Standard purposes (simulation_ready, \
                  design_review) must only appear in std.determinacy.purposes \
-                 and in user modules compiled against the full stdlib. \
-                 Check that std.determinacy.purposes is still the LAST entry \
-                 in stdlib_loader.rs's sources vec.",
+                 and in user modules compiled against the full stdlib, so no \
+                 stdlib module may import std.determinacy.purposes.",
                 path_str,
                 purpose.name
             );
@@ -193,27 +160,6 @@ fn load_stdlib_is_cached() {
     assert!(
         std::ptr::eq(first, second),
         "load_stdlib() should return the same slice reference on repeated calls"
-    );
-}
-
-// ─── step-1b: std.units is the first stdlib module (bootstrap order) ─
-
-/// load_stdlib() returns std.units as the first module in the slice.
-/// This ensures units are available to all subsequent stdlib modules.
-#[test]
-fn std_units_is_first_module() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        modules.len() >= 2,
-        "expected at least 2 stdlib modules (units + materials), got {}",
-        modules.len()
-    );
-    let first = &modules[0];
-    let path_str = format!("{}", first.path);
-    assert!(
-        path_str.contains("units"),
-        "first stdlib module should be std.units, got path: {}",
-        path_str
     );
 }
 
@@ -381,13 +327,8 @@ fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
     }));
 
     let err = result.expect_err("expected panic naming all offending paths");
-    let msg: &str = if let Some(s) = err.downcast_ref::<String>() {
-        s.as_str()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        s
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    };
+    let msg: &str = reify_core::panic_payload_str(err.as_ref())
+        .expect("panic payload was neither String nor &'static str");
 
     // Anchor: confirm the panic originates from the aggregated-violations code
     // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
@@ -896,26 +837,6 @@ structure def S {
 // source set through the production entry point is the only way to observe the
 // gate fire.
 
-/// Drive `build_stdlib_modules` on `sources` and return the panic message.
-///
-/// Panics (failing the test) if the build did NOT panic, or if the payload is
-/// neither `String` nor `&'static str`. Downcast idiom mirrors
-/// `multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic`
-/// above.
-fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stdlib_loader::build_stdlib_modules(sources);
-    }));
-    let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
-    if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    }
-}
-
 /// Assert that building `sources` panics with the NS-P2 collision message, and
 /// that the message names the kind, the colliding name, and BOTH modules.
 ///
@@ -931,7 +852,7 @@ fn assert_collision_panic(
     module_a: &str,
     module_b: &str,
 ) {
-    let msg = stdlib_build_panic_message(sources);
+    let msg = crate::common::stdlib_build_panic_message(sources);
     for needle in [NS_P2_PANIC_ANCHOR, kind, name, module_a, module_b] {
         assert!(
             msg.contains(needle),
@@ -975,7 +896,7 @@ fn stdlib_build_with_injected_duplicate_structure_name_panics_naming_both_module
 /// The positive counterpart: the REAL stdlib must still build. This is what
 /// proves the gate is wired into the production path rather than only reachable
 /// from a synthetic test set — if the scan were too coarse (kind-agnostic, or
-/// keying functions by name alone), this test goes red on the live 47-file
+/// keying functions by name alone), this test goes red on the live
 /// corpus while the injected-duplicate test above stays green.
 #[test]
 fn real_stdlib_build_is_collision_free() {
@@ -1016,7 +937,7 @@ fn real_stdlib_build_is_collision_free() {
 //       one; reading `CompiledModule.type_aliases` (module-level only) does not.
 //
 // Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
-// (modal_analysis_fns.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
+// (modal_analysis.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
 // `solve_load_cases` x2 (fea_multi_case.ri) are all same-module overloads, out
 // of a cross-module scan's reach by construction, and remain the business of
 // the per-module duplicate path (`record_or_report_duplicate` in ctx.rs).
@@ -1033,11 +954,7 @@ fn assert_no_collision_panic(sources: &[(&str, &str)], why: &str) {
         stdlib_loader::build_stdlib_modules(sources);
     }));
     if let Err(err) = result {
-        let msg = err
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
-            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         panic!("stdlib build should have accepted {why}; got:\n{msg}");
     }
 }
@@ -1198,4 +1115,156 @@ fn associated_types_are_not_module_level_type_aliases() {
         "the same ASSOCIATED type name declared inside two different traits \
          (live: MotionValue in kinematic.ri HasMotion/Prismatic/Revolute/Coupling)",
     );
+}
+
+// ─── task 5498 (stdlib-namespace δ): boundary #6 — vestigial *_fns folds ───
+//
+// Each folded fn is declared by its parent module, with the expected overload
+// count and `@optimized` dispatch target, and by no `*/fns` module. Asserted
+// over the compiled stdlib, so it pins where the fn resolves from without
+// naming the file or module it used to live in. A same-name overload in some
+// other module is legal stdlib and is deliberately not an offender here.
+
+struct FoldedFn {
+    parent: &'static str,
+    name: &'static str,
+    overloads: usize,
+    optimized_target: Option<&'static str>,
+}
+
+const FOLDED_FNS: &[FoldedFn] = &[
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "solve_buckling",
+        overloads: 1,
+        optimized_target: Some("solver::buckling"),
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "critical_load",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "safety_factor_buckling",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "mode_shape",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/solver/buckling",
+        name: "solve_buckling_load_cases",
+        overloads: 1,
+        optimized_target: Some("solver::buckling_multi_case"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "modal_analysis",
+        overloads: 1,
+        optimized_target: Some("modal::free_vibration"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "first_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "mode_frequency",
+        overloads: 1,
+        optimized_target: None,
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "transient_response",
+        overloads: 1,
+        optimized_target: Some("modal::transient_response"),
+    },
+    FoldedFn {
+        parent: "std/modal/analysis",
+        name: "displacement_at",
+        overloads: 2,
+        optimized_target: Some("modal::displacement_at"),
+    },
+    FoldedFn {
+        parent: "std/trajectory",
+        name: "simulate_trajectory",
+        overloads: 1,
+        optimized_target: Some("trajectory::simulate"),
+    },
+];
+
+fn stdlib_declarations_of(fn_name: &str) -> Vec<(String, Option<String>)> {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| {
+            m.functions
+                .iter()
+                .filter(move |f| f.name == fn_name)
+                .map(move |f| (m.path.to_string(), f.optimized_target.clone()))
+        })
+        .collect()
+}
+
+#[test]
+fn folded_fns_are_declared_by_their_parent_module_and_no_fns_module() {
+    let offenders: Vec<String> = FOLDED_FNS
+        .iter()
+        .filter_map(|row| {
+            let declarations = stdlib_declarations_of(row.name);
+            let in_parent: Vec<&Option<String>> = declarations
+                .iter()
+                .filter(|(path, _)| path == row.parent)
+                .map(|(_, target)| target)
+                .collect();
+            let parent_matches = in_parent.len() == row.overloads
+                && in_parent
+                    .iter()
+                    .all(|target| target.as_deref() == row.optimized_target);
+            let in_fns_module = declarations.iter().any(|(path, _)| path.ends_with("/fns"));
+            (!parent_matches || in_fns_module).then(|| {
+                format!(
+                    "fn {}: expected {} overload(s) in {} with optimized_target {:?} and \
+                     none in a */fns module; found (module, optimized_target) = {:?}",
+                    row.name, row.overloads, row.parent, row.optimized_target, declarations
+                )
+            })
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "folded stdlib fns must be declared by their parent module, with their \
+         @optimized target intact, and by no */fns module (a legitimate same-name \
+         overload in another module is allowed and is not what this reports):\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn no_fns_sibling_is_loaded_beside_a_folded_parent() {
+    let loaded: BTreeSet<String> = stdlib_loader::load_stdlib()
+        .iter()
+        .map(|m| m.path.to_string())
+        .collect();
+    let parents: BTreeSet<&str> = FOLDED_FNS.iter().map(|row| row.parent).collect();
+    let offenders: Vec<String> = parents
+        .into_iter()
+        .flat_map(|parent| {
+            let sibling = format!("{parent}/fns");
+            let missing_parent =
+                (!loaded.contains(parent)).then(|| format!("{parent} is not in the loaded stdlib"));
+            let stale_sibling = loaded
+                .contains(&sibling)
+                .then(|| format!("{sibling} is still loaded beside its folded parent"));
+            missing_parent.into_iter().chain(stale_sibling)
+        })
+        .collect();
+    assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }

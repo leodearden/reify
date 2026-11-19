@@ -1,3 +1,4 @@
+module std.tolerancing
 #no_prelude
 // Stdlib: Tolerancing — Dimensional, Geometric (14 GD&T types), Surface
 // Provides core definitions for engineering tolerancing and geometric dimensioning.

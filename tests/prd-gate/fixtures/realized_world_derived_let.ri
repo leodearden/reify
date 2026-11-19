@@ -1,0 +1,10 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// Row B9. Today: `h` displays 0.005 m; extrude's distance is unresolved (Undef).
+module realized_world_derived_let
+
+structure P {
+    let g = box(5mm, 5mm, 5mm)
+    let v = volume(g)
+    let h = v / 25mm^2
+    let r = extrude(rectangle(5mm, 5mm), h)
+}

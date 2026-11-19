@@ -300,7 +300,8 @@ fn rewrite_free_idents<'e>(
 //
 // A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
 // whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
-// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// with no intermediate geometry let, or the same query in a `constraint`
+// predicate (task 10033) — evaluates to `Value::Undef`: eval's
 // `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
 // let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
 // arg. This desugar rewrites the entity member list ONCE, upstream of every
@@ -665,7 +666,7 @@ fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunctio
 /// member list where a lambda param / quantifier variable / match-pattern binder
 /// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
 /// the two in lockstep. Note this is scoped at BOTH levels: only top-level
-/// `Let`/`Param` members are descended (see
+/// `Let` values, `Param` defaults and `Constraint` predicates are descended (see
 /// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
 /// sub-expressions.
 fn hoist_queries_in_expr(
@@ -730,21 +731,34 @@ fn make_synthetic_geometry_let(
     })
 }
 
-/// The value/default expression of a value-cell member (`Let` value / `Param`
-/// default), or `None` for non-value members.
-fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+/// The expression of `member` the inline geometry-query hoist descends (`Let`
+/// value / `Param` default / `Constraint` predicate), or `None` for any other
+/// member. [`hoist_scan_expr_mut`] is its mutable twin: the two name the same
+/// members.
+fn hoist_scan_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
     match member {
         reify_ast::MemberDecl::Let(l) => Some(&l.value),
         reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&c.expr),
+        _ => None,
+    }
+}
+
+/// Mutable twin of [`hoist_scan_expr`].
+fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&mut l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_mut(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&mut c.expr),
         _ => None,
     }
 }
 
 /// Desugar inline geometry-query arguments into synthetic geometry lets
-/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
-/// default) whose expression contains a hoistable whole-handle query, mint the
-/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
-/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// (task 5345). For each top-level member whose [`hoist_scan_expr`] (`Let`
+/// value / `Param` default / `Constraint` predicate) contains a hoistable
+/// whole-handle query, mint the `__geoq_<N>` geometry let(s) immediately BEFORE
+/// the consuming member and rewrite the query arg[0] to reference them. Synthetic names are minted from
 /// a single structure-scoped counter in source+post-order.
 ///
 /// Returns `None` — and allocates nothing — when no member carries an inline
@@ -756,9 +770,10 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 /// keeps ordinary product-geometry semantics.
 ///
 /// The rewritten member list becomes the single source consumed by all downstream
-/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
-/// members are descended (guarded-group / match-cluster members are out of
-/// scope, consistent with the whole-handle-query acceptance surface).
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`/
+/// `Constraint` members are descended (guarded-group / match-cluster members are
+/// out of scope, consistent with the whole-handle-query acceptance surface). A
+/// `where` guard is not consulted, for a `Constraint` as for a `Let`.
 ///
 /// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
 /// verbatim to the STRUCTURE member list: at the member level as above, and
@@ -771,7 +786,7 @@ fn desugar_inline_geometry_query_args(
 ) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
     let has_any = members
         .iter()
-        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+        .any(|m| hoist_scan_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
     if !has_any {
         return None;
     }
@@ -780,34 +795,13 @@ fn desugar_inline_geometry_query_args(
     let mut minted: HashSet<String> = HashSet::new();
     let mut counter: usize = 0;
     for member in members {
-        match member {
-            reify_ast::MemberDecl::Let(let_decl)
-                if expr_has_hoistable_query(&let_decl.value, functions) =>
-            {
-                let mut new_let = let_decl.clone();
-                hoist_queries_in_expr(
-                    &mut new_let.value,
-                    &mut counter,
-                    functions,
-                    &mut out,
-                    &mut minted,
-                );
-                out.push(reify_ast::MemberDecl::Let(new_let));
-            }
-            reify_ast::MemberDecl::Param(param)
-                if param
-                    .default
-                    .as_ref()
-                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
-            {
-                let mut new_param = param.clone();
-                if let Some(def) = new_param.default.as_mut() {
-                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
-                }
-                out.push(reify_ast::MemberDecl::Param(new_param));
-            }
-            other => out.push(other.clone()),
+        let mut member = member.clone();
+        if let Some(expr) = hoist_scan_expr_mut(&mut member)
+            && expr_has_hoistable_query(expr, functions)
+        {
+            hoist_queries_in_expr(expr, &mut counter, functions, &mut out, &mut minted);
         }
+        out.push(member);
     }
     Some((out, minted))
 }
@@ -1362,24 +1356,12 @@ pub(crate) fn compile_entity(
     };
 
     let entity_name = structure.name;
-    // task 3540 (SIR-α): make `structure def` templates reachable at the
-    // expression-lowering site so `Foo()` can lower to a
-    // `StructureInstanceCtor` (esc-3540-177 RULING 1). Composition: prelude
-    // structure-defs first, then local already-compiled structure-defs
-    // (later entries shadow earlier — local definitions shadow prelude,
-    // matching Reify scoping). Declared BEFORE `scope` so it outlives the
-    // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .ctor
-        .iter()
-        .map(|(k, v)| (k.clone(), *v))
-        .chain(
-            compiled_templates
-                .iter()
-                .filter(|t| t.entity_kind == EntityKind::Structure)
-                .map(|t| (t.name.clone(), t)),
-        )
-        .collect();
+    // task 3540 (SIR-α): the ctor view `Foo()` lowers against
+    // (esc-3540-177 RULING 1), by the rule fn bodies use too:
+    // `name_env::overlay_local_templates`. Declared BEFORE `scope` so it
+    // outlives the scope's borrow (drop order is reverse-declaration).
+    let entity_template_registry: HashMap<String, &TopologyTemplate> =
+        crate::name_env::overlay_local_templates(prelude.ctor, compiled_templates);
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;
@@ -6511,6 +6493,8 @@ pub(crate) fn trait_satisfies(
 ///     emit a single error diagnostic and return.
 ///   * Validate named-argument set against the def's params (unknown args,
 ///     missing required args). Validation errors short-circuit emission.
+///   * Type-check each explicit arg (`constraint_arg_type_conforms`); a
+///     rejection also short-circuits emission.
 ///   * Allocate one shared `inst_idx` for this instantiation by bumping the
 ///     `constraint_inst_counts` entry for `ci.name`, so all predicates from
 ///     this call share the same inst_idx and differ only by `pred_idx`.
@@ -6603,20 +6587,6 @@ pub(crate) fn expand_constraint_inst(
         return;
     }
 
-    // Allocate this instantiation's inst_idx before the per-predicate loop
-    // so all predicates from one `constraint MinWall(...)` share the same
-    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
-    // split to avoid cloning `ci.name` on the common case where the entry
-    // already exists.
-    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
-        let idx = *entry;
-        *entry += 1;
-        idx
-    } else {
-        constraint_inst_counts.insert(ci.name.clone(), 1);
-        0
-    };
-
     // η/4480: capture the EXPLICIT call-site argument bindings, attached to
     // every CompiledConstraint emitted for this instantiation. The presence of
     // a binding (e.g. `"actual"`) is how the GD&T conformance pass detects a
@@ -6643,89 +6613,72 @@ pub(crate) fn expand_constraint_inst(
     // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
-    {
-        let mut throwaway_diag_sink = Vec::new();
-        for (name, expr) in &ci.args {
-            // Probe map for this single param — depends only on the param name,
-            // so it is built once per arg (not once per arg×predicate).
-            let mut probe = HashMap::new();
-            probe.insert(
-                name.clone(),
-                reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Undef,
-                    span: expr.span,
-                },
-            );
-            // If substituting this param changes a predicate, the param's arg
-            // expr is inlined into that predicate and compiled (with real
-            // diagnostics) below — so route this binding compile to the
-            // throwaway sink. Otherwise it is compiled ONLY here.
-            let referenced_by_predicate = def
-                .predicates
-                .iter()
-                .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
-            let compiled = if referenced_by_predicate {
-                compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
-            } else {
-                compile_expr(expr, scope, enum_defs, functions, diagnostics)
-            };
-            arg_bindings.push((name.clone(), compiled));
-        }
+    let mut throwaway_diag_sink = Vec::new();
+    for (name, expr) in &ci.args {
+        // Probe map for this single param — depends only on the param name,
+        // so it is built once per arg (not once per arg×predicate).
+        let mut probe = HashMap::new();
+        probe.insert(
+            name.clone(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Undef,
+                span: expr.span,
+            },
+        );
+        // If substituting this param changes a predicate, the param's arg
+        // expr is inlined into that predicate and compiled (with real
+        // diagnostics) below — so route this binding compile to the
+        // throwaway sink. Otherwise it is compiled ONLY here.
+        let referenced_by_predicate = def
+            .predicates
+            .iter()
+            .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
+        let compiled = if referenced_by_predicate {
+            compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
+        } else {
+            compile_expr(expr, scope, enum_defs, functions, diagnostics)
+        };
+        arg_bindings.push((name.clone(), compiled));
     }
 
     // Task 4546: param-level argument type conformance check.
     //
-    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // Run AFTER the arg_bindings loop (which compiles all explicit args into
     // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
     // std::mem::take's arg_bindings). This is the earliest point where both the
     // compiled arg types AND the declared param types (now stored on
     // CompiledConstraintParam.ty) are available simultaneously.
     //
-    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
-    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
-    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
-    // (dimensional strictness within predicates is task 4490's responsibility).
-    //
-    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
-    // task 4490's emit_comparison_operand_diagnostics also fires for the
-    // substituted predicate. Both diagnostics are accepted (they fire at
-    // distinct seams — binding site vs. predicate body).
-    {
-        // Build a name→arg-expr-span map so the diagnostic label can point at
-        // the argument expression, not the whole constraint instantiation.
-        let arg_spans: HashMap<&str, SourceSpan> = ci
-            .args
-            .iter()
-            .map(|(name, expr)| (name.as_str(), expr.span))
-            .collect();
-        for (arg_name, compiled_arg) in &arg_bindings {
-            // Look up the matching declared param.
-            // Unknown arg names are already diagnosed by the validation above;
-            // skip names that have no matching param to avoid double-reporting.
-            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
-                continue;
-            };
-            // Skip params with no resolved type (unannotated or resolution failed).
-            let Some(ref param_ty) = param.ty else {
-                continue;
-            };
-            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type mismatch: argument '{}' for constraint '{}' \
-                         has type {} but parameter expects {}",
-                        arg_name, ci.name, compiled_arg.result_type, param_ty,
-                    ))
-                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        arg_span,
-                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
-                    )),
-                );
-            }
+    // A rejected binding short-circuits emission like a missing argument, so the
+    // mistake is reported once, at the argument, instead of again from inside the
+    // def body. Predicate compilation and the guard group will no longer run, so
+    // the diagnostics they were going to report are reported here instead: the
+    // throwaway sink is flushed and the `where` condition is compiled for its
+    // diagnostics alone. Pinned by
+    // crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs's
+    // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
+    // does_not_swallow siblings.
+    if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {
+        diagnostics.append(&mut throwaway_diag_sink);
+        if let Some(wc) = &ci.where_clause {
+            compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
         }
+        return;
     }
+
+    // Allocate this instantiation's inst_idx before the per-predicate loop
+    // so all predicates from one `constraint MinWall(...)` share the same
+    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
+    // split to avoid cloning `ci.name` on the common case where the entry
+    // already exists.
+    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+        let idx = *entry;
+        *entry += 1;
+        idx
+    } else {
+        constraint_inst_counts.insert(ci.name.clone(), 1);
+        0
+    };
 
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
@@ -6779,6 +6732,55 @@ pub(crate) fn expand_constraint_inst(
             constraints.push(cc);
         }
     }
+}
+
+/// Emit one `ConstraintArgTypeMismatch` per explicit arg whose compiled type
+/// does not conform (`constraint_arg_type_conforms`) to its declared param
+/// type; returns whether any was emitted.
+fn emit_constraint_arg_type_mismatches(
+    ci: &reify_ast::ConstraintInstDecl,
+    def: &CompiledConstraintDef,
+    arg_bindings: &[(String, CompiledExpr)],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    // Build a name→arg-expr-span map so the diagnostic label can point at
+    // the argument expression, not the whole constraint instantiation.
+    let arg_spans: HashMap<&str, SourceSpan> = ci
+        .args
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr.span))
+        .collect();
+    let mut any_emitted = false;
+    for (arg_name, compiled_arg) in arg_bindings {
+        // Look up the matching declared param.
+        // Unknown arg names are already diagnosed by `expand_constraint_inst`'s
+        // validation; skip names that have no matching param to avoid
+        // double-reporting.
+        let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+            continue;
+        };
+        // Skip params with no resolved type (unannotated or resolution failed).
+        let Some(ref param_ty) = param.ty else {
+            continue;
+        };
+        if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+            let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch: argument '{}' for constraint '{}' \
+                     has type {} but parameter expects {}",
+                    arg_name, ci.name, compiled_arg.result_type, param_ty,
+                ))
+                .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    arg_span,
+                    format!("expected {}, got {}", param_ty, compiled_arg.result_type),
+                )),
+            );
+            any_emitted = true;
+        }
+    }
+    any_emitted
 }
 
 #[cfg(test)]

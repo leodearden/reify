@@ -14,9 +14,12 @@ here:
   renders, of which B1 asserts one (the attempt sidecar), and the retry
   subset's own lines;
 - nextest.nextest_config_path's generate arm, which only the executor reaches,
-  and the removal of a generated config when planning fails after it;
+  and the removal of a generated config when planning fails after it, a real
+  failure: a scratch clone whose git-env scrub lib fails;
 - bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
   the lib seams run under, over a scratch lib;
+- bashcall.ask's NotCalled for a function that never ran, over a scratch
+  lib, and release_declared's refusal of it;
 - policy's unknown-role refusal text, which no CLI run shows bare because the
   CLI always prefixes it.
 
@@ -25,6 +28,7 @@ thin wrapper tests/infra/test_verify_plan_model.sh.
 """
 
 import dataclasses
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,7 +41,7 @@ INFRA_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INFRA_DIR.parents[1]
 sys.path.insert(0, str(INFRA_DIR))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from verify_ledger_env import hermetic_env  # noqa: E402
+from scope_record_harness import InClone, base_env, discard_clone  # noqa: E402
 
 from reify_verify import (  # noqa: E402
     bashcall,
@@ -48,6 +52,7 @@ from reify_verify import (  # noqa: E402
     narrowing,
     nextest,
     policy,
+    releasescope,
     render,
     retry,
     scope,
@@ -93,13 +98,11 @@ LINT_ALL_INFRA = ["lint", "--scope", "all", "--include-infra", "--print-plan"]
 GUI_CRATE = Packages((narrowing.GUI_CRATE,))
 OVERRIDE_CONFIG = NextestConfig("/caller/nextest.toml", ConfigOrigin.OVERRIDE)
 RECORDING = ConfirmRecording("j.xml", ((Profile.DEBUG, ConfirmPaths("m.txt", "s.json")),))
+GENERATED_CONFIG_PREFIX = "reify-nextest-occt."
 
 
-def base_env(**overrides):
-    """hermetic_env() without any REIFY_* or DF_* key, then `overrides`."""
-    env = {k: v for k, v in hermetic_env().items() if not k.startswith(("REIFY_", "DF_"))}
-    env.update(overrides)
-    return env
+def tearDownModule():
+    discard_clone()
 
 
 def lint_inputs(env) -> build.PlanInputs:
@@ -297,6 +300,122 @@ class TestSeamShellOptions(unittest.TestCase):
             bashcall.read_export(bashcall.BashExport(self.LIB, "B1_EXPORTED"), self.repo_root, self.env)
 
 
+class TestNotCalled(unittest.TestCase):
+    """bashcall.ask reports a function that never ran as a NotCalled, never as a status.
+
+    bash's `source` exits 1 for a lib it cannot read, which is also the answer
+    a status-as-answer predicate gives, so only a CallResult carries the
+    function's own status.
+    """
+
+    LIB = "lib.sh"
+    CALL = bashcall.BashCall(LIB, "f")
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repo_root = Path(scratch.name)
+        self.env = base_env()
+
+    def ask(self, lib_text, call=CALL):
+        if lib_text is not None:
+            (self.repo_root / self.LIB).write_text(lib_text, encoding="utf-8")
+        return bashcall.ask(call, (), self.repo_root, self.env)
+
+    def assert_not_called(self, answer, status):
+        self.assertIsInstance(answer, bashcall.NotCalled)
+        self.assertEqual(answer.result.returncode, status, answer.result.stderr)
+
+    def assert_called(self, answer):
+        self.assertNotIsInstance(answer, bashcall.NotCalled)
+
+    def test_a_missing_lib_is_not_called(self):
+        answer = self.ask(None, bashcall.BashCall("absent.sh", "f"))
+        self.assert_not_called(answer, 1)
+        self.assertIn("absent.sh", answer.result.stderr)
+
+    def test_a_lib_whose_sourcing_returns_1_is_not_called(self):
+        self.assert_not_called(self.ask("return 1\nf(){ :; }\n"), 1)
+
+    def test_a_lib_that_ends_the_shell_with_0_is_not_called(self):
+        self.assert_not_called(self.ask("exit 0\nf(){ echo out; }\n"), 0)
+
+    def test_a_lib_with_a_syntax_error_is_not_called(self):
+        self.assert_not_called(self.ask("if then\n"), 2)
+
+    def test_a_lib_without_the_function_is_not_called(self):
+        answer = self.ask("g(){ :; }\n")
+        self.assert_not_called(answer, 127)
+        self.assertIn("f: not a function", answer.result.stderr)
+
+    def test_bash_that_cannot_start_is_not_called(self):
+        no_bash = self.repo_root / "no-bash"
+        no_bash.mkdir()
+        self.env["PATH"] = str(no_bash)
+        self.assert_not_called(self.ask("f(){ :; }\n"), 127)
+
+    def test_the_functions_1_is_its_answer(self):
+        answer = self.ask("f(){ echo out; echo err >&2; return 1; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.returncode, 1)
+        self.assertEqual(answer.lines, ("out",))
+        self.assertEqual(answer.stderr_lines, ("err",))
+
+    def test_load_time_stderr_is_kept_byte_for_byte(self):
+        answer = self.ask("printf 'loading' >&2\nf(){ echo err >&2; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.stderr, "loadingerr\n")
+
+    def test_a_lib_shadowing_printf_is_still_called(self):
+        answer = self.ask("printf(){ :; }\nf(){ return 1; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.returncode, 1)
+
+    def test_run_raises_for_a_function_that_never_ran(self):
+        (self.repo_root / self.LIB).write_text("exit 0\nf(){ echo out; }\n", encoding="utf-8")
+        with self.assertRaises(BashCallError) as raised:
+            bashcall.run(self.CALL, (), self.repo_root, self.env)
+        self.assertEqual(raised.exception.result.returncode, 0)
+
+
+class TestReleaseDeclaredNotCalled(unittest.TestCase):
+    """releasescope.release_declared refuses when release_declared_set never ran.
+
+    verify.sh sources release-scope-lib.sh at top level under `set -e`, so a
+    lib that does not source ends the run with source's own status and
+    stderr, even a 0; a lib that ends the shell is never an empty declared
+    set.
+    """
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repo_root = Path(scratch.name)
+        (self.repo_root / "scripts").mkdir()
+
+    def declared(self, lib_text):
+        if lib_text is not None:
+            (self.repo_root / "scripts" / "release-scope-lib.sh").write_text(lib_text, encoding="utf-8")
+        return releasescope.release_declared(self.repo_root, base_env())
+
+    def test_a_lib_that_ends_the_shell_with_0_is_refused_with_0_not_empty(self):
+        declared = self.declared("echo gave-up >&2\nexit 0\nrelease_declared_set(){ echo some-crate; }\n")
+        self.assertEqual(declared, Refused(("gave-up",), 0))
+
+    def test_a_missing_lib_is_refused_with_1(self):
+        declared = self.declared(None)
+        self.assertIsInstance(declared, Refused)
+        self.assertEqual(declared.exit_code, 1)
+
+    def test_a_lib_whose_sourcing_returns_2_is_refused_with_2(self):
+        declared = self.declared("return 2\n")
+        self.assertIsInstance(declared, Refused)
+        self.assertEqual(declared.exit_code, 2)
+
+    def test_control_a_sourced_lib_answers_its_declared_set(self):
+        self.assertEqual(self.declared("release_declared_set(){ echo some-crate; }\n"), ("some-crate",))
+
+
 class TestNextestConfigPath(unittest.TestCase):
     """nextest.nextest_config_path's three arms.
 
@@ -316,7 +435,7 @@ class TestNextestConfigPath(unittest.TestCase):
         self.tmpdir = Path(scratch.name)
 
     def config_files(self) -> set[Path]:
-        return set(self.tmpdir.glob("reify-nextest-occt.*"))
+        return set(self.tmpdir.glob(f"{GENERATED_CONFIG_PREFIX}*"))
 
     def generator_stderr(self, env, test_threads) -> list[str]:
         """What gen-nextest-config.sh itself prints on stderr under `env` and the CLI thread count."""
@@ -551,15 +670,16 @@ class TestSlotFdClosed(unittest.TestCase):
     """The slot-closed wrapper a CARGO step admits holds one test pass, bare or behind its crate's guard."""
 
     def test_a_bare_or_guarded_test_pass_is_held(self):
-        run = nextest_run()
-        bodies = (
-            run,
-            CargoTestRun(Workspace(), False, (), "60m", "", 1),
-            ConfirmRecorded(run, "j.xml", "m.txt", "s.json", Profile.DEBUG),
-            gatepaths.GUI_CRATE_GUARD.around(run),
-        )
-        for body in bodies:
-            with self.subTest(body=type(body).__name__):
+        nextest_pass = nextest_run()
+        cargo_test_pass = CargoTestRun(Workspace(), False, (), "60m", "", 1)
+        recorded_pass = ConfirmRecorded(nextest_pass, "j.xml", "m.txt", "s.json", Profile.DEBUG)
+        bare = (nextest_pass, cargo_test_pass, recorded_pass)
+        # the bodies emit_pass puts behind a crate guard: a recording pass carries none
+        guarded = (nextest_pass, cargo_test_pass)
+        shapes = [(record, False) for record in bare] + [(record, True) for record in guarded]
+        for record, is_guarded in shapes:
+            with self.subTest(record=type(record).__name__, guarded=is_guarded):
+                body = gatepaths.GUI_CRATE_GUARD.around(record) if is_guarded else record
                 step = Step(StepKind.CARGO, Phase.DEBUG_NEXTEST, SlotFdClosed(body), None, None)
                 self.assertTrue(render.render_step(step).endswith(" 9<&-"))
 
@@ -603,7 +723,7 @@ class TestPassInvariants(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
         message = str(raised.exception)
-        for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
+        for part in ("PassSpec", f"claimed by {CONFIRM_RECORDER}", guard.setup.path):
             self.assertIn(part, message)
         PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
 
@@ -614,7 +734,7 @@ class TestPassInvariants(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             nextest.emit_pass(spec, recording_runner())
         message = str(raised.exception)
-        for part in ("emit_pass", CONFIRM_RECORDER, guard.setup.path):
+        for part in ("emit_pass", f"claimed by {CONFIRM_RECORDER}", guard.setup.path):
             self.assertIn(part, message)
 
     def test_only_a_profile_pass_records(self):
@@ -824,15 +944,12 @@ class TestRetrySubsetLines(unittest.TestCase):
 
 
 class TestGeneratedConfigCleanup(unittest.TestCase):
-    """A nextest config execute mode generated is removed when no plan will name it."""
+    """NextestConfig.discard removes a GENERATED file and no other: the caller's file and the placeholder stay."""
 
     def setUp(self):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.tmpdir = Path(scratch.name)
-
-    def generated(self) -> list[Path]:
-        return sorted(self.tmpdir.glob("reify-nextest-occt.*"))
 
     def test_discard_removes_only_a_generated_file(self):
         for origin in ConfigOrigin:
@@ -842,18 +959,61 @@ class TestGeneratedConfigCleanup(unittest.TestCase):
                 NextestConfig(str(path), origin).discard()
                 self.assertEqual(path.exists(), origin is not ConfigOrigin.GENERATED)
 
+
+class TestCompositionFailureAfterTheRegion(InClone):
+    """A nextest config the test region generated is removed when composing the plan fails after it.
+
+    The failure is a real one, in the shared clone: its git-env scrub lib
+    fails, and a SELECTIVE role reads that lib only after the region holds its
+    generated config. The planted function lists TMPDIR as it fails, so a case
+    that fails before any config exists cannot pass for want of one.
+    """
+
+    FAULT_EXIT = 7
+
+    def setUp(self):
+        super().setUp()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.tmpdir = Path(scratch.name) / "tmp"
+        self.tmpdir.mkdir()
+        self.listed_at_fault = Path(scratch.name) / "tmpdir-at-fault.txt"
+
+    def plant_fault(self):
+        """Make the clone's scrub-prefix function list TMPDIR into a file, then exit FAULT_EXIT."""
+        scrub = build.GIT_ENV_SCRUB_PREFIX
+        listing = f"ls -1 -- {shlex.quote(str(self.tmpdir))} > {shlex.quote(str(self.listed_at_fault))}"
+        self.clone.append(scrub.lib, f"\n{scrub.function}() {{ {listing}; return {self.FAULT_EXIT}; }}\n")
+
     def test_a_failure_after_the_region_removes_its_generated_config(self):
-        env = base_env(TMPDIR=str(self.tmpdir))
-        invocation = cli.parse_invocation(["test", "--scope", "all"], env)
+        self.clone.stage("scripts/verify.sh")
+        self.plant_fault()
+        env = base_env(TMPDIR=str(self.tmpdir), DF_VERIFY_ROLE="task")
+        invocation = cli.parse_invocation(["test", "--scope", "staged"], env)
+        role_policy = policy.ROLE_TABLE[invocation.role]
         self.assertIsNone(invocation.plan_format, "premise: an execute-mode invocation")
-        self.assertIsInstance(build.plan_invocation(invocation, env, REPO_ROOT), build.Planned)
-        self.assertEqual(len(self.generated()), 1, "premise: planning it generates one config")
-        for path in self.generated():
-            path.unlink()
-        with mock.patch.object(build, "build_steps", side_effect=RuntimeError("after the region")):
-            with self.assertRaises(RuntimeError):
-                build.plan_invocation(invocation, env, REPO_ROOT)
-        self.assertEqual(self.generated(), [])
+        self.assertIs(
+            role_policy.infra_tier,
+            policy.InfraTier.SELECTIVE,
+            "premise: only a SELECTIVE role reads the scrub prefix",
+        )
+        planning = environment.build(invocation.role, role_policy, env, self.clone.root).planning
+        self.assertIsInstance(
+            environment.nextest_probe(planning, self.clone.root),
+            environment.NextestAvailable,
+            "premise: cargo-nextest runs under the clone's planning env, or the region generates no config",
+        )
+
+        with self.assertRaises(BashCallError) as raised:
+            build.plan_invocation(invocation, env, self.clone.root)
+
+        self.assertEqual(raised.exception.call, build.GIT_ENV_SCRUB_PREFIX)
+        self.assertEqual(raised.exception.result.returncode, self.FAULT_EXIT)
+        self.assertTrue(self.listed_at_fault.is_file(), "premise: the planted function ran")
+        listed = self.listed_at_fault.read_text(encoding="utf-8").splitlines()
+        at_fault = [name for name in listed if name.startswith(GENERATED_CONFIG_PREFIX)]
+        self.assertEqual(len(at_fault), 1, "premise: the region had generated its config when composing failed")
+        self.assertEqual(sorted(self.tmpdir.glob(f"{GENERATED_CONFIG_PREFIX}*")), [])
 
 
 if __name__ == "__main__":

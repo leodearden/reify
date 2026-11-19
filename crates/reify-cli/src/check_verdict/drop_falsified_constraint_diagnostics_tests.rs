@@ -1,6 +1,5 @@
 use super::{
-    drop_falsified_indeterminate_diagnostics, indeterminacy_anchor, indeterminacy_subject,
-    indeterminacy_subject_in,
+    ConstraintClaim, constraint_claim_in, constraint_subject, drop_falsified_constraint_diagnostics,
 };
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity};
 use reify_eval::ConstraintCheckEntry;
@@ -40,10 +39,10 @@ fn labeled(
     }
 }
 
-/// (0) The forward and inverse readings of the indeterminacy grammar are
-/// ONE definition: whatever `indeterminacy_anchor` writes,
-/// `indeterminacy_subject_in` must read back — for a labeled entry and an
-/// unlabeled one alike.
+/// (0) The forward and inverse readings of the claim grammar are ONE
+/// definition: whatever `ConstraintClaim::anchor` writes, `constraint_claim_in`
+/// must read back — for both claim words, for a labeled entry and an unlabeled
+/// one alike.
 ///
 /// This is the lock that lets both legs match by extracting the subject and
 /// hashing it (O(diagnostics + constraints)) instead of scanning every
@@ -51,29 +50,40 @@ fn labeled(
 /// wording ever changes, this test fails BEFORE the silent
 /// nothing-ever-matches degradation it would otherwise cause.
 #[test]
-fn indeterminacy_grammar_round_trips() {
-    for e in [
-        entry("Bracket", 12, Satisfaction::Indeterminate),
-        labeled("Bracket", 3, "wall_thick", Satisfaction::Indeterminate),
-    ] {
-        let subject = indeterminacy_subject(&e).into_owned();
-        let message = format!(
-            "{}: undefined inputs: Bracket.thickness",
-            indeterminacy_anchor(&subject)
-        );
-        assert_eq!(
-            indeterminacy_subject_in(&message),
-            Some(subject.as_str()),
-            "the inverse must read back exactly what the forward direction \
-             wrote, for {message}"
-        );
+fn constraint_claim_grammar_round_trips() {
+    for claim in ConstraintClaim::ALL {
+        for e in [
+            entry("Bracket", 12, Satisfaction::Indeterminate),
+            labeled("Bracket", 3, "wall_thick", Satisfaction::Indeterminate),
+        ] {
+            let subject = constraint_subject(&e).into_owned();
+            let d = Diagnostic::warning(format!(
+                "{}: undefined inputs: Bracket.thickness",
+                claim.anchor(&subject)
+            ))
+            .with_code(claim.code());
+            assert_eq!(
+                constraint_claim_in(&d),
+                Some((claim, subject.as_str())),
+                "the inverse must read back exactly what the forward direction \
+                 wrote, for {:?}",
+                d.message
+            );
+        }
     }
-    assert_eq!(
-        indeterminacy_subject_in("Conforms INDETERMINATE: no geometry kernel"),
-        None,
-        "a message that does not follow the grammar yields no subject, so \
-         nothing can falsify it — see keeps_idless_indeterminate_diagnostics"
-    );
+    for message in [
+        "Conforms INDETERMINATE: no geometry kernel",
+        "Conforms VIOLATED: measured deviation 0.3000 mm exceeds the 0.1000 mm tolerance zone",
+    ] {
+        for claim in ConstraintClaim::ALL {
+            assert_eq!(
+                constraint_claim_in(&Diagnostic::warning(message).with_code(claim.code())),
+                None,
+                "a message that does not follow the grammar yields no subject, \
+                 so nothing can falsify it: {message:?}"
+            );
+        }
+    }
 }
 
 /// Builds the exact shape `reify_constraints`' checker emits:
@@ -102,7 +112,7 @@ fn drops_indeterminate_claim_falsified_by_a_satisfied_verdict() {
     )];
     let results = vec![entry("SphereCheck", 0, Satisfaction::Satisfied)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert!(
         kept.is_empty(),
@@ -120,7 +130,7 @@ fn drops_indeterminate_claim_falsified_by_a_violated_verdict() {
     let build = vec![indeterminate_warning("Bracket#constraint[2]", "Bracket.t")];
     let results = vec![entry("Bracket", 2, Satisfaction::Violated)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert!(
         kept.is_empty(),
@@ -141,7 +151,7 @@ fn keeps_indeterminate_claim_when_the_verdict_is_also_indeterminate() {
     )];
     let results = vec![entry("Bracket", 2, Satisfaction::Indeterminate)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
@@ -160,7 +170,7 @@ fn keeps_indeterminate_claim_when_no_entry_matches_the_id() {
     let build = vec![indeterminate_warning("Ghost#constraint[0]", "Ghost.x")];
     let results = vec![entry("Bracket", 0, Satisfaction::Satisfied)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
@@ -170,12 +180,12 @@ fn keeps_indeterminate_claim_when_no_entry_matches_the_id() {
     );
 }
 
-/// (5) The filter falsifies exactly ONE claim: indeterminacy. A diagnostic
-/// carrying the same needle under a different code (e.g. the
-/// `ConstraintViolated` summary line) is untouched even when a definite
-/// verdict exists for that id.
+/// (5) A claim is read off its CODE and its grammar together.  A line whose
+/// code names one claim but whose text does not follow that claim's grammar,
+/// and an uncoded line that does follow a grammar, are untouched even when a
+/// definite verdict exists for that id.
 #[test]
-fn never_drops_a_diagnostic_that_is_not_coded_constraint_indeterminate() {
+fn never_drops_a_diagnostic_off_the_coded_claim_grammar() {
     let violated = Diagnostic::error("constraint Bracket#constraint[2] indeterminate-ish note")
         .with_code(DiagnosticCode::ConstraintViolated);
     let uncoded = Diagnostic::warning(
@@ -184,13 +194,13 @@ fn never_drops_a_diagnostic_that_is_not_coded_constraint_indeterminate() {
     let build = vec![violated, uncoded];
     let results = vec![entry("Bracket", 2, Satisfaction::Satisfied)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
         keys(&build),
-        "only ConstraintIndeterminate-coded entries are subject to the \
-         filter; every other code (and the uncoded case) must survive"
+        "only a claim-coded entry following that claim's grammar is subject \
+         to the filter; everything else (and the uncoded case) must survive"
     );
 }
 
@@ -203,7 +213,7 @@ fn matches_on_the_label_when_the_entry_carries_one() {
     let build = vec![indeterminate_warning("wall_thick", "Bracket.t")];
     let results = vec![labeled("Bracket", 3, "wall_thick", Satisfaction::Satisfied)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert!(
         kept.is_empty(),
@@ -229,7 +239,7 @@ fn anchored_matcher_survives_an_id_prefix_collision() {
         entry("Foo", 10, Satisfaction::Indeterminate),
     ];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
@@ -252,7 +262,7 @@ fn keeps_idless_indeterminate_diagnostics() {
     ];
     let results = vec![entry("SphereCheck", 0, Satisfaction::Satisfied)];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
@@ -272,7 +282,7 @@ fn empty_constraint_results_returns_build_diags_verbatim() {
         Diagnostic::error("failed to compile geometry operation"),
     ];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &[]);
+    let kept = drop_falsified_constraint_diagnostics(&build, &[]);
 
     assert_eq!(
         keys(&kept),
@@ -297,12 +307,150 @@ fn preserves_the_order_of_surviving_entries() {
         entry("A", 1, Satisfaction::Indeterminate),
     ];
 
-    let kept = drop_falsified_indeterminate_diagnostics(&build, &results);
+    let kept = drop_falsified_constraint_diagnostics(&build, &results);
 
     assert_eq!(
         keys(&kept),
         keys(&[first, second, third]),
         "the filter must retain in place: surviving entries keep their \
          original relative order"
+    );
+}
+
+// -------------------------------------------------------------------
+// The VIOLATION claim (#6048 shape a)
+// -------------------------------------------------------------------
+
+/// The exact shape `reify_constraints`' checker emits for a false predicate:
+/// `constraint {subject} violated`, coded `ConstraintViolated`, at `Error`
+/// severity.
+fn violated(subject: &str) -> Diagnostic {
+    Diagnostic::error(format!("constraint {subject} violated"))
+        .with_code(DiagnosticCode::ConstraintViolated)
+}
+
+/// A build-side violation claim is false once the authoritative list says
+/// `Satisfied`, in both the raw-id and the label-rewritten form.
+#[test]
+fn drops_violation_claim_when_every_holder_is_satisfied() {
+    let by_id = drop_falsified_constraint_diagnostics(
+        &[violated("Bracket#constraint[12]")],
+        &[entry("Bracket", 12, Satisfaction::Satisfied)],
+    );
+    assert!(
+        by_id.is_empty(),
+        "a violation claim about a Satisfied constraint is false, got {:?}",
+        keys(&by_id)
+    );
+
+    let by_label = drop_falsified_constraint_diagnostics(
+        &[violated("wall_thick")],
+        &[labeled("Bracket", 3, "wall_thick", Satisfaction::Satisfied)],
+    );
+    assert!(
+        by_label.is_empty(),
+        "a labeled constraint's violation line names the LABEL, got {:?}",
+        keys(&by_label)
+    );
+}
+
+/// Only `Satisfied` falsifies a violation.  A `Violated` verdict confirms the
+/// claim (the true line after an Indeterminate→Violated upgrade, pinned end to
+/// end by `cli_check.rs::check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure`),
+/// and an undecided verdict is not evidence the violation is stale.
+#[test]
+fn keeps_violation_claim_when_the_verdict_is_violated_or_indeterminate() {
+    let build = vec![violated("Bracket#constraint[2]")];
+    for verdict in [Satisfaction::Violated, Satisfaction::Indeterminate] {
+        let kept = drop_falsified_constraint_diagnostics(&build, &[entry("Bracket", 2, verdict)]);
+        assert_eq!(
+            keys(&kept),
+            keys(&build),
+            "a {verdict:?} verdict does not falsify a violation claim"
+        );
+    }
+}
+
+/// Compiler labels are unique per entity, not per module, so one subject can
+/// name several constraints.  The claim is falsified only when EVERY holder
+/// contradicts it; a same-label `Violated` holder elsewhere keeps its true
+/// line.
+#[test]
+fn keeps_violation_claim_when_only_some_same_subject_holders_are_satisfied() {
+    let build = vec![violated("wall_thick")];
+    let kept = drop_falsified_constraint_diagnostics(
+        &build,
+        &[
+            labeled("Bracket", 3, "wall_thick", Satisfaction::Satisfied),
+            labeled("Lid", 0, "wall_thick", Satisfaction::Violated),
+        ],
+    );
+    assert_eq!(
+        keys(&kept),
+        keys(&build),
+        "one Satisfied holder must not retract a claim another holder of the \
+         same label still makes true"
+    );
+}
+
+/// The SAME every-holder rule on the indeterminate word: one definite holder
+/// does not retract a claim a same-label holder still makes true.
+#[test]
+fn every_holder_rule_also_applies_to_the_indeterminate_word() {
+    let build = vec![indeterminate_warning("wall_thick", "Lid.t")];
+    let kept = drop_falsified_constraint_diagnostics(
+        &build,
+        &[
+            labeled("Bracket", 3, "wall_thick", Satisfaction::Satisfied),
+            labeled("Lid", 0, "wall_thick", Satisfaction::Indeterminate),
+        ],
+    );
+    assert_eq!(
+        keys(&kept),
+        keys(&build),
+        "an indeterminacy claim survives while any same-label holder is still \
+         Indeterminate"
+    );
+}
+
+/// The GD&T `Conforms VIOLATED` line names no constraint, so no verdict can
+/// falsify it, by design.
+#[test]
+fn keeps_idless_conformance_violation() {
+    let build = vec![
+        Diagnostic::error(
+            "Conforms VIOLATED: measured deviation 0.3000 mm exceeds the 0.1000 mm \
+             tolerance zone",
+        )
+        .with_code(DiagnosticCode::ConstraintViolated),
+    ];
+    let kept = drop_falsified_constraint_diagnostics(
+        &build,
+        &[entry("Bracket", 2, Satisfaction::Satisfied)],
+    );
+    assert_eq!(
+        keys(&kept),
+        keys(&build),
+        "an id-less violation carries no subject and must survive"
+    );
+}
+
+/// `evaluated to non-boolean value` shares the code but not the violation
+/// grammar, so it is never read as a violation claim, even when its subject is
+/// `Satisfied`.
+#[test]
+fn keeps_non_boolean_value_error() {
+    let build = vec![
+        Diagnostic::error("constraint Bracket#constraint[2] evaluated to non-boolean value")
+            .with_code(DiagnosticCode::ConstraintViolated),
+    ];
+    let kept = drop_falsified_constraint_diagnostics(
+        &build,
+        &[entry("Bracket", 2, Satisfaction::Satisfied)],
+    );
+    assert_eq!(
+        keys(&kept),
+        keys(&build),
+        "a non-boolean constraint error has no ` violated` infix and must survive"
     );
 }

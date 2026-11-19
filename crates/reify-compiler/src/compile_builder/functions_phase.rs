@@ -9,11 +9,12 @@
 //!   the unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`)
 //!   can resolve — and pad — calls to same-module fns.  Omitting a default that
 //!   constructs a same-module structure draws `FnDefaultNotYetAvailable` there.
-//! * [`compile_function_decl`] compiles one fn's body, plus any defaults the
-//!   early pass left pending.  It is driven by the unified source-order pass in
-//!   `entities_phase::phase_entities`, which interleaves fn bodies with entity
-//!   templates in declaration order, so a fn body constructs a same-module
-//!   structure against that structure's AUTHORITATIVE [`TopologyTemplate`].
+//! * [`SourceOrderFnEnv::compile_function_decl`] compiles one fn's body, plus
+//!   any defaults the early pass left pending.  It is driven by the unified
+//!   source-order pass in `entities_phase::phase_entities`, which interleaves
+//!   fn bodies with entity templates in declaration order, so a fn body
+//!   constructs a same-module structure against that structure's
+//!   AUTHORITATIVE [`TopologyTemplate`].
 //!
 //! A same-module structure declared BELOW the fn has no template yet; using it
 //! draws `DiagnosticCode::StructureDeclaredAfterFunction`.
@@ -63,7 +64,7 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 /// Each fn's defaults are probed against what the unified pass would give them
 /// minus the module's own templates: the signature stubs of the fns above it
 /// (carrying the outcomes decided so far), the prelude ctor view, and every
-/// module-local ctor-view name marked as declared later.  The probe's
+/// module-local ctor-view name marked unavailable.  The probe's
 /// diagnostics go to a scratch buffer:
 ///
 /// * holding a `StructureDeclaredAfterFunction` or `FnDefaultNotYetAvailable`,
@@ -71,7 +72,9 @@ pub(crate) fn phase_fn_signatures(ctx: &mut CompilationCtx, fn_refs: &[&FnDef]) 
 ///   defaults are pending) — `NeedLocalTemplates`, and the scratch and its
 ///   result are DISCARDED; the unified pass compiles them in the fn's slot;
 /// * otherwise the result is exactly what the unified pass would compile —
-///   `Compiled`, and the scratch is emitted, once, here.
+///   `Compiled`, and the scratch is emitted, once, here.  Debug builds re-check
+///   the compiled defaults, not the scratch, in
+///   [`SourceOrderFnEnv::compile_function_decl`].
 ///
 /// Seeds `ctx.resolution_functions` with the resulting stubs composed with the
 /// prelude as [`build_resolution_functions`] composes them, and records the
@@ -81,13 +84,13 @@ pub(crate) fn phase_fn_param_defaults(
     prelude: &[&CompiledModule],
     fn_refs: &[&FnDef],
 ) {
-    let prelude_ctor_view = name_env::ctor_template_registry(&[], prelude);
+    let prelude_ctor_view = name_env::prelude_ctor_view(prelude);
     let local_ctor_names = ctx.local_entity_names();
     let declared_callables = crate::functions::declared_callable_names(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut table = ResolutionTable::new(prelude);
+    let mut table = ResolutionTable::new(Vec::new(), prelude);
     let mut pending = PendingDefaults::default();
     for (fn_def, sig) in fn_refs.iter().zip(&ctx.fn_signatures) {
         let outcome = if fn_def.params.iter().all(|p| p.default.is_none()) {
@@ -97,7 +100,7 @@ pub(crate) fn phase_fn_param_defaults(
                 enum_defs: &ctx.resolution_enums,
                 calls: CallTable::with_pending(table.functions(), &pending),
                 template_registry: Some(&prelude_ctor_view),
-                later_declared_structure_names: Some(&local_ctor_names),
+                unavailable_local_template_names: Some(&local_ctor_names),
                 declared_callable_names: &declared_callables,
             };
             let mut scratch = Vec::new();
@@ -134,94 +137,219 @@ pub(crate) fn phase_fn_param_defaults(
     ctx.resolution_functions = table.into_functions();
 }
 
-/// Compile ONE `fn` declaration's body, plus its param defaults when
-/// [`phase_fn_param_defaults`] left them pending.
-///
-/// Called from the `Declaration::Function` arm of
-/// `entities_phase::phase_entities`, in source order, so `user_fns_so_far` and
-/// `templates_so_far` hold only what is declared ABOVE this fn:
-///
-/// * constructors resolve against [`name_env::ctor_template_registry`] over
-///   `templates_so_far`, so a fn body may construct a same-module structure
-///   declared above it and get that structure's authoritative template — the
-///   same no-forward-reference rule `compile_entity` obeys for entity → entity
-///   references;
-/// * calls resolve against [`build_resolution_functions`] over
-///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
-///   references to sibling fns do not resolve.
-///
-/// `later_declared_structure_names` holds the module-local `structure def`s
-/// with no template in `templates_so_far` yet — those declared BELOW this fn;
-/// using one draws `StructureDeclaredAfterFunction` rather than a silent
-/// fallback.
-///
-/// The ctor view is rebuilt per fn: it borrows `templates_so_far`, which the
-/// caller's structure arms push to between fns.
-///
-/// `declared_callables` is the module's order-independent callable vocabulary
-/// (task #5371), built once per pass by the caller.
-///
-/// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
-/// already emitted them exactly once — and neither are those of `Compiled`
-/// defaults, which are reused as compiled.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_function_decl(
-    fn_def: &FnDef,
-    sig: &FnSignature,
-    defaults: &FnParamDefaults,
-    enum_defs: &[EnumDef],
-    user_fns_so_far: &[CompiledFunction],
-    templates_so_far: &[TopologyTemplate],
-    prelude: &[&CompiledModule],
-    later_declared_structure_names: &HashSet<String>,
-    declared_callables: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledFunction> {
-    let functions = build_resolution_functions(user_fns_so_far, prelude);
-    let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::ctor_template_registry(templates_so_far, prelude);
-    let env = FnCompileEnv {
-        enum_defs,
-        // Never holds a pending stub: fns above are real, fns below are #5371's
-        // forward references.
-        calls: CallTable::complete(&functions),
-        template_registry: Some(&template_registry),
-        later_declared_structure_names: Some(later_declared_structure_names),
-        declared_callable_names: declared_callables,
-    };
-    let param_defaults = match defaults {
-        FnParamDefaults::Compiled(defaults) => defaults.clone(),
-        FnParamDefaults::NeedLocalTemplates => {
-            compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
+/// The pass-invariant inputs every fn body in the unified source-order pass
+/// compiles against, built once by `entities_phase::phase_entities` before its
+/// declaration loop.
+pub(crate) struct SourceOrderFnEnv<'a> {
+    enum_defs: &'a [EnumDef],
+    prelude_ctor_view: &'a HashMap<String, &'a TopologyTemplate>,
+    /// The module's order-INDEPENDENT callable vocabulary (task #5371): the
+    /// companion to the order-dependent `calls_above` each fn body resolves
+    /// against. It changes nothing about which overload resolves; see
+    /// `CompilationScope::declared_callable_names` for what it is for.
+    declared_callable_names: HashSet<String>,
+    local_structure_def_names: &'a HashSet<String>,
+}
+
+impl<'a> SourceOrderFnEnv<'a> {
+    pub(crate) fn new(
+        enum_defs: &'a [EnumDef],
+        prelude_ctor_view: &'a HashMap<String, &'a TopologyTemplate>,
+        declared_callable_names: HashSet<String>,
+        local_structure_def_names: &'a HashSet<String>,
+    ) -> Self {
+        Self {
+            enum_defs,
+            prelude_ctor_view,
+            declared_callable_names,
+            local_structure_def_names,
         }
-    };
-    compile_fn_body(fn_def, sig, param_defaults, &env, diagnostics)
+    }
+
+    /// Compile ONE `fn` declaration's body, plus its param defaults when
+    /// [`phase_fn_param_defaults`] left them pending.
+    ///
+    /// Called from the `Declaration::Function` arm of
+    /// `entities_phase::phase_entities`, in source order, so `calls_above` and
+    /// `templates_so_far` hold only what is declared ABOVE this fn:
+    ///
+    /// * constructors resolve against the prelude ctor view overlaid by
+    ///   `templates_so_far` ([`name_env::overlay_local_templates`]), so a fn
+    ///   body may construct a same-module structure declared above it and get
+    ///   that structure's authoritative template — the same
+    ///   no-forward-reference rule `compile_entity` obeys for entity → entity
+    ///   references;
+    /// * calls resolve against `calls_above`: the real fns declared above plus
+    ///   every prelude fn they do not shadow, so forward references to sibling
+    ///   fns do not resolve;
+    /// * the module-local `structure def`s with no template in
+    ///   `templates_so_far` — those declared BELOW this fn — draw
+    ///   `StructureDeclaredAfterFunction` rather than a silent fallback.
+    ///
+    /// The overlay and the declared-below set are per fn because both derive
+    /// from `templates_so_far`, which the caller pushes to between fns.
+    ///
+    /// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
+    /// already emitted them exactly once — and neither are those of `Compiled`
+    /// defaults, which are reused as compiled (debug builds recompile them only
+    /// to check that rule).
+    pub(crate) fn compile_function_decl(
+        &self,
+        fn_def: &FnDef,
+        sig: &FnSignature,
+        defaults: &FnParamDefaults,
+        calls_above: &ResolutionTable<'_>,
+        templates_so_far: &[TopologyTemplate],
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<CompiledFunction> {
+        let template_registry =
+            name_env::overlay_local_templates(self.prelude_ctor_view, templates_so_far);
+        let declared_below = self.structure_defs_declared_below(templates_so_far);
+        let env = FnCompileEnv {
+            enum_defs: self.enum_defs,
+            // Never holds a pending stub: fns above are real, fns below are
+            // #5371's forward references.
+            calls: CallTable::complete(calls_above.functions()),
+            template_registry: Some(&template_registry),
+            unavailable_local_template_names: Some(&declared_below),
+            declared_callable_names: &self.declared_callable_names,
+        };
+        let param_defaults = match defaults {
+            FnParamDefaults::Compiled(defaults) => {
+                #[cfg(debug_assertions)]
+                early_default_recheck::assert_early_defaults_match_unified(
+                    fn_def, sig, defaults, &env,
+                );
+                defaults.clone()
+            }
+            FnParamDefaults::NeedLocalTemplates => {
+                compile_fn_param_defaults(fn_def, sig, &env, diagnostics)
+            }
+        };
+        compile_fn_body(fn_def, sig, param_defaults, &env, diagnostics)
+    }
+
+    /// The module-local `structure def`s with no template in `templates_so_far`.
+    fn structure_defs_declared_below(
+        &self,
+        templates_so_far: &[TopologyTemplate],
+    ) -> HashSet<String> {
+        let mut declared_below = self.local_structure_def_names.clone();
+        for template in templates_so_far {
+            declared_below.remove(&template.name);
+        }
+        declared_below
+    }
+}
+
+/// Debug-build recheck of the early-default commit rule.
+#[cfg(debug_assertions)]
+mod early_default_recheck {
+    use reify_ast::FnDef;
+    use reify_core::{ContentHash, Type};
+    use reify_ir::CompiledExpr;
+
+    use crate::functions::{FnCompileEnv, FnSignature, compile_fn_param_defaults};
+
+    /// Each default slot's identity, for comparing two compilations of the same
+    /// defaults: its `content_hash` (what the engine caches by) and its
+    /// `result_type` (which a literal's hash leaves out).
+    pub(super) fn default_fingerprints(
+        defaults: &[Option<CompiledExpr>],
+    ) -> Vec<Option<(ContentHash, Type)>> {
+        defaults
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .map(|expr| (expr.content_hash, expr.result_type.clone()))
+            })
+            .collect()
+    }
+
+    /// Debug-build recheck of the early-default commit rule (PRD
+    /// `stdlib-namespace.md` D-8): panics unless recompiling `fn_def`'s defaults
+    /// in the unified `env` gives `early`, the `Compiled` defaults that
+    /// [`super::phase_fn_param_defaults`] committed.
+    ///
+    /// It checks the compiled defaults only, not the diagnostics compiling them
+    /// drew: the recompile's are dropped, and nothing compares them with the
+    /// ones the early pass emitted.
+    pub(super) fn assert_early_defaults_match_unified(
+        fn_def: &FnDef,
+        sig: &FnSignature,
+        early: &[Option<CompiledExpr>],
+        env: &FnCompileEnv<'_>,
+    ) {
+        let unified = compile_fn_param_defaults(fn_def, sig, env, &mut Vec::new());
+        let early_fingerprints = default_fingerprints(early);
+        let unified_fingerprints = default_fingerprints(&unified);
+        let slot_count = early_fingerprints.len().max(unified_fingerprints.len());
+        let Some(slot) =
+            (0..slot_count).find(|&i| early_fingerprints.get(i) != unified_fingerprints.get(i))
+        else {
+            return;
+        };
+        let param = match fn_def.params.get(slot) {
+            Some(param) => format!("param `{}`", param.name),
+            None => format!("slot {slot}, past the declared params"),
+        };
+        panic!(
+            "early-default commit rule violated (PRD stdlib-namespace D-8): the defaults \
+             `phase_fn_param_defaults` committed as `Compiled` for fn `{}` differ from the \
+             unified recompile at {param}\n  early:   {}\n  unified: {}\n\
+             Look for a `scope.template_registry` read in expr.rs that runs before \
+             `later_declared_structure_error`.",
+            fn_def.name,
+            describe_slot(early_fingerprints.get(slot)),
+            describe_slot(unified_fingerprints.get(slot)),
+        );
+    }
+
+    /// One entry of [`default_fingerprints`], as the divergence panic prints it.
+    fn describe_slot(slot: Option<&Option<(ContentHash, Type)>>) -> String {
+        match slot {
+            None => "no slot".to_owned(),
+            Some(None) => "no default".to_owned(),
+            Some(Some((hash, ty))) => format!("`{ty}` {hash}"),
+        }
+    }
 }
 
 /// The compile-time overload-dispatch table: every user function, then each
 /// prelude function that wins its `(name, param types)` key under NS-P1
 /// ([`name_env`]: imports before std modules, first wins). A prelude function
 /// sharing a user function's key is shadowed.
-pub(crate) fn build_resolution_functions(
+fn build_resolution_functions(
     user: &[CompiledFunction],
     prelude: &[&CompiledModule],
 ) -> Vec<CompiledFunction> {
-    let bindings = name_env::bind(user, prelude.iter().copied());
-    let prelude_winners = bindings
+    let mut functions = user.to_vec();
+    functions.extend(unshadowed_prelude_winners(user, prelude));
+    functions
+}
+
+/// The prelude tail of [`build_resolution_functions`]: each prelude function
+/// that wins its key under NS-P1 and shares no key with `user`.
+fn unshadowed_prelude_winners(
+    user: &[CompiledFunction],
+    prelude: &[&CompiledModule],
+) -> Vec<CompiledFunction> {
+    name_env::bind(user, prelude.iter().copied())
         .winning_candidates()
         .iter()
         .filter(|candidate| candidate.origin != Origin::Local)
-        .map(|candidate| candidate.definition.clone());
-    user.iter().cloned().chain(prelude_winners).collect()
+        .map(|candidate| candidate.definition.clone())
+        .collect()
 }
 
 /// [`build_resolution_functions`] over a user list that grows one fn at a time.
 ///
-/// After every [`Self::push_user`], [`Self::functions`] equals
-/// `build_resolution_functions(&users_pushed_so_far, prelude)`. A user fn that
-/// shadows no prelude winner's key is spliced in at the end of the user
-/// prefix; only one that does triggers a rebuild, so the prelude winners are
-/// cloned once rather than once per user fn.
+/// [`Self::functions`] always equals
+/// `build_resolution_functions(&(seed ++ users_pushed_so_far), prelude)`. A
+/// user fn that shadows no prelude winner's key is spliced in at the end of
+/// the user prefix; only one that does triggers a rebuild of the prelude tail,
+/// so the prelude winners are cloned once rather than once per user fn, and
+/// the user prefix is never re-cloned.
 pub(crate) struct ResolutionTable<'p> {
     prelude: &'p [&'p CompiledModule],
     prelude_keys: HashSet<FunctionSignature<'p>>,
@@ -230,7 +358,7 @@ pub(crate) struct ResolutionTable<'p> {
 }
 
 impl<'p> ResolutionTable<'p> {
-    pub(crate) fn new(prelude: &'p [&'p CompiledModule]) -> Self {
+    pub(crate) fn new(users: Vec<CompiledFunction>, prelude: &'p [&'p CompiledModule]) -> Self {
         let prelude_keys = name_env::bind::<CompiledFunction, _>(&[], prelude.iter().copied())
             .winners()
             .map(Definition::key)
@@ -238,8 +366,8 @@ impl<'p> ResolutionTable<'p> {
         ResolutionTable {
             prelude,
             prelude_keys,
-            functions: build_resolution_functions(&[], prelude),
-            user_len: 0,
+            functions: build_resolution_functions(&users, prelude),
+            user_len: users.len(),
         }
     }
 
@@ -251,7 +379,8 @@ impl<'p> ResolutionTable<'p> {
         if self.prelude_keys.contains(&user.key()) {
             self.functions.truncate(self.user_len);
             self.functions.push(user);
-            self.functions = build_resolution_functions(&self.functions, self.prelude);
+            let prelude_tail = unshadowed_prelude_winners(&self.functions, self.prelude);
+            self.functions.extend(prelude_tail);
         } else {
             self.functions.insert(self.user_len, user);
         }
@@ -259,6 +388,11 @@ impl<'p> ResolutionTable<'p> {
     }
 
     pub(crate) fn into_functions(self) -> Vec<CompiledFunction> {
+        self.functions
+    }
+
+    pub(crate) fn into_user_functions(mut self) -> Vec<CompiledFunction> {
+        self.functions.truncate(self.user_len);
         self.functions
     }
 }
@@ -269,14 +403,38 @@ mod tests {
 
     use super::*;
 
-    fn compile_src(source: &str) -> CompiledModule {
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    fn parse_at(module: &str, source: &str) -> reify_ast::ParsedModule {
+        let parsed = reify_syntax::parse(source, ModulePath::single(module));
         assert!(
             parsed.errors.is_empty(),
             "fixture must parse: {:?}",
             parsed.errors
         );
-        crate::compile(&parsed)
+        parsed
+    }
+
+    fn compile_src(source: &str) -> CompiledModule {
+        crate::compile(&parse_at("test", source))
+    }
+
+    /// `source` compiled as module `test` with module `p`, compiled from
+    /// `prelude_source`, as its prelude.
+    fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
+        let prelude = crate::compile(&parse_at("p", prelude_source));
+        crate::compile_with_prelude(&parse_at("test", source), &[prelude])
+    }
+
+    fn result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m reify_ir::CompiledExpr {
+        let found = module.functions.iter().find(|f| f.name == fn_name);
+        &found
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected `{fn_name}` in compiled module; found functions: {:?}",
+                    module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+                )
+            })
+            .body
+            .result_expr
     }
 
     fn codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
@@ -325,8 +483,9 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+    /// A prelude with fns `kept` and `shadowed`, and three users: `fresh`, a
+    /// `shadowed` that shadows the prelude's, and a `kept(String)` that does not.
+    fn prelude_and_users() -> (CompiledModule, Vec<CompiledFunction>) {
         let prelude =
             compile_src("fn kept(x : Real) -> Real { x }\nfn shadowed(x : Real) -> Real { x }\n");
         let users = compile_src(
@@ -334,14 +493,214 @@ mod tests {
              fn kept(x : String) -> Real { 1.0 }\n",
         )
         .functions;
+        (prelude, users)
+    }
+
+    #[test]
+    fn resolution_table_matches_build_resolution_functions_after_every_push() {
+        let (prelude, users) = prelude_and_users();
         let prelude_refs = [&prelude];
-        let mut table = ResolutionTable::new(&prelude_refs);
+        let mut table = ResolutionTable::new(Vec::new(), &prelude_refs);
         for pushed in 1..=users.len() {
             table.push_user(users[pushed - 1].clone());
             assert_eq!(
                 signatures(table.functions()),
                 signatures(&build_resolution_functions(&users[..pushed], &prelude_refs)),
                 "after pushing {pushed} user fn(s)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seeded_resolution_table_matches_build_resolution_functions_and_hands_back_its_users() {
+        let (prelude, users) = prelude_and_users();
+        let prelude_refs = [&prelude];
+        let mut table = ResolutionTable::new(users[..1].to_vec(), &prelude_refs);
+        assert_eq!(
+            signatures(table.functions()),
+            signatures(&build_resolution_functions(&users[..1], &prelude_refs)),
+            "straight after seeding with 1 user fn"
+        );
+        for held in 2..=users.len() {
+            table.push_user(users[held - 1].clone());
+            assert_eq!(
+                signatures(table.functions()),
+                signatures(&build_resolution_functions(&users[..held], &prelude_refs)),
+                "holding {held} user fn(s)"
+            );
+        }
+        assert_eq!(signatures(&table.into_user_functions()), signatures(&users));
+    }
+
+    #[test]
+    fn a_prelude_fn_stays_visible_to_fn_bodies_above_the_local_fn_that_shadows_it() {
+        let module = compile_against_prelude(
+            "fn f(x : Real) -> Real { x }\n",
+            "fn g() -> Real { f(1.0) }\n\
+             fn f(x : Real) -> String { \"s\" }\n\
+             fn h() -> String { f(1.0) }\n",
+        );
+        assert_eq!(
+            result_expr(&module, "g").result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "g is above the local f, so its call binds the prelude f"
+        );
+        assert_eq!(
+            result_expr(&module, "h").result_type,
+            reify_core::Type::String,
+            "h is below the local f, so its call binds the local f"
+        );
+    }
+
+    fn ctor_default_names(module: &CompiledModule, fn_name: &str) -> Vec<String> {
+        match &result_expr(module, fn_name).kind {
+            reify_ir::CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
+                defaults.iter().map(|(name, _)| name.clone()).collect()
+            }
+            other => panic!("`{fn_name}` should construct a structure; got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fn_bodys_ctor_view_is_the_prelude_view_overlaid_by_templates_above_it() {
+        const PRELUDE: &str = "structure def P { param from_prelude : Real = 1.0 }\n";
+        let local_above = compile_against_prelude(
+            PRELUDE,
+            "structure def P { param from_local : Real = 2.0 }\nfn mk() -> P { P() }\n",
+        );
+        assert_eq!(
+            ctor_default_names(&local_above, "mk"),
+            ["from_local"],
+            "a local P above the fn shadows the prelude P"
+        );
+        let prelude_only = compile_against_prelude(PRELUDE, "fn mk() -> P { P() }\n");
+        assert_eq!(
+            ctor_default_names(&prelude_only, "mk"),
+            ["from_prelude"],
+            "with no local P, the fn constructs the prelude P"
+        );
+    }
+
+    #[test]
+    fn only_a_fn_above_a_local_structure_def_is_told_it_is_declared_after() {
+        const SRC: &str = "fn above() -> S { S() }\n\
+             structure def S { param a : Real = 1.0 }\n\
+             fn below() -> S { S() }\n";
+        let module = compile_src(SRC);
+        let def_start = SRC.find("structure def S").expect("fixture declares S") as u32;
+        let ordering_call_sites: Vec<u32> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction))
+            .flat_map(|d| d.labels.iter().map(|label| label.span.start))
+            .collect();
+        assert!(
+            matches!(ordering_call_sites[..], [call_site] if call_site < def_start),
+            "exactly one ordering error, at the call in `above`; got: {:#?}",
+            module.diagnostics
+        );
+        assert_eq!(
+            ctor_default_names(&module, "below"),
+            ["a"],
+            "`below` is below S, so it constructs the local S"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    mod early_default_recheck_tests {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        use super::*;
+        use crate::compile_builder::functions_phase::early_default_recheck::default_fingerprints;
+
+        /// One defaulted param, `spoiled`, whose default the unified env
+        /// compiles to the literal `1.0`.
+        const EARLY_PROBE: &str = "fn early_probe(spoiled : Real = 1.0) -> Real { spoiled }\n";
+
+        /// `source`'s one `fn` through [`SourceOrderFnEnv::compile_function_decl`],
+        /// told by `early` that the early pass already compiled its defaults.
+        ///
+        /// The unified env is empty (no prelude, no templates, no name sets),
+        /// which is what [`compile_src`] compiles a template-free module against.
+        fn decl_with_early_defaults(
+            source: &str,
+            early: Vec<Option<CompiledExpr>>,
+        ) -> Option<CompiledFunction> {
+            let parsed = parse_at("test", source);
+            let [reify_ast::Declaration::Function(fn_def)] = &parsed.declarations[..] else {
+                panic!(
+                    "fixture must declare exactly one fn: {:?}",
+                    parsed.declarations
+                );
+            };
+            let sig = resolve_fn_signature(
+                fn_def,
+                &[],
+                &crate::type_resolution::TypeAliasRegistry::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut Vec::new(),
+            );
+            let prelude_view = HashMap::new();
+            let local_structure_def_names = HashSet::new();
+            SourceOrderFnEnv::new(
+                &[],
+                &prelude_view,
+                HashSet::new(),
+                &local_structure_def_names,
+            )
+            .compile_function_decl(
+                fn_def,
+                &sig,
+                &FnParamDefaults::Compiled(early),
+                &ResolutionTable::new(Vec::new(), &[]),
+                &[],
+                &mut Vec::new(),
+            )
+        }
+
+        /// What the unified pass compiles `source`'s defaults to.
+        fn honest_defaults(source: &str) -> Vec<Option<CompiledExpr>> {
+            compile_src(source).functions[0].param_defaults.clone()
+        }
+
+        #[test]
+        #[should_panic(expected = "spoiled")]
+        fn a_compiled_default_whose_content_differs_from_the_unified_recompile_panics() {
+            let early = vec![Some(CompiledExpr::literal(
+                reify_ir::Value::Real(2.0),
+                Type::dimensionless_scalar(),
+            ))];
+            decl_with_early_defaults(EARLY_PROBE, early);
+        }
+
+        #[test]
+        #[should_panic(expected = "spoiled")]
+        fn a_compiled_default_whose_type_differs_from_the_unified_recompile_panics() {
+            // Only `result_type` is overwritten, so the `content_hash` still
+            // equals the unified recompile's: only the type comparison can fire.
+            let mut early = honest_defaults(EARLY_PROBE);
+            early[0]
+                .as_mut()
+                .expect("`spoiled` is defaulted")
+                .result_type = Type::String;
+            decl_with_early_defaults(EARLY_PROBE, early);
+        }
+
+        /// The control for the type-only test above: an honest default passes
+        /// the debug recheck, so [`honest_defaults`] and this test's empty
+        /// unified env give `spoiled` the same `content_hash`, and the type-only
+        /// panic can only come from the `result_type` comparison.
+        #[test]
+        fn an_honest_compiled_default_passes_the_debug_recheck() {
+            let honest = honest_defaults(EARLY_PROBE);
+            let compiled = decl_with_early_defaults(EARLY_PROBE, honest.clone())
+                .expect("a well-formed fn compiles")
+                .param_defaults;
+            assert_eq!(
+                default_fingerprints(&compiled),
+                default_fingerprints(&honest)
             );
         }
     }

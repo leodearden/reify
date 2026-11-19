@@ -246,7 +246,7 @@ fn run_displacement_at(history: &Value, location: Value, direction: Value) -> Ve
 ///     (in-module in `reify-eval/src/modal_ops.rs`) drives the trampoline and
 ///     asserts every entry is a `Value::Scalar` of `DimensionVector::LENGTH`;
 ///   - DECLARED — `displacement_at_overloads_return_list_of_length`
-///     (`reify-compiler/tests/harness_mechanics/modal_analysis_fns_stdlib_compile.rs`)
+///     (`reify-compiler/tests/harness_mechanics/modal_analysis_stdlib_compile.rs`)
 ///     asserts both stdlib overloads declare `-> List<Length>`.
 ///
 /// Those are tests. `displacement_series_outcome` — which wraps the series in
@@ -510,7 +510,7 @@ structure R3bSelectorOverloadProbe {{
 
     let material = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: material)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
@@ -571,7 +571,7 @@ fn displacement_at_overload_errors(module: &reify_compiler::CompiledModule) -> V
 /// `Selector` / `AnySelector`: `resolve_function_overload` (type_compat.rs)
 /// matches params by EXACT equality, so an `AnySelector` param would reject the
 /// `FaceSelector` argument this test passes and reinstate the very
-/// no-matching-overload failure guarded here — `stdlib/modal_analysis_fns.ri`
+/// no-matching-overload failure guarded here — `stdlib/modal_analysis.ri`
 /// carries the same warning above the declaration. The kind-agnostic shape
 /// belongs one layer down, at runtime, where the shared trampoline branches on
 /// `value_inputs[1]`'s `Value::Selector`.

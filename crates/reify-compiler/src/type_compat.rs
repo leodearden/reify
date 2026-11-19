@@ -1019,17 +1019,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 
 /// Predicate used by `expand_constraint_inst` (entity.rs) to validate that a
 /// constraint instantiation argument's type conforms to the declared parameter
-/// type.
+/// type. It rejects every pairing Rules 1–4 below do not accept.
 ///
-/// This is a **narrow cross-category conformance check** — it rejects only
-/// cross-category mismatches (Bool/String/Enum/aggregate vs numeric/Length
-/// etc.) while deliberately tolerating numeric-for-dimensioned at the binding
-/// site (e.g. `Int` passed where `Length` is declared). Dimensional strictness
-/// within comparison predicates is already enforced by task 4490's
-/// `emit_comparison_operand_diagnostics`; duplicating it here at the binding
-/// site would cause false-positive rejections for currently-valid
-/// instantiations such as `forall v in [1,2,3]: constraint MinThreshold(value: v)`
-/// where `param value: Length` and `v` is `Int`.
+/// The restated Int-for-Length ruling lives at
+/// crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
 ///
 /// # Safety of non-numeric param types
 ///
@@ -1043,9 +1036,10 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// - **Same-type non-numeric params** (e.g. `param actual : Geometry` with a
 ///   `Geometry`-typed arg) exit at Rule 3 via `type_compatible`'s identity
 ///   short-circuit (`from == to`).
-/// - Rule 5 therefore fires only for genuinely cross-category pairs such as
-///   `Bool` or `String` passed where a numeric/`Geometry`/struct param is
-///   declared — those are real errors and correctly rejected.
+/// - For a non-numeric param, Rule 5 therefore fires only for genuinely
+///   cross-category pairs such as `Bool` or `String` passed where a
+///   `Geometry`/struct param is declared — those are real errors and correctly
+///   rejected.
 ///
 /// This invariant is validated by the reify-compiler test suite (including
 /// GD&T `Conforms` tolerancing fixtures that use trait-typed and
@@ -1063,12 +1057,15 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
 ///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
 ///    selector coercions — the common well-typed case).
-/// 4. Both sides are numeric (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`)
-///    → **accept** (numeric leniency: tolerates `Int`-for-`Length` and
-///    cross-dimension scalars at the binding site; task 4490 guards
-///    dimensional correctness inside comparison predicates).
-/// 5. Otherwise → **reject** (cross-category mismatch, e.g. `Bool` vs `Length`,
-///    `String` vs `Length`, `Enum(X)` vs `Length`).
+/// 4. A `Type::ScalarParam(_)` on either side, with the other side a scalar
+///    kind (`is_orderable_scalar`: `Type::Int | Type::Scalar{..} |
+///    Type::ScalarParam(_)`) → **accept** (the D4-5 dimension-generic fence:
+///    the dimension-generic machinery resolves it, not this check).
+/// 5. Otherwise → **reject**: a cross-category mismatch (e.g. `Bool`, `String`
+///    or `Enum(X)` vs `Length`), or a numeric pairing outside both Rule 3's
+///    widening and the fence — a scalar of another dimension (task 5762, δ₂),
+///    an `Int` at a dimensioned scalar param, or a scalar at an `Int` param
+///    (task 10029).
 pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bool {
     // Rule 1: Anti-cascade guard — either side poisoned → accept.
     // Also prevents `type_compatible`'s debug_assert!(!param_ty.is_error()) from
@@ -1087,14 +1084,18 @@ pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bo
     if type_compatible(param_ty, arg_ty) {
         return true;
     }
-    // Rule 4: Numeric leniency — both sides are some form of numeric scalar.
-    // Tolerates Int-for-Length and cross-dimension scalar-for-scalar at the
-    // binding site; dimensional strictness within predicates is task 4490's job.
-    let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
-    if is_numeric(param_ty) && is_numeric(arg_ty) {
+    // Rule 4: The D4-5 fence — a `ScalarParam` against any scalar kind is
+    // accepted, because the dimension-generic machinery resolves it, not this
+    // check.
+    let dimension_generic_meets_scalar = |generic: &Type, other: &Type| {
+        matches!(generic, Type::ScalarParam(_)) && is_orderable_scalar(other)
+    };
+    if dimension_generic_meets_scalar(param_ty, arg_ty)
+        || dimension_generic_meets_scalar(arg_ty, param_ty)
+    {
         return true;
     }
-    // Rule 5: Cross-category mismatch (e.g. Bool vs Length, String vs Length).
+    // Rule 5: Everything else is a mismatch (see Rules, item 5).
     false
 }
 
@@ -1350,24 +1351,30 @@ pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> b
 /// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
 /// β2, INV-COMP-3).
 ///
-/// `Some(ty)` — the operand-kind pair is one the runtime evaluator
+/// `Ok(ty)` — the operand-kind pair is one the runtime evaluator
 /// (`eval_mul`/`eval_div` in `reify-expr`) has an INTENTIONAL arm for; `ty` is
-/// the exact static result type for that arm. `None` — no intentional arm
-/// exists (a **structural**, kind-level `Value::Undef`, not a data-dependent
-/// one like divide-by-zero); the caller (the `expr.rs` operand-kind guard)
-/// poisons to `Type::Error` and emits `DiagnosticCode::ArithOperandKind`.
+/// the exact static result type for that arm. `Err(OperandKinds)` — no
+/// intentional arm exists (a **structural**, kind-level `Value::Undef`, not a
+/// data-dependent one like divide-by-zero); the caller (the `expr.rs`
+/// operand-kind guard) poisons to `Type::Error` and emits
+/// `DiagnosticCode::ArithOperandKind`. `Err(DimensionOverflow)` — the arm
+/// exists but the combined dimension has an exponent that does not fit
+/// `Rational`; the caller poisons and emits
+/// `DiagnosticCode::DimensionExponentOverflow`, and the runtime arm yields
+/// `Undef`. Unlike divide-by-zero, overflow is a static TYPE question: the
+/// operand dimensions alone decide it.
 ///
 /// Pinned row-for-row against the frozen runtime characterization suite:
 /// `crates/reify-expr/tests/mul_div_runtime_truth_table.rs` (β1, task 5052).
-/// Only that file's `INTENTIONAL` rows become `Some`; `STRUCTURAL-Undef`,
+/// Only that file's `INTENTIONAL` rows become `Ok`; `STRUCTURAL-Undef`,
 /// `degenerate-NOT-intentional`, and `Matrix-diagnostic` rows all become
-/// `None`. `DATA-DRIVEN-Undef` rows (divide-by-zero) are excluded — they are
-/// a runtime VALUE question, not a static TYPE question.
+/// `Err(OperandKinds)`. `DATA-DRIVEN-Undef` rows (divide-by-zero) are
+/// excluded — they are a runtime VALUE question, not a static TYPE question.
 ///
 /// Callers: `infer_binop_type`'s `Mul`/`Div` arm (below) delegates here
 /// directly via `mul_div_result_or_placeholder`. `expr.rs`'s `compile_binop`
 /// calls this function directly, exactly ONCE per `*`/`/` expression, and
-/// threads the resulting `Option` through both `mul_div_result_or_placeholder`
+/// threads the resulting `Result` through both `mul_div_result_or_placeholder`
 /// (for the static result type) and the operand-kind guard's poison decision
 /// (task compiler-type-hygiene β2 amendment round 3 — previously the guard
 /// called this function a second, independent time). Keeping both concerns
@@ -1381,34 +1388,34 @@ pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> b
 /// `eval_mul`/`eval_div` over each component against the same "scalar"
 /// operand — so a dimensioned "scalar" (e.g. `Scalar<Time>`) combines
 /// dimensions with the quantity exactly as `Scalar ⊗ Scalar` would.
-pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Option<Type> {
+pub(crate) fn infer_mul_div_result(
+    op: BinOp,
+    left: &Type,
+    right: &Type,
+) -> Result<Type, MulDivRefusal> {
     debug_assert!(
         matches!(op, BinOp::Mul | BinOp::Div),
         "infer_mul_div_result only handles BinOp::Mul/BinOp::Div, got {op:?}"
     );
     match (left, right) {
         // ── Numeric + Scalar core ────────────────────────────────────────────
-        (Type::Int, Type::Int) => Some(Type::Int),
+        (Type::Int, Type::Int) => Ok(Type::Int),
 
-        (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Some(Type::Scalar {
-            dimension: match op {
-                BinOp::Mul => ld.mul(rd),
-                BinOp::Div => ld.div(rd),
-                _ => unreachable!(),
-            },
+        (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Ok(Type::Scalar {
+            dimension: combined_dimension(op, ld, rd)?,
         }),
 
         // Scalar ⊗ Int: Int carries no dimension, so both Mul and Div preserve
         // the Scalar's dimension unchanged.
-        (Type::Scalar { dimension }, Type::Int) => Some(Type::Scalar {
+        (Type::Scalar { dimension }, Type::Int) => Ok(Type::Scalar {
             dimension: *dimension,
         }),
         // Int ⊗ Scalar: Mul is commutative with the above (preserve); Div is
         // the non-commutative reciprocal-dimension arm (`Int / Scalar<Time>`).
-        (Type::Int, Type::Scalar { dimension }) => Some(Type::Scalar {
+        (Type::Int, Type::Scalar { dimension }) => Ok(Type::Scalar {
             dimension: match op {
                 BinOp::Mul => *dimension,
-                BinOp::Div => DimensionVector::DIMENSIONLESS.div(dimension),
+                BinOp::Div => combined_dimension(op, &DimensionVector::DIMENSIONLESS, dimension)?,
                 _ => unreachable!(),
             },
         }),
@@ -1435,12 +1442,12 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         //
         // `ScalarParam ⊗ ScalarParam` and `ScalarParam ⊗` a NON-dimensionless
         // concrete `Scalar` are deliberately left unhandled (fall through to
-        // `None` below): the combined dimension (e.g. "Q²" or "Q*Length")
+        // `Err(OperandKinds)` below): the combined dimension (e.g. "Q²" or "Q*Length")
         // is not representable by `ScalarParam`'s bare-name form. Extending
         // `ScalarParam` to carry a compound dimension expression is out of
         // scope for this fix.
         //
-        // Unlike this function's OTHER `None` pairings (genuine runtime-
+        // Unlike this function's OTHER `Err(OperandKinds)` pairings (genuine runtime-
         // unsupported operand kinds), this is a static REPRESENTATIONAL gap
         // only: the combination is always runtime-legal once `Q` is
         // substituted with a concrete dimension (e.g.
@@ -1452,21 +1459,21 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // `TypeParam`/`Projection` skips; see the guard's doc comment for the
         // full rationale. `infer_binop_type`'s `Mul`/`Div` arm correspondingly
         // propagates the `ScalarParam` itself (not `Type::Int`) for this
-        // `None` case via `mul_div_result_or_placeholder` below, mirroring its
+        // `Err(OperandKinds)` case via `mul_div_result_or_placeholder` below, mirroring its
         // `Type::Projection` propagation, so the unresolved dimension
         // survives follow-on arithmetic instead of leaking as a spuriously-
         // concrete `Int`.
-        (Type::ScalarParam(name), Type::Int) => Some(Type::ScalarParam(name.clone())),
+        (Type::ScalarParam(name), Type::Int) => Ok(Type::ScalarParam(name.clone())),
         (Type::Int, Type::ScalarParam(name)) if op == BinOp::Mul => {
-            Some(Type::ScalarParam(name.clone()))
+            Ok(Type::ScalarParam(name.clone()))
         }
         (Type::ScalarParam(name), Type::Scalar { dimension }) if dimension.is_dimensionless() => {
-            Some(Type::ScalarParam(name.clone()))
+            Ok(Type::ScalarParam(name.clone()))
         }
         (Type::Scalar { dimension }, Type::ScalarParam(name))
             if op == BinOp::Mul && dimension.is_dimensionless() =>
         {
-            Some(Type::ScalarParam(name.clone()))
+            Ok(Type::ScalarParam(name.clone()))
         }
 
         // ── Aggregate scale: Vector/Point/Tensor ⊗ scalar-like ───────────────
@@ -1527,37 +1534,29 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // non-commutativity as the aggregate-scale Div arms above.
         (Type::Complex(lq), Type::Complex(rq)) => match (lq.as_ref(), rq.as_ref()) {
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                Some(Type::complex(Type::Scalar {
-                    dimension: match op {
-                        BinOp::Mul => ld.mul(rd),
-                        BinOp::Div => ld.div(rd),
-                        _ => unreachable!(),
-                    },
+                Ok(Type::complex(Type::Scalar {
+                    dimension: combined_dimension(op, ld, rd)?,
                 }))
             }
-            _ => None,
+            _ => Err(MulDivRefusal::OperandKinds),
         },
         (Type::Complex(cq), Type::Scalar { dimension: sd }) => match cq.as_ref() {
-            Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
-                dimension: match op {
-                    BinOp::Mul => cd.mul(sd),
-                    BinOp::Div => cd.div(sd),
-                    _ => unreachable!(),
-                },
+            Type::Scalar { dimension: cd } => Ok(Type::complex(Type::Scalar {
+                dimension: combined_dimension(op, cd, sd)?,
             })),
-            _ => None,
+            _ => Err(MulDivRefusal::OperandKinds),
         },
         (Type::Scalar { dimension: sd }, Type::Complex(cq)) if op == BinOp::Mul => {
             match cq.as_ref() {
-                Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
-                    dimension: cd.mul(sd),
+                Type::Scalar { dimension: cd } => Ok(Type::complex(Type::Scalar {
+                    dimension: combined_dimension(op, cd, sd)?,
                 })),
-                _ => None,
+                _ => Err(MulDivRefusal::OperandKinds),
             }
         }
-        (Type::Complex(cq), Type::Int) => Some(Type::complex(cq.as_ref().clone())),
+        (Type::Complex(cq), Type::Int) => Ok(Type::complex(cq.as_ref().clone())),
         (Type::Int, Type::Complex(cq)) if op == BinOp::Mul => {
-            Some(Type::complex(cq.as_ref().clone()))
+            Ok(Type::complex(cq.as_ref().clone()))
         }
 
         // ── Transform(n) — Mul only, matching n required ────────────────────
@@ -1566,19 +1565,19 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // there is no reverse (`Vector/Point/Transform × Transform`) arm —
         // Div is entirely unsupported for Transform (no runtime arm at all).
         (Type::Transform(n1), Type::Vector { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
-            Some(Type::Vector {
+            Ok(Type::Vector {
                 n: *n2,
                 quantity: quantity.clone(),
             })
         }
         (Type::Transform(n1), Type::Point { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
-            Some(Type::Point {
+            Ok(Type::Point {
                 n: *n2,
                 quantity: quantity.clone(),
             })
         }
         (Type::Transform(n1), Type::Transform(n2)) if op == BinOp::Mul && n1 == n2 => {
-            Some(Type::Transform(*n1))
+            Ok(Type::Transform(*n1))
         }
 
         // Every other operand-kind pairing (aggregate×aggregate; degenerate
@@ -1586,12 +1585,36 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // either position; List/String/Bool; non-commutative Div reversals;
         // and `Type::Applied`/`Type::StructureRef`/`Type::Union` nominal
         // struct/union types) has no runtime-intentional arm and is
-        // INTENTIONALLY `None`: none of these are in the
+        // INTENTIONALLY `Err(OperandKinds)`: none of these are in the
         // `is_mul_div_gradualism_skip` deferred set below, so they correctly
         // poison + emit `E_ArithOperandKind` rather than silently mistyping to
         // `Int`.
-        _ => None,
+        _ => Err(MulDivRefusal::OperandKinds),
     }
+}
+
+/// Why [`infer_mul_div_result`] gives a `*`/`/` no static result type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MulDivRefusal {
+    /// The runtime has no intentional arm for this operand-kind pair.
+    OperandKinds,
+    /// The combined dimension has an exponent that does not fit `Rational`.
+    DimensionOverflow,
+}
+
+/// The dimension of `l op r` for `*`/`/`, or `DimensionOverflow` when an
+/// exponent does not fit `Rational`.
+fn combined_dimension(
+    op: BinOp,
+    l: &DimensionVector,
+    r: &DimensionVector,
+) -> Result<DimensionVector, MulDivRefusal> {
+    match op {
+        BinOp::Mul => l.checked_mul(r),
+        BinOp::Div => l.checked_div(r),
+        _ => unreachable!("combined_dimension only handles BinOp::Mul/BinOp::Div, got {op:?}"),
+    }
+    .ok_or(MulDivRefusal::DimensionOverflow)
 }
 
 /// Infer the result type of a binary operation given operand types.
@@ -1671,7 +1694,7 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         }
         // Delegates to the single source of truth for both the correct static
         // result type and the runtime-supported/unsupported partition (β2,
-        // INV-COMP-3) — see `infer_mul_div_result`'s doc. `None` collapses via
+        // INV-COMP-3) — see `infer_mul_div_result`'s doc. An `Err` collapses via
         // `mul_div_result_or_placeholder`, which propagates an
         // `is_mul_div_gradualism_skip` operand (`Error`/`TypeParam`/
         // `Projection`/`ScalarParam`) unchanged — so an unresolved or poisoned
@@ -1727,12 +1750,13 @@ pub(crate) fn is_mul_div_gradualism_skip(ty: &Type) -> bool {
     )
 }
 
-/// Resolves `infer_mul_div_result`'s `Option<Type>` to the concrete static
+/// Resolves `infer_mul_div_result`'s `Result` to the concrete static
 /// `Type` used both as `infer_binop_type`'s `Mul`/`Div` result (above) and,
 /// via `expr.rs::compile_binop` calling this function directly, as the input
 /// to the operand-kind guard's poison decision.
 ///
-/// `Some(ty)` passes through unchanged. `None` collapses to the pre-β2
+/// `Ok(ty)` passes through unchanged. `Err(DimensionOverflow)` is
+/// `Type::Error`. `Err(OperandKinds)` collapses to the pre-β2
 /// `Type::Int` placeholder (which the `expr.rs` guard then poisons to
 /// `Type::Error`), EXCEPT when an operand matches `is_mul_div_gradualism_skip`
 /// above — then that operand's own type propagates unchanged instead, so an
@@ -1747,21 +1771,25 @@ pub(crate) fn is_mul_div_gradualism_skip(ty: &Type) -> bool {
 /// `ScalarParam` pins nearby. Integration-level symptom of the gap this
 /// closes: `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
 pub(crate) fn mul_div_result_or_placeholder(
-    inferred: Option<Type>,
+    inferred: Result<Type, MulDivRefusal>,
     left: &Type,
     right: &Type,
 ) -> Type {
-    inferred.unwrap_or_else(|| {
-        if left.is_error() || right.is_error() {
-            Type::Error
-        } else if is_mul_div_gradualism_skip(left) {
-            left.clone()
-        } else if is_mul_div_gradualism_skip(right) {
-            right.clone()
-        } else {
-            Type::Int
+    match inferred {
+        Ok(ty) => ty,
+        Err(MulDivRefusal::DimensionOverflow) => Type::Error,
+        Err(MulDivRefusal::OperandKinds) => {
+            if left.is_error() || right.is_error() {
+                Type::Error
+            } else if is_mul_div_gradualism_skip(left) {
+                left.clone()
+            } else if is_mul_div_gradualism_skip(right) {
+                right.clone()
+            } else {
+                Type::Int
+            }
         }
-    })
+    }
 }
 
 /// Whether `cand` could take `arg_types` by padding its trailing params: it
@@ -4636,7 +4664,7 @@ mod tests {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 
-    // ── constraint_arg_type_conforms (task 4546) ──────────────────────────────
+    // ── constraint_arg_type_conforms (task 4546; task 5762, δ₂; task 10029) ──
 
     /// (gap) Bool passed where Length expected → false.
     /// This is the primary gap this task closes.
@@ -4648,32 +4676,132 @@ mod tests {
         );
     }
 
-    /// (numeric leniency) Int passed where Length expected → true.
-    /// Dimensional strictness within predicates is task 4490's job.
+    /// (Int-for-Length rejected, task 10029) Int passed where Length expected → false.
     #[test]
-    fn constraint_arg_type_conforms_int_for_length_is_true() {
+    fn constraint_arg_type_conforms_int_for_length_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::Int),
-            "Int passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&length_ty(), &Type::Int),
+            "Int passed as Length param must be rejected"
         );
     }
 
-    /// (cross-dimension numeric tolerated) Mass passed where Length expected → true.
-    /// Both sides are Scalar — the numeric-leniency rule applies.
+    /// (Scalar-at-Int rejected, task 10029) Length passed where Int expected → false.
     #[test]
-    fn constraint_arg_type_conforms_mass_for_length_is_true() {
+    fn constraint_arg_type_conforms_length_arg_for_int_param_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &mass_ty()),
-            "Mass scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&Type::Int, &length_ty()),
+            "Length arg passed as Int param must be rejected"
         );
     }
 
-    /// (dimensionless numeric tolerated) dimensionless Real passed where Length → true.
+    /// (Scalar-at-Int rejected, task 10029) dimensionless Real passed where Int
+    /// expected → false. Rule 3's Int→dimensionless widening is one-way.
     #[test]
-    fn constraint_arg_type_conforms_dimensionless_for_length_is_true() {
+    fn constraint_arg_type_conforms_dimensionless_arg_for_int_param_is_false() {
         assert!(
-            constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
-            "dimensionless Real scalar passed as Length param must be tolerated (numeric leniency)"
+            !constraint_arg_type_conforms(&Type::Int, &Type::dimensionless_scalar()),
+            "dimensionless Real arg passed as Int param must be rejected"
+        );
+    }
+
+    /// (Rule 3 widening kept) Int passed where a dimensionless Real param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_for_dimensionless_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::dimensionless_scalar(), &Type::Int),
+            "Int passed as dimensionless Real param must be accepted (Int widening)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Mass passed where Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_mass_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &mass_ty()),
+            "Mass scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) dimensionless Real passed where
+    /// Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_dimensionless_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
+            "dimensionless Real scalar passed as Length param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (cross-dimension rejected, task 5762) Length passed where a dimensionless
+    /// Real param is declared → false. The reverse direction of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_length_for_dimensionless_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::dimensionless_scalar(), &length_ty()),
+            "Length scalar passed as dimensionless Real param must be rejected (cross-dimension)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Length is
+    /// declared → true. Guards against over-removing Rule 4.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Length param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Length passed where a dimension-generic `ScalarParam` param
+    /// is declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_length_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &length_ty()),
+            "Length arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) Int passed where a dimension-generic `ScalarParam` param is
+    /// declared → true.
+    #[test]
+    fn constraint_arg_type_conforms_int_arg_for_scalar_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Int),
+            "Int arg passed as ScalarParam param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence) a dimension-generic `ScalarParam` arg passed where Int is
+    /// declared → true. The fence accepts a `ScalarParam` on either side against
+    /// any scalar kind.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_int_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Int, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Int param must be accepted (dimension-generic fence)"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) Bool arg passed where a dimension-generic
+    /// `ScalarParam` is declared → false. The fence needs a scalar kind on the
+    /// other side; a `ScalarParam` alone does not accept.
+    #[test]
+    fn constraint_arg_type_conforms_bool_arg_for_scalar_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::ScalarParam("Q".into()), &Type::Bool),
+            "Bool arg passed as ScalarParam param must be rejected"
+        );
+    }
+
+    /// (D4-5 fence, non-scalar side) a dimension-generic `ScalarParam` arg passed
+    /// where Bool is declared → false. The reverse of the case above.
+    #[test]
+    fn constraint_arg_type_conforms_scalar_param_arg_for_bool_param_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&Type::Bool, &Type::ScalarParam("Q".into())),
+            "ScalarParam arg passed as Bool param must be rejected"
         );
     }
 
@@ -4761,7 +4889,7 @@ mod tests {
     fn infer_mul_div_result_scalar_times_scalar_multiplies_dimensions() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::length()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
             }),
         );
@@ -4771,7 +4899,7 @@ mod tests {
     fn infer_mul_div_result_scalar_div_scalar_divides_dimensions() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::length()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::LENGTH.div(&DimensionVector::LENGTH),
             }),
         );
@@ -4781,17 +4909,17 @@ mod tests {
     fn infer_mul_div_result_int_times_int_yields_int() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Int),
-            Some(Type::Int)
+            Ok(Type::Int)
         );
     }
 
     #[test]
     fn infer_mul_div_result_int_div_int_yields_int_exemption() {
-        // β3 exemption ledger (PRD decision 4): stays Some(Int) statically even
+        // β3 exemption ledger (PRD decision 4): stays Ok(Int) statically even
         // though the runtime widens to Real on non-divisible operands.
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::Int, &Type::Int),
-            Some(Type::Int)
+            Ok(Type::Int)
         );
     }
 
@@ -4799,11 +4927,11 @@ mod tests {
     fn infer_mul_div_result_scalar_times_int_preserves_dimension_both_orders() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::Int),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::length()),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
     }
 
@@ -4811,7 +4939,7 @@ mod tests {
     fn infer_mul_div_result_scalar_div_int_preserves_dimension() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::Int),
-            Some(Type::length()),
+            Ok(Type::length()),
         );
     }
 
@@ -4819,7 +4947,7 @@ mod tests {
     fn infer_mul_div_result_int_div_scalar_yields_reciprocal_dimension() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::Int, &time_ty()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
             }),
         );
@@ -4830,7 +4958,7 @@ mod tests {
         // A `Real` literal types as `Scalar{DIMENSIONLESS}` — there is no `Type::Real`.
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::dimensionless_scalar(), &time_ty()),
-            Some(Type::Scalar {
+            Ok(Type::Scalar {
                 dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
             }),
         );
@@ -4841,14 +4969,14 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &v, &Type::dimensionless_scalar()),
-            Some(v),
+            Ok(v),
         );
     }
 
     #[test]
     fn infer_mul_div_result_int_times_vector_is_commutative() {
         let v = Type::vec3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Some(v));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Ok(v));
     }
 
     #[test]
@@ -4856,9 +4984,9 @@ mod tests {
         let p = Type::point3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &p, &Type::Int),
-            Some(p.clone())
+            Ok(p.clone())
         );
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Some(p));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Ok(p));
     }
 
     #[test]
@@ -4866,9 +4994,9 @@ mod tests {
         let t = Type::tensor(1, 3, Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
-            Some(t.clone())
+            Ok(t.clone())
         );
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Some(t));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Ok(t));
     }
 
     #[test]
@@ -4877,7 +5005,7 @@ mod tests {
         let v = Type::vec3(force_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &v, &Type::dimensionless_scalar()),
-            Some(v),
+            Ok(v),
         );
     }
 
@@ -4885,7 +5013,7 @@ mod tests {
     fn infer_mul_div_result_vector_div_scalar_time_yields_reciprocal_component() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::vec3(Type::length()), &time_ty()),
-            Some(Type::vec3(Type::Scalar {
+            Ok(Type::vec3(Type::Scalar {
                 dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
             })),
         );
@@ -4900,48 +5028,63 @@ mod tests {
                 &Type::dimensionless_scalar(),
                 &Type::vec3(Type::length())
             ),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
     #[test]
     fn infer_mul_div_result_vector_times_vector_is_none() {
         let v = Type::vec3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &v, &v), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &v),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_tensor_times_tensor_is_none() {
         let t = Type::tensor(1, 3, Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &t, &t), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &t, &t),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_point_times_point_is_none() {
         let p = Type::point3(Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &p, &p), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &p, &p),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_scalar_div_vector_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &Type::length(), &Type::vec3(Type::length())),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
     #[test]
     fn infer_mul_div_result_matrix_operand_is_none_both_orders() {
         let m = Type::matrix(2, 2, Type::length());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &m, &Type::Int), None);
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &m), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &m, &Type::Int),
+            Err(MulDivRefusal::OperandKinds)
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &m),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     #[test]
     fn infer_mul_div_result_list_operand_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::List(Box::new(Type::Int)), &Type::Int),
-            None,
+            Err(MulDivRefusal::OperandKinds),
         );
     }
 
@@ -4949,7 +5092,7 @@ mod tests {
     fn infer_mul_div_result_bool_operand_is_none() {
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Bool, &Type::Int),
-            None
+            Err(MulDivRefusal::OperandKinds)
         );
     }
 
@@ -4965,7 +5108,10 @@ mod tests {
     #[test]
     fn infer_mul_div_result_scalar_param_times_scalar_param_is_none() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &q), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &q, &q),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     /// `Int / ScalarParam(Q)` is deliberately left unhandled: the `Int ⊗
@@ -4975,16 +5121,19 @@ mod tests {
     #[test]
     fn infer_mul_div_result_int_div_scalar_param_is_none() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Div, &Type::Int, &q), None);
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &q),
+            Err(MulDivRefusal::OperandKinds)
+        );
     }
 
     /// `ScalarParam(Q) * Int` preserves `Q` (Int carries no dimension) — pins
-    /// the `(Type::ScalarParam(name), Type::Int)` arm's Some-returning result
-    /// type, not just the adjacent None-returning edges above.
+    /// the `(Type::ScalarParam(name), Type::Int)` arm's Ok-returning result
+    /// type, not just the adjacent Err-returning edges above.
     #[test]
     fn infer_mul_div_result_scalar_param_times_int_preserves_q() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Some(q));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Ok(q));
     }
 
     /// `Int * ScalarParam(Q)` preserves `Q` — the commutative (Mul-only)
@@ -4992,7 +5141,7 @@ mod tests {
     #[test]
     fn infer_mul_div_result_int_times_scalar_param_preserves_q() {
         let q = Type::ScalarParam("Q".to_string());
-        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Some(q));
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Ok(q));
     }
 
     /// `ScalarParam(Q) * Scalar{DIMENSIONLESS}` preserves `Q` — the
@@ -5005,7 +5154,7 @@ mod tests {
         let q = Type::ScalarParam("Q".to_string());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &q, &Type::dimensionless_scalar()),
-            Some(q)
+            Ok(q)
         );
     }
 
@@ -5016,7 +5165,7 @@ mod tests {
         let q = Type::ScalarParam("Q".to_string());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::dimensionless_scalar(), &q),
-            Some(q)
+            Ok(q)
         );
     }
 
@@ -5198,7 +5347,7 @@ mod tests {
         let time_complex = Type::complex(time_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &length_complex, &time_complex),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
             })),
         );
@@ -5207,7 +5356,7 @@ mod tests {
     #[test]
     fn infer_mul_div_result_complex_times_scalar_multiplies_dimensions_both_orders() {
         let length_complex = Type::complex(Type::length());
-        let expected = Some(Type::complex(Type::Scalar {
+        let expected = Ok(Type::complex(Type::Scalar {
             dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
         }));
         assert_eq!(
@@ -5225,11 +5374,11 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &length_complex, &Type::Int),
-            Some(length_complex.clone()),
+            Ok(length_complex.clone()),
         );
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::Int, &length_complex),
-            Some(length_complex),
+            Ok(length_complex),
         );
     }
 
@@ -5239,7 +5388,7 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &area_complex, &length_complex),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
             })),
         );
@@ -5250,7 +5399,7 @@ mod tests {
         let area_complex = Type::complex(area_ty());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &area_complex, &Type::length()),
-            Some(Type::complex(Type::Scalar {
+            Ok(Type::complex(Type::Scalar {
                 dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
             })),
         );
@@ -5261,7 +5410,7 @@ mod tests {
         let length_complex = Type::complex(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Div, &length_complex, &Type::Int),
-            Some(length_complex),
+            Ok(length_complex),
         );
     }
 
@@ -5270,7 +5419,7 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &v),
-            Some(v),
+            Ok(v),
         );
     }
 
@@ -5279,7 +5428,7 @@ mod tests {
         let p = Type::point3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &p),
-            Some(p),
+            Ok(p),
         );
     }
 
@@ -5288,7 +5437,7 @@ mod tests {
         // β1 row-9 pin: `Transform(3) * Transform(3) -> Transform(3)`.
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &Type::transform(3), &Type::transform(3)),
-            Some(Type::transform(3)),
+            Ok(Type::transform(3)),
         );
     }
 
@@ -5299,7 +5448,89 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(
             infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
-            None,
+            Err(MulDivRefusal::OperandKinds),
+        );
+    }
+
+    // ── task 9236: a combined dimension that overflows `Rational` ───────────
+
+    fn length_pow(num: i16, den: i16) -> DimensionVector {
+        DimensionVector::LENGTH
+            .checked_pow_rational(reify_core::Rational::new(num, den))
+            .expect("a small power of LENGTH does not overflow")
+    }
+
+    fn length_pow_scalar(num: i16, den: i16) -> Type {
+        Type::Scalar {
+            dimension: length_pow(num, den),
+        }
+    }
+
+    /// `Scalar<Length^(68/1147)>`, the type of `1m^1/31 * 1m^1/37`. Combined
+    /// with `Length^(±1/41)` its Length exponent needs denominator 47027.
+    fn overflow_base() -> Type {
+        length_pow_scalar(68, 1147)
+    }
+
+    /// A Length slot of `i16::MIN`, whose reciprocal `0 - i16::MIN` does not fit.
+    fn length_min_scalar() -> Type {
+        let mut dimension = DimensionVector::DIMENSIONLESS;
+        dimension.0[0] = reify_core::Rational::new(i16::MIN, 1);
+        Type::Scalar { dimension }
+    }
+
+    #[test]
+    fn infer_mul_div_result_refuses_an_overflowing_combined_dimension() {
+        let (a, b, b_neg) = (
+            overflow_base(),
+            length_pow_scalar(1, 41),
+            length_pow_scalar(-1, 41),
+        );
+        let (ca, cb, cb_neg) = (
+            Type::complex(a.clone()),
+            Type::complex(b.clone()),
+            Type::complex(b_neg.clone()),
+        );
+        let rows = [
+            (BinOp::Mul, a.clone(), b.clone()),
+            (BinOp::Div, a.clone(), b_neg.clone()),
+            (BinOp::Div, Type::Int, length_min_scalar()),
+            (BinOp::Mul, ca.clone(), cb),
+            (BinOp::Div, ca.clone(), cb_neg),
+            (BinOp::Mul, ca.clone(), b.clone()),
+            (BinOp::Mul, b.clone(), ca),
+            (BinOp::Mul, Type::vec3(a), b),
+        ];
+        for (op, left, right) in rows {
+            assert_eq!(
+                infer_mul_div_result(op, &left, &right),
+                Err(MulDivRefusal::DimensionOverflow),
+                "{left} {op:?} {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn mul_div_result_or_placeholder_poisons_a_dimension_overflow() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                Err(MulDivRefusal::DimensionOverflow),
+                &Type::length(),
+                &Type::length()
+            ),
+            Type::Error
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_at_the_dimension_boundary_stays_ok() {
+        assert_eq!(
+            infer_mul_div_result(
+                BinOp::Mul,
+                &length_pow_scalar(1, 127),
+                &length_pow_scalar(1, 126)
+            ),
+            Ok(length_pow_scalar(253, 16002))
         );
     }
 

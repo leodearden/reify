@@ -27,10 +27,14 @@
 //      `FDMCouponOverride.ex` in fdm_correlations.ri).
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   3. No `#no_prelude` pragma. std.ports.electrical refines Port from
-//      std.ports (inter-stdlib dependency), so the growing-prelude sequence
-//      in stdlib_loader.rs must include std.ports before this module. Adding
-//      `#no_prelude` would break both the refinement resolution and the
+//      std.ports (inter-stdlib dependency), imported below. Adding
+//      `#no_prelude` would hide that import, breaking both the refinement
+//      resolution and the
 //      stdlib_loader_tests bidirectional invariant test.
+
+module std.ports.electrical
+
+import std.ports
 
 // ── Signal kind enumeration ───────────────────────────────────────────────────
 

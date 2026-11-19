@@ -1,11 +1,19 @@
 # Getting Started with Reify
 
-This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md).
+This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
+
+The examples live in the repository, not in the package. Fetch the one this guide uses into your current directory:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/leodearden/reify/main/examples/m5_geometry.ri
+```
+
+`main` moves on after each release. If `reify check` rejects the file, or its output differs from section 1 below, put your release's tag (for example `v0.2-alpha`) in the URL in place of `main`.
 
 ## 1. Sanity check
 
 ```sh
-./target/release/reify check examples/m5_geometry.ri
+reify check m5_geometry.ri
 ```
 
 You should see:
@@ -22,14 +30,14 @@ The warning is harmless: the example has no `module` line.
 ## 2. Build a STEP file
 
 ```sh
-./target/release/reify build examples/m5_geometry.ri -o /tmp/flange.step
+reify build m5_geometry.ri -o /tmp/flange.step
 ```
 
 Open `/tmp/flange.step` in any STEP viewer (FreeCAD, KiCad's 3D viewer, Online ones). It's a simple cylindrical flange — 50 mm radius, 10 mm tall.
 
 ## 3. Edit a parameter
 
-`examples/m5_geometry.ri` looks like:
+`m5_geometry.ri` looks like:
 
 ```
 structure def Flange {
@@ -90,17 +98,29 @@ Every CLI command that evaluates a design, `check` (including `--strict`), `test
 
 ## 4. Open the GUI
 
+Launch **Reify** from your desktop's application menu, or run `reify-gui` in a terminal (AppImage: run the downloaded file). With no file argument it opens on the **Start view**, which has three parts:
+
+- **Mode** — Design, Assistant or Debug. Design is the plain editor and viewer. Assistant shows the assistant panel and needs Node.js on your `PATH` (the version is in the README's [System requirements](../README.md#system-requirements)) as well as a Claude Code login on the machine. Debug opens a local control port that tools on this machine can drive (default `127.0.0.1:3939`; set `REIFY_DEBUG_PORT` to change it).
+- **Document** — **Open…** picks an existing `.ri` file; **New…** asks for a path and writes a minimal module template there, then opens it. You can also type a path and press Open or Create. A file that cannot be opened or created shows an error on the Start view instead of leaving it.
+- **Recent** — files you opened before; click one to reopen it.
+
+Choose **Open…** and pick `m5_geometry.ri`. The GUI shows a 3D viewer, an outline of the design, parameter sliders, and a constraints panel. Edit a parameter — the geometry updates live.
+
+To see the model's edges, press the **Edges** button in the toolbar or the `E` key: every edge is drawn in black over the shaded mesh, whatever is selected. Press it again to turn it off. The setting is off by default.
+
+You can also skip the Start view by passing the file: `reify-gui m5_geometry.ri` (or `reify gui m5_geometry.ri`).
+
+### For contributors: running the GUI from a checkout
+
 ```sh
 scripts/run-gui.sh examples/m5_geometry.ri
 ```
 
-The GUI shows a 3D viewer, an outline of the design, parameter sliders, and a constraints panel. Edit a parameter — the geometry updates live.
-
-If you want hot-reload of frontend changes (e.g. you're poking at the SolidJS code), use `scripts/run-gui-dev.sh` instead. It also opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}` for instrumented automation. Set `REIFY_DEBUG_PORT` to a different port to avoid collisions when running concurrent worktrees.
+builds and launches the release-mode GUI. If you want hot-reload of frontend changes (e.g. you're poking at the SolidJS code), use `scripts/run-gui-dev.sh` instead. It also opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}` for instrumented automation. Set `REIFY_DEBUG_PORT` to a different port to avoid collisions when running concurrent worktrees.
 
 ## 5. Try other examples
 
-The 50+ files under `examples/` exercise different language features:
+The 50+ files under [`examples/`](https://github.com/leodearden/reify/tree/main/examples) in the repository exercise different language features:
 
 | File | What it shows |
 |------|---------------|
@@ -127,10 +147,12 @@ If one fails to parse or check, that's a real bug — please report it (see [REA
 
 ## Common issues
 
-**`cargo build` fails on `reify-kernel-occt`** — OCCT 7.8 is missing or wrong version. Re-run `scripts/setup-dev.sh`; it adds the FreeCAD PPA and pins to 7.8.
+**(Source builds) `cargo build` fails on `reify-kernel-occt`** — OCCT 7.8 is missing or wrong version. Re-run `scripts/setup-dev.sh`; it adds the FreeCAD PPA and pins to 7.8.
 
-**GUI fails to launch with a webkit/gtk linker error** — Tauri 2 webview deps missing. `scripts/setup-dev.sh` installs them; re-run it.
+**GUI fails to launch with a webkit/gtk linker error** — from a source build, Tauri 2 webview deps are missing: re-run `scripts/setup-dev.sh`. From the AppImage, install GTK 3 and the GL libraries (`sudo apt install libgtk-3-0t64 libopengl0 libegl1 libgles2 libgl1`) or use the `.deb`.
 
-**`reify build` hangs for minutes** — first run on a fresh checkout includes a tree-sitter generate (60s) and OCCT C++ compile (a few minutes). Subsequent runs are fast.
+**The AppImage won't start (FUSE error)** — install `libfuse2t64`, or run it with `APPIMAGE_EXTRACT_AND_RUN=1 ./Reify_*_amd64.AppImage`.
 
-**`reify check` reports "Parse error"** — the `.ri` file uses a feature that's not yet stable. Try `examples/m5_geometry.ri` to confirm your install is healthy, then file an issue with the failing file.
+**(Source builds) `reify build` hangs for minutes** — first run on a fresh checkout includes a tree-sitter generate (60s) and OCCT C++ compile (a few minutes). Subsequent runs are fast.
+
+**`reify check` reports "Parse error"** — the `.ri` file uses a feature that's not yet stable. Try `m5_geometry.ri` to confirm your install is healthy, then file an issue with the failing file.

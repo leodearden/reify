@@ -108,6 +108,7 @@ pub(crate) fn try_eval_topology_selector(
 **Contract invariants (preserved from task-2324 dispatch; load-bearing for additive expansion):**
 
 1. **Arg-shape contract.** Both args must be `ValueRef`s — literal / inline-call shapes fall through to `None`. Pinned by the `try_eval_topology_selector_*_literal_args_falls_through_to_none` unit tests.
+   - *Superseded per kind (2026-11-17, Leo's ruling R5 in `docs/prds/v0_6/realized-world-evaluation.md`).* The adopted guarantee is that inline equals let-bound for every realization-dependent member whose geometry receiver is a cell. Each leaf of that PRD inverts this contract and its `*_literal_args_falls_through_to_none` pins for its own member kind, on purpose: selector coercion in α #10154, geometry queries in γ #10156, topology helpers in δ #10157. Until a kind's leaf lands, the contract above still describes it.
 2. **Fall-through is preservation.** `None` means "the cell stays at its compiled default (`Value::Undef`)" — never panic, never partial-construct. The arg-resolution helpers (`resolve_point3_length_arg`, `resolve_geometry_handle_arg`) return `Option`; any resolution failure exits via `?` to `None`.
 3. **Kernel-error downgrade.** A kernel `Err(_)` reply OR a malformed payload produces `Some(Value::Undef)` with a `Warning` diagnostic — never panics, never returns success-shaped Undef without a diagnostic.
 4. **No double-dispatch within one call.** Each helper name routes to exactly one kernel-query variant; no fan-out at the helper layer (fan-out is the multi-kernel dispatcher's job, §6 below).

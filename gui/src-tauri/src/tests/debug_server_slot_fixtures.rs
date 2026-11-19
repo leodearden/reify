@@ -1,6 +1,6 @@
 #![cfg(feature = "gui")]
 //! A recording [`DebugServerSlot`] and the [`Served`] record of what it served,
-//! shared by the debug-listener and `set_mode` tests.
+//! shared by the `DebugServerSlot` and `set_mode` tests.
 
 use std::sync::{Arc, Mutex};
 

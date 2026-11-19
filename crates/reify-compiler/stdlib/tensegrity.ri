@@ -24,10 +24,15 @@
 //   Tensegrity and add a sibling accessor — existing wire/surface call sites
 //   do not change.
 //
-// Dependencies (all earlier in the growing-prelude sequence):
-//   - std.units         — Length, Area, Force, Pressure dimensions
+// Dependencies, imported below (Length, Area, Force and Pressure are
+// built-in dimensions):
 //   - std.si_units      — 0N, mm², Pa, etc.
 //   - std.materials.fea — ElasticMaterial trait
+
+module std.tensegrity
+
+import std.materials.fea
+import std.si_units
 
 // ── Strut ─────────────────────────────────────────────────────────────────────
 //

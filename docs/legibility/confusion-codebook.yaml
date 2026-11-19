@@ -1,6 +1,7 @@
 # Agent-confusion codebook — persistent cause registry for legibility surveys.
-# version 2. MERGER-OWNED FILE: written solely by scripts/legibility/codebook.py
-# (plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
+# version 2. MERGER-OWNED FILE: written solely by dark-factory's
+# scripts/legibility/codebook.py (dark-factory's
+# plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
 # entries are never deleted (retire via status: retired); sightings/candidates
 # are appended by the deterministic merger's apply_coding_records(). Hand edits
 # will be normalized/overwritten on the next merge.
@@ -3835,6 +3836,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The foreground bounded-wait watcher-rearm died with exit 137 at turn 84 (timeout 3600 inside a 3660 Bash timeout), which is the exit-137 death this entry describes.
+  - date: '2026-11-15'
+    project: reify
+    session: 06820299-04d2-4c7b-8d7c-2de9f79617ef
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical foreground watcher-rearm call died with exit 137 at turn 71 and was retried unchanged rather than switched to a background wait. Only one 137 is visible, so this match is weaker than entry-cand-20260719-4.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -4079,6 +4086,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Turn 103: ''sleep 60; wc -l <task output file>'' blocked by the guard, which directs the agent to Monitor or run_in_background.'
+  - date: '2026-11-17'
+    project: reify
+    session: 43bcc46d-ff45-4d5f-bd36-1fc4d62ea62c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent chained sleep 60 with tail on a background task's output file, and the sandbox guard blocked the command. The digest's guard message points to Monitor or run_in_background as the required alternative.
+    evidence_quote: sleep 60; tail -5 /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-19/43bcc46d-ff45-4d5f-bd36-1fc4d62ea62c/tasks/bk3wd5jrt.output
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260723-4
@@ -4421,6 +4435,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher session ran with DFR empty (echo at turn 30 shows DARK_FACTORY_ROOT unset). A later python3 call resolved session_registry.py against the reify cwd and failed with ENOENT. The agent then had to set DARK_FACTORY_ROOT explicitly in the rearm command.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: Turn 30 shows DARK_FACTORY_ROOT empty (DFR=) in the watcher session, and the python3 call then targets a mis-resolved path (/home/leo/orchestrator/...) that does not exist. The session later exports the variable explicitly.
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -4894,6 +4914,44 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh Bash call with timeout 3600 was re-issued 20 times with an identical command string under run_in_background, instead of changing strategy after the bounded wait.
+  - date: '2026-11-15'
+    project: reify
+    session: ceed4297-9aa5-4e8a-8b47-ae0ce39edba6
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The watcher-rearm.sh bounded wait (--timeout 3600) hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and the same Bash command was issued three times in the Retry Loops section.'
+  - date: '2026-11-15'
+    project: reify
+    session: 06820299-04d2-4c7b-8d7c-2de9f79617ef
+    origin_phase: ops
+    manifested_phase: ops
+    note: The same bounded watcher-rearm command (--level 1 --timeout 3600) was re-issued identically at turn 71 after hitting its own CEILING (exit 124) at turn 59.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical watcher-rearm Bash command (run_in_background, timeout 3660000) is re-issued 14 times. The digest does not show the ceiling outcome explicitly, so the ceiling link is inferred.
+  - date: '2026-11-16'
+    project: reify
+    session: 763e3008-e4c1-4b2b-bf8a-310f6ed776c1
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The Bash watcher-rearm bounded wait (--timeout 3600, timeout 3660000) was re-issued three times with identical arguments. The digest does not show the timeout ceiling being hit, so this is a partial match on the identical-reissue pattern.
+  - date: '2026-11-17'
+    project: reify
+    session: 857db5fa-9bc7-4c19-93cb-9a4f4cff9c87
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The bounded watcher-rearm wait hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING), and the identical command was re-issued at turns 112 and 123 without any change to its arguments.'
+    evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
+  - date: '2026-11-18'
+    project: reify
+    session: 87ad023f-1268-42ff-9d6d-68e4fddac168
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: After watcher-rearm.sh hit its own CEILING (exit 124), the same bounded Bash rearm was re-issued four times with identical arguments and timeout.
+    evidence_quote: 'Bash x4: {"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600", "description": "Wait for next L1 escalation (bounded)", "timeout": 3660000}'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -5197,6 +5255,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Path-scope guard (df_guard) fired at turn 35 during cross-project operation; orchestrated task in warm-lanes continued with fused-memory MCP calls at turns 95, 114, 126 that failed with socket/timeout errors
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    note: The df_guard fired 10 times across the session, and the watcher kept re-attempting cross-project operations (watcher re-arm and polling chains) after the guard had already fired.
 - id: entry-cand-20260730-10
   title: Digest mislabels injected memory-hint Context block as a User Correction
   severity: medium
@@ -9250,6 +9314,24 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Bash call chaining `sleep 100` with a grep/tail check was blocked by the anti-chaining guard, which told the agent to use Monitor or run_in_background instead. The digest shows a single tool_error and no retry, so the recurrence is not evidenced.
+  - date: '2026-11-15'
+    project: reify
+    session: 757334dc-bf5f-49fc-b4b4-8061e8c8b06e
+    origin_phase: unknown
+    manifested_phase: review
+    note: Turn 92 Bash chained 'sleep 60; tail -5' to poll a background cargo test log, and the anti-chaining guard blocked it. The log name 'review-9901-cargo.log' supports the review phase. The digest does not show the origin phase.
+  - date: '2026-11-16'
+    project: reify
+    session: d2c21bae-9fdf-42c9-b808-394bc6d84c5c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 493: a Bash call chaining `sleep 60` with a cat|grep|head progress check was blocked by the anti-chaining guard, which recommends Monitor or run_in_background. This is the same sleep-chain polling pattern the entry describes. Phase is not supported by the digest.'
+  - date: '2026-11-16'
+    project: reify
+    session: f2307512-d7f0-4459-9b7e-19e9fb02429e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 118 Bash call chains `sleep 240` with `cat ... .output | tail -30` to poll a background test output file. The anti-chaining guard blocked it, matching this entry's sleep+poll-tripped-guard pattern. Phase is not supported by the digest.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -9568,6 +9650,19 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Agent ran `head -c 1500 .task/plan.json` to inspect an 'existing plan.json stub' in a warm-lane worktree and got 'No such file or directory' (exit 1). This matches the warm-lane task bootstrap missing plan.json pattern. The origin phase can't be determined from the digest.
+  - date: '2026-11-16'
+    project: reify
+    session: ba3aff1f-2708-444f-84f7-f2ccbafc1dd7
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The error neighborhood shows a Read of .task/plan.json in a warm-lane worktree returning 'File does not exist', which matches the warm-lane bootstrap missing plan.json entry.
+  - date: '2026-11-18'
+    project: reify
+    session: 41987a31-f186-4dc8-ac03-c015fbe40791
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A Read of the warm-lane .task/plan.json returned 'File does not exist' from the _lane-12 working directory, which matches the title's warm-lane missing-plan.json mechanism. The digest does not show whether this happened during bootstrap, so the phases are unknown.
+    evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-12/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-12.'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -9626,6 +9721,20 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: A Bash call chaining sleep 25 with ls/grep/reap commands was blocked by the sandbox, and the guard message directed the agent to Monitor or run_in_background instead of shorter sleeps.
+  - date: '2026-11-17'
+    project: reify
+    session: 83d07921-d3f0-493b-b93d-52248e996021
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A sleep+check polling chain (sleep 45 then cat|tail) was blocked by the sandbox anti-chaining guard, which told the agent to use Monitor or run_in_background instead.
+    evidence_quote: 'Blocked: sleep 45 followed by: cat /home/leo/.claude/fleet/sessions/warm-base-reify-10046-3079289/breakglass.log tail -20. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-18'
+    project: reify
+    session: a6fdcc08-1084-4a29-b781-bffadbaaee2c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent chained sleep 60 with a log tail to poll a background test batch, and the sandbox guard blocked the chain. This is the sleep+check polling-chain block the entry names.
+    evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/rev9638_b.log tail -30. To wait for a condition, use Monitor with an until-loop'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -10514,6 +10623,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The User Corrections section lists a system-injected spawn-brief directive (turn 4, pointing to a brief file and a result.md write requirement) as if it were a user correction. This is the same digest mislabeling pattern as the async task-notification entry. The digest contains only one user turn and no evidence of the agent's own confusion, so the phases are unknown. The single not_found signal (turn 145, 'command not found') names no command and is not matched.
+  - date: '2026-11-18'
+    project: reify
+    session: 1986e5a9-fe7c-47e4-abb2-4fff769b8956
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The User Corrections section lists an injected system notice about a T3 server restart and cancelled background work as a user correction. The digest mislabels a non-user notification as a User Correction.
+    evidence_quote: '(turn 426) Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back on its own, so resume or restart what you still need and wait for its result:'
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -11512,6 +11628,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The '## User Corrections' section labels the injected /escalation-watcher command-message block (a system-issued skill invocation with its own output-format instructions) as a user correction. Same digest-mislabel class as the injected-escalation case. Phase cannot be supported from the digest.
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's User Corrections section lists the injected /escalation-watcher command body (turn 4), which is a skill invocation rather than a user correction, and it lists an assistant-quoted citation (turn 98) as well. Both are digest mislabels.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -11750,6 +11872,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Path guesses under .worktrees/8363 and reify/crates/reify-audit/src returned not-found repeatedly (turns 35, 117, 121), while the real worktrees were at warm-lanes/worktrees/_lane-29 and reify-adhoc/8363. Partial match: the digest shows path guessing against an unexpected worktree layout, not the same nesting. Moderate confidence.'
+  - date: '2026-11-15'
+    project: reify
+    session: 8d951db3-d8dd-421c-a97d-015c71868843
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Digest shows 13 not_found errors in a warm-lane worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-3), including repo-root-relative probes such as gui/src-tauri/sidecar/ returning 'No such file or directory' (turn 437). This fits the nested-worktree path-guess pattern. Phase is not determinable from the digest.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -12005,6 +12133,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A chained Bash command (git grep; echo rc=$?; ls ...) reported exit 2 because its final ls subcommand failed on guessed nonexistent files, even though the earlier git grep had succeeded (rc=0) and found the needed data.
+  - date: '2026-11-18'
+    project: reify
+    session: c2a08f06-f8be-4df7-be11-fe3a2c9b332a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The command chains several subcommands with `;` and pipes. The grep stage printed matches, but the reported exit code is 1, which most likely comes from the final `which ruff pyright` stage. The digest does not confirm which subcommand set the code.
+    evidence_quote: 'Bash({"command": "git grep -n \"REAPER_LIB\\|verify_sh_refusal\\|MISSING_LIB_REFUSALS\" -- tests scripts | head; ls tests/infra/test_verify_plan_model.py 2>&1; which ruff pyright 2>&1", "description": "Che...) -> [exit 1] Exit code 1'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -33055,6 +33190,84 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'Contradictory docstring: in `conformance/mod.rs`, an older line says Real and Int are out of scope for the pass. That''s wrong, and the new paragraph right below it now contradicts it.'
+- id: cand-20261116-1
+  title: Background build completion sentinel (.rc file) polled repeatedly although it is never written
+  cause: The agent polls a background build's exit-code sentinel file (/tmp/9979-pre1.rc) with the same tail+cat command across several turns. The file never appears, and the agent does not check whether the producing job is still running or whether the sentinel path is wired correctly before retrying.
+  area: tooling
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: a24ce7d4-2f3d-47a4-9ddc-5cede2dde73e
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'cat: /tmp/9979-pre1.rc: No such file or directory'
+- id: cand-20261116-2
+  title: Watcher declares a base commit 'phantom' without checking its merge provenance, requiring self-correction
+  cause: The escalation watcher classified a base commit it was supposed to wait for as a 'phantom' commit. The commit was actually an unlanded merge belonging to another task (10033), and the watcher had to correct itself later in the session.
+  area: ops
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: d5afd675-70e8-4dab-ab8e-5f68f228763e
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: '**Correction:** the auto-watcher said the base 9877 was supposed to wait for (`cdb69767d4`) was a "phantom" commit. That''s wrong, as it was for -4: it is 10033''s unlanded merge.'
+- id: cand-20261116-3
+  title: Task spawned from a shared review suggestion has no declared attribution link, so a sibling task's commit cannot be credited and the claim blocks as no_attribution
+  cause: The task was spawned from the same review suggestion as an earlier task (5494). When the architect found that suggestion already fixed by commit 426deaa4f2 on a different task branch, nothing declared the link between the two tasks, so the done-claim could not be attributed to this task. The block required a manual, first-hand rebuild and repro to resolve.
+  area: task attribution / orchestration bookkeeping
+  first_seen: '2026-11-16'
+  disposition: pending
+  sightings:
+  - date: '2026-11-16'
+    project: reify
+    session: ba3aff1f-2708-444f-84f7-f2ccbafc1dd7
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: is review suggestion 1 of task 5494, the same suggestion this task was spawned from
+- id: cand-20261118-1
+  title: Read-only diagnostic Bash commands denied under don't-ask permission mode, blocking root-cause investigation of a verify failure
+  cause: The agent ran read-only diagnostic Bash commands (git log, git diff, grep and cat over verify logs) to investigate a post-merge test failure. Each was denied because the session runs in don't-ask permission mode, so the agent could not inspect the logs and had to proceed without root-cause evidence.
+  area: permissions
+  first_seen: '2026-11-18'
+  disposition: pending
+  sightings:
+  - date: '2026-11-18'
+    project: reify
+    session: 74660af5-0d68-4dc0-aeff-162083384979
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: Permission to use Bash has been denied because Claude Code is running in don't ask mode.
+- id: cand-20261118-2
+  title: 'Test run prints inline FAIL lines while its summary reports 0 failed and RESULT: PASS'
+  cause: The harness output contains an explicit FAIL assertion line, yet the summary counts and the suite RESULT line report success. An agent or reviewer reading the summary cannot tell whether the gate passed, which makes a wrong change harder to catch before it lands.
+  area: verification
+  first_seen: '2026-11-18'
+  disposition: pending
+  sightings:
+  - date: '2026-11-18'
+    project: reify
+    session: 4c5d9121-c50d-4cc1-97d3-a59bd2daa983
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'FAIL: submit_task response does not indicate directory rejection — γ backstop not enforcing'
+- id: cand-20261118-3
+  title: verify.sh role=merge bypasses psi-gate and compile-gate, so a merge-phase pass does not show the gates ran
+  cause: When verify.sh runs under role=merge, it skips the psi and compile gates and the semaphore slot, and only logs a bypass line. A merge-phase success therefore does not guarantee those gates were exercised, which weakens the check on the next change.
+  area: verification
+  first_seen: '2026-11-18'
+  disposition: pending
+  sightings:
+  - date: '2026-11-18'
+    project: reify
+    session: 4c5d9121-c50d-4cc1-97d3-a59bd2daa983
+    origin_phase: verify
+    manifested_phase: merge
+    evidence_quote: 'verify.sh: PSI gate bypass (role=merge) — timestamp bumped'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:

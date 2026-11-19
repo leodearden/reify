@@ -4306,6 +4306,7 @@ dependencies = [
  "reify-doc-build",
  "reify-eval",
  "reify-geometry",
+ "reify-gui",
  "reify-ir",
  "reify-kernel-manifold",
  "reify-kernel-occt",
@@ -4320,6 +4321,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tower-lsp",
  "tracing",
  "workspace-feature-union",
 ]
@@ -4793,6 +4795,7 @@ dependencies = [
  "faer",
  "inventory",
  "reify-build-utils",
+ "reify-core",
  "reify-ir",
  "reify-kernel-gmsh",
  "reify-solver-elastic",

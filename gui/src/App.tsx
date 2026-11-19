@@ -32,6 +32,7 @@ import { Splitter } from './components/Splitter';
 import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
 import { createSubscriptionSet, type SubscriptionRow, type Unsubscribe } from './app/subscriptionSet';
 import { createLauncherActions, LaunchFailure } from './app/launcherActions';
+import { createDebugBridgeStarter } from './app/debugBridgeStarter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -1176,20 +1177,30 @@ const App: Component = () => {
    * their stores and restores persisted view state atomically.
    *
    * This is the one open funnel behind `launcherActions.loadDocument`: the
-   * Start view, File→Open, File→New. It rejects only before its first store
-   * write, so a failure leaves the editor, the engine store and the current
-   * path on the previous document and reaches a caller that can still present
-   * it (the Start view stays up until the editor write dismisses it). Keeping
+   * Start view, File→Open, File→New. A source the engine rejects is not a
+   * failure: open_file_engine resolves with the cold-start state, its buffer
+   * and diagnostics with no geometry, so the file opens for repair. It
+   * rejects when the file is unreadable or the engine fails, and only before
+   * its first store write, so a failure leaves the editor, the engine store
+   * and the current path on the previous document and reaches a caller that
+   * can still present it (the Start view stays up until the editor write
+   * dismisses it). Keeping
    * this in one place also ensures the batch() ordering invariant is never
    * accidentally diverged between callers — the subtle race it prevents is
-   * documented in the batch() block below.
+   * documented in the batch() block below. Once `signal` is aborted (an
+   * abandoned launcher attempt), it sends no further engine request and writes
+   * no further store. It rejects if it has not yet written a store and returns
+   * quietly otherwise, so an abandoned attempt never writes over a document
+   * opened since.
    */
-  async function loadPathIntoStores(requestedPath: string): Promise<void> {
+  async function loadPathIntoStores(requestedPath: string, signal: AbortSignal): Promise<void> {
     const fileData = await bridgeOpenFile(requestedPath);
+    signal.throwIfAborted();
     // The canonical document key, not the spelling the user typed, keys the
     // engine, the editor tab, view persistence and the save path alike.
     const path = fileData.path;
     const published = await bridgeOpenFileEngine(path);
+    signal.throwIfAborted();
     editorStore.openFile(fileData);
     engineStore.applyPublishedState(published);
 
@@ -1197,6 +1208,7 @@ const App: Component = () => {
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
     // user views are in place when auto views are generated.
     const persisted = await loadPersistedViews(path).catch(reportUnrestoredViews);
+    if (signal.aborted) return;
     // Wrap the three store writes in a single batch so the debounced-save
     // effect observes the path transition AND the new view/camera state
     // atomically.  Without batch(), a future refactor that reorders or
@@ -1240,8 +1252,9 @@ const App: Component = () => {
   }
 
   async function handleOpen() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending();
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickOpenPath();
       if (!path) return;
       await launcherActions.openDocument(path);
@@ -1253,8 +1266,9 @@ const App: Component = () => {
   }
 
   async function handleNew() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending();
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
       // A load failure after a successful create leaves the starter file on
@@ -1523,38 +1537,7 @@ const App: Component = () => {
     };
   }
 
-  let debugBridgeStart: Promise<void> | null = null;
-
-  /**
-   * Start the debug bridge unless it is live or starting, so one debug-request
-   * listener answers however many callers ask. Every caller awaits the one
-   * start and sees its failure. The handle joins the subscription set; a failed
-   * start, or disposing the handle, lets the next call start afresh.
-   */
-  function ensureDebugBridge(): Promise<void> {
-    debugBridgeStart ??= holdDebugBridge();
-    return debugBridgeStart;
-  }
-
-  async function holdDebugBridge(): Promise<void> {
-    const failures: unknown[] = [];
-    await subscriptions.subscribeAll([
-      {
-        subscribe: async () => {
-          const stop = await startDebugBridge();
-          return () => {
-            debugBridgeStart = null;
-            stop();
-          };
-        },
-        onFailure: (err) => failures.push(err),
-      },
-    ]);
-    if (failures.length > 0) {
-      debugBridgeStart = null;
-      throw failures[0];
-    }
-  }
+  const ensureDebugBridge = createDebugBridgeStarter({ subscriptions, start: startDebugBridge });
 
   const launcherActions = createLauncherActions(launcherStore, {
     loadDocument: loadPathIntoStores,
@@ -1573,8 +1556,9 @@ const App: Component = () => {
   /**
    * Show why the launch file failed to load. The backend records it before
    * getInitialState replies, so it is read after that, and hands it out once.
-   * A failure that still opened a document (a compile error opens the failing
-   * buffer with its diagnostics) is already presented by the editor.
+   * A source the engine rejects records no failure, because it opens: the
+   * editor presents the failing buffer with its diagnostics. Once a document
+   * is open, the Start view presents no launch failure at all.
    */
   async function presentInitialFileLoadFailure(): Promise<void> {
     try {

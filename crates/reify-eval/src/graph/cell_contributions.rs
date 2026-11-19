@@ -64,10 +64,22 @@ impl InstanceSlot<'_> {
         } = self;
         match self.index {
             SlotIndex::Single => format!("{parent}.{sub_name}"),
-            SlotIndex::Positional(i) => format!("{parent}.{sub_name}[{i}]"),
-            SlotIndex::Keyed(key) => format!("{parent}.{}", key.path_segment(sub_name)),
+            SlotIndex::Positional(i) => positional_slot_entity(parent, sub_name, i),
+            SlotIndex::Keyed(key) => keyed_slot_entity(parent, sub_name, key),
         }
     }
+}
+
+/// The scoped entity of collection sub `sub_name`'s `index`th instance under
+/// `parent`, `P.s[i]`.
+pub(crate) fn positional_slot_entity(parent: &str, sub_name: &str, index: i64) -> String {
+    format!("{parent}.{sub_name}[{index}]")
+}
+
+/// The scoped entity of keyed sub `sub_name`'s `key` instance under `parent`,
+/// `P.s["k"]`.
+pub(crate) fn keyed_slot_entity(parent: &str, sub_name: &str, key: &MemberKey) -> String {
+    format!("{parent}.{}", key.path_segment(sub_name))
 }
 
 impl<'a> ContributedCell<'a> {
@@ -354,19 +366,36 @@ fn literal_int(expr: &CompiledExpr) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
+pub(crate) mod fixtures {
     use reify_compiler::CompiledModule;
     use reify_constraints::SimpleConstraintChecker;
     use reify_core::ModulePath;
 
-    use super::{Source, contributed_cell_types, contributed_cells, sub_instances};
-
-    fn compile(src: &str) -> CompiledModule {
+    pub(crate) fn compile(src: &str) -> CompiledModule {
         let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
         reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)
     }
+
+    /// `Rig` stamps one instance slot of each kind from `Bolt`: `Rig.single`,
+    /// `Rig.rack[0]`, `Rig.rack[1]` and `Rig.keyed["a"]`.
+    pub(crate) fn rig_with_every_slot_kind() -> CompiledModule {
+        compile(
+            "structure def Bolt { param len : Real = 1.0 }\n\
+             structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
+             constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
+             \"a\" => { len = 2.0 }\n    }\n}\n",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use reify_compiler::CompiledModule;
+
+    use super::fixtures::{compile, rig_with_every_slot_kind};
+    use super::{Source, contributed_cell_types, contributed_cells, sub_instances};
 
     #[test]
     fn contributed_cell_types_does_not_grow_with_instance_count() {
@@ -396,12 +425,7 @@ mod tests {
 
     #[test]
     fn sub_instances_maps_every_instance_slot_with_cells_to_its_child_template() {
-        let module = compile(
-            "structure def Bolt { param len : Real = 1.0 }\n\
-             structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
-             constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
-             \"a\" => { len = 2.0 }\n    }\n}\n",
-        );
+        let module = rig_with_every_slot_kind();
         let in_fixture = |entity: &String| entity.starts_with("Rig.");
         let registry: BTreeMap<String, &str> = sub_instances(&module.templates)
             .filter(|(entity, _)| in_fixture(entity))

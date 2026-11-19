@@ -8,12 +8,22 @@
 
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
+use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
-    ImportPlan, NameRole, NameUse, RequiredImport, derive_std_imports, insert_imports,
+    ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports, cfg_unsatisfied_imports,
+    derive_std_imports, insert_imports,
 };
-use reify_core::{DiagnosticCode, ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_to_string};
 
 const SUBJECT_PATH: &str = "subject";
+
+/// An active cfg with exactly the bare flags `names` set.
+fn flags(names: &[&str]) -> CfgSet {
+    CfgSet {
+        flags: names.iter().map(|name| name.to_string()).collect(),
+        ..CfgSet::default()
+    }
+}
 
 fn parse_clean(source: &str, path: &str) -> ParsedModule {
     let module_path = ModulePath::from_dotted(path).expect("valid dotted fixture path");
@@ -53,7 +63,7 @@ fn dotted_modules(plan: &ImportPlan) -> Vec<String> {
 /// An import-free module is missing every derived module, so `missing_from` yields the whole plan.
 fn names_needing(plan: &ImportPlan, module: &str) -> Vec<NameUse> {
     let imports_nothing = parse_clean("structure def S {}\n", SUBJECT_PATH);
-    let whole_plan = plan.missing_from(&imports_nothing);
+    let whole_plan = plan.missing_from(&imports_nothing, &CfgSet::default());
     let yielded: Vec<String> = whole_plan
         .iter()
         .map(|required| required.module.to_dotted())
@@ -502,13 +512,25 @@ fn an_already_imported_module_is_still_derived() {
     );
 }
 
-// ─── g1/g2: the residual-diagnostics guard ─────────────────────────────────
+// ─── g1-g6: the residual-diagnostics guard ─────────────────────────────────
 
 fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
     dotted
         .iter()
         .map(|path| ModulePath::from_dotted(path).expect("valid dotted module path"))
         .collect()
+}
+
+/// What `plan.residual_diagnostics` panics with for `given`. `#[should_panic]`
+/// matches one substring, and a refusal is also pinned by what it must not say.
+fn refusal_message(plan: &ImportPlan, given: &ParsedModule) -> String {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plan.residual_diagnostics(given, &[])
+    }));
+    match outcome {
+        Ok(residual) => panic!("expected a refusal, but the plan judged the module: {residual:?}"),
+        Err(payload) => panic_payload_to_string(payload.as_ref()),
+    }
 }
 
 #[test]
@@ -552,6 +574,51 @@ fn a_module_other_than_the_one_the_plan_was_derived_for_is_refused() {
     plan.residual_diagnostics(&elsewhere, &[]);
 }
 
+#[test]
+fn a_refusal_for_another_path_names_both_paths_and_never_claims_they_match() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let other_source = "structure def Other {}\n";
+    let plan = derive(source, &universe);
+    for elsewhere_source in [source, other_source] {
+        let message = refusal_message(&plan, &parse_clean(elsewhere_source, "elsewhere"));
+        assert!(
+            message.contains("derived for `subject`, given `elsewhere`"),
+            "{message}\nsource:\n{elsewhere_source}"
+        );
+        assert!(
+            !message.contains("the paths match"),
+            "{message}\nsource:\n{elsewhere_source}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "derived for `subject`, given `subject`: the paths match but the source changed"
+)]
+fn the_subject_re_parsed_with_edited_source_is_refused() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let parsed = parse_clean(source, SUBJECT_PATH);
+    let plan = derive_parsed(&parsed, &universe);
+    let headed = parse_clean(
+        &insert_imports(source, &parsed, &CfgSet::default(), &plan.modules()),
+        SUBJECT_PATH,
+    );
+    plan.residual_diagnostics(&headed, &plan.modules());
+}
+
+#[test]
+fn an_identical_re_parse_of_the_subject_is_still_judged() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = "structure def S { param b : Bracket }\n";
+    let plan = derive(source, &universe);
+    let reparsed = parse_clean(source, SUBJECT_PATH);
+    let residual = plan.residual_diagnostics(&reparsed, &plan.modules());
+    assert!(residual.is_empty(), "{residual:?}");
+}
+
 // ─── m1-m5: declared-import coverage by import form ────────────────────────
 
 /// Calls `Bracket` and `Gizmo`, both of std.fake.shapes.
@@ -561,8 +628,17 @@ const BRACKET_AND_GIZMO: &str = "structure def S {\n\
                                  }\n";
 
 fn missing_for(header: &str, body: &str, universe: &[CompiledModule]) -> Vec<RequiredImport> {
+    missing_under(header, body, universe, &CfgSet::default())
+}
+
+fn missing_under(
+    header: &str,
+    body: &str,
+    universe: &[CompiledModule],
+    cfg: &CfgSet,
+) -> Vec<RequiredImport> {
     let parsed = parse_clean(&format!("{header}{body}"), SUBJECT_PATH);
-    derive_parsed(&parsed, universe).missing_from(&parsed)
+    derive_parsed(&parsed, universe).missing_from(&parsed, cfg)
 }
 
 fn required(module: &str, names: Vec<NameUse>) -> RequiredImport {
@@ -676,8 +752,12 @@ fn an_entity_import_of_an_enum_does_not_cover_its_variants_written_bare() {
 // ─── h1-h5: inserting import lines ─────────────────────────────────────────
 
 fn insert(source: &str, modules: &[&str]) -> String {
+    insert_under(source, modules, &CfgSet::default())
+}
+
+fn insert_under(source: &str, modules: &[&str], cfg: &CfgSet) -> String {
     let parsed = parse_clean(source, SUBJECT_PATH);
-    insert_imports(source, &parsed, &module_paths(modules))
+    insert_imports(source, &parsed, cfg, &module_paths(modules))
 }
 
 #[test]
@@ -768,6 +848,41 @@ fn an_aliased_module_import_counts_as_imported_whole() {
     assert_eq!(insert(source, &["std.fake.c"]), source);
 }
 
+#[test]
+fn a_new_import_never_lands_where_a_pending_cfg_would_gate_it() {
+    for (source, expected) in [
+        (
+            "#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "import std.fake.c\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+        (
+            "#version(0.1)\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "#version(0.1)\n\nimport std.fake.c\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+        (
+            "#no_prelude #cfg(wide)\n\nstructure def S {}\n",
+            "import std.fake.c\n\n#no_prelude #cfg(wide)\n\nstructure def S {}\n",
+        ),
+        (
+            "#no_prelude\n#cfg(wide)\nstructure def S {}\n",
+            "#no_prelude\n\nimport std.fake.c\n#cfg(wide)\nstructure def S {}\n",
+        ),
+        (
+            "// header\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "// header\n\nimport std.fake.c\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+    ] {
+        let fixed = insert(source, &["std.fake.c"]);
+        let reparsed = parse_clean(&fixed, SUBJECT_PATH);
+        let in_effect: Vec<String> = cfg_satisfied_imports(&reparsed, &CfgSet::default())
+            .iter()
+            .map(ModulePath::to_dotted)
+            .collect();
+        assert_eq!(in_effect, vec!["std.fake.c"], "fixed source:\n{fixed}");
+        assert_eq!(fixed, expected, "source:\n{source}");
+    }
+}
+
 // ─── r1: inserting what is missing satisfies missing_from ──────────────────
 
 #[test]
@@ -775,7 +890,7 @@ fn inserting_the_missing_imports_leaves_nothing_missing() {
     let universe = compile_universe(&[SHAPES]);
     let source = format!("import std.fake.shapes.Bracket\n\n{BRACKET_AND_GIZMO}");
     let parsed = parse_clean(&source, SUBJECT_PATH);
-    let missing = derive_parsed(&parsed, &universe).missing_from(&parsed);
+    let missing = derive_parsed(&parsed, &universe).missing_from(&parsed, &CfgSet::default());
     assert!(
         !missing.is_empty(),
         "fixture must start out missing imports"
@@ -785,11 +900,159 @@ fn inserting_the_missing_imports_leaves_nothing_missing() {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = insert_imports(&source, &parsed, &modules);
+    let fixed = insert_imports(&source, &parsed, &CfgSet::default(), &modules);
     let reparsed = parse_clean(&fixed, SUBJECT_PATH);
     assert_eq!(
-        derive_parsed(&reparsed, &universe).missing_from(&reparsed),
+        derive_parsed(&reparsed, &universe).missing_from(&reparsed, &CfgSet::default()),
         vec![],
         "fixed source:\n{fixed}"
+    );
+}
+
+// ─── c1-c5: #cfg-gated imports cover only under a cfg that satisfies them ──
+
+#[test]
+fn a_cfg_gated_import_covers_only_under_a_cfg_that_satisfies_it() {
+    let universe = compile_universe(&[SHAPES]);
+    let neither_covered = vec![required(
+        "std.fake.shapes",
+        vec![
+            name_use("Bracket", NameRole::Callee),
+            name_use("Gizmo", NameRole::Callee),
+        ],
+    )];
+    for header in [
+        "#cfg(wide)\nimport std.fake.shapes\n",
+        "#cfg(wide)\nimport std.fake.shapes.{Bracket, Gizmo}\n",
+    ] {
+        assert_eq!(
+            missing_under(header, BRACKET_AND_GIZMO, &universe, &flags(&["wide"])),
+            vec![],
+            "header:\n{header}"
+        );
+        assert_eq!(
+            missing_under(header, BRACKET_AND_GIZMO, &universe, &CfgSet::default()),
+            neither_covered,
+            "header:\n{header}"
+        );
+    }
+
+    let stacked = "#cfg(wide)\n#cfg(tall)\nimport std.fake.shapes\n";
+    assert_eq!(
+        missing_under(stacked, BRACKET_AND_GIZMO, &universe, &flags(&["wide"])),
+        neither_covered
+    );
+    assert_eq!(
+        missing_under(
+            stacked,
+            BRACKET_AND_GIZMO,
+            &universe,
+            &flags(&["wide", "tall"])
+        ),
+        vec![]
+    );
+}
+
+#[test]
+fn a_gated_entity_import_leaves_only_its_own_names_uncovered() {
+    let universe = compile_universe(&[SHAPES]);
+    assert_eq!(
+        missing_under(
+            "#cfg(wide)\nimport std.fake.shapes.Bracket\nimport std.fake.shapes.Gizmo\n",
+            BRACKET_AND_GIZMO,
+            &universe,
+            &CfgSet::default()
+        ),
+        vec![required(
+            "std.fake.shapes",
+            vec![name_use("Bracket", NameRole::Callee)]
+        )]
+    );
+}
+
+#[test]
+fn an_unsatisfied_gated_import_does_not_stop_its_module_being_imported_whole() {
+    let source = "#cfg(wide)\nimport std.fake.c\n\nstructure def S {}\n";
+    assert_eq!(
+        insert_under(source, &["std.fake.c"], &CfgSet::default()),
+        "#cfg(wide)\nimport std.fake.c\nimport std.fake.c\n\nstructure def S {}\n"
+    );
+    assert_eq!(
+        insert_under(source, &["std.fake.c"], &flags(&["wide"])),
+        source
+    );
+}
+
+#[test]
+fn inserting_the_missing_imports_under_a_cfg_leaves_nothing_missing_under_it() {
+    let universe = compile_universe(&[SHAPES]);
+    let cfg = CfgSet::default();
+    let source = format!("#cfg(wide)\nimport std.fake.shapes\n\n{BRACKET_AND_GIZMO}");
+    let parsed = parse_clean(&source, SUBJECT_PATH);
+    let missing = derive_parsed(&parsed, &universe).missing_from(&parsed, &cfg);
+    assert!(
+        !missing.is_empty(),
+        "fixture must start out missing imports under the cfg"
+    );
+
+    let modules: Vec<ModulePath> = missing
+        .iter()
+        .map(|required| required.module.clone())
+        .collect();
+    let fixed = insert_imports(&source, &parsed, &cfg, &modules);
+    let reparsed = parse_clean(&fixed, SUBJECT_PATH);
+    assert_eq!(
+        derive_parsed(&reparsed, &universe).missing_from(&reparsed, &cfg),
+        vec![],
+        "fixed source:\n{fixed}"
+    );
+}
+
+#[test]
+fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off() {
+    let parsed = parse_clean(
+        "import std.fake.a\n\
+         #cfg(wide)\n\
+         import std.fake.b.Thing\n\
+         #cfg(wide)\n\
+         #cfg(tall)\n\
+         import std.fake.c\n\
+         \n\
+         structure def S {}\n",
+        SUBJECT_PATH,
+    );
+    let split = |cfg: &CfgSet| {
+        let dotted = |modules: Vec<ModulePath>| -> Vec<String> {
+            modules.iter().map(ModulePath::to_dotted).collect()
+        };
+        (
+            dotted(cfg_satisfied_imports(&parsed, cfg)),
+            dotted(cfg_unsatisfied_imports(&parsed, cfg)),
+        )
+    };
+    assert_eq!(
+        split(&CfgSet::default()),
+        (
+            vec!["std.fake.a".to_string()],
+            vec!["std.fake.b".to_string(), "std.fake.c".to_string()]
+        )
+    );
+    assert_eq!(
+        split(&flags(&["wide"])),
+        (
+            vec!["std.fake.a".to_string(), "std.fake.b".to_string()],
+            vec!["std.fake.c".to_string()]
+        )
+    );
+    assert_eq!(
+        split(&flags(&["wide", "tall"])),
+        (
+            vec![
+                "std.fake.a".to_string(),
+                "std.fake.b".to_string(),
+                "std.fake.c".to_string()
+            ],
+            vec![]
+        )
     );
 }

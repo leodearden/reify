@@ -497,13 +497,13 @@ structure FeaBodyMultiCase {
     let body     = box(1000mm, 100mm, 100mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
 }
@@ -665,13 +665,13 @@ structure FeaBodyMultiCase {
     let body     = box(1000mm, 100mm, 100mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
 }
@@ -896,19 +896,23 @@ fn multi_case_body_solve_survives_a_preceding_template() {
 ///
 /// ## Why `ElasticOptions(deterministic: true)` — shared by all three cylinder fixtures
 ///
-/// The fixtures pin the single-threaded `Deterministic` execution mode (no
-/// thread team, no CG warm start) that
-/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes universal,
-/// because at the realized cylinder's DOF count the default `Parallel` mode is
-/// amplified by host load and was half the root cause of this file's 1800s B9
-/// timeouts. Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
+/// The fixtures pin the `Deterministic` execution mode: a single-threaded CG
+/// and assembly, and a cold start. They do so because at the realized
+/// cylinder's DOF count the default `Parallel` mode is amplified by host load
+/// and was half the root cause of this file's 1800s B9 timeouts.
+/// `docs/prds/v0_6/elastic-static-solver-performance.md` makes every linear
+/// solve single-threaded (`threads` still sets assembly parallelism) and
+/// deletes the `Parallel` mode, but keeps warm start under the default
+/// `deterministic: false`. The cold start is incidental: no test here
+/// exercises warm start.
+/// Measurements: `docs/notes/elastic-body-e2e-solver-threading-measurement.md`.
 #[cfg(has_gmsh)]
 const NON_PRISMATIC_BODY_SOURCE: &str = r#"
 structure FeaBodyNonPrismatic {
     let material = Steel_AISI_1045()
     let body     = cylinder(50mm, 200mm)
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount    = FixedSupport(target: "root")
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+    let mount    = FixedSupport(target: face(body, "root"))
     let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions(deterministic: true))
 }
 "#;
@@ -995,13 +999,13 @@ structure FeaBodyNonPrismaticMultiCase {
     let body     = cylinder(50mm, 200mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions(deterministic: true))
 }
@@ -1030,8 +1034,8 @@ structure FeaBodyNonPrismaticMultiCase {
     let body     = cylinder(50mm, 200mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1], ElasticOptions(deterministic: true))
 }

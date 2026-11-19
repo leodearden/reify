@@ -111,7 +111,7 @@ fn self_unit_axes_are_directions() {
     ] {
         let v = eval_cell(SELF_DATUM_SRC, member);
         match v {
-            Value::Direction { x, y, z } => approx3([x, y, z], expected),
+            Value::Direction(u) => approx3(u.components(), expected),
             other => panic!("expected Value::Direction for `{member}`, got {other:?}"),
         }
     }
@@ -130,7 +130,10 @@ fn self_principal_planes_have_origin_and_axis_normals() {
         match v {
             Value::Plane { origin, normal: n } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.0]);
-                approx3(comps3(&n), normal);
+                match *n {
+                    Value::Direction(u) => approx3(u.components(), normal),
+                    ref other => panic!("`{member}` normal: expected a Direction, got {other:?}"),
+                }
             }
             other => panic!("expected Value::Plane for `{member}`, got {other:?}"),
         }

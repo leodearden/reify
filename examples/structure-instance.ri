@@ -11,14 +11,16 @@
 
 // ── Flat construction ───────────────────────────────────────────────────────
 //
-// Concrete stdlib structures, every field defaulted. Each `let` below
-// evaluates to a flat `Value::StructureInstance`.
+// Concrete stdlib structures, every optional field defaulted. Each
+// structure-valued `let` below evaluates to a flat `Value::StructureInstance`.
+// A support's `target` is a required typed selector naming a face of `body`.
 structure def FlatPart {
     let steel    = Steel_AISI_1045()
-    let load     = PointLoad()
+    let load     = PointLoad(point: vertex(body, "tip"))
     let pressure = PressureLoad()
-    let support  = FixedSupport()
-    let pinned   = PinnedSupport()
+    let support  = FixedSupport(target: face(body, "x_min"))
+    let pinned   = PinnedSupport(target: face(body, "x_max"))
+    let body     = box(1000mm, 100mm, 100mm)
 }
 
 // ── Nested compositional construction ───────────────────────────────────────
@@ -26,14 +28,18 @@ structure def FlatPart {
 // `Beam`'s trait-typed params default to structure constructors, so a bare
 // `Beam()` yields a `Value::StructureInstance` whose `material` and `load`
 // fields are *themselves* nested `Value::StructureInstance` values
-// (step-18's nested-default recursion).
+// (step-18's nested-default recursion). `load` defaults to the target-free
+// `Gravity()` because a let-constructed instance such as `let primary = Beam()`
+// evaluates a param default that reads a sibling `let` to undef: a
+// `PointLoad(point: vertex(body, "tip"))` default would print `point: undef`
+// there, until #10098 lands.
 structure def Beam {
     param material : ElasticMaterial = Steel_AISI_1045()
-    param load     : Load            = PointLoad()
+    param load     : Load            = Gravity()
 }
 
 // Two `Beam` instances composed into one assembly. `primary` / `secondary`
-// each evaluate to a nested-structure value carrying the Steel/PointLoad
+// each evaluate to a nested-structure value carrying the Steel/Gravity
 // sub-instances.
 structure def NestedAssembly {
     let primary   = Beam()

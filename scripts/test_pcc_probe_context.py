@@ -25,6 +25,7 @@ from _pcc_test_support import (
     make_fixture_repo,
     make_git_fixture_repo,
     probe_context,
+    trust_ctx,
     trust_environ,
     write_bin_sidecar,
     write_profile_binary,
@@ -258,18 +259,39 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx(BASH_ENV=bash_env)
         self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
 
-    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
-        """The home answers in one stdout line; a root holding a newline makes it two."""
-        with tempfile.TemporaryDirectory(prefix="pcc_trust_") as tmp:
-            root = os.path.join(tmp, "two\nlines")
-            os.makedirs(root)
-            write_bin_sidecar(root, make_git_fixture_repo(root) + "\n")
-            write_profile_binary(root, "target/release/reify")
-            ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
-                                                    repo_root=root)
-            self.assertIsNone(ctx.reify_bin)
-            self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
-            self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+    def test_a_caller_shellopts_does_not_reach_the_trust_home(self):
+        """bash turns on every option SHELLOPTS names before the home runs."""
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        for shellopts in ("keyword", "noexec"):
+            with self.subTest(SHELLOPTS=shellopts):
+                ctx = self._ctx(SHELLOPTS=shellopts)
+                self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+
+    def test_a_refusal_under_a_caller_errexit_still_names_its_reason(self):
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        ctx = self._ctx(SHELLOPTS="errexit")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_a_caller_exported_function_cannot_vouch_for_a_stale_binary(self):
+        """An exported BASH_FUNC_git%% shadows git inside the home, so it could forge HEAD."""
+        self._both_binaries(newer="debug")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        poison = {"BASH_FUNC_git%%": "() { echo %s; }" % stale}
+        shadowed_head = subprocess.run(
+            ["bash", "-c", 'git -C "$1" rev-parse HEAD', "_", self.root],
+            env=trust_environ(**poison), capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(shadowed_head, stale)
+        ctx = self._ctx(**poison)
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
 
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
@@ -285,39 +307,6 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx(REIFY_BIN="/x/reify")
         self.assertEqual(ctx.reify_bin, "/x/reify")
         self.assertIsNone(ctx.reify_bin_refusal)
-
-    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
-
-    def _lone_binary_ctx(self, relpath, sidecar_for_head):
-        """(binary path, ctx) over a fresh git repo holding only `relpath`.
-
-        `sidecar_for_head(head)` is the sidecar text to write, or None for none.
-        """
-        with tempfile.TemporaryDirectory(prefix="pcc_trust_lone_") as root:
-            head = make_git_fixture_repo(root)
-            path = write_profile_binary(root, relpath)
-            sidecar = sidecar_for_head(head)
-            if sidecar is not None:
-                write_bin_sidecar(root, sidecar)
-            return path, pcc.ProbeContext.from_environment(environ=trust_environ(),
-                                                           repo_root=root)
-
-    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
-        for relpath in self._PROFILE_BINARIES:
-            for sidecar in (None, "0" * 40):
-                with self.subTest(binary=relpath, sidecar=sidecar):
-                    path, ctx = self._lone_binary_ctx(relpath, lambda _head: sidecar)
-                    self.assertIsNone(ctx.reify_bin)
-                    self.assertIn(path, ctx.reify_bin_refusal)
-                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
-
-    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
-        for relpath in self._PROFILE_BINARIES:
-            with self.subTest(binary=relpath):
-                path, ctx = self._lone_binary_ctx(relpath, lambda head: head + "\n")
-                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
-                self.assertTrue(os.path.isabs(ctx.reify_bin))
-                self.assertIsNone(ctx.reify_bin_refusal)
 
     def test_an_empty_reify_bin_falls_through_to_a_vouched_binary(self):
         debug = write_profile_binary(self.root, "target/debug/reify")
@@ -356,6 +345,57 @@ class TestReifyBinaryTrust(unittest.TestCase):
                     probe_context(**fields)
                 self.assertIn("reify_bin", str(cm.exception))
                 self.assertIn("reify_bin_refusal", str(cm.exception))
+
+
+class TestReifyBinaryTrustFreshRepo(unittest.TestCase):
+    """R14 M6 cases that each lay out their own fixture repo through trust_ctx().
+
+    The REAL trust home decides here too; these cases need no shared repo, so
+    the class has no setUp.
+    """
+
+    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
+
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_fresh_"))
+
+    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
+        for relpath in self._PROFILE_BINARIES:
+            for sidecar in (None, "0" * 40):
+                with self.subTest(binary=relpath, sidecar=sidecar):
+                    path, ctx = trust_ctx(self._fresh_root(), relpath, lambda _head: sidecar)
+                    self.assertIsNone(ctx.reify_bin)
+                    self.assertIn(path, ctx.reify_bin_refusal)
+                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
+        for relpath in self._PROFILE_BINARIES:
+            with self.subTest(binary=relpath):
+                path, ctx = trust_ctx(self._fresh_root(), relpath, lambda head: head + "\n")
+                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
+                self.assertTrue(os.path.isabs(ctx.reify_bin))
+                self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
+        """The home answers in one stdout line; a root holding a newline makes it two.
+
+        The one-line sibling is the control: the same vouched binary is trusted
+        there, so the newline alone turns trust into refusal.  "No readable
+        verdict" also names a home that exits outside its verdicts, so the
+        refusal must show the trusted exit and the two-line stdout it refused.
+        """
+        tmp = self._fresh_root()
+        release, control = trust_ctx(os.path.join(tmp, "one-line"), "target/release/reify",
+                                     lambda head: head + "\n")
+        self.assertEqual(control.reify_bin, release, control.reify_bin_refusal)
+        newline_release, ctx = trust_ctx(os.path.join(tmp, "two\nlines"), "target/release/reify",
+                                         lambda head: head + "\n")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+        self.assertIn("no readable verdict", ctx.reify_bin_refusal)
+        self.assertIn("(exit 0,", ctx.reify_bin_refusal)
+        self.assertIn(repr(newline_release + "\n"), ctx.reify_bin_refusal)
 
 
 if __name__ == "__main__":

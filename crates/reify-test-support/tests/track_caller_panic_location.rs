@@ -10,23 +10,30 @@
 //!
 //! This file guards `reify-test-support`'s panicking helpers against
 //! regressing back to the closure form, or dropping `#[track_caller]` from
-//! any link of a delegation chain: `require_default_expr` (reached through
-//! the public `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr`
-//! wrappers), `cell_value`, and the value-cell lookup family's own panics
-//! ("no template named", "no value cell named", "ambiguous cell name",
-//! "expected at least one template"), each driven through the longest public
-//! chain that reaches it. Each guard asserts the reported location plus a
-//! SHORT payload substring — never full message prose, per the wording rule
-//! `dimensioned_assertions.rs` already follows.
+//! any link of a delegation chain:
+//! - `require_default_expr`, reached through the public
+//!   `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr` wrappers;
+//! - `cell_value`;
+//! - the value-cell lookup family's own panics ("no template named", "no
+//!   value cell named", "ambiguous cell name", "expected at least one
+//!   template"), each driven through the longest public chain that reaches it;
+//! - `assert_single_declaration_error`, called directly;
+//! - `panic_message_of`'s two strict-failure panics ("returned normally",
+//!   "neither a &str nor a String"), called directly.
+//!
+//! Each guard asserts the reported location plus a SHORT payload substring —
+//! never full message prose, per the wording rule `dimensioned_assertions.rs`
+//! already follows.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
 /// Serialises the panic-hook swap in [`panic_site`]. The hook is
 /// PROCESS-global while libtest runs this binary's tests as parallel
-/// threads of ONE process; see `dimensioned_assertions.rs`'s `PANIC_HOOK`
-/// for the exact interleave this guards against (an unserialised swap can
-/// leave a silencer installed for the rest of the binary).
+/// threads of ONE process, so two unserialised take/set pairs interleave:
+/// `A:take` → `B:take` (gets A's temporary hook) → `A:set(previous)` →
+/// `B:set(A's temporary hook)` leaves A's capturing hook installed for the
+/// rest of the binary, and every later panic is routed through it.
 static PANIC_HOOK: Mutex<()> = Mutex::new(());
 
 /// A captured panic: its payload message and the `Location` `#[track_caller]`
@@ -92,8 +99,8 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
     }
 }
 
-/// Asserts `site` was attributed to the CALLER (this file), not to `helpers.rs`, and that
-/// its payload contains `needle`. File identity alone discriminates the regression, so no
+/// Asserts `site` was attributed to the CALLER (this file), not to the helper's own module,
+/// and that its payload contains `needle`. File identity alone discriminates the regression, so no
 /// exact line is pinned (`rustfmt --edition 2024` is free to shift it); `site.line` is
 /// surfaced for diagnosis only.
 #[track_caller]
@@ -101,7 +108,8 @@ fn assert_attributed_here(site: &PanicSite, needle: &str) {
     assert_eq!(
         site.file.as_str(),
         file!(),
-        "panic must attribute to the CALLER (this file), not to helpers.rs; reported {}:{}",
+        "panic must attribute to the CALLER (this file), not to the helper's own module; \
+         reported {}:{}",
         site.file,
         site.line,
     );
@@ -212,4 +220,36 @@ fn get_let_expr_empty_module_panic_reports_caller_not_helpers_rs() {
     });
 
     assert_attributed_here(&site, "expected at least one template");
+}
+
+#[test]
+fn assert_single_declaration_error_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::assert_single_declaration_error(
+            "structure S { let a : Length = 5mm }",
+            reify_core::DiagnosticCode::LetAnnotationTypeMismatch,
+            "let",
+            "a",
+        );
+    });
+
+    assert_attributed_here(&site, "expected exactly one error");
+}
+
+#[test]
+fn panic_message_of_returned_normally_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::panic_message_of(|| ());
+    });
+
+    assert_attributed_here(&site, "returned normally");
+}
+
+#[test]
+fn panic_message_of_non_string_payload_panic_reports_caller_not_its_module() {
+    let site = panic_site(|| {
+        reify_test_support::panic_message_of(|| std::panic::panic_any(42_i32));
+    });
+
+    assert_attributed_here(&site, "neither a &str nor a String");
 }

@@ -1,0 +1,11 @@
+module tuned_rig
+
+import parts
+
+structure def Rig {
+    sub p = Pulley()
+    param gap : Length = auto
+    constraint gap > 1mm
+    constraint gap < 50mm
+    minimize gap
+}

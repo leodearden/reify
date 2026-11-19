@@ -1226,9 +1226,10 @@ fn compile_modal_options_with_shift(shift_arg: &str) -> CompiledModule {
     compile_source_with_stdlib(&format!(
         r#"
 structure ShiftFrequencyCtorProbe {{
+    let beam = box(1000mm, 100mm, 100mm)
     let opts = ModalOptions(
         n_modes: 2,
-        boundary_conditions: [FixedSupport(target: "x_min")],
+        boundary_conditions: [FixedSupport(target: face(beam, "x_min"))],
         damping: NoDamping(),
         {shift_arg},
         tol: 0.000000001,
@@ -2094,7 +2095,7 @@ fn forcing_time_history_struct_has_correct_param_shape() {
 /// construction (via SIR-α's `check_constraints_against_templates`) rather than
 /// waiting for the transient_response trampoline (task θ) to flag it. Follows
 /// the task-2544 explicit-contract convention mirrored by
-/// `PiecewisePolynomialProfile.constraint waypoints.count > 0` (trajectory.ri:230).
+/// `PiecewisePolynomialProfile.constraint waypoints.count > 0` (`trajectory.ri :: PiecewisePolynomialProfile`).
 #[test]
 fn forcing_time_history_constrains_sources_nonempty() {
     let template = find_structure("ForcingTimeHistory");

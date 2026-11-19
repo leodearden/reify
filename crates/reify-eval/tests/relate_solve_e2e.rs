@@ -1141,10 +1141,10 @@ fn point_m(v: &Value) -> [f64; 3] {
 
 /// A `Value::Direction`'s components (unit, dimensionless).
 fn dir_xyz(v: &Value) -> [f64; 3] {
-    let Value::Direction { x, y, z } = v else {
+    let Value::Direction(u) = v else {
         panic!("expected Value::Direction, got {v:?}");
     };
-    [*x, *y, *z]
+    u.components()
 }
 
 /// A realized `Value::Axis`'s `(origin_m, unit_direction)`.

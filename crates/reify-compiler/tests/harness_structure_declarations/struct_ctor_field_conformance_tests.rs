@@ -2821,8 +2821,6 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 /// unit table — this predicate does NOT consult the compiler's derivation, so it
 /// is a real oracle rather than a restatement of it:
 ///
-/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
-///   cannot be written as a unit literal at all;
 /// * an entirely NEGATIVE exponent set (e.g. `Frequency`, s⁻¹) leaves no
 ///   numerator term to anchor the literal. Measured: `param x : Frequency = 1/s`
 ///   fails with `unresolved name: s` — reify reads the bare `1` as a number and
@@ -2840,9 +2838,11 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 /// Anything else declining to offer an example is a derivation bug, and the rot
 /// guard says so by name.
 fn has_no_clean_unit_literal(dim: &DimensionVector) -> bool {
-    dim.0.iter().enumerate().any(|(slot, r)| {
-        r.num() != 0 && (r.den() != 1 || !SPELLABLE_BASE_UNITS.contains(&BASE_UNIT_SYMBOLS[slot]))
-    }) || !dim.0.iter().any(|r| r.num() > 0)
+    dim.0
+        .iter()
+        .enumerate()
+        .any(|(slot, r)| r.num() != 0 && !SPELLABLE_BASE_UNITS.contains(&BASE_UNIT_SYMBOLS[slot]))
+        || !dim.0.iter().any(|r| r.num() > 0)
 }
 
 /// The base-unit symbols the stdlib-seeded unit registry resolves, and which can
@@ -2977,11 +2977,16 @@ fn g_migration_hint_example_round_trips_for_every_named_dimension() {
     }
 
     assert!(
+        !exempt.contains(&"FractureToughness"),
+        "FractureToughness has a rational-exponent spelling (`1kg/m^1/2/s^2`, task #9236), \
+         so it must offer an example that round-trips; exempt: {exempt:?}"
+    );
+    assert!(
         !exempt.is_empty(),
-        "no NAMED_DIMENSIONS row exercised the fractional-exponent exemption — either the \
-         registry lost its fractional dimensions (then delete the escape hatch) or the \
-         derivation stopped declining them (then it is inventing literals that cannot \
-         parse)"
+        "no NAMED_DIMENSIONS row exercised the all-negative-exponent exemption \
+         (`Frequency`, s⁻¹) — either the registry lost every such dimension (then \
+         delete the escape hatch) or the derivation stopped declining them (then it is \
+         offering a signed-power example the hint does not intend)"
     );
 }
 

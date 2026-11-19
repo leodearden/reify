@@ -369,6 +369,60 @@ fn a_match_over_a_discriminant_that_refused_a_tangent_refuses_the_row() {
     );
 }
 
+/// `match Box { w: <payload> } { Box { w: b } => b }`, the payload built at
+/// runtime by a `VariantCtor` (task 7456).
+fn match_reading_back_a_runtime_payload(payload: CompiledExpr) -> CompiledExpr {
+    use reify_ir::{CompiledMatchArm, CompiledPattern};
+
+    let binder = reify_core::ValueCellId::new("$matcharm0.Holder", "b");
+    let ctor = CompiledExpr::variant_ctor(
+        "Holder".into(),
+        "Box".into(),
+        vec![("w".into(), payload)],
+        reify_core::Type::Enum("Holder".into()),
+    );
+    let arms = vec![CompiledMatchArm {
+        patterns: vec![CompiledPattern::VariantBind {
+            name: "Box".into(),
+            binders: vec![("w".into(), binder.clone())],
+        }],
+        body: CompiledExpr::value_ref(binder, dl()),
+    }];
+    CompiledExpr::match_expr(ctor, arms, dl())
+}
+
+#[test]
+fn a_match_over_a_seed_dependent_runtime_payload_refuses_naming_the_ctor() {
+    // The arm binds the payload's VALUE but no tangent, so a payload that
+    // moves with a seed must refuse rather than hand back a flat row — and the
+    // refusal must name the construct that dropped the derivative.
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let expr = match_reading_back_a_runtime_payload(pref("x"));
+
+    match jrow(&expr, &values, &seed_cells) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => assert_eq!(kind, "VariantCtor"),
+        other => panic!("expected an UnsupportedKind refusal naming VariantCtor, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_seed_independent_runtime_payload_is_an_honest_zero_row() {
+    // A runtime payload that cannot reach a seed is a constant: it must not
+    // poison the residual it sits in.
+    let (mut values, seed_cells) = probe(&[("x", 3.0)]);
+    values.insert(cell("y"), Value::Real(4.0));
+    let expr = binop(
+        BinOp::Add,
+        pref("x"),
+        match_reading_back_a_runtime_payload(pref("y")),
+    );
+
+    let (primal, row) = jrow(&expr, &values, &seed_cells)
+        .expect("a seed-independent runtime payload is differentiable");
+    assert_eq!(primal, 7.0);
+    assert_eq!(row, vec![1.0]);
+}
+
 // ---------------------------------------------------------------------------
 // The η-side consequence of the missing strict-`Undef` precheck
 // ---------------------------------------------------------------------------

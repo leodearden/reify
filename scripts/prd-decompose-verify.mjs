@@ -283,9 +283,11 @@ function leavesFrom({ raw, value, parseError }, warn) {
 // The operator, never an agent, names the reify binary α probes with: binary
 // trust is SHA identity (#8649), and this script cannot read files or env
 // (PRD §3 M4), so args is the only channel.  A non-array object (or a JSON
-// string of one) owning an envelope key is an envelope; anything else is the
-// leaf batch itself, as before.  Operator contract:
-// .claude/skills/prd/project.md, "Choosing the reify binary".
+// string of one) owning an envelope key is an envelope; anything else must
+// itself be a leaf batch, by the same isLeafBatch rule as an envelope's
+// leaves, or it is refused (task #9946).  The rule judges a JSON string by its
+// decoded value, so "null" is refused like null (task #10063).  Operator
+// contract: .claude/skills/prd/project.md, "Choosing the reify binary".
 // ---------------------------------------------------------------------------
 
 const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
@@ -296,13 +298,26 @@ function batchEnvelope(value) {
         key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
 }
 
-// leaves as normalizeLeaves takes it: an array (an explicit [] is the empty
-// batch), one leaf object, or a non-blank string.  Anything else, a blank
-// template slot rendered as "" included, would become a vacuous zero-leaf PASS
-// or a leaf made of a bare scalar.
+// The leaf batch rule, for the top-level args and an envelope's leaves alike:
+// an array (an explicit [] is the only empty batch), one leaf object, or a
+// non-blank string.  Anything else, a blank template slot rendered as ""
+// included, would become a vacuous zero-leaf PASS or a leaf made of a bare
+// scalar.  It is applied to the decoded value: a JSON string is held to what it
+// encodes (task #10063).
 function isLeafBatch(leaves) {
     return (leaves !== null && typeof leaves === "object")
         || (typeof leaves === "string" && leaves.trim() !== "");
+}
+
+// Names the args as given and, when a JSON string was decoded, the value that
+// was actually judged.
+function leafBatchRefusal(subject, { raw, value, parseError }) {
+    if (isLeafBatch(value)) return null;
+    const decoding = typeof raw === "string" && parseError === null
+        ? `, which decodes to ${JSON.stringify(value)}`
+        : "";
+    return `${subject} must be the leaf array, one leaf object, a non-blank string, `
+        + `or the JSON string of one of these; got ${JSON.stringify(raw)}${decoding}`;
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is
@@ -316,10 +331,8 @@ function envelopeRefusal(envelope) {
         return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
             + `unknown key(s): ${JSON.stringify(unknown)}`;
     }
-    if (!isLeafBatch(envelope.leaves)) {
-        return "leaves must be the leaf array, its JSON string, or one leaf object; "
-            + `got ${JSON.stringify(envelope.leaves)}`;
-    }
+    const leavesRefusal = leafBatchRefusal("leaves", destringifyArgs(envelope.leaves));
+    if (leavesRefusal !== null) return leavesRefusal;
     const bin = envelope.reify_bin;
     if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
         return "reify_bin must be the absolute path of the reify binary α probes with; "
@@ -331,11 +344,13 @@ function envelopeRefusal(envelope) {
 function batchArgs(rawArgs, warn) {
     const destringified = destringifyArgs(rawArgs);
     const envelope = batchEnvelope(destringified.value);
+    const refusal = envelope === null
+        ? leafBatchRefusal("args", destringified)
+        : envelopeRefusal(envelope);
+    if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
     if (envelope === null) {
         return { leaves: leavesFrom(destringified, warn), reifyBin: null };
     }
-    const refusal = envelopeRefusal(envelope);
-    if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
     return { leaves: normalizeLeaves(envelope.leaves, warn), reifyBin: envelope.reify_bin ?? null };
 }
 

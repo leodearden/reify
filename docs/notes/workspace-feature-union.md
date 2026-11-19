@@ -65,9 +65,11 @@ For every covered member, every external (name, version, side, features)
 variant that `-p <m>` compiles, as read from `cargo tree -p <m>`, is one that
 `--workspace` compiles. The gate
 `real_workspace_resolves_every_member_like_the_workspace` runs
-`python3 scripts/workspace-feature-union.py check` (resolve-only,
-`--frozen`; about 20 s, though 74–81 s on a heavily loaded host on 2026-11-07,
-of which parsing was 0.02 s). It runs on every
+`python3 scripts/workspace-feature-union.py check`. Check first runs
+`cargo fetch --locked --target <host>`, which makes no request on a warm cache
+and took about 26 s for 492 crates on a cold one (Cold cargo cache), and then
+resolves only, with `--frozen`: about 20 s, though 74–81 s on a heavily loaded
+host on 2026-11-07, of which parsing was 0.02 s. It runs on every
 `crates/*/Cargo.toml` edit, because it lives in reify-build-utils, the crate
 `scripts/reify_path_attribution.py` routes manifest edits to. Sides come from a
 walk over cargo's deduped tree, and a member printed twice as a root is placed
@@ -140,7 +142,9 @@ dirties workspace units: 30 were rebuilt instead of 21 or 22 (see Tree-sitter
 share).
 
 Probing at the base commit gives a zero-delta first build, one with no
-workspace source newer than the seed's base. Do it before the arm B copy below.
+workspace file or directory newer than the seed's base. Do it before the arm B
+copy below. The lines that run before every probe keep that state, and end with
+the directory check again, so it is proven at the probe, not only here.
 The arm B copy is generated from the checked-out `grammar.js`, so a copy made at
 HEAD describes HEAD's grammar, not the base's. The base-commit block reads `$B`
 from `/tmp/<id>-base.env`, so it also works after the snapshot.
@@ -152,6 +156,9 @@ git diff --name-only --no-renames "$B" HEAD > /tmp/<id>-D.lst   # both names of 
 git checkout --detach "$B"
 # The checkout rewrote the paths in D. Give each one that still exists the mtime the seed gives it at $B:
 while IFS= read -r f; do [ -e "$f" ] && touch -h -d 2020-01-01T00:00:00 "$f"; done < /tmp/<id>-D.lst
+# The checkout also bumped every directory that holds or held a path of D. The seed stamps directories too (its find
+# has no -type f), and reify-eval's build script watches directories, so stamp them all back:
+find . -mindepth 1 \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type d -exec touch -h -d 2020-01-01T00:00:00 {} +
 # Then touch to now the paths of D that the seed's env!() relink touches. The regex is read from the seed; the
 # case pattern restates the seed's `find`, which matches absolute paths, so it tests "$PWD/$f".
 RE=$(sed -n "s/^ *_ENV_PATH_MACRO_RE='\(.*\)'$/\1/p" scripts/seed-warm-lane.sh)
@@ -166,12 +173,31 @@ relink_sources() {
 }
 relink_sources < /tmp/<id>-D.lst | xargs -r -d '\n' touch --
 git diff --name-only "$B"   # must print nothing
-# Check the whole tree both ways: every relink source at $B against every file newer than 2020-01-02.
 git ls-files | relink_sources | LC_ALL=C sort > /tmp/<id>-relink.lst
+# A dispatch rebase after the seed also rewrote files outside D: $B's content, a fresh mtime. Stamp back each tracked
+# file newer than 2020-01-02 that is no relink source and has no skip-worktree flag (.mcp.json has one), if it equals $B:
+git ls-files -v | sed -n 's/^H //p' | LC_ALL=C sort > /tmp/<id>-tracked.lst
+find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -printf '%P\n' |
+  LC_ALL=C sort | LC_ALL=C comm -23 - /tmp/<id>-relink.lst | LC_ALL=C comm -12 - /tmp/<id>-tracked.lst |
+  while IFS= read -r f; do git diff --quiet "$B" -- "$f" && touch -h -d 2020-01-01T00:00:00 "$f"; done
+# Check the whole tree both ways: every relink source at $B against every file newer than 2020-01-02.
 find . \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type f -newermt 2020-01-02 -printf '%P\n' |
   LC_ALL=C sort | LC_ALL=C comm -3 - /tmp/<id>-relink.lst
 # must print only incidentals such as .mcp.json, unindented; an indented line is a relink source still at 2020
+find . -mindepth 1 \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type d -newermt 2020-01-02 -print
+# must print nothing
 ```
+
+The directory lines matter because git bumps the mtime of every directory that
+holds a file it rewrites, and reify-eval's build script watches directories: a
+bumped `crates/reify-kernel-gmsh/src` reran it, and with it reify-eval's lib and
+the crates that link that lib, in probe D1 (Host profiles).
+
+The stamp-back step after the relink exists because the dispatch can run
+`git rebase main` in a lane after the seed. That rewrites every file that
+differs between the commit the seed stamped and main's tip, and a file outside
+D among them has `$B`'s content but a fresh mtime, so the file check lists it.
+In `_lane-10` that was 64 files (Tree-sitter re-probe after #9896).
 
 After the last probe, return with `git checkout <task branch>`, which rewrites
 the delta with fresh mtimes, the state the seed gives a branch's HEAD. An
@@ -201,8 +227,9 @@ cp -a --reflink=always "$S"/. target/
 check; echo "restored-matches rc=$?"   # must be 0 before probing
 
 # after any arm B copy, immediately before every probe, the first included (arm B: see below):
-git clean -Xfd -- tree-sitter-reify/src
+git clean -Xfd -- tree-sitter-reify/src && touch -h -d 2020-01-01T00:00:00 tree-sitter-reify/src   # the clean bumps the directory; a seed has it at 2020-01-01
 git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
+find . -mindepth 1 \( -path ./target -o -path ./.git -o -path ./.task \) -prune -o -type d -newermt 2020-01-02 -print   # must print nothing: the last line before every probe
 ```
 
 The `git clean` line deletes the gitignored generated sources under
@@ -216,6 +243,11 @@ is whatever the ignore rules match there, chiefly the root `.gitignore`'s
 `git clean -xfd -e target` deletes those same files. A new output of
 `tree-sitter generate` is covered as soon as that block lists it.
 
+For a base gen built after #9896, files under `tree-sitter-reify/src` do not
+affect the build, and its stamps attest only `grammar.js` and `src/scanner.c`.
+The reset line, arm B and its stamp check matter only for older gens; they stay
+here as the recipe behind the measurements below.
+
 The generated sources live outside `target/`, so restoring `target/` does not
 restore their absence, and the listing check does not see them. The
 `git status` line does. It prints nothing only when the directory holds nothing
@@ -226,6 +258,12 @@ acquire's `-x` deletes it. A new `tree-sitter generate` output that the block
 does not list yet is one. `--untracked-files=normal` stops a
 `status.showUntrackedFiles=no` in user config from hiding the `??` lines.
 Remove `target/.pristine` after the last probe.
+
+When the clean deletes something it bumps the mtime of `tree-sitter-reify/src`
+itself, so the clean line stamps that directory back to the seed's 2020-01-01.
+The `find` line is the base-commit block's directory check, run again as the
+last line before every probe: whatever ran since (the generator, the clean, the
+arm B copy), no directory may be newer than the seed's stamp.
 
 To exclude the tree-sitter share, probe in arm B of the Tree-sitter share
 subsection: the generated sources present and back-dated to 2020-01-01, so the
@@ -238,7 +276,7 @@ git status --porcelain --untracked-files=all -- tree-sitter-reify/src   # must p
 git status --porcelain --untracked-files=all --ignored -- tree-sitter-reify/src | LC_ALL=C sort > /tmp/<id>-tsgen.lst   # what every restore below must reproduce
 mkdir /tmp/<id>-tsgen
 (cd tree-sitter-reify/src && git ls-files -z -oi --exclude-standard --directory . | xargs -0 cp -a -t /tmp/<id>-tsgen/)
-find /tmp/<id>-tsgen -mindepth 1 -exec touch -h -d 2020-01-01T00:00:00 {} +
+find /tmp/<id>-tsgen -exec touch -h -d 2020-01-01T00:00:00 {} +   # the root too: the copy below puts its mtime on tree-sitter-reify/src
 bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
 for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
 ```
@@ -252,13 +290,19 @@ base commit cures the first two. Remove `/tmp/<id>-tsgen`, run the base-commit
 block, then repeat this block. A DIFF that survives that points to the CLI, and
 then the copy cannot be proven identical to the base's inputs, so arm B is not
 valid in this lane. Before every arm B probe, the first included, keep the
-`git clean` line above and replace only the `git status` line, which would list
-the copy:
+`git clean` line above first and its `find` line last, and replace only the
+`git status` line between them, which would list the copy:
 
 ```bash
 cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/
 git status --porcelain --untracked-files=all --ignored -- tree-sitter-reify/src | LC_ALL=C sort | cmp - /tmp/<id>-tsgen.lst; echo "tsgen-matches rc=$?"   # must be 0 before probing
 ```
+
+`cp -a <root>/. <dir>/` also copies the root's own mtime onto `<dir>`, which is
+why the back-date above includes the root: with `-mindepth 1` the root keeps the
+time it was filled, and the copy leaves `tree-sitter-reify/src` newer than the
+seed's stamp. The `tsgen-matches` check does not see mtimes. The `find` line
+does.
 
 The clean removes the directory's ignored files first, so the copy is not laid
 over what an earlier arm A build left there, and no ignored file but the copy
@@ -350,6 +394,10 @@ reify-ast, reify-config, reify-ir or reify-stdlib, and it reaches reify-expr
 only under `-p reify-expr`, through that package's dev-dependencies. That is the
 reach by manifest edges. The next subsection measures it: a first build pays
 only for tree-sitter-reify itself, and the reach shows in the next invocation.
+Since #9896 this contributor is gone: `build.rs` generates into `$OUT_DIR/src`
+and watches only `grammar.js`, `src/scanner.c`, `build_support.rs` and the
+tree-sitter CLI, so the acquire's `git clean` no longer reaches the build
+(Limits, Tree-sitter regeneration).
 
 Hypothesis, not isolated by these probes: once tree-sitter regeneration is
 excluded (next subsection), the workspace units that remain are the union of
@@ -380,6 +428,13 @@ the basecommit was checked out again and the 53 files that differ from main's
 tip re-stamped (37 to 2020-01-01, 5 `env!()` test sources left at now, 11 files
 gone), `target/` was restored, and the lane was verified against the seed's
 model again.
+
+That model covers files only. Both checkouts re-stamped files, and directory
+mtimes were not restored (the file-only re-stamp predates the directory stamp in
+Probing at the base commit; see probe D1 in Host profiles). Every directory
+whose entries the checkout changed kept the checkout's mtime, so zero delta in
+this subsection means files, and reify-eval's build-script run may also have
+been dirty through the directories its build script watches.
 
 Arm A is a fresh lane as it is today: the eight generated sources absent. Arm B
 has them present and back-dated to 2020-01-01, as in the arm B recipe under
@@ -468,6 +523,140 @@ leave in arms A and B. The `after` clippy row cannot be read that way: it ran
 against gen.618 before the union reached the base, when every member rehashes,
 so its 30 units are not separable into a `CLIPPY_ARGS` part and a rehash part.
 
+### Tree-sitter re-probe after #9896 (#10046)
+
+Lane `_lane-10`, 2026-11-17 14:27 to 14:45 UTC. Its `target/` carried base
+`target.gen.643`'s mtime to the nanosecond (`12:56:44.495479464`, built under
+`_merge-verify`, basecommit `cb24012c60`), and no file under it was newer than
+the `.basecommit` stamp. gen.643 is the first gen whose basecommit contains
+#9896's merge `d176b5ddfd`. Every run used the verify env, as in Probe
+procedure, and every capture carries
+`CARGO_LOG=cargo::core::compiler::fingerprint=info`, so the log names each
+non-Fresh unit with its reason, and a unit it does not name was Fresh. Each
+pair is one `cargo test -p reify-eval --no-run` run twice with nothing changed
+between the runs. Before #9896 the second run compiled 8 units, tree-sitter-reify
+and the dependents it reaches (Tree-sitter share, "A, 2nd run").
+
+Probe (1) is a fresh lane at zero delta. HEAD `202e206e6f`, main's tip, differs
+from the basecommit in 13 files, among them `crates/reify-eval/src/modal_ops.rs`.
+So probe (1) ran at the basecommit, as in Probing at the base commit, with the
+directory stamp and without the tree-sitter reset line or arm B, which the
+procedure keeps for older gens. The block's file check failed at first. Besides
+`.mcp.json` it listed 64 tracked files that the dispatch's `git rebase main`
+had rewritten at 14:14, after the seed, moving the branch from `48f6c7710b` to
+`202e206e6f`. Their content equalled the basecommit's, and the block then
+re-stamped only the basecommit-to-HEAD delta, so they were re-stamped to
+2020-01-01 by hand. The block's stamp-back step now does this.
+The lane then matched the seed's model, files and directories. A reflink
+snapshot of `target/` (69,437 non-directory entries) matched the seed's listing
+and was never restored: HEAD did not move during either pair.
+
+Probe (2) replays the reset the merge worker gives `_merge-verify` before each
+verify (dark-factory `GitOps.reset_persistent_merge_worktree`):
+`git reset --hard 202e206e6f`, then `git clean -xfd -e target`, with `-e .task`
+added to keep the task's plan. It ran in `_lane-10` after probe (1), on the
+`target/` that probe (1) built in place, with no re-stamp. The reset rewrote the
+delta's files and left 8 directories newer than the seed's stamp, and the clean
+removed `scripts/__pycache__/`. This is not a run in `_merge-verify`. A task
+agent is sandboxed to its own lane, and refresh-warm-base copies
+`_merge-verify`'s `target/` into the next base gen. Two things still differ.
+`_merge-verify`'s `target/` also holds the `--workspace` variants its verify
+builds. And the replay covers only the reset and the two cargo runs, not
+`scripts/verify.sh`'s non-cargo leaves (`tree-sitter-generate.sh`,
+`tree-sitter-freshness.sh ensure`, the infra tests), which run between cargo
+invocations in `_merge-verify` and can bump a watched input's mtime. The delta
+changes one reify-eval source, `modal_ops.rs`, plus test,
+script and docs files that `-p reify-eval` does not build.
+
+| Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
+|---|---|---|---|---|---|
+| (1) run 1: `test -p reify-eval --no-run`, fresh lane, zero delta | `cb24012c60` | gen.643 | **0** + 15 | 6:56.36 | 118/181/161 → 212/211/182 |
+| (1) run 2: same command, nothing changed | `cb24012c60` | gen.643 | **0** + **0** | 0:14.27 | 182/204/180 → 160/198/178 |
+| (2) run 1: same command after the replayed reset | `202e206e6f` | gen.643 | **0** + 4 | 4:42.84 | 122/177/173 → 214/186/176 |
+| (2) run 2: same command, nothing changed | `202e206e6f` | gen.643 | **0** + **0** | 0:06.91 | 205/185/176 → 190/182/175 |
+
+All four runs exited 0. Both second runs compiled no unit, and their
+fingerprint logs are empty. The walls are indicative only: the host load was
+over 100 throughout.
+
+Probe (1) run 1 compiled 15 workspace units: reify-compiler,
+reify-compute-contract, reify-constraints, reify-doc-build, reify-eval,
+reify-expr, reify-git-env, reify-kernel-gmsh, reify-kernel-occt,
+reify-kernel-openvdb, reify-mesh-morph, reify-runtime, reify-solver-elastic,
+reify-stdlib and reify-test-support. Its log names 256 non-Fresh units, and
+every one is `failed to read .../.fingerprint/...`, a unit hash the base never
+had:
+
+- the lib of each of the 15;
+- the build-script compile and run of reify-kernel-gmsh and of
+  reify-kernel-openvdb;
+- reify-eval's lib unit test and its 236 `tests/*.rs` targets.
+
+None is dirty, so no unit was rebuilt for a changed input. This measurement does
+not attribute them among the other contributors. The log never names
+tree-sitter-reify or reify-syntax, so all their units were Fresh, and that
+includes tree-sitter-reify's build-script run. The seed reflinked the run dirs
+and relocated their paths to `_lane-10`, and the `OUT_DIR` state they hold
+stayed valid there. After both pairs, no file under any
+`target/*/build/tree-sitter-reify-*` dir was newer than the gen's `.basecommit`
+stamp, so the script was never re-invoked, and `tree-sitter-reify/src` still
+held only its tracked files.
+
+Probe (2) run 1 compiled 4 workspace units: reify-eval, reify-test-support,
+reify-mesh-morph and reify-runtime. The delta explains all four. Of the 241
+non-Fresh units in its log, reify-eval's lib is `StaleItem(ChangedFile)`, stale
+`crates/reify-eval/src/modal_ops.rs` against its `dep-lib-reify_eval`. The other
+240 are `StaleDepFingerprint` on that lib: reify-eval's lib unit test and 236
+`tests/*.rs` targets, and the libs of reify-test-support, reify-mesh-morph and
+reify-runtime. The log names no build-script unit. It does not name
+tree-sitter-reify, reify-syntax or reify-compiler either, and nothing upstream of
+reify-eval changed.
+
+The real `_merge-verify` was read, not written, at 15:02:30 UTC. Its HEAD was
+still `cb24012c60`, its last verify attempt (`target/reify-verify-attempt.json`)
+was stamped 12:27:51Z, and no `tree-sitter-reify-*` run dir had been invoked
+after 12:09:26. So no merge verify had run there since gen.643's own.
+
+The run dirs `_merge-verify` holds show the build script re-run without
+regenerating, with `tree-sitter-reify/` byte-identical throughout. The three run
+dirs that hold a generation stamp were invoked at 2026-11-17 06:30:31 (release,
+`02cc16f2…`), 11:40:25 and 12:09:26 (debug, `867156fd…` and `e66a76b4…`), and
+their `generation_key.stamp` files are from 2026-11-16, 17:11 to 17:16. The key
+stamp is rewritten after every generation, so none of these runs regenerated.
+The lane's reflog places the two debug invocations in
+gen.643's verify at `cb24012c60`, checked out at 11:39:51 from `48f6c7710b`,
+which contains `d176b5ddfd` and is identical under `tree-sitter-reify/`. The
+release invocation falls under the 05:35:53 reset to `40b1ebb59f`, which also
+contains #9896 and is identical there. `grammar.js` reads 12:09:25.125 with a
+clean `git status`, 1.4 s before `e66a76b4…`'s invocation (12:09:26.507). That
+run rewrote the archive (12:09:31) and did not regenerate. So a watched input's
+mtime was bumped mid-verify with its bytes unchanged. The bump was not a
+`tree-sitter-freshness.sh ensure` force. A force touches `src/scanner.c` as well,
+and the script's header says the ledger "is written only AFTER the touch", yet
+`scanner.c`, `target/.tree-sitter-freshness.ledger` and the ledger's mtime
+witness all still read 2026-11-16 17:11:41.
+
+`867156fd…` and `02cc16f2…` were invoked before that mtime. By cargo's
+`rerun-if-changed` mtime rule, the next `_merge-verify` build of those units is
+therefore expected to re-run the script, recompile the archive and rebuild
+tree-sitter-reify's dependents there. That is an expectation: no verify had run
+there since to confirm it. Why those two dirs themselves reran without
+regenerating is not attributed. A watched input rewritten with unchanged bytes,
+a changed `src/scanner.c` or `build_support.rs`, a `rerun-if-env-changed`
+variable or a rebuilt build-script compile unit would each do it.
+
+Hypothesis: `tests/infra/test_tree_sitter_pipeline.sh` makes the bump. Its
+`TS_DIR` is the real `tree-sitter-reify/`, and two of its tests,
+`test_build_rs_watches_all_compiled_inputs` and
+`test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host`, `touch` the real
+`grammar.js` and then run `cargo check -p tree-sitter-reify` into the lane's own
+`target/`. The 1.4 s gap fits that shape, but nothing read-only shows which leaf
+made the bump.
+
+Fresh lanes do not see it: the seed stamps `grammar.js` back to 2020-01-01,
+whatever mtime `_merge-verify` left, and probe (1) measured tree-sitter-reify's
+build-script run Fresh in such a lane.
+
 ### Cold build
 
 Every row above is a warm-lane build. The cold cost is
@@ -484,6 +673,72 @@ The union started at 174.05 s, when nalgebra's metadata became ready, behind
 serde_derive (a proc-macro, usable only once fully built), serde, num-complex
 and simba. The host was loaded, so walls and offsets are indicative only:
 serde_derive started 63 s after its last dependency finished.
+
+### Cold cargo cache (#10003)
+
+Measured on 2026-11-16 in lane `_lane-28` at base `a3d5da91ce`, with cargo
+1.96.0, before check fetched anything. Each run used an empty `CARGO_HOME` and,
+for the compiles, a scratch `CARGO_TARGET_DIR`:
+
+- A: `cargo metadata --frozen --no-deps` exited 0, so it needs no registry.
+  `cargo tree --frozen --workspace -e normal,build,dev -f '{p}|{f}' --charset ascii --target x86_64-unknown-linux-gnu`
+  exited 101 with "no matching package named `serde` found".
+- C: the narrowed, online
+  `cargo test -p reify-build-utils --test workspace_feature_union --no-run`
+  exited 0 in 2:27 and downloaded 26 crates (registry cache 5.7 MB; the index
+  took 46 MB, because resolving against `Cargo.lock` reads the whole
+  lockfile's index).
+- D: the gate,
+  `cargo test --frozen -p reify-build-utils --test workspace_feature_union real_workspace_resolves_every_member_like_the_workspace`,
+  then failed. The script exited 2 at its first resolution,
+  `cargo tree --frozen --workspace`, with "failed to download `ahash v0.8.12`",
+  caused by "attempting to make an HTTP request, but --frozen was specified".
+  The panic text blamed a member split.
+- E: `cargo fetch --locked --target x86_64-unknown-linux-gnu` exited 0 in
+  26.0 s, downloaded 492 crates (registry cache 47 MB) and left `Cargo.lock`
+  unchanged.
+- F: the same fetch again, with `CARGO_HTTP_PROXY` and `HTTPS_PROXY` pointed at
+  a dead port, exited 0 in 2.76 s. A warm fetch makes no request.
+- G: the gate then passed in 84.4 s, the full check including the
+  `--unit-graph` profile pass.
+
+`cargo tree` and `cargo test --unit-graph` need the `.crate` of every package
+reachable from the selection, not just its index entry. A narrowed verify
+(`--scope branch`, with `-p` on check, clippy and nextest) downloads only the
+selected crates' closure, so a lane's cache can be warm enough to compile the
+gate and too cold for the gate to resolve.
+
+Decision: check fetches first, with `cargo fetch --locked --target <host>`,
+after the HOST-UNION early return and before any `cargo tree` or unit graph.
+`--locked` keeps `Cargo.lock` unwritten. The host fetch also covers the
+target-less unit graphs, which are host builds (G). HOST-UNION is read from
+`cargo metadata --no-deps` alone (A), so an unreachable registry cannot hide
+it. A host with no network and a cold cache is exit 2 naming
+`cargo fetch --locked`, and the gate's failure text says that is not a
+finding; it is never skipped. `generate` does not fetch: it resolves
+`--offline` so that a manifest edit may update `Cargo.lock`, which
+`cargo fetch --locked` would refuse.
+
+The stub-cargo tests in `crates/reify-build-utils/tests/workspace_feature_union/main.rs`
+pin this with a cold-cache model copied from D:
+`check_gives_a_cold_cargo_cache_the_verdict_a_warm_one_gets`,
+`check_exits_2_naming_cargo_fetch_when_the_registry_is_unreachable` and
+`check_reports_a_host_union_finding_without_fetching`.
+
+To re-run the real measurement, use a scratch directory of your own, never the
+lane's `target/` (another `CARGO_HOME` changes dependency metadata hashes and
+fills it with duplicate artifacts):
+
+```sh
+M=/tmp/<task-id>-cold-cache; rm -rf "$M"; mkdir -p "$M/cargo-home" "$M/target"
+export CARGO_HOME="$M/cargo-home" CARGO_TARGET_DIR="$M/target"
+cargo test -p reify-build-utils --test workspace_feature_union --no-run
+cargo test --frozen -p reify-build-utils --test workspace_feature_union \
+  real_workspace_resolves_every_member_like_the_workspace -- --exact
+rm -rf "$M"
+```
+
+The first command is online and took about 2.5 min (C). The second must pass.
 
 ## Member features (#9825)
 
@@ -565,9 +820,13 @@ C used the arm B branch of Probe procedure. After `git checkout --detach
 that match the seed's `env!()` relink rule were left at now, and the 13
 HEAD-only files were gone. `git diff --name-only 35a914623f` then printed
 nothing, and the 233 files newer than 2020-01-02 were all under `tests/` or
-`benches/`, except `.mcp.json`. The generated sources came from
-`scripts/tree-sitter-generate.sh` at the basecommit, back-dated, and all four
-seeded `tree_sitter_inputs.stamp` files matched
+`benches/`, except `.mcp.json`. Directory mtimes were not restored (the
+re-stamp covered files only; probe D1 in Host profiles): every directory whose
+entries the checkout changed kept the checkout's mtime, so C's reify-eval
+build-script run may also have been dirty through the ones its build script
+watches. Host profiles reads C's rebuilt set on that footing. The generated
+sources came from `scripts/tree-sitter-generate.sh` at the basecommit,
+back-dated, and all four seeded `tree_sitter_inputs.stamp` files matched
 `tree-sitter-freshness.sh --print-fingerprint`.
 
 With #9862's arm B (Tree-sitter share: generated sources present, no
@@ -658,8 +917,9 @@ indicative only.
   #9884) still rebuilt reify-eval.
 - **Advisory MEMBER-SPLIT reporting: adopted.** Failing on the accepted
   splits would red the gate permanently.
-- **Next candidate** once #9896 lands (the build-script variants were fixed
-  by #9884): reify-stdlib `test-support`, behind the remaining 3 split-only
+- **Next candidate**, now that #9896 has removed the tree-sitter share (the
+  build-script variants were fixed by #9884): reify-stdlib `test-support`,
+  behind the remaining 3 split-only
   units (reify-stdlib, reify-expr and reify-constraints).
 
 Landing cost: the reify-core, reify-ast and reify-ir member variants change,
@@ -769,13 +1029,139 @@ stanza every host unit compiles at debuginfo 0 and every runtime unit at 2, so
 a unit's profile names its copy, a host copy links only host copies, and the
 case does not arise today.
 
-No compile-level re-probe here. Base gen.625 predates the stanza, so a first
-build in a lane seeded from it re-hashes the host graph and measures nothing
-about the fix. The unit graph is the evidence: a unit's metadata hash is a
-function of what the graph shows (package, target, mode, features, profile
-and its dependencies' identities) plus rustc and the target, which are equal
-across selections. The compile-level re-probe on the first base gen built
-with the stanza is #9927. The fix pays off where features already match: the
+The unit graph is the gate's evidence: a unit's metadata hash is a function of
+what the graph shows (package, target, mode, features, profile and its
+dependencies' identities) plus rustc and the target, which are equal across
+selections. A compile-level check needs a base gen built with the stanza. A
+first build in a lane seeded from gen.625, which predates it, re-hashes the
+host graph and measures nothing about the fix. gen.642 (basecommit
+`2eebd70872`) contains it: the stanza's commit `30c0171d4a` is an ancestor of
+that basecommit.
+
+### Compile-level re-probe (#9927)
+
+Probe D is probe C of Member features (#9825): the same command, arm B, at the
+base commit, with C's `--features` list minus the `reify-ast/serde` and
+`reify-ir/serde` entries that #9825 deleted:
+
+    --features reify-compiler/test-support,reify-stdlib/test-support,reify-kernel-gmsh/stub_register,reify-kernel-occt/mesh-morph,reify-kernel-occt/test-fixtures,reify-kernel-openvdb/stub_register,reify-solver-elastic/linear-solve-fault-injection
+
+Each run was a first build from the `target/` that lane `_lane-27` was seeded
+with, base `target.gen.642` (basecommit `2eebd70872`). D2 ran after the
+snapshot of that `target/` was restored, and its listing matched the seed's.
+Both ran under the verify env, following Probe procedure. The generated
+sources came from `scripts/tree-sitter-generate.sh` at the basecommit,
+back-dated, and all six seeded `tree_sitter_inputs.stamp` files matched
+`tree-sitter-freshness.sh --print-fingerprint`. Each capture also carries
+`CARGO_LOG=cargo::core::compiler::fingerprint=info`, which logs every
+non-Fresh unit with its mode, target and reason.
+
+| Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
+|---|---|---|---|---|---|
+| D1: generated sources present, `--features`, directory mtimes left by the checkout (2026-11-15) | `2eebd70872` | gen.642 | **0** + 6 | 8:11.57 | 54.48/88.59/96.33 → 64.11/65.92/81.92 |
+| D2: generated sources present, `--features`, directory mtimes restored before the arm B copy (2026-11-15) | `2eebd70872` | gen.642 | **0** + 3 | 7:36.63 | 69.32/86.10/82.73 → 66.77/66.43/73.79 |
+
+D2 is the measurement. D1 ran first and is explained below. The walls are
+indicative only: the load differs, and D2 ran after D1 on the same sccache.
+
+D2 compiled reify-git-env, reify-test-support and reify-eval, nothing else.
+Its fingerprint log names 239 non-Fresh units: the reify-git-env and
+reify-test-support libs, reify-eval's lib unit test and its 236 `tests/*.rs`
+targets. All 239 are `failed to read .../.fingerprint/...`, a hash the base
+never had, and none is dirty. reify-eval prints its `Compiling` line for the
+test-mode units; its lib Build unit and its build script are Fresh.
+
+The log lists only non-Fresh units, so a unit it does not name was Fresh. D2
+names none of the 25 units that `-p reify-eval` builds for these packages:
+
+- reify-kernel-gmsh, reify-kernel-occt, reify-kernel-openvdb,
+  reify-solver-elastic, reify-config and reify-mesh-morph: the lib, the
+  build-script compile and the build-script run of each, 18 units. The first
+  four are the build scripts that probe C compiled as new variants;
+- reify-compute-contract, reify-compiler, reify-runtime and reify-doc-build:
+  a lib each, 4 units;
+- reify-eval's lib Build unit and its build script's compile and run: 3 units.
+
+C − D2, as a set difference of package names, is the first two groups' ten:
+reify-compiler, reify-compute-contract, reify-config, reify-doc-build,
+reify-kernel-gmsh, reify-kernel-occt, reify-kernel-openvdb, reify-mesh-morph,
+reify-runtime and reify-solver-elastic. C rebuilt them and D2 did not. They
+are the units the host-profile cause rebuilt in C, through the four build
+scripts and the normal edges that reach them. C and D2 also differ in base gen
+and commit. Three manifest-touching commits landed between them: the stanza,
+#9825's serde deletion (C emulated it with `--features
+reify-ast/serde,reify-ir/serde`) and a comment-only edit of
+reify-shell-extract's manifest. No build script changed. D1 splits the ten:
+C − D1 is seven of them, and D1 − D2 is reify-kernel-occt, reify-mesh-morph
+and reify-runtime, which D1 rebuilt through directory mtimes alone (below).
+Hypothesis: C's checkout left directory mtimes in place as D1's did, so those
+three had both causes in C, and C cannot say which one rebuilt them. The
+profile cause suffices for each of them by manifest edges alone:
+reify-kernel-occt and reify-mesh-morph have build scripts, and reify-runtime
+depends on reify-config's.
+
+What D2 did compile is the accepted splits and what reaches them:
+
+- reify-git-env is the `test-utils` split (Member features):
+  `reify-git-env/test-utils` cannot be named in `--features`, because
+  reify-git-env is not a direct dependency of reify-eval, so its features are
+  `[]` under `-p` and `[test-utils]` under `--workspace`.
+- reify-test-support's only dependency that differs from `--workspace` is that
+  reify-git-env lib.
+- reify-eval's test-mode units dev-depend on reify-test-support, and the
+  seed's `env!()` relink touches 125 sources under reify-eval's `tests/`. All
+  237 logged `failed to read`, which does not apportion the two causes.
+
+This agrees with a build-free comparison at `2eebd70872`. It takes recursive
+unit identity (package, target, mode, features, platform, profile and the
+dependencies' identities) over the `--unit-graph` of `-p reify-eval
+--features <list>` and of `--workspace`. Of the 590 `-p` units, 240 have an
+identity `--workspace` lacks: the reify-git-env and reify-test-support libs,
+reify-eval's lib unit test and lib doctest, and its 236 `tests/*.rs` targets.
+D2's 239 non-Fresh units are those 240 minus the doctest, which `--no-run`
+never builds, and none lies outside the set. The comparison sees the hash
+cause only. A file or directory mtime is not in the graph, which is why D1's
+extra five lay outside it.
+
+D1 compiled six packages: D2's three, and reify-mesh-morph, reify-runtime and
+reify-kernel-occt. Its log has five non-Fresh units outside the identity set:
+
+- reify-eval, build-script run: dirty, `StaleItem(ChangedFile)`, whose stale
+  path is the directory `crates/reify-eval/../reify-kernel-gmsh/src`, with
+  `stale_mtime` 2026-11-15 05:08:43 against the output's 2026-11-09 06:15:33;
+- reify-eval, lib Build: dirty, `StaleDepFingerprint` on that build-script run;
+- reify-mesh-morph and reify-runtime, lib Build: dirty, `StaleDepFingerprint`
+  on reify-eval's lib, which they depend on (reify-eval dev-depends on both);
+- reify-kernel-occt, lib Build: dirty, `StaleDepFingerprint` on
+  reify-mesh-morph's lib, which its `mesh-morph` feature depends on.
+
+The `UnitIndex(n)` in each reason resolves, in the unit graph of the same
+selection, to the dependency named. The stale mtime is the moment of the
+checkout. Probe procedure's base-commit block restored the mtimes of the
+delta's files, but git also bumps the mtime of every directory that holds a
+file it rewrites, 27 below the root here, and `crates/reify-kernel-gmsh/src`
+held `kernel_real.rs`. The seed's bulk stamp covers directories too (its
+`find` has no `-type f`), so a seeded lane has them at 2020-01-01, and
+reify-eval's `build.rs` emits `rerun-if-changed` for every directory of its
+hashed contributor crates. D2 differs from D1 in one step: after `target/` was
+restored from the snapshot, every directory outside `target/`, `.git` and
+`.task` was stamped back to 2020-01-01, and none was newer afterwards. The
+base-commit block now does this.
+
+D2's arm B copy came after that stamp, and no directory check followed it. The
+copy's root was not back-dated, and `cp -a <root>/. tree-sitter-reify/src/` puts
+the root's mtime on the destination, so `tree-sitter-reify/src` was newer than
+2020-01-02 in D2, as in D1. That is derived from the procedure and reproduced
+with the real generator in a scratch repo; the lane was not inspected after the
+copy. Nothing in D2's graph watches the directory: tree-sitter-reify's
+`build.rs` emits `rerun-if-changed` for files, and reify-eval's, the one
+workspace build script in the graph that emits it for directories, does not hash
+tree-sitter-reify (`NotHashed` in `WORKSPACE_CRATE_COVERAGE`), so D2's result
+stands. Probe procedure now back-dates the root and ends every pre-probe
+sequence with the directory check.
+
+D2 ran with the splits closed by `--features`, so it says nothing about a
+plain `-p reify-eval`. The fix pays off where features already match: the
 kernels' accepted member-feature splits (Member features) still make a plain
 `-p reify-eval` build those packages as feature variants.
 
@@ -786,23 +1172,39 @@ kernels' accepted member-feature splits (Member features) still make a plain
   members that carry them and their dependents. They are accepted, and `check`
   reports each as an advisory MEMBER-SPLIT line. Measurements and decision:
   Member features (#9825).
-- **Tree-sitter regeneration.** The generated sources are gitignored, so
-  the acquire deletes them, and `build.rs` watches them, so a fresh lane's first
-  build reruns the build script. Measured on `-p reify-eval` (Tree-sitter
-  share), with the other contributors present: the first build gains one unit,
-  tree-sitter-reify, a 4.34 s build-script run in the clippy pair's `--timings`;
-  the next invocation of the same test command compiles 8 workspace units again,
-  in 1:30.44 against 4.75 s with the sources present, so the second invocation
-  is most of the cost today.
-  Decision: accepted until a ruling. The fix that removes both costs is to
-  restore the content-attested generated sources at acquire, from a snapshot
-  carried in the base gen (#9896). It needs a ruling first, because the seed is
-  documented as source-tree-inert (CLAUDE.md, Warm lanes;
-  `tests/infra/test_seed_warm_lane.sh`, Block X). Not taken: unwatching the
-  outputs in `build.rs` reverses #5629 and #9741, generating into `OUT_DIR`
-  redesigns verify's tree-sitter leaves and the `src/` consumers, and
-  back-dating the outputs in `build.rs` leans on cargo's internal reference
-  time.
+- **Tree-sitter regeneration.** Removed by #9896 (option (e), esc-9896-3,
+  ruled by Leo 2026-11-14). Before it, the generated sources were gitignored,
+  so the acquire deleted them, and `build.rs` watched them, so a fresh lane's
+  first build reran the build script. Measured on `-p reify-eval` (Tree-sitter
+  share), with the other contributors present: the first build gained one unit,
+  tree-sitter-reify, a 4.34 s build-script run in the clippy pair's
+  `--timings`; the next invocation of the same test command compiled 8
+  workspace units again, in 1:30.44 against 4.75 s with the sources present.
+  Now `build.rs` runs `tree-sitter generate grammar.js --abi 14 -o
+  $OUT_DIR/src`, copies `src/scanner.c` beside the outputs and compiles from
+  there. It watches only `grammar.js`, `src/scanner.c`, `build_support.rs` and
+  the resolved CLI, and regenerates when a generation key (sha256 of
+  `grammar.js` plus the CLI's `--version`) or the outputs manifest in
+  `OUT_DIR` disagrees. Nothing it writes is watched, and nothing in
+  `tree-sitter-reify/src` is read. Elsewhere, `scripts/tree-sitter-freshness.sh`
+  now fingerprints only `grammar.js` and `src/scanner.c`, and
+  `scripts/verify.sh` changed only in its comments: its
+  `tree-sitter-generate.sh` leaf stays for the `tree-sitter parse` consumers of
+  `src/`. Measured in the #9896 task lane on 2026-11-15: one
+  `cargo test -p reify-eval --no-run` (22 units, 9:05) and then
+  `git clean -Xfd -- tree-sitter-reify/src`, which left only `lib.rs` and
+  `scanner.c`. Two further identical runs compiled 0 units (1.44 s and 0.78 s)
+  and restored no file under `src/`. After `scripts/tree-sitter-generate.sh`
+  rewrote `src/`, a fourth also compiled 0 units (2.19 s). Re-probed by #10046
+  in a lane freshly seeded from gen.643, the first base gen built after #9896,
+  and again after a replay of `_merge-verify`'s reset in that lane: in both
+  pairs the second identical run compiled 0 units, and tree-sitter-reify's
+  build-script run stayed Fresh in each first run. Open limit: in the real
+  `_merge-verify`, `grammar.js`'s mtime was bumped mid-verify with its bytes
+  unchanged, the build script re-ran, and two other run dirs are now older
+  than it, so the next verify there is expected to re-run the script and
+  rebuild the cascade. It is unresolved, and owned by #10144.
+  Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.
@@ -811,8 +1213,9 @@ kernels' accepted member-feature splits (Member features) still make a plain
   compared per unit key, not along dependency edges (Host profiles), and
   nothing is built. Resolution reproduced the task's observed syn
   fingerprint exactly, and the probes above are the compile-level evidence
-  for features. The compile-level re-probe for host
-  profiles, on the first base gen built with the stanza, is #9927.
+  for features. Probe D2 (Host profiles), a compile-level re-probe by #9927
+  on a base gen built with the stanza, is the compile-level evidence for host
+  profiles, on `-p reify-eval` alone.
 - **Cold and release builds.** Every Measurements row outside the Cold build
   subsection is a warm-lane build, whose base has already compiled the
   `--workspace` external variants the union pins. A cold target must compile the

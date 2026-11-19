@@ -992,10 +992,11 @@ impl crate::Engine {
 /// Owned, `Send + Sync` [`reify_ir::ComputeDispatch`] adapter over a snapshot
 /// of an [`Engine`](crate::Engine)'s compute-fn registry (task #4880).
 ///
-/// Wires the `DimensionalSolver` cost loop (via `reify_expr::EvalContext`'s
-/// `compute_dispatch` hook) to the same `@optimized` trampolines the engine's
-/// own `ComputeNode` lowering dispatches to, so an `@optimized` function
-/// evaluated from inside a constraint-solve candidate (e.g.
+/// Wires the `DimensionalSolver` cost loop and the post-solve constraint
+/// checker (via `reify_expr::EvalContext`'s `compute_dispatch` hook) to the
+/// same `@optimized` trampolines the engine's own `ComputeNode` lowering
+/// dispatches to, so an `@optimized` function evaluated from inside a
+/// constraint-solve candidate or a checked constraint (e.g.
 /// `solve_elastic_static` under a `minimize .. where ..` auto-resolution)
 /// returns its real trampoline result instead of falling through to
 /// body-eval `Undef`.
@@ -1055,12 +1056,8 @@ impl OptimizedComputeDispatcher {
     /// Snapshot `engine`'s registered `@optimized` compute-fn map.
     ///
     /// `pub(crate)`: constructing one only makes sense from this crate's own
-    /// auto-resolution call sites — the four in engine_eval.rs (cold per-template,
-    /// warm per-template, merged-cluster ranked, warm merged-cluster) and the two
-    /// in engine_edit.rs (`edit_param`, `edit_source`) — which alone have both an
-    /// `&Engine` and the reason to bridge it into a [`reify_ir::ComputeDispatch`]
-    /// for the constraint solver. (An earlier draft of this list also named
-    /// `concurrent.rs`; that module no longer exists.)
+    /// constraint-solver and constraint-checker call sites, which alone have both
+    /// an `&Engine` and the reason to bridge it into a [`reify_ir::ComputeDispatch`].
     pub(crate) fn from_engine(engine: &crate::Engine) -> Self {
         Self::from_registry(&engine.compute_registry)
     }
@@ -4688,40 +4685,6 @@ mod tests {
                  got {other:?}"
             ),
         }
-    }
-
-    // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
-    //
-    // `reify_core::panic_payload_to_string` is exercised directly below in
-    // isolation. Its output is also asserted as a substring of the `Failed`
-    // diagnostic message built by tests (a)/(b) above: each of those drives
-    // the exact same `invoke_compute_trampoline` call already used for the
-    // target/"panicked" wording check, so the payload-text assertion lives
-    // alongside it on the same diagnostic rather than in a separate test.
-
-    /// (h) `reify_core::panic_payload_to_string` must extract the payload
-    /// text from both `&str` and `String` panic payloads, and fall back to a
-    /// fixed message for any other payload type.
-    #[test]
-    fn panic_payload_to_string_extracts_str_string_and_falls_back() {
-        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
-        assert_eq!(
-            reify_core::panic_payload_to_string(str_payload.as_ref()),
-            "boom_str"
-        );
-
-        let string_payload: Box<dyn std::any::Any + Send> =
-            Box::new(String::from("boom_string"));
-        assert_eq!(
-            reify_core::panic_payload_to_string(string_payload.as_ref()),
-            "boom_string"
-        );
-
-        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
-        assert_eq!(
-            reify_core::panic_payload_to_string(other_payload.as_ref()),
-            "<non-string panic payload>"
-        );
     }
 
     // ── Task #5079 step-5: RED — dispatch_compute_node must share the guard ──

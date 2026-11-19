@@ -16,7 +16,7 @@ use reify_constraints::trust_region::SolveBudget;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
-use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
+use reify_test_support::{axis_val, direction_val, meters, plane_val, point3};
 
 /// The Frame solve within the default budget, read through the
 /// [`SolveResult`] contract
@@ -446,15 +446,11 @@ fn rel(name: &str, operands: Vec<Operand>) -> RelationInstance {
 }
 
 fn z_axis_at(x: f64, y: f64, z: f64) -> Value {
-    axis_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
+    axis_val(point3(x, y, z), direction_val(0.0, 0.0, 1.0))
 }
 
 fn z_plane_at(x: f64, y: f64, z: f64) -> Value {
-    plane_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
-}
-
-fn direction(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
+    plane_val(point3(x, y, z), direction_val(0.0, 0.0, 1.0))
 }
 
 fn translated(translation: [f64; 3]) -> Pose {
@@ -595,8 +591,8 @@ fn direction_only_relation_sets_floor_at_kernel_local() {
     let relations = [rel(
         "parallel",
         vec![
-            moving(direction(0.0, 0.0, 1.0)),
-            anchor(direction(0.0, 0.0, 1.0)),
+            moving(direction_val(0.0, 0.0, 1.0)),
+            anchor(direction_val(0.0, 0.0, 1.0)),
         ],
     )];
     assert_eq!(
@@ -925,7 +921,7 @@ fn redundant_metre_row_is_judged_against_the_scaled_assertion_rung() {
     let tilt = 5e-5_f64;
     let tilted = offset_by(plane_val(
         point3(0.0, 0.0, 20.0),
-        vec3_dimensionless(tilt.sin(), 0.0, tilt.cos()),
+        direction_val(tilt.sin(), 0.0, tilt.cos()),
     ));
     assert!(exceedance(tilted, SolveScaling::new(20.0, tol)) > 1.0);
 }

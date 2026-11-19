@@ -12,6 +12,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from reify_verify import knobs
+from reify_verify.diagnostics import WARNING
 
 
 class Role(Enum):
@@ -272,11 +273,11 @@ def resolve_prio(
     if has_nice:
         return PrioResolution(
             prio.nice_only_prefix,
-            f"verify.sh: WARNING — ionice not found; {role_label} role using nice only (no IO throttle)",
+            f"{WARNING}ionice not found; {role_label} role using nice only (no IO throttle)",
         )
     missing = "nice/ionice" if prio.uses_ionice else "nice"
     return PrioResolution(
-        "", f"verify.sh: WARNING — {missing} not found; {role_label} role running at normal priority"
+        "", f"{WARNING}{missing} not found; {role_label} role running at normal priority"
     )
 
 

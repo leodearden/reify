@@ -143,8 +143,8 @@ pub struct EvalContext<'a> {
     /// unchanged — preserving legacy behaviour for every caller that does not attach a
     /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
     ///
-    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
-    /// call sites that invoke the constraint solver.
+    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` wherever it
+    /// invokes the constraint solver or the constraint checker.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
     /// Optional kernel-free selector-ctor capability (task #7875); see
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
@@ -671,10 +671,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
                     // case (`linear_combine`) / AffineMap-constructor or
                     // transform_exp / inverse-dynamics / iso_it_tolerance /
-                    // orient_exp builtin returns `Value::Undef`, classify and emit
-                    // its specific diagnostic into the ctx sink.
-                    // The six name families are disjoint, so at most one diagnose
-                    // helper fires for a single Undef. Consolidated into one
+                    // orient_exp / dir builtin returns `Value::Undef`, classify and
+                    // emit its specific diagnostic into the ctx sink.
+                    // The classifiers' name families are disjoint, so at most one
+                    // diagnose helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 3 MiB test-thread stack under
@@ -1138,6 +1138,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ctx,
         ),
 
+        CompiledExprKind::VariantCtor {
+            type_name,
+            variant,
+            payload,
+        } => eval_variant_ctor(type_name, variant, payload, ctx),
+
         // task 4118 (γ): Selector→List<Geometry> coercion node. In the
         // registry-free evaluator this is a PASSTHROUGH — evaluate the inner
         // selector (yielding a `Value::Selector`) and return it unchanged.
@@ -1239,6 +1245,30 @@ fn eval_structure_instance_ctor(
         }
         .with_source_span(span),
     ))
+}
+
+/// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
+/// evaluating each payload expr in stored (declaration) order.
+///
+/// PRD data-carrying-enums D2: an `Undef` field value stays in its own slot
+/// and the enum is still constructed — the tag is determined, so a `match`
+/// selects the arm and only that binder is undef. `#[inline(never)]` for the
+/// reason given on [`eval_structure_instance_ctor`].
+#[inline(never)]
+fn eval_variant_ctor(
+    type_name: &str,
+    variant: &str,
+    payload: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    Value::Enum {
+        type_name: type_name.to_string(),
+        variant: variant.to_string(),
+        payload: payload
+            .iter()
+            .map(|(name, field)| (name.clone(), eval_expr(field, ctx)))
+            .collect(),
+    }
 }
 
 /// A structure instance's members as a child value scope: each field keyed by
@@ -2015,8 +2045,9 @@ fn interp_render(value: &Value) -> String {
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
-/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
-/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
+/// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
+/// (#6080), and the `dir` direction constructor (`direction_diagnose`) — for a
+/// builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2027,10 +2058,10 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
-/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// The classifiers' name families (stackup math builtins / `"linear_combine"` /
+/// the geometry-builtin family (`geometry_diagnose`) / dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"`) are disjoint, so at most
+/// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
 ///
@@ -2067,6 +2098,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // spelling, so this Severity::Error is the migration mechanism for that
         // breaking change rather than a silent Undef.
         reify_stdlib::orientation_diagnose(name, args),
+        // `dir`: dimensioned component -> DimensionedArgRejected; zero or
+        // non-finite vector -> E_DegenerateDirection.
+        reify_stdlib::direction_diagnose(name, args),
     ];
     for diag in classified.into_iter().flatten() {
         // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
@@ -3735,6 +3769,16 @@ fn int_or_undef(checked: Option<i64>) -> Value {
     checked.map_or(Value::Undef, Value::Int)
 }
 
+/// A result whose dimension overflows `Rational` (a `None` from a checked
+/// dimension op) is `Undef`, never a panic.
+#[inline]
+fn dimensioned_or_undef(
+    dimension: Option<DimensionVector>,
+    build: impl FnOnce(DimensionVector) -> Value,
+) -> Value {
+    dimension.map_or(Value::Undef, build)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
@@ -4191,11 +4235,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im: bi,
                 dimension: bd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| Value::Complex {
             re: ar * br - ai * bi,
             im: ar * bi + ai * br,
-            dimension: ad.mul(bd),
-        },
+            dimension,
+        }),
         // Scalar * Scalar: multiply values, add dimension exponents
         (
             Value::Scalar {
@@ -4206,7 +4250,9 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| {
+            Value::from_real_scalar(a * b, dimension)
+        }),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -4258,11 +4304,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im,
                 dimension: cd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_mul(sd), |dimension| Value::Complex {
             re: re * si_value,
             im: im * si_value,
-            dimension: cd.mul(sd),
-        },
+            dimension,
+        }),
         // Complex * Int | Int * Complex: dimensionless multiplier preserves dimension
         (Value::Complex { re, im, dimension }, Value::Int(n))
         | (Value::Int(n), Value::Complex { re, im, dimension }) => Value::Complex {
@@ -4477,10 +4523,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension: bd,
             },
         ) => {
-            let result_dim = ad.div(bd);
             // Route through the value-layer chokepoint: a dimension-cancelling
             // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
-            Value::from_real_scalar(a / b, result_dim)
+            dimensioned_or_undef(ad.checked_div(bd), |dimension| {
+                Value::from_real_scalar(a / b, dimension)
+            })
         }
         // Scalar / dimensionless
         (
@@ -4507,11 +4554,14 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
         // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
         // fully-cancelling reciprocal still collapses to Real (Invariant V).
         (Value::Real(a), Value::Scalar { si_value, dimension }) => {
-            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| Value::from_real_scalar(a / si_value, d))
         }
         (Value::Int(a), Value::Scalar { si_value, dimension }) => {
-            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
-            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| {
+                Value::from_real_scalar(*a as f64 / si_value, d)
+            })
         }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
@@ -4534,11 +4584,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
             if denom == 0.0 {
                 Value::Undef
             } else {
-                Value::Complex {
+                dimensioned_or_undef(ad.checked_div(bd), |dimension| Value::Complex {
                     re: (ar * br + ai * bi) / denom,
                     im: (ai * br - ar * bi) / denom,
-                    dimension: ad.div(bd),
-                }
+                    dimension,
+                })
             }
         }
         // Complex / Scalar: divide re/im, combine dimensions
@@ -4552,11 +4602,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension: sd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_div(sd), |dimension| Value::Complex {
             re: re / si_value,
             im: im / si_value,
-            dimension: cd.div(sd),
-        },
+            dimension,
+        }),
         // Complex / Int: preserve dimension
         (Value::Complex { re, im, dimension }, Value::Int(n)) => Value::Complex {
             re: re / *n as f64,

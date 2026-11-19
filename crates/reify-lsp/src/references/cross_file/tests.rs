@@ -409,6 +409,50 @@ fn compute_references_cross_file_aliased_import_contributes_entity_token_only() 
     );
 }
 
+#[test]
+fn compute_rename_cross_file_self_aliased_import_rewrites_entity_token_only() {
+    // Self-aliased import: `import parts.Hole as Hole`. The alias is a local
+    // binding distinct from the entity even when spelt the same, so renaming
+    // parts.ri's `Hole` rewrites the import ENTITY token and leaves the alias
+    // and its `sub hole = Hole()` use alone: main.ri still reaches the renamed
+    // entity through `Hole`.
+    let self_aliased_src =
+        "import parts.Hole as Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+
+    let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), self_aliased_src)]);
+    let mut map = HashMap::new();
+    map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+    let resolver = mock_resolver(map);
+
+    let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+    let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+
+    let edit = compute_rename_cross_file(
+        PARTS_SRC,
+        &parsed_parts,
+        &parts_uri(),
+        offset_to_position(PARTS_SRC, parts_decl as u32),
+        "Bore",
+        &docs,
+        &resolver,
+    )
+    .expect("renaming the home declaration yields a WorkspaceEdit");
+    let changes = edit.changes.expect("changes present");
+    let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+
+    let main_after = apply_edits(self_aliased_src, main_edits);
+    assert_eq!(
+        main_after,
+        "import parts.Bore as Hole\nstructure Assembly {\n    sub hole = Hole()\n}"
+    );
+    let reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+    assert!(
+        reparsed.errors.is_empty(),
+        "main.ri re-parses clean after rename: {:?}\n{main_after}",
+        reparsed.errors
+    );
+}
+
 // --- κ step-7 (task 4210): cross-file prepare_rename lifts the refusal ---
 
 /// The `RenameTarget` for the whole-word `text` token starting at byte

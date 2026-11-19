@@ -1,0 +1,9 @@
+module fasteners
+
+pub structure def Bolt : Costed {
+    param supplier : String = "Fastenal"
+    param part_number : String = "BOLT-M6-20"
+    param unit_cost : Money = 0.50USD
+    param lead_time : Time = 24h
+    param quantity_produced : Real = 10.0
+}

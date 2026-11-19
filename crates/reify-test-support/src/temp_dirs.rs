@@ -485,16 +485,6 @@ mod tests {
         result
     }
 
-    /// Recover a panic payload as a `String`, whichever of the two standard
-    /// payload types it was raised with.
-    fn panic_message(err: Box<dyn std::any::Any + Send>) -> String {
-        err.downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("<non-string panic payload>")
-            .to_string()
-    }
-
     /// THE property this module exists to provide: the directory is removed
     /// when the scope holding the guard unwinds, not merely when it returns.
     ///
@@ -878,7 +868,7 @@ mod tests {
             std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(rel))
                 .expect_err("scanning a nonexistent file must panic, not pass vacuously")
         });
-        let msg = panic_message(err);
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains(&format!("/{rel}")),
             "the panic must name the ABSOLUTE path it attempted (repo root + \
@@ -904,7 +894,7 @@ mod tests {
             std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(&path))
                 .expect_err("a violating file must panic, not pass")
         });
-        let msg = panic_message(err);
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
 
         assert!(
             msg.contains("line 2"),

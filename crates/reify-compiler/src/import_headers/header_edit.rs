@@ -1,6 +1,6 @@
 //! Adding `import <module>` lines to a module's source text without
-//! disturbing anything else in it. Imports `reify_ast`/`reify_core` and the
-//! sibling [`coverage`](super::coverage) only.
+//! disturbing anything else in it. Imports `reify_ast`/`reify_core`, the
+//! [`CfgSet`] type and the sibling [`coverage`](super::coverage) only.
 
 use std::collections::HashSet;
 
@@ -8,9 +8,12 @@ use reify_ast::{Declaration, ParsedModule};
 use reify_core::ModulePath;
 
 use super::coverage::ImportCoverage;
+use crate::cfg::CfgSet;
 
-/// A `#cfg(…)` pragma gates the declaration that follows it, so it is never
-/// part of a module's leading pragma header.
+/// A `#cfg(…)` pragma stays pending across pragmas until the next
+/// declaration, which it gates only if that declaration is an import; so a
+/// new import written below a leading `#cfg` would be gated by it, and a
+/// module's leading pragma header ends at the line holding the first one.
 const CFG_PRAGMA: &str = "cfg";
 
 /// [`super::insert_imports`], which states the contract; [`header_anchor`]
@@ -18,9 +21,10 @@ const CFG_PRAGMA: &str = "cfg";
 pub(crate) fn insert_imports(
     source: &str,
     parsed: &ParsedModule,
+    cfg: &CfgSet,
     modules: &[ModulePath],
 ) -> String {
-    let coverage = ImportCoverage::of(parsed);
+    let coverage = ImportCoverage::of(parsed, cfg);
     let mut emitted: HashSet<&ModulePath> = HashSet::new();
     let new_lines: String = modules
         .iter()
@@ -47,8 +51,8 @@ pub(crate) fn insert_imports(
 enum Anchor {
     /// Directly after the line holding the last `import`.
     AfterImports(usize),
-    /// After the `module` declaration or the last leading module pragma,
-    /// separated from it by a blank line.
+    /// After the `module` declaration or the last pragma of the leading
+    /// pragma header, separated from it by a blank line.
     AfterHeaderLine(usize),
     /// At this offset, followed by a blank line: the end of the leading
     /// comment block's last blank line, so a comment hugging the first
@@ -78,38 +82,59 @@ fn header_anchor(source: &str, parsed: &ParsedModule) -> Anchor {
     if let Some(span) = module_decl {
         return Anchor::AfterHeaderLine(span.end as usize);
     }
-    let first_declaration_start = parsed
-        .declarations
-        .first()
-        .map_or(source.len(), declaration_start);
-    let last_leading_pragma = parsed
+    let header_end = pragma_header_end(source, parsed);
+    let last_header_pragma = parsed
         .pragmas
         .iter()
         .filter(|pragma| pragma.name != CFG_PRAGMA)
         .map(|pragma| pragma.span.end as usize)
-        .filter(|&end| end <= first_declaration_start)
+        .filter(|&end| end <= header_end)
         .max();
-    if let Some(end) = last_leading_pragma {
+    if let Some(end) = last_header_pragma {
         return Anchor::AfterHeaderLine(end);
     }
     Anchor::BeforeBody(leading_comment_block_end(source))
 }
 
+/// The end of the leading pragma header: the start of the line holding the
+/// first `#cfg` before the first declaration, else that declaration's start.
+fn pragma_header_end(source: &str, parsed: &ParsedModule) -> usize {
+    let first_declaration_start = parsed
+        .declarations
+        .first()
+        .map_or(source.len(), declaration_start);
+    parsed
+        .pragmas
+        .iter()
+        .filter(|pragma| pragma.name == CFG_PRAGMA)
+        .map(|pragma| pragma.span.start as usize)
+        .filter(|&start| start < first_declaration_start)
+        .min()
+        .map_or(first_declaration_start, |start| line_start(source, start))
+}
+
 /// The offset just past the last blank line of the run of blank and `//`
 /// lines that opens `source`; 0 when that run has no blank line.
 fn leading_comment_block_end(source: &str) -> usize {
-    let mut line_start = 0;
+    let mut offset = 0;
     let mut block_end = 0;
     for line in source.split_inclusive('\n') {
         let content = line.trim();
         if content.is_empty() {
-            block_end = line_start + line.len();
+            block_end = offset + line.len();
         } else if !content.starts_with("//") {
             break;
         }
-        line_start += line.len();
+        offset += line.len();
     }
     block_end
+}
+
+/// The offset where the line containing `offset` starts.
+fn line_start(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1)
 }
 
 /// The insertion point at the end of the line containing `offset`, with

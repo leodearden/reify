@@ -84,6 +84,17 @@ def language_version(parser_c: Path) -> int:
     return int(match.group(1))
 
 
+def out_src_dir(target_dir: Path) -> Path:
+    """The `src` dir build.rs generates into, beside the one archive under `target_dir`."""
+    pattern = "debug/build/tree-sitter-reify-*/out/libtree_sitter_reify.a"
+    archives = sorted(target_dir.glob(pattern))
+    if len(archives) != 1:
+        raise AssertionError(
+            f"expected exactly one {target_dir}/{pattern}, found {len(archives)}"
+        )
+    return archives[0].parent / "src"
+
+
 def env_without_abi_override(**extra: str) -> dict:
     env = dict(os.environ)
     env.pop("TREE_SITTER_ABI_VERSION", None)
@@ -253,9 +264,10 @@ class TreeSitterAbiPinTest(unittest.TestCase):
         crate = scratch / "crate"
         write_fixture_crate(crate)
 
-        result = self._cargo_build(crate, scratch / "target", env_without_abi_override())
+        target_dir = scratch / "target"
+        result = self._cargo_build(crate, target_dir, env_without_abi_override())
         self.assertEqual(
-            language_version(crate / "src" / "parser.c"),
+            language_version(out_src_dir(target_dir) / "parser.c"),
             PINNED_ABI,
             f"{self.cli_version}: tree-sitter-reify/build.rs emitted a parser "
             f"the tree-sitter 0.24 runtime cannot load.\n{result.stdout}",
@@ -265,17 +277,18 @@ class TreeSitterAbiPinTest(unittest.TestCase):
         scratch = self._scratch_dir()
         crate = scratch / "crate"
         write_fixture_crate(crate)
-        parser_c = crate / "src" / "parser.c"
+        target_dir = scratch / "target"
 
-        self._cargo_build(crate, scratch / "target-pre-pin", self._pre_pin_env())
-        pre_pin_abi = language_version(parser_c)
+        self._cargo_build(crate, target_dir, self._pre_pin_env())
+        pre_pin_abi = language_version(out_src_dir(target_dir) / "parser.c")
         self.assertGreater(pre_pin_abi, PINNED_ABI, "the pre-pin shim did not take effect")
 
-        # A fresh target dir re-runs the build script, as pulling the pinned
-        # build.rs does, with only the shell stamps left to vouch for parser.c.
-        healed = self._cargo_build(crate, scratch / "target", env_without_abi_override())
+        # The shim forwards `--version`, so the key stamp matches and only the
+        # parser's own ABI line can trigger the heal.
+        (crate / "build.rs").touch()
+        healed = self._cargo_build(crate, target_dir, env_without_abi_override())
         self.assertEqual(
-            language_version(parser_c),
+            language_version(out_src_dir(target_dir) / "parser.c"),
             PINNED_ABI,
             f"{self.cli_version}: tree-sitter-reify/build.rs kept the ABI-{pre_pin_abi} "
             f"parser.c a pre-pin build left behind its consistent stamps.\n{healed.stdout}",

@@ -9,7 +9,7 @@
 | Section | Guarding test |
 |---------|--------------|
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
-| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_listener_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
+| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_server_slot_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
 | §0 AI write tools: write targets confined to the design's directory | `write_confinement_tests.rs` — the rule; `debug_write_confinement_tests.rs` — both write seams enforce it, atomically |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |

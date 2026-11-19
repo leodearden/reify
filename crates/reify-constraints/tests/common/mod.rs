@@ -12,29 +12,27 @@ pub fn point3(x: f64, y: f64, z: f64) -> Value {
     Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
 }
 
-pub fn vec3(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-}
-
-/// A `Value::Axis` from an origin point (metres) + a direction vector.
+/// A `Value::Axis` from an origin point (metres) + a `Direction`.
 pub fn axis(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
     Value::Axis {
         origin: Box::new(point3(o.0, o.1, o.2)),
-        direction: Box::new(vec3(d.0, d.1, d.2)),
+        direction: Box::new(dir(d.0, d.1, d.2)),
     }
 }
 
-/// A `Value::Plane` from an origin point (metres) + a unit normal vector.
+/// A `Value::Plane` from an origin point (metres) + a `Direction` normal.
 pub fn plane(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
     Value::Plane {
         origin: Box::new(point3(o.0, o.1, o.2)),
-        normal: Box::new(vec3(n.0, n.1, n.2)),
+        normal: Box::new(dir(n.0, n.1, n.2)),
     }
 }
 
 /// A dimensionless `Value::Direction`.
 pub fn dir(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
+    Value::Direction(
+        reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+    )
 }
 
 /// A datum operand belonging to sub `sub` (so the partition transforms it by the

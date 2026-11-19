@@ -325,7 +325,8 @@ describe('command palette', () => {
     await flushMacrotasks(0);
 
     // Do NOT call focus_editor — the global Ctrl+Shift+P handler is on document,
-    // so it fires regardless of focus (risk R2 bypass via palette-global exemption).
+    // so it fires regardless of focus (risk R2 bypass; the commandPalette
+    // ShortcutDef sets `worksInTypingContext`, see gui/src/shortcuts.ts).
     // Bridge keyboard dispatches on document.activeElement (body), bubbles to document.
     await dispatch('keyboard', { key: 'P', ctrl: true, shift: true });
     await flushMacrotasks(0);

@@ -77,7 +77,7 @@ fn check_reports_an_unreadable_unit_graph_as_an_input_error() {
 
 #[test]
 fn check_reports_a_malformed_unit_graph_as_an_input_error_naming_the_fault() {
-    let unit =
+    let common_fields =
         format!(r#""pkg_id": "{B_PKG_ID}", "platform": null, "mode": "build", "features": []"#);
     let target = r#""target": {"kind": ["lib"], "name": "b"}"#;
     let profile = r#""profile": {"debuginfo": 0}"#;
@@ -94,18 +94,20 @@ fn check_reports_a_malformed_unit_graph_as_an_input_error_naming_the_fault() {
         ),
         (
             "a unit without a profile",
-            graph_of(&[format!("{{{unit}, {target}}}")]),
+            graph_of(&[format!("{{{common_fields}, {target}}}")]),
             "unit 0 has no field 'profile'",
         ),
         (
             "a profile that is not an object",
-            graph_of(&[format!(r#"{{{unit}, {target}, "profile": "dev"}}"#)]),
+            graph_of(&[format!(
+                r#"{{{common_fields}, {target}, "profile": "dev"}}"#
+            )]),
             "unit 0: profile is not an object",
         ),
         (
             "a target.kind that is a string",
             graph_of(&[format!(
-                r#"{{{unit}, "target": {{"kind": "lib", "name": "b"}}, {profile}}}"#
+                r#"{{{common_fields}, "target": {{"kind": "lib", "name": "b"}}, {profile}}}"#
             )]),
             "unit 0: target.kind is not a list of strings",
         ),

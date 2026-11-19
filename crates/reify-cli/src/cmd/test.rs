@@ -1,5 +1,6 @@
-//! `reify test <file>`: runs the module's `@test` entities and reports each
-//! verdict with its constraint lines and diagnostics.
+//! `reify test <file>`: compiles the entry as a program (its `#cfg`-satisfied
+//! imports resolved as under `reify check`), runs its `@test` entities and
+//! reports each verdict with its constraint lines and diagnostics.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -8,17 +9,22 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 use reify_eval::{TestResult, TestStatus};
 
+use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
 use crate::constraint_report::report_eval_output;
 use crate::help::TEST_USAGE;
-use crate::parse_and_compile;
+use crate::parse_and_compile_program_entry;
 
 pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("{TEST_USAGE}");
-        return ExitCode::FAILURE;
-    }
+    let (cfg, rest) = match split_cfg_args_or_usage(args, TEST_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let path = match parse_single_file_arg(&rest, "test", TEST_USAGE) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -35,7 +41,7 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     if results.is_empty() {
         println!(
             "test result: no tests. {} declares no @test structures",
-            args[0]
+            path
         );
         return ExitCode::SUCCESS;
     }

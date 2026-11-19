@@ -25,6 +25,10 @@
 //      uniformity — see the Frame3 block below — but left this Vector-vs-Point
 //      divergence on the origin alone.)
 
+module std.ports
+
+import std.trajectory
+
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
 // Direction of a port connection.

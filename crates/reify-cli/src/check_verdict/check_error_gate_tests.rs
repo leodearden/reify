@@ -2,7 +2,10 @@
 //! synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
 //! these run in a stub-mode build.
 
-use super::{check_gating_error, has_error_diagnostic};
+use super::{
+    CheckErrorAllowlistDisposition, CheckErrorAllowlistMatcher, CheckErrorExitAllowance,
+    check_gating_error, first_unexcused_error, has_error_diagnostic,
+};
 use reify_core::{Diagnostic, DiagnosticCode};
 
 /// The SOFT missing-trampoline message, verbatim as
@@ -23,7 +26,8 @@ fn trampoline_warning() -> Diagnostic {
     Diagnostic::warning(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
-/// A code-less geometry Error that the `is unresolved (Undef)` entry excuses.
+/// The code-less geometry Error `geometry_ops.rs::unresolved_arg_message` words
+/// for an argument left `Undef`.
 fn undef_argument_error() -> Diagnostic {
     Diagnostic::error(
         "failed to compile geometry operation: argument 'depth' for box is unresolved (Undef)",
@@ -41,8 +45,8 @@ const TRAMPOLINE_CANCELLED: &str =
 
 /// `has_error_diagnostic` is the ONE definition of "this set carries an
 /// Error", shared with `cmd_eval` and `cmd_build`.  It must know nothing
-/// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only
-/// migration ratchet, and eval/build have gated on `Severity::Error` since
+/// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only guard,
+/// empty by design, and eval/build have gated on `Severity::Error` since
 /// #4458 — including on the trampoline Error, which `build_is_success`'
 /// own doc names as its motivating example.
 #[test]
@@ -144,112 +148,32 @@ fn the_deleted_bolt_ons_are_subsumed() {
     }
 }
 
-/// Each seeded allowlist entry, exercised against a message taken verbatim
-/// from the MEASURED corpus sweep that seeded it.
+/// Families whose allowlist entry has been retired now gate like any other
+/// Error: whatever still excused them is fixed upstream of the gate.
 #[test]
-fn seeded_allowlist_entries_excuse_their_families() {
-    assert!(
-        check_gating_error(&[undef_argument_error()]).is_none(),
-        "the `is unresolved (Undef)` entry (#5404) excuses the code-less \
-         Undef-argument geometry Error"
-    );
-    assert!(
-        check_gating_error(&[Diagnostic::error(
-            "all geometry operations failed; no geometry output produced"
-        )])
-        .is_none(),
-        "the `all geometry operations failed` entry (#5404): check writes no \
-         geometry, so this is not a fact about the design"
-    );
+fn retired_allowlist_families_now_gate() {
     assert!(
         check_gating_error(&[Diagnostic::error(
             "constraint BoltFlange#constraint[1] violated: clearance 0.4mm \
              below minimum 0.5mm"
         )
         .with_code(DiagnosticCode::ConstraintViolated)])
-        .is_none(),
-        "the `Code(ConstraintViolated)` entry (#5404): a stale build-side \
-         ConstraintViolated can survive \
-         the merge while check's authoritative verdict is Satisfied; gating \
-         on it would contradict check's own stdout"
-    );
-}
-
-/// No matcher may be over-broad: `TRAMPOLINE_CANCELLED` shares the
-/// `@optimized target "solver::elastic_static": ` prefix with the
-/// missing-trampoline message and is a genuine failure that must keep gating.
-#[test]
-fn allowlist_does_not_swallow_the_prefix_sibling() {
-    assert!(
-        check_gating_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)]).is_some(),
-        "a cancelled trampoline is a real failure and must gate"
-    );
-}
-
-/// A `MessageContains` entry excuses CODE-LESS diagnostics only, and no
-/// entry excuses the missing-trampoline text.
-///
-/// This is the executable form of the 2026-08-26 ruling that codes minted
-/// after the gate can never be excused: once an emission is coded — #6608's
-/// replacement of the code-less "per-instance re-realization compile error
-/// … is unresolved (Undef)" family in particular — no legacy substring
-/// entry may silently keep excusing it.  The code attached below is
-/// arbitrary; it is one no `Code(..)` entry names.
-#[test]
-fn message_entries_excuse_only_code_less_diagnostics() {
-    for msg in [
-        "failed to compile geometry operation: argument 'depth' for box is \
-         unresolved (Undef)",
-        "all geometry operations failed; no geometry output produced",
-    ] {
-        assert!(
-            check_gating_error(&[
-                Diagnostic::error(msg).with_code(DiagnosticCode::ArgTypeMismatch)
-            ])
-            .is_some(),
-            "a CODED Error must not be excused by a legacy substring: {msg:?}"
-        );
-    }
-
-    assert!(
-        check_gating_error(&[Diagnostic::error("no registered compute trampoline")]).is_some(),
-        "no allowlist entry excuses the code-less missing-trampoline text"
-    );
-}
-
-/// The load-bearing composition: an allowlisted Error must neither invent a
-/// gate nor mask a co-resident one.
-#[test]
-fn an_excused_error_neither_gates_nor_masks() {
-    assert!(
-        check_gating_error(&[
-            undef_argument_error(),
-            Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
-        ])
-        .is_none(),
-        "an excused Error beside a Warning must not gate"
+        .is_some(),
+        "a violation Error that survives the merge is real: stale ones are \
+         removed upstream by drop_falsified_constraint_diagnostics"
     );
     assert!(
-        check_gating_error(&[
-            trampoline_warning(),
-            Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
-        ])
-        .is_none(),
-        "an empty-registry trampoline Warning (the LSP's posture) beside a \
-         DFM Warning must not gate"
+        check_gating_error(&[undef_argument_error()]).is_some(),
+        "a code-less Undef-argument Error gates: check solves, so what remains \
+         is a genuine Error that `reify eval` also exits 1 on"
     );
-
-    let mixed = [
-        undef_argument_error(),
-        Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
-    ];
-    let gating = check_gating_error(&mixed)
-        .expect("a co-resident non-allowlisted Error must still gate");
     assert!(
-        gating.message.contains("E_DFM_OVERHANG"),
-        "the gate must return the diagnostic that actually gates, not the \
-         excused one it scanned past; got {:?}",
-        gating.message
+        check_gating_error(&[Diagnostic::error(
+            "all geometry operations failed; no geometry output produced"
+        )])
+        .is_some(),
+        "the code-less rollup Error gates: declared geometry that produced \
+         nothing is never a healthy path"
     );
 }
 
@@ -281,4 +205,150 @@ fn relate_family_errors_are_never_excused() {
              CHECK_ERROR_EXIT_ALLOWLIST is the regression this test forbids"
         );
     }
+}
+
+// -------------------------------------------------------------------
+// first_unexcused_error — the matching core, over SYNTHETIC rows, so its
+// semantics stay executable whatever the production table holds
+// -------------------------------------------------------------------
+
+/// A fixture row.  The neutral cite `#1` marks it as test data rather than a
+/// burn-down claim; the gate never reads `disposition` or `cite`.
+fn row(matcher: CheckErrorAllowlistMatcher) -> CheckErrorExitAllowance {
+    CheckErrorExitAllowance {
+        matcher,
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#1",
+    }
+}
+
+#[test]
+fn an_empty_table_gates_the_first_error() {
+    let diagnostics = [
+        Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+        Diagnostic::info("note: nothing to see"),
+        Diagnostic::error("first error"),
+        Diagnostic::error("second error"),
+    ];
+    let gating =
+        first_unexcused_error(&diagnostics, &[]).expect("with no rows, the first Error gates");
+    assert_eq!(gating.message, "first error");
+
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::warning(
+                "W_DFM_DRAFT: 0.5° below the 1° minimum"
+            )],
+            &[]
+        )
+        .is_none(),
+        "a Warning-only set never gates"
+    );
+}
+
+#[test]
+fn a_code_row_excuses_only_its_code() {
+    const VIOLATION: &str =
+        "constraint BoltFlange#constraint[1] violated: clearance 0.4mm below minimum 0.5mm";
+    let rows = [row(CheckErrorAllowlistMatcher::Code(
+        DiagnosticCode::ConstraintViolated,
+    ))];
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::error(VIOLATION).with_code(DiagnosticCode::ConstraintViolated)],
+            &rows
+        )
+        .is_none(),
+        "a Code row excuses an Error carrying that code"
+    );
+    assert!(
+        first_unexcused_error(
+            &[Diagnostic::error(VIOLATION).with_code(DiagnosticCode::ConstraintIndeterminate)],
+            &rows
+        )
+        .is_some(),
+        "a Code row does not excuse an Error carrying a different code"
+    );
+    assert!(
+        first_unexcused_error(&[Diagnostic::error(VIOLATION)], &rows).is_some(),
+        "a Code row keys on the code, never on the message text"
+    );
+}
+
+/// The executable form of the 2026-08-26 ruling that codes minted after the
+/// gate can never be excused: once an emission is coded — #6608's replacement
+/// of the code-less "per-instance re-realization compile error … is unresolved
+/// (Undef)" family in particular — no legacy substring row may keep excusing
+/// it.  The code attached below is arbitrary.
+#[test]
+fn a_substring_row_excuses_only_code_less_diagnostics() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "is unresolved (Undef)",
+    ))];
+    assert!(
+        first_unexcused_error(&[undef_argument_error()], &rows).is_none(),
+        "a MessageContains row excuses the code-less message"
+    );
+    assert!(
+        first_unexcused_error(
+            &[undef_argument_error().with_code(DiagnosticCode::ArgTypeMismatch)],
+            &rows
+        )
+        .is_some(),
+        "a CODED Error must not be excused by a legacy substring"
+    );
+}
+
+/// The load-bearing composition: an excused Error must neither invent a gate
+/// nor mask a co-resident one.
+#[test]
+fn an_excused_row_neither_gates_nor_masks() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "is unresolved (Undef)",
+    ))];
+    assert!(
+        first_unexcused_error(
+            &[
+                undef_argument_error(),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ],
+            &rows
+        )
+        .is_none(),
+        "an excused Error beside a Warning must not gate"
+    );
+
+    let mixed = [
+        undef_argument_error(),
+        Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
+    ];
+    let gating = first_unexcused_error(&mixed, &rows)
+        .expect("a co-resident unexcused Error must still gate");
+    assert!(
+        gating.message.contains("E_DFM_OVERHANG"),
+        "the gate must return the diagnostic that actually gates, not the \
+         excused one it scanned past; got {:?}",
+        gating.message
+    );
+}
+
+/// Text rows match a SUBSTRING, never a prefix.  `TRAMPOLINE_CANCELLED` shares
+/// the `@optimized target "solver::elastic_static": ` prefix with the
+/// missing-trampoline message and is a genuine failure, so a row naming the
+/// missing-trampoline text must excuse that message and nothing sharing its
+/// prefix.
+#[test]
+fn a_substring_row_never_swallows_the_prefix_sibling() {
+    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
+        "no registered compute trampoline",
+    ))];
+    assert!(
+        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE)], &rows).is_none(),
+        "the row's text sits mid-message, after the target prefix, and still \
+         excuses it"
+    );
+    assert!(
+        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)], &rows).is_some(),
+        "a cancelled trampoline shares only the prefix and is a real failure"
+    );
 }

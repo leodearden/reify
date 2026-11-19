@@ -158,8 +158,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * spellings too, making it a strict superset of this alphabet. The full
    * account — what "advertised" now means, and the one asymmetry that remains
    * — is on `quantityUnitAlphabet` in `../stores/unitLadder`, and it is pinned
-   * end-to-end by the `App.test.tsx` block "the reconciled unit/bare-number
-   * contract".
+   * end-to-end by the `App.parameters.test.tsx` block "App parameter input:
+   * the reconciled unit/bare-number contract (task #5757)".
    *
    * Per-cell scoping therefore no longer exists to shrink a gap. It earns its
    * keep on its own terms: it is what rejects a Density literal in a Volume

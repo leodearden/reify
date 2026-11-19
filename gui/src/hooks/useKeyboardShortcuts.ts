@@ -58,13 +58,6 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
 };
 
 /**
- * Shortcut ids that are exempt from the typing-context guard (input/textarea/
- * select type-ahead/contentEditable). These are global palette-open actions that
- * must fire from any focus state, including while the CodeMirror editor is focused.
- */
-const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
-
-/**
  * Returns true when `id` has a callback wiring entry in ID_TO_CALLBACK, i.e.
  * the shortcut is neither `disabled: true` on SHORTCUTS nor missing a `bind`.
  * This is the narrow predicate the invariant test uses to check membership
@@ -81,14 +74,13 @@ export interface PaletteCommand {
 }
 
 /**
- * Returns the list of commands available in the command palette.
- * Derived from SHORTCUTS entries that have callback wiring, excluding the two
- * palette-control ids themselves (commandPalette, symbolJump) to prevent a
- * recursive "open command palette" entry appearing inside the palette.
+ * Returns the list of commands available in the command palette: the SHORTCUTS
+ * entries that have callback wiring and do not set `hiddenFromPalette`, in
+ * registry order.
  */
 export function paletteCommands(): PaletteCommand[] {
   return SHORTCUTS.filter(
-    (s) => hasCallbackWiring(s.id) && !PALETTE_GLOBAL_IDS.has(s.id),
+    (s) => hasCallbackWiring(s.id) && !s.hiddenFromPalette,
   ).map((s) => ({ id: s.id, title: s.description, key: s.key }));
 }
 
@@ -113,11 +105,11 @@ function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
 
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, or contenteditable
- * element, or a select receiving one of its own type-ahead keys (see
- * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire),
- * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
- * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
+ * While the event target is an input, textarea, or contenteditable element,
+ * or a select receiving one of its own type-ahead keys (see
+ * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire), only
+ * `worksInTypingContext` shortcuts run; every other key is left to the
+ * focused element. A `toggle` shortcut swallows its key's
  * auto-repeat keydowns, so holding the key flips the state once. With no
  * document open, only `worksWithoutDocument` shortcuts run; the others, and
  * the Escape and 1–9 keys, are swallowed.
@@ -147,9 +139,7 @@ export function useKeyboardShortcuts(
       const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
 
-      // Palette-global shortcuts bypass the typing-context guard.
-      // All other shortcuts respect the guard (do not fire in inputs/editors).
-      if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
+      if (inTypingContext && !shortcut.worksInTypingContext) continue;
 
       e.preventDefault();
       if (noDocument && !shortcut.worksWithoutDocument) return;

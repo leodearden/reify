@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
@@ -310,9 +310,11 @@ impl TypeAliasEntry {
 
 /// Registry mapping type alias names to compiled alias entries.
 /// Built during the pre-pass so type resolution can check aliases.
+/// Entries iterate in ascending name order, so `CompiledModule.type_aliases`
+/// and the `iter()`-driven diagnostics are deterministic across builds.
 #[derive(Clone)]
 pub(crate) struct TypeAliasRegistry {
-    entries: HashMap<String, TypeAliasEntry>,
+    entries: BTreeMap<String, TypeAliasEntry>,
     /// Names of entries seeded from prelude modules (not user-declared).
     ///
     /// `into_compiled()` and `iter()` exclude these so the user module's
@@ -326,7 +328,7 @@ impl TypeAliasRegistry {
     /// Create an empty registry.
     pub(crate) fn new() -> Self {
         TypeAliasRegistry {
-            entries: HashMap::new(),
+            entries: BTreeMap::new(),
             seeded_names: HashSet::new(),
         }
     }
@@ -368,7 +370,8 @@ impl TypeAliasRegistry {
         self.entries.get(name)
     }
 
-    /// Iterate over user-declared alias entries (excluding prelude-seeded entries).
+    /// Iterate over user-declared alias entries (excluding prelude-seeded entries),
+    /// in ascending name order.
     ///
     /// Used by `compute_module_hash` to ensure only user-declared aliases influence
     /// the module's content hash — changes to prelude aliases must not invalidate
@@ -379,7 +382,8 @@ impl TypeAliasRegistry {
             .filter(|e| !self.seeded_names.contains(&e.name))
     }
 
-    /// Consume the registry, returning compiled entries for user-declared aliases only.
+    /// Consume the registry, returning compiled entries for user-declared aliases only,
+    /// in ascending name order.
     ///
     /// Excludes prelude-seeded entries (registered via `register_as_prelude_seed`) so
     /// the user module's exported `type_aliases` only contains its own declarations —
@@ -3346,156 +3350,62 @@ fn normalize_type_guarded(
 }
 
 /// Recursively rewrite every node's `result_type` in `expr` in place by
-/// applying the type-parameter substitution map `subst`.
+/// applying the type-parameter substitution map `subst`, pre-order.
 ///
-/// Mirrors [`CompiledExpr::walk`] (reify-ir/src/expr.rs) arm-for-arm but
-/// **mutably**, visiting pre-order. The `match` over `CompiledExprKind` is
-/// exhaustive (no `_` wildcard) so that adding a new variant to the enum
-/// produces a compile error here — preventing a new variant from silently
-/// passing through with unsubstituted `result_type` values.
+/// Children come from [`CompiledExpr::for_each_child_mut`], which is where a
+/// new variant's children are declared. The node-local `match` stays
+/// exhaustive (no `_` wildcard) so a new variant must decide whether it
+/// carries a `Type` annotation of its own. `StructureInstanceCtor` lets are
+/// not children, so any `TypeParam` inside a `lets` subtree is NOT
+/// substituted — an accepted α partial-coverage limitation.
 ///
 /// Used during monomorphization (`phase_auto_type_param_resolution`) to
 /// rewrite body expressions in cloned generic templates so that all
 /// `Type::TypeParam` occurrences in expression nodes are replaced with the
 /// resolved concrete `Type::StructureRef` values.
 pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &HashMap<String, Type>) {
-    // Substitute this node's own result_type (pre-order).
     expr.result_type = substitute_type_params(&expr.result_type, subst);
 
     match &mut expr.kind {
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ValueRef(_) | CompiledExprKind::CrossSubGeometryRef(_) => {}
-        CompiledExprKind::BinOp { left, right, .. } => {
-            substitute_expr_result_types(left, subst);
-            substitute_expr_result_types(right, subst);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            substitute_expr_result_types(operand, subst);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                substitute_expr_result_types(arg, subst);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            substitute_expr_result_types(condition, subst);
-            substitute_expr_result_types(then_branch, subst);
-            substitute_expr_result_types(else_branch, subst);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            substitute_expr_result_types(discriminant, subst);
-            for arm in arms {
-                substitute_expr_result_types(&mut arm.body, subst);
-            }
-        }
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                substitute_expr_result_types(arg, subst);
-            }
-        }
-        CompiledExprKind::Lambda { params, body, .. } => {
-            // Substitute TypeParam→StructureRef in lambda parameter type
-            // annotations (e.g., `|x: T| ...` inside a generic body).
-            // Mirrors the explicit annotation positions — NOT included in
-            // CompiledExpr::walk because walk only traverses sub-expressions;
-            // we substitute here to prevent residual TypeParam in param types.
+        // Lambda parameter type annotations (e.g. `|x: T| ...` inside a
+        // generic body) are not expressions, so substitute them here.
+        CompiledExprKind::Lambda { params, .. } => {
             for (_, ty) in params.iter_mut() {
                 if let Some(t) = ty {
                     *t = substitute_type_params(t, subst);
                 }
             }
-            substitute_expr_result_types(body, subst);
         }
-        CompiledExprKind::ListLiteral(elements) => {
-            for elem in elements {
-                substitute_expr_result_types(elem, subst);
-            }
-        }
-        CompiledExprKind::ReflectiveCellList(elements) => {
-            for elem in elements {
-                substitute_expr_result_types(elem, subst);
-            }
-        }
-        CompiledExprKind::SetLiteral(elements) => {
-            for elem in elements {
-                substitute_expr_result_types(elem, subst);
-            }
-        }
-        CompiledExprKind::MapLiteral(entries) => {
-            for (key, val) in entries {
-                substitute_expr_result_types(key, subst);
-                substitute_expr_result_types(val, subst);
-            }
-        }
-        CompiledExprKind::IndexAccess { object, index } => {
-            substitute_expr_result_types(object, subst);
-            substitute_expr_result_types(index, subst);
-        }
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            substitute_expr_result_types(object, subst);
-            for arg in args {
-                substitute_expr_result_types(arg, subst);
-            }
-        }
-        CompiledExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            substitute_expr_result_types(collection, subst);
-            substitute_expr_result_types(predicate, subst);
-        }
-        CompiledExprKind::OptionSome(inner) => {
-            substitute_expr_result_types(inner, subst);
-        }
-        CompiledExprKind::OptionNone => {}
-        CompiledExprKind::MetaAccess { .. } => {}
-        CompiledExprKind::DeterminacyPredicate { .. } => {}
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                substitute_expr_result_types(lo, subst);
-            }
-            if let Some(hi) = upper {
-                substitute_expr_result_types(hi, subst);
-            }
-        }
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            substitute_expr_result_types(base, subst);
-            for arg in args {
-                substitute_expr_result_types(arg, subst);
-            }
-        }
-        // Leaf placeholder — no child expressions.
-        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-        // Mirror walk: only ordered_args and defaults are traversed; `lets`
-        // contains template-local value refs (structural, not type-bearing)
-        // and is intentionally skipped by CompiledExpr::walk — we mirror
-        // that decision here.  Any result_type TypeParam nodes inside a
-        // `lets` subtree are therefore NOT substituted, which is an accepted
-        // α partial-coverage limitation (symmetric with walk's precedent).
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                substitute_expr_result_types(arg, subst);
-            }
-            for (_, def) in defaults {
-                substitute_expr_result_types(def, subst);
-            }
-        }
-        // task 4118 (γ): recurse into the wrapped selector. The node's own
-        // result_type is the invariant List<Geometry> (no TypeParam to
-        // substitute), but the inner selector may carry substitutable types.
-        CompiledExprKind::ResolveSelector { selector } => {
-            substitute_expr_result_types(selector, subst);
-        }
+        // No `Type` annotation of their own beyond `result_type`.
+        CompiledExprKind::Literal(_)
+        | CompiledExprKind::ValueRef(_)
+        | CompiledExprKind::CrossSubGeometryRef(_)
+        | CompiledExprKind::BinOp { .. }
+        | CompiledExprKind::UnOp { .. }
+        | CompiledExprKind::FunctionCall { .. }
+        | CompiledExprKind::Conditional { .. }
+        | CompiledExprKind::Match { .. }
+        | CompiledExprKind::UserFunctionCall { .. }
+        | CompiledExprKind::ListLiteral(_)
+        | CompiledExprKind::SetLiteral(_)
+        | CompiledExprKind::MapLiteral(_)
+        | CompiledExprKind::IndexAccess { .. }
+        | CompiledExprKind::MethodCall { .. }
+        | CompiledExprKind::Quantifier { .. }
+        | CompiledExprKind::OptionSome(_)
+        | CompiledExprKind::OptionNone
+        | CompiledExprKind::MetaAccess { .. }
+        | CompiledExprKind::DeterminacyPredicate { .. }
+        | CompiledExprKind::RangeConstructor { .. }
+        | CompiledExprKind::AdHocSelector { .. }
+        | CompiledExprKind::PurposeReflectiveAggregation { .. }
+        | CompiledExprKind::ReflectiveCellList(_)
+        | CompiledExprKind::StructureInstanceCtor { .. }
+        | CompiledExprKind::VariantCtor { .. }
+        | CompiledExprKind::ResolveSelector { .. } => {}
     }
+
+    expr.for_each_child_mut(&mut |child| substitute_expr_result_types(child, subst));
 }
 
 /// What the USE SITE contributes to resolving an alias body (task 6477): the

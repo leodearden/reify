@@ -12,7 +12,7 @@ use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagno
 use crate::constraint_report::report_eval_output;
 use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
+use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, BUILD_USAGE) {
@@ -97,7 +97,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
-    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
+    let compiled = match parse_and_compile_program_entry(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

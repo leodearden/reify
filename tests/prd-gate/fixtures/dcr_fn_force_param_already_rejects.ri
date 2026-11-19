@@ -5,7 +5,7 @@ module dcr_fn_force_param_already_rejects
 //
 // PRD §9 phrases ι's signal partly as "`critical_load(result, 1mm)` exits 1".
 // `critical_load` is a `.ri` fn with `reference_load : Force`
-// (crates/reify-compiler/stdlib/solver_buckling_fns.ri:74-79), so it is already
+// (crates/reify-compiler/stdlib/solver_buckling.ri :: critical_load), so it is already
 // covered by `resolve_function_overload`'s strict `param_ty == arg_ty` gate
 // (crates/reify-compiler/src/type_compat.rs:1155/:1194-1200) — that half of the
 // signal is ALREADY TRUE and delivers nothing.

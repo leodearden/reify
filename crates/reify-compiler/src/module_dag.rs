@@ -12,6 +12,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePathParseErr
 
 use crate::CompiledModule;
 use crate::cfg::{CfgSet, cfg_satisfied};
+use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -105,7 +106,7 @@ enum StdlibMode {
 enum StdlibVisibility {
     /// `std.*` imports resolve through the DAG (filesystem first, embedded
     /// fallback, [`StdlibMode`] all-or-nothing) and each unit sees only what it
-    /// imports. Used by `compile_project*` and the GUI's dirty-buffer bridge.
+    /// imports. Used by `compile_project*`.
     Imported,
     /// The full stdlib is ambient: a `std`/`std.*` import is never followed at
     /// any depth (PRD resolution-unification I4, an interim superseded by
@@ -302,23 +303,6 @@ fn partial_overlay_diag(
     }
 }
 
-/// Attach a module-path declaration diagnostic (§7.1/§7.2) to `compiled` if warranted.
-///
-/// Encapsulates the `check_module_path_decl` call and diagnostic push shared by the
-/// user-module entry points in this file. Call sites that can receive stdlib modules
-/// (i.e. `compile_module`) must guard with `!is_std_path` before calling this.
-pub(crate) fn attach_module_path_diag(
-    compiled: &mut CompiledModule,
-    parsed: &reify_ast::ParsedModule,
-) {
-    if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
-        parsed.declared_module_path.as_ref(),
-        &parsed.path,
-    ) {
-        compiled.diagnostics.push(diag);
-    }
-}
-
 impl Default for ModuleDag {
     fn default() -> Self {
         Self::new()
@@ -502,9 +486,10 @@ impl ModuleDag {
                         self.stdlib_mode = Some(StdlibMode::Embedded);
                     }
                     // Found in embedded stdlib. Insert all modules up to and including
-                    // the target in topological order. The stdlib slice is itself
-                    // topologically ordered: module at index i was compiled against
-                    // all modules at indices 0..i.
+                    // the target in topological order. The stdlib slice is
+                    // topologically ordered over declared imports, so the prefix
+                    // 0..=idx holds the target's whole import closure (plus
+                    // unrelated modules).
                     //
                     // Insert-prefix invariant: if stdlib[k] is present in self.modules,
                     // then stdlib[0..=k] are all present (because any prior fallback call
@@ -637,14 +622,10 @@ impl ModuleDag {
             self.stdlib_mode = Some(StdlibMode::FileSystem);
         }
 
-        // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-        // Skip stdlib modules: none of the stdlib .ri files declare `module`, so
-        // emitting W_MODULE_DECL_MISSING for every std.* import would be spurious
-        // noise under the FileSystem stdlib path. The embedded path is unaffected
-        // (stdlib modules are inserted directly; they never reach this branch).
-        if !is_std_path {
-            attach_module_path_diag(&mut compiled, &parsed);
-        }
+        // Enforce module-path declaration (spec §7.1/§7.2, task γ), std modules
+        // included. Embedded stdlib modules are inserted above and never reach
+        // here; the stdlib build checked their headers already.
+        attach_module_path_diag(&mut compiled, &parsed, ExpectedPathOrigin::FileLocation);
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
@@ -755,12 +736,8 @@ mod tests {
 /// An import with no `cfg_predicates` is vacuously satisfied (always followed).
 /// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
 ///
-/// This is the canonical import-gating predicate. It is `pub` so the GUI's
-/// dirty-buffer bridge (`gui/src-tauri/src/engine.rs`) can gate its direct
-/// imports through the same definition instead of re-inlining
-/// `cfg_predicates.iter().all(cfg_satisfied)`, which could otherwise drift from
-/// this semantics.
-pub fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
+/// This is the canonical import-gating predicate.
+pub(crate) fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
     import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
 }
 
@@ -879,7 +856,11 @@ pub fn compile_project_with_entry_source_cfg(
     // parsed.path == ModulePath::single(entry_name) by construction (D-6).
     // Entry source is always a user module, so no stdlib exclusion needed.
     let mut compiled_entry = compiled_entry;
-    attach_module_path_diag(&mut compiled_entry, &parsed);
+    attach_module_path_diag(
+        &mut compiled_entry,
+        &parsed,
+        ExpectedPathOrigin::FileLocation,
+    );
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);
@@ -915,13 +896,12 @@ fn is_std_import_path(path: &str) -> bool {
 /// Merge the `pub` templates of already-compiled direct imports into `entry`'s
 /// own template list, **first-wins** with a `Warning` on every name collision.
 ///
-/// This is the single home of the cross-import template-merge policy shared by
-/// the program compile ([`crate::program::compile_program_with_parsed_entry`],
-/// which the CLI's `reify check` enters through) and the GUI's
-/// `compile_entry_with_imports` (dirty-buffer bridge). Keeping the policy
-/// — the visibility filter, the first-wins de-dup, and the collision-warning
-/// wording — in one place ensures the two callers cannot drift (e.g. a fix to
-/// the collision logic landing in only one of them).
+/// This is the single home of the cross-import template-merge policy — the
+/// visibility filter, the first-wins de-dup, and the collision-warning wording.
+/// Its one caller is the program compile
+/// ([`crate::program::compile_program_with_parsed_entry`]), which the CLI's
+/// `reify check` and the GUI's file-backed reload enter through; PRD
+/// resolution-unification κ #5524 deletes it with the interim merge.
 ///
 /// - `entry_origin` is the entry module's own path/name, used only to label
 ///   entry-vs-import collisions in the warning message.
@@ -936,7 +916,7 @@ fn is_std_import_path(path: &str) -> bool {
 /// both declaring sides and the `first-wins` policy. The warning is phrased
 /// kind-neutrally ("imported pub template") because `templates` can hold
 /// non-structure template kinds.
-pub fn merge_imported_pub_templates(
+pub(crate) fn merge_imported_pub_templates(
     entry: &mut CompiledModule,
     entry_origin: &str,
     imports: &[(&str, &CompiledModule)],

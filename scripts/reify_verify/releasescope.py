@@ -1,0 +1,101 @@
+"""releasescope — the release pass's load-time facts: the release-sensitive crates release-sensitive-crates.txt declares, and whether the merge's delta skips the pass (PRD D15).
+
+bash computes both at load for every action, before it knows whether the
+plan holds a release pass. scripts/release-scope-lib.sh answers both; neither
+is reimplemented here.
+"""
+
+from collections.abc import Mapping
+from enum import IntEnum
+from pathlib import Path
+
+from reify_verify import bashcall, gitcall, knobs, scope
+from reify_verify.bashcall import BashCall, NotCalled
+from reify_verify.childproc import CallResult
+from reify_verify.plan import Refused
+from reify_verify.policy import RolePolicy
+
+RELEASE_DECLARED_SET = BashCall("scripts/release-scope-lib.sh", "release_declared_set")
+RELEASE_DELTA_REQUIRES_PASS = BashCall("scripts/release-scope-lib.sh", "release_delta_requires_pass")
+
+
+class PredicateStatus(IntEnum):
+    """The two statuses release_delta_requires_pass answers with; any other is a failure, not an answer."""
+
+    REQUIRED = 0
+    SKIPPABLE = 1
+
+
+def release_declared(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | Refused:
+    """The release-sensitive crates release-sensitive-crates.txt declares.
+
+    bash assigns the list under `set -e`, so a failing call ends the run with
+    the lib's own stderr and status. bash sources the lib at top level under
+    `set -e` too, so a function that never ran ends the run with the shell's
+    stderr and status, whatever that status is.
+    """
+    match bashcall.ask(RELEASE_DECLARED_SET, (), repo_root, planning):
+        case CallResult(returncode=0) as declared:
+            return declared.lines
+        case NotCalled(result=failed) | (CallResult() as failed):
+            return Refused(failed.stderr_lines, failed.returncode)
+
+
+def decide_release_delta(
+    role_policy: RolePolicy, repo_root: Path, planning: Mapping[str, str]
+) -> tuple[bool, tuple[str, ...]]:
+    """Whether the run skips its release pass, and the predicate's stderr lines.
+
+    Only an eligible role with REIFY_RELEASE_DELTA_SKIP=1 asks. The caller's
+    affected-crate override is the predicate's whole input; without one, the
+    merge's changed files are, and a delta verify cannot derive keeps the pass
+    without asking. Only the predicate's SKIPPABLE status skips: the lib is
+    fail-wide, so a predicate that never ran (a lib that cannot be sourced,
+    including the 2 the lib returns for a dependency it could not load) or
+    any other non-zero status (a crash) keeps the pass and warns.
+    """
+    if not (role_policy.release_delta_skip_eligible and knobs.resolve(knobs.RELEASE_DELTA_SKIP, planning).value):
+        return False, ()
+    overridden = knobs.resolve(knobs.AFFECTED_CRATES_OVERRIDE, planning).value
+    changed = () if overridden else _merge_delta(repo_root, planning)
+    if changed is None:
+        return False, ()
+    return _decision_from_answer(bashcall.ask(RELEASE_DELTA_REQUIRES_PASS, changed, repo_root, planning))
+
+
+def _decision_from_answer(answer: CallResult | NotCalled) -> tuple[bool, tuple[str, ...]]:
+    """Whether the predicate's answer skips the release pass, and its stderr lines with any warning."""
+    if isinstance(answer, NotCalled):
+        return _kept_pass(answer.result, "never ran")
+    try:
+        status = PredicateStatus(answer.returncode)
+    except ValueError:
+        answers = " nor ".join(str(int(known)) for known in PredicateStatus)
+        return _kept_pass(answer, f"answered neither {answers}")
+    return status is PredicateStatus.SKIPPABLE, answer.stderr_lines
+
+
+def _kept_pass(failed: CallResult, what_happened: str) -> tuple[bool, tuple[str, ...]]:
+    """The release pass kept: the failed call's stderr lines, then a warning naming its status."""
+    warning = (
+        f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} {what_happened} "
+        f"(exited {failed.returncode}): the release pass runs"
+    )
+    return False, (*failed.stderr_lines, warning)
+
+
+def _merge_delta(repo_root: Path, planning: Mapping[str, str]) -> tuple[str, ...] | None:
+    """The files the merge changes, or None when that cannot be derived.
+
+    A merge in progress diffs HEAD against MERGE_HEAD; a merge commit at HEAD
+    diffs against its first parent; anything else, or any git failure, is
+    underivable. git's stderr is dropped, as bash's `2>/dev/null` drops it.
+    """
+    if scope.merge_in_progress(repo_root, planning):
+        diff = gitcall.run(repo_root, planning, "diff", "--name-only", "HEAD", "MERGE_HEAD")
+    else:
+        parents = gitcall.run(repo_root, planning, "rev-list", "--parents", "-n1", "HEAD")
+        if parents.returncode != 0 or len(parents.stdout.split()) < 3:
+            return None
+        diff = gitcall.run(repo_root, planning, "diff", "--name-only", "HEAD^1", "HEAD")
+    return diff.lines if diff.returncode == 0 else None

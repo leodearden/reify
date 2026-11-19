@@ -134,9 +134,11 @@ pub(crate) fn assert_input_error(out: &Output, needles: &[&str], context: &str) 
     );
 }
 
-/// One `check` of the real workspace (about 38 `cargo tree` runs and as many
-/// `cargo test --unit-graph` resolutions), resolved with the inherited
-/// environment so the verify env's CARGO and CARGO_HOME reach cargo. It is
+/// One `check` of the real workspace (one `cargo fetch`, then about 38
+/// `cargo tree` runs and as many `cargo test --unit-graph` resolutions),
+/// resolved with the inherited environment so the verify env's CARGO and
+/// CARGO_HOME reach cargo; since check fetches the locked packages first,
+/// what the inherited CARGO_HOME holds no longer decides the verdict. It is
 /// shared only within one test process: cargo-nextest runs each test in a
 /// process of its own, so there every real-workspace test runs its own check.
 pub(crate) fn real_check() -> &'static Output {
@@ -236,18 +238,39 @@ pub(crate) fn write_file(path: &Path, contents: &str) {
 /// `test --workspace` serves unit-graph-workspace.json and `test -p NAME`
 /// serves unit-graph-NAME.json, or the empty version-1 unit graph when that
 /// file is absent; every `test` call appends its RUSTC_BOOTSTRAP and
-/// CARGO_TARGET_DIR to cargo-env.log.
+/// CARGO_TARGET_DIR to cargo-env.log, then exits 3 when unit-graph-refuse
+/// exists. The cargo cache is warm unless cold-cache exists: then `tree` and
+/// `test` fail with real cargo's `--frozen` download error until `fetch` has
+/// written fetched, and while it is cold, `fetch` fails as with no network
+/// when fetch-fail exists. A warm `fetch` makes no request, so it succeeds.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$*" >> "$here/cargo-argv.log"
+needs_fetch() {
+  if [ -e "$here/cold-cache" ] && [ ! -e "$here/fetched" ]; then
+    printf '%s\n' 'error: failed to download `ahash v0.8.12`' '' 'Caused by:' \
+      '  attempting to make an HTTP request, but --frozen was specified' >&2
+    exit 101
+  fi
+}
 case "${1:-}" in
   -vV)
     printf 'cargo 1.0.0 (stub)\nrelease: 1.0.0\nhost: x86_64-unknown-linux-gnu\n'
     exit 0 ;;
   metadata)
     exec cat "$here/metadata.json" ;;
+  fetch)
+    if [ -e "$here/fetch-fail" ] && [ -e "$here/cold-cache" ] && [ ! -e "$here/fetched" ]; then
+      printf '%s\n' 'error: failed to download from `https://static.crates.io/crates/ahash/0.8.12/download`' \
+        '' 'Caused by:' \
+        "  [6] Couldn't resolve host name (Could not resolve host: static.crates.io)" >&2
+      exit 101
+    fi
+    : > "$here/fetched"
+    exit 0 ;;
   tree)
+    needs_fetch
     if [ -e "$here/Cargo.lock" ] && [[ " $* " == *" --offline "* ]]; then
       printf 'resolved by: %s\n' "$*" >> "$here/Cargo.lock"
     fi
@@ -277,8 +300,13 @@ case "${1:-}" in
       prev="$arg"
     done ;;
   test)
+    needs_fetch
     printf 'RUSTC_BOOTSTRAP=%s CARGO_TARGET_DIR=%s\n' "${RUSTC_BOOTSTRAP:-}" "${CARGO_TARGET_DIR:-}" \
       >> "$here/cargo-env.log"
+    if [ -e "$here/unit-graph-refuse" ]; then
+      echo 'stub cargo: this fixture serves no unit graph' >&2
+      exit 3
+    fi
     prev=""
     for arg in "$@"; do
       graph=""
@@ -307,6 +335,21 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new(members: &[Member], workspace_tree: &str) -> Fixture {
+        let fixture = Fixture::serving_metadata(members);
+        fixture.write("tree-workspace.txt", workspace_tree);
+        fixture
+    }
+
+    /// Serves `members` as cargo metadata and nothing else, so a check or
+    /// generate that resolves any `cargo tree` or `cargo test --unit-graph`
+    /// exits 2.
+    pub(crate) fn metadata_only(members: &[Member]) -> Fixture {
+        let fixture = Fixture::serving_metadata(members);
+        fixture.write("unit-graph-refuse", "");
+        fixture
+    }
+
+    fn serving_metadata(members: &[Member]) -> Fixture {
         let fixture = Fixture {
             dir: tempfile::tempdir().expect("create workspace-feature-union fixture dir"),
         };
@@ -315,7 +358,6 @@ impl Fixture {
         fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
             .unwrap_or_else(|e| panic!("chmod {}: {e}", stub.display()));
         fixture.write("metadata.json", &metadata_json(fixture.dir.path(), members));
-        fixture.write("tree-workspace.txt", workspace_tree);
         fixture
     }
 
@@ -329,6 +371,19 @@ impl Fixture {
     /// name for `-p <name>`, or "workspace" for `--workspace`.
     pub(crate) fn unit_graph(self, selection: &str, json: &str) -> Fixture {
         self.write(&format!("unit-graph-{selection}.json"), json);
+        self
+    }
+
+    /// Empties the cargo cache: no `tree` or `test` resolves before a `fetch`.
+    pub(crate) fn cold_cache(self) -> Fixture {
+        self.write("cold-cache", "");
+        self
+    }
+
+    /// Takes the network away: like real cargo, `fetch` then fails on a cold
+    /// cache and succeeds on a warm one, which needs no request.
+    pub(crate) fn unreachable_registry(self) -> Fixture {
+        self.write("fetch-fail", "");
         self
     }
 
@@ -424,7 +479,7 @@ a v0.1.0 (/fixture/crates/a)|
 pub(crate) const TREE_UNION: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|\n";
 
-/// `--workspace` over roots `a` and the union crate.
+/// A `--workspace` tree printing each of `roots` as its own root, in order.
 pub(crate) fn workspace_of(roots: &[&str]) -> String {
     roots.join("\n")
 }
@@ -433,26 +488,8 @@ pub(crate) fn covered_a() -> Vec<Member> {
     vec![member("a", &[UNION]), member(UNION, &[])]
 }
 
-pub(crate) const UNION_NODE: &str =
+const UNION_NODE: &str =
     "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|";
-
-/// `--workspace` with `a` building with member `u`, whose subtree below its
-/// `[build-dependencies]` line is `u_children` (each line indented under u).
-pub(crate) fn workspace_building_a_with_u(u_children: &[&str]) -> String {
-    let below_u: String = u_children
-        .iter()
-        .map(|line| format!("    {line}\n"))
-        .collect();
-    let tree_a = format!(
-        "a v0.1.0 (/fixture/crates/a)|\n\
-         |-- {UNION_NODE}\n\
-         `-- memchr v2.0.0|std\n\
-         [build-dependencies]\n\
-         `-- u v0.1.0 (/fixture/crates/u)|\n\
-         {below_u}"
-    );
-    workspace_of(&[&tree_a, TREE_UNION])
-}
 
 /// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
 /// `-p d` resolve it without. Each of `uncovered` joins as a member that

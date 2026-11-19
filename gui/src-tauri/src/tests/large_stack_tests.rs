@@ -14,20 +14,6 @@ use crate::tests::test_helpers::{
     ANTI_WEDGE, DEEP_RECURSION_DEPTH, deep_recurse, deep_recurse_if_on_thread, post_and_wait,
 };
 
-/// Render a caught panic payload as a string, so a test can assert on the
-/// ORIGINAL message rather than merely on "something panicked" — the latter is
-/// also true when a helper substitutes a failure of its own.
-///
-/// `panic!("literal")` yields a `&'static str` payload while a formatted
-/// `panic!("{x}")` yields a `String`, so both are tried.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
-}
-
 // ── spawn_on_large_stack: fire-and-forget variant (step-3/step-4) ────────────
 
 /// (d) `spawn_on_large_stack` runs the fire-and-forget closure (which delivers
@@ -112,6 +98,185 @@ fn the_per_call_thread_is_named_for_observability() {
         spawn_name.as_deref(),
         Some(ENGINE_THREAD_NAME),
         "spawn_on_large_stack's thread must be named for panic backtraces / profilers"
+    );
+}
+
+// ── Awaitable per-call submission (task 9878) ────────────────────────────────
+//
+// `run_on_large_stack` is the per-call tier's awaitable form: compiler work that
+// belongs to no lane, awaited by an async command without parking any thread.
+
+/// (a) The closure's value comes back to the awaiter, and the closure ran on a
+/// per-call large-stack thread — not the caller's — named for observability.
+#[tokio::test]
+async fn run_on_large_stack_returns_the_value_from_a_named_per_call_thread() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, run_on_large_stack};
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on, ran_on_name) = run_on_large_stack(|| {
+        let thread = std::thread::current();
+        (42u32, thread.id(), thread.name().map(str::to_owned))
+    })
+    .await
+    .expect("a closure that returns normally must resolve Ok");
+
+    assert_eq!(value, 42, "the closure's value must reach the awaiter");
+    assert_ne!(
+        ran_on, caller_id,
+        "the closure must run on its own thread, never inline on the awaiter"
+    );
+    assert_eq!(
+        ran_on_name.as_deref(),
+        Some(ENGINE_THREAD_NAME),
+        "the closure must run on the per-call tier's named large-stack thread"
+    );
+}
+
+/// (b) Awaiting a slow job leaves the calling runtime free to poll other tasks.
+///
+/// The same ORDERING proof as `lane_dispatch_does_not_block_the_calling_runtime`:
+/// on the default current-thread `#[tokio::test]` runtime, an implementation
+/// that ran the job inline (or parked in a blocking `recv`) would resolve only
+/// after the 300 ms job with the one thread busy throughout, so the
+/// already-ready spawned task could not have run and the flag would read false.
+#[tokio::test]
+async fn run_on_large_stack_does_not_block_the_calling_runtime() {
+    use crate::large_stack::run_on_large_stack;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let concurrent_ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&concurrent_ran);
+
+    let concurrent = tokio::spawn(async move {
+        flag.store(true, Ordering::SeqCst);
+        "concurrent task done"
+    });
+
+    let job_result = run_on_large_stack(|| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        "job done"
+    })
+    .await;
+
+    // Read the flag at THIS instant — before awaiting the handle, which would
+    // give a blocked runtime a second chance to run the task and hide the bug.
+    let ran_during_the_job = concurrent_ran.load(Ordering::SeqCst);
+
+    assert_eq!(
+        job_result,
+        Ok("job done"),
+        "the job must still deliver its value"
+    );
+    assert_eq!(
+        concurrent
+            .await
+            .expect("the concurrent task must not panic"),
+        "concurrent task done",
+        "the concurrent task must complete"
+    );
+    assert!(
+        ran_during_the_job,
+        "a concurrently-spawned task had still not been polled when the job \
+         finished — awaiting run_on_large_stack BLOCKED the runtime thread"
+    );
+}
+
+/// (c) A panicking job resolves the await as `Err` carrying the ORIGINAL panic
+/// message, rather than panicking the awaiter or leaving it hung.
+///
+/// The message assertion is load-bearing: a thread that merely died, or a
+/// oneshot that merely disconnected, would also yield an `Err`, just without
+/// the job's own words.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_panic_as_an_err_carrying_its_message() {
+    use crate::large_stack::run_on_large_stack;
+
+    let outcome = run_on_large_stack::<_, ()>(|| panic!("create boom")).await;
+
+    let message = outcome.expect_err("a panicking job must resolve as Err");
+    assert!(
+        message.contains("create boom"),
+        "the Err must carry the job's original panic message, got: {message}"
+    );
+}
+
+/// (d) The awaitable path carries the 256 MiB stack: ~16 MiB of recursion, 8x
+/// the ~2 MiB a tokio worker or `spawn_blocking` thread would have given it,
+/// runs to completion.
+///
+/// Per the module's "no violent RED" doctrine the recursion is reached ONLY
+/// through [`deep_recurse_if_on_thread`], so an implementation that ran the job
+/// anywhere but the per-call thread yields a clean assertion failure instead of
+/// overflowing and aborting the whole test binary.
+#[tokio::test]
+async fn run_on_large_stack_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, run_on_large_stack};
+
+    let result =
+        run_on_large_stack(|| deep_recurse_if_on_thread(ENGINE_THREAD_NAME, DEEP_RECURSION_DEPTH))
+            .await;
+
+    assert_eq!(
+        result,
+        Ok(Ok(u64::from(DEEP_RECURSION_DEPTH) + 1)),
+        "deep recursion must run to completion on the per-call large stack, \
+         reached through the awaitable entry point"
+    );
+}
+
+/// (e) A refused spawn resolves the await as `Err` naming the refusal, and the
+/// job is never run, neither inline on the awaiter nor on a fallback thread.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_refused_spawn_as_an_err_without_running_the_job() {
+    use crate::large_stack::run_on_large_stack_via;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let job_ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&job_ran);
+
+    let outcome = run_on_large_stack_via(
+        |_job| Err(std::io::Error::other("mmap refused")),
+        move || flag.store(true, Ordering::SeqCst),
+    )
+    .await;
+
+    let message = outcome.expect_err("a refused spawn must resolve as Err");
+    assert!(
+        message.contains("mmap refused"),
+        "the Err must carry the spawn refusal, got: {message}"
+    );
+    assert!(
+        !job_ran.load(Ordering::SeqCst),
+        "a refused spawn must not run the job anywhere"
+    );
+}
+
+/// (f) A thread that drops the job unrun resolves the await as `Err` at once,
+/// never as a hang.
+#[tokio::test]
+async fn run_on_large_stack_reports_a_job_dropped_unrun_as_an_err() {
+    use crate::large_stack::run_on_large_stack_via;
+
+    let outcome = tokio::time::timeout(
+        ANTI_WEDGE,
+        run_on_large_stack_via(
+            |job| {
+                drop(job);
+                Ok(())
+            },
+            || 7u32,
+        ),
+    )
+    .await
+    .expect("a job dropped unrun must resolve the await, not hang it");
+
+    let message = outcome.expect_err("a job dropped unrun must resolve as Err");
+    assert!(
+        message.contains("without answering"),
+        "the Err must say the job never answered, got: {message}"
     );
 }
 
@@ -496,7 +661,7 @@ async fn lsp_lane_is_panic_isolated_and_survives() {
         .expect_err("a panicking LSP-lane job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "lsp boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -656,7 +821,7 @@ async fn lane_dispatch_propagates_the_original_job_panic() {
     );
     let payload = err.into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "async boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -796,7 +961,7 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = panic_message(&*err.into_panic());
+    let message = reify_core::panic_payload_to_string(&*err.into_panic());
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \
@@ -1070,7 +1235,7 @@ async fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
         .expect_err("a panicking pool job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "pool boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -1110,7 +1275,7 @@ async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = panic_message(&*err.into_panic());
+    let message = reify_core::panic_payload_to_string(&*err.into_panic());
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \

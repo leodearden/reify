@@ -7,27 +7,18 @@
 # WHY THIS GUARD EXISTS  (task #5629, esc-5392-1)
 # ----------------------------------------------
 # Cargo re-runs a build script only for paths that script declared via
-# `cargo:rerun-if-changed`.  tree-sitter-reify/build.rs declared exactly ONE:
-# `grammar.js`.  But it compiles TWO C translation units —
+# `cargo:rerun-if-changed`, and the `cc` crate declares none of its own.  Before
+# #5629, tree-sitter-reify/build.rs declared only grammar.js, so an edit
+# confined to src/scanner.c never recompiled the archive, and the merge gate
+# reported success over a change that was never under test.
 #
-#     c_config.file(&parser_path);      // src/parser.c   (generated, gitignored)
-#     c_config.file("src/scanner.c");   // hand-written, TRACKED
-#
-# — plus the headers under src/tree_sitter/.  The `cc` crate emits no
-# rerun-if-changed directives of its own (verified against cc 1.2.62: zero hits
-# in its source).  So before this guard, `src/scanner.c` and every
-# `src/tree_sitter/*.h` were watched by NOTHING.
-#
-# The consequence is a false GREEN, and it does not depend on warm lanes or on
-# any mtime accident: an edit confined to src/scanner.c gave cargo no reason
-# whatsoever to re-run the build script, in ANY checkout.  cc::Build::compile
-# was never re-invoked, the previously-built libtree_sitter_reify.a stayed
-# linked, and the external-scanner change was simply never under test — while
-# the merge gate reported success.
-#
-# `scripts/tree-sitter-generate.sh` cannot repair this.  It refreshes on-disk
-# sources (src/parser.c, grammar.json, node-types.json); it never writes
-# scanner.c, and nothing it does makes cargo recompile anything.
+# Since #9896 build.rs generates the parser into $OUT_DIR/src, compiles both
+# translation units from there, and watches exactly the tracked inputs
+# (grammar.js, src/scanner.c) plus its own logic and the tree-sitter CLI.  The
+# bytes that determine the archive are therefore grammar.js and src/scanner.c,
+# and those two files are this guard's whole input set.  Nothing under
+# tree-sitter-reify/src that scripts/tree-sitter-generate.sh writes is read by
+# the build, so nothing it does can make the archive stale or fresh.
 #
 # WHY NOT MTIME
 # -------------
@@ -47,14 +38,15 @@
 #
 # The repair must also come from OUTSIDE the build script: a build script that
 # cargo has declined to run cannot repair itself.  Hence a standalone plan leaf
-# that verify.sh runs after tree-sitter-generate.sh and before every cargo leaf.
+# that verify.sh runs before every cargo leaf.
 #
 # MODES
 # -----
-#   --list-inputs   Print the C-compilation input set — one TS_DIR-relative path
-#                   per line, LC_ALL=C sorted, de-duplicated.  This is the single
-#                   source of truth for what the fingerprint covers; build.rs
-#                   enumerates the same set so the two manifests agree byte-for-byte.
+#   --list-inputs   Print the attested input set — grammar.js and src/scanner.c,
+#                   one TS_DIR-relative path per line, LC_ALL=C sorted.  This is
+#                   the single source of truth for what the fingerprint covers;
+#                   build.rs attests the same set (build_support.rs's
+#                   ATTESTED_INPUTS) so the two manifests agree byte-for-byte.
 #   --print-fingerprint
 #                   Print the per-file sha256 manifest for that input set —
 #                   '<hash>  <relpath>' lines, sorted by relpath.  Exactly what
@@ -72,8 +64,7 @@
 #                   or dormant — bump the mtime of the watched inputs (grammar.js,
 #                   src/scanner.c) so cargo is guaranteed to re-run the build
 #                   script, and thus recompile, on the next invocation.  This is
-#                   what verify.sh runs after tree-sitter-generate.sh and before
-#                   every cargo leaf.
+#                   what verify.sh runs before every cargo leaf.
 #   --help, -h      This message.
 #
 # LIVE vs DORMANT — WHY `check` AND `ensure` HAVE DIFFERENT SCOPES
@@ -271,8 +262,9 @@ usage() {
 Usage: scripts/tree-sitter-freshness.sh <mode>
 
 Modes:
-  --list-inputs        Print the C-compilation input set (one TS_DIR-relative
-                       path per line, LC_ALL=C sorted, de-duplicated).
+  --list-inputs        Print the attested input set, grammar.js and
+                       src/scanner.c (one TS_DIR-relative path per line,
+                       LC_ALL=C sorted).
   --print-fingerprint  Print the per-file sha256 manifest for that input set
                        ('<hash>  <relpath>' lines, sorted by relpath) — exactly
                        what build.rs writes to $OUT_DIR/tree_sitter_inputs.stamp.
@@ -293,43 +285,15 @@ EOF
 
 # ts_inputs
 #
-# THE single source of truth for the C-compilation input set: every file whose
-# bytes end up inside libtree_sitter_reify.a.  Emits TS_DIR-relative paths so
-# the manifest is location-independent and reproducible by build.rs.
-#
-# Headers come from a SORTED GLOB rather than a hardcoded alloc.h/array.h/parser.h
-# list, and build.rs enumerates them the same way, so a future header is covered
-# automatically by both sides.  A hardcoded list is exactly how this defect class
-# recurs.
+# THE single source of truth for the fingerprint's input set, TS_DIR-relative
+# and LC_ALL=C sorted.  It is build_support.rs's ATTESTED_INPUTS: the tracked
+# files whose bytes determine libtree_sitter_reify.a.  The generated sources
+# live in $OUT_DIR/src beside the archive, where build.rs content-checks them
+# against its generation key, and nothing else under src/ feeds the archive.
+# It is also the set `ensure` force-touches, since both are what build.rs
+# watches.
 ts_inputs() {
-    local had_nullglob=0
-    shopt -q nullglob && had_nullglob=1
-    shopt -s nullglob
-
-    local f
-    local -a headers=()
-    for f in "$TS_DIR"/src/tree_sitter/*.h; do
-        headers+=("src/tree_sitter/${f##*/}")
-    done
-
-    [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-
-    {
-        # The two translation units build.rs hands to cc::Build.  src/parser.c is
-        # generated and gitignored, but its bytes are compiled in, so it belongs
-        # in the fingerprint.  Since `#6992` it is ALSO watched by build.rs — the
-        # old "deliberately NOT watched, watching an output causes double
-        # execution" note here was falsified by that change.  The cost is one
-        # extra build-script run after a genuine regeneration, which then finds
-        # both shell stamps current and writes nothing; what it buys is that a
-        # deleted or CoW-mismatched parser.c can re-trigger the build script at
-        # all.
-        printf 'src/parser.c\n'
-        printf 'src/scanner.c\n'
-        if [ "${#headers[@]}" -gt 0 ]; then
-            printf '%s\n' "${headers[@]}" | LC_ALL=C sort
-        fi
-    } | awk 'NF && !seen[$0]++'
+    printf '%s\n' grammar.js src/scanner.c
 }
 
 # ts_hash_file
@@ -401,9 +365,8 @@ ts_fingerprint() {
         abs="$TS_DIR/$rel"
         if [ ! -f "$abs" ]; then
             echo "ERROR: tree-sitter freshness input is missing: $abs" >&2
-            echo "       Run scripts/tree-sitter-generate.sh first — every compiled input," >&2
-            echo "       including the generated src/parser.c, must exist on disk before it" >&2
-            echo "       can be fingerprinted." >&2
+            echo "       $rel is a tracked file of tree-sitter-reify; restore it" >&2
+            echo "       (git checkout -- $rel) before it can be fingerprinted." >&2
             return 1
         fi
         # ts_hash_file -> bare '<hash>'; pair it with the normalised relpath.
@@ -830,38 +793,11 @@ ts_unattestable_lines() {
     done <<< "$TS_UNATTESTABLE_REPORT"
 }
 
-# ts_watched_inputs
-#
-# Exactly what `ensure` is permitted to touch: grammar.js, which is an input to
-# generation rather than to compilation, plus the compilation inputs from
-# ts_inputs() (derived rather than restated, so it cannot drift).
-#
-# Generate outputs (src/parser.c, src/tree_sitter/*.h) are excluded on purpose,
-# although build.rs WATCHES them (`#6992`, #9741).  The two sets answer
-# different questions: build.rs's watch set is what cargo re-runs the build
-# script FOR, whereas this is what `ensure` is allowed to force-TOUCH.  Adding a
-# build-script OUTPUT to a force set risks a touch/regenerate loop, and would
-# make the ts_max_watched_mtime witness move on every regeneration — weakening
-# the rewind signature at ts_ledger_force_in_effect that guards against
-# warm-lane mtime rollback.  Touching grammar.js already re-triggers the build
-# script, which recompiles against the current outputs, so the narrower set
-# loses nothing.
-ts_watched_inputs() {
-    printf 'grammar.js\n'
-    local rel
-    while IFS= read -r rel; do
-        case "$rel" in
-            src/parser.c | src/tree_sitter/*) ;;
-            *) printf '%s\n' "$rel" ;;
-        esac
-    done < <(ts_inputs)
-}
-
 # ts_max_watched_mtime
 #
 # Highest mtime, in epoch seconds, across the inputs `ensure` is allowed to touch.
-# Prints 0 when none of them can be stat'ed.  Derived from ts_watched_inputs() so
-# it measures exactly the set a force bumps — nothing else can drift into it.
+# Prints 0 when none of them can be stat'ed.  Derived from ts_inputs() so it
+# measures exactly the set a force bumps — nothing else can drift into it.
 ts_max_watched_mtime() {
     local rel abs m best=0
     while IFS= read -r rel; do
@@ -875,7 +811,7 @@ ts_max_watched_mtime() {
         if [ "$m" -gt "$best" ]; then
             best="$m"
         fi
-    done < <(ts_watched_inputs)
+    done < <(ts_inputs)
     printf '%s' "$best"
 }
 
@@ -945,7 +881,7 @@ ts_force_touch() {
             echo "ERROR: cannot force a rebuild — 'touch' failed on $abs (read-only tree?)" >&2
             failed=1
         fi
-    done < <(ts_watched_inputs)
+    done < <(ts_inputs)
     return "$failed"
 }
 
@@ -1000,7 +936,7 @@ ts_mode_ensure() {
     echo "tree-sitter-freshness: ensure — attesting libtree_sitter_reify.a against $TS_DIR"
 
     # Open the RUN WINDOW first, before anything else can touch target/. verify.sh
-    # runs `ensure` after tree-sitter-generate.sh and before every cargo leaf, so
+    # runs `ensure` before every cargo leaf, so
     # stamping here means every build-script run the upcoming cargo wave performs
     # lands at or after the epoch — and the `check` leaf at the end of the plan
     # therefore attests EVERY archive this run built, not just the newest one.

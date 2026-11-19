@@ -302,15 +302,12 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
-    let needed_tk: Vec<&str> =
-        stdout.lines().filter(|l| l.contains("(NEEDED)") && l.contains("libTK")).collect();
-    if needed_tk.is_empty() {
+    if needed_starting_with(&stdout, "libTK").is_none() {
         eprintln!("no NEEDED libTK* entries in {exe}; OCCT likely stubbed — skipping");
         return;
     }
 
-    let has_direct_tbb_needed =
-        stdout.lines().any(|l| l.contains("(NEEDED)") && l.contains("[libtbb.so.12]"));
+    let has_direct_tbb_needed = needed_sonames(&stdout).any(|soname| soname == "libtbb.so.12");
     assert!(
         has_direct_tbb_needed,
         "readelf -d {exe} has no direct NEEDED libtbb.so.12 entry — \
@@ -318,15 +315,8 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
          may be missing or not taking effect.\n\nFull readelf -d output:\n{stdout}"
     );
 
-    let runpath_line = stdout
-        .lines()
-        .find(|l| l.contains("(RUNPATH)") || l.contains("(RPATH)"))
-        .unwrap_or_else(|| panic!("no RUNPATH/RPATH entry in readelf -d {exe}:\n{stdout}"));
-    let dirs: Vec<&str> = runpath_line
-        .split('[')
-        .nth(1)
-        .and_then(|s| s.split(']').next())
-        .unwrap_or_else(|| panic!("could not parse RUNPATH/RPATH entry: {runpath_line}"))
+    let dirs: Vec<&str> = runpath_entry(&stdout)
+        .unwrap_or_else(|| panic!("no RUNPATH/RPATH entry in readelf -d {exe}:\n{stdout}"))
         .split(':')
         .collect();
     assert_eq!(
@@ -373,4 +363,89 @@ fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
         "eagerly bound bare launch of {exe} --version exited {:?}:\n{stderr}",
         output.status
     );
+}
+
+/// (f) RUNPATH ORDER (task 10113). `reify` must search OCCT's lib dir before
+/// the deps prefix, as `reify-gui` does: the deps prefix ships its own
+/// libstdc++/libgcc_s, so the dir searched first decides which copy the
+/// binary binds, and the installer bundles one copy for both binaries.
+#[test]
+fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
+    let exe = env!("CARGO_BIN_EXE_reify");
+    let Some(readelf) = readelf_d(exe) else {
+        return;
+    };
+    let (Some(tkernel), Some(gmsh)) = (
+        needed_starting_with(&readelf, "libTKernel.so"),
+        needed_starting_with(&readelf, "libgmsh.so"),
+    ) else {
+        eprintln!("{exe} lacks a NEEDED libTKernel.so* or libgmsh.so*; stub build — skipping");
+        return;
+    };
+    let Some(ldd_out) = bare_ldd(exe) else {
+        return;
+    };
+    let resolved_dir = |soname: &str| {
+        let path = ldd_resolved_path(&ldd_out, soname)
+            .unwrap_or_else(|| panic!("bare ldd of {exe} does not resolve {soname}:\n{ldd_out}"));
+        let dir = std::path::Path::new(path)
+            .parent()
+            .unwrap_or_else(|| panic!("ldd path {path} has no parent dir"));
+        std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}"))
+    };
+    let occt_dir = resolved_dir(tkernel);
+    let deps_dir = resolved_dir(gmsh);
+    if occt_dir == deps_dir {
+        eprintln!(
+            "{tkernel} and {gmsh} both resolve in {occt_dir:?}; no order to check — skipping"
+        );
+        return;
+    }
+
+    let runpath = runpath_entry(&readelf)
+        .unwrap_or_else(|| panic!("no RUNPATH/RPATH entry in readelf -d {exe}:\n{readelf}"));
+    let dirs: Vec<std::path::PathBuf> = runpath
+        .split(':')
+        .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.into()))
+        .collect();
+    // A dir missing from RUNPATH is searched after every RUNPATH entry.
+    let rank = |dir: &std::path::Path| dirs.iter().position(|d| d == dir).unwrap_or(dirs.len());
+    assert!(
+        rank(&occt_dir) < rank(&deps_dir),
+        "{exe}'s RUNPATH searches the deps prefix {deps_dir:?} (where {gmsh} resolves) \
+         before OCCT's lib dir {occt_dir:?} (where {tkernel} resolves). RUNPATH: \
+         [{runpath}]. An unscoped `cargo:rustc-link-arg` -rpath emitted earlier in \
+         crates/reify-cli/build.rs reaches the bin ahead of the bin-scoped OCCT dir, so \
+         reify binds the deps prefix's libstdc++/libgcc_s where reify-gui binds the \
+         system's, and the installer can bundle only one."
+    );
+}
+
+/// The `(NEEDED)` sonames in `readelf -d` output, in order.
+fn needed_sonames(readelf: &str) -> impl Iterator<Item = &str> + '_ {
+    readelf
+        .lines()
+        .filter(|line| line.contains("(NEEDED)"))
+        .filter_map(bracketed)
+}
+
+/// The first `(NEEDED)` soname in `readelf -d` output starting with `prefix`.
+fn needed_starting_with<'a>(readelf: &'a str, prefix: &str) -> Option<&'a str> {
+    needed_sonames(readelf).find(|soname| soname.starts_with(prefix))
+}
+
+/// The colon-separated dir list of the `(RUNPATH)` or `(RPATH)` entry.
+fn runpath_entry(readelf: &str) -> Option<&str> {
+    readelf
+        .lines()
+        .find(|line| line.contains("(RUNPATH)") || line.contains("(RPATH)"))
+        .and_then(bracketed)
+}
+
+/// The text between the first `[` and the following `]` of a readelf line.
+fn bracketed(line: &str) -> Option<&str> {
+    line.split_once('[')?
+        .1
+        .split_once(']')
+        .map(|(inner, _)| inner)
 }

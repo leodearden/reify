@@ -38,6 +38,7 @@ use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
+use crate::compile_builder::functions_phase::{ResolutionTable, SourceOrderFnEnv};
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{
     ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
@@ -148,20 +149,12 @@ pub(crate) fn phase_entities(
             .map(|t| (t.name.clone(), t))
             .collect();
 
-    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
-    // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
-    // already-compiled structure-defs. Occurrences are excluded — only
-    // structure-defs are constructible via the ctor path.
-    //
-    // DERIVED from the unfiltered map above rather than re-walking `prelude`:
-    // a prelude occurrence that wins a name under NS-P1 (`name_env`) must not
-    // let a lower-precedence `structure def` of that name into the ctor view.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
-        .iter()
-        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
+    // task 3540 (SIR-α): the prelude ctor view, so the expression-lowering site
+    // can recognise `Foo()` as a structure constructor (esc-3540-177 RULING 1);
+    // `compile_entity` overlays the templates declared above it via
+    // `name_env::overlay_local_templates`. Rule: `name_env::prelude_ctor_view`.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::prelude_ctor_view(prelude);
 
     // One bundle for the entity-compile recursion, so the two same-typed maps
     // cannot be transposed at a call site (they are read by field name).
@@ -213,22 +206,26 @@ pub(crate) fn phase_entities(
     let mut resolution_functions: Vec<CompiledFunction> =
         std::mem::take(&mut ctx.resolution_functions);
     let mut pending = std::mem::take(&mut ctx.fns_with_pending_defaults);
-    // The module-local `structure def`s with no template yet, i.e. declared
-    // below the current declaration: what a fn's body may not use.
-    let mut later_declared_structures = ctx.local_structure_def_names.clone();
-    let mut templates_seen: usize = 0;
+    // What fn BODIES' calls resolve against: the fns above plus the prelude.
+    // Built at the first fn, so a module with none clones no prelude fn here;
+    // from then on it owns the pass's user fns until the epilogue.
+    let mut fn_body_calls: Option<ResolutionTable> = None;
     // Declaration index of the next `Declaration::Function` — parallel to
     // `decl_refs.fn_refs` and hence to `ctx.fn_signatures`, because
     // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
     // order with no filtering.
     let mut fn_decl_index: usize = 0;
-    // The order-INDEPENDENT companion to the order-dependent call table each fn
-    // body resolves against (task #5371), merged ONCE for the whole pass and
-    // borrowed by every fn scope. It changes nothing about which overload
-    // resolves; see `CompilationScope::declared_callable_names` for what it is for.
-    let declared_callables = crate::functions::declared_callable_names(
-        &ctx.declared_fn_names,
-        &ctx.resolution_structure_names,
+    // What every fn body compiles against besides the fns and templates above
+    // it. Built once; its borrows of `ctx` fields are disjoint from the `&mut`
+    // field borrows the loop takes.
+    let fn_env = SourceOrderFnEnv::new(
+        &ctx.resolution_enums,
+        &prelude_template_registry,
+        crate::functions::declared_callable_names(
+            &ctx.declared_fn_names,
+            &ctx.resolution_structure_names,
+        ),
+        &ctx.local_structure_def_names,
     );
 
     for decl in &parsed.declarations {
@@ -310,16 +307,15 @@ pub(crate) fn phase_entities(
                     ));
                     continue;
                 };
-                if let Some(f) = crate::compile_builder::functions_phase::compile_function_decl(
+                let calls_above = fn_body_calls.get_or_insert_with(|| {
+                    ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude)
+                });
+                if let Some(f) = fn_env.compile_function_decl(
                     fn_def,
                     sig,
                     defaults,
-                    &ctx.resolution_enums,
-                    &ctx.functions,
+                    calls_above,
                     &ctx.templates,
-                    prelude,
-                    &later_declared_structures,
-                    &declared_callables,
                     &mut ctx.diagnostics,
                 ) {
                     // Replace this fn's signature stub with the real
@@ -337,7 +333,7 @@ pub(crate) fn phase_entities(
                             "its call-table slot; later declarations resolve against its stub",
                         )),
                     }
-                    ctx.functions.push(f);
+                    calls_above.push_user(f);
                 }
             }
             reify_ast::Declaration::Trait(_) => {
@@ -451,10 +447,6 @@ pub(crate) fn phase_entities(
                 );
             }
         }
-        for template in &ctx.templates[templates_seen..] {
-            later_declared_structures.remove(&template.name);
-        }
-        templates_seen = ctx.templates.len();
     }
 
     // ── Unified-pass epilogue (task 5494) ──
@@ -464,6 +456,9 @@ pub(crate) fn phase_entities(
     // trait-static fns …]` that `compute_module_hash` folds and
     // `CompiledModule::functions` first-match dispatch depends on.
     let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
+    if let Some(table) = fn_body_calls {
+        ctx.functions = table.into_user_functions();
+    }
     ctx.functions.append(&mut trait_static_fns);
 
     // Publish the pass-local table (real `CompiledFunction`s in place of the
@@ -1925,3 +1920,9 @@ fn for_each_template_root_expr(
         }
     }
 }
+
+#[cfg(test)]
+mod ctor_view_tests;
+
+#[cfg(test)]
+mod fn_tables_misaligned_tests;

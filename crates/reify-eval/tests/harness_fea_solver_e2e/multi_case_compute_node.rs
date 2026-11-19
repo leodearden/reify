@@ -51,15 +51,16 @@ const TWO_CASE_SOURCE: &str = r#"
 structure def MultiCaseSolveFixture {
     let lc1       = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2       = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
-        supports: [FixedSupport(target: "root")],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

@@ -508,7 +508,8 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
 ///
 /// Every other test in this file goes through `reify_syntax::parse`, i.e. the
 /// full CST→AST lowering. That makes them exquisitely sensitive to a stale
-/// `tree-sitter-reify/src/parser.c` and completely silent about *why*: a parser
+/// linked parser (generated into tree-sitter-reify's `$OUT_DIR/src`) and
+/// completely silent about *why*: a parser
 /// built from a grammar that predates the indexer clause turns
 /// `sub idlers[i in 0..4] = …` into an ERROR node, and what the reader is
 /// handed is eight lowering assertions failing on absent
@@ -518,7 +519,7 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
 ///
 /// So this probes the parser DIRECTLY rather than through lowering. It is the
 /// one test here that can distinguish "the grammar's contract changed" from
-/// "the compiled parser on disk is not the one grammar.js describes", and it is
+/// "the linked parser is not the one grammar.js describes", and it is
 /// deliberately not a restatement of `indexed_sub_lowers_binder_and_domain`:
 /// that pins where the fields LAND in `SubDecl`, this pins that the linked
 /// parser emits them at all.
@@ -540,13 +541,14 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
 fn linked_parser_exposes_the_indexer_clause_fields() {
     /// Appended to every failure here: the diagnosis a bare assertion cannot give.
     const STALE_PARSER: &str = "\n\n\
-        This is the `#6992` signature: tree-sitter-reify/src/parser.c is a \
-        GENERATED, gitignored artifact, and nothing in this crate can tell a \
-        grammar regression from a parser.c that was never regenerated for the \
-        grammar.js on disk. If grammar.js still declares the optional \
-        `[binder in domain]` clause on `sub_declaration`, the parser is stale — \
-        run `scripts/tree-sitter-generate.sh --force` and re-run this test \
-        before looking anywhere else.";
+        This is the `#6992` signature: the linked parser is generated into \
+        tree-sitter-reify's OUT_DIR by its build script, and nothing in this \
+        crate can tell a grammar regression from an archive that was never \
+        rebuilt for the grammar.js on disk. If grammar.js still declares the \
+        optional `[binder in domain]` clause on `sub_declaration`, run \
+        `scripts/tree-sitter-freshness.sh check`; if it reports STALE, run \
+        `scripts/tree-sitter-freshness.sh ensure`, rebuild, and re-run this \
+        test before looking anywhere else.";
 
     // (1) The cheap signal: the field NAMES exist in the linked language.
     //

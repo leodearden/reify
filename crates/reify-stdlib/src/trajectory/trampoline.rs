@@ -1252,7 +1252,7 @@ mod tests {
     }
 
     /// Minimal `mech` fixture — the simulate path takes `mech : Real`
-    /// (trajectory_fns.ri), so the bare `Value::Real` is the canonical input.
+    /// (trajectory.ri :: simulate_trajectory), so a bare `Value::Real` is canonical.
     fn mech(m: f64) -> Value {
         Value::Real(m)
     }

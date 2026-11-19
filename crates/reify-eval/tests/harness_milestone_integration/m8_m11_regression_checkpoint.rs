@@ -458,7 +458,7 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         // 3D geometric primitives
         Value::Plane { .. } | Value::Axis { .. } | Value::BoundingBox { .. } => true,
         // Dimensionless 3D unit vector (task 4382 / β)
-        Value::Direction { .. } => true,
+        Value::Direction(_) => true,
         // Range
         Value::Range { .. } => true,
         // Matrix
@@ -733,11 +733,7 @@ fn checkpoint_value_variant_coverage() {
             ])),
         },
         // Dimensionless 3D unit vector (task 4382 / β)
-        Value::Direction {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        },
+        Value::Direction(reify_ir::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap()),
         // Range (1)
         Value::Range {
             lower: Some(Box::new(Value::Real(0.0))),

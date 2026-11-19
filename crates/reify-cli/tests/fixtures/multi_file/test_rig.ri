@@ -1,0 +1,9 @@
+module test_rig
+
+import parts
+
+@test
+structure def TestRig {
+    sub p = Pulley()
+    constraint p.diameter > 10mm
+}

@@ -1,0 +1,9 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// Row B26 (leaf zeta). Today: `wt` displays true; extrude's distance is unresolved (Undef).
+module realized_world_conformance_branch
+
+structure P {
+    let g = box(10mm, 10mm, 10mm)
+    let wt = is_watertight(g)
+    let r = extrude(rectangle(5mm, 5mm), if wt then 10mm else 20mm)
+}

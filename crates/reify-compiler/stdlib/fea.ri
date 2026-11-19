@@ -27,10 +27,12 @@
 // module cannot name them at all — `Stress` works there only because it
 // resolves to the built-in `Pressure` dimension, not to a units.ri alias.
 //
-// Module placement: registered after `std.analysis` in `stdlib_loader.rs`
-// so the growing prelude carries `Stress`/`AnalysisResult` when this module
-// compiles. It now also REQUIRES `std.units` to precede it (see the ordering
-// note on the `std.fea` entry in stdlib_loader.rs).
+// Dependencies: `std.units`, imported below, for the `Pressure2`/`Pressure3`
+// aliases its fields declare (task #6092).
+
+module std.fea
+
+import std.units
 
 structure def StressInvariants {
     param i1 : Pressure

@@ -6,7 +6,8 @@
 //! and the position it writes it in; [`attribution`] ranks the definitions of
 //! each name through `name_env`, so only names whose winning definition lives
 //! in a std module need an import. [`coverage`] decides which of those names
-//! a module's own `import` declarations already make visible.
+//! a module's own `import` declarations, those in effect under the active
+//! cfg, already make visible.
 
 mod attribution;
 mod coverage;
@@ -16,10 +17,11 @@ mod name_uses;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticIdentity, ModulePath, Severity};
+use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
 
+use crate::cfg::CfgSet;
 use crate::types::CompiledModule;
 
 /// One std module a module needs, with the written names that need it.
@@ -30,10 +32,53 @@ pub struct RequiredImport {
     pub names: Vec<NameUse>,
 }
 
+/// The exact module an [`ImportPlan`] was derived for: its path and the hash
+/// of its source.
+#[derive(Clone, PartialEq, Eq)]
+struct Subject {
+    path: ModulePath,
+    content_hash: ContentHash,
+}
+
+impl Subject {
+    fn of(parsed: &ParsedModule) -> Self {
+        Self {
+            path: parsed.path.clone(),
+            content_hash: parsed.content_hash,
+        }
+    }
+
+    /// # Panics
+    ///
+    /// If `parsed` is not this subject: another path, or the same path with
+    /// edited source.
+    fn assert_is(&self, parsed: &ParsedModule) {
+        let given = Self::of(parsed);
+        if *self == given {
+            return;
+        }
+        let source_changed = if self.path == given.path {
+            format!(
+                ": the paths match but the source changed ({:?} at derive, {:?} given); \
+                 re-derive the plan for the edited source",
+                self.content_hash, given.content_hash
+            )
+        } else {
+            String::new()
+        };
+        panic!(
+            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
+             derived for `{}`, given `{}`{source_changed}",
+            self.path.to_dotted(),
+            given.path.to_dotted()
+        );
+    }
+}
+
 /// The std-import derivation of one module over one universe.
 #[derive(Clone)]
 pub struct ImportPlan<'u> {
-    subject: ModulePath,
+    subject: Subject,
     required: Vec<RequiredImport>,
     universe: Vec<&'u CompiledModule>,
     whole_universe_diagnostics: Vec<Diagnostic>,
@@ -49,14 +94,14 @@ impl<'u> ImportPlan<'u> {
     }
 
     /// The required imports `parsed` does not yet satisfy, each narrowed to
-    /// the names its declared imports leave uncovered.
+    /// the names its imports in effect under `cfg` leave uncovered.
     ///
     /// # Panics
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
-    pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<RequiredImport> {
-        let coverage = coverage::ImportCoverage::of(parsed);
+    pub fn missing_from(&self, parsed: &ParsedModule, cfg: &CfgSet) -> Vec<RequiredImport> {
+        let coverage = coverage::ImportCoverage::of(parsed, cfg);
         self.required
             .iter()
             .filter_map(|required| {
@@ -83,20 +128,16 @@ impl<'u> ImportPlan<'u> {
     ///
     /// # Panics
     ///
-    /// If `parsed` is not at the module path the plan was derived for: the
-    /// whole-universe diagnostics are that module's.
+    /// If `parsed` is not the module the plan was derived for, at the same
+    /// path with the same source: the whole-universe diagnostics are that
+    /// exact module's, so a module whose source was edited, for example by
+    /// [`insert_imports`], needs a fresh plan.
     pub fn residual_diagnostics(
         &self,
         parsed: &ParsedModule,
         imports: &[ModulePath],
     ) -> Vec<Diagnostic> {
-        assert!(
-            parsed.path == self.subject,
-            "ImportPlan::residual_diagnostics judges only the module the plan was derived for: \
-             derived for `{}`, given `{}`",
-            self.subject.to_dotted(),
-            parsed.path.to_dotted()
-        );
+        self.subject.assert_is(parsed);
         let imported: Vec<&CompiledModule> = self
             .universe
             .iter()
@@ -152,7 +193,7 @@ pub fn derive_std_imports<'u>(
         }
     }
     ImportPlan {
-        subject: parsed.path.clone(),
+        subject: Subject::of(parsed),
         required: by_module
             .into_values()
             .map(|(module, names)| RequiredImport {
@@ -169,16 +210,29 @@ pub fn derive_std_imports<'u>(
     }
 }
 
-/// The module path of every `import` `parsed` declares, in any form.
+/// The module path of every `import` `parsed` declares whose `#cfg`
+/// predicates `cfg` satisfies, in any form.
 ///
 /// # Panics
 ///
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
-pub fn declared_imports(parsed: &ParsedModule) -> Vec<ModulePath> {
-    coverage::imports(parsed)
+pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
+    coverage::in_effect(parsed, cfg)
         .map(|(module, _)| module)
         .collect()
+}
+
+/// The module path of every `import` `parsed` declares whose `#cfg`
+/// predicates `cfg` does not satisfy, in any form: the imports
+/// [`cfg_satisfied_imports`] leaves out, which cover nothing under `cfg`.
+///
+/// # Panics
+///
+/// If `parsed` declares an import whose path is not a module path, which
+/// only a module with parse errors can.
+pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
+    coverage::gated_off(parsed, cfg).collect()
 }
 
 /// Every compiled stdlib module except `module`, in load order: the universe
@@ -195,15 +249,22 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 }
 
 /// `source` with an `import` line added for every module of `modules` it
-/// does not already import whole, through a namespace import (an entity
-/// import of the module does not count), in the order given: after the last
-/// import, else after the `module` declaration, else after the leading module
-/// pragmas, else after the leading comment block's last blank line.
+/// does not already import whole under `cfg`, through a namespace import (an
+/// entity import, or a gated import `cfg` does not satisfy, does not count),
+/// in the order given: after the last import, else after the `module`
+/// declaration, else after the leading module pragmas above the line holding
+/// the first leading `#cfg`, else after the leading comment block's last blank
+/// line.
 ///
 /// # Panics
 ///
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
-pub fn insert_imports(source: &str, parsed: &ParsedModule, modules: &[ModulePath]) -> String {
-    header_edit::insert_imports(source, parsed, modules)
+pub fn insert_imports(
+    source: &str,
+    parsed: &ParsedModule,
+    cfg: &CfgSet,
+    modules: &[ModulePath],
+) -> String {
+    header_edit::insert_imports(source, parsed, cfg, modules)
 }

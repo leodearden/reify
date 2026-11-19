@@ -1902,6 +1902,21 @@ fn probe() {
     let _ = env!("CARGO_MANIFEST_DIR");
 }
 RS_EOF
+# bin_probe_*: each holds ONLY its own CARGO_BIN_EXE_<name> macro (no
+# CARGO_MANIFEST_DIR), so no other regex alternative can relink it and let
+# N2b/N2c pass vacuously.
+cat > "$N_LANE/crates/foo/tests/bin_probe_hyphen.rs" <<'RS_EOF'
+#[test]
+fn bin_probe_hyphen() {
+    let _ = env!("CARGO_BIN_EXE_my-tool");
+}
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/bin_probe_underscore.rs" <<'RS_EOF'
+#[test]
+fn bin_probe_underscore() {
+    let _ = env!("CARGO_BIN_EXE_my_tool");
+}
+RS_EOF
 cat > "$N_LANE/crates/foo/tests/plain.rs" <<'RS_EOF'
 #[test]
 fn plain() {
@@ -1930,6 +1945,15 @@ assert "N1: differ-buildroot seed exits 0" test "$RC" -eq 0
 N2_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/env_probe.rs")"
 assert "N2: tests/env_probe.rs mtime > 2020 epoch (relinked on buildroot differ)" \
     test "$N2_MTIME" -gt "$EPOCH_2020"
+
+# N2b/N2c: CARGO_BIN_EXE_<name> is relinked whether <name> carries a hyphen
+# (cargo bin names may: reify-audit, reify-gui) or only underscores.
+N2B_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/bin_probe_hyphen.rs")"
+assert "N2b: tests/bin_probe_hyphen.rs mtime > 2020 epoch (hyphenated CARGO_BIN_EXE_<name> relinked on buildroot differ)" \
+    test "$N2B_MTIME" -gt "$EPOCH_2020"
+N2C_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/bin_probe_underscore.rs")"
+assert "N2c: tests/bin_probe_underscore.rs mtime > 2020 epoch (underscore CARGO_BIN_EXE_<name> still relinked on buildroot differ)" \
+    test "$N2C_MTIME" -gt "$EPOCH_2020"
 
 # N3: plain tests/ file (no macro) stays at the bulk-stamp epoch (scope: macro-only)
 N3_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/plain.rs")"

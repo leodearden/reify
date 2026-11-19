@@ -362,16 +362,15 @@ pub enum DiagnosticCode {
     ///          (param-level argument type check, task 4546).
     ///
     /// Emitted when a constraint instantiation passes an argument whose
-    /// compile-time type is incompatible with the declared parameter type —
-    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
-    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
-    /// for `Length`) are deliberately tolerated at the binding site; dimensional
-    /// strictness within comparison predicates is enforced by task 4490's
-    /// `E_CmpOperandKind` guard.
+    /// compile-time type does not conform to the declared parameter type. The
+    /// acceptance policy is the Rules list of
+    /// `crates/reify-compiler/src/type_compat.rs::constraint_arg_type_conforms`.
+    /// A rejection short-circuits the instantiation, so no predicate-body
+    /// comparison diagnostic doubles it.
     ///
     /// Canonical message form:
-    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
-    ///   of constraint '<def>' expects <expected>"`.
+    /// `"type mismatch: argument '<arg>' for constraint '<def>' has type \
+    ///   <actual> but parameter expects <expected>"`.
     ///
     /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
     ConstraintArgTypeMismatch,
@@ -2668,6 +2667,28 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
     /// (severity convention: `E_*` → Error).
     ExponentOutOfRange,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `BinOp::Mul`/`BinOp::Div`
+    /// arm), via `type_compat::infer_mul_div_result` returning
+    /// `MulDivRefusal::DimensionOverflow`.
+    ///
+    /// Emitted as a `Severity::Error` when the combined dimension of a
+    /// value-level `*` or `/` has an exponent that does not fit `Rational`
+    /// (`i16/i16`). Example: `1m^1/31 * 1m^1/37 * 1m^1/41`, whose Length
+    /// exponent needs denominator 47027.
+    ///
+    /// Canonical message form:
+    ///   `"the combined dimension of `<left>` <op> `<right>` has an exponent out of range"`
+    /// with a label `"combined dimension out of range"` on the operator node.
+    ///
+    /// The result type is poisoned to `Type::Error` (anti-cascade); the runtime
+    /// `eval_mul`/`eval_div` arm yields `Undef`.
+    ///
+    /// Distinct from [`ExponentOutOfRange`], which is a WRITTEN `^` literal
+    /// outside `i8`; this code is a COMPUTED exponent outside `Rational`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSION_EXPONENT_OVERFLOW`
+    /// (severity convention: `E_*` → Error).
+    DimensionExponentOverflow,
     /// Origin: `crates/reify-compiler/src/expr.rs`
     /// (`ExprKind::FunctionCall` arm — semantic gate for VALUE-position `auto`).
     ///
@@ -4602,6 +4623,15 @@ pub enum DiagnosticCode {
     /// one-variant addition that serde round-trips automatically (same
     /// non-breaking argument as `ExpressionNestingTooDeep` above).
     DimensionedArgRejected,
+    /// Origin: the `dir(...)` builtin (docs/prds/v0_6/direction-typing.md
+    /// C4/C11) when `reify_ir::direction::UnitVec3::from_vector` returns a
+    /// `DirectionFault` — a zero, sub-floor or non-finite vector has no unit
+    /// Direction.
+    ///
+    /// Runtime `Severity::Error`; the message embeds the
+    /// `E_DegenerateDirection` mnemonic because the CLI does not print codes.
+    /// Distinct from `DimensionedArgRejected` (the wrong-units fault).
+    DegenerateDirection,
     /// Origin:
     /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
     /// — the single shared refusal builder, emitted from BOTH export surfaces:
@@ -4973,6 +5003,19 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     FnDeclTablesMisaligned,
+    /// Origin: `gui/src-tauri/src/engine.rs::unanchored_import_warning`, the GUI's
+    /// buffer-only compile (task #5519, PRD resolution-unification D-10).
+    ///
+    /// Emitted when a compile with no file anchor (GUI `load_from_source`, or
+    /// `update_source` before any `load_file`) contains imports a file-backed
+    /// compile would follow, which it therefore cannot resolve. One per buffer,
+    /// naming every such import, located at the first.
+    ///
+    /// Canonical message: `"import \"<a>\", \"<b>\" not resolved: imports
+    /// require a file-backed buffer — open the .ri file to resolve them"`.
+    ///
+    /// Severity: Warning.
+    ImportRequiresFileBackedBuffer,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5609,6 +5652,15 @@ mod tests {
     fn dimensioned_arg_rejected_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
         assert_eq!(s, "\"DimensionedArgRejected\"");
+    }
+
+    // --- DegenerateDirection tests (direction-typing α) ---
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn degenerate_direction_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DegenerateDirection).unwrap();
+        assert_eq!(s, "\"DegenerateDirection\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---
@@ -8137,10 +8189,12 @@ pub struct DiagnosticInfo {
     /// Whether this diagnostic carries a real, line-tied source span.
     ///
     /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
-    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// actual span from the compiled source (a first `Diagnostic::labels` entry
+    /// whose span is not [`SourceSpan::prelude`]).
     /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
     /// point at a meaningful source location — e.g. module-level hot-reload staleness
-    /// errors where no span is available.
+    /// errors where no span is available, or a diagnostic re-homed from an
+    /// imported module, whose spans index that module, not this source.
     ///
     /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
     /// navigating the editor to a fake line 1 for span-less diagnostics.

@@ -790,12 +790,15 @@ pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Before the file exists: this is the slow, panic-prone step, and a panic
+    // must not leave behind an empty file that refuses the retry.
+    let template = crate::new_file_template::new_file_template(&stem);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
         .map_err(|e| format!("Error creating {target}: {e}"))?;
-    if let Err(e) = file.write_all(crate::new_file_template::new_file_template(&stem).as_bytes()) {
+    if let Err(e) = file.write_all(template.as_bytes()) {
         // The file is ours (create_new): remove the partial write so a retry is not refused.
         let _ = std::fs::remove_file(&target);
         return Err(format!("Error creating {target}: {e}"));
@@ -803,8 +806,18 @@ pub fn create_new_file_impl(path: &str) -> Result<FileData, String> {
     open_file_impl(&target)
 }
 
-/// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
-/// entries are still stem-only module keys rather than canonical absolute
+/// [`create_new_file_impl`], awaited on a large-stack thread: the template's
+/// parse can be the process's first stdlib compile, which must not run on the
+/// GTK main thread.
+pub async fn create_new_file_on_large_stack(path: String) -> Result<FileData, String> {
+    crate::large_stack::run_on_large_stack(move || create_new_file_impl(&path))
+        .await
+        .and_then(std::convert::identity)
+}
+
+/// A [`GuiState`] fresh out of an engine open (`load_file_into_engine` or
+/// [`open_document_in_engine`]), whose `files[].path` entries are still
+/// stem-only module keys rather than canonical absolute
 /// paths. The only way to get a plain [`GuiState`] back out is
 /// [`resolve`](Self::resolve) — that keeps the rewrite step paired with the
 /// load at the type level, so a future call site cannot return the
@@ -822,7 +835,7 @@ impl UnresolvedGuiState {
     /// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
     /// identity key regardless of how the original input path was spelled.
     ///
-    /// Deliberately a separate step from [`load_file_into_engine`] (#5193):
+    /// Deliberately a separate step from the engine open (#5193):
     /// it is filesystem I/O that touches no engine state, so
     /// callers call this AFTER releasing the engine lock that produced
     /// `self`, rather than holding the mutex across N
@@ -836,20 +849,43 @@ impl UnresolvedGuiState {
 /// Load `canonical` into the engine, adopting its identity via
 /// `EngineSession::load_file` (`FilePathUpdate::Set`).
 ///
-/// Shared choke-point for both open-file entry points — [`open_file_engine_impl`]
-/// (the normal Tauri command) and `debug_server::open_source_into_engine_and_refresh_baseline`
-/// (the debug bridge's open_file/load_fixture funnel) — so the load_file
-/// call cannot drift between them again (task #5193).
+/// The debug open funnel's choke-point
+/// (`debug_server::open_source_into_engine_and_refresh_baseline`, behind the
+/// debug bridge's open_file/load_fixture tools). It refuses a source the
+/// engine rejects, so those MCP tools report it as an error; the GUI's own
+/// open adopts such a file instead, through [`open_document_in_engine`]. Both
+/// adopt the opened file's identity on success rather than preserving the
+/// previously loaded one (task #5193).
 ///
 /// Returns an [`UnresolvedGuiState`]: callers MUST call
 /// [`UnresolvedGuiState::resolve`] to obtain a `GuiState` fit to hand to a
 /// caller. See that method's docs for why the step is separate rather than
 /// inlined here.
+///
+/// Gated to its consumer, the `#[cfg(feature = "gui")]` `debug_server`: in the
+/// default-feature build it would be dead code under clippy's `-D warnings`.
+#[cfg(feature = "gui")]
 pub(crate) fn load_file_into_engine(
     session: &mut EngineSession,
     canonical: &Path,
 ) -> Result<UnresolvedGuiState, String> {
     session.load_file(canonical).map(UnresolvedGuiState)
+}
+
+/// Open `canonical` as the engine's document via
+/// `EngineSession::open_document`: the GUI open funnel's choke-point, behind
+/// [`load_initial_file_impl`].
+///
+/// `Err` only for an unreadable file. A source the engine rejects still
+/// opens, as an uncompiled document whose state carries its diagnostics.
+///
+/// Returns an [`UnresolvedGuiState`], exactly as `load_file_into_engine`
+/// does: callers MUST call [`UnresolvedGuiState::resolve`].
+fn open_document_in_engine(
+    session: &mut EngineSession,
+    canonical: &Path,
+) -> Result<UnresolvedGuiState, String> {
+    session.open_document(canonical).map(UnresolvedGuiState)
 }
 
 /// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
@@ -892,6 +928,10 @@ fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
 
 /// Load a file into the engine and return the initial state.
 ///
+/// `Err` means the file is unreadable or the engine failed (a panic). A file
+/// whose source the engine rejects opens as an uncompiled document: the state
+/// carries its buffer and compile diagnostics, with no geometry.
+///
 /// The input `path` is canonicalised to an absolute realpath via
 /// [`crate::path_key::canonicalize_document_key`], then handed to
 /// [`load_initial_file_impl`] — a THIN WRAPPER, deliberately: the two entry
@@ -918,9 +958,13 @@ pub fn open_file_evaluation(
 
 /// The ONE load-and-resolve body behind both file-open entry points: the
 /// startup **argv** launch ([`begin_initial_file_load`] → here) and File-Open
-/// ([`open_file_engine_impl`], which canonicalises and delegates), alongside
-/// `debug_server::open_source_into_engine_and_refresh_baseline` on the shared
-/// [`load_file_into_engine`] choke-point (#5193).
+/// ([`open_file_engine_impl`], which canonicalises and delegates), through the
+/// [`open_document_in_engine`] choke-point.
+///
+/// `Err` means the file is unreadable or the engine failed (a panic). A source
+/// the engine rejects opens as an uncompiled document whose state carries its
+/// diagnostics, so it can be repaired in place — unlike the debug open funnel
+/// on `load_file_into_engine`, which refuses it.
 ///
 /// `main()` previously called `EngineSession::load_file` inline and DISCARDED the
 /// returned `GuiState`, so [`UnresolvedGuiState::resolve`] never ran on the argv
@@ -956,12 +1000,15 @@ pub fn load_initial_file_impl(
     engine: &Mutex<EngineSession>,
     path: &Path,
 ) -> Result<GuiState, String> {
-    let state = crate::engine_lock::with_engine_lock(engine, |s| load_file_into_engine(s, path))
+    let state = crate::engine_lock::with_engine_lock(engine, |s| open_document_in_engine(s, path))
         .and_then(std::convert::identity)?;
     Ok(state.resolve(path))
 }
 
 /// Why the argv launch file failed to load: the file, and the load's error.
+///
+/// The file was unreadable or the engine failed; a source the engine rejects
+/// is not a failure, because it opens (see [`load_initial_file_impl`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct InitialFileLoadFailure {
     pub path: String,
@@ -991,7 +1038,8 @@ impl InitialFileLoadFailureSlot {
 }
 
 /// [`load_initial_file_impl`] as a queued snapshot of the argv file, recording
-/// a failure in `failure_slot` before it replies.
+/// a failure in `failure_slot` before it replies. A source the engine rejects
+/// opens, so it records no failure.
 pub fn initial_file_evaluation(
     engine: Arc<Mutex<EngineSession>>,
     canonical: PathBuf,

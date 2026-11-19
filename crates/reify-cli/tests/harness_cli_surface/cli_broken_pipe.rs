@@ -2,22 +2,46 @@
 //! filter does — terminated by SIGPIPE — not with a Rust panic (exit 101, "failed printing
 //! to stdout: Broken pipe"); task #7906.
 
-use std::os::unix::process::ExitStatusExt;
+use std::io;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Output, Stdio};
+
+/// Points stdout at a pipe nobody can read. The pipe is built in the forked child rather than in
+/// the multi-threaded test process, where a parallel test's fork could copy the read end and
+/// keep a reader alive across the fork-to-exec window (#10035).
+///
+/// # Safety
+///
+/// Call only in a forked child before exec: it replaces the caller's stdout.
+unsafe fn point_stdout_at_a_pipe_without_reader() -> io::Result<()> {
+    let mut pipe_fds: [libc::c_int; 2] = [-1; 2];
+    // SAFETY: plain fd syscalls on a buffer and descriptors that only this child holds.
+    unsafe {
+        if libc::pipe(pipe_fds.as_mut_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let [read_end, write_end] = pipe_fds;
+        libc::close(read_end);
+        if libc::dup2(write_end, libc::STDOUT_FILENO) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        libc::close(write_end);
+    }
+    Ok(())
+}
 
 fn run_with_closed_stdout(args: &[&str]) -> Output {
     let cache_dir = tempfile::tempdir().expect("create hermetic REIFY_CACHE_DIR");
-    let (reader, writer) = std::io::pipe().expect("create stdout pipe");
-    // Closed before spawn, so the child's first stdout write can never land in a pipe buffer.
-    drop(reader);
-    Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reify"));
+    command
         .args(args)
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
-        .stdout(writer)
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary")
+        .stdout(Stdio::null()) // the hook below replaces fd 1 in the child
+        .stderr(Stdio::piped());
+    // SAFETY: runs in the forked child before exec and calls only async-signal-safe libc.
+    unsafe { command.pre_exec(|| point_stdout_at_a_pipe_without_reader()) };
+    command.output().expect("failed to execute reify binary")
 }
 
 fn assert_terminated_by_sigpipe_without_panic(output: &Output, invocation: &str) {

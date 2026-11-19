@@ -145,6 +145,11 @@ mod polymorphic_zero_trait_eval;
 // layout and stays a grandfathered top-level standalone.
 #[path = "harness_engine/instance_scope_param_default_order.rs"]
 mod instance_scope_param_default_order;
+// Task #10015's cold instance-scope guarded-template-let pins land here for the
+// same anti-re-accretion reason as #5196's and #5360's above, beside #7418's
+// `unfold.rs` instance-scope pins.
+#[path = "harness_engine/instance_scope_guarded_template_let.rs"]
+mod instance_scope_guarded_template_let;
 // Task #5417's DIC γ runtime-half e2e lands here for the same anti-re-accretion
 // reason as #5196's and #5360's above.
 #[path = "harness_engine/objective_consumption_e2e.rs"]
@@ -193,3 +198,11 @@ mod def_env_skeleton;
 // what `unfold.rs` commits for geometry and selector cells.
 #[path = "harness_engine/instance_scope_symbolic_mint.rs"]
 mod instance_scope_symbolic_mint;
+// Task #5763's dimensioned-construction ε constraint-verdict pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/dimensioned_param_default_constraint_verdicts.rs"]
+mod dimensioned_param_default_constraint_verdicts;
+// Task #10033's checker-side `@optimized` dispatch pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/constraint_check_optimized_dispatch.rs"]
+mod constraint_check_optimized_dispatch;

@@ -7,9 +7,7 @@
 //
 // PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task η.
 //
-// Load order (stdlib_loader.rs): this module loads AFTER `std.fdm.as_printed`
-// so that `FDMProcess` (std.fdm) and the surrounding FDM surface are resolved in
-// the growing sequential prelude when this module compiles.
+// Dependencies, imported below: `FDMProcess` (std.fdm).
 //
 // Field-type ↔ marshalling contract:
 //   The Toolpath / Bead / Layer / BeadRole shapes below MUST stay aligned with
@@ -22,6 +20,11 @@
 //   and `bead.width > 0.45` no longer silently means a 1000x-wrong thing.
 //   `fdm_slice_e2e.rs`'s `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime`
 //   is the guard that keeps this block honest — it fails if a field reverts to `Real`.
+
+module std.fdm.slice
+
+import std.fdm
+import std.units
 
 // ── BeadRole ────────────────────────────────────────────────────────────────
 //

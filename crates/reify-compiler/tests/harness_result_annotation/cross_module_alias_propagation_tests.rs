@@ -452,9 +452,8 @@ fn parametric_pub_prelude_alias_resolves_via_body_no_panic() {
 /// `Rate<Length>` → body `Q / Time` with Q=Length → LENGTH / TIME = VELOCITY.
 ///
 /// This is the precise, harness-free counterpart to the committed .ri signal
-/// (S7/S8); it also guards that adding `Rate` to units.ri keeps the stdlib
-/// build clean (the `signal_2_real_stdlib_compiles_clean_and_order_is_stable`
-/// test in stdlib_topo.rs auto-covers that).
+/// (S7/S8). That adding `Rate` to units.ri keeps the stdlib build clean is
+/// enforced by `load_stdlib`'s NS-M2 panic on any Error diagnostic.
 ///
 /// RED on base: `Rate` is not yet declared in units.ri → unresolved-type Error.
 #[test]
@@ -621,8 +620,9 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
 ///
 /// `Vec3<Pressure>` → body `Vector3<Q>` with Q=Pressure → Type::vec3(Type::Scalar{PRESSURE}).
 ///
-/// RED on base: trajectory.ri:102 declares `pub type Vec3 = Vector3<Length>` (0-param),
-/// so `Vec3<Pressure>` is an arity error (1 arg vs 0 params).
+/// RED on base: `trajectory.ri :: Vec3` was then declared
+/// `pub type Vec3 = Vector3<Length>` (0-param), so `Vec3<Pressure>` was an
+/// arity error (1 arg vs 0 params).
 #[test]
 fn vec3_alias_resolves_via_real_stdlib_prelude() {
     let source = "structure def S { param p : Vec3<Pressure> }";

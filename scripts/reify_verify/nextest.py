@@ -18,10 +18,10 @@ from pathlib import Path
 
 from reify_verify import bashcall, knobs
 from reify_verify.bashcall import ScriptCall
+from reify_verify.diagnostics import ERROR
 from reify_verify.gatepaths import CrateGuard
 from reify_verify.plan import (
     CONFIRM_RECORDER,
-    ERROR,
     CargoTestRun,
     ConfirmRecorded,
     NextestFlags,
@@ -123,7 +123,7 @@ class PassSpec:
 
     The gui-feature pass never carries a filter: one would narrow away the
     gui-gated tests it exists to run. A pass of a recording kind carries no
-    guard, because its step's one gate path is the recorder's.
+    guard; _refuse_guarded_recording says why.
     """
 
     kind: PassKind
@@ -142,16 +142,20 @@ class PassSpec:
                 f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
                 f"retry_ids={self.retry_ids!r})"
             )
-        recorder = CONFIRM_RECORDER if self.kind.records else None
-        _refuse_guarded_recording(f"PassSpec(kind={self.kind.value})", recorder, self.guard)
+        if self.kind.records:
+            _refuse_guard_on_claimed_gate_path(
+                f"PassSpec(kind={self.kind.value})", CONFIRM_RECORDER, self.guard
+            )
 
 
-def _refuse_guarded_recording(owner: str, recorder: str | None, guard: CrateGuard | None) -> None:
-    """A step names one gate path, so a guard may not take the one a recorded pass gives its recorder."""
-    if recorder is not None and guard is not None:
+def _refuse_guard_on_claimed_gate_path(
+    owner: str, claimed_gate_path: str | None, guard: CrateGuard | None
+) -> None:
+    """A step names one gate path, so a guard may not take one its pass has already claimed."""
+    if claimed_gate_path is not None and guard is not None:
         raise ValueError(
-            f"{owner}: a pass that records its failing ids carries no guard: its step names one "
-            f"gate path, which {recorder} and {guard.setup.path} would both claim"
+            f"{owner}: the step names one gate path, which is claimed by {claimed_gate_path}, "
+            f"so the pass carries no guard to claim it for {guard.setup.path}"
         )
 
 
@@ -236,9 +240,8 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
 
     A nextest pass names the runner's config, so a nextest runner holding none
     is refused. A recording runner wraps a nextest pass of a recording kind in
-    the confirm recorder, whose gate path no guard may then take; the
-    cargo-test fallback records nothing. The pass runs without the semaphore
-    slot's descriptor.
+    the confirm recorder; the cargo-test fallback records nothing. The pass
+    runs without the semaphore slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
@@ -265,7 +268,7 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
     guard_file = None
     if spec.guard is not None:
         owner = f"emit_pass(kind={spec.kind.value}, profile={spec.profile.value})"
-        _refuse_guarded_recording(owner, gate_path, spec.guard)
+        _refuse_guard_on_claimed_gate_path(owner, gate_path, spec.guard)
         run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
     phase = _phase(spec, nextest=runner.nextest)

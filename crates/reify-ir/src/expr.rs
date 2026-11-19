@@ -27,7 +27,11 @@ pub enum SelectorKind {
 }
 
 /// The kinds of compiled expression nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::EnumDiscriminants)]
+#[strum_discriminants(
+    name(CompiledExprKindDiscriminants),
+    derive(strum::EnumIter, strum::EnumCount, Hash)
+)]
 pub enum CompiledExprKind {
     /// Literal value.
     Literal(Value),
@@ -191,9 +195,11 @@ pub enum CompiledExprKind {
         /// Template `Let` cells to eagerly materialize at construction time
         /// (task-4342). Each entry is `(member_name, compiled_expr)` in
         /// declaration order.  These reference template-local `ValueCellId`s
-        /// (`entity == type_name`) and are intentionally NOT traversed by
-        /// `walk` / `try_for_each_value_ref` / `remap_entity` / `remap_cell`
-        /// — those operations act on surrounding-scope refs only.
+        /// (`entity == type_name`) and are NOT children
+        /// (`CompiledExpr::try_for_each_child`), so the child accessors and
+        /// every pass built on them (`walk`, `try_for_each_value_ref`,
+        /// `remap_entity`, `remap_cell`, …) skip them — those passes act on
+        /// surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
         /// The `.ri` source span of the constructor call site (task 4089,
         /// FEA result-model R2), populated by the compiler from the AST
@@ -208,6 +214,18 @@ pub enum CompiledExprKind {
         /// (`StructureInstanceData::with_source_span`, value.rs), which is
         /// likewise excluded from value-level identity via `user_fields()`.
         span: Option<SourceSpan>,
+    },
+    /// Runtime constructor for a data-carrying enum variant (task 7456).
+    ///
+    /// Emitted by reify-compiler's `variant_construct` for a payload variant
+    /// whose field values are not all literals (an all-literal construction
+    /// folds to a `Literal(Value::Enum)` instead). `payload` is in the
+    /// variant's DECLARATION order; reify-expr evaluates it pointwise into a
+    /// `Value::Enum` with the same field names and order.
+    VariantCtor {
+        type_name: String,
+        variant: String,
+        payload: Vec<(String, CompiledExpr)>,
     },
     /// Compiler-inserted Selector→`List<Geometry>` coercion node (task 4118, γ).
     ///
@@ -459,7 +477,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[29]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[30]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -493,6 +511,8 @@ pub const TAG_CROSS_SUB_GEOMETRY_REF: u8 = 27;
 /// the next free `CompiledExpr` tag after `TAG_CROSS_SUB_GEOMETRY_REF` (27) is
 /// 28. (The plan's draft cited 21; superseded by the in-code reservation.)
 pub const TAG_RESOLVE_SELECTOR: u8 = 28;
+/// task 7456: runtime data-carrying enum variant constructor.
+pub const TAG_VARIANT_CTOR: u8 = 29;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -562,129 +582,211 @@ impl CompiledExpr {
         }
     }
 
-    /// Recursively walk the expression tree, calling `f` on each node (pre-order).
+    /// Call `f` on each DIRECT child expression in evaluation order, stopping
+    /// at the first `Break`. A child is a sub-expression evaluated in this
+    /// node's scope; `StructureInstanceCtor.lets` are template-local and are
+    /// NOT children.
     ///
-    /// This is the canonical traversal for `CompiledExprKind`. All callers
-    /// that need to visit expression nodes should use this method rather than
-    /// implementing their own match on `CompiledExprKind`. This ensures that
-    /// when new variants are added, only this single method needs updating.
-    pub fn walk(&self, f: &mut impl FnMut(&CompiledExpr)) {
-        f(self);
+    /// This match is THE statement of each variant's child shape:
+    /// `for_each_child` derives from it and `for_each_child_mut` mirrors it
+    /// arm for arm (pinned by `crates/reify-ir/tests/child_enumeration.rs`).
+    pub fn try_for_each_child<'a, B>(
+        &'a self,
+        f: &mut dyn FnMut(&'a CompiledExpr) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
         match &self.kind {
-            CompiledExprKind::Literal(_) => {}
-            CompiledExprKind::ValueRef(_) | CompiledExprKind::CrossSubGeometryRef(_) => {}
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::ValueRef(_)
+            | CompiledExprKind::CrossSubGeometryRef(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::DeterminacyPredicate { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
             CompiledExprKind::BinOp { left, right, .. } => {
-                left.walk(f);
-                right.walk(f);
+                f(left)?;
+                f(right)?;
             }
-            CompiledExprKind::UnOp { operand, .. } => {
-                operand.walk(f);
-            }
-            CompiledExprKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    arg.walk(f);
-                }
+            CompiledExprKind::UnOp { operand, .. } => f(operand)?,
+            CompiledExprKind::FunctionCall { args, .. }
+            | CompiledExprKind::UserFunctionCall { args, .. } => {
+                args.iter().try_for_each(&mut *f)?;
             }
             CompiledExprKind::Conditional {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                condition.walk(f);
-                then_branch.walk(f);
-                else_branch.walk(f);
+                f(condition)?;
+                f(then_branch)?;
+                f(else_branch)?;
             }
             CompiledExprKind::Match { discriminant, arms } => {
-                discriminant.walk(f);
-                for arm in arms {
-                    arm.body.walk(f);
-                }
+                f(discriminant)?;
+                arms.iter().try_for_each(|arm| f(&arm.body))?;
             }
-            CompiledExprKind::UserFunctionCall { args, .. } => {
-                for arg in args {
-                    arg.walk(f);
-                }
-            }
-            CompiledExprKind::Lambda { body, .. } => {
-                body.walk(f);
-            }
-            CompiledExprKind::ListLiteral(elements) => {
-                for elem in elements {
-                    elem.walk(f);
-                }
-            }
-            CompiledExprKind::ReflectiveCellList(elements) => {
-                for elem in elements {
-                    elem.walk(f);
-                }
-            }
-            CompiledExprKind::SetLiteral(elements) => {
-                for elem in elements {
-                    elem.walk(f);
-                }
+            CompiledExprKind::Lambda { body, .. } => f(body)?,
+            CompiledExprKind::ListLiteral(elements)
+            | CompiledExprKind::SetLiteral(elements)
+            | CompiledExprKind::ReflectiveCellList(elements) => {
+                elements.iter().try_for_each(&mut *f)?;
             }
             CompiledExprKind::MapLiteral(entries) => {
                 for (key, val) in entries {
-                    key.walk(f);
-                    val.walk(f);
+                    f(key)?;
+                    f(val)?;
                 }
             }
             CompiledExprKind::IndexAccess { object, index } => {
-                object.walk(f);
-                index.walk(f);
+                f(object)?;
+                f(index)?;
             }
             CompiledExprKind::MethodCall { object, args, .. } => {
-                object.walk(f);
-                for arg in args {
-                    arg.walk(f);
-                }
+                f(object)?;
+                args.iter().try_for_each(&mut *f)?;
             }
             CompiledExprKind::Quantifier {
                 collection,
                 predicate,
                 ..
             } => {
-                collection.walk(f);
-                predicate.walk(f);
+                f(collection)?;
+                f(predicate)?;
             }
-            CompiledExprKind::OptionSome(inner) => {
-                inner.walk(f);
-            }
-            CompiledExprKind::OptionNone => {}
-            CompiledExprKind::MetaAccess { .. } => {}
-            CompiledExprKind::DeterminacyPredicate { .. } => {}
+            CompiledExprKind::OptionSome(inner) => f(inner)?,
             CompiledExprKind::RangeConstructor { lower, upper, .. } => {
                 if let Some(lo) = lower {
-                    lo.walk(f);
+                    f(lo)?;
                 }
                 if let Some(hi) = upper {
-                    hi.walk(f);
+                    f(hi)?;
                 }
             }
             CompiledExprKind::AdHocSelector { base, args, .. } => {
-                base.walk(f);
-                for arg in args {
-                    arg.walk(f);
-                }
+                f(base)?;
+                args.iter().try_for_each(&mut *f)?;
             }
-            // Placeholder is a leaf — no children to traverse.
-            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
             CompiledExprKind::StructureInstanceCtor {
                 ordered_args,
                 defaults,
                 ..
             } => {
-                for (_, arg) in ordered_args {
-                    arg.walk(f);
-                }
-                for (_, def) in defaults {
-                    def.walk(f);
-                }
+                ordered_args.iter().try_for_each(|(_, arg)| f(arg))?;
+                defaults.iter().try_for_each(|(_, def)| f(def))?;
             }
-            CompiledExprKind::ResolveSelector { selector } => {
-                selector.walk(f);
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                payload.iter().try_for_each(|(_, field)| f(field))?;
             }
+            CompiledExprKind::ResolveSelector { selector } => f(selector)?,
         }
+        ControlFlow::Continue(())
+    }
+
+    /// Call `f` on each direct child expression in evaluation order; see
+    /// `try_for_each_child` for what a child is.
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a CompiledExpr)) {
+        let ControlFlow::Continue(()) =
+            self.try_for_each_child::<std::convert::Infallible>(&mut |child| {
+                f(child);
+                ControlFlow::Continue(())
+            });
+    }
+
+    /// Mutable mirror of `try_for_each_child`, which states the child shape.
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut CompiledExpr)) {
+        match &mut self.kind {
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::ValueRef(_)
+            | CompiledExprKind::CrossSubGeometryRef(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::DeterminacyPredicate { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                f(left);
+                f(right);
+            }
+            CompiledExprKind::UnOp { operand, .. } => f(operand),
+            CompiledExprKind::FunctionCall { args, .. }
+            | CompiledExprKind::UserFunctionCall { args, .. } => {
+                args.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                f(condition);
+                f(then_branch);
+                f(else_branch);
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                f(discriminant);
+                arms.iter_mut().for_each(|arm| f(&mut arm.body));
+            }
+            CompiledExprKind::Lambda { body, .. } => f(body),
+            CompiledExprKind::ListLiteral(elements)
+            | CompiledExprKind::SetLiteral(elements)
+            | CompiledExprKind::ReflectiveCellList(elements) => {
+                elements.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    f(key);
+                    f(val);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                f(object);
+                f(index);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                f(object);
+                args.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::Quantifier {
+                collection,
+                predicate,
+                ..
+            } => {
+                f(collection);
+                f(predicate);
+            }
+            CompiledExprKind::OptionSome(inner) => f(inner),
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+                if let Some(lo) = lower {
+                    f(lo);
+                }
+                if let Some(hi) = upper {
+                    f(hi);
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                f(base);
+                args.iter_mut().for_each(&mut *f);
+            }
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                ordered_args.iter_mut().for_each(|(_, arg)| f(arg));
+                defaults.iter_mut().for_each(|(_, def)| f(def));
+            }
+            CompiledExprKind::VariantCtor { payload, .. } => {
+                payload.iter_mut().for_each(|(_, field)| f(field));
+            }
+            CompiledExprKind::ResolveSelector { selector } => f(selector),
+        }
+    }
+
+    /// Recursively walk the expression tree, calling `f` on each node
+    /// (pre-order: the node, then each child from `for_each_child` in turn).
+    ///
+    /// This is the canonical whole-tree traversal; each variant's child shape
+    /// is stated once, in `try_for_each_child`.
+    pub fn walk(&self, f: &mut impl FnMut(&CompiledExpr)) {
+        f(self);
+        self.for_each_child(&mut |child| child.walk(f));
     }
 
     /// Rewrite every `ValueRef` cell ID in this expression tree by applying
@@ -698,7 +800,8 @@ impl CompiledExpr {
     /// structurally fresh expression. This is the contract the runtime
     /// per-element forall emission relies on.
     ///
-    /// Variant coverage MUST match `walk()` arm-for-arm — adding a new
+    /// Variant coverage MUST match `try_for_each_child`'s child shape
+    /// arm-for-arm — adding a new
     /// `CompiledExprKind` variant should fail to compile here so the new
     /// variant is forced through this transform's hash-rebuilding path.
     ///
@@ -952,8 +1055,8 @@ impl CompiledExpr {
                 // that every ValueRef inside a let expr has entity == type_name.
                 // This makes the "no-traverse" contract visible and loud (rather than
                 // silently-wrong) if a future let ever captures a surrounding-scope ref.
-                // Walk + try_for_each_value_ref intentionally skip `lets` (they use
-                // `..`), so any cross-scope ref there would be missed by dependency
+                // Walk + try_for_each_value_ref skip `lets` because lets are not
+                // children, so any cross-scope ref there would be missed by dependency
                 // analysis and remapping — this assert fires before that can happen.
                 #[cfg(debug_assertions)]
                 for (let_name, let_expr) in &lets {
@@ -978,6 +1081,17 @@ impl CompiledExpr {
                     span,
                     result_type,
                 )
+            }
+            CompiledExprKind::VariantCtor {
+                type_name,
+                variant,
+                payload,
+            } => {
+                let new_payload: Vec<(String, CompiledExpr)> = payload
+                    .into_iter()
+                    .map(|(n, e)| (n, e.map_value_refs(f)))
+                    .collect();
+                CompiledExpr::variant_ctor(type_name, variant, new_payload, result_type)
             }
             CompiledExprKind::ResolveSelector { selector } => {
                 // Rebuild via `resolve_selector` so the variant (and its fixed
@@ -1048,76 +1162,9 @@ impl CompiledExpr {
         f: &mut dyn FnMut(&ValueCellId) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
         match &self.kind {
-            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => f(id)?,
-            CompiledExprKind::Literal(_) => {}
-            CompiledExprKind::BinOp { left, right, .. } => {
-                left.try_for_each_value_ref(f)?;
-                right.try_for_each_value_ref(f)?;
-            }
-            CompiledExprKind::UnOp { operand, .. } => {
-                operand.try_for_each_value_ref(f)?;
-            }
-            CompiledExprKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    arg.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::Conditional {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                condition.try_for_each_value_ref(f)?;
-                then_branch.try_for_each_value_ref(f)?;
-                else_branch.try_for_each_value_ref(f)?;
-            }
-            CompiledExprKind::Match { discriminant, arms } => {
-                discriminant.try_for_each_value_ref(f)?;
-                for arm in arms {
-                    arm.body.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::UserFunctionCall { args, .. } => {
-                for arg in args {
-                    arg.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::Lambda { captures, .. } => {
-                for cap in captures {
-                    f(cap)?;
-                }
-            }
-            CompiledExprKind::ListLiteral(elements) => {
-                for elem in elements {
-                    elem.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::ReflectiveCellList(elements) => {
-                for elem in elements {
-                    elem.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::SetLiteral(elements) => {
-                for elem in elements {
-                    elem.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::MapLiteral(entries) => {
-                for (key, val) in entries {
-                    key.try_for_each_value_ref(f)?;
-                    val.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::IndexAccess { object, index } => {
-                object.try_for_each_value_ref(f)?;
-                index.try_for_each_value_ref(f)?;
-            }
-            CompiledExprKind::MethodCall { object, args, .. } => {
-                object.try_for_each_value_ref(f)?;
-                for arg in args {
-                    arg.try_for_each_value_ref(f)?;
-                }
-            }
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => f(id),
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => f(cell),
+            CompiledExprKind::Lambda { captures, .. } => captures.iter().try_for_each(&mut *f),
             CompiledExprKind::Quantifier {
                 variable_id,
                 collection,
@@ -1131,48 +1178,35 @@ impl CompiledExpr {
                     } else {
                         f(id)
                     }
-                })?;
+                })
             }
-            CompiledExprKind::OptionSome(inner) => {
-                inner.try_for_each_value_ref(f)?;
-            }
-            CompiledExprKind::OptionNone => {}
-            CompiledExprKind::MetaAccess { .. } => {}
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => f(cell)?,
-            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-                if let Some(lo) = lower {
-                    lo.try_for_each_value_ref(f)?;
-                }
-                if let Some(hi) = upper {
-                    hi.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::AdHocSelector { base, args, .. } => {
-                base.try_for_each_value_ref(f)?;
-                for arg in args {
-                    arg.try_for_each_value_ref(f)?;
-                }
-            }
-            // Placeholder carries no concrete cell IDs — activation will
-            // expand it before any dependency-tracking pass runs.
-            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-            CompiledExprKind::StructureInstanceCtor {
-                ordered_args,
-                defaults,
-                ..
-            } => {
-                for (_, arg) in ordered_args {
-                    arg.try_for_each_value_ref(f)?;
-                }
-                for (_, def) in defaults {
-                    def.try_for_each_value_ref(f)?;
-                }
-            }
-            CompiledExprKind::ResolveSelector { selector } => {
-                selector.try_for_each_value_ref(f)?;
+            // No dependency of their own (Match's VariantBind binders
+            // included); they depend on what their children depend on.
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::BinOp { .. }
+            | CompiledExprKind::UnOp { .. }
+            | CompiledExprKind::FunctionCall { .. }
+            | CompiledExprKind::Conditional { .. }
+            | CompiledExprKind::Match { .. }
+            | CompiledExprKind::UserFunctionCall { .. }
+            | CompiledExprKind::ListLiteral(_)
+            | CompiledExprKind::SetLiteral(_)
+            | CompiledExprKind::MapLiteral(_)
+            | CompiledExprKind::IndexAccess { .. }
+            | CompiledExprKind::MethodCall { .. }
+            | CompiledExprKind::OptionSome(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::RangeConstructor { .. }
+            | CompiledExprKind::AdHocSelector { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. }
+            | CompiledExprKind::ReflectiveCellList(_)
+            | CompiledExprKind::StructureInstanceCtor { .. }
+            | CompiledExprKind::VariantCtor { .. }
+            | CompiledExprKind::ResolveSelector { .. } => {
+                self.try_for_each_child(&mut |child| child.try_for_each_value_ref(f))
             }
         }
-        ControlFlow::Continue(())
     }
 
     /// Create a lambda expression.
@@ -1229,10 +1263,8 @@ impl CompiledExpr {
     /// cell-iteration trigger fires only on placeholder-derived lists.
     pub fn reflective_cell_list(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
         // Invariant (task-2552, follow-up to task-2544): every element must be a
-        // `ValueRef`. The split no-op arm for `ReflectiveCellList` in
-        // `expand_purpose_reflective_placeholders` (reify-eval) elides recursion on
-        // the basis of this invariant — a non-ValueRef element here would silently
-        // skip placeholder expansion in release builds.
+        // `ValueRef` — `eval_quantifier`'s cell-iteration mode (reify-expr) reads
+        // each element's cell and treats any other shape as unreachable.
         debug_assert!(
             elements
                 .iter()
@@ -1380,154 +1412,50 @@ impl CompiledExpr {
     /// `purpose:<name>:constraint:<i>`). Same caveat applies to `remap_cell`
     /// and to `engine_purposes::expand_purpose_reflective_placeholders`.
     pub fn remap_entity(&mut self, from_entity: &str, to_entity: &str) {
+        let remap = |id: &mut ValueCellId| {
+            if id.entity == from_entity {
+                id.entity = to_entity.to_string();
+            }
+        };
         match &mut self.kind {
-            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-                if id.entity == from_entity {
-                    id.entity = to_entity.to_string();
-                }
-            }
-            CompiledExprKind::Literal(_) => {}
-            CompiledExprKind::BinOp { left, right, .. } => {
-                left.remap_entity(from_entity, to_entity);
-                right.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::UnOp { operand, .. } => {
-                operand.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    arg.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::Conditional {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                condition.remap_entity(from_entity, to_entity);
-                then_branch.remap_entity(from_entity, to_entity);
-                else_branch.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::Match { discriminant, arms } => {
-                discriminant.remap_entity(from_entity, to_entity);
-                for arm in arms {
-                    arm.body.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::UserFunctionCall { args, .. } => {
-                for arg in args {
-                    arg.remap_entity(from_entity, to_entity);
-                }
-            }
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => remap(id),
             CompiledExprKind::Lambda {
-                body,
                 captures,
                 param_ids,
                 ..
-            } => {
-                body.remap_entity(from_entity, to_entity);
-                for cap in captures {
-                    if cap.entity == from_entity {
-                        cap.entity = to_entity.to_string();
-                    }
-                }
-                for pid in param_ids {
-                    if pid.entity == from_entity {
-                        pid.entity = to_entity.to_string();
-                    }
-                }
-            }
-            CompiledExprKind::ListLiteral(elements) => {
-                for elem in elements {
-                    elem.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::ReflectiveCellList(elements) => {
-                for elem in elements {
-                    elem.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::SetLiteral(elements) => {
-                for elem in elements {
-                    elem.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::MapLiteral(entries) => {
-                for (key, val) in entries {
-                    key.remap_entity(from_entity, to_entity);
-                    val.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::IndexAccess { object, index } => {
-                object.remap_entity(from_entity, to_entity);
-                index.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::MethodCall { object, args, .. } => {
-                object.remap_entity(from_entity, to_entity);
-                for arg in args {
-                    arg.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::Quantifier {
-                variable_id,
-                collection,
-                predicate,
-                ..
-            } => {
-                if variable_id.entity == from_entity {
-                    variable_id.entity = to_entity.to_string();
-                }
-                collection.remap_entity(from_entity, to_entity);
-                predicate.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::OptionSome(inner) => {
-                inner.remap_entity(from_entity, to_entity);
-            }
-            CompiledExprKind::OptionNone => {}
+            } => captures.iter_mut().chain(param_ids).for_each(remap),
+            CompiledExprKind::Quantifier { variable_id, .. } => remap(variable_id),
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => remap(cell),
             CompiledExprKind::MetaAccess { entity, .. } => {
                 if entity == from_entity {
                     *entity = to_entity.to_string();
                 }
             }
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-                if cell.entity == from_entity {
-                    cell.entity = to_entity.to_string();
-                }
-            }
-            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-                if let Some(lo) = lower {
-                    lo.remap_entity(from_entity, to_entity);
-                }
-                if let Some(hi) = upper {
-                    hi.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::AdHocSelector { base, args, .. } => {
-                base.remap_entity(from_entity, to_entity);
-                for arg in args {
-                    arg.remap_entity(from_entity, to_entity);
-                }
-            }
-            // Placeholder carries no entity-bearing cell IDs; the activation
-            // walk in `engine_purposes::activate_purpose` resolves it against
-            // the bound entity directly. No-op here.
-            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-            CompiledExprKind::StructureInstanceCtor {
-                ordered_args,
-                defaults,
-                ..
-            } => {
-                for (_, arg) in ordered_args {
-                    arg.remap_entity(from_entity, to_entity);
-                }
-                for (_, def) in defaults {
-                    def.remap_entity(from_entity, to_entity);
-                }
-            }
-            CompiledExprKind::ResolveSelector { selector } => {
-                selector.remap_entity(from_entity, to_entity);
-            }
+            // No entity of their own rewritten here (Match's VariantBind
+            // binders included); their children are remapped below.
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::BinOp { .. }
+            | CompiledExprKind::UnOp { .. }
+            | CompiledExprKind::FunctionCall { .. }
+            | CompiledExprKind::Conditional { .. }
+            | CompiledExprKind::Match { .. }
+            | CompiledExprKind::UserFunctionCall { .. }
+            | CompiledExprKind::ListLiteral(_)
+            | CompiledExprKind::SetLiteral(_)
+            | CompiledExprKind::MapLiteral(_)
+            | CompiledExprKind::IndexAccess { .. }
+            | CompiledExprKind::MethodCall { .. }
+            | CompiledExprKind::OptionSome(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::RangeConstructor { .. }
+            | CompiledExprKind::AdHocSelector { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. }
+            | CompiledExprKind::ReflectiveCellList(_)
+            | CompiledExprKind::StructureInstanceCtor { .. }
+            | CompiledExprKind::VariantCtor { .. }
+            | CompiledExprKind::ResolveSelector { .. } => {}
         }
+        self.for_each_child_mut(&mut |child| child.remap_entity(from_entity, to_entity));
     }
 
     /// Rewrite every `ValueCellId` equal to `from` to `to`, traversing all
@@ -1536,155 +1464,54 @@ impl CompiledExpr {
     /// cell ID into a quantifier predicate (e.g. `DeterminacyPredicate { cell }`)
     /// after binding the synthetic loop var to the iterated cell (task-2289).
     ///
-    /// Mirrors the structure of `remap_entity` arm-for-arm so future variant
-    /// additions touch one place.
+    /// Like `remap_entity`, the node-local match names every variant, so a new
+    /// variant must decide whether it owns a cell; its children come from
+    /// `for_each_child_mut`.
     ///
     /// CONTRACT — content-hash staleness: same as `remap_entity`. This walk
     /// rewrites cell IDs in place but does not rebuild ancestor `content_hash`
     /// values. Callers that consume the rewritten tree's hash must reseed it.
     pub fn remap_cell(&mut self, from: &ValueCellId, to: &ValueCellId) {
+        let remap = |id: &mut ValueCellId| {
+            if id == from {
+                *id = to.clone();
+            }
+        };
         match &mut self.kind {
-            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-                if id == from {
-                    *id = to.clone();
-                }
-            }
-            CompiledExprKind::Literal(_) => {}
-            CompiledExprKind::BinOp { left, right, .. } => {
-                left.remap_cell(from, to);
-                right.remap_cell(from, to);
-            }
-            CompiledExprKind::UnOp { operand, .. } => {
-                operand.remap_cell(from, to);
-            }
-            CompiledExprKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    arg.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::Conditional {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                condition.remap_cell(from, to);
-                then_branch.remap_cell(from, to);
-                else_branch.remap_cell(from, to);
-            }
-            CompiledExprKind::Match { discriminant, arms } => {
-                discriminant.remap_cell(from, to);
-                for arm in arms {
-                    arm.body.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::UserFunctionCall { args, .. } => {
-                for arg in args {
-                    arg.remap_cell(from, to);
-                }
-            }
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => remap(id),
             CompiledExprKind::Lambda {
-                body,
                 captures,
                 param_ids,
                 ..
-            } => {
-                body.remap_cell(from, to);
-                for cap in captures {
-                    if cap == from {
-                        *cap = to.clone();
-                    }
-                }
-                for pid in param_ids {
-                    if pid == from {
-                        *pid = to.clone();
-                    }
-                }
-            }
-            CompiledExprKind::ListLiteral(elements) => {
-                for elem in elements {
-                    elem.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::ReflectiveCellList(elements) => {
-                for elem in elements {
-                    elem.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::SetLiteral(elements) => {
-                for elem in elements {
-                    elem.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::MapLiteral(entries) => {
-                for (key, val) in entries {
-                    key.remap_cell(from, to);
-                    val.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::IndexAccess { object, index } => {
-                object.remap_cell(from, to);
-                index.remap_cell(from, to);
-            }
-            CompiledExprKind::MethodCall { object, args, .. } => {
-                object.remap_cell(from, to);
-                for arg in args {
-                    arg.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::Quantifier {
-                variable_id,
-                collection,
-                predicate,
-                ..
-            } => {
-                if variable_id == from {
-                    *variable_id = to.clone();
-                }
-                collection.remap_cell(from, to);
-                predicate.remap_cell(from, to);
-            }
-            CompiledExprKind::OptionSome(inner) => {
-                inner.remap_cell(from, to);
-            }
-            CompiledExprKind::OptionNone => {}
-            CompiledExprKind::MetaAccess { .. } => {}
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-                if cell == from {
-                    *cell = to.clone();
-                }
-            }
-            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-                if let Some(lo) = lower {
-                    lo.remap_cell(from, to);
-                }
-                if let Some(hi) = upper {
-                    hi.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::AdHocSelector { base, args, .. } => {
-                base.remap_cell(from, to);
-                for arg in args {
-                    arg.remap_cell(from, to);
-                }
-            }
-            // Placeholder has no cell to rewrite — activation expands it.
-            CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-            CompiledExprKind::StructureInstanceCtor {
-                ordered_args,
-                defaults,
-                ..
-            } => {
-                for (_, arg) in ordered_args {
-                    arg.remap_cell(from, to);
-                }
-                for (_, def) in defaults {
-                    def.remap_cell(from, to);
-                }
-            }
-            CompiledExprKind::ResolveSelector { selector } => {
-                selector.remap_cell(from, to);
-            }
+            } => captures.iter_mut().chain(param_ids).for_each(remap),
+            CompiledExprKind::Quantifier { variable_id, .. } => remap(variable_id),
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => remap(cell),
+            // No cell of their own rewritten here (Match's VariantBind binders
+            // included); their children are remapped below.
+            CompiledExprKind::Literal(_)
+            | CompiledExprKind::BinOp { .. }
+            | CompiledExprKind::UnOp { .. }
+            | CompiledExprKind::FunctionCall { .. }
+            | CompiledExprKind::Conditional { .. }
+            | CompiledExprKind::Match { .. }
+            | CompiledExprKind::UserFunctionCall { .. }
+            | CompiledExprKind::ListLiteral(_)
+            | CompiledExprKind::SetLiteral(_)
+            | CompiledExprKind::MapLiteral(_)
+            | CompiledExprKind::IndexAccess { .. }
+            | CompiledExprKind::MethodCall { .. }
+            | CompiledExprKind::OptionSome(_)
+            | CompiledExprKind::OptionNone
+            | CompiledExprKind::MetaAccess { .. }
+            | CompiledExprKind::RangeConstructor { .. }
+            | CompiledExprKind::AdHocSelector { .. }
+            | CompiledExprKind::PurposeReflectiveAggregation { .. }
+            | CompiledExprKind::ReflectiveCellList(_)
+            | CompiledExprKind::StructureInstanceCtor { .. }
+            | CompiledExprKind::VariantCtor { .. }
+            | CompiledExprKind::ResolveSelector { .. } => {}
         }
+        self.for_each_child_mut(&mut |child| child.remap_cell(from, to));
     }
 
     /// Create a method call expression.
@@ -1882,6 +1709,37 @@ impl CompiledExpr {
                 defaults,
                 lets,
                 span,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a runtime enum-variant constructor expression (task 7456).
+    ///
+    /// Hash fold: `TAG_VARIANT_CTOR || type_name || variant || for each
+    /// payload entry: name || expr.content_hash`, in stored (declaration)
+    /// order — the `structure_instance_ctor` scheme. The tag keeps it distinct
+    /// from a folded `Literal(Value::Enum)` over the same values.
+    pub fn variant_ctor(
+        type_name: String,
+        variant: String,
+        payload: Vec<(String, CompiledExpr)>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[TAG_VARIANT_CTOR])
+            .combine(ContentHash::of_str(&type_name))
+            .combine(ContentHash::of_str(&variant));
+        for (name, field) in &payload {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(name))
+                .combine(field.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::VariantCtor {
+                type_name,
+                variant,
+                payload,
             },
             result_type,
             content_hash,
@@ -2382,7 +2240,7 @@ mod tests {
             TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
             TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
             TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_REFLECTIVE_CELL_LIST,
-            TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+            TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF, TAG_VARIANT_CTOR,
         };
 
         assert_eq!(TAG_LITERAL, 0u8);
@@ -2408,6 +2266,7 @@ mod tests {
         assert_eq!(TAG_MATCH, 24u8);
         // task-2458: new variant tag byte
         assert_eq!(TAG_REFLECTIVE_CELL_LIST, 26u8);
+        assert_eq!(TAG_VARIANT_CTOR, 29u8);
 
         // Lock: constructing via the public API and reconstructing via TAG_*
         // must produce the same content hash.

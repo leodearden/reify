@@ -8,51 +8,53 @@
 //! gate automatically once step-6 activates it. Until step-6, the same tests
 //! pass trivially (no gate → no panic) which is the correct "no false-positive"
 //! signal.
+//!
+//! The tests after the five idioms (task 10137) pin WHICH order the gate checks:
+//! the walk the realization loop actually performs, not declaration order.
 
+use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::Severity;
-use reify_ir::ExportFormat;
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_eval::{BuildResult, BuildScheduler};
+use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::{
+    GeometryOpRecord, MockGeometryKernel, assert_no_error_diagnostics, parse_and_compile,
+};
+
+/// Build `compiled` on a recording `MockGeometryKernel`, returning the build
+/// result and every op the kernel recorded, in execution order.
+///
+/// `Some(scheduler)` pins the build scheduler so an ambient
+/// `REIFY_BUILD_SCHEDULER` cannot change the path under test; `None` keeps the
+/// engine default.
+fn build_on_mock(
+    compiled: &CompiledModule,
+    scheduler: Option<BuildScheduler>,
+) -> (BuildResult, Vec<GeometryOpRecord>) {
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel)),
+    );
+    if let Some(scheduler) = scheduler {
+        engine.set_build_scheduler(scheduler);
+    }
+
+    let result = engine.build(compiled, ExportFormat::Step);
+    let recorded = ops_ref.lock().unwrap().clone();
+    (result, recorded)
+}
 
 /// Helper: compile source, build with MockGeometryKernel, assert no panic
 /// and no Error diagnostics.
 fn assert_gate_clean(source: &str) {
-    let compiled = compile_source(source);
-
-    let compile_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        compile_errors.is_empty(),
-        "expected no compile-time Error diagnostics; got: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    let kernel = MockGeometryKernel::new();
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
+    let compiled = parse_and_compile(source);
 
     // This call must NOT panic (the gate must not fire on valid source).
-    let result = engine.build(&compiled, ExportFormat::Step);
+    let (result, _) = build_on_mock(&compiled, None);
 
-    let build_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        build_errors.is_empty(),
-        "expected no Error diagnostics from build; got: {:?}",
-        build_errors
-            .iter()
-            .map(|d| format!("[{:?}] {}", d.severity, d.message))
-            .collect::<Vec<_>>()
-    );
+    assert_no_error_diagnostics(&result.diagnostics, "build");
 }
 
 /// §6 idiom 1 — cross-sub assembly.
@@ -161,4 +163,68 @@ pub structure Assembly {
     let moved = translate(self.p.body, 5mm, 0mm, 0mm)
 }"#,
     );
+}
+
+// ── task 10137: a geometry `let` declared after its consumer ──────────────────
+
+/// `p` patterns `g`, but `g` is declared AFTER `p`: the realization DAG has the
+/// edge `T3#1 → T3#0` while declaration order is `[T3#0, T3#1]`.
+const FORWARD_DECLARED_GEOMETRY_SRC: &str = r#"structure T3 {
+    let p = circular_pattern(g, axis_z(point3(0mm, 0mm, 0mm)), 4, 90deg)
+    let g = box(2mm, 2mm, 2mm)
+}"#;
+
+/// A geometry `let` declared after the `let` that consumes it builds in debug
+/// exactly as it does in release.
+///
+/// Under the default `UnifiedDag` scheduler the realization loop walks the Kahn
+/// schedule, so `g` (T3#1) runs before `p` (T3#0). The debug gate used to check
+/// declaration order instead and panicked with a false `BackwardEdge`.
+///
+/// NOT `cfg`-gated: both profiles are held to the same expectations — in
+/// particular that `p` patterned `g`'s real body, which is only possible when
+/// `g` ran first.
+#[test]
+fn gate_forward_declared_geometry_let_no_false_positive() {
+    let compiled = parse_and_compile(FORWARD_DECLARED_GEOMETRY_SRC);
+    let (result, recorded) = build_on_mock(&compiled, Some(BuildScheduler::UnifiedDag));
+
+    assert_no_error_diagnostics(&result.diagnostics, "build");
+
+    let box_handle = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for T3.g")
+        .result_handle;
+    let pattern_target = recorded
+        .iter()
+        .find_map(|rec| match rec.op {
+            GeometryOp::CircularPattern { target, .. } => Some(target),
+            _ => None,
+        })
+        .expect("expected a CircularPattern op recorded for T3.p");
+    assert_eq!(
+        pattern_target, box_handle,
+        "T3.p must pattern T3.g's Box handle ({box_handle:?}); got {pattern_target:?}"
+    );
+
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+/// The gate still catches a GENUINE backward edge: `LegacyMultiPass` really
+/// walks declaration order, so `p` (T3#0) runs before its producer `g` (T3#1).
+/// Pins that `exec_order` is derived from the executed walk — a fix that ordered
+/// it topologically regardless of the walk would make the gate vacuous and turn
+/// this test red. Cross-template coverage of the same contract:
+/// `cross_sub_geometry_e2e.rs::cross_sub_forward_declared_sub_trips_assert_dag_complete_in_debug`.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "assert_dag_complete: BackwardEdge")]
+fn gate_forward_declared_geometry_let_trips_under_legacy_declaration_order_walk() {
+    let compiled = parse_and_compile(FORWARD_DECLARED_GEOMETRY_SRC);
+    build_on_mock(&compiled, Some(BuildScheduler::LegacyMultiPass));
 }

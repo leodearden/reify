@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_core::dimension::{DimensionVector, FORCE};
-use reify_ir::{CompiledExpr, DeterminacyState, Value};
+use reify_ir::{CompiledExpr, DeterminacyState, UnitVec3, Value};
 
 // --- Range value constructors ---
 
@@ -619,7 +619,7 @@ pub fn transform_val(rotation: Value, translation: Value) -> Value {
     }
 }
 
-/// Create a `Value::Plane` with the given origin (Point) and normal (Vector).
+/// Create a `Value::Plane` with the given origin (Point) and normal (Direction).
 pub fn plane_val(origin: Value, normal: Value) -> Value {
     Value::Plane {
         origin: Box::new(origin),
@@ -627,12 +627,20 @@ pub fn plane_val(origin: Value, normal: Value) -> Value {
     }
 }
 
-/// Create a `Value::Axis` with the given origin (Point) and direction (Vector).
+/// Create a `Value::Axis` with the given origin (Point) and direction (Direction).
 pub fn axis_val(origin: Value, direction: Value) -> Value {
     Value::Axis {
         origin: Box::new(origin),
         direction: Box::new(direction),
     }
+}
+
+/// Create a `Value::Direction` from `[x, y, z]`, normalised by `UnitVec3::from_vector`.
+/// Panics on a zero or non-finite input.
+pub fn direction_val(x: f64, y: f64, z: f64) -> Value {
+    Value::Direction(
+        UnitVec3::from_vector([x, y, z]).expect("direction_val: a non-degenerate finite vector"),
+    )
 }
 
 /// Create a `Value::BoundingBox` with the given min and max corner points.
@@ -1773,6 +1781,14 @@ mod tests {
         let normal = vec3_dimensionless(0.0, 0.0, 1.0);
         let v = plane_val(origin, normal);
         assert!(matches!(v, Value::Plane { .. }));
+    }
+
+    #[test]
+    fn direction_val_produces_a_unit_direction() {
+        assert_eq!(
+            direction_val(0.0, 0.0, 2.0),
+            Value::Direction(UnitVec3::from_vector([0.0, 0.0, 1.0]).unwrap())
+        );
     }
 
     #[test]

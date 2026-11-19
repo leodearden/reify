@@ -19,6 +19,8 @@
 // a DSL type. This is distinct from the Rust type `reify_core::Severity` used
 // for compiler diagnostics — there is no namespace clash at the DSL level.
 
+module std.process
+
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
 // Severity level of a DFM rule finding.

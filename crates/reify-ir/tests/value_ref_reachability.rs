@@ -361,6 +361,19 @@ fn corpus() -> Vec<Case> {
             CompiledExpr::resolve_selector(r("a")),
             cells(&["a"]),
         ),
+        case(
+            "variant_ctor",
+            CompiledExpr::variant_ctor(
+                "Shape".to_string(),
+                "Rect".to_string(),
+                vec![
+                    ("x".to_string(), r("a")),
+                    ("y".to_string(), add(r("b"), r("a"))),
+                ],
+                Type::Enum("Shape".to_string()),
+            ),
+            cells(&["a", "b"]),
+        ),
         case("composite", composite(), cells(&["a", "b", "c", "d", "f"])),
     ]
 }

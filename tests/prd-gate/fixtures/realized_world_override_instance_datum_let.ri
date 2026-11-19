@@ -1,0 +1,17 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// PRD section 7 declared interim (ruling R15), closed by leaf beta (row B22). Today it fails only on the
+// decoder gap that direction-typing task #9638 closes; the override path already receives the DEFAULT
+// instance's axis.
+module realized_world_override_instance_datum_let
+
+pub structure Inner {
+    param size : Length = 10mm
+    let ref_cyl = translate(revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad), size, 0mm, 0mm)
+    let a : Axis = ref_cyl.axis
+    let body = circular_pattern(box(1mm, 1mm, 1mm), a, 4, 360deg)
+}
+
+pub structure Outer {
+    sub a = Inner(size: 80mm)
+    let moved = translate(self.a.body, 0mm, 0mm, 500mm)
+}

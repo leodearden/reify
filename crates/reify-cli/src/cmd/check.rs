@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::{PurposeActivation, parse_purpose_flag, split_cfg_args_or_usage};
 use crate::check_verdict::{
-    check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
+    check_gating_error, dedup_diagnostics, drop_falsified_constraint_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
 use crate::constraint_report::{finish_check, report_achieved_deviations, report_eval_output};
@@ -16,7 +16,7 @@ use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
-use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
+use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 
 /// `reify check <file>` — resolves autos and reports every constraint verdict.
 ///
@@ -29,12 +29,11 @@ use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 /// with `--purpose`: that path never measures a deviation, so it would print
 /// nothing.
 ///
-/// **`error:` lines.** Every `Severity::Error` diagnostic makes
-/// `check` exit non-zero through [`check_gating_error`] unless a
-/// `check_verdict::CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.  The residual shapes across
-/// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
-/// measures them), which owns triaging them — never by adding allowlist
-/// entries.
+/// **`error:` lines.** Every `Severity::Error` diagnostic makes `check` exit
+/// non-zero through [`check_gating_error`]; nothing excuses one.  The residual
+/// shapes across `examples/**/*.ri` are inventoried in #7308 (with the sweep
+/// command that measures them), which owns triaging them — never by adding
+/// allowlist entries.
 pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, CHECK_USAGE) {
         Ok(v) => v,
@@ -99,7 +98,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
+    let compiled = match parse_and_compile_program_entry(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -320,14 +319,13 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // A `None` build result (the lightweight arm, and the kernel-backed
         // sub-case that takes only the `tessellate_realizations` side effect)
         // yields an empty slice, so those paths stay byte-identical (C2).
-        let build_diagnostics: Vec<reify_core::Diagnostic> =
-            drop_falsified_indeterminate_diagnostics(
-                build_result
-                    .as_ref()
-                    .map(|b| b.diagnostics.as_slice())
-                    .unwrap_or(&[]),
-                &result.constraint_results,
-            );
+        let build_diagnostics: Vec<reify_core::Diagnostic> = drop_falsified_constraint_diagnostics(
+            build_result
+                .as_ref()
+                .map(|b| b.diagnostics.as_slice())
+                .unwrap_or(&[]),
+            &result.constraint_results,
+        );
         let merged_diagnostics = merge_build_diagnostics(&result.diagnostics, &build_diagnostics);
 
         let outcome = report_eval_output(
@@ -349,8 +347,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         );
 
         // INV-SF-2: any `Severity::Error` in the set `report_eval_output` just
-        // showed the user makes `check` exit non-zero, unless a
-        // `CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.
+        // showed the user makes `check` exit non-zero.
         //
         // Gated on `merged_diagnostics`, NOT `result.diagnostics`, so a
         // realization-only Error moves the exit code too — e.g. the
@@ -517,18 +514,16 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             // produced by both passes is reported exactly once.
             //
             // Same return leg as sub-path (b), applied symmetrically so the two
-            // cannot drift: build's stale `ConstraintIndeterminate` claims are
-            // filtered against the AUTHORITATIVE `constraint_results` first. The
+            // cannot drift: build's stale constraint claims are filtered
+            // against the AUTHORITATIVE `constraint_results` first. The
             // known divergence path here is `engine_fixpoint`'s UnifiedDag
             // `declined` set, whose constraints keep build's Indeterminate
             // warning while the CLI-side check still reaches a definite verdict.
             //
             // Composition pinned by `d2_pass_ordering_tests::
             // run_in_cmd_check_purpose_order`'s tests.
-            let front_end_diagnostics = drop_falsified_indeterminate_diagnostics(
-                &front_end_diagnostics,
-                &constraint_results,
-            );
+            let front_end_diagnostics =
+                drop_falsified_constraint_diagnostics(&front_end_diagnostics, &constraint_results);
             // The realization's list also carries a COPY of the GD&T legality
             // pass appended below. Withdraw it before the dedup rather than
             // letting the dedup collapse the two runs: that pass can emit two

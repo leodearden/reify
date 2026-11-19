@@ -57,6 +57,12 @@
 //     `Elastic`-is-narrower difference). New FEA-bound code should
 //     depend on `ElasticMaterial`.
 
+module std.materials.fea
+
+import std.materials.appearance
+import std.si_units
+import std.units
+
 // ── Provenance ───────────────────────────────────────────────────────────────
 
 // MaterialPropertyProvenance is the citation record attached to a single
@@ -99,9 +105,9 @@ structure def MaterialPropertyProvenance {
 //
 // Declared here (above ElasticMaterial) rather than in constitutive.ri so
 // that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
-// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
+// (std.constitutive imports this module, not the reverse — PRD §4.2 γ).
 // constitutive.ri retains a pointer comment; Orthotropic/TransverseIsotropic
-// still refine ConstitutiveLaw via the growing prelude.
+// there refine ConstitutiveLaw through that import.
 trait ConstitutiveLaw { }
 
 // ── ElasticMaterial trait ────────────────────────────────────────────────────

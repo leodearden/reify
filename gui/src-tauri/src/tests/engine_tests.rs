@@ -7778,7 +7778,8 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 /// `structure Top` has no direct params, so compiled.templates = [Top] with
 /// value_cells = [] → state.values is empty.
 ///
-/// Post-fix (compile_entry_with_imports): `ModuleResolver` resolves `helper`,
+/// Post-fix (task 3228; since task 5519 the program compile,
+/// `compile_entry_program`): the entry-directory resolver resolves `helper`,
 /// Helper's template is merged into compiled.templates, phase-1 eval produces
 /// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
 ///
@@ -7846,8 +7847,9 @@ fn load_file_with_user_import_resolves_imported_structure() {
     );
 }
 
-/// Regression: loading a standalone .ri file with no imports via the new
-/// compile_entry_with_imports path must work correctly — same as before.
+/// Regression: loading a standalone .ri file with no imports via the
+/// file-backed `load_file` path must work correctly — same as before (since
+/// task 5519 an import-free entry compiles single-file through `compile_buffer`).
 ///
 /// Guards against the new code path mishandling the no-imports case
 /// (e.g. wrong project_root resolution, double-counting stdlib, or the
@@ -7903,9 +7905,10 @@ fn load_file_solo_helper_no_imports_works() {
 ///
 /// Pre-fix (compile_with_stdlib path): the import is ignored, compile succeeds,
 /// load_file returns Ok with empty or useless engine state.
-/// Post-fix (compile_entry_with_imports): dag.compile_module returns an Err
-/// containing the resolver's "module 'nonexistent' not found: tried '...' and
-/// '...'" message, which load_file surfaces as Err.
+/// Post-fix (task 3228; since task 5519 the program compile,
+/// `compile_entry_program`): the missing import surfaces as an Error on the
+/// entry carrying the resolver's "module 'nonexistent' not found: tried '...'
+/// and '...'" message, which load_file surfaces as Err.
 #[test]
 fn load_file_unresolved_import_returns_clear_err() {
     let checker = SimpleConstraintChecker;
@@ -8003,8 +8006,9 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
 /// Pre-fix: `update_source` uses `compile_with_stdlib` (single-file, ignores
 /// `import helper`) → compile-error for unknown `Helper` template → returns
 /// `Err`.
-/// Post-fix: branches on `self.file_path.is_some()`, routes through
-/// `compile_entry_with_imports` → import resolved → returns `Ok` with
+/// Post-fix: branches on `self.file_path.is_some()`, routes through the
+/// file-backed program compile (`compile_entry_program` since task 5519) →
+/// import resolved → returns `Ok` with
 /// `Helper.x = 10mm` still present.
 #[test]
 fn update_source_after_load_file_preserves_multi_file_imports() {
@@ -8048,8 +8052,8 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
 ///
 /// This is the core dirty-buffer regression scenario for task 3318: pre-fix
 /// `update_source` silently dropped all imports on every keystroke because it
-/// called `compile_with_stdlib` (single-file) instead of
-/// `compile_entry_with_imports` (multi-file).
+/// called `compile_with_stdlib` (single-file) instead of the multi-file
+/// compile (since task 5519 the program compile, `compile_entry_program`).
 #[test]
 fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
     let (_dir, mut session, main_path, _main_content) = loaded_helper_session();
@@ -8921,9 +8925,9 @@ fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded(
 /// in `files[0]` so diagnostics line/col can be indexed against the actual text
 /// (task 4258).
 ///
-/// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
-/// `compile_entry_with_imports`, which must also populate
-/// `compile_failure` on failure once refactored in step-6.
+/// Pins step-5/step-6 of the task-3351 plan: `load_file`'s file-backed
+/// compile (since task 5519 `compile_buffer`, which rejects the parse error
+/// before routing) must also populate `compile_failure` on failure.
 /// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
@@ -9119,11 +9123,12 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
 
 /// After a session already has a successful compile via `load_file` (`compiled` is
 /// `Some` AND `file_path` is `Some`), a subsequent failed `update_source` (multi-file
-/// path — `self.file_path` is `Some`, so `update_source` routes through
-/// `compile_entry_with_imports`) must surface the live compile failure in
+/// path — `self.file_path` is `Some`, so `update_source` compiles anchored at the
+/// entry through `compile_buffer`) must surface the live compile failure in
 /// `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Exercises `update_source`'s multi-file branch (`compile_entry_with_imports`).
+/// Exercises `update_source`'s file-backed branch (task 3386's multi-file path;
+/// since task 5519 `compile_buffer` with the entry anchor).
 /// Pins the invariant introduced in task 3386: live compile failures on the multi-file
 /// path are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
@@ -9189,7 +9194,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 /// `Some`), a subsequent failed `load_file` (overwritten with broken source) must
 /// surface the live compile failure in `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Exercises `load_file`'s failure path (`compile_entry_with_imports`).
+/// Exercises `load_file`'s failure path (task 3386's multi-file path; since
+/// task 5519 `compile_buffer` with the entry anchor).
 /// Pins the invariant introduced in task 3386: live compile failures via `load_file`
 /// are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
@@ -15094,8 +15100,8 @@ fn build_gui_state_cold_start_failure_surfaces_failing_source() {
 /// project (entry + imported helper), a failing `update_source` must override
 /// ONLY the entry file's `files[].content` with the failing buffer.
 ///
-/// This exercises the LiveEdit override path via `compile_entry_with_imports`
-/// (the multi-file call site at engine.rs:1769) rather than the single-file
+/// This exercises the LiveEdit override path via the file-backed program
+/// compile (`compile_entry_program` since task 5519) rather than the single-file
 /// path used by the other added tests.  It also confirms that the single-entry
 /// source_map stores only the entry key ("main.ri"), not the imported key
 /// ("helper.ri"), so `build_gui_state` produces exactly one `files` entry
@@ -15114,7 +15120,7 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
     );
 
     // Trigger a failing live edit on the entry file.  The import line is kept
-    // so compile_entry_with_imports is taken (multi-file path), and the bogus
+    // so the program compile, compile_entry_program, is taken, and the bogus
     // reference produces a compile-phase UnresolvedName error.
     let bad_main = "import helper\nstructure Top { sub h = Helper()\nlet broken = bogus_var }\n";
     let result = session.update_source(main_path.to_str().unwrap(), bad_main);
@@ -21731,13 +21737,13 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
 
 #[test]
 fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
-    // `compile_entry_with_imports` MERGES a direct import's pub templates into
-    // `compiled.templates`, so an imported param passes the cell-existence gate
-    // — while its text never enters `parsed_cache` or `source_map`, so there is
-    // nothing here to splice. Without a dedicated arm that combination reads as
-    // "no default expression", which is not what happened: the default is right
-    // there in the other file, and δ would surface a reason that sends its
-    // caller looking in the wrong place.
+    // The program compile (`compile_entry_program`) MERGES a direct import's
+    // pub templates into `compiled.templates`, so an imported param passes the
+    // cell-existence gate — while its text never enters `parsed_cache` or
+    // `source_map`, so there is nothing here to splice. Without a dedicated arm
+    // that combination reads as "no default expression", which is not what
+    // happened: the default is right there in the other file, and δ would
+    // surface a reason that sends its caller looking in the wrong place.
     //
     // Two-file fixture mirroring `load_file_with_user_import_resolves_imported_structure`.
     let dir = tempfile::tempdir().expect("tempdir should be created");

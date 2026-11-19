@@ -38,6 +38,12 @@
 //      so the PRD's `1e-6` defaults to `0.000001` here.
 //   4. PRD's `Number` and `Integer` map to Reify's `Real` and `Int` builtins.
 
+module std.solver.elastic
+
+import std.constitutive
+import std.fea.types
+import std.materials.fea
+
 // ── ElementOrder enum ────────────────────────────────────────────────────────
 
 // `ElementOrder` selects between first-order (P1, linear) and second-order
@@ -707,7 +713,7 @@ structure def ShellStress {
 // solve_elastic_static accepts ConstitutiveLaw directly (task γ/4441 supertrait
 // + task δ/4442 shim retirement). Do NOT widen FEAMaterialInput.material to
 // ConstitutiveLaw — that would break buckling (`solve_buckling` in
-// solver_buckling_fns.ri, param material:ElasticMaterial).
+// solver_buckling.ri, param material:ElasticMaterial).
 pub structure def FEAMaterialInput {
     param material : ElasticMaterial
 }
@@ -759,9 +765,8 @@ pub structure def FEAMaterialInput {
 //     resolver prefers over this ConstitutiveLaw wildcard for a Field arg.
 //
 //   `loads : List<Load>` and `supports : List<Support>`:
-//     The `Load` and `Support` marker traits are declared in `std.fea.types`
-//     (loaded immediately before this module in `stdlib_loader.rs`), so they
-//     are in the growing prelude when this function compiles.
+//     The `Load` and `Support` marker traits are declared in `std.fea.types`,
+//     which this module imports.
 //     The overload resolver treats a `List<Trait>` param as a WILDCARD (matches
 //     any list argument regardless of element type), then a post-resolution
 //     conformance pass (`phase_fn_arg_conformance` → conformance/mod.rs) checks

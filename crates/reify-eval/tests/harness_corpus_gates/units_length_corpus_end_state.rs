@@ -192,18 +192,9 @@ fn sweep_source(rel: &str, source: &str) -> FileOutcome {
         Ok(outcome) => FileOutcome::Swept(outcome),
         Err(payload) => FileOutcome::Skipped(Skip {
             cause: SkipCause::BuildPanic,
-            detail: panic_text(&payload),
+            detail: reify_core::panic_payload_to_string(payload.as_ref()),
         }),
     }
-}
-
-/// The payload of a caught panic, as text, so a skip line says WHY rather than just that.
-fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_string())
 }
 
 /// Realize `compiled` against a mock kernel and collect what this gate reads off it.

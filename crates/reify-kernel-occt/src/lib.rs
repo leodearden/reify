@@ -231,6 +231,8 @@ use op_args::{
 
 #[cfg(has_occt)]
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
+#[cfg(has_occt)]
+use reify_ir::UnitVec3;
 
 #[cfg(has_occt)]
 /// Encode a `Point3` as the JSON string `{"x":_,"y":_,"z":_}` used by centroid-style queries.
@@ -3360,19 +3362,16 @@ fn analytic_surface_datum_to_value(
         Value::length(d.origin.y),
         Value::length(d.origin.z),
     ]);
-    let dir = Value::Direction {
-        x: d.direction.x,
-        y: d.direction.y,
-        z: d.direction.z,
-    };
+    // Minted only inside the Plane/Axis arms: the Sphere arm's direction is zero.
+    let direction = || analytic_direction(&d.direction, d.kind, "face_analytic_datum");
     match d.kind {
         0 => Ok(Value::Plane {
             origin: Box::new(origin),
-            normal: Box::new(dir),
+            normal: Box::new(direction()?),
         }),
         1 | 2 => Ok(Value::Axis {
             origin: Box::new(origin),
-            direction: Box::new(dir),
+            direction: Box::new(direction()?),
         }),
         3 => Ok(origin),
         other => Err(QueryError::QueryFailed(format!(
@@ -3399,21 +3398,38 @@ fn analytic_curve_datum_to_value(
         Value::length(d.origin.y),
         Value::length(d.origin.z),
     ]);
-    let dir = Value::Direction {
-        x: d.direction.x,
-        y: d.direction.y,
-        z: d.direction.z,
-    };
     match d.kind {
         // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
         0..=2 => Ok(Value::Axis {
             origin: Box::new(origin),
-            direction: Box::new(dir),
+            direction: Box::new(analytic_direction(
+                &d.direction,
+                d.kind,
+                "edge_analytic_datum",
+            )?),
         }),
         other => Err(QueryError::QueryFailed(format!(
             "edge_analytic_datum: unknown curve-datum kind byte {other}"
         ))),
     }
+}
+
+/// The unit [`Value::Direction`] of an analytic datum record returned by the
+/// FFI `query`, or `QueryFailed` naming `query` and the `kind` byte when the
+/// direction is degenerate. Call it only for a kind that carries a direction.
+#[cfg(has_occt)]
+fn analytic_direction(
+    direction: &ffi::ffi::Point3,
+    kind: u8,
+    query: &str,
+) -> Result<Value, QueryError> {
+    UnitVec3::from_vector([direction.x, direction.y, direction.z])
+        .map(Value::Direction)
+        .map_err(|fault| {
+            QueryError::QueryFailed(format!(
+                "{query}: kind {kind} datum has no unit direction: {fault}"
+            ))
+        })
 }
 
 /// Stateless across warm starts: there is no state to capture or restore.

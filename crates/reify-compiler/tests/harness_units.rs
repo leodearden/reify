@@ -72,3 +72,7 @@ mod curvature_dimension_tests;
 
 #[path = "harness_units/unit_label_round_trip.rs"]
 mod unit_label_round_trip;
+
+// INV-SF-7 value faithfulness of a `/` adjacent to a unit exponent.
+#[path = "harness_units/unit_exponent_slash_value_faithfulness.rs"]
+mod unit_exponent_slash_value_faithfulness;

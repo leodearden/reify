@@ -13,11 +13,11 @@ const RECENT: RecentEntry[] = [
 ];
 
 describe('launcherStore', () => {
-  it('starts with no document error, no recent entries, and the assistant mode selected', () => {
+  it('starts with no document error, no recent entries, nothing pending, and the assistant mode selected', () => {
     const store = createLauncherStore();
 
     expect(store.state).toEqual({
-      document: { error: null, recent: [] },
+      document: { error: null, recent: [], pending: null },
       mode: { selected: 'assistant', debugPort: null, error: null },
     });
   });
@@ -63,6 +63,22 @@ describe('launcherStore', () => {
     expect(store.state.document.recent).toEqual(RECENT);
   });
 
+  it('setDocumentPending records the path of a document attempt in flight and clears it', () => {
+    const store = createLauncherStore();
+    store.setRecent(RECENT);
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.setDocumentPending('/designs/bracket.ri');
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+
+    store.setDocumentPending(null);
+    expect(store.state.document).toEqual({
+      error: { code: 'E_GUI_OPEN_FAILED', message: 'm' },
+      recent: RECENT,
+      pending: null,
+    });
+  });
+
   it('reset clears both errors and keeps the recent list and the mode', () => {
     const store = createLauncherStore();
     store.setRecent(RECENT);
@@ -73,16 +89,30 @@ describe('launcherStore', () => {
     store.reset();
 
     expect(store.state).toEqual({
-      document: { error: null, recent: RECENT },
+      document: { error: null, recent: RECENT, pending: null },
       mode: { selected: 'debug', debugPort: 4321, error: null },
     });
   });
 
-  it('names exactly the three launch error codes, each spelled as its own key', () => {
+  it('reset leaves an in-flight document attempt pending', () => {
+    const store = createLauncherStore();
+    store.setDocumentPending('/designs/bracket.ri');
+    store.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'm' });
+
+    store.reset();
+
+    expect(store.state.document.error).toBeNull();
+    expect(store.state.document.pending).toBe('/designs/bracket.ri');
+  });
+
+  it('names exactly the six launch error codes, each spelled as its own key', () => {
     expect(Object.entries(LAUNCH_ERROR_CODES)).toEqual([
       ['E_GUI_OPEN_FAILED', 'E_GUI_OPEN_FAILED'],
       ['E_GUI_TEMPLATE_WRITE_FAILED', 'E_GUI_TEMPLATE_WRITE_FAILED'],
+      ['E_GUI_DOCUMENT_BUSY', 'E_GUI_DOCUMENT_BUSY'],
+      ['E_GUI_MODE_FAILED', 'E_GUI_MODE_FAILED'],
       ['E_GUI_DEBUG_LISTENER_FAILED', 'E_GUI_DEBUG_LISTENER_FAILED'],
+      ['E_GUI_DEBUG_BRIDGE_FAILED', 'E_GUI_DEBUG_BRIDGE_FAILED'],
     ]);
     expect(Object.isFrozen(LAUNCH_ERROR_CODES)).toBe(true);
   });
@@ -99,21 +129,18 @@ describe('isDocumentLoaded', () => {
 });
 
 describe('initialFileLoadFailureInfo', () => {
-  it('presents a read failure as E_GUI_OPEN_FAILED with its own error, which already names the file', () => {
-    const info = initialFileLoadFailureInfo({
-      path: '/designs/broken.ri',
-      error: 'Error reading /designs/broken.ri: No such file',
-    });
+  const LAUNCH_FILE = '/designs/broken.ri';
 
-    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
-    expect(info.message).toBe('Error reading /designs/broken.ri: No such file');
-  });
-
-  it('names the file even when the error does not', () => {
-    const info = initialFileLoadFailureInfo({ path: '/designs/broken.ri', error: 'panic in engine: boom' });
-
-    expect(info.code).toBe(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED);
-    expect(info.message).toContain('/designs/broken.ri');
-    expect(info.message).toContain('panic in engine: boom');
-  });
+  it.each([
+    ['an error that does not mention the file', 'permission denied'],
+    ['an error that already mentions the file', `${LAUNCH_FILE}: permission denied`],
+  ])(
+    'always presents E_GUI_OPEN_FAILED naming the launch file ahead of the error, whatever the error says: %s',
+    (_label, error) => {
+      expect(initialFileLoadFailureInfo({ path: LAUNCH_FILE, error })).toEqual({
+        code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+        message: `Could not open ${LAUNCH_FILE}: ${error}`,
+      });
+    },
+  );
 });
