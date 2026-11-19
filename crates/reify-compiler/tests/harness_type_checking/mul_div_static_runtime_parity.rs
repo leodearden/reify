@@ -49,7 +49,7 @@
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 use reify_expr::{eval_expr, EvalContext};
-use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+use reify_ir::{BinOp, CompiledExpr, UnitVec3, Value, ValueMap};
 use reify_test_support::compile_source;
 
 // ── Runtime driver (re-authored from β1, mul_div_runtime_truth_table.rs:49-55) ──
@@ -130,6 +130,11 @@ fn xform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
             Value::length(tz),
         ])),
     }
+}
+
+/// Build a `Value::Direction` through `UnitVec3`'s only constructor.
+fn dirv(x: f64, y: f64, z: f64) -> Value {
+    Value::Direction(UnitVec3::from_vector([x, y, z]).expect("non-degenerate direction"))
 }
 
 /// 90-degree rotation about the Z axis (re-authored from β1's
@@ -257,6 +262,14 @@ fn positive_rows() -> Vec<PositiveRow> {
         PositiveRow { label: "Mul Transform*Point[L]->Point[L]",             op: Mul, lv: xform(rotation_90z(), 10.0, 20.0, 30.0), rv: pt3(D::LENGTH, 1.0, 0.0, 0.0), lt: Type::transform(3), rt: Type::point3(Type::length()) },
         PositiveRow { label: "Mul Transform*Transform->Transform (row-9)",   op: Mul, lv: xform(rotation_90z(), 10.0, 0.0, 0.0), rv: xform(orient(), 1.0, 0.0, 0.0), lt: Type::transform(3), rt: Type::transform(3) },
 
+        // ── Mul: Direction scale (direction-typing C6) ───────────────────
+        PositiveRow { label: "Mul Direction*Int->Vector3<Dimensionless>",  op: Mul, lv: dirv(0.0, 0.0, 1.0), rv: Value::Int(2),        lt: Type::Direction, rt: Type::Int },
+        PositiveRow { label: "Mul Int*Direction->Vector3<Dimensionless>",  op: Mul, lv: Value::Int(2),        rv: dirv(0.0, 0.0, 1.0), lt: Type::Int, rt: Type::Direction },
+        PositiveRow { label: "Mul Direction*Real->Vector3<Dimensionless>", op: Mul, lv: dirv(0.0, 1.0, 0.0), rv: Value::Real(2.0),     lt: Type::Direction, rt: Type::dimensionless_scalar() },
+        PositiveRow { label: "Mul Real*Direction->Vector3<Dimensionless>", op: Mul, lv: Value::Real(2.0),     rv: dirv(0.0, 1.0, 0.0), lt: Type::dimensionless_scalar(), rt: Type::Direction },
+        PositiveRow { label: "Mul Scalar[L]*Direction->Vector3<Length>",   op: Mul, lv: Value::length(0.002), rv: dirv(0.0, 0.0, 1.0), lt: Type::length(), rt: Type::Direction },
+        PositiveRow { label: "Mul Direction*Scalar[L]->Vector3<Length>",   op: Mul, lv: dirv(0.0, 0.0, 1.0), rv: Value::length(0.002), lt: Type::Direction, rt: Type::length() },
+
         // ── Div: numeric + Scalar core ───────────────────────────────────
         // NOTE: Int/Int here is the DIVISIBLE case (clean agreement, both
         // Int). The non-divisible case is the exemption-ledger row, defined
@@ -289,11 +302,26 @@ fn positive_rows() -> Vec<PositiveRow> {
 /// `assert_parity_or_ledgered_divergence` classifier (defined in the
 /// Exemption ledger section below) rather than a dedicated accept-only
 /// helper, so these rows also exercise its clean-parity-on-accept branch.
+/// The classifier also passes a row that BOTH sides reject, so each row first
+/// asserts the static side accepts it.
 #[test]
 fn positive_parity_batch() {
     for row in positive_rows() {
+        assert_static_partition(row.op, &row.lt, &row.rt, true, row.label);
         assert_parity_or_ledgered_divergence(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
     }
+}
+
+/// Asserts `infer_mul_div_result` accepts (`accepted == true`) or rejects the
+/// row, so a batch cannot pass on the classifier's other parity branch.
+fn assert_static_partition(op: BinOp, lt: &Type, rt: &Type, accepted: bool, label: &str) {
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(op, lt, rt);
+    assert_eq!(
+        static_result.is_some(),
+        accepted,
+        "{label}: expected the static table to {} {op:?}({lt:?}, {rt:?}), got {static_result:?}",
+        if accepted { "accept" } else { "reject" }
+    );
 }
 
 // ── Rejection-parity batch ──────────────────────────────────────────────────
@@ -354,6 +382,17 @@ fn rejection_rows() -> Vec<RejectionRow> {
         RejectionRow { label: "Div List/Int undef",   op: Div, lv: Value::List(vec![Value::Int(1), Value::Int(2)]), rv: Value::Int(2), lt: Type::List(Box::new(Type::Int)), rt: Type::Int },
         RejectionRow { label: "Div String/Int undef", op: Div, lv: Value::String("abc".to_string()), rv: Value::Int(2), lt: Type::String, rt: Type::Int },
         RejectionRow { label: "Div Bool/Int undef",   op: Div, lv: Value::Bool(true), rv: Value::Int(2), lt: Type::Bool, rt: Type::Int },
+
+        // ── Direction: every non-scale pairing (direction-typing C6) ──────
+        RejectionRow { label: "Mul Direction*Direction undef", op: Mul, lv: dirv(0.0, 0.0, 1.0), rv: dirv(1.0, 0.0, 0.0), lt: Type::Direction, rt: Type::Direction },
+        RejectionRow { label: "Div Direction/Int undef",       op: Div, lv: dirv(0.0, 0.0, 1.0), rv: Value::Int(2),       lt: Type::Direction, rt: Type::Int },
+        RejectionRow { label: "Div Direction/Scalar[L] undef", op: Div, lv: dirv(0.0, 0.0, 1.0), rv: Value::length(2.0),  lt: Type::Direction, rt: Type::length() },
+        RejectionRow { label: "Div Real/Direction undef",      op: Div, lv: Value::Real(2.0),     rv: dirv(0.0, 0.0, 1.0), lt: Type::dimensionless_scalar(), rt: Type::Direction },
+        RejectionRow { label: "Mul Vector[L]*Direction undef", op: Mul, lv: vec3(D::LENGTH, 1.0, 2.0, 3.0), rv: dirv(0.0, 0.0, 1.0), lt: Type::vec3(Type::length()), rt: Type::Direction },
+        RejectionRow { label: "Mul Direction*Vector[L] undef", op: Mul, lv: dirv(0.0, 0.0, 1.0), rv: vec3(D::LENGTH, 1.0, 2.0, 3.0), lt: Type::Direction, rt: Type::vec3(Type::length()) },
+        RejectionRow { label: "Mul Tensor*Direction undef",    op: Mul, lv: tensor1(vec![Value::Int(1), Value::Int(2)]), rv: dirv(0.0, 0.0, 1.0), lt: Type::tensor(1, 3, Type::Int), rt: Type::Direction },
+        RejectionRow { label: "Mul Point[L]*Direction undef",  op: Mul, lv: pt3(D::LENGTH, 1.0, 2.0, 3.0), rv: dirv(0.0, 0.0, 1.0), lt: Type::point3(Type::length()), rt: Type::Direction },
+        RejectionRow { label: "Mul Complex[L]*Direction undef", op: Mul, lv: cx(2.0, 3.0, D::LENGTH), rv: dirv(0.0, 0.0, 1.0), lt: Type::complex(Type::length()), rt: Type::Direction },
     ]
 }
 
@@ -366,6 +405,7 @@ fn rejection_rows() -> Vec<RejectionRow> {
 #[test]
 fn rejection_parity_batch() {
     for row in rejection_rows() {
+        assert_static_partition(row.op, &row.lt, &row.rt, false, row.label);
         assert_parity_or_ledgered_divergence(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
     }
 }
