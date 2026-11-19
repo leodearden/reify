@@ -648,13 +648,23 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             fixture=_COMMITTED_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
-        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub), timeout=0.6)
-        self.assertEqual(
-            run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
-            "precondition: the stub must have outlasted the bound",
-        )
+        def recorded_grandchild():
+            return os.path.isfile(pidfile) and os.path.getsize(pidfile) > 0
+
+        # The bound runs from launch, so on a loaded host it can fire before the
+        # stub forks; that run has no grandchild to test, so retry with a longer one.
+        for bound in (0.6, 3.0, 15.0):
+            if os.path.exists(pidfile):
+                os.remove(pidfile)
+            run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub), timeout=bound)
+            self.assertEqual(
+                run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
+                "precondition: the stub must have outlasted the bound",
+            )
+            if recorded_grandchild():
+                break
         self.assertTrue(
-            _wait_until(lambda: os.path.isfile(pidfile) and os.path.getsize(pidfile), 5.0),
+            recorded_grandchild(),
             "precondition: the stub must have recorded its grandchild's pid",
         )
         with open(pidfile) as fh:
