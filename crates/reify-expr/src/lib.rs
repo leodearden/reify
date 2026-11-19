@@ -5779,8 +5779,8 @@ mod tests {
     }
 
     #[test]
-    fn eq_scalar_different_dimensions_is_false() {
-        // 0.005 LENGTH == 0.005 MASS should be false (different dimensions)
+    fn eq_scalar_different_dimensions_is_undef() {
+        // 0.005 LENGTH == 0.005 MASS is Undef (incomparable dimensions), like `<`
         let left = lit(
             Value::Scalar {
                 si_value: 0.005,
@@ -5799,10 +5799,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -5869,8 +5866,8 @@ mod tests {
     }
 
     #[test]
-    fn eq_dimensioned_scalar_vs_int_is_false() {
-        // Scalar{5.0, LENGTH} == Int(5) should be false
+    fn eq_dimensioned_scalar_vs_int_is_undef() {
+        // Scalar{5.0, LENGTH} == Int(5) is Undef: a Length is incomparable to a bare number
         let left = lit(
             Value::Scalar {
                 si_value: 5.0,
@@ -5881,15 +5878,12 @@ mod tests {
         let right = lit(Value::Int(5), Type::Int);
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
-    fn ne_scalar_different_dimensions_is_true() {
-        // 0.005 LENGTH != 0.005 MASS should be true
+    fn ne_scalar_different_dimensions_is_undef() {
+        // 0.005 LENGTH != 0.005 MASS is Undef (incomparable dimensions), like `<`
         let left = lit(
             Value::Scalar {
                 si_value: 0.005,
@@ -5908,17 +5902,15 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(true) => {}
-            other => panic!("expected Bool(true), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
-    fn eq_scalar_same_value_different_dimension_is_false() {
-        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} should be false
+    fn eq_scalar_same_value_different_dimension_is_undef() {
+        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} is Undef.
         // Regression guard for task 38: different dimensions must never compare equal,
         // even when the numeric si_value is identical (5mm == 5kg was silently true).
+        // That is now enforced as Undef, never Bool(true).
         let left = lit(
             Value::Scalar {
                 si_value: 5.0,
@@ -5937,10 +5929,43 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
+    }
+
+    #[test]
+    fn eq_ne_and_cmp_agree_on_dimension_incomparable_operands() {
+        let mass = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        for (left, right) in [
+            (mm_val(3.0), Value::Real(3.0)),
+            (Value::Real(3.0), mm_val(3.0)),
+            (mm_val(3.0), Value::Int(3)),
+            (mm_val(3.0), Value::Bool(true)),
+            (mm_val(3.0), Value::String("3mm".to_string())),
+            (mm_val(3.0), Value::enum_unit("Fit", "Loose")),
+            (mm_val(1.0), mass),
+        ] {
+            assert_eq!(
+                eval_eq(&left, &right),
+                Value::Undef,
+                "{left:?} == {right:?}"
+            );
+            assert_eq!(
+                eval_ne(&left, &right),
+                Value::Undef,
+                "{left:?} != {right:?}"
+            );
+            assert_eq!(
+                eval_cmp(&left, &right, |a, b| a < b),
+                Value::Undef,
+                "{left:?} < {right:?}"
+            );
         }
+
+        assert_eq!(eval_eq(&mm_val(3.0), &mm_val(3.0)), Value::Bool(true));
+        assert_eq!(eval_ne(&mm_val(3.0), &mm_val(4.0)), Value::Bool(true));
     }
 
     // ── Enum eval tests ──────────────────────────────────
@@ -8973,8 +8998,8 @@ mod tests {
         // comparable with a bare Real.
         assert_eq!(
             eval_eq(&mm_val(3.0), &Value::Real(3.0)),
-            Value::Bool(false),
-            "Length == Real must be false"
+            Value::Undef,
+            "Length == Real must be Undef, like Length < Real"
         );
         assert_eq!(
             eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),

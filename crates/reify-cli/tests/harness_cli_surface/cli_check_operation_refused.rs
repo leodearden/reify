@@ -56,3 +56,49 @@ fn check_fails_on_a_pure_operation_refusal() {
         output.status
     );
 }
+
+/// `==` and `!=` refuse dimension-incomparable operands exactly as `>` does,
+/// so none of the three reports a definite verdict.
+#[test]
+fn equality_refuses_dimension_incomparable_operands_like_ordering() {
+    let output = check_module(
+        "op_refused_r2",
+        "purpose wide_enough(subject : Structure) {\n    \
+         constraint subject.width > 0mm\n    \
+         constraint subject.width == 0mm\n    \
+         constraint subject.width != 0mm\n}\n\n\
+         structure def Plate {\n    param width : Real = 5.0\n}",
+        &["--purpose", "wide_enough=Plate"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+    for (index, operator) in [">", "==", "!="].into_iter().enumerate() {
+        let line = format!(
+            "INDETERMINATE purpose:wide_enough@Plate#constraint[{index}]: \
+             `{operator}` is undefined for these operands: Real, Scalar<m>"
+        );
+        assert!(
+            stdout.contains(&line),
+            "expected `{line}` on stdout;{context}"
+        );
+    }
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "a refusal is never a definite VIOLATED;{context}"
+    );
+    assert!(
+        !stdout.contains("OK purpose:wide_enough@Plate"),
+        "a refusal is never a definite OK;{context}"
+    );
+    assert!(
+        stderr.contains("error: constraint purpose:wide_enough@Plate#constraint[1] indeterminate:"),
+        "expected the `==` refusal as an error diagnostic;{context}"
+    );
+    assert!(
+        !output.status.success(),
+        "a pure refusal must fail the check: {:?};{context}",
+        output.status
+    );
+}
