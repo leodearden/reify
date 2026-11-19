@@ -385,7 +385,7 @@ def probe_script(product_name: str, *, bind_symbols: bool) -> str:
 
 def docker_probe(image: str, stage: Path, product_name: str,
                  binaries: Mapping[str, Path], host_resolved: Mapping[str, str],
-                 *, bind_symbols: bool = False) -> Probe:
+                 *, bind_symbols: bool) -> Probe:
     """A probe that stages onto `stage` and runs ldd on it in `image`. ldd runs
     with no LD_LIBRARY_PATH, so it checks the as-installed layout. With
     bind_symbols it runs `ldd -r`, which also reports each undefined symbol, but
