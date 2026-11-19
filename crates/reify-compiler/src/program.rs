@@ -37,61 +37,100 @@ pub struct CompiledImportUnit {
 /// A compiled program: an entry module plus everything it was compiled with.
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
-    /// The entry module, with the direct imports' pub templates merged into its
-    /// template list and every import failure attached to its diagnostics.
-    /// [`Self::entry_declared_templates`] is a prefix of `entry.templates`:
-    /// append to that list, never shrink or reorder it.
-    pub entry: CompiledModule,
+    /// See [`Self::entry`].
+    entry: CompiledModule,
     /// The entry's followed, successfully compiled direct imports, in
     /// declaration order, one per distinct import path.
     pub imports: Vec<CompiledImportUnit>,
     /// The source of every user module compiled into the program, in
     /// topological order (dependencies first), entry last.
     pub sources: Vec<ModuleSource>,
-    /// Which of `entry.diagnostics` are re-homed copies of a compiled user
-    /// module's own diagnostics, in `entry.diagnostics` order.
-    rehomed: Vec<RehomedDiagnostic>,
+    /// Where among [`Self::entry`]'s diagnostics the re-homed copies of the
+    /// compiled user modules' own diagnostics sit.
+    rehomed: RehomedBlock,
     /// How many of `entry.templates`, from the front, the entry's own compile
-    /// produced.
+    /// produced: a prefix of that list, which the I5 merge only appends to.
     declared_templates: usize,
 }
 
-/// One of the entry's diagnostics that is a re-homed copy.
+/// The entry's re-homed copies: one contiguous run of its diagnostics, the
+/// copy at `start + i` raised compiling the user module `module_keys[i]`.
 #[derive(Debug, Clone)]
-struct RehomedDiagnostic {
-    /// The dotted key of the user module whose compile raised the original.
-    module_key: String,
-    /// The copy's index in the entry's diagnostics as compiled; appending to
-    /// them keeps it valid.
-    entry_index: usize,
+struct RehomedBlock {
+    start: usize,
+    /// Dotted module keys, one per copy, in diagnostics order.
+    module_keys: Vec<String>,
+}
+
+impl RehomedBlock {
+    /// The run's index range in `diagnostics`, which must contain it.
+    fn range_in(&self, diagnostics: &[Diagnostic]) -> std::ops::Range<usize> {
+        let range = self.start..self.start + self.module_keys.len();
+        assert!(
+            range.end <= diagnostics.len(),
+            "CompiledProgram invariant: the re-homed copies {range:?} must lie within the \
+             entry's {} diagnostics",
+            diagnostics.len(),
+        );
+        range
+    }
 }
 
 impl CompiledProgram {
+    /// Assemble a program, checking each of its invariants once up front; the
+    /// accessors check them again where they rely on them.
+    fn new(
+        entry: CompiledModule,
+        imports: Vec<CompiledImportUnit>,
+        sources: Vec<ModuleSource>,
+        rehomed: RehomedBlock,
+        declared_templates: usize,
+    ) -> Self {
+        let program = Self {
+            entry,
+            imports,
+            sources,
+            rehomed,
+            declared_templates,
+        };
+        let _ = program.rehomed.range_in(&program.entry.diagnostics);
+        let _ = program.entry_declared_templates();
+        program
+    }
+
+    /// The entry module, with the direct imports' pub templates merged into its
+    /// template list and every import failure attached to its diagnostics.
+    pub fn entry(&self) -> &CompiledModule {
+        &self.entry
+    }
+
+    /// The same module as [`Self::entry`], handed back by value.
+    pub fn into_entry(self) -> CompiledModule {
+        self.entry
+    }
+
     /// The entry's diagnostics re-homed from the user module `module_key` (a
     /// direct or transitive import), in the order they were raised.
     // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
     pub fn rehomed_from(&self, module_key: &str) -> impl Iterator<Item = &Diagnostic> {
+        let copies = &self.entry.diagnostics[self.rehomed.range_in(&self.entry.diagnostics)];
         self.rehomed
+            .module_keys
             .iter()
-            .filter(move |rehomed| rehomed.module_key == module_key)
-            .map(|rehomed| &self.entry.diagnostics[rehomed.entry_index])
+            .zip(copies)
+            .filter(move |(key, _)| key.as_str() == module_key)
+            .map(|(_, diag)| diag)
     }
 
     /// The entry's diagnostics that are not re-homed copies: those raised
     /// compiling the entry itself, and the failures of its imports.
     // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
     pub fn entry_own_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.entry
-            .diagnostics
+        let diagnostics = &self.entry.diagnostics;
+        let range = self.rehomed.range_in(diagnostics);
+        diagnostics[..range.start]
             .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                !self
-                    .rehomed
-                    .iter()
-                    .any(|rehomed| rehomed.entry_index == *index)
-            })
-            .map(|(_, diag)| diag)
+            .chain(&diagnostics[range.end..])
     }
 
     /// The templates the entry's own compile produced, excluding the I5 interim
@@ -102,8 +141,8 @@ impl CompiledProgram {
         let templates = &self.entry.templates;
         assert!(
             self.declared_templates <= templates.len(),
-            "entry_declared_templates: the entry's compile produced {} templates but \
-             `entry.templates` now holds {}; the I5 merge only appends, so a caller shrank it",
+            "CompiledProgram invariant: the entry's {} declared templates must be a prefix of \
+             its {} templates",
             self.declared_templates,
             templates.len(),
         );
@@ -121,13 +160,14 @@ impl CompiledProgram {
 /// `std.*` imports are skipped because the stdlib is already present.
 ///
 /// **Diagnostics-embedded contract.** Nothing short-circuits. An entry parse
-/// error reaches `entry.diagnostics` through the compiler's own parse-error
-/// forwarding, and a followed import that is missing or broken surfaces as
-/// `Error` diagnostics on the entry while the entry itself still compiles, so a
-/// caller's "any Error diagnostic, exit non-zero" policy handles every failure
-/// uniformly. Every Error and Warning a compiled user module carries —
-/// transitive modules included — is re-homed onto the entry too, attributed to
-/// its file (see `rehome_imported`); [`CompiledProgram::rehomed_from`] and
+/// error reaches the diagnostics of [`CompiledProgram::entry`] through the
+/// compiler's own parse-error forwarding, and a followed import that is missing
+/// or broken surfaces as `Error` diagnostics on the entry while the entry
+/// itself still compiles, so a caller's "any Error diagnostic, exit non-zero"
+/// policy handles every failure uniformly. Every Error and Warning a compiled
+/// user module carries — transitive modules included — is re-homed onto the
+/// entry too, attributed to its file (see `rehome_imported`);
+/// [`CompiledProgram::rehomed_from`] and
 /// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
 /// entry's own diagnostics.
 ///
@@ -236,13 +276,7 @@ pub fn compile_program_with_parsed_entry(
         })
         .collect();
 
-    CompiledProgram {
-        entry,
-        imports,
-        sources,
-        rehomed,
-        declared_templates,
-    }
+    CompiledProgram::new(entry, imports, sources, rehomed, declared_templates)
 }
 
 /// True iff compiling `parsed` as a program entry under `cfg` follows at least
@@ -305,15 +339,13 @@ fn followed_direct_imports<'p>(
     followed
 }
 
-/// Append to the entry's `diagnostics` a re-homed copy of every Error and
-/// Warning carried by a unit `dag` compiled, and record where each copy landed.
-/// Walks the topological order, not just the direct imports, so a transitive
-/// unit's diagnostic is not swallowed one level down.
-fn rehome_unit_diagnostics(
-    dag: &ModuleDag,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<RehomedDiagnostic> {
-    let mut rehomed = Vec::new();
+/// Append to the entry's `diagnostics`, as one contiguous run, a re-homed copy
+/// of every Error and Warning carried by a unit `dag` compiled, and return
+/// where that run sits. Walks the topological order, not just the direct
+/// imports, so a transitive unit's diagnostic is not swallowed one level down.
+fn rehome_unit_diagnostics(dag: &ModuleDag, diagnostics: &mut Vec<Diagnostic>) -> RehomedBlock {
+    let start = diagnostics.len();
+    let mut module_keys = Vec::new();
     for key in &dag.topo_order {
         let Some(module) = dag.modules.get(key) else {
             continue;
@@ -323,14 +355,11 @@ fn rehome_unit_diagnostics(
             .iter()
             .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
         {
-            rehomed.push(RehomedDiagnostic {
-                module_key: key.clone(),
-                entry_index: diagnostics.len(),
-            });
+            module_keys.push(key.clone());
             diagnostics.push(rehome_imported(diag, key, dag.source(key)));
         }
     }
-    rehomed
+    RehomedBlock { start, module_keys }
 }
 
 /// A copy of `diag`, raised while compiling the imported module `module_key`,
@@ -401,5 +430,96 @@ mod tests {
         assert_eq!(rehomed.labels.len(), 1);
         assert_eq!(rehomed.labels[0].span, SourceSpan::prelude());
         assert_eq!(rehomed.labels[0].message, "here");
+    }
+
+    /// `module main` declaring one template, `Rig`, and importing nothing.
+    fn compile_one_template_entry() -> CompiledProgram {
+        let dir = tempfile::tempdir().expect("tempdir");
+        compile_program(
+            &dir.path().join("main.ri"),
+            "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+            &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+            &CfgSet::default(),
+            &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+        )
+    }
+
+    fn rehomed_block(start: usize, module_keys: &[&str]) -> RehomedBlock {
+        RehomedBlock {
+            start,
+            module_keys: module_keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    fn warnings(count: usize) -> Vec<Diagnostic> {
+        (0..count)
+            .map(|i| Diagnostic::warning(format!("warning {i}")))
+            .collect()
+    }
+
+    #[test]
+    fn rehomed_block_range_is_its_run_of_copies() {
+        let diagnostics = warnings(4);
+
+        assert_eq!(rehomed_block(1, &["a", "b"]).range_in(&diagnostics), 1..3);
+        assert_eq!(rehomed_block(2, &["a", "b"]).range_in(&diagnostics), 2..4);
+        assert_eq!(rehomed_block(4, &[]).range_in(&diagnostics), 4..4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the re-homed copies 1..3 must lie within \
+                    the entry's 2 diagnostics"
+    )]
+    fn rehomed_block_outside_the_diagnostics_names_the_invariant() {
+        let _ = rehomed_block(1, &["a", "b"]).range_in(&warnings(2));
+    }
+
+    /// The invariants are checked where a program is built, not only where it
+    /// is read.
+    #[test]
+    #[should_panic(expected = "CompiledProgram invariant: the re-homed copies")]
+    fn compiled_program_new_rejects_a_rehomed_block_past_the_diagnostics() {
+        let program = compile_one_template_entry();
+        let len = program.entry.diagnostics.len();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(len + 1, &["a"]),
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the entry's 2 declared templates must be \
+                    a prefix of its 1 templates"
+    )]
+    fn compiled_program_new_rejects_a_declared_prefix_longer_than_the_templates() {
+        let program = compile_one_template_entry();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(0, &[]),
+            2,
+        );
+    }
+
+    /// A shrunk `entry.templates` below the declared prefix gets a panic naming
+    /// the invariant and both counts, not a bare slice-index panic.
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the entry's 1 declared templates must be \
+                    a prefix of its 0 templates"
+    )]
+    fn entry_declared_templates_names_a_shrunk_template_list() {
+        let mut program = compile_one_template_entry();
+        program.entry.templates.clear();
+
+        let _ = program.entry_declared_templates();
     }
 }

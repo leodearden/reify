@@ -175,7 +175,7 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
     };
 
     if program
-        .entry
+        .entry()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -201,7 +201,7 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
     let templates = program.entry_declared_templates().to_vec();
     let declared = CompiledModule {
         templates,
-        ..program.entry
+        ..program.into_entry()
     };
     let model = reify_doc_build::build_doc_model(&declared, &source);
     let xrefs = reify_doc_build::cross_refs::build_cross_refs(&declared.templates);

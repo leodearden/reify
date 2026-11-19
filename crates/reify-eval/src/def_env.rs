@@ -65,7 +65,7 @@ impl<'p> DefEnv<'p> {
     /// declaration order, then each stdlib module in load order.
     // G-allow: P1 DefEnv skeleton (resolution-unification D-3); first production consumer is θ #5522
     pub fn from_program(program: &'p CompiledProgram) -> Self {
-        let entry = ModuleScope::new(program.entry.path.0.join("."), &program.entry.templates);
+        let entry = ModuleScope::new(program.entry().path.0.join("."), &program.entry().templates);
         let imports = program.imports.iter().map(|unit| {
             ModuleScope::new(
                 unit.import_path.clone(),
@@ -76,7 +76,7 @@ impl<'p> DefEnv<'p> {
             )
         });
         Self {
-            declared: &program.entry,
+            declared: program.entry(),
             program_scopes: std::iter::once(entry).chain(imports).collect(),
             stdlib_scopes: stdlib_scopes(),
         }

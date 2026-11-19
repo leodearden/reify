@@ -109,7 +109,7 @@ fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
         cfg,
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
-    .entry
+    .into_entry()
 }
 
 /// Under `target = "linux"`, the gated linux import is followed: `LinuxOnly`

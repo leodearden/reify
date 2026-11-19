@@ -80,7 +80,7 @@ pub(super) fn compile_document(
             CompiledDocument {
                 eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), &compiled),
                 declared_templates: compiled.entry_declared_templates().len(),
-                module: compiled.entry,
+                module: compiled.into_entry(),
             }
         }
         _ => CompiledDocument::single_file(reify_compiler::compile_with_stdlib_checked(
@@ -99,7 +99,7 @@ fn program_eval_cache_key(entry_key: &str, program: &CompiledProgram) -> Content
         .iter()
         .filter(|module| module.module_key != entry_key);
     ContentHash::combine_all(
-        std::iter::once(program.entry.content_hash).chain(imported.map(|module| {
+        std::iter::once(program.entry().content_hash).chain(imported.map(|module| {
             ContentHash::of_str(&module.module_key).combine(ContentHash::of_str(&module.source))
         })),
     )

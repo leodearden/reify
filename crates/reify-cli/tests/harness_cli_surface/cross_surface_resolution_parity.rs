@@ -193,7 +193,7 @@ impl Observed {
         match surface {
             Surface::Program => self
                 .program
-                .entry
+                .entry()
                 .diagnostics
                 .iter()
                 .map(|d| (Some(d.severity), d.message.clone()))
@@ -380,7 +380,7 @@ fn importing_entry_reports_one_diagnostic_set_on_every_surface() {
     let observed = observe(&entry);
     assert_parity(&entry, &observed);
 
-    let canonical = &observed.program.entry.diagnostics;
+    let canonical = &observed.program.entry().diagnostics;
     assert!(
         canonical.iter().all(|d| d.severity != Severity::Error)
             && canonical.iter().any(|d| {
@@ -487,13 +487,13 @@ fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
         let program = &observed.program;
         assert!(
             program
-                .entry
+                .entry()
                 .diagnostics
                 .iter()
                 .any(|d| d.severity == Severity::Error && d.message.contains(&broken_path)),
             "{stem}: the canonical compile must raise an Error attributed to {broken_path}; every \
              surface reports the canonical Errors (parity above), so it is on every surface\n{:#?}",
-            program.entry.diagnostics
+            program.entry().diagnostics
         );
         assert!(
             program
@@ -571,13 +571,13 @@ fn cfg_unsatisfied_import_is_inert_on_every_surface() {
     let program = &observed.program;
     assert!(
         program
-            .entry
+            .entry()
             .diagnostics
             .iter()
             .all(|d| d.severity != Severity::Error),
         "precondition: the canonical compile raises no Error, so the parity above compared \
          Errors and Warnings\n{:#?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
     let mut needles: Vec<&str> = gated_paths.iter().map(String::as_str).collect();
     needles.extend([
@@ -611,7 +611,7 @@ fn cfg_unsatisfied_import_is_inert_on_every_surface() {
         "the program's sources must name no gated module; found {gated_sources:?}"
     );
     assert!(
-        program.entry.templates.iter().all(|t| t.name != "WasmOnly"),
+        program.entry().templates.iter().all(|t| t.name != "WasmOnly"),
         "the I5 merge must not take WasmOnly from a gated-out import"
     );
     let env = reify_eval::DefEnv::from_program(program);
@@ -641,13 +641,13 @@ fn cfg_unsatisfied_import_lends_the_entry_no_definitions() {
     let program = &observed.program;
     assert!(
         program
-            .entry
+            .entry()
             .diagnostics
             .iter()
             .any(|d| d.severity == Severity::Error && d.message.contains("WasmOnly")),
         "the canonical compile must reject Rig's WasmOnly, which only a gated-out import defines\n\
          {:#?}",
-        program.entry.diagnostics
+        program.entry().diagnostics
     );
     assert!(
         reify_eval::DefEnv::from_program(program)
