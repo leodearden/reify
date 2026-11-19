@@ -1848,10 +1848,12 @@ mod alias_to_entity_type_other_emit_sites {
 // regression lock.
 //
 // The revert-detectors are ABSOLUTE-value locks living elsewhere — the task-6416
-// sections of `tests/constraint_def_compile_tests.rs` (def-side `ty` values) and
-// `tests/constraint_inst_tests.rs` (instantiation-site diagnostic counts). Named
-// by section rather than by test, because nothing keeps a cross-file test name
-// honest.
+// sections of
+// `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs`
+// (def-side `ty` values) and
+// `crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs`
+// (instantiation-site diagnostic counts). Named by section rather than by test,
+// because nothing keeps a cross-file test name honest.
 //
 // Do NOT weaken those to parity comparisons, and do not delete them as
 // duplicating this module — they are the only thing that fails if the scope

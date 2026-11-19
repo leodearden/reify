@@ -338,9 +338,9 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
 /// Driving the loop from the parse rather than from `compiled.type_aliases` buys
 /// three things:
 ///
-/// 1. **Determinism.** `into_compiled` drains a `HashMap`, so its `Vec` order
-///    varies per process under std's `RandomState`. Source order does not, and
-///    these items carry no `sort_text` to re-impose an order downstream.
+/// 1. **Source order.** `compiled.type_aliases` is in name order, completion
+///    wants source order, and these items carry no `sort_text` to re-impose an
+///    order downstream, so the order must come from the parse.
 /// 2. **A single signature source.** `format_type_alias_signature` takes the
 ///    parsed `reify_ast::TypeAliasDecl`, which is always available here —
 ///    keeping the completion `detail` byte-identical to hover with no divergent
@@ -352,9 +352,9 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
 ///
 ///    Note what is NOT a reason: `type_expr` being `None`. Every entry in
 ///    `compiled.type_aliases` has `type_expr == Some(..)`, parameterized or
-///    not — both `resolve_alias_dfs` registration sites clone it
-///    unconditionally (`crates/reify-compiler/src/type_resolution.rs:3790`
-///    and `:3827`) and `into_compiled` carries it through verbatim. The `None`
+///    not — `resolve_alias_dfs` clones it unconditionally at both of its
+///    registrations, the cycle placeholder and the resolved path, and
+///    `into_compiled` carries it through verbatim. The `None`
 ///    arm arises only for NON-PARAMETRIC PRELUDE entries built by
 ///    `from_compiled_for_prelude`, and those are excluded from
 ///    `type_aliases` by `seeded_names`. So `type_expr.is_none()` is not a
@@ -2263,12 +2263,11 @@ mod tests {
         );
     }
 
-    /// Order pin. `TypeAliasRegistry::into_compiled` drains a
-    /// `HashMap<String, TypeAliasEntry>`, so iterating `compiled.type_aliases`
-    /// yielded a different order per process under std's `RandomState`, and these
-    /// items set no `sort_text` to re-impose one. Driving the loop from the parse
-    /// makes the order source order. The three names are deliberately ordered so
-    /// source order differs from alphabetical, catching a sort-by-name too.
+    /// Order pin. `compiled.type_aliases` is in name order, and these items set
+    /// no `sort_text` to re-impose another, so driving the loop from the parse is
+    /// what makes the order source order. The three names are deliberately
+    /// ordered so source order differs from alphabetical: iterating the compiled
+    /// list, or any sort-by-name, fails this test.
     #[test]
     fn completion_type_aliases_are_offered_in_source_order() {
         let source = "type Zeta = Length / Time\ntype Alpha = Bool\ntype Mid = Length\n\
@@ -2284,7 +2283,7 @@ mod tests {
         assert_eq!(
             aliases,
             vec!["Zeta", "Alpha", "Mid"],
-            "aliases must be offered in source order, not HashMap order"
+            "aliases must be offered in source order, not name order"
         );
     }
 

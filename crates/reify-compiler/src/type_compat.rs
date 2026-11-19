@@ -1022,7 +1022,7 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// type. It rejects every pairing Rules 1–4 below do not accept.
 ///
 /// The restated Int-for-Length ruling lives at
-/// constraint_def_compile_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
+/// crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs::int_literal_for_length_param_is_constraint_arg_type_mismatch.
 ///
 /// # Safety of non-numeric param types
 ///

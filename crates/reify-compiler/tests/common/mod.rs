@@ -142,14 +142,11 @@ pub fn units_module() -> &'static CompiledModule {
 /// neither `String` nor `&'static str`. Callers assert on the message CONTENT,
 /// so an unrelated build failure cannot satisfy them.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
 pub fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    reify_test_support::panic_message_of(|| {
         stdlib_loader::build_stdlib_modules(sources);
-    }));
-    let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
-    reify_core::panic_payload_str(err.as_ref())
-        .expect("panic payload was neither String nor &'static str")
-        .to_owned()
+    })
 }
 
 /// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.

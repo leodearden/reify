@@ -113,7 +113,10 @@ exponent    := '-'? /[0-9]+/ ('/' /[0-9]+/)?          // signed integer or ratio
   lexed only after the unit-pow `^`, so a contiguous `^p/q` is ONE exponent.
 - A rational exponent must be in lowest terms with denominator ≥ 2. Otherwise
   (`^2/4`, `^2/2`, `^2/1`, `^0/2`, `^1/0`) it is a located parse error, never a silent
-  reread (the legacy reading of `1m^2/2` was 0.5 m²).
+  reread (the legacy reading of `1m^2/2` was 0.5 m²). A canonical one is a deliberate
+  reread: before #9236 the contiguous `1m^2/3` was a value division, (1/3)·m², and it
+  is now 1·m^(2/3). The dimension changes too, so a typed consumer or a `+`/`-`
+  catches it. To divide, write `1m^2 / 3`.
 - A value-level `/` touching a unit exponent (`1m^1/ 2`, `1m^1/-2`, `1m^1/2/3`) is a
   located parse error at the `/`. To divide, put a space before it: `1m^2 / 2`.
 - A `^p/q` directly followed by a unit name (`1m^2/3s`, `1m^1/2kg`) is a parse error,
@@ -347,6 +350,11 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
    `UnitResolveError::DimensionOverflow`, never a panic or a wrapped dimension.
    A value-level `*` or `/` whose combined dimension does not fit `Rational`
    (`1m^1/31 * 1m^1/37 * 1m^1/41`) is the compile error `DimensionExponentOverflow` and
-   evaluates to `Undef`. The value-level `^` (#9696) and the builtin dimension
-   combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`; #9796) do not have this
-   guarantee yet.
+   evaluates to `Undef`. Only the unit-expression resolver fold and the value-level
+   `*`/`/` have that guarantee. Any other caller of the panicking
+   `DimensionVector::mul`/`div`/`pow`/`root` (or of `Rational`'s `+`/`-`) panics on such
+   an overflow, in release builds as well as debug, instead of reporting a diagnostic or
+   `Undef`. Examples, not a complete list: the value-level `^` (#9696); the builtin
+   dimension combiners (`sqrt`, `dot`, `cross`, `outer`, `complex_*`, the stress
+   invariants; #9796); `determinant`; and the `*`/`/` folds of type-level dimension
+   aliases.

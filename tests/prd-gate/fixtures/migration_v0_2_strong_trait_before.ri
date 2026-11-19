@@ -1,0 +1,5 @@
+structure def Steel : Strong {
+    param yield_strength : Real = 250000000.0
+    param uts : Real = 400000000.0
+    param compressive_strength : Real = 250000000.0
+}

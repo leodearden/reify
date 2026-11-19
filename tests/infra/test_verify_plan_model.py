@@ -18,6 +18,8 @@ here:
   failure: a scratch clone whose git-env scrub lib fails;
 - bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
   the lib seams run under, over a scratch lib;
+- bashcall.ask's NotCalled for a function that never ran, over a scratch
+  lib, and release_declared's refusal of it;
 - policy's unknown-role refusal text, which no CLI run shows bare because the
   CLI always prefixes it.
 
@@ -50,6 +52,7 @@ from reify_verify import (  # noqa: E402
     narrowing,
     nextest,
     policy,
+    releasescope,
     render,
     retry,
     scope,
@@ -295,6 +298,122 @@ class TestSeamShellOptions(unittest.TestCase):
         self.write_lib("B1_EXPORTED=x; export B1_EXPORTED; false | true\n")
         with self.assertRaises(BashCallError):
             bashcall.read_export(bashcall.BashExport(self.LIB, "B1_EXPORTED"), self.repo_root, self.env)
+
+
+class TestNotCalled(unittest.TestCase):
+    """bashcall.ask reports a function that never ran as a NotCalled, never as a status.
+
+    bash's `source` exits 1 for a lib it cannot read, which is also the answer
+    a status-as-answer predicate gives, so only a CallResult carries the
+    function's own status.
+    """
+
+    LIB = "lib.sh"
+    CALL = bashcall.BashCall(LIB, "f")
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repo_root = Path(scratch.name)
+        self.env = base_env()
+
+    def ask(self, lib_text, call=CALL):
+        if lib_text is not None:
+            (self.repo_root / self.LIB).write_text(lib_text, encoding="utf-8")
+        return bashcall.ask(call, (), self.repo_root, self.env)
+
+    def assert_not_called(self, answer, status):
+        self.assertIsInstance(answer, bashcall.NotCalled)
+        self.assertEqual(answer.result.returncode, status, answer.result.stderr)
+
+    def assert_called(self, answer):
+        self.assertNotIsInstance(answer, bashcall.NotCalled)
+
+    def test_a_missing_lib_is_not_called(self):
+        answer = self.ask(None, bashcall.BashCall("absent.sh", "f"))
+        self.assert_not_called(answer, 1)
+        self.assertIn("absent.sh", answer.result.stderr)
+
+    def test_a_lib_whose_sourcing_returns_1_is_not_called(self):
+        self.assert_not_called(self.ask("return 1\nf(){ :; }\n"), 1)
+
+    def test_a_lib_that_ends_the_shell_with_0_is_not_called(self):
+        self.assert_not_called(self.ask("exit 0\nf(){ echo out; }\n"), 0)
+
+    def test_a_lib_with_a_syntax_error_is_not_called(self):
+        self.assert_not_called(self.ask("if then\n"), 2)
+
+    def test_a_lib_without_the_function_is_not_called(self):
+        answer = self.ask("g(){ :; }\n")
+        self.assert_not_called(answer, 127)
+        self.assertIn("f: not a function", answer.result.stderr)
+
+    def test_bash_that_cannot_start_is_not_called(self):
+        no_bash = self.repo_root / "no-bash"
+        no_bash.mkdir()
+        self.env["PATH"] = str(no_bash)
+        self.assert_not_called(self.ask("f(){ :; }\n"), 127)
+
+    def test_the_functions_1_is_its_answer(self):
+        answer = self.ask("f(){ echo out; echo err >&2; return 1; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.returncode, 1)
+        self.assertEqual(answer.lines, ("out",))
+        self.assertEqual(answer.stderr_lines, ("err",))
+
+    def test_load_time_stderr_is_kept_byte_for_byte(self):
+        answer = self.ask("printf 'loading' >&2\nf(){ echo err >&2; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.stderr, "loadingerr\n")
+
+    def test_a_lib_shadowing_printf_is_still_called(self):
+        answer = self.ask("printf(){ :; }\nf(){ return 1; }\n")
+        self.assert_called(answer)
+        self.assertEqual(answer.returncode, 1)
+
+    def test_run_raises_for_a_function_that_never_ran(self):
+        (self.repo_root / self.LIB).write_text("exit 0\nf(){ echo out; }\n", encoding="utf-8")
+        with self.assertRaises(BashCallError) as raised:
+            bashcall.run(self.CALL, (), self.repo_root, self.env)
+        self.assertEqual(raised.exception.result.returncode, 0)
+
+
+class TestReleaseDeclaredNotCalled(unittest.TestCase):
+    """releasescope.release_declared refuses when release_declared_set never ran.
+
+    verify.sh sources release-scope-lib.sh at top level under `set -e`, so a
+    lib that does not source ends the run with source's own status and
+    stderr, even a 0; a lib that ends the shell is never an empty declared
+    set.
+    """
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repo_root = Path(scratch.name)
+        (self.repo_root / "scripts").mkdir()
+
+    def declared(self, lib_text):
+        if lib_text is not None:
+            (self.repo_root / "scripts" / "release-scope-lib.sh").write_text(lib_text, encoding="utf-8")
+        return releasescope.release_declared(self.repo_root, base_env())
+
+    def test_a_lib_that_ends_the_shell_with_0_is_refused_with_0_not_empty(self):
+        declared = self.declared("echo gave-up >&2\nexit 0\nrelease_declared_set(){ echo some-crate; }\n")
+        self.assertEqual(declared, Refused(("gave-up",), 0))
+
+    def test_a_missing_lib_is_refused_with_1(self):
+        declared = self.declared(None)
+        self.assertIsInstance(declared, Refused)
+        self.assertEqual(declared.exit_code, 1)
+
+    def test_a_lib_whose_sourcing_returns_2_is_refused_with_2(self):
+        declared = self.declared("return 2\n")
+        self.assertIsInstance(declared, Refused)
+        self.assertEqual(declared.exit_code, 2)
+
+    def test_control_a_sourced_lib_answers_its_declared_set(self):
+        self.assertEqual(self.declared("release_declared_set(){ echo some-crate; }\n"), ("some-crate",))
 
 
 class TestNextestConfigPath(unittest.TestCase):

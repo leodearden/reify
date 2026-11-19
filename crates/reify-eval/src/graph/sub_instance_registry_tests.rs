@@ -127,7 +127,7 @@ fn a_removed_slot_restamped_from_another_template_records_the_new_one() {
 #[should_panic(
     expected = "a removed slot of `P.s` still holds a cell its collection's shape does not name: `P.s[0].stray`"
 )]
-fn remove_collection_slots_refuses_to_forget_a_slot_holding_a_cell_outside_its_shape() {
+fn remove_collection_slots_debug_asserts_no_forgotten_slot_keeps_a_cell_outside_its_shape() {
     let bolts = bolts_collection(&["d"]);
     let mut graph = EvaluationGraph::default();
     graph.insert_sub_instance_cell("Bolt", cell("P.s[0]", "d"));

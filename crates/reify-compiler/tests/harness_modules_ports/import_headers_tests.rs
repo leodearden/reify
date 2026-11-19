@@ -848,6 +848,41 @@ fn an_aliased_module_import_counts_as_imported_whole() {
     assert_eq!(insert(source, &["std.fake.c"]), source);
 }
 
+#[test]
+fn a_new_import_never_lands_where_a_pending_cfg_would_gate_it() {
+    for (source, expected) in [
+        (
+            "#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "import std.fake.c\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+        (
+            "#version(0.1)\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "#version(0.1)\n\nimport std.fake.c\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+        (
+            "#no_prelude #cfg(wide)\n\nstructure def S {}\n",
+            "import std.fake.c\n\n#no_prelude #cfg(wide)\n\nstructure def S {}\n",
+        ),
+        (
+            "#no_prelude\n#cfg(wide)\nstructure def S {}\n",
+            "#no_prelude\n\nimport std.fake.c\n#cfg(wide)\nstructure def S {}\n",
+        ),
+        (
+            "// header\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+            "// header\n\nimport std.fake.c\n\n#cfg(wide)\n#no_prelude\n\nstructure def S {}\n",
+        ),
+    ] {
+        let fixed = insert(source, &["std.fake.c"]);
+        let reparsed = parse_clean(&fixed, SUBJECT_PATH);
+        let in_effect: Vec<String> = cfg_satisfied_imports(&reparsed, &CfgSet::default())
+            .iter()
+            .map(ModulePath::to_dotted)
+            .collect();
+        assert_eq!(in_effect, vec!["std.fake.c"], "fixed source:\n{fixed}");
+        assert_eq!(fixed, expected, "source:\n{source}");
+    }
+}
+
 // ─── r1: inserting what is missing satisfies missing_from ──────────────────
 
 #[test]
@@ -976,15 +1011,14 @@ fn inserting_the_missing_imports_under_a_cfg_leaves_nothing_missing_under_it() {
 #[test]
 fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off() {
     let parsed = parse_clean(
-        "import std.fake.a
-         #cfg(wide)
-import std.fake.b.Thing
-         #cfg(wide)
-#cfg(tall)
-import std.fake.c
-
-         structure def S {}
-",
+        "import std.fake.a\n\
+         #cfg(wide)\n\
+         import std.fake.b.Thing\n\
+         #cfg(wide)\n\
+         #cfg(tall)\n\
+         import std.fake.c\n\
+         \n\
+         structure def S {}\n",
         SUBJECT_PATH,
     );
     let split = |cfg: &CfgSet| {

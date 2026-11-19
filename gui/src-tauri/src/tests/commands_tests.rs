@@ -2099,6 +2099,52 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
+/// A source that fails to parse.
+const UNPARSEABLE_SRC: &str = "this is not valid {{{}}}";
+
+/// A file that reads but whose source the engine rejects opens as an
+/// uncompiled document carrying its diagnostics; only an unreadable file
+/// fails the open.
+#[test]
+fn open_file_engine_impl_opens_a_rejected_source_with_its_diagnostics() {
+    use crate::commands::open_file_engine_impl;
+    use crate::types::FileData;
+
+    let engine = make_test_engine_for_commands();
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.ri");
+    std::fs::write(&broken, UNPARSEABLE_SRC).unwrap();
+    let expected_path = std::fs::canonicalize(&broken)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let state = open_file_engine_impl(&engine, broken.to_str().unwrap())
+        .expect("a readable file opens even when the engine rejects its source");
+
+    assert_eq!(
+        state.files,
+        vec![FileData {
+            path: expected_path,
+            content: UNPARSEABLE_SRC.to_owned(),
+        }]
+    );
+    assert!(state.meshes.is_empty(), "a rejected source has no geometry");
+    assert!(
+        !state.compile_diagnostics.is_empty()
+            && state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.severity == "Error"),
+        "the open carries the rejection's errors, got {:?}",
+        state.compile_diagnostics
+    );
+
+    let missing = dir.path().join("missing.ri");
+    open_file_engine_impl(&engine, missing.to_str().unwrap())
+        .expect_err("an unreadable file still fails the open");
+}
+
 // ── Queued engine-call payloads (task 7442) ──────────────────────────────────
 
 /// Compile-time proof that `T` satisfies the bound a queued request's reply
@@ -4400,6 +4446,39 @@ mod queued_requests {
             "the slot must carry the file and the same error the ticket replied"
         );
         assert_eq!(failure_slot.take(), None, "the failure is handed out once");
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_of_a_rejected_source_opens_it_and_records_no_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broken = dir.path().join("broken.ri");
+        std::fs::write(&broken, super::UNPARSEABLE_SRC).expect("write broken.ri");
+        let canonical = std::fs::canonicalize(&broken).expect("canonicalize");
+        let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(initial_file_evaluation(
+            fresh_engine(),
+            canonical,
+            Arc::clone(&failure_slot),
+        ));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("a rejected source still opens");
+        assert!(
+            !published.state().compile_diagnostics.is_empty(),
+            "the opened buffer carries its diagnostics"
+        );
+        assert_eq!(
+            rig.observer.deltas().len(),
+            1,
+            "the cold-start state is published"
+        );
+        assert_eq!(
+            failure_slot.take(),
+            None,
+            "a rejected source is an open, not a launch failure"
+        );
     }
 
     #[test]

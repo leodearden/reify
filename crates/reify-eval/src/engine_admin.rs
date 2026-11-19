@@ -518,7 +518,7 @@ impl Engine {
     /// This test-gated accessor provides direct cache access (by entity+repr+tol
     /// key) for the cross-kernel-handoff test that needs to assert the terminal
     /// kernel is Manifold (gap-3 cross-kernel routing).  `KernelHandle` is
-    /// `Copy`, so the borrowed cache entry is copied out without disturbing
+    /// `Copy`, so the cache entry's handle is copied out without disturbing
     /// the cache.
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn test_terminal_handle(
@@ -529,7 +529,7 @@ impl Engine {
     ) -> Option<reify_ir::KernelHandle> {
         self.realization_cache
             .lookup(entity, repr, tol, crate::NO_OPTIONS)
-            .copied()
+            .map(|entry| entry.handle)
     }
 
     /// Return per-realization terminal-kernel provenance for the most recent
@@ -727,7 +727,7 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn realization_cache(
         &self,
-    ) -> &crate::realization_cache::RealizationCache<reify_ir::KernelHandle> {
+    ) -> &crate::realization_cache::RealizationCache<crate::RealizationCacheEntry> {
         &self.realization_cache
     }
 
@@ -3469,9 +3469,12 @@ mod tests {
             ReprKind::BRep,
             0.01,
             ContentHash(0),
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: GeometryHandleId(1),
+            crate::RealizationCacheEntry {
+                handle: KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                },
+                swept_kind: None,
             },
         );
         assert!(

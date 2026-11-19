@@ -243,16 +243,11 @@ structure S {
     param bad_dim : Length = 1.0 / 1m
 }
 "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param bad_dim : Length = 1.0/1m' \
-         (type_compatible(Scalar[m], _) is false)"
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "bad_dim",
     );
 }
 
@@ -269,20 +264,11 @@ structure S {
     param x     : Length = ratio * 2.0
 }
 "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param x : Length = ratio * 2.0' \
-         (type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "x",
     );
 }
 
@@ -297,20 +283,11 @@ structure S {
     param x : Int = 5kg
 }
 "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param x : Int = 5kg' \
-         (Int ≠ Scalar[kg]); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "x",
     );
 }
 
@@ -325,20 +302,11 @@ structure S {
     param x : Int = 0.5
 }
 "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param x : Int = 0.5' \
-         (Int ≠ Real/dimensionless-scalar); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "x",
     );
 }
 
@@ -354,21 +322,11 @@ structure S {
     param bad_dim : Real = 1.0 / 1m
 }
 "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
-         (Real/dimensionless ≠ Scalar[1/m]; 1.0/1m correctly infers as reciprocal dimension); \
-         got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        source,
+        DiagnosticCode::ParamDefaultTypeMismatch,
+        "param",
+        "bad_dim",
     );
 }
 

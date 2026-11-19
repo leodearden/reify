@@ -620,8 +620,9 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
 ///
 /// `Vec3<Pressure>` → body `Vector3<Q>` with Q=Pressure → Type::vec3(Type::Scalar{PRESSURE}).
 ///
-/// RED on base: trajectory.ri:102 declares `pub type Vec3 = Vector3<Length>` (0-param),
-/// so `Vec3<Pressure>` is an arity error (1 arg vs 0 params).
+/// RED on base: `trajectory.ri :: Vec3` was then declared
+/// `pub type Vec3 = Vector3<Length>` (0-param), so `Vec3<Pressure>` was an
+/// arity error (1 arg vs 0 params).
 #[test]
 fn vec3_alias_resolves_via_real_stdlib_prelude() {
     let source = "structure def S { param p : Vec3<Pressure> }";

@@ -774,6 +774,10 @@ fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_
 /// `Constraint` members are descended (guarded-group / match-cluster members are
 /// out of scope, consistent with the whole-handle-query acceptance surface). A
 /// `where` guard is not consulted, for a `Constraint` as for a `Let`.
+/// The synthetic realization is therefore unguarded: a known gap, not a
+/// contract, pinned by
+/// `known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization`
+/// (`tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`).
 ///
 /// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
 /// verbatim to the STRUCTURE member list: at the member level as above, and
@@ -6654,7 +6658,8 @@ pub(crate) fn expand_constraint_inst(
     // def body. Predicate compilation and the guard group will no longer run, so
     // the diagnostics they were going to report are reported here instead: the
     // throwaway sink is flushed and the `where` condition is compiled for its
-    // diagnostics alone. Pinned by constraint_def_compile_tests.rs's
+    // diagnostics alone. Pinned by
+    // crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs's
     // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
     // does_not_swallow siblings.
     if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {

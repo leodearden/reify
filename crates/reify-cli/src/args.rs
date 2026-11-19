@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
 
-use crate::help::DOC_USAGE;
+use crate::help::{CFG_SYNOPSIS, DOC_USAGE};
 
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
@@ -175,7 +175,7 @@ fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
             values.push(value.clone());
         } else if token.starts_with("--cfg=") {
             return Err(format!(
-                "--cfg takes its value as the next argument (`--cfg <key=value|flag>`), got '{token}'"
+                "--cfg takes its value as the next argument (`{CFG_SYNOPSIS}`), got '{token}'"
             ));
         } else {
             rest.push(token.clone());
@@ -207,7 +207,7 @@ pub(crate) fn split_cfg_args_or_usage(
 ///
 /// The path is returned as an owned [`String`] so it safely outlives the argument slice.
 ///
-/// Used by `cmd_explain` (and available for other no-flag subcommands).  Commands with
+/// For subcommands that take one file and no flags of their own.  Commands with
 /// their own optional flags (e.g. `cmd_eval` with `--explain-undef`) extract those flags
 /// first, then delegate the remainder to this helper or handle the tail themselves.
 pub(crate) fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> Result<String, ExitCode> {
@@ -441,6 +441,10 @@ mod tests {
         for token in ["--cfg=target=wasm", "--cfg="] {
             let err = split_cfg_args(&strings(&[token, "f.ri"])).expect_err("inline --cfg=");
             assert!(err.contains("next argument"), "{token}: got: {err}");
+            assert!(
+                err.contains(CFG_SYNOPSIS),
+                "{token}: the refusal must name the spelling `--help` documents, got: {err}"
+            );
         }
     }
 
@@ -454,5 +458,41 @@ mod tests {
             .expect("valid --cfg");
         assert!(cfg.flags.contains("feat"));
         assert_eq!(rest, strings(&["f.ri"]));
+    }
+
+    #[test]
+    fn parse_single_file_arg_returns_the_lone_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["f.ri"]), "explain", "usage"),
+            Ok("f.ri".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_unknown_double_dash_flag() {
+        // The flag is refused whether it comes before or after the file.
+        for argv in [["--strict", "f.ri"], ["f.ri", "--strict"]] {
+            assert_eq!(
+                parse_single_file_arg(&strings(&argv), "explain", "usage"),
+                Err(ExitCode::FAILURE),
+                "argv: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_extra_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["a.ri", "b.ri"]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_a_missing_file() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&[]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
     }
 }

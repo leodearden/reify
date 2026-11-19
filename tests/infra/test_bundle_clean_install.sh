@@ -4,6 +4,7 @@
 # install into a stock ubuntu:24.04 container (no /opt/reify-deps, no extra apt
 # source), `reify check examples/m5_geometry.ri` exits 0 and reify-gui under
 # xvfb answers a debug-MCP store_state with at least one mesh.
+# The installed reify-sidecar completes its ready handshake under the system node.
 #
 # DEFAULT-SKIPPING: armed only by REIFY_RUN_BUNDLE_CLEAN_INSTALL=1, because it
 # costs a cold scripts/build-bundle.sh plus two containers. Classified

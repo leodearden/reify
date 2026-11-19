@@ -79,6 +79,7 @@ pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
 /// # Panics
 /// Panics on parse errors, compile errors, or eval-phase diagnostics.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_engine();
@@ -101,6 +102,7 @@ pub fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_simple_engine();
@@ -116,6 +118,7 @@ pub fn check_source(source: &str) -> reify_eval::CheckResult {
 /// # Panics
 /// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
@@ -126,6 +129,7 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedModule {
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
     assert!(
@@ -140,6 +144,7 @@ fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedMod
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
     parse_or_panic_named(source, "test")
 }
@@ -151,6 +156,7 @@ fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
+#[track_caller]
 fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
     assert!(
@@ -169,6 +175,7 @@ fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic(source);
     reify_compiler::compile(&parsed)
@@ -182,6 +189,7 @@ pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic_named(source, module_name);
     reify_compiler::compile(&parsed)
@@ -196,6 +204,7 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
 ///
 /// # Panics
 /// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_with_stdlib_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
@@ -318,6 +327,7 @@ pub fn compile_source_with_stdlib_allow_parse_errors(
 ///
 /// # Panics
 /// Panics if there are parse errors or if the compiled module has no templates.
+#[track_caller]
 pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
@@ -334,14 +344,14 @@ pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic
 ///
 /// # Panics
 /// Panics if there are parse errors or if no template with `name` is found.
+#[track_caller]
 pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let compiled = compile_source(source);
     let diagnostics = compiled.diagnostics;
-    let template = compiled
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("compile_template: template {:?} not found", name));
+    // let-else, not a closure: see tests/track_caller_panic_location.rs
+    let Some(template) = compiled.templates.into_iter().find(|t| t.name == name) else {
+        panic!("compile_template: template {:?} not found", name);
+    };
     (template, diagnostics)
 }
 
@@ -474,6 +484,7 @@ pub fn assert_eval_clean(result: &reify_eval::EvalResult) {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -492,6 +503,7 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
+#[track_caller]
 pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source_with_stdlib(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -506,6 +518,7 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
 /// # Panics
 /// Panics if there are parse errors, if no compile errors are produced, or
 /// if `needle` is non-empty and no error message contains it.
+#[track_caller]
 pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
@@ -1359,21 +1372,8 @@ pub fn scalar_si(value: &reify_ir::Value, what: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
+    use crate::panic_capture::panic_message_of;
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
-
-    /// Run `f` and return the message it panicked with.
-    ///
-    /// `#[should_panic(expected = ...)]` matches exactly ONE substring, which
-    /// otherwise forces a second byte-identical test per expectation. Capturing
-    /// the message instead lets one test assert every substring that makes a
-    /// panic diagnosable. Reuses `reify_core::panic_payload_to_string` rather
-    /// than open-coding the downcast chain.
-    fn panic_message(f: impl FnOnce()) -> String {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            Ok(()) => panic!("expected a panic, but the call returned normally"),
-            Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
-        }
-    }
 
     /// Build a `reify_eval::EvalResult` from the only two fields these unit
     /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
@@ -1618,11 +1618,11 @@ mod tests {
     /// A non-`Scalar` value panics with a message naming BOTH the caller's
     /// `what` label and the value that was actually there — the two facts
     /// that make the failure diagnosable without a rerun. Asserting both is
-    /// why `panic_message` is used here instead of
+    /// why `panic_message_of` is used here instead of
     /// `#[should_panic(expected = ..)]`.
     #[test]
     fn scalar_si_panics_naming_label_and_observed_value() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let _ = super::scalar_si(&reify_ir::Value::Undef, "E.__connector_0.gain");
         });
         assert!(message.contains("E.__connector_0.gain"), "{message}");
@@ -2198,7 +2198,7 @@ mod tests {
     /// only the shared helper.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::compile_expecting_only_arg_type_mismatch(bracket_source(), "pattern spacing");
         });
 
@@ -2225,7 +2225,7 @@ mod tests {
     /// reason the assertion exists, and only a mixed fixture can see it.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_panics_on_a_second_unrelated_error() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::compile_expecting_only_arg_type_mismatch(
                 BARE_FILLET_PLUS_UNRELATED_ERROR_SRC,
                 "pattern spacing",
@@ -2507,7 +2507,7 @@ mod tests {
     /// diagnostic, so a failure is diagnosable without a rerun.
     #[test]
     fn test_assert_error_code_absent_panic_names_context_and_offender() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let diags = vec![
                 Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
                     .with_code(DiagnosticCode::StructureMemberNotFound),
@@ -2527,7 +2527,7 @@ mod tests {
     /// author can see what happened instead of the expected code.
     #[test]
     fn test_assert_error_code_present_panic_lists_observed_errors() {
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             let diags = vec![
                 Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
             ];
@@ -3045,7 +3045,7 @@ mod tests {
         let module = super::compile_source(source);
         super::assert_no_diagnostics(&module.diagnostics, "two-subs Vent/Manifold fixture");
 
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_let_expr_in(&module, "Manifold", "area");
         });
 
@@ -3224,7 +3224,7 @@ mod tests {
     #[test]
     fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
         let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_function_in(&module, "quadruple");
         });
         for expected in [
@@ -3247,7 +3247,7 @@ mod tests {
         let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
         let module = super::compile_source_named(source, "fn_lookup");
         super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
-        let message = panic_message(|| {
+        let message = panic_message_of(|| {
             super::get_function_in(&module, "convert");
         });
         let real_param = format!(

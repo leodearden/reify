@@ -108,7 +108,26 @@ PROBE_EXHAUSTED = (
     "failed persistently across 3/3 retries (4 probes total, including the initial attempt; "
     "last retry rc=101)"
 )
-REAPER_LIB = "scripts/lib_proc_reaper.sh"
+
+
+def verify_sh_refusal(lib):
+    """verify.sh's own load-time guard: exit 1 and its not-found line."""
+    return lib, 1, f"verify.sh: ERROR — {lib} not found next to verify.sh"
+
+
+# The libs verify.sh guards at load, in its source order: (deleted path, bash's exit code, bash's refusal line).
+MISSING_LIB_REFUSALS = (
+    verify_sh_refusal("scripts/occt-scope-lib.sh"),
+    verify_sh_refusal("scripts/release-scope-lib.sh"),
+    # release-scope-lib.sh sources it behind its own guard, which runs before verify.sh's (#10080).
+    ("scripts/affected-crates-lib.sh", 2,
+     "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh"),
+    verify_sh_refusal("scripts/lib_test_semaphore.sh"),
+    verify_sh_refusal("scripts/cpu-admit.sh"),
+    verify_sh_refusal("scripts/lib_proc_reaper.sh"),
+    verify_sh_refusal("scripts/heavy-test-filter-lib.sh"),
+    verify_sh_refusal("scripts/lib_git_env_scrub.sh"),
+)
 HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
 HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
 EMPTY_HEAVY_FILTER = (
@@ -584,11 +603,10 @@ class TestPlanParityStartup(InParityClone):
         )
 
     def test_missing_lib_is_refused(self):
-        (self.clone.root / REAPER_LIB).unlink()
-        self.check(Expect(
-            lint_all(f"{REAPER_LIB} deleted"), exit_code=1,
-            stderr=(f"verify.sh: ERROR — {REAPER_LIB} not found next to verify.sh",),
-        ))
+        for lib, exit_code, refusal in MISSING_LIB_REFUSALS:
+            self.clone.reset()
+            (self.clone.root / lib).unlink()
+            self.check(Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal,)))
 
     def test_empty_heavy_filter_is_refused(self):
         lib = self.clone.root / HEAVY_FILTER_LIB

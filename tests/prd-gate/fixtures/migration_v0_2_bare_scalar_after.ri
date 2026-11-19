@@ -1,0 +1,3 @@
+structure def Bracket {
+    param width: Length = 80mm
+}

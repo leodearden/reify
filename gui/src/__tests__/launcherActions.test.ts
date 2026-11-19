@@ -3,7 +3,7 @@ import { createLauncherActions, LaunchFailure } from '../app/launcherActions';
 import { createLauncherStore, LAUNCH_ERROR_CODES, type LauncherStore } from '../stores/launcherStore';
 import type { FileData, ModeState } from '../types';
 import { deferred, flushMacrotasks } from './test-utils';
-import { makeLauncherDeps, stubRecent } from './test_utils/launcherDeps';
+import { FAKE_DEBUG_PORT, makeLauncherDeps, stubRecent } from './test_utils/launcherDeps';
 
 async function failureOf(promise: Promise<unknown>): Promise<LaunchFailure> {
   const outcome = await promise.then(
@@ -451,7 +451,7 @@ describe('selectMode', () => {
 
     await actions.selectMode('debug');
 
-    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: FAKE_DEBUG_PORT, error: null });
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
 
     await actions.selectMode('debug');
@@ -468,7 +468,7 @@ describe('selectMode', () => {
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_BRIDGE_FAILED);
     expect(failure.message).toContain('Failed to fetch dynamically imported module');
-    expect(store.state.mode.debugPort).toBe(3939);
+    expect(store.state.mode.debugPort).toBe(FAKE_DEBUG_PORT);
   });
 
   it('debug: two selections in flight together both settle with the one bridge start', async () => {
@@ -515,7 +515,7 @@ describe('selectMode', () => {
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
     expect(failure.message).toBe('IPC channel closed');
-    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
+    expect(store.state.mode).toEqual({ selected: 'debug', debugPort: FAKE_DEBUG_PORT, error: null });
     expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
     expect(deps.showAssistant).not.toHaveBeenCalled();
   });
@@ -529,6 +529,21 @@ describe('selectMode', () => {
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
     expect(failure.message).toBe('IPC channel closed');
+  });
+
+  it('debug: after Debug then Design, a Debug selection whose set_mode fails rejects with E_GUI_MODE_FAILED, keeping Design selected', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.selectMode('debug');
+    await actions.selectMode('design');
+    expect(store.state.mode).toEqual({ selected: 'design', debugPort: FAKE_DEBUG_PORT, error: null });
+
+    deps.setMode.mockRejectedValueOnce('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+    expect(store.state.mode.selected).toBe('design');
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
   });
 
   it.each(['design', 'assistant'] as const)(

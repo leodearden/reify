@@ -170,7 +170,8 @@ describe('quantityUnitAlphabet', () => {
   };
 
   // (a) The ladders-unavailable floor. `get_unit_ladders` is a best-effort
-  // one-shot fetch that can fail (App.test.tsx pins a toast for that path), so
+  // one-shot fetch that can fail (App.init.test.tsx's 'App unit ladders
+  // (task #5199)' pins a toast for that path), so
   // validation must not silently narrow when it does — and every existing
   // ladder-less validation test must stay byte-identical.
   it.each([

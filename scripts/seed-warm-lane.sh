@@ -1571,7 +1571,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
     # convention above).  Currently covers the CARGO_* macros known to bake
     # absolute build-time paths into compiled test/bench binaries.
-    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_]+)"\)'
+    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
 
     # ── buildroot-match gate ───────────────────────────────────────────────
     # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
@@ -1601,7 +1601,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         done < <(find "$LANE_DIR" -type f -name '*.rs' \
                       \( -path '*/tests/*' -o -path '*/benches/*' \) \
                       -not -path "$LANE_DIR/target/*" -print0)
-        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own CARGO_MANIFEST_DIR (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
+        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
     else
         info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
     fi

@@ -1,6 +1,6 @@
 # Reify
 
-Parametric engineering-design DSL (`.ri` files): Rust workspace (`crates/`) + Tauri GUI (`gui/`). Dev setup: `scripts/setup-dev.sh` (builds prebuilt native deps, wires git hooks); the verify pipeline requires `sccache` on PATH (`dark-factory-orchestrator.yaml` sets `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees).
+Parametric engineering-design DSL (`.ri` files): Rust workspace (`crates/`) + Tauri GUI (`gui/`). Dev setup: `scripts/setup-dev.sh` (builds prebuilt native deps, wires git hooks); the verify pipeline requires `sccache` on PATH (`dark-factory-orchestrator.yaml` sets `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`; the cache is shared across worktrees only in part, see the sccache row under Pointers).
 
 This file holds **invariants and pointers only**. Mechanism detail lives in the canonical docs/scripts in the Pointers table — read those before working on a subsystem.
 
@@ -57,7 +57,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 
 ## GUI launch
 
-- `scripts/run-gui.sh [file.ri]` — release-mode build+launch (what end users run). `scripts/run-gui-dev.sh [file.ri]` — vite dev server + debug binary with `REIFY_DEBUG=1`, which opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`; set `REIFY_DEBUG_PORT` per worktree to avoid collisions. With no file, either script opens `reify-gui` on the launcher Start view (Open/New/Recent). Both export OCCT's `LD_LIBRARY_PATH` automatically, prepend `/opt/reify-deps/tbb-pin` ahead of any **inherited** `LD_LIBRARY_PATH` (which is preserved, not scrubbed — the loader reads `LD_LIBRARY_PATH` before `DT_RUNPATH`, so a caller `/usr/lib` path would otherwise defeat #5192's tbb pin), and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+- `scripts/run-gui.sh [file.ri]` — release-mode build+launch (what end users run). `scripts/run-gui-dev.sh [file.ri]` — vite dev server + debug binary with `REIFY_DEBUG=1`, which opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`; set `REIFY_DEBUG_PORT` per worktree to avoid collisions. With no file, either script opens `reify-gui` on the launcher Start view (Open/New/Recent). Both export OCCT's `LD_LIBRARY_PATH` automatically, prepend `/opt/reify-deps/tbb-pin` ahead of any **inherited** `LD_LIBRARY_PATH` (which is preserved, not scrubbed — the loader reads `LD_LIBRARY_PATH` before `DT_RUNPATH`, so a caller `/usr/lib` path would otherwise defeat #5192's tbb pin). `reify-gui` itself defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1` when it is unset or empty (`gui/src-tauri/src/webkit_env.rs`), on every launch path including the installed package; export `0` to opt out.
 - Both preflight before any build — `run-gui-dev.sh` the display **and** the vite port, `run-gui.sh` the display — and refuse rather than build into a launch that cannot work; `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses.
 - With a built binary: `reify gui --debug <file.ri>` (`--mcp` is an alias) or `reify gui-debug <file.ri>`.
 
@@ -100,6 +100,6 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | GUI vitest shared workers (isolate=false): project routing, per-file rebinding, test-author rules | `docs/notes/gui-vitest-shared-workers.md` |
 | Intra-crate module-SCC ratchet (INV-ARCH-1): reading GREW/STALE, lowering a baseline row | `scripts/assert-module-scc.py --help`; baseline `scripts/module-scc-baseline.json` |
 | Native-dep runtime loader path: the cargo-target / workspace-bin classes, which package bakes which RUNPATH, LD_LIBRARY_PATH-outranks-DT_RUNPATH | `docs/notes/native-dep-loader-path.md`; helper `scripts/lib_native_ld_path.sh` |
-| sccache / cross-worktree build-cache design | `~/.claude/plans/playful-hopping-nygaard.md` |
+| sccache cache key: what hits across worktree paths and what does not | `docs/notes/sccache-key-path-sensitivity.md` |
 
 Cross-repo seams follow one pattern: **reify ships the primitive, dark-factory wires the invocation** (debug-port trigger, cpu-governance ζ, reaper sweep, warm-lane *seed* primitive, verify-pipeline-guard consult). Each seam's contract lives with its topic above. Superseded for the warm-lane **pool-lifecycle** half only — pool sizing/lifecycle, lane state, reclaim policy, liveness determination and the scripts implementing them become dark-factory's under a *toolchain* boundary (dark-factory `plans/warm-lane-infra-repatriation-prd.md`, leaf ι), with `seed-warm-lane.sh` (genuinely toolchain-bound: RUSTFLAGS fingerprint, mtime stamping, OUT_DIR relocation, `env!()`-baked paths) and `refresh-warm-base.sh` staying in reify. That is the TARGET state, **not** today's: leaf α (DF 3072) has landed, so dark-factory ships its own copies of the generic pool scripts, but it resolves the project's copy first, so reify's copies are still the ones that run. The seed-side lane-lock / exit-code seam is untouched by that redraw and still follows the one pattern (§9.5 inv.11).

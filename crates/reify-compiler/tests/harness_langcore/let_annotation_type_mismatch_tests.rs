@@ -34,51 +34,23 @@ structure S {
     );
 }
 
-/// `let a : Length = 5N` must produce ≥1 "declared"/"initializer" error
-/// anchored at the `let a` declaration. Under the stdlib-less `compile_source`,
-/// `N` is an unknown unit (a second, codeless error), so the initializer types
-/// as `Real`, not Force.
+/// A force-dimensioned initializer at a `Length` let produces exactly one
+/// `LetAnnotationTypeMismatch` anchored at `let a`. The force is built from
+/// built-in units (kg·m·s^-2) because `N` lives only in the stdlib unit
+/// registry. Force shares Length's m^1 exponent, so only a full-dimension
+/// comparison rejects it.
 #[test]
-fn let_annotation_dimension_mismatch_force_unit_errors_at_declaration() {
-    let source = r#"
-structure S {
-    let a : Length = 5N
-}
-"#;
-
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    assert!(
-        !errors.is_empty(),
-        "expected at least one error for 'let a : Length = 5N' (force ≠ length), got none; \
-         diagnostics: {:?}",
-        module.diagnostics
+fn let_annotation_force_dimension_mismatch_errors_at_declaration() {
+    let message = assert_single_declaration_error(
+        "structure S { let a : Length = 5kg * 1m / (1s * 1s) }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "a",
     );
-
-    let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains("'a'")
-            && d.message.contains("declared")
-            && d.message.contains("initializer")
-    });
     assert!(
-        mismatch_diag.is_some(),
-        "expected an error mentioning \"'a'\", 'declared', and 'initializer' for 5N case; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let diag = mismatch_diag.unwrap();
-    assert!(
-        !diag.labels.is_empty(),
-        "expected diagnostic to have at least one label for 5N case; diag: {:?}",
-        diag
-    );
-    let span = diag.labels[0].span;
-    let sliced = &source[span.start as usize..span.end as usize];
-    assert!(
-        sliced.contains("let a"),
-        "expected label span to cover 'let a' for 5N case, but span covers: {:?}",
-        sliced
+        message.contains("`Scalar[m]`") && message.contains("`Scalar[m·kg·s^-2]`"),
+        "message must name declared `Scalar[m]` and found force `Scalar[m·kg·s^-2]`, \
+         got: {message:?}"
     );
 }
 
@@ -173,24 +145,11 @@ fn let_annotation_pure_literal_arithmetic_on_dimensioned_scalar_errors() {
 /// (one-directional widening: Int→dimensionless, not the reverse).
 #[test]
 fn let_int_declared_with_real_initializer_errors() {
-    let source = r#"
-structure S {
-    let i : Int = 0.5
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let i : Int = 0.5' (Int ≠ Real); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let i : Int = 0.5 }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "i",
     );
 }
 
@@ -198,25 +157,11 @@ structure S {
 /// `LetAnnotationTypeMismatch`. `type_compatible(Int, Scalar[kg])` is false.
 #[test]
 fn let_int_declared_with_dimensioned_initializer_errors() {
-    let source = r#"
-structure S {
-    let j : Int = 5kg
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let j : Int = 5kg' (Int ≠ Scalar[kg]); \
-         got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let j : Int = 5kg }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "j",
     );
 }
 
@@ -225,25 +170,11 @@ structure S {
 /// Tests the "wrong-type" path (non-scalar RHS with scalar declared type).
 #[test]
 fn let_scalar_declared_with_bool_initializer_errors() {
-    let source = r#"
-structure S {
-    let a : Length = true
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected LetAnnotationTypeMismatch for 'let a : Length = true' \
-         (scalar declared, Bool RHS); got: {:?}",
-        errors
-            .iter()
-            .map(|d| (&d.message, &d.code))
-            .collect::<Vec<_>>()
+    assert_single_declaration_error(
+        "structure S { let a : Length = true }",
+        DiagnosticCode::LetAnnotationTypeMismatch,
+        "let",
+        "a",
     );
 }
 

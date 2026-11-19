@@ -225,7 +225,7 @@ pub(crate) fn phase_entities(
             &ctx.declared_fn_names,
             &ctx.resolution_structure_names,
         ),
-        &ctx.local_structure_def_names,
+        ctx.local_structure_def_names(),
     );
 
     for decl in &parsed.declarations {

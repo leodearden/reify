@@ -1,0 +1,4 @@
+structure def Gate {
+    param not : Bool = false
+    let open = not
+}

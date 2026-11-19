@@ -263,7 +263,7 @@ describe('MultiViewport', () => {
     // This is a claim about the COMPONENT, not about which panes App gives FEA
     // props to. Since #5670 the caller populates the FEA trio for every pane
     // from a viewportId-keyed registry (App.tsx's `panes` mapArray; pinned by
-    // App.test.tsx's '#5670: the FEA trio reaches EVERY pane' test). Rewriting
+    // App.panes.test.tsx's '#5670: the FEA trio reaches EVERY pane' test). Rewriting
     // the fixture below to match that caller-side policy would make this test
     // inert — the point is precisely that MultiViewport forwards whatever it is
     // given, so a pane config WITHOUT the keys must stay without them.

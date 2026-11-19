@@ -27,7 +27,7 @@ DEST="${DEST_DIR}/${SIDECAR_NAME}"
 # Create executable: shebang + bundled JS
 mkdir -p "$DEST_DIR"
 printf '#!/usr/bin/env node\n' > "$DEST"
-cat dist/cli.js >> "$DEST"
+cat dist/cli.cjs >> "$DEST"
 chmod +x "$DEST"
 
 echo "Built ${SIDECAR_NAME} ($(wc -c < "$DEST") bytes)"
