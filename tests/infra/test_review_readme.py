@@ -18,11 +18,14 @@ against a hermetic tempdir fixture:
                   twin for the missing-CLI case; it records what
                   ./target/release/reify --version printed when the session
                   ran;
-  - `bin/cargo`   a stub standing in for CARGO_BIN: it emulates cargo's
-                  output-dir resolution and writes an executable
-                  target/release/reify that reports the HEAD it was built at;
-                  on request it then advances main, as the merge worker does
-                  while a real build runs.
+  - `bin/cargo`   a stub standing in for CARGO_BIN. Like cargo, it writes the
+                  `reify` binary only for `build -p reify-cli`, into release/
+                  only with `--release` (else debug/), under the output dir
+                  that CARGO_TARGET_DIR and its kin select; any other
+                  invocation succeeds and leaves a stale binary in place. The
+                  binary reports the HEAD it was built at; on request the stub
+                  then advances main, as the merge worker does while a real
+                  build runs.
 
 SAFETY: the claude stub edits NOTHING unless `pwd -P` is the fixture root it
 was handed, and the cargo stub builds NOTHING (it exits 97) unless it is run
@@ -197,7 +200,12 @@ printf '%s\\n' "$here" >> {shlex.quote(str(self.cargo_marker))}
 [ "$here" = "$REVIEW_README_STUB_ROOT" ] || exit 97
 [ -z "${{REVIEW_README_STUB_CARGO_SLEEP:-}}" ] || sleep "$REVIEW_README_STUB_CARGO_SLEEP"
 [ -z "${{REVIEW_README_STUB_CARGO_RC:-}}" ] || exit "$REVIEW_README_STUB_CARGO_RC"
-out="${{CARGO_TARGET_DIR:-${{CARGO_BUILD_TARGET_DIR:-target}}}}${{CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}}/release"
+args=" $* "
+case "$args" in *" build "*) ;; *) exit 0 ;; esac
+case "$args" in *" -p reify-cli "*|*" --package reify-cli "*|*" --package=reify-cli "*) ;; *) exit 0 ;; esac
+profile=debug
+case "$args" in *" --release "*) profile=release ;; esac
+out="${{CARGO_TARGET_DIR:-${{CARGO_BUILD_TARGET_DIR:-target}}}}${{CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}}/$profile"
 mkdir -p "$out"
 cat > "$out/reify" <<EOF
 #!/bin/sh
