@@ -151,3 +151,21 @@ fn empty_path_components_never_resolve_against_the_cwd() {
         "child never reached its assertions (filter matched no test?):\n{stdout}"
     );
 }
+
+#[test]
+fn a_file_only_group_and_other_may_execute_is_not_found() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir();
+    let name = "tool";
+    let path = fixture(dir.path(), name, 0o611);
+    if fs::metadata(&path).expect("stat fixture").uid() == 0 {
+        eprintln!("skipping: root may execute any file with an execute bit");
+        return;
+    }
+
+    assert_eq!(
+        find_executable_on_path(&[name], Some(&path_var(&[dir.path()]))),
+        None
+    );
+}
