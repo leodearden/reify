@@ -195,6 +195,21 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
     reify_compiler::compile(&parsed)
 }
 
+/// Like [`compile_source`] but compiled against `prelude`, the modules whose
+/// `pub` declarations the consumer sees. The consumer module is `"test"`, so
+/// name preludes with [`compile_source_named`].
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+#[track_caller]
+pub fn compile_source_with_prelude(
+    source: &str,
+    prelude: &[reify_compiler::CompiledModule],
+) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic(source);
+    reify_compiler::compile_with_prelude(&parsed, prelude)
+}
+
 /// Parse and compile `source` with stdlib, without asserting absence of compile errors.
 ///
 /// Like [`compile_source`] but uses `reify_compiler::compile_with_stdlib` so that
