@@ -919,9 +919,10 @@ Against the comparator that isolates the setting they do.
    median build wall over uniform (a) at 341 commits, carried by 55 tasks. It needs guidance, not
    configuration. The census shows where it comes from: 38% of heavy calls carry the verify env by hand, as
    memories ab2b34af and bfd48b27 instruct, and in 15 of the 54 mixed lanes it is two roles that disagree (an
-   implementer on the verify env, a reviewer on the default). This task records the measured facts in a
-   guidance memory (which env reuses the base, what the default rebuilds, that switching within a lane pays both
-   unit sets) and files a curator follow-up to correct the three memories' wrapper claim.
+   implementer on the verify env, a reviewer on the default). This task recorded the measured facts in a
+   guidance memory (5fa36323: which env reuses the base, what the default rebuilds, that switching within a lane
+   pays both unit sets), wrote the wrapper correction as memory d484da06, and filed curator ticket
+   tkt_0RX5AG3GC5AETDMR024ZZE2R2X to amend the three memories' wrapper claim in place.
 3. **What would reopen it.** A base kept within a few dozen commits of main, where (b) saves 12% of fleet CPU;
    7429's outcome (next section), which may make (a) the matching setting; or a measurement of (b0)'s edit
    loop, the one cell this bench lacks.
