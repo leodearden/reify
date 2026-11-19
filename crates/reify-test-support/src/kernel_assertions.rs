@@ -793,23 +793,20 @@ macro_rules! assert_kernel_contract {
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use crate::panic_capture::panic_message_of;
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";
 
-    /// Unwrap a [`catch_unwind`] result from a negative self-test below and
-    /// assert the panic message contains `fragment`, pinning the test to
-    /// the *intended* assertion's panic rather than merely "something
-    /// panicked". Without this, a future edit that makes an unrelated
-    /// assertion fire first would leave these tests green while no longer
-    /// verifying the property they claim to.
-    fn assert_panic_contains(result: std::thread::Result<()>, fragment: &str) {
-        let payload = match result {
-            Err(payload) => payload,
-            Ok(()) => panic!("expected the wrapped call to panic, but it returned normally"),
-        };
-        let message = reify_core::panic_payload_str(payload.as_ref())
-            .unwrap_or_else(|| panic!("panic payload was neither a &str nor a String"));
+    /// Run `f`, a negative self-test's call that must panic, and assert the
+    /// panic message contains `fragment`, pinning the test to the *intended*
+    /// assertion's panic rather than merely "something panicked". Without
+    /// this, a future edit that makes an unrelated assertion fire first would
+    /// leave these tests green while no longer verifying the property they
+    /// claim to.
+    #[track_caller]
+    fn assert_panic_contains<R>(f: impl FnOnce() -> R, fragment: &str) {
+        let message = panic_message_of(f);
         assert!(
             message.contains(fragment),
             "expected panic message to contain {:?}, got {:?}",
@@ -900,13 +897,15 @@ mod tests {
         super::assert_query_many_length_invariant(&TestStubKernel::new(), GeometryHandleId(1));
 
         // WrongLengthQueryManyKernel always returns an empty Vec — must panic.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_query_many_length_invariant(
-                &WrongLengthQueryManyKernel,
-                GeometryHandleId(1),
-            );
-        }));
-        assert_panic_contains(result, "query_many on");
+        assert_panic_contains(
+            || {
+                super::assert_query_many_length_invariant(
+                    &WrongLengthQueryManyKernel,
+                    GeometryHandleId(1),
+                );
+            },
+            "query_many on",
+        );
     }
 
     /// All-error kernel whose `query_many` returns a length-correct but
@@ -934,13 +933,15 @@ mod tests {
         // DivergentSingleQueryManyKernel's query_many(&[q]) returns
         // Ok(42.0) while query(&q) returns Err(_) — same length, wrong
         // content — must panic on the agreement check specifically.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_query_many_length_invariant(
-                &DivergentSingleQueryManyKernel,
-                GeometryHandleId(1),
-            );
-        }));
-        assert_panic_contains(result, "query_many(&[q]) must agree with query(&q)");
+        assert_panic_contains(
+            || {
+                super::assert_query_many_length_invariant(
+                    &DivergentSingleQueryManyKernel,
+                    GeometryHandleId(1),
+                );
+            },
+            "query_many(&[q]) must agree with query(&q)",
+        );
     }
 
     /// Kernel whose per-element `query` always succeeds (models a kernel
@@ -996,13 +997,15 @@ mod tests {
         // query(probe) succeeds, but query_many on a 2-element batch of
         // the same query wrongly returns Err — the guard must not
         // tolerate this, since the probe is valid.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_query_many_length_invariant(
-                &ErroringQueryManyWithValidProbeKernel,
-                GeometryHandleId(1),
-            );
-        }));
-        assert_panic_contains(result, "query_many on 2 queries must return");
+        assert_panic_contains(
+            || {
+                super::assert_query_many_length_invariant(
+                    &ErroringQueryManyWithValidProbeKernel,
+                    GeometryHandleId(1),
+                );
+            },
+            "query_many on 2 queries must return",
+        );
     }
 
     /// All-error kernel whose `extract_edges`/`extract_faces`/`extract_vertices`
@@ -1054,10 +1057,15 @@ mod tests {
         super::assert_extract_determinism(&mut TestStubKernel::new(), GeometryHandleId(1));
 
         // UnstableExtractKernel mints a fresh id every call — must panic.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_extract_determinism(&mut UnstableExtractKernel::new(), GeometryHandleId(1));
-        }));
-        assert_panic_contains(result, "extract_edges must be idempotent");
+        assert_panic_contains(
+            || {
+                super::assert_extract_determinism(
+                    &mut UnstableExtractKernel::new(),
+                    GeometryHandleId(1),
+                );
+            },
+            "extract_edges must be idempotent",
+        );
     }
 
     /// Kernel that silently accepts any handle — including one it never
@@ -1106,10 +1114,15 @@ mod tests {
         super::assert_dangling_handle_is_err(&mut TestStubKernel::new(), GeometryHandleId(999));
 
         // AcceptsDanglingKernel returns Ok for a handle it never created — must panic.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_dangling_handle_is_err(&mut AcceptsDanglingKernel, GeometryHandleId(999));
-        }));
-        assert_panic_contains(result, "execute on a dangling handle");
+        assert_panic_contains(
+            || {
+                super::assert_dangling_handle_is_err(
+                    &mut AcceptsDanglingKernel,
+                    GeometryHandleId(999),
+                );
+            },
+            "execute on a dangling handle",
+        );
     }
 
     /// Which single handle-taking method (besides `execute`, which always
@@ -1179,32 +1192,38 @@ mod tests {
     #[test]
     fn dangling_is_err_helper_catches_accepting_kernel_on_query_export_tessellate() {
         // Isolate the `query` branch: execute errors, query wrongly accepts.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_dangling_handle_is_err(
-                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Query),
-                GeometryHandleId(999),
-            );
-        }));
-        assert_panic_contains(result, "query on a dangling handle");
+        assert_panic_contains(
+            || {
+                super::assert_dangling_handle_is_err(
+                    &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Query),
+                    GeometryHandleId(999),
+                );
+            },
+            "query on a dangling handle",
+        );
 
         // Isolate the `export` branch: execute/query error, export wrongly accepts.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_dangling_handle_is_err(
-                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Export),
-                GeometryHandleId(999),
-            );
-        }));
-        assert_panic_contains(result, "export on a dangling handle");
+        assert_panic_contains(
+            || {
+                super::assert_dangling_handle_is_err(
+                    &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Export),
+                    GeometryHandleId(999),
+                );
+            },
+            "export on a dangling handle",
+        );
 
         // Isolate the `tessellate` branch: execute/query/export error,
         // tessellate wrongly accepts.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_dangling_handle_is_err(
-                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Tessellate),
-                GeometryHandleId(999),
-            );
-        }));
-        assert_panic_contains(result, "tessellate on a dangling handle");
+        assert_panic_contains(
+            || {
+                super::assert_dangling_handle_is_err(
+                    &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Tessellate),
+                    GeometryHandleId(999),
+                );
+            },
+            "tessellate on a dangling handle",
+        );
     }
 
     /// All-error stub kernel whose `execute` returns the wrong error
@@ -1264,10 +1283,12 @@ mod tests {
 
         // WrongTaxonomyStub's execute returns InvalidReference, not
         // OperationFailed — must panic.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_all_error_taxonomy(&mut WrongTaxonomyStub::new(), "WrongTaxonomy");
-        }));
-        assert_panic_contains(result, "OperationFailed");
+        assert_panic_contains(
+            || {
+                super::assert_all_error_taxonomy(&mut WrongTaxonomyStub::new(), "WrongTaxonomy");
+            },
+            "OperationFailed",
+        );
     }
 
     /// Real-like kernel fixture that models the verified OCCT dangling-handle
@@ -1399,10 +1420,15 @@ mod tests {
 
         // TestStubKernel returns OperationFailed, not InvalidReference — must
         // panic. This is the canonical stub/real taxonomy divergence.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_dangling_reference_taxonomy(&mut TestStubKernel::new(), GeometryHandleId(9999));
-        }));
-        assert_panic_contains(result, "InvalidReference");
+        assert_panic_contains(
+            || {
+                super::assert_dangling_reference_taxonomy(
+                    &mut TestStubKernel::new(),
+                    GeometryHandleId(9999),
+                );
+            },
+            "InvalidReference",
+        );
     }
 
     #[test]
@@ -1424,10 +1450,12 @@ mod tests {
         // topology extraction is broken or unimplemented, which
         // `assert_extract_determinism` alone would miss (two equal `Err`s
         // still look "idempotent").
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            super::assert_extract_succeeds(&mut TestStubKernel::new(), GeometryHandleId(1));
-        }));
-        assert_panic_contains(result, "extract_edges on a valid handle");
+        assert_panic_contains(
+            || {
+                super::assert_extract_succeeds(&mut TestStubKernel::new(), GeometryHandleId(1));
+            },
+            "extract_edges on a valid handle",
+        );
     }
 
     // The both-arms-from-one-source suite self-test: instantiate
