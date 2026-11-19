@@ -452,12 +452,12 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// own `let` cells and its plain nested subs form ONE dependency-ordered walk
 /// ([`build_phase15_nodes`] + [`phase15_node_traces`] + [`topological_sort`]).
 /// A nested sub's constructor arg is compiled in `child_template`'s scope, so it
-/// may read anything that scope offers — a param (already in phase 1's
-/// `child_values`), a `let` of the child, or a sibling sub's member via
-/// `self.<sub>.<member>`. Only the param case needs no ordering; the other two
-/// must be produced *before* the consuming sub's args are evaluated, or the read
-/// falls through to the TEMPLATE-scope entry in the global map and silently
-/// substitutes the template default for this instance's value.
+/// may read anything that scope offers — a param or a guarded-group cell (both
+/// already in phase 1's `child_values`), a `let` of the child, or a sibling sub's
+/// member via `self.<sub>.<member>`. Only the first case needs no ordering; the
+/// other two must be produced *before* the consuming sub's args are evaluated,
+/// or the read falls through to the TEMPLATE-scope entry in the global map and
+/// silently substitutes the template default for this instance's value.
 ///
 /// The walk therefore threads a running `overlay` (template-scoped keys, seeded
 /// with phase 1's params and the template's guarded-group cells at their

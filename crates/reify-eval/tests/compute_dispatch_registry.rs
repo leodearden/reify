@@ -1874,16 +1874,16 @@ fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
 ///
 /// Since task 10015 `elaborate_child_params_only` seeds phase 1's scope with
 /// the template's guarded-group cells, so `child_values` and phase 1.5's
-/// overlay both carry `half` and the read compares equal. Measured on
-/// c783b7386c with that seed loop disabled, the same fixture reported one
-/// `InputNotComparable` warning and left both elaboration-only cells `Undef`.
-/// `const777_fn` ignores its input, so 777 can only come from Reuse; the body
-/// `x + 100` makes a body-inline over the seed read 106.
+/// overlay both carry `half` and the read compares equal. `const777_fn` ignores
+/// its input, so 777 can only come from Reuse; the body `x + 100` makes a
+/// body-inline over the seed read 106.
 ///
 /// The CHARACTERIZATION block pins today's template-scope 106: the task-4707
 /// cold guarded-member cone pass re-folds graph-stamped cells through the .ri
-/// body (ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT). A fix there flips those two
-/// assertions to 777; re-point them, do not re-baseline them.
+/// body (ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT). When that ticket lands these
+/// cells read 777: replace the characterization block with a contract
+/// assertion that `r` equals `probe.v` (template, instance and phase-1.5
+/// scratch agree), rather than swapping 106 for 777.
 #[test]
 fn instance_scope_optimized_let_over_a_guarded_template_let_reuses_the_dispatch_silently() {
     let source = r#"
@@ -1963,8 +1963,8 @@ fn instance_scope_optimized_let_over_a_guarded_template_let_reuses_the_dispatch_
     // (e) CHARACTERIZATION — today's behaviour, not the contract. The cone pass
     //     re-folds the template cell and the graph-stamped instance cell through
     //     the .ri body, so within GuardedOuter.a, `r` (106) differs from
-    //     `probe.v` (777). Ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT: a fix flips
-    //     both to 777; re-point these, do not re-baseline them.
+    //     `probe.v` (777). Ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT: once it lands,
+    //     replace this block with `r == probe.v` (see this test's doc).
     for entity in ["GuardedInner", "GuardedOuter.a"] {
         assert_eq!(
             value_of(entity, "r"),
