@@ -1601,7 +1601,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         done < <(find "$LANE_DIR" -type f -name '*.rs' \
                       \( -path '*/tests/*' -o -path '*/benches/*' \) \
                       -not -path "$LANE_DIR/target/*" -print0)
-        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own CARGO_MANIFEST_DIR (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
+        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
     else
         info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
     fi
