@@ -9,8 +9,8 @@
 //! [`EvaluationGraph::from_templates`]: super::EvaluationGraph::from_templates
 
 use reify_compiler::{
-    CompiledGuardedGroup, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
-    find_template,
+    CompiledGuardedGroup, GuardedGroupCell, SubComponentDecl, TopologyTemplate, ValueCellDecl,
+    ValueCellKind, find_template,
 };
 use reify_core::{Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, MemberKey, Value};
@@ -142,7 +142,7 @@ impl<'a> ContributedCell<'a> {
 
 /// Every value cell `from_templates(templates)` inserts, in insertion order.
 /// Per template: its own cells, then each resolvable sub's instance cells,
-/// then each guarded group's guard cell, members and else-members.
+/// then each guarded group's [`CompiledGuardedGroup::owned_cells`].
 pub fn contributed_cells(
     templates: &[TopologyTemplate],
 ) -> impl Iterator<Item = ContributedCell<'_>> {
@@ -188,17 +188,24 @@ fn template_cells<'a>(
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
     let own = template.value_cells.iter().map(declared_cell);
-    let guarded = template.guarded_groups.iter().flat_map(|group| {
-        std::iter::once(ContributedCell(Source::Guard(group)))
-            .chain(group.members.iter().map(declared_cell))
-            .chain(group.else_members.iter().map(declared_cell))
-    });
+    let guarded = template
+        .guarded_groups
+        .iter()
+        .flat_map(CompiledGuardedGroup::owned_cells)
+        .map(guarded_group_cell);
     own.chain(sub_instance_cells(templates, template, instances))
         .chain(guarded)
 }
 
 fn declared_cell(decl: &ValueCellDecl) -> ContributedCell<'_> {
     ContributedCell(Source::Declared(decl))
+}
+
+fn guarded_group_cell(cell: GuardedGroupCell<'_>) -> ContributedCell<'_> {
+    match cell {
+        GuardedGroupCell::Guard(group) => ContributedCell(Source::Guard(group)),
+        GuardedGroupCell::Member(decl) => declared_cell(decl),
+    }
 }
 
 /// Every sub instance whose cells [`contributed_cells`] yields: its scoped
