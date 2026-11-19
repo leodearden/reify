@@ -166,6 +166,12 @@ impl Pose {
         }
         p
     }
+
+    /// Whether the pose places every datum at finite coordinates. The rotation is
+    /// checked by magnitude because [`rotate`] divides by it.
+    fn is_finite(&self) -> bool {
+        self.translation.iter().all(|c| c.is_finite()) && norm3(self.rotation).is_finite()
+    }
 }
 
 /// The measured rank report for one input relation (in input order).
@@ -551,6 +557,8 @@ fn scaled_residual_jacobian(
 /// Evaluate `rel`'s residual rows at pose `x`: transform each MOVING datum operand
 /// (one whose sub is the auto unknown) by `x`, leave anchors fixed, then dispatch
 /// on the relation name. A zero residual means the relation is satisfied at `x`.
+/// At a pose that is not finite ([`Pose::is_finite`]) no datum is moved: every row
+/// of the relation's identity-pose form reads NaN.
 fn relation_residual_rows(
     rel: &RelationInstance,
     unknown: &FrameUnknown,
@@ -558,7 +566,9 @@ fn relation_residual_rows(
 ) -> Vec<ResidualRow> {
     let mut datums: Vec<(Value, bool)> = Vec::new(); // (value, moving)
     let mut scalars: Vec<f64> = Vec::new(); // metric operands, in declaration order
-    let mut unposable = false;
+    let mut unposable = !x.is_finite();
+    let identity = Pose::identity();
+    let x = if unposable { &identity } else { x };
     for op in &rel.operands {
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
@@ -589,11 +599,12 @@ fn relation_residual_rows(
     }
 }
 
-/// `rows` with every value NaN: what a relation reads when [`transform_datum`]
-/// cannot pose one of its moving datums, which only a non-finite pose rotation
-/// causes. The rows keep the count and units of the relation's form, which
-/// [`FrameProblem`] requires to be pose-independent, and the NaN reaches
-/// trust_region's NonFinite verdict as a NaN rotated into any other residual does.
+/// `rows` with every value NaN: what a relation reads at a pose that places no
+/// datum at finite coordinates ([`Pose::is_finite`]), or when [`transform_datum`]
+/// cannot pose one of its moving datums. The rows keep the count and units of the
+/// relation's form, which [`FrameProblem`] requires to be pose-independent, and the
+/// NaN reaches trust_region's NonFinite verdict as a NaN rotated into any other
+/// residual does.
 fn unposable_datum_rows(rows: Vec<ResidualRow>) -> Vec<ResidualRow> {
     rows.into_iter()
         .map(|row| ResidualRow {
@@ -1310,9 +1321,10 @@ fn plane_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
 /// Apply pose `x` to a datum: directions rotate, origins rotate-then-translate.
 ///
 /// A rotated direction is re-minted through [`UnitVec3::from_vector`], so every
-/// direction a residual reads stays a unit `Direction`. That fails only for a
-/// non-finite pose rotation, and the caller reports such a relation through
-/// [`unposable_datum_rows`]. A malformed datum passes through unchanged.
+/// direction a residual reads stays a unit `Direction`. That fails only for a pose
+/// rotation of non-finite magnitude, which [`relation_residual_rows`] never applies:
+/// [`Pose::is_finite`] screens such a pose first, and an `Err` that still reached it
+/// would read as [`unposable_datum_rows`]. A malformed datum passes through unchanged.
 fn transform_datum(v: &Value, x: &Pose) -> Result<Value, DirectionFault> {
     let rotate_unit =
         |u: [f64; 3]| UnitVec3::from_vector(rotate(x.rotation, u)).map(Value::Direction);
@@ -1428,7 +1440,9 @@ struct FrameProblem<'a> {
     scaling: &'a SolveScaling,
     /// How many residual rows each relation contributes. A residual form
     /// branches only on its operands' shapes, so the count is the same at every
-    /// pose; [`LeastSquaresProblem::residual`] asserts it.
+    /// pose; [`LeastSquaresProblem::residual`] asserts it. A pose that is not
+    /// finite reads the identity form, NaN'd by [`relation_residual_rows`], so the
+    /// count holds there too.
     row_counts: Vec<usize>,
 }
 
