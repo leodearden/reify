@@ -232,7 +232,36 @@ pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModuleP
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
 pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
-    coverage::gated_off(parsed, cfg).collect()
+    coverage::gated_off(parsed, cfg)
+        .map(|(module, _)| module)
+        .collect()
+}
+
+/// What the imports `parsed` declares whose `#cfg` predicates `cfg` does not
+/// satisfy would bind, were those predicates satisfied.
+pub struct GatedOffImports<'p> {
+    coverage: coverage::ImportCoverage<'p>,
+}
+
+impl<'p> GatedOffImports<'p> {
+    /// # Panics
+    ///
+    /// If `parsed` declares an import whose path is not a module path, which
+    /// only a module with parse errors can.
+    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+        Self {
+            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg),
+        }
+    }
+
+    /// Whether one of those imports would bind one of `required`'s names from
+    /// `required.module`.
+    pub fn would_cover_any(&self, required: &RequiredImport) -> bool {
+        required
+            .names
+            .iter()
+            .any(|name_use| self.coverage.covers(&required.module, &name_use.name))
+    }
 }
 
 /// Every compiled stdlib module except `module`, in load order: the universe
