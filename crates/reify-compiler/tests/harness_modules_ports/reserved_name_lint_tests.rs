@@ -206,12 +206,21 @@ fn structure_bracket_emits_no_reserved_type_name_warning() {
 /// only the Warning; the builtin still resolves.
 ///
 /// This confirms the lint is warning-only and type resolution is unchanged.
+///
+/// The param carries no default. It once read `= Direction.In`, which was
+/// Error-free only while Direction slots went unexamined; direction-typing δ
+/// (#9637) promoted the datum leaf families to exact-identity judgement, so a
+/// user-enum default into the builtin-typed slot is now an `ArgTypeMismatch`
+/// (pinned by
+/// `user_enum_default_into_builtin_direction_param_is_an_arg_type_mismatch`).
+/// The resolved-type pin for this fixture is
+/// `param_type_resolves_to_builtin_direction_when_user_enum_collides`.
 #[test]
 fn builtin_still_resolves_when_user_enum_collides() {
     let source = r#"
 enum Direction { In, Out }
 structure Beam {
-    param d : Direction = Direction.In
+    param d : Direction
 }
 "#;
     let module = compile_source(source);
@@ -239,6 +248,49 @@ structure Beam {
         reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert_eq!(reserved[0].severity, Severity::Warning);
+}
+
+/// Because the builtin wins in type position, a default drawn from the
+/// colliding user enum lands in a builtin-`Direction` slot and is judged
+/// there: exactly one `ArgTypeMismatch` naming `d`, beside the one
+/// ReservedTypeName Warning the collision always costs.
+#[test]
+fn user_enum_default_into_builtin_direction_param_is_an_arg_type_mismatch() {
+    let source = r#"
+enum Direction { In, Out }
+structure Beam {
+    param d : Direction = Direction.In
+}
+"#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(errors[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    assert!(
+        errors[0].message.contains("'d'"),
+        "ArgTypeMismatch must name param 'd', got: {:?}",
+        errors[0].message
+    );
+
+    let warnings = warnings_only(&module);
+    let reserved = reserved_name_warnings(&warnings);
+    assert_eq!(
+        reserved.len(),
+        1,
+        "expected exactly 1 ReservedTypeName warning, got {}: {:?}",
+        reserved.len(),
+        reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 // ── Amendment: TypeAlias coverage (suggestion 1) ─────────────────────────────

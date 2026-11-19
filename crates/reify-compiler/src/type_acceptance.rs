@@ -431,6 +431,8 @@ mod tests {
             field(Type::point3(length()), real()),
             Type::Selector(SelectorKind::Face),
             Type::Int,
+            Type::Direction,
+            Type::Frame(3),
         ];
         let args = [
             Type::TypeParam("T".to_string()),
@@ -752,11 +754,88 @@ mod tests {
 
     #[test]
     fn unexamined_families_are_not_judged() {
-        assert_rows(&[(
-            "frame param",
-            Type::Frame(3),
-            Type::Int,
-            ArgVerdict::Unverifiable,
-        )]);
+        assert_rows(&[
+            (
+                "transform param",
+                Type::Transform(3),
+                Type::Int,
+                ArgVerdict::Unverifiable,
+            ),
+            (
+                "complex param",
+                Type::Complex(Box::new(real())),
+                Type::Int,
+                ArgVerdict::Unverifiable,
+            ),
+        ]);
+    }
+
+    #[test]
+    fn datum_params_accept_only_their_own_type() {
+        let reject = ArgVerdict::Reject(ParamFamily::Datum);
+        assert_rows(&[
+            (
+                "direction <- direction",
+                Type::Direction,
+                Type::Direction,
+                ArgVerdict::Accept,
+            ),
+            ("axis <- axis", Type::Axis, Type::Axis, ArgVerdict::Accept),
+            (
+                "plane <- plane",
+                Type::Plane,
+                Type::Plane,
+                ArgVerdict::Accept,
+            ),
+            (
+                "frame <- frame",
+                Type::Frame(3),
+                Type::Frame(3),
+                ArgVerdict::Accept,
+            ),
+            (
+                "direction <- dimensionless vector",
+                Type::Direction,
+                Type::vec3(real()),
+                reject,
+            ),
+            (
+                "direction <- length vector",
+                Type::Direction,
+                Type::vec3(length()),
+                reject,
+            ),
+            ("direction <- string", Type::Direction, Type::String, reject),
+            ("direction <- int", Type::Direction, Type::Int, reject),
+            (
+                "direction <- axis: no implicit lift at a ctor slot",
+                Type::Direction,
+                Type::Axis,
+                reject,
+            ),
+            ("axis <- direction", Type::Axis, Type::Direction, reject),
+            ("axis <- int", Type::Axis, Type::Int, reject),
+            ("plane <- vector", Type::Plane, Type::vec3(real()), reject),
+            ("frame <- int", Type::Frame(3), Type::Int, reject),
+            ("frame <- string", Type::Frame(3), Type::String, reject),
+            (
+                "frame <- transform",
+                Type::Frame(3),
+                Type::Transform(3),
+                reject,
+            ),
+            (
+                "frame <- other arity",
+                Type::Frame(3),
+                Type::Frame(2),
+                reject,
+            ),
+            (
+                "direction <- colliding user enum: the builtin wins in type position",
+                Type::Direction,
+                Type::Enum("Direction".to_string()),
+                reject,
+            ),
+        ]);
     }
 }

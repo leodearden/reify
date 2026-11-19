@@ -189,11 +189,11 @@ structure def S {
 #[test]
 fn enum_lt_enum_emits_cmp_operand_kind() {
     let src = r#"
-enum Direction { X, Y, Z }
+enum Heading { X, Y, Z }
 
 structure def S {
-    param dir : Direction = Direction.X
-    constraint dir < Direction.Y
+    param dir : Heading = Heading.X
+    constraint dir < Heading.Y
 }
 "#;
     let errs = errors(src);

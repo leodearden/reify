@@ -1,0 +1,149 @@
+//! Datum slots (`Direction`, `Axis`, `Plane`, `Frame`) at ctor fields and param
+//! defaults accept only their own type (`docs/prds/v0_6/direction-typing.md`
+//! C7 / D8, rows B22 and B8).
+
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
+use reify_test_support::{compile_source_with_stdlib, errors_only, is_ctor_conformance_code};
+
+fn ctor_conformance_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    errors_only(module)
+        .into_iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .collect()
+}
+
+/// `A` declares `decl`; `Root` constructs it as `A(<field>: <arg>)`.
+fn ctor_field_source(decl: &str, field: &str, arg: &str) -> String {
+    format!(
+        "structure def A {{\n    {decl}\n}}\n\
+         structure def Root {{\n    let x = A({field}: {arg})\n}}\n"
+    )
+}
+
+fn assert_one_arg_type_mismatch_naming<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    field: &str,
+    case: &str,
+) -> &'m Diagnostic {
+    let errors = ctor_conformance_errors(module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "{case}: expected one ctor-conformance Error, got {errors:?}"
+    );
+    let diagnostic = errors[0];
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{case}: {diagnostic:?}"
+    );
+    assert_eq!(
+        diagnostic.severity,
+        Severity::Error,
+        "{case}: {diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message.contains(&format!("'{field}'")),
+        "{case}: the mismatch must name '{field}': {diagnostic:?}"
+    );
+    diagnostic
+}
+
+fn assert_checks_clean(source: &str, case: &str) {
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "{case} must check clean, got {errors:?}");
+}
+
+#[test]
+fn each_datum_slot_rejects_a_foreign_argument_at_a_ctor_field() {
+    // `Frame` displays as `Frame3`, so its substring is the family name alone.
+    for (decl, field, arg, type_name) in [
+        ("param f : Frame", "f", "\"hello\"", "Frame"),
+        ("param a : Axis", "a", "5", "Axis"),
+        ("param p : Plane", "p", "vec3(0, 0, 1)", "Plane"),
+        ("param d : Direction", "d", "\"hello\"", "Direction"),
+    ] {
+        let module = compile_source_with_stdlib(&ctor_field_source(decl, field, arg));
+        let case = format!("{decl} <- {arg}");
+        let diagnostic = assert_one_arg_type_mismatch_naming(&module, field, &case);
+        assert!(
+            diagnostic.message.contains(type_name),
+            "{case}: the mismatch must name the required type {type_name}: {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn the_task_repro_reports_one_mismatch_per_datum_field() {
+    let source = "structure def L {\n    \
+                  param d : Direction = undef\n    \
+                  param p : Plane = undef\n    \
+                  param a : Axis = undef\n    \
+                  param f : Frame = undef\n}\n\
+                  structure def Root {\n    let l = L(d: \"x\", p: 42, a: \"y\", f: 7)\n}\n";
+    let module = compile_source_with_stdlib(source);
+    let errors = ctor_conformance_errors(&module);
+
+    assert_eq!(errors.len(), 4, "one Error per datum field, got {errors:?}");
+    for diagnostic in &errors {
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "{diagnostic:?}"
+        );
+    }
+    for field in ["d", "p", "a", "f"] {
+        let naming = format!("argument '{field}'");
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|d| d.message.contains(&naming))
+                .count(),
+            1,
+            "exactly one Error must name '{field}': {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_direction_param_default_rejects_a_string() {
+    let module =
+        compile_source_with_stdlib("structure def A {\n    param d : Direction = \"hello\"\n}\n");
+    assert_one_arg_type_mismatch_naming(&module, "d", "Direction default <- String");
+}
+
+#[test]
+fn datum_slots_accept_datum_values() {
+    let root_prelude = "let o = point3(0mm, 0mm, 0mm)\n    \
+                        let fr = frame_at(o, dir(1, 0, 0), dir(0, 0, 1))\n    \
+                        param dd : Direction";
+    let ctor_cases = [
+        ("param d : Direction", "d", "dir(0, 1, 0)"),
+        ("param d : Direction", "d", "axis_y(o).dir"),
+        ("param d : Direction", "d", "plane_xy(0mm).normal"),
+        ("param d : Direction", "d", "fr.z"),
+        ("param d : Direction", "d", "dd"),
+        ("param a : Axis", "a", "axis_x(o)"),
+        (
+            "param a : Axis",
+            "a",
+            "axis_through(o, point3(0mm, 0mm, 1mm))",
+        ),
+        ("param p : Plane", "p", "plane_xy(0mm)"),
+        ("param p : Plane", "p", "fr.xy_plane"),
+        ("param f : Frame", "f", "fr"),
+        ("param f : Frame", "f", "frame3(o, orient_identity())"),
+    ];
+    for (decl, field, arg) in ctor_cases {
+        let source = format!(
+            "structure def A {{\n    {decl}\n}}\n\
+             structure def Root {{\n    {root_prelude}\n    let x = A({field}: {arg})\n}}\n"
+        );
+        assert_checks_clean(&source, &format!("{decl} <- {arg}"));
+    }
+    for default in ["axis_y(point3(0mm, 0mm, 0mm)).dir", "undef"] {
+        let source = format!("structure def A {{\n    param d : Direction = {default}\n}}\n");
+        assert_checks_clean(&source, &format!("Direction default {default}"));
+    }
+}
