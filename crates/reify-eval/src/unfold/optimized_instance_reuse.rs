@@ -165,11 +165,16 @@ pub(super) enum DeclineCause {
     /// Both directions are reachable:
     ///
     /// * ABSENT AT INSTANCE SCOPE. `child_values` carries the child template's
-    ///   own params, the collapsed sub instances, and a BFS projection over the
+    ///   own params, the template's guarded-group cells at their template
+    ///   values, the collapsed sub instances, and a BFS projection over the
     ///   subs phase 1.5 actually elaborated — so a read of a member of a
     ///   DECLINED sub (a collection, a keyed sub, a `skip_reason_for_shape`
     ///   miss, an unresolvable target, a cycle cut) is missing here while the
-    ///   global map holds it from the top-level pass.
+    ///   global map holds it from the top-level pass. A read of a guarded
+    ///   template let is therefore NOT absent: it compares equal and reuses
+    ///   (pinned by
+    ///   `instance_scope_optimized_let_over_a_guarded_template_let_reuses_the_dispatch_silently`
+    ///   in `tests/compute_dispatch_registry.rs`).
     /// * ABSENT AT TEMPLATE SCOPE. For a prelude/stdlib child structure — the
     ///   same population [`Self::NoTemplateValue`] describes, absent from
     ///   `module.templates` — the top-level pass never seeds `{Tmpl}.{param}`
@@ -353,9 +358,10 @@ fn render_input_value(value: &Value) -> String {
 /// ## Why the two instance maps reach the SAME decision
 ///
 /// The gate runs against two differently-built instance maps — phase 1.5's
-/// `overlay` (params + scratch lets + ONE level of nested-sub member
-/// projections + the collapsed `__self` aliases) and phase 2's `child_values`
-/// (params + the multi-level projection BFS + collapsed values) — and a key one
+/// `overlay` (params + guarded-group seeds + scratch lets + ONE level of
+/// nested-sub member projections + the collapsed `__self` aliases) and phase
+/// 2's `child_values` (params + guarded-group seeds + the multi-level
+/// projection BFS + collapsed values) — and a key one
 /// map carries while the other does not would compare `Some(v)` vs `None` and
 /// flip the gate. MEASURED on this branch, that divergence class is not
 /// reachable, because the only keys the two maps differ on are ones no read set
@@ -377,6 +383,9 @@ fn render_input_value(value: &Value) -> String {
 ///   PREDECESSOR of the reading cell (`phase15_node_traces` normalises a
 ///   cross-sub read onto its sub node), so ordering cannot make one map hold a
 ///   key the other is still missing.
+/// * the template's guarded-group cells (guard cell, members, else members) at
+///   their template values are in BOTH maps too: phase 1 seeds them before
+///   either map is built, and both inherit them, so ordering is not involved.
 /// * a SKIPPED sub (non-nestable / cycle cut / unresolvable) contributes to
 ///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
 ///   excludes exactly the subs phase 1.5 skipped.
@@ -1176,7 +1185,8 @@ mod tests {
     /// Both directions are reachable, not hypothetical:
     ///
     /// * INSTANCE-SIDE ABSENCE. `child_values` is seeded with the child
-    ///   template's own params, the collapsed sub instances, and a BFS
+    ///   template's own params, the template's guarded-group cells at their
+    ///   template values, the collapsed sub instances, and a BFS
     ///   projection over the subs phase 1.5 actually elaborated — so a read of a
     ///   member of a DECLINED sub (a collection, a keyed sub, a
     ///   `skip_reason_for_shape` miss, an unresolvable target, a cycle cut) is
