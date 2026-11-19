@@ -20,7 +20,9 @@ against a hermetic tempdir fixture:
                   ran;
   - `bin/cargo`   a stub standing in for CARGO_BIN: it emulates cargo's
                   output-dir resolution and writes an executable
-                  target/release/reify that reports the HEAD it was built at.
+                  target/release/reify that reports the HEAD it was built at;
+                  on request it then advances main, as the merge worker does
+                  while a real build runs.
 
 SAFETY: the claude stub edits NOTHING unless `pwd -P` is the fixture root it
 was handed, and the cargo stub builds NOTHING (it exits 97) unless it is run
@@ -73,6 +75,7 @@ _SCRUBBED_KEYS = (
     "REVIEW_README_STUB_APPEND",
     "REVIEW_README_STUB_CARGO_RC",
     "REVIEW_README_STUB_CARGO_SLEEP",
+    "REVIEW_README_STUB_CARGO_ADVANCE",
     "REVIEW_README_BUILD_TIMEOUT",
     "REIFY_BIN",
     "CARGO_TARGET_DIR",
@@ -201,6 +204,7 @@ cat > "$out/reify" <<EOF
 echo "{BUILT_FROM} $(git rev-parse HEAD)"
 EOF
 chmod +x "$out/reify"
+[ -z "${{REVIEW_README_STUB_CARGO_ADVANCE:-}}" ] || git commit -q --allow-empty --no-verify -m "fixture: concurrent advance"
 exit 0
 """)
         return stub
@@ -520,6 +524,16 @@ class BinaryTrustTest(ReviewReadmeFixture):
                                  REVIEW_README_STUB_CARGO_SLEEP="30")
         self.assert_build_refused_before_the_session(
             result, planted=planted, head_before=head_before)
+
+    def test_a_main_that_moves_during_the_build_refuses_before_the_session(self):
+        self.plant_stale_binary()
+        before_build = self.head()
+        result = self.run_script(REVIEW_README_STUB_CARGO_ADVANCE="1")
+        self.assertNotEqual(self.head(), before_build, _diag(result))
+        self.assertEqual(result.returncode, 1, _diag(result))
+        self.assertIsNone(self.session_ran_binary(), _diag(result))
+        self.assertNotEqual(self.sidecar(), self.head(), _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
 
 
 if __name__ == "__main__":
