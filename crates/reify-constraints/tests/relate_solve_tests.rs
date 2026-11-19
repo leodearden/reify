@@ -526,40 +526,54 @@ fn solve_frame_seed_biases_residual_dof() {
 // driving `max_relation_residual` directly, so the residual algebra is checked
 // without a solver round-trip.
 
-/// Solve `relations` for the moving sub `"m"` from a seed whose rotation is NaN,
-/// and assert the run reaches the NonFinite verdict — the shared body of the
-/// Direction/Axis/Plane NaN-rotation guards. `datum_kind` names the moving
-/// datum's kind in the failure message only.
-fn assert_a_nan_rotation_is_non_finite(relations: &[RelationInstance], datum_kind: &str) {
+/// Solve `relations` for the moving sub `"m"` from `seed` and assert the run
+/// reaches the NonFinite verdict — the shared body of the non-finite-pose guards.
+/// `what` names the case in the failure message only.
+fn assert_the_seed_is_non_finite(relations: &[RelationInstance], seed: &Pose, what: &str) {
     let unknown = unknown("m", false);
-    let seed = Pose {
-        translation: [0.0; 3],
-        rotation: [f64::NAN, 0.0, 0.0],
-    };
     let scaling = scaling_for(relations, &unknown, &Pose::identity());
-    let outcome = solve_frame_outcome(relations, &unknown, &seed, &scaling, SolveBudget::default());
+    let outcome = solve_frame_outcome(relations, &unknown, seed, &scaling, SolveBudget::default());
     assert!(
         matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
-        "a NaN-rotated {datum_kind} must reach the NonFinite verdict: {outcome:?}"
+        "{what} must reach the NonFinite verdict: {outcome:?}"
     );
 }
 
-/// A Direction operand under a non-finite pose rotation must surface as a
-/// non-finite evaluation, exactly as an Axis/Plane operand does — never be left
-/// unrotated. An unrotated Direction reads the identity residual at every probe:
-/// zero here (the pair is seated), so the run would report a converged pose
-/// carrying the NaN seed rotation.
+/// The identity placement with a NaN rotation.
+fn nan_rotation() -> Pose {
+    Pose {
+        translation: [0.0; 3],
+        rotation: [f64::NAN, 0.0, 0.0],
+    }
+}
+
+/// A moving Direction under a NaN pose rotation must surface as a non-finite
+/// evaluation for every relation that reads a Direction, whatever residual form
+/// reads it — never be left unrotated, which would read the identity residual at
+/// every probe and converge at a pose carrying the NaN rotation. `coincident` is
+/// in the table because its form matches on the Direction shape alone, so a datum
+/// that changed shape under the rotation used to change its row count and panic
+/// the solve.
 #[test]
 fn a_direction_under_a_nan_rotation_is_a_non_finite_evaluation() {
-    let relations = vec![relation(
-        "perpendicular",
-        vec![
-            datum("m", dir(0.0, 0.0, 1.0)),
-            datum("a", dir(1.0, 0.0, 0.0)),
-        ],
-        1,
-    )];
-    assert_a_nan_rotation_is_non_finite(&relations, "Direction");
+    // (relation, moving direction, anchor direction, nominal ΔDOF)
+    let cases = [
+        ("perpendicular", dir(0.0, 0.0, 1.0), dir(1.0, 0.0, 0.0), 1),
+        ("parallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0), 2),
+        ("coincident", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0), 2),
+    ];
+    for (name, moving, anchor, nominal_delta_dof) in cases {
+        let relations = vec![relation(
+            name,
+            vec![datum("m", moving), datum("a", anchor)],
+            nominal_delta_dof,
+        )];
+        assert_the_seed_is_non_finite(
+            &relations,
+            &nan_rotation(),
+            &format!("a NaN-rotated Direction under `{name}`"),
+        );
+    }
 }
 
 /// The Axis twin of `a_direction_under_a_nan_rotation_is_a_non_finite_evaluation`:
@@ -575,7 +589,7 @@ fn an_axis_under_a_nan_rotation_is_a_non_finite_evaluation() {
         ],
         4,
     )];
-    assert_a_nan_rotation_is_non_finite(&relations, "Axis");
+    assert_the_seed_is_non_finite(&relations, &nan_rotation(), "a NaN-rotated Axis");
 }
 
 /// The Plane twin: a moving Plane under a NaN pose rotation reaches the NonFinite
@@ -590,7 +604,44 @@ fn a_plane_under_a_nan_rotation_is_a_non_finite_evaluation() {
         ],
         3,
     )];
-    assert_a_nan_rotation_is_non_finite(&relations, "Plane");
+    assert_the_seed_is_non_finite(&relations, &nan_rotation(), "a NaN-rotated Plane");
+}
+
+/// A seed whose translation is NaN or ±∞ places no datum, so the solve must end
+/// NonFinite. `perpendicular` over Directions and `parallel` over Axes read only
+/// the moving datum's direction, so a translation never reaches their rows: without
+/// a pose-level check every residual and Jacobian entry stays finite and the run
+/// converges at the non-finite seed.
+#[test]
+fn a_non_finite_seed_translation_is_a_non_finite_evaluation() {
+    // (relation, moving datum, anchor datum, nominal ΔDOF)
+    let cases = [
+        ("perpendicular", dir(0.0, 0.0, 1.0), dir(1.0, 0.0, 0.0), 1),
+        (
+            "parallel",
+            axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            2,
+        ),
+    ];
+    for (name, moving, anchor, nominal_delta_dof) in cases {
+        let relations = vec![relation(
+            name,
+            vec![datum("m", moving), datum("a", anchor)],
+            nominal_delta_dof,
+        )];
+        for x in [f64::NAN, f64::INFINITY] {
+            let seed = Pose {
+                translation: [x, 0.0, 0.0],
+                rotation: [0.0; 3],
+            };
+            assert_the_seed_is_non_finite(
+                &relations,
+                &seed,
+                &format!("a seed translated by {x} under `{name}`"),
+            );
+        }
+    }
 }
 
 /// `parallel` / `antiparallel` / `coincident`-over-Direction must distinguish the two
