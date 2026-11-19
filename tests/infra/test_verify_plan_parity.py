@@ -129,6 +129,8 @@ MISSING_LIB_REFUSALS = (
     ("scripts/affected-crates-lib.sh", 2,
      "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh"),
     verify_sh_refusal("scripts/lib_test_semaphore.sh"),
+    ("scripts/lib_slot_acquire.sh", 1,
+     "lib_test_semaphore.sh: ERROR — scripts/lib_slot_acquire.sh not found next to lib_test_semaphore.sh"),
     slot_acquire_refusal("scripts/lib_clock_stop.sh"),
     slot_acquire_refusal("scripts/lib_event_log.sh"),
     verify_sh_refusal("scripts/cpu-admit.sh"),
