@@ -50,10 +50,13 @@ pub use solver::{DimensionalSolver, TrialModel};
 pub use solver::build_centrality_objective;
 pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
-use reify_core::{Diagnostic, DiagnosticCode};
+use std::ops::ControlFlow;
+
+use reify_core::{Diagnostic, DiagnosticCode, Type};
 use reify_ir::{
-    ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    IndeterminateReason, Satisfaction, TransientReason, Value,
+    CompiledExpr, CompiledExprKind, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics,
+    ConstraintInput, ConstraintResult, IndeterminateReason, RefusedOperation, Satisfaction,
+    TransientReason, Value,
 };
 
 /// Does any leaf operand of `expr` resolve to `Undef` in `values`?
@@ -82,14 +85,18 @@ fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bo
     ids.iter().any(|id| values.get(id).is_none_or(Value::is_undef))
 }
 
-/// Classify `Value::Undef` by leaf-ValueRef definedness.
+/// Classify the `Value::Undef` that `expr` evaluated to under `ctx`.
 ///
 /// Returns:
 /// - `UndefInputs { cells }` — at least one leaf is `Undef`; `cells` lists the
 ///   undefined cells, deduped and ordered by their `ValueCellId::Display` name.
-/// - `OperatorUndefinedForKinds { kinds }` — all leaves are defined (or the
-///   expression has no ValueRefs); `kinds` lists the distinct `value_kind_label`
-///   strings of the defined leaf values (deduped, sorted alphabetically).
+/// - `OperationRefused` — every leaf is defined and the Undef traces to a pure
+///   operation refusing plain-data operands (see [`refused_operation`]); the
+///   one cause INV-SF-4 counts as unexpected.
+/// - `OperatorUndefinedForKinds { kinds }` — every leaf is defined (or the
+///   expression has no ValueRefs) but no refusal was proven; `kinds` lists the
+///   distinct `value_kind_label` strings of the defined leaf values (deduped,
+///   sorted alphabetically).
 ///
 /// ## CrossSubGeometryRef
 /// `CompiledExpr::collect_value_refs()` collects both `ValueRef` and
@@ -101,13 +108,14 @@ fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bo
 /// access and are resolved before constraint checking). The behaviour is therefore
 /// correct for the current call sites; this comment documents the contract so future
 /// callers are aware that cross-sub geometry refs will surface here if present.
-fn classify_undef(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-) -> TransientReason {
+fn classify_undef(expr: &CompiledExpr, ctx: &reify_expr::EvalContext) -> TransientReason {
+    let values = ctx.values;
     let leaf_ids = expr.collect_value_refs();
 
     if !any_undef(&leaf_ids, values) {
+        if let Some(refusal) = refused_operation(expr, ctx) {
+            return refusal;
+        }
         let mut kinds: Vec<String> = leaf_ids
             .iter()
             .map(|id| value_kind_label(&values.get_or_undef(id)))
@@ -126,6 +134,82 @@ fn classify_undef(
     TransientReason::UndefInputs {
         cells: cells.into_iter().map(|(_, id)| id).collect(),
     }
+}
+
+/// The pure operation that refused, when `expr`'s `Undef` traces to one.
+///
+/// Walks down from `expr` into the first `Undef` child of each BinOp, UnOp or
+/// builtin FunctionCall until it reaches the node whose operands are all
+/// defined. That node refused iff every operand is plain data and, for a
+/// builtin, so is its static result type. Any other node kind is unproven.
+fn refused_operation(
+    expr: &CompiledExpr,
+    ctx: &reify_expr::EvalContext,
+) -> Option<TransientReason> {
+    if contains_user_function_call(expr) {
+        return None;
+    }
+    let mut node = expr;
+    loop {
+        let operation = match &node.kind {
+            CompiledExprKind::BinOp { op, .. } => RefusedOperation::Binary(*op),
+            CompiledExprKind::UnOp { op, .. } => RefusedOperation::Unary(*op),
+            CompiledExprKind::FunctionCall { function, .. } => {
+                RefusedOperation::Builtin(function.name.clone())
+            }
+            _ => return None,
+        };
+        let mut children = Vec::new();
+        node.for_each_child(&mut |child| children.push(child));
+        let operands: Vec<Value> = children
+            .iter()
+            .map(|child| reify_expr::eval_expr(child, ctx))
+            .collect();
+        if let Some(first_undef) = operands.iter().position(Value::is_undef) {
+            node = children[first_undef];
+            continue;
+        }
+        let plain_result = !matches!(node.kind, CompiledExprKind::FunctionCall { .. })
+            || is_plain_data_type(&node.result_type);
+        let refused = plain_result && operands.iter().all(is_plain_data_value);
+        return refused.then(|| TransientReason::OperationRefused {
+            operation,
+            operands: operands.iter().map(value_kind_label).collect(),
+        });
+    }
+}
+
+/// A user call is never a proven refusal, and since #10033 it may reach the
+/// uncached `@optimized` dispatcher, so the diagnostic path must not re-run it.
+fn contains_user_function_call(expr: &CompiledExpr) -> bool {
+    fn visit(expr: &CompiledExpr) -> ControlFlow<()> {
+        if matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }) {
+            return ControlFlow::Break(());
+        }
+        expr.try_for_each_child(&mut |child| visit(child))
+    }
+    visit(expr).is_break()
+}
+
+/// The closed set of values `eval_expr` treats purely; unknown kinds are not plain.
+fn is_plain_data_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Bool(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::String(_)
+            | Value::Scalar { .. }
+            | Value::Enum { .. }
+    )
+}
+
+/// The closed set of static types whose values are plain data; unknown types are not plain.
+fn is_plain_data_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Bool | Type::Int | Type::String | Type::Scalar { .. } | Type::Enum(_)
+    )
 }
 
 /// A short human-readable label for the kind of a defined `Value`.
@@ -150,7 +234,11 @@ fn value_kind_label(v: &Value) -> String {
 
 /// Simple constraint checker for M1: evaluates constraint expressions
 /// and checks whether they are satisfied (true), violated (false), or
-/// indeterminate (undef input).
+/// indeterminate (undef).
+///
+/// An indeterminate verdict records the [`classify_undef`] reason; its
+/// diagnostic is an error when that reason is unexpected under INV-SF-4
+/// ([`IndeterminateReason::is_unexpected`]) and a warning otherwise.
 pub struct SimpleConstraintChecker;
 
 impl ConstraintChecker for SimpleConstraintChecker {
@@ -193,15 +281,18 @@ impl ConstraintChecker for SimpleConstraintChecker {
                         None,
                     ),
                     Value::Undef => {
-                        let reason =
-                            IndeterminateReason::Transient(classify_undef(expr, input.values));
+                        let reason = IndeterminateReason::Transient(classify_undef(expr, &ctx));
                         let message = format!("constraint {} indeterminate: {}", id, reason);
+                        let diagnostic = if reason.is_unexpected() {
+                            Diagnostic::error(message)
+                        } else {
+                            Diagnostic::warning(message)
+                        };
                         (
                             Satisfaction::Indeterminate,
                             ConstraintDiagnostics {
                                 messages: vec![
-                                    Diagnostic::warning(message)
-                                        .with_code(DiagnosticCode::ConstraintIndeterminate),
+                                    diagnostic.with_code(DiagnosticCode::ConstraintIndeterminate),
                                 ],
                             },
                             Some(reason),
