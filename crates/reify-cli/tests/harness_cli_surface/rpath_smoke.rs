@@ -141,12 +141,34 @@ fn bare_ldd(path: &str) -> Option<String> {
 
 /// Extract the resolved path from an `ldd` output line of the form
 /// `<soname> => <path> (0x...)`. `None` if `soname` has no such line (e.g.
-/// not NEEDED by this binary at all).
+/// not NEEDED by this binary at all). Panics on `<soname> => not found`: ldd
+/// still exits 0 for it, and a soname the loader cannot place is neither
+/// resolved nor absent, so no caller can handle it as either.
 fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
     let needle = format!("{soname} =>");
-    ldd_output.lines().find_map(|line| {
-        line.trim().strip_prefix(needle.as_str())?.split_whitespace().next()
+    ldd_output.lines().map(str::trim).find_map(|line| {
+        let resolution = line.strip_prefix(needle.as_str())?.trim_start();
+        assert!(
+            !resolution.starts_with("not found"),
+            "ldd reports `{line}`: the loader cannot find {soname} via any RUNPATH entry, the \
+             ld.so cache or the default dirs (bare ldd runs without LD_LIBRARY_PATH).\n\n\
+             Full ldd output:\n{ldd_output}"
+        );
+        resolution.split_whitespace().next()
     })
+}
+
+/// The canonical parent dir of the path `ldd` resolves `soname` to. `None` if
+/// `soname` has no `<soname> =>` line; panics on a `not found` one (both per
+/// `ldd_resolved_path`). Canonicalizing folds the merged-/usr spellings of one
+/// dir (`/lib/x86_64-linux-gnu` and `/usr/lib/x86_64-linux-gnu`) and the deps
+/// tree's `/opt/reify-deps/lib/./` form into one comparable path.
+fn ldd_resolved_dir(ldd_output: &str, soname: &str) -> Option<std::path::PathBuf> {
+    let path = ldd_resolved_path(ldd_output, soname)?;
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| panic!("ldd path {path} has no parent dir"));
+    Some(std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}")))
 }
 
 /// The repo root, derived from this crate's manifest dir
@@ -365,12 +387,13 @@ fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
     );
 }
 
-/// (f) RUNPATH ORDER (task 10113). `reify` must search OCCT's lib dir before
-/// the deps prefix, as `reify-gui` does: the deps prefix ships its own
-/// libstdc++/libgcc_s, so the dir searched first decides which copy the
-/// binary binds, and the installer bundles one copy for both binaries.
+/// (f) C++ RUNTIME BINDING (task 10113). Bare `ldd` must resolve `reify`'s
+/// libstdc++.so.6 and libgcc_s.so.1 outside the deps prefix, as it does for
+/// `reify-gui`: the deps prefix ships its own copies, and the installer bundles
+/// one copy for both binaries. The mechanism, also asserted, is OCCT's lib dir
+/// preceding the deps prefix in RUNPATH.
 #[test]
-fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
+fn reify_binary_binds_the_cxx_runtime_outside_the_deps_prefix() {
     let exe = env!("CARGO_BIN_EXE_reify");
     let Some(readelf) = readelf_d(exe) else {
         return;
@@ -385,19 +408,16 @@ fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
     let Some(ldd_out) = bare_ldd(exe) else {
         return;
     };
-    let resolved_dir = |soname: &str| {
-        let path = ldd_resolved_path(&ldd_out, soname)
-            .unwrap_or_else(|| panic!("bare ldd of {exe} does not resolve {soname}:\n{ldd_out}"));
-        let dir = std::path::Path::new(path)
-            .parent()
-            .unwrap_or_else(|| panic!("ldd path {path} has no parent dir"));
-        std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}"))
+    let required_dir = |soname: &str| {
+        ldd_resolved_dir(&ldd_out, soname)
+            .unwrap_or_else(|| panic!("bare ldd of {exe} does not resolve {soname}:\n{ldd_out}"))
     };
-    let occt_dir = resolved_dir(tkernel);
-    let deps_dir = resolved_dir(gmsh);
+    let occt_dir = required_dir(tkernel);
+    let deps_dir = required_dir(gmsh);
     if occt_dir == deps_dir {
         eprintln!(
-            "{tkernel} and {gmsh} both resolve in {occt_dir:?}; no order to check — skipping"
+            "{tkernel} and {gmsh} both resolve in {occt_dir:?}; no order or binding to check \
+             — skipping"
         );
         return;
     }
@@ -408,17 +428,56 @@ fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
         .split(':')
         .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.into()))
         .collect();
+    let rank = |dir: &std::path::Path| dirs.iter().position(|d| d == dir);
+    let (occt_rank, deps_rank) = (rank(&occt_dir), rank(&deps_dir));
     // A dir missing from RUNPATH is searched after every RUNPATH entry.
-    let rank = |dir: &std::path::Path| dirs.iter().position(|d| d == dir).unwrap_or(dirs.len());
-    assert!(
-        rank(&occt_dir) < rank(&deps_dir),
-        "{exe}'s RUNPATH searches the deps prefix {deps_dir:?} (where {gmsh} resolves) \
-         before OCCT's lib dir {occt_dir:?} (where {tkernel} resolves). RUNPATH: \
-         [{runpath}]. An unscoped `cargo:rustc-link-arg` -rpath emitted earlier in \
-         crates/reify-cli/build.rs reaches the bin ahead of the bin-scoped OCCT dir, so \
-         reify binds the deps prefix's libstdc++/libgcc_s where reify-gui binds the \
-         system's, and the installer can bundle only one."
-    );
+    let occt_searched_first = occt_rank.unwrap_or(dirs.len()) < deps_rank.unwrap_or(dirs.len());
+    let explain_runpath_order = || {
+        if occt_rank.is_none() && deps_rank.is_none() {
+            format!(
+                "Neither OCCT's lib dir {occt_dir:?} (where {tkernel} resolves) nor the deps \
+                 prefix {deps_dir:?} (where {gmsh} resolves) is in {exe}'s RUNPATH [{runpath}], \
+                 so both resolve through the loader's default search or the ld.so cache rather \
+                 than RUNPATH. crates/reify-cli/build.rs's emit_rpath_for_bins calls may have \
+                 regressed."
+            )
+        } else if occt_searched_first {
+            format!(
+                "{exe}'s RUNPATH [{runpath}] searches OCCT's lib dir {occt_dir:?} (where \
+                 {tkernel} resolves) before the deps prefix {deps_dir:?} (where {gmsh} \
+                 resolves), so the deps copy is reached through another route: a later RUNPATH \
+                 entry, or the ld.so cache."
+            )
+        } else {
+            format!(
+                "{exe}'s RUNPATH [{runpath}] searches the deps prefix {deps_dir:?} (where \
+                 {gmsh} resolves) before OCCT's lib dir {occt_dir:?} (where {tkernel} \
+                 resolves). An unscoped `cargo:rustc-link-arg` -rpath emitted earlier in \
+                 crates/reify-cli/build.rs reaches the bin ahead of the bin-scoped OCCT dir, so \
+                 any libstdc++/libgcc_s the deps prefix ships binds ahead of the system's."
+            )
+        }
+    };
+
+    for soname in ["libstdc++.so.6", "libgcc_s.so.1"] {
+        match ldd_resolved_dir(&ldd_out, soname) {
+            Some(dir) => assert!(
+                dir != deps_dir,
+                "bare ldd of {exe} binds {soname} from {dir:?}, the deps prefix (where {gmsh} \
+                 resolves). reify-gui binds the system's {soname}, and the installer bundles \
+                 one copy for both binaries, so reify must bind it outside the deps prefix \
+                 too. {}\n\nFull ldd output:\n{ldd_out}",
+                explain_runpath_order()
+            ),
+            None if needed_sonames(&readelf).any(|needed| needed == soname) => panic!(
+                "bare ldd of {exe} does not resolve {soname}, which readelf -d lists as \
+                 NEEDED:\n{ldd_out}"
+            ),
+            None => eprintln!("{exe} neither NEEDs nor loads {soname}; skipping its binding check"),
+        }
+    }
+
+    assert!(occt_searched_first, "{}", explain_runpath_order());
 }
 
 /// The `(NEEDED)` sonames in `readelf -d` output, in order.
