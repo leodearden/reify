@@ -307,9 +307,8 @@ pub(crate) fn drop_falsified_constraint_diagnostics(
 /// one shared severity predicate, so the two commands cannot drift apart.
 ///
 /// `reify check` gates on that SAME severity filter through
-/// [`check_gating_error`], over its merged diagnostic set.  The
-/// [`CHECK_ERROR_EXIT_ALLOWLIST`] it consults is EMPTY, so every Error moves
-/// all three commands' exit codes alike.
+/// [`check_gating_error`], over its merged diagnostic set, with nothing
+/// excused, so every Error moves all three commands' exit codes alike.
 ///
 /// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
 /// unit-testable; callers convert to `ExitCode` at the boundary.
@@ -334,75 +333,11 @@ pub(crate) fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
     }
 }
 
-/// How one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry selects the diagnostics it
-/// excuses.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckErrorAllowlistMatcher {
-    /// Preferred: match the machine-readable [`DiagnosticCode`].
-    Code(DiagnosticCode),
-    /// LEGACY code-less emissions ONLY — enforced, not merely documented:
-    /// [`row_excuses`] never lets this arm match a diagnostic that
-    /// carries a [`DiagnosticCode`].  Coding a legacy emission therefore drops
-    /// it out of the allowlist with no table edit, and a code minted after
-    /// the gate can never be excused through a legacy substring
-    /// (`check_error_gate_tests::a_substring_row_excuses_only_code_less_diagnostics`).
-    ///
-    /// PRD §7 sketches this as `MessagePrefix`; a code-less emission's
-    /// distinguishing text can sit mid-string, after per-call detail, where a
-    /// prefix match could not express it, and a shared prefix is exactly what
-    /// a genuine sibling failure can carry
-    /// (`check_error_gate_tests::a_substring_row_never_swallows_the_prefix_sibling`).
-    MessageContains(&'static str),
-}
-
-/// What retiring a [`CHECK_ERROR_EXIT_ALLOWLIST`] row would take.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckErrorAllowlistDisposition {
-    /// The emission's `Severity::Error` is wrong for this path; the producer
-    /// should emit `Severity::Warning`.  A Warning never gates, so the row can
-    /// then be deleted with no other change.
-    Demote,
-    /// The emission needs a machine-readable [`DiagnosticCode`] before it can
-    /// be reasoned about (or excused) precisely.
-    Recode,
-    /// The emission is a real Error, but `check` reaching it at all is the
-    /// bug; the fix is on the code path, not on the diagnostic.
-    FixPath,
-}
-
-/// One row of the `reify check` Error-exit allowlist.
-#[allow(dead_code)]
-struct CheckErrorExitAllowance {
-    /// The only field the gate itself reads — see [`row_excuses`].
-    matcher: CheckErrorAllowlistMatcher,
-    /// What retiring this row would take.  Never read by the gate.
-    disposition: CheckErrorAllowlistDisposition,
-    /// PTODO-canonical cite (`#NNNN`) of the LIVE task that would retire this
-    /// row.  PTODO never reads a string literal, so this field is
-    /// liveness-checked only through a marker comment in this file citing the
-    /// same task: that marker is load-bearing, not a duplicate to delete, and
-    /// `every_allowlist_cite_has_a_ptodo_liveness_marker` turns red if it goes
-    /// missing.
-    cite: &'static str,
-}
-
-/// INV-SF-2's `reify check` Error-exit allowlist: EMPTY by design, so every
-/// `Severity::Error` diagnostic gates.
-///
-/// The row types, [`row_excuses`] and [`first_unexcused_error`] remain as the
-/// guard against re-additions (PRD eradicate-silent-undef §3 Leg B item 4).
-/// **Do not add rows** — `check_error_exit_allowlist_ratchet`'s doc states the
-/// standing obligation.
-const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[];
-
 /// Every `Severity::Error` entry of `diagnostics`, in order.
 ///
 /// The single per-diagnostic severity test, so [`has_error_diagnostic`] and
 /// [`check_gating_error`] cannot drift apart: `check`'s gate is exactly this
-/// filter plus [`row_excuses`], never a restatement of the severity
-/// comparison.
+/// filter, never a restatement of the severity comparison.
 fn error_diagnostics(
     diagnostics: &[reify_core::Diagnostic],
 ) -> impl Iterator<Item = &reify_core::Diagnostic> {
@@ -413,54 +348,26 @@ fn error_diagnostics(
 ///
 /// Shared by `cmd_eval`, `cmd_build` (as [`build_is_success`]' second
 /// argument) and [`check_gating_error`] — PRD §7's "one shared helper also
-/// used by eval/build".
-///
-/// Deliberately allowlist-BLIND: [`CHECK_ERROR_EXIT_ALLOWLIST`] is a
-/// `check`-only guard, empty by design.  `eval` and `build` have gated on
-/// `Severity::Error` since #4458 and must keep gating on every Error — locked
-/// by `check_error_gate_tests::
-/// has_error_diagnostic_is_pure_severity_and_allowlist_blind`.
+/// used by eval/build".  `eval` and `build` have gated on `Severity::Error`
+/// since #4458 — locked by
+/// `check_error_gate_tests::has_error_diagnostic_is_pure_severity`.
 pub(crate) fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
     error_diagnostics(diagnostics).next().is_some()
 }
 
-/// Whether `row` excuses `d` from moving `reify check`'s exit code.
-fn row_excuses(row: &CheckErrorExitAllowance, d: &reify_core::Diagnostic) -> bool {
-    match row.matcher {
-        CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
-        CheckErrorAllowlistMatcher::MessageContains(needle) => {
-            d.code.is_none() && d.message.contains(needle)
-        }
-    }
-}
-
-/// The first `Severity::Error` entry of `diagnostics` that no row of
-/// `allowlist` excuses, or `None`.
-///
-/// The matching core of [`check_gating_error`], parametrized over the table so
-/// its semantics are pinned against synthetic rows
-/// (`check_error_gate_tests`) whatever the production table holds.
-fn first_unexcused_error<'a>(
-    diagnostics: &'a [reify_core::Diagnostic],
-    allowlist: &[CheckErrorExitAllowance],
-) -> Option<&'a reify_core::Diagnostic> {
-    error_diagnostics(diagnostics).find(|d| !allowlist.iter().any(|row| row_excuses(row, d)))
-}
-
 /// `reify check`'s exit gate (INV-SF-2): the first `Severity::Error`
-/// diagnostic, or `None`.  [`CHECK_ERROR_EXIT_ALLOWLIST`] is empty, so no
-/// Error is excused.
+/// diagnostic, or `None`; no Error is ever excused.  The guard against
+/// re-adding an excuse is
+/// `check_error_gate_tests::check_gating_error_agrees_with_has_error_diagnostic`.
 ///
 /// Applied identically on both `cmd_check` paths, over the MERGED diagnostic
 /// set — what the user was just shown — so a realization-only Error is no
-/// longer invisible to the exit code.
-///
-/// Returns the gating diagnostic, as [`first_unexcused_error`] does; both
-/// production callers only test `.is_some()`.
+/// longer invisible to the exit code.  Both production callers only test
+/// `.is_some()`.
 pub(crate) fn check_gating_error(
     diagnostics: &[reify_core::Diagnostic],
 ) -> Option<&reify_core::Diagnostic> {
-    first_unexcused_error(diagnostics, CHECK_ERROR_EXIT_ALLOWLIST)
+    error_diagnostics(diagnostics).next()
 }
 
 /// Outcome of constraint checking.
@@ -687,8 +594,6 @@ pub(crate) fn strip_diagnostics_reproduced_by(
 mod check_fails_tests;
 #[cfg(test)]
 mod build_is_success_tests;
-#[cfg(test)]
-mod check_error_exit_allowlist_ratchet;
 #[cfg(test)]
 mod check_error_gate_tests;
 #[cfg(test)]

@@ -2,10 +2,7 @@
 //! synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
 //! these run in a stub-mode build.
 
-use super::{
-    CheckErrorAllowlistDisposition, CheckErrorAllowlistMatcher, CheckErrorExitAllowance,
-    check_gating_error, first_unexcused_error, has_error_diagnostic,
-};
+use super::{check_gating_error, has_error_diagnostic};
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 
 /// The SOFT missing-trampoline message, verbatim as
@@ -124,17 +121,15 @@ fn gate_fixture_sets() -> Vec<Vec<Diagnostic>> {
 }
 
 // -------------------------------------------------------------------
-// has_error_diagnostic — the shared, allowlist-BLIND severity predicate
+// has_error_diagnostic — the shared severity predicate
 // -------------------------------------------------------------------
 
 /// `has_error_diagnostic` is the ONE definition of "this set carries an
-/// Error", shared with `cmd_eval` and `cmd_build`.  It must know nothing
-/// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only guard,
-/// empty by design, and eval/build have gated on `Severity::Error` since
-/// #4458 — including on the trampoline Error, which `build_is_success`'
-/// own doc names as its motivating example.
+/// Error", shared with `cmd_eval` and `cmd_build`, which have gated on
+/// `Severity::Error` since #4458 — including on the trampoline Error, which
+/// `build_is_success`' own doc names as its motivating example.
 #[test]
-fn has_error_diagnostic_is_pure_severity_and_allowlist_blind() {
+fn has_error_diagnostic_is_pure_severity() {
     assert!(!has_error_diagnostic(&[]), "empty set carries no Error");
     assert!(
         !has_error_diagnostic(&[Diagnostic::warning(W_DFM_OVERHANG)]),
@@ -162,7 +157,7 @@ fn missing_trampoline_warning_never_gates_and_its_error_gates() {
     );
     assert!(
         check_gating_error(&[trampoline_error()]).is_some(),
-        "no allowlist entry excuses the coded Error, so it gates check"
+        "nothing excuses the coded Error, so it gates check"
     );
     assert!(
         has_error_diagnostic(&[trampoline_error()]),
@@ -171,7 +166,7 @@ fn missing_trampoline_warning_never_gates_and_its_error_gates() {
 }
 
 // -------------------------------------------------------------------
-// check_gating_error — severity AND no allowlist match
+// check_gating_error — every Severity::Error gates
 // -------------------------------------------------------------------
 
 #[test]
@@ -244,10 +239,10 @@ fn retired_allowlist_families_now_gate() {
     );
 }
 
-/// Behavioural, not a table-text match, so it holds against any matcher
-/// shape.  `ArgTypeMismatch` is guarded whole because a `Code` matcher cannot
-/// be scoped to relate call sites.  Code-less relate Errors (the conflict
-/// family) can only be swallowed by a `MessageContains` entry and are pinned
+/// Behavioural, so it holds against any shape of excuse.  `ArgTypeMismatch` is
+/// guarded whole because an excuse keyed on a code cannot be scoped to relate
+/// call sites.  Code-less relate Errors (the conflict family) can only be
+/// swallowed by a message-text excuse and are pinned
 /// end to end by `crates/reify-cli/tests/harness_cli/cli_check_relate_family_exit.rs`
 /// `check_exits_nonzero_on_engine_phase_relate_conflict`.
 #[test]
@@ -256,8 +251,8 @@ fn relate_family_errors_are_never_excused() {
         assert!(
             check_gating_error(&[relate_family_error(*code)]).is_some(),
             "a relate-family Error must always move `reify check`'s exit \
-             (INV-SF-2); {code:?} is excused — adding it to \
-             CHECK_ERROR_EXIT_ALLOWLIST is the regression this test forbids"
+             (INV-SF-2); {code:?} is excused — excusing it at the gate is \
+             the regression this test forbids"
         );
     }
 }
@@ -291,146 +286,4 @@ fn check_gating_error_agrees_with_has_error_diagnostic() {
             gating.map(|d| &d.message)
         );
     }
-}
-
-// -------------------------------------------------------------------
-// first_unexcused_error — the matching core, over SYNTHETIC rows, so its
-// semantics stay executable whatever the production table holds
-// -------------------------------------------------------------------
-
-/// A fixture row.  The neutral cite `#1` marks it as test data rather than a
-/// burn-down claim; the gate never reads `disposition` or `cite`.
-fn row(matcher: CheckErrorAllowlistMatcher) -> CheckErrorExitAllowance {
-    CheckErrorExitAllowance {
-        matcher,
-        disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#1",
-    }
-}
-
-#[test]
-fn an_empty_table_gates_the_first_error() {
-    let diagnostics = [
-        Diagnostic::warning(W_DFM_OVERHANG),
-        Diagnostic::info("note: nothing to see"),
-        Diagnostic::error("first error"),
-        Diagnostic::error("second error"),
-    ];
-    let gating =
-        first_unexcused_error(&diagnostics, &[]).expect("with no rows, the first Error gates");
-    assert_eq!(gating.message, "first error");
-
-    assert!(
-        first_unexcused_error(
-            &[Diagnostic::warning(W_DFM_DRAFT)],
-            &[]
-        )
-        .is_none(),
-        "a Warning-only set never gates"
-    );
-}
-
-#[test]
-fn a_code_row_excuses_only_its_code() {
-    let rows = [row(CheckErrorAllowlistMatcher::Code(
-        DiagnosticCode::ConstraintViolated,
-    ))];
-    assert!(
-        first_unexcused_error(
-            &[violation_error()],
-            &rows
-        )
-        .is_none(),
-        "a Code row excuses an Error carrying that code"
-    );
-    assert!(
-        first_unexcused_error(
-            &[Diagnostic::error(VIOLATION).with_code(DiagnosticCode::ConstraintIndeterminate)],
-            &rows
-        )
-        .is_some(),
-        "a Code row does not excuse an Error carrying a different code"
-    );
-    assert!(
-        first_unexcused_error(&[Diagnostic::error(VIOLATION)], &rows).is_some(),
-        "a Code row keys on the code, never on the message text"
-    );
-}
-
-/// The executable form of the 2026-08-26 ruling that codes minted after the
-/// gate can never be excused: once an emission is coded — #6608's replacement
-/// of the code-less "per-instance re-realization compile error … is unresolved
-/// (Undef)" family in particular — no legacy substring row may keep excusing
-/// it.  The code attached below is arbitrary.
-#[test]
-fn a_substring_row_excuses_only_code_less_diagnostics() {
-    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
-        "is unresolved (Undef)",
-    ))];
-    assert!(
-        first_unexcused_error(&[undef_argument_error()], &rows).is_none(),
-        "a MessageContains row excuses the code-less message"
-    );
-    assert!(
-        first_unexcused_error(
-            &[undef_argument_error().with_code(DiagnosticCode::ArgTypeMismatch)],
-            &rows
-        )
-        .is_some(),
-        "a CODED Error must not be excused by a legacy substring"
-    );
-}
-
-/// The load-bearing composition: an excused Error must neither invent a gate
-/// nor mask a co-resident one.
-#[test]
-fn an_excused_row_neither_gates_nor_masks() {
-    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
-        "is unresolved (Undef)",
-    ))];
-    assert!(
-        first_unexcused_error(
-            &[
-                undef_argument_error(),
-                Diagnostic::warning(W_DFM_OVERHANG),
-            ],
-            &rows
-        )
-        .is_none(),
-        "an excused Error beside a Warning must not gate"
-    );
-
-    let mixed = [
-        undef_argument_error(),
-        Diagnostic::error(E_DFM_MESSAGES[0]),
-    ];
-    let gating = first_unexcused_error(&mixed, &rows)
-        .expect("a co-resident unexcused Error must still gate");
-    assert!(
-        gating.message.contains("E_DFM_OVERHANG"),
-        "the gate must return the diagnostic that actually gates, not the \
-         excused one it scanned past; got {:?}",
-        gating.message
-    );
-}
-
-/// Text rows match a SUBSTRING, never a prefix.  `TRAMPOLINE_CANCELLED` shares
-/// the `@optimized target "solver::elastic_static": ` prefix with the
-/// missing-trampoline message and is a genuine failure, so a row naming the
-/// missing-trampoline text must excuse that message and nothing sharing its
-/// prefix.
-#[test]
-fn a_substring_row_never_swallows_the_prefix_sibling() {
-    let rows = [row(CheckErrorAllowlistMatcher::MessageContains(
-        "no registered compute trampoline",
-    ))];
-    assert!(
-        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE)], &rows).is_none(),
-        "the row's text sits mid-message, after the target prefix, and still \
-         excuses it"
-    );
-    assert!(
-        first_unexcused_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)], &rows).is_some(),
-        "a cancelled trampoline shares only the prefix and is a real failure"
-    );
 }
