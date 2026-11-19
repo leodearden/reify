@@ -11261,7 +11261,7 @@ mod tests {
     }
 
     fn named_face(name: &str) -> Value {
-        crate::compute_targets::bc_resolve::named_leaf_selector(
+        reify_test_support::selector_fixtures::named_leaf_selector(
             reify_core::ty::SelectorKind::Face,
             name,
         )
@@ -11271,7 +11271,7 @@ mod tests {
 
     #[test]
     fn any_support_targets_reads_a_typed_named_target() {
-        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_test_support::selector_fixtures::named_leaf_selector;
         use reify_core::ty::SelectorKind;
         let naming = |kind, name| vec![fixed_support_with_span(named_leaf_selector(kind, name), None)];
 
