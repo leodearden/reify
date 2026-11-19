@@ -14,6 +14,9 @@ workspace-feature-union.workspace = true
 # crate-DAG gate's B1–B6 rules. See docs/prds/v0_5/fdm-as-printed-fea.md task ζ.
 reify-gcode.workspace = true
 
+# `slice` module: discover_slicer's PATH lookup.
+reify-exec-lookup.workspace = true
+
 # `slice` module (task η): `slice_body` writes the slicer's G-code to a unique
 # temp output path via `tempfile::tempdir` — this is PRODUCTION code, not just a
 # test, so tempfile is a normal dependency. 3.x is a workspace dep. Normal deps
