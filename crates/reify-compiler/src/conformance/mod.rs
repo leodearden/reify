@@ -1330,7 +1330,8 @@ fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &m
         | ParamFamily::MatrixTensor
         | ParamFamily::Field
         | ParamFamily::Enum
-        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+        | ParamFamily::ScalarFamily
+        | ParamFamily::Datum => emit_arg_type_mismatch(param_type, arg_ty, ctx),
     }
 }
 

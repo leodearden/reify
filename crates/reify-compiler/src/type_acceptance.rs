@@ -41,6 +41,9 @@ pub(crate) enum ParamFamily {
     Enum,
     /// `Bool`, `Int`, `String` and `Scalar`.
     ScalarFamily,
+    /// `Direction`, `Axis`, `Plane` and `Frame`, accepted only by the identical type
+    /// (direction-typing D2/D8).
+    Datum,
 }
 
 /// Judges the leaf pair `arg` against `param`; `enum_defs` tells an applied enum from an
@@ -82,6 +85,8 @@ pub(crate) fn conformance_accepts<'t>(
         Type::Point { .. } => point_verdict(param, arg),
         Type::Matrix { .. } | Type::Tensor { .. } => matrix_tensor_verdict(param, arg),
         Type::Field { .. } => field_verdict(arg),
+        // docs/prds/v0_6/direction-typing.md C7/D8: exact identity; D2 forbids any coercion.
+        Type::Direction | Type::Axis | Type::Plane | Type::Frame(_) => datum_verdict(param, arg),
         // Spec §4.9 Known limitation (#8101): a Geometry field accepts any argument.
         Type::Geometry => ArgVerdict::Unverifiable,
         _ => match base_enum_name(param, enum_defs) {
@@ -145,6 +150,14 @@ fn field_verdict(arg: &Type) -> ArgVerdict<'static> {
     match arg {
         Type::Field { .. } | Type::Function { .. } => ArgVerdict::Unverifiable,
         _ => ArgVerdict::Reject(ParamFamily::Field),
+    }
+}
+
+fn datum_verdict(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+    if param == arg {
+        ArgVerdict::Accept
+    } else {
+        ArgVerdict::Reject(ParamFamily::Datum)
     }
 }
 
