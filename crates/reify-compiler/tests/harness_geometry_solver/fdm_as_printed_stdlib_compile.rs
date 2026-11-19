@@ -16,7 +16,7 @@ use reify_core::*;
 use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/fdm/as_printed` CompiledModule from the production stdlib
-/// loader (same embedded + sequential-prelude path as production).
+/// loader (same embedded + strict (declared-imports) path as production).
 fn load_stdlib_module() -> &'static CompiledModule {
     reify_compiler::stdlib_loader::load_stdlib()
         .iter()

@@ -17,7 +17,7 @@
 //! `FlexureCompliance` is declared at the structure-def level.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper pattern in `trajectory_stdlib_compile.rs`.
 
 use reify_compiler::*;
@@ -29,7 +29,8 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/flexures` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -993,16 +994,15 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
 ///    `kinematic_stdlib_compile.rs::conforming_joints_have_driving_joint_bound`
 ///    (`template.trait_bounds`), rather than inventing a new one.
 ///
-/// COUPLED TO PRELUDE ORDER. The `: DrivingJoint` clause only resolves because
-/// `stdlib_loader.rs` registers `std.flexures` AFTER `std.kinematic`. The stdlib
-/// prelude is built by growing sequential registration (no `.ri` file declares
-/// an `import`), so registration order IS visibility order: move `std.flexures`
-/// back before `std.kinematic` and `DrivingJoint` is not yet in scope when
+/// COUPLED TO flexures.ri's `import std.kinematic`. The `: DrivingJoint` clause
+/// only resolves because `std.flexures` declares `import std.kinematic`: the
+/// strict build (#5499) compiles each stdlib module against its declared
+/// imports alone. Drop that import and `DrivingJoint` is out of scope when
 /// flexures.ri compiles. That failure does not surface here — it surfaces as a
 /// resolution Error through the `std_flexures_module_loads_with_no_errors`
 /// canary above, which is deliberately left untouched so it can catch it. If
-/// this test fails on `trait_bounds` while that canary is red too, fix the
-/// module order, not the declaration.
+/// this test fails on `trait_bounds` while that canary is red too, restore the
+/// import, not the declaration.
 #[test]
 fn std_flexures_declares_flexure_joint_marker() {
     let template = find_structure("FlexureJoint");
