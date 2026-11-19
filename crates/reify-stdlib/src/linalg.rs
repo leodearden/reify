@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn normalize_of_a_direction_is_identity() {
         let d = dir_value(1.0, 2.0, 3.0);
-        assert_eq!(eval_builtin("normalize", &[d.clone()]), d);
+        assert_eq!(eval_builtin("normalize", std::slice::from_ref(&d)), d);
     }
 
     #[test]
