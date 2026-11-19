@@ -9,8 +9,8 @@ kernel 7.0.0-31-generic; rustc and cargo 1.96.0, sccache 0.14.0).
 | Bench head (`BENCH_HEAD`) | `f743808f664fbf782a2867019102ae1c97c86705`, main's tip at bench start, 341 commits ahead of the basecommit |
 | Raw per-step data | `docs/notes/agent-build-settings-bench-raw.jsonl` |
 
-Status: this revision carries the census. The bench results, pricing, recommendation and caveats are added
-by the later steps of the task.
+Status: this revision carries the census, the bench method and the reify-compiler results. The other crates,
+the pricing, the recommendation and the caveats are added by the later steps of the task.
 
 The question, from Leo's ruling of 2026-11-17: would agents' own cargo builds reuse the warm base of a
 freshly seeded lane if they ran under the verify's settings (`CARGO_INCREMENTAL=0` plus
@@ -169,3 +169,205 @@ bin-only (no lib target), so its S1 selection is `--bins` (76 census calls) rath
 function that takes the edit in each file is a private, non-generic, single-line-signature function:
 `describe_slot` in the compiler's `functions_phase.rs`, `realize_structures` in the evaluator's
 `relate_solve.rs`, `write_flags` in the CLI's `help.rs`.
+
+## Bench method
+
+### Arms
+
+All arms inherit the implementer's own ambient agent env, which is itself a `role_env_overrides`-merged agent
+env: `CARGO_HOME=/tmp/reify-agent-cargo-home`, neither `CARGO_INCREMENTAL` nor `RUSTC_WRAPPER` set,
+`LD_LIBRARY_PATH` unset. Changes common to every arm: `CARGO_MAKEFLAGS`, `MAKEFLAGS` and `MFLAGS` unset and
+`-j 8` on every cargo command (a niced bench must not hold shared task-jobserver tokens, and parallelism is
+equal across arms), `nice -n 19 ionice -c3` on every process, and
+`CARGO_LOG=cargo::core::compiler::fingerprint=info` with stderr kept per step, from which the dirty and
+"failed to read" unit counts are taken.
+
+| arm | env delta | meaning |
+|---|---|---|
+| (a) | none | today's agent default: incremental on, no wrapper |
+| (b) | `CARGO_INCREMENTAL=0`, `RUSTC_WRAPPER=sccache` | the verify's pair, as `role_env_overrides` would merge it |
+| (b0) | `CARGO_INCREMENTAL=0` | diagnostic: the verify's incremental setting without the wrapper |
+
+Arm (b) points sccache at a PRIVATE server: its own port, its own `SCCACHE_DIR` under the bench directory,
+`SCCACHE_CACHE_SIZE=20G`, started in the foreground with `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1`. A fresh
+server is started inside each measured step and stopped, waited for, before the step ends, so the rustc
+processes it spawns on a cache miss are inside the measured tree; the cache directory persists across one
+sequence's steps and is emptied between sequences. The shared server is never touched.
+
+### Lane and seed
+
+The lane is a standalone `git clone --shared --no-checkout` of the main checkout at
+`<worktree>/.task/bench-10169/lane` (gitignored), detached at `BENCH_HEAD`. It is a clone and not a
+`git worktree add`, so the seed's rerere and hooks arming lands in the clone's own `.git` and not in the
+shared store. It sits inside the task worktree because the implementer is sandboxed (write set: the worktree
+and `/tmp`) and `/tmp` is ext4, while the base and the worktree are on the same XFS loop, where a reflink
+seed works.
+
+Before every sequence (step S0, untimed): DF's acquire steps (`git checkout -f --detach <head>`,
+`git clean -xfd -e target -e 'target.reseed-trash.*'`), then the real
+`scripts/seed-warm-lane.sh <BASE_GEN> <lane> --fresh-checkout` under `flock -s <BASE_GEN>.lock`. That is the
+state a freshly acquired production lane starts from: a reflinked `target/`, the 2020 mtime stamp, the delta
+touch, the `env!()` relink and the tauri build-dir deletion. The bench parks the previous `target/` by
+renaming it into `.task/bench-10169/junk/` instead of letting the seed delete ~170 GB at idle IO priority;
+the seed then finds no `target/`, which is the state it creates anyway.
+
+The base was pinned once, `target.gen.643`, and stayed current throughout (each S0 record carries
+`current_base_gen`). Its `.basecommit` is `cb24012c60`, written 2026-11-17 13:04; the previous generation's
+dates from 2026-11-09. No newer generation existed at the bench start on 2026-11-19, 36 hours and 341
+commits later, while main took 64 merges on 11-18 alone. That staleness is the bench's default condition:
+every sequence runs at `BENCH_HEAD`, so the stale-delta rebuild a production lane pays is in every number
+below, unless the row says zero delta.
+
+### One sequence
+
+S0 reseed. Then, with `X` the crate, `T` its census `--test` target and `F` its most-edited lib file:
+
+| step | command |
+|---|---|
+| S1 | `cargo test -p X --lib --no-run` (`--bins` for the bin-only reify-cli) |
+| S2 | `cargo test -p X --test T --no-run` |
+| E1, E2, E3 | edit k, then S2's command, then S1's command, recorded as `Ek-S2` and `Ek-S1` |
+| S6 | `cargo clippy -p X --all-targets -- -D warnings` |
+| S7 | verify pre-pay probe, fingerprint-only, no compile, always last |
+
+Edit k inserts `let _ = std::hint::black_box(<k>u32);` as the first statement of one fixed private function
+in `F`; edit k replaces edit k-1, so every edit is new content. Same function, same file, in every arm.
+
+S7 is the study's `failrustc.sh` pattern: `CARGO_INCREMENTAL=0`, `RUSTC_WRAPPER` set to a script that passes
+rustc's `-vV` and `--print` probes through and refuses every compile, `CARGO_HOME=/tmp/reify-agent-cargo-home`,
+and `cargo test -p <X plus its workspace reverse-dependency closure> --no-run`. It reports how many of the units
+the verify would build are dirty or unreadable after the agent's work, without building any. The difference
+between arms is the number of verify units the arm-(b) agent pre-paid. The probe deletes the hash files of
+the units it finds dirty, which is why it ends the sequence.
+
+### What is measured per step
+
+- `cpu_s`: user plus sys of the step's whole waited process tree (`getrusage(RUSAGE_CHILDREN)` delta). Under
+  (b) the private server is a child of the step, so the compiles it runs are included. The primary metric.
+- `cgroup_cpu_s`: the same step's `usage_usec` from the dedicated `systemd-run --user --scope` unit each
+  driver runs in, a cross-check: the largest relative difference from `cpu_s` is 0.14% over the 41 crate-1
+  bench steps.
+- `sccache_server_cpu_s`: the server's own CPU, from `/proc/<pid>/stat` after the step.
+- `wall_s`: monotonic. Secondary, because the host is shared (below).
+- `units_written`: fingerprint directories whose newest file mtime is after the step start, the rule of
+  `scripts/verify-ledger.py::scan_fingerprints`. `units_new_vs_base`: of those, the names absent from
+  `BASE_GEN/debug/.fingerprint`.
+- `dirty`, `failed_to_read`: distinct units the fingerprint log reports as "fingerprint dirty for" and
+  "err: failed to read". A unit that cargo cannot read is one the base never had under that hash: new.
+  `dirty_root` counts dirty units whose reason is not a propagated dependency change.
+- PSI `some avg10` at start and end and `loadavg` at start. The host ran other agents and verifies throughout.
+  Over the 41 crate-1 bench steps PSI `some avg10` was 14 to 66 (median 36) and the 1-minute load average
+  52 to 146 (median 86). CPU time is robust to that load, wall time is not, and the arms are interleaved so
+  both see the same weather.
+
+### Calibration
+
+The private server must not hide its compile CPU. One cacheable lib miss (`cargo build -p
+reify-shell-extract --lib`, 4 units) was run under (b) and (b0), with the gate that (b)'s `cpu_s` is within
+25% of (b0)'s. Round 1 measured `getrusage` only and failed: 13.0 s against 9.3 s, ratio 1.39. Per the plan's
+contingency the step wrapper then moved into a `systemd-run --user --scope` unit with the cgroup cross-check,
+and round 2 passed: 9.9 s against 9.0 s, ratio 1.10, with the cgroup within 0.1% of `getrusage` and the
+server accounting for 9.3 of the 9.9 CPU-s. Both rounds are in the raw data (`phase: calibration`). On a
+4-unit, 10-second build, (b)'s own two readings differ by 31% between rounds, which is host-load noise; the
+bench steps that matter run for minutes.
+
+### Bookkeeping and the zero-delta control
+
+Cumulative `cpu_s` over all bench steps is capped at 450 CPU-minutes with a stop rule (a `truncated` flag on
+the record that crosses it). Crate 1's five planned sequences used 53.3 CPU-minutes, far below the 200
+CPU-minute line that would have reduced steps 3 and 4, so those run in full.
+
+One addition to the plan's sequences: a **zero-delta control** (`d0a` under (a), `d0b` under (b)). Same crate,
+reseeded at the basecommit itself (`behind_by` 0, so the seed's delta touch is empty), steps S1, S2, S6, S7 and
+no edits. At 341 commits of staleness the delta dirties 19 units of reify-compiler's closure under (b), which
+confounds the effect of the settings with the effect of the base's age; the control isolates the second. It
+brackets the production case, since the age of a production lane's base varies.
+
+## Bench results
+
+Tables give the median over the repetitions of a sequence: two for (a) and (b) on reify-compiler
+(`a1`/`a2`, `b1`/`b2`), one for (b0). `cpu_s` and `wall_s` are seconds. "Units written (new vs base)" counts
+the fingerprint units the step wrote and, in brackets, those the base never had under that hash. Every row
+below runs at `BENCH_HEAD`, 341 commits ahead of the base, unless it says zero delta.
+
+### reify-compiler (census rank 1)
+
+`T` = `harness_modules_ports`, `F` = `compile_builder/functions_phase.rs` (function `describe_slot`), S7 closure
+= 25 packages. Source: sequences `a1 b1 a2 b2 b0`, 41 measured steps.
+
+| step | arm | reps | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|---:|
+| S1 `--lib` | a | 2 | 311.0 | 145.9 | 39 (39) | 0 | 39 |
+| S1 `--lib` | b | 2 | 334.8 | 184.3 | 32 (13) | 19 | 13 |
+| S1 `--lib` | b0 | 1 | 280.4 | 143.3 | 32 (13) | 19 | 13 |
+| S2 `--test T` | a | 2 | 13.6 | 8.7 | 1 (1) | 0 | 1 |
+| S2 `--test T` | b | 2 | 11.7 | 10.4 | 1 (1) | 0 | 1 |
+| E1-S2 | a | 2 | 10.3 | 8.3 | 4 (4) | 4 | 0 |
+| E1-S2 | b | 2 | 88.6 | 65.4 | 4 (3) | 4 | 0 |
+| E1-S1 | a | 2 | 7.7 | 7.0 | 1 (1) | 1 | 0 |
+| E1-S1 | b | 2 | 37.8 | 28.1 | 1 (1) | 1 | 0 |
+| E2-S2 | a | 2 | 9.6 | 7.7 | 4 (4) | 4 | 0 |
+| E2-S2 | b | 2 | 85.4 | 62.0 | 4 (3) | 4 | 0 |
+| E2-S1 | a | 2 | 5.7 | 5.0 | 1 (1) | 1 | 0 |
+| E2-S1 | b | 2 | 36.1 | 25.7 | 1 (1) | 1 | 0 |
+| E3-S2 | a | 2 | 10.1 | 7.9 | 4 (4) | 4 | 0 |
+| E3-S2 | b | 2 | 77.5 | 53.8 | 4 (3) | 4 | 0 |
+| E3-S1 | a | 2 | 6.4 | 6.1 | 1 (1) | 1 | 0 |
+| E3-S1 | b | 2 | 34.1 | 24.2 | 1 (1) | 1 | 0 |
+| S6 clippy | a | 2 | 186.7 | 128.1 | 62 (62) | 0 | 62 |
+| S6 clippy | b | 2 | 180.2 | 168.2 | 55 (42) | 13 | 42 |
+| S7 probe | a | 2 | 8.1 | 14.7 | – | 620 | 34 |
+| S7 probe | b | 2 | 2.6 | 6.5 | – | 607 | 33 |
+
+Pooled over the three edits (six readings per arm), median `cpu_s` / `wall_s`:
+
+| edit-rebuild | (a) | (b) | (b) over (a) |
+|---|---:|---:|---:|
+| `Ek-S2` (`--test T` after an edit) | 10.0 / 8.1 | 83.3 / 60.3 | 8.3x CPU, 7.4x wall |
+| `Ek-S1` (`--lib` after an edit) | 6.4 / 6.1 | 34.9 / 25.4 | 5.5x CPU, 4.2x wall |
+
+Rep spread, `|rep1 - rep2|` over the mean of `cpu_s`: first build 5.2% (a) and 11.7% (b); S2 10% (a) and 13%
+(b); clippy 1.4% (a) and 4.3% (b); edit-rebuild steps 0.2% to 9% (a) and 6% to 18% (b).
+
+What the rows say:
+
+- **The base is reused only under (b) and (b0); under (a) nothing of it is.** Every unit (a) writes is new:
+  `-C incremental` changes the hash of every workspace unit, so the base holds none of them (39 of 39 in S1,
+  62 of 62 in S6, zero dirty). Under (b) and (b0) the units the base has are found. No external crate is
+  rebuilt or unreadable in any S1, S2, Ek or S6 step of any arm.
+- **At today's staleness that reuse buys no first-build CPU.** (b)'s S1 reuses all but 32 units and still costs
+  335 CPU-s against (a)'s 311, a difference inside (b)'s own 11.7% rep spread, and 26% more wall (184 s
+  against 146 s). The 32 units are 19 the delta dirtied and 13 the base never had. The 19 are all
+  `FsStatusOutdated`, source files the seed's delta touch marked newer than the fingerprint: the libraries
+  of reify-ast, -core, -builtins, -compiler, -config, -build-utils, -ir, -syntax and -shell-extract, the
+  library and build-script run of tree-sitter-reify, the library, build script and build-script run of
+  reify-config, and the build script and its run for the gmsh, solver-elastic and openvdb kernels. The 13 are
+  absent from the base under the hash this selection asks for: the `reify-compiler` test unit, the libraries
+  of reify-eval (with its build script and its run), -stdlib, -constraints, -expr, -compute-contract,
+  -solver-elastic, -kernel-gmsh, -kernel-openvdb, -mcp and -test-support. That is the feature-split of the
+  study's M1 (dark-factory `plans/seeded-lane-rebuild-study-2026-11-17/S-seed-mechanics.md` section 4),
+  consistent with a base built under the verify's workspace-wide feature set; this bench does not test the
+  cause. The 13 are rebuilt whatever the delta.
+- **The wrapper is not what makes the base reusable.** (b0) has no wrapper and shows exactly (b)'s unit
+  counts (32 written, 13 new, 19 dirty, 13 unreadable). Had `RUSTC_WRAPPER` been part of the unit hash or
+  fingerprint, (b0) would have found every unit of the closure unreadable or dirty. It agrees with the
+  study's experiment iii, which reused the base under a different wrapper. The `CARGO_INCREMENTAL=0` half is
+  the only one that matters for reuse; what this means for the existing memories is in the recommendation.
+- **sccache itself costs CPU on a cold cache.** (b) 335 against (b0) 280 CPU-s on S1 is 19% more, one (b0)
+  repetition, so indicative. The server's own share of (b)'s S1 was 274 of 315 CPU-s in `b1`.
+- **The edit loop is where (b) loses, by a wide margin.** Each edit-rebuild costs 5 to 8 times the CPU and 4
+  to 7 times the wall under (b). Under (a) incremental compilation keeps an edit-rebuild to 10 CPU-s for
+  the test target and 6 for the lib test; under (b) the edited crate is recompiled from scratch, 63 to 79
+  server CPU-s per `Ek-S2`, and sccache cannot help because the content is new (3 cache misses of 3 executed
+  requests in `E1-S2`).
+- **Clippy does not benefit.** (b)'s S6 is 180 CPU-s against (a)'s 187, equal within the spread, and 31%
+  more wall. sccache cannot cache check-mode compiles: 52 of 56 requests were not cacheable in `b1`'s S6.
+  Of the 55 units (b)'s S6 wrote, 13 were in the base and dirtied by the delta, and 42 were not in it.
+- **A (b) agent pre-pays almost nothing the verify would build, at this staleness.** S7: after (b)'s work the
+  verify's closure still has 607 dirty units against 620 after (a)'s, so (b) pre-paid 13 units (2.1%).
+  The delta dirties about 600 units of the verify's graph, all but 5 of them workspace units, whichever arm
+  the agent ran.
+- **S2 builds one test unit:** 13.6 against 11.7 CPU-s, the same.
+
+The zero-delta control for this crate, which separates these numbers from the base's age, is reported below
+once it has run.
