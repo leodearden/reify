@@ -7203,17 +7203,21 @@ impl Engine {
     ///    cache's tol partial order (`cached_tol ≤ requested_tol`
     ///    satisfies). Pinned by
     ///    `probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order`.
-    /// 3. **On a hit, the FULL cold-path side-effect set — and nothing
+    /// 3. **On a hit, the cold-path side-effect set — and nothing
     ///    else.** `step_handles` push, `named_steps` + `named_step_reprs`
     ///    insert, `produced_repr_out` write, the `debug_assert_eq!`
     ///    consistency guard, and the entry's swept kind (if any) recorded into
     ///    `swept_kind_table` under the cached handle's id; dispatch counters
     ///    are left at their entry values, and the function returns before the
-    ///    op loop ever runs. Pinned by
+    ///    op loop ever runs. One exception: a terminal that a post-loop
+    ///    VolumeMesh/Voxel edge replaced caches `swept_kind: None`, so the
+    ///    cold-only entry at the meshed-from body's id is not restored (the
+    ///    egress-body facet, owned by S2 κ #9263). Pinned by
     ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
     ///    and `probe_realization_cache_hit_on_entry_without_swept_kind_records_none`
-    ///    (single hit) and, cold-vs-warm over a Box and a swept fixture,
-    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
+    ///    (single hit), cold-vs-warm over a Box and a swept fixture by
+    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`, and the
+    ///    exception by `voxel_replaced_terminal_caches_and_restores_no_swept_kind`.
     /// 4. **On a hit, the cache-served handle has NO `topology_attribute_table`
     ///    entry — enforced fail-closed.** After #4351's `KernelHandle`
     ///    re-key, cross-kernel collision at this table is impossible by

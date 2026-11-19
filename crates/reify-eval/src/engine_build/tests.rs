@@ -9380,6 +9380,109 @@ structure Assembly {
         );
     }
 
+    /// A terminal replaced by the post-loop Voxel edge caches no swept kind
+    /// (task 10153): the BRep extrude the op loop classified is not the cached
+    /// OpenVdb terminal, so a warm hit must not record the extrude's kind under
+    /// the OpenVdb handle's bare id, a key the cold pass never writes.
+    #[test]
+    fn voxel_replaced_terminal_caches_and_restores_no_swept_kind() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::sync::{Arc, Mutex};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+        let swept_ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                args: vec![("radius".into(), mm_lit(5.0))],
+            },
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![("profile".into(), mm_lit(5.0)), ("distance".into(), mm_lit(10.0))],
+            },
+        ];
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        kernels.insert(
+            KernelId::OpenVdb.as_registry_name().to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: Arc::new(Mutex::new(0)),
+                execute_count: Arc::new(Mutex::new(0)),
+                next_ingest_id: 5000,
+            }),
+        );
+
+        let realization_id = RealizationNodeId::new("VoxelReplacedTerminal", 0);
+        let tol = 1e-3;
+        let mut state = DispatchTestState::default();
+        let mut run = |state: &mut DispatchTestState| {
+            state.run_demand(
+                &mut kernels,
+                &registry,
+                "default",
+                &swept_ops,
+                &realization_id,
+                Some("part"),
+                SourceSpan::new(0, 0),
+                ReprKind::Voxel,
+                Some(tol),
+                None,
+            )
+        };
+
+        run(&mut state);
+        let voxel_terminal = *state
+            .step_handles
+            .last()
+            .expect("premise: the cold pass pushes a terminal handle");
+        assert_eq!(
+            voxel_terminal.kernel,
+            KernelId::OpenVdb,
+            "premise: the post-loop Voxel edge replaced the terminal, got {:?}",
+            state.step_handles
+        );
+        let extrude_body = state.step_handles[state.step_handles.len() - 2];
+        assert!(
+            matches!(
+                state.swept_kind_table.lookup(extrude_body.id),
+                Some(SweptKind::Extrude { .. })
+            ),
+            "premise: the cold pass classifies the BRep extrude body"
+        );
+        let entry = state
+            .realization_cache
+            .lookup(&realization_id.entity, ReprKind::Voxel, tol, NO_OPTIONS)
+            .expect("premise: the cold pass caches the Voxel terminal");
+        assert_eq!(entry.handle, voxel_terminal);
+        assert_eq!(
+            entry.swept_kind, None,
+            "a Voxel-replaced terminal must cache no swept kind"
+        );
+
+        let dispatch_count_after_cold = state.dispatch_count;
+        state.step_handles.clear();
+        state.named_steps.clear();
+        state.named_step_reprs.clear();
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+        run(&mut state);
+
+        assert_eq!(
+            state.dispatch_count, dispatch_count_after_cold,
+            "premise: the warm pass is a cache hit"
+        );
+        assert_eq!(state.step_handles, vec![voxel_terminal]);
+        assert!(
+            state.swept_kind_table.is_empty(),
+            "a warm hit on a Voxel-replaced terminal must record no swept kind, got {:?}",
+            state.swept_kind_table
+        );
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
