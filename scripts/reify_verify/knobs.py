@@ -13,6 +13,9 @@ REIFY_CLOCK_HEARTBEAT_SECS, the reaper knobs); and the values verify.sh sets
 for its children rather than reads (REIFY_AMBIENT_LD_LIBRARY_PATH,
 REIFY_RUN_ALL_TIMING_OUT, REIFY_HEAVY_NEXTEST_FILTER, REIFY_VERIFY_EVENT_LOG,
 which it passes through or removes).
+
+It imports nothing from the package: scripts/verify.py's PRD D8 boundary
+imports it before cli, outside the boundary's try.
 """
 
 import re

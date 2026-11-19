@@ -23,7 +23,8 @@ here:
 - policy's unknown-role refusal text, which no CLI run shows bare because the
   CLI always prefixes it;
 - diagnostics' internal-error line (PRD D8) for a multi-line message, which no
-  --print-plan run can provoke.
+  --print-plan run can provoke, and that verify.py's boundary imports only
+  leaf modules ahead of its try.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_model.sh.
@@ -886,6 +887,23 @@ class TestInternalErrorLine(unittest.TestCase):
         line = diagnostics.internal_error(ValueError("first\nsecond"))
         self.assertNotIn("\n", line)
         self.assertEqual(line, "verify.sh: ERROR — internal: ValueError: first second")
+
+    def test_the_boundary_imports_only_leaves_before_its_try(self):
+        """verify.py's top level imports knobs and diagnostics outside the boundary's try, so loading it must
+        import no other package module: an import failure there would print a raw traceback."""
+        probe = (
+            "import runpy, sys\n"
+            "runpy.run_path(sys.argv[1], run_name='probe')\n"
+            "print(*sorted(m for m in sys.modules if m.split('.')[0].startswith('reify')), sep='\\n')\n"
+        )
+        run = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", probe, str(REPO_ROOT / "scripts/verify.py")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout.split(), ["reify_verify", "reify_verify.diagnostics", "reify_verify.knobs"]
+        )
 
 
 class TestQuotedPathKnobs(unittest.TestCase):
