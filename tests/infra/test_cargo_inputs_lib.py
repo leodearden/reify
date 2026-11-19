@@ -30,11 +30,12 @@ LIB = INFRA_DIR / "cargo_inputs_lib.sh"
 MARKER = "@@REIFY_INFRA_UNAVAILABLE@@"
 UNAVAILABLE_RC = 75
 
-# Members that source cargo_inputs_lib.sh; DriftTest keeps this exact.
+# Members that source cargo_inputs_lib.sh; AdoptersTest keeps this exact.
 ADOPTERS = (
     "test_affected_crates_lib.sh",
     "test_engine_hash_closure.sh",
     "test_run_gui_scripts.sh",
+    "test_tree_sitter_pipeline.sh",
 )
 
 SOURCES_LIB = re.compile(r"^\s*(source|\.)\s+\S*cargo_inputs_lib\.sh", re.M)
