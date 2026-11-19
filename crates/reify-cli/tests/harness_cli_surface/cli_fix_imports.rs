@@ -25,6 +25,14 @@ const ENTITY_HEADER: &str = "import std.materials.appearance.Finish\nimport std.
 const GATED_HEADER: &str =
     "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n";
 
+/// Gates an entity import of `Appearance`, which binds neither of PLATE's `Color`/`Finish`.
+const GATED_APPEARANCE_ENTITY_HEADER: &str =
+    "#cfg(appearance)\nimport std.materials.appearance.Appearance\nimport std.si_units\n\n";
+
+/// Gates an entity import of PLATE's `Finish` alone.
+const GATED_FINISH_HEADER: &str =
+    "#cfg(appearance)\nimport std.materials.appearance.Finish\nimport std.si_units\n\n";
+
 /// What `fix` appends to a reported module that the file imports under a `#cfg` the active cfg
 /// leaves unsatisfied.
 const GATED_OFF_NOTE: &str = "; a #cfg-gated import of it is not in effect under the active cfg";
@@ -430,6 +438,41 @@ fn the_host_target_satisfies_a_target_gated_import_by_default() {
         describe(&output)
     );
     assert!(stdout.contains(GATED_OFF_NOTE), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn a_gated_off_entity_import_that_binds_none_of_the_missing_names_adds_no_note() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{GATED_APPEARANCE_ENTITY_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+    let expected = format!("{file}: missing import std.materials.appearance (Color, Finish)\n");
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+
+    let output = run_reify(&["fix", "--imports", "--check", "--cfg", "appearance", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn a_gated_off_entity_import_that_binds_a_missing_name_keeps_the_note() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{GATED_FINISH_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "{file}: missing import std.materials.appearance (Color, Finish){GATED_OFF_NOTE}\n"
+        )
+    );
     assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
 }
 
