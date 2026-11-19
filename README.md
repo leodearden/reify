@@ -40,6 +40,7 @@ What's flaky or missing:
 - Ubuntu 24.04 LTS, x86_64 (other distros not yet supported)
 - A desktop session for the GUI; the `reify` CLI needs none.
 - Node.js 18 or newer on your `PATH` for the GUI's Assistant mode, which runs a Node script. The `.deb` installs Ubuntu 24.04's own `nodejs` for you; with the AppImage, run `sudo apt install nodejs`. Building from source needs Node 20+ with npm. The `reify` CLI and the GUI's other modes need none.
+- Python 3 for the GUI's Assistant mode, which runs Claude inside a write sandbox, a Python script. The `.deb` installs Ubuntu 24.04's `python3` for you, and an Ubuntu desktop already has it for the AppImage. Without it the Assistant logs a one-time "Sandbox unavailable" warning and runs Claude unrestricted.
 
 ## Install
 
