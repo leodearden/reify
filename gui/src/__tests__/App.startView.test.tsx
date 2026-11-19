@@ -4,6 +4,7 @@ import type { FileData, ModeState, PersistentViewState, PublishedState } from '.
 import { flushMacrotasks, deferred, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
 import { makeGuiState } from './test_utils/guiState';
+import { fakeSetMode } from './test_utils/launcherDeps';
 
 vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
 vi.mock('@tauri-apps/api/event', async () => (await import('./appHarness/moduleMocks')).tauriEventMock());
@@ -475,7 +476,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
   });
 
   it('Design closes the chat panel and Assistant reopens it', async () => {
-    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({ mode, debug_port: null }));
+    vi.mocked(bridge.setMode).mockImplementation(fakeSetMode());
     await renderAndWaitForReady();
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
 
@@ -490,10 +491,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
   });
 
   it('Debug selects debug mode through set_mode and starts the debug bridge', async () => {
-    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
-      mode,
-      debug_port: mode === 'debug' ? 3939 : null,
-    }));
+    vi.mocked(bridge.setMode).mockImplementation(fakeSetMode());
     await renderAndWaitForReady();
 
     fireEvent.click(screen.getByTestId('start-mode-debug'));
@@ -523,10 +521,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
   });
 
   it('a debug bridge that fails to start shows E_GUI_DEBUG_BRIDGE_FAILED, and Debug again retries it', async () => {
-    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
-      mode,
-      debug_port: mode === 'debug' ? 3939 : null,
-    }));
+    vi.mocked(bridge.setMode).mockImplementation(fakeSetMode());
     vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('debug-request subscription failed'));
     await renderAndWaitForReady();
 
@@ -585,10 +580,9 @@ describe('App launcher Start view (alpha-spine β)', () => {
   });
 
   it('a Design click whose set_mode fails shows E_GUI_MODE_FAILED and leaves the chat panel open', async () => {
+    const backend = fakeSetMode();
     vi.mocked(bridge.setMode).mockImplementation((mode) =>
-      mode === 'design'
-        ? Promise.reject('state not managed')
-        : Promise.resolve({ mode, debug_port: mode === 'debug' ? 3939 : null }),
+      mode === 'design' ? Promise.reject('state not managed') : backend(mode),
     );
     await renderAndWaitForReady();
 
@@ -604,10 +598,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
 
   it('an env-launched debug session reports Debug mode', async () => {
     vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
-    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
-      mode,
-      debug_port: mode === 'debug' ? 3939 : null,
-    }));
+    vi.mocked(bridge.setMode).mockImplementation(fakeSetMode());
 
     await renderAndWaitForReady();
 
@@ -653,10 +644,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
-      vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
-        mode,
-        debug_port: mode === 'debug' ? 3939 : null,
-      }));
+      vi.mocked(bridge.setMode).mockImplementation(fakeSetMode());
       vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('debug-request subscription failed'));
 
       await renderAndWaitForReady();
