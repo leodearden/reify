@@ -115,6 +115,7 @@ class RequiredLibNotFound:
 
 VERIFY_SH = NotFoundNextTo("verify.sh")
 RELEASE_SCOPE_LIB = NotFoundNextTo("release-scope-lib.sh", exit_code=2)
+LIB_TEST_SEMAPHORE = NotFoundNextTo("lib_test_semaphore.sh")
 LIB_SLOT_ACQUIRE = RequiredLibNotFound("lib_slot_acquire.sh")
 
 
@@ -136,6 +137,7 @@ LOAD_TIME_LIBS = (
     LoadTimeLib("scripts/release-scope-lib.sh"),
     LoadTimeLib("scripts/affected-crates-lib.sh", RELEASE_SCOPE_LIB),
     LoadTimeLib("scripts/lib_test_semaphore.sh"),
+    LoadTimeLib("scripts/lib_slot_acquire.sh", LIB_TEST_SEMAPHORE),
     LoadTimeLib("scripts/lib_clock_stop.sh", LIB_SLOT_ACQUIRE),
     LoadTimeLib("scripts/lib_event_log.sh", LIB_SLOT_ACQUIRE),
     LoadTimeLib("scripts/cpu-admit.sh"),
