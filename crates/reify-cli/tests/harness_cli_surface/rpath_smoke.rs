@@ -435,10 +435,18 @@ fn reify_binary_binds_the_cxx_runtime_outside_the_deps_prefix() {
         .split(':')
         .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.into()))
         .collect();
-    // A dir missing from RUNPATH is searched after every RUNPATH entry.
-    let rank = |dir: &std::path::Path| dirs.iter().position(|d| d == dir).unwrap_or(dirs.len());
+    let rank = |dir: &std::path::Path| dirs.iter().position(|d| d == dir);
+    let (occt_rank, deps_rank) = (rank(&occt_dir), rank(&deps_dir));
     assert!(
-        rank(&occt_dir) < rank(&deps_dir),
+        occt_rank.is_some() || deps_rank.is_some(),
+        "neither OCCT's lib dir {occt_dir:?} (where {tkernel} resolves) nor the deps prefix \
+         {deps_dir:?} (where {gmsh} resolves) is in {exe}'s RUNPATH [{runpath}], so both \
+         resolve through the loader's default search or the ld.so cache rather than RUNPATH. \
+         crates/reify-cli/build.rs's emit_rpath_for_bins calls may have regressed."
+    );
+    // A dir missing from RUNPATH is searched after every RUNPATH entry.
+    assert!(
+        occt_rank.unwrap_or(dirs.len()) < deps_rank.unwrap_or(dirs.len()),
         "{exe}'s RUNPATH searches the deps prefix {deps_dir:?} (where {gmsh} resolves) \
          before OCCT's lib dir {occt_dir:?} (where {tkernel} resolves). RUNPATH: \
          [{runpath}]. An unscoped `cargo:rustc-link-arg` -rpath emitted earlier in \
