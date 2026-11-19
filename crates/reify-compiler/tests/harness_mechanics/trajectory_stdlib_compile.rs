@@ -817,8 +817,9 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
 
     // RHS must be the literal `0`. Accept either `Int(0)` or `Real(0.0)`,
     // mirroring the future-proofing rationale established in
-    // `buckling_stdlib_compile.rs:357-358` /
-    // `solver_elastic_tests.rs:567-579`: `waypoints.count` is `Type::Int`
+    // `buckling_options_constrains_positivity_invariants` in
+    // buckling_stdlib_compile.rs / `elastic_options_constrains_positivity_invariants`
+    // in solver_elastic_tests.rs: `waypoints.count` is `Type::Int`
     // today so the `0` literal stays `Int`, but accepting `Real(0.0)` keeps
     // this test robust against a future literal-coercion change and
     // consistent with the precedent it explicitly cites.
@@ -843,7 +844,7 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
 ///
 /// `p : Profile` resolves to `Type::TraitObject("Profile")` — the same
 /// trait-typed param resolution verified by `fn_signature_resolves_stdlib_trait_name`
-/// in `fn_signature_type_resolution_tests.rs:60-86` (using `MaterialSpec`).
+/// in `fn_signature_type_resolution_tests.rs` (using `MaterialSpec`).
 /// `t : Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }` —
 /// already in use for `Waypoint.t` (trajectory_stdlib_compile.rs, step-9).
 /// Return type `List<JointValue>` = `List<Real>` via the module-level alias
@@ -897,7 +898,7 @@ fn evaluate_profile_ddot_fn_signature() {
 
 /// Look up the named param cell on `template` and return its `default_expr`.
 /// Panics with a clear message if the cell or its default is missing.
-/// Mirrors `require_default` in `modal_options_validation_tests.rs:97-106`.
+/// Mirrors `require_default` in `modal_options_validation_tests.rs`.
 fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
     let cell = template
         .value_cells
@@ -925,7 +926,7 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 /// `p : Profile` resolves to `Type::TraitObject("Profile")` (same as steps
 /// 21/23/25). `is_pub == true` for the same downstream-consumer reason.
 /// Single-param assertion mirrors `STANDARD_GRAVITY` (zero-param precedent)
-/// in `standard_gravity_tests.rs:22-50`.
+/// in `standard_gravity_function_present_in_std_units` (standard_gravity_tests.rs).
 #[test]
 fn profile_duration_fn_signature() {
     let module = load_stdlib_module();
@@ -2150,8 +2151,9 @@ structure def TotsKinematicLimitReadProbe {{
 /// and dim-incompatible with Frequency).
 ///
 /// Uses the HarmonicForce Frequency-constraint pattern
-/// (modal_options_validation_tests.rs:1296-1348) and the TOTSShaper
-/// trait-bounds + param-shape assertion style (step-35).
+/// (`harmonic_force_constrains_amplitude_and_frequency_positive` in
+/// modal_options_validation_tests.rs) and the TOTSShaper trait-bounds +
+/// param-shape assertion style ([`assert_tots_shaper_param_shape`], step-35).
 ///
 /// Landed alongside the structure_def in `trajectory.ri :: ZVShaper`.
 #[test]
@@ -2435,7 +2437,8 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
 ///   (c) `vibration_tolerance <= 1`      — BinOp::Le, RHS Int(1)/Real(1.0)
 ///
 /// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
-/// (same discipline as TOTSShaper, step-39 at line 1391-1477).
+/// (same discipline as TOTSShaper's step-39 body,
+/// [`assert_tots_shaper_constrains_design_param_invariants`]).
 ///
 /// Landed alongside the structure_def in `trajectory.ri :: EIShaper`.
 #[test]
@@ -2736,7 +2739,9 @@ fn end_effector_track_struct_has_correct_param_shape() {
     // ModalResult lives in std/modal.analysis (not std/trajectory), so we
     // search across all stdlib modules. A string-equality StructureRef assertion
     // alone would pass even if the referenced name did not exist.
-    // (ModalResult shape is also fully verified by modal_options_validation_tests.rs:446.)
+    // (ModalResult shape is also fully verified by
+    // `modal_result_struct_has_correct_param_shape` in
+    // modal_options_validation_tests.rs.)
     assert!(
         stdlib_loader::load_stdlib()
             .iter()
