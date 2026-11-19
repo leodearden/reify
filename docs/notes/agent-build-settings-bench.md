@@ -465,3 +465,37 @@ Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
   sccache executed 9 of 282 requests, all misses; 273 were check-mode and not cacheable.
 - **S7:** the verify's closure has 597 dirty units after (b)'s work against 615 after (a)'s, so (b) pre-paid 18
   units (2.9%), none of them external.
+
+#### Zero-delta control, reify-eval (`d0a`, `d0b`)
+
+One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
+
+| step | arm | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|
+| S1 `--lib` | a | 440.4 | 205.5 | 54 (49) | 5 | 49 |
+| S1 `--lib` | b | 339.2 | 239.4 | 26 (20) | 6 | 20 |
+| S2 `--test T` | a | 11.1 | 9.6 | 1 (1) | 0 | 1 |
+| S2 `--test T` | b | 7.3 | 13.9 | 1 (1) | 0 | 1 |
+| S6 clippy | a | 297.2 | 144.6 | 288 (285) | 3 | 285 |
+| S6 clippy | b | 235.6 | 141.5 | 264 (260) | 4 | 260 |
+| S7 probe | a | 1.5 | 2.2 | – | 294 | 29 |
+| S7 probe | b | 2.4 | 5.7 | – | 293 | 29 |
+
+- **For reify-eval the base's age barely matters; the feature-split units set the floor.** (b)'s first build
+  costs 339 CPU-s at zero delta and 341 at 341 commits. The 21 units the delta dirties are small crates and
+  cost almost nothing next to the 20 absent units, which include reify-eval's own library and test unit. At
+  zero delta (b) saves 101 CPU-s (23%) on the first build against (a)'s 440; at 341 commits it saved 72 (17%)
+  against 413. (a) itself reads 7% higher here than at stale, one repetition each.
+- **The remaining dirty units are the seed's own.** (b)'s 6 and (a)'s 5 dirty units are the `manifold-csg-sys`
+  build-script run, which the seed always invalidates, and the units that depend on it (`manifold-csg-sys`,
+  `manifold-csg`, `manifold3d`, and for (b) `reify-kernel-manifold`).
+- **CPU and wall disagree on the first build, and the wall readings are not comparable.** (b)'s S1 took 239 s
+  of wall for 339 CPU-s at PSI `some avg10` 4, against (a)'s 206 s for 440 CPU-s at PSI 63.
+  Hypothesis, not tested: the 20 absent units include one very large library (reify-eval's own) compiled in a
+  single rustc process, so (b)'s wall is bound by that critical path, while (a)'s incremental build splits it
+  into many codegen units, and a quiet host would shorten (a)'s wall more than (b)'s. The first-build wall
+  difference between arms on this crate is therefore not resolved by this bench; the CPU difference is.
+- **Clippy:** 236 against 297 CPU-s (21% less under (b)), 260 absent units as at stale and 4 dirty. sccache
+  executed 7 of 267 requests, all misses.
+- **S7:** 293 against 294 dirty units, so (b) pre-paid none of the verify's units at zero delta. The 294 are,
+  as for reify-compiler, the seed's own invalidation.
