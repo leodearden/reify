@@ -9,8 +9,8 @@ kernel 7.0.0-31-generic; rustc and cargo 1.96.0, sccache 0.14.0).
 | Bench head (`BENCH_HEAD`) | `f743808f664fbf782a2867019102ae1c97c86705`, main's tip at bench start, 341 commits ahead of the basecommit |
 | Raw per-step data | `docs/notes/agent-build-settings-bench-raw.jsonl` |
 
-Status: this revision carries the census, the bench method and the reify-compiler and reify-eval results. The
-remaining crate, the pricing, the recommendation and the caveats are added by the later steps of the task.
+Status: this revision carries the census, the bench method and the results for all three benched crates, with
+the bench totals. The pricing, the recommendation and the caveats are added by the next step of the task.
 
 The question, from Leo's ruling of 2026-11-17: would agents' own cargo builds reuse the warm base of a
 freshly seeded lane if they ran under the verify's settings (`CARGO_INCREMENTAL=0` plus
@@ -579,3 +579,28 @@ One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
 - **Wall is unusable on the clippy row:** (b)'s S6 took 301 s of wall for 152 CPU-s, a load artefact (PSI is
   recorded per step in the raw data).
 - **S7:** (a) leaves 27 of the probe's units unreadable and (b) leaves 1, the same degenerate selection as above.
+
+### Bench totals and teardown
+
+Totals over the raw file, 2026-11-19 from 00:33Z (first calibration reseed) to 02:57Z (last probe):
+
+| | steps | CPU-min | wall-min |
+|---|---:|---:|---:|
+| reify-compiler (`a1 b1 a2 b2 b0 d0a d0b`) | 49 | 67.7 | 45.3 |
+| reify-eval (`a1 b1 d0a d0b`) | 28 | 51.5 | 34.2 |
+| reify-cli (`a1 b1 d0a d0b`) | 28 | 34.9 | 23.4 |
+| **bench steps** | **105** | **154.1** | **102.9** |
+| calibration steps | 4 | 0.7 | 0.7 |
+| untimed reseeds (S0), 15 bench and 4 calibration | 19 | – | 33.5 |
+
+By arm, the 105 bench steps used 72.2 CPU-min under (a), 77.2 under (b) and 4.7 under (b0). That is 34% of the
+450 CPU-minute cap, so no record is `truncated`, and crate 1's total (67.7) never approached the 200
+CPU-minute line that would have reduced crates 2 and 3. Every CPU figure includes the private sccache
+server's compiles (calibration above). Wall is the sum of the steps' own `wall_s` and excludes the reseeds.
+
+Teardown, after the last probe: each measured step had started its own private sccache server and stopped it
+before the step ended, and none was left listening (no private port in `ss -ltn`; the one sccache process on
+the host is the shared server, never touched). No process had the bench directory as its working directory or
+in its command line, and no `bench10169-*` systemd scope remained. `.task/bench-10169` (the lane clone, the 17
+parked `target/` copies and the lock files) was then removed with `rm -rf`; it was gitignored and outside every
+commit.
