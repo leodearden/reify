@@ -197,7 +197,7 @@ printf '%s\\n' "$here" >> {shlex.quote(str(self.cargo_marker))}
 [ "$here" = "$REVIEW_README_STUB_ROOT" ] || exit 97
 [ -z "${{REVIEW_README_STUB_CARGO_SLEEP:-}}" ] || sleep "$REVIEW_README_STUB_CARGO_SLEEP"
 [ -z "${{REVIEW_README_STUB_CARGO_RC:-}}" ] || exit "$REVIEW_README_STUB_CARGO_RC"
-out="${{CARGO_BUILD_TARGET_DIR:-${{CARGO_TARGET_DIR:-target}}}}/release"
+out="${{CARGO_TARGET_DIR:-${{CARGO_BUILD_TARGET_DIR:-target}}}}${{CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}}/release"
 mkdir -p "$out"
 cat > "$out/reify" <<EOF
 #!/bin/sh
@@ -534,6 +534,26 @@ class BinaryTrustTest(ReviewReadmeFixture):
         self.assertIsNone(self.session_ran_binary(), _diag(result))
         self.assertNotEqual(self.sidecar(), self.head(), _diag(result))
         self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
+
+    def assert_inherited_redirect_is_ignored(self, **redirect):
+        self.plant_stale_binary()
+        self.assert_session_ran_binary_built_from_head(self.run_script(**redirect))
+
+    def test_an_inherited_CARGO_TARGET_DIR_does_not_divert_the_build(self):
+        self.assert_inherited_redirect_is_ignored(CARGO_TARGET_DIR=str(self.tmpdir / "diverted"))
+
+    def test_an_inherited_CARGO_BUILD_TARGET_DIR_does_not_divert_the_build(self):
+        self.assert_inherited_redirect_is_ignored(
+            CARGO_BUILD_TARGET_DIR=str(self.tmpdir / "diverted"))
+
+    def test_an_inherited_CARGO_BUILD_TARGET_does_not_divert_the_build(self):
+        self.assert_inherited_redirect_is_ignored(CARGO_BUILD_TARGET="x86_64-unknown-linux-gnu")
+
+    def test_an_inherited_REIFY_BIN_does_not_choose_the_audited_binary(self):
+        elsewhere = self.tmpdir / "elsewhere" / "reify"
+        elsewhere.parent.mkdir()
+        _write_executable(elsewhere, f"#!/bin/sh\necho '{BUILT_FROM} ELSEWHERE'\n")
+        self.assert_session_ran_binary_built_from_head(self.run_script(REIFY_BIN=str(elsewhere)))
 
 
 if __name__ == "__main__":
