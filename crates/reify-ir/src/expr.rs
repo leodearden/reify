@@ -28,10 +28,7 @@ pub enum SelectorKind {
 
 /// The kinds of compiled expression nodes.
 #[derive(Debug, Clone, strum::EnumDiscriminants)]
-#[strum_discriminants(
-    name(CompiledExprKindDiscriminants),
-    derive(strum::EnumIter, strum::EnumCount, Hash)
-)]
+#[strum_discriminants(name(CompiledExprKindDiscriminants), derive(strum::EnumIter, Hash))]
 pub enum CompiledExprKind {
     /// Literal value.
     Literal(Value),
