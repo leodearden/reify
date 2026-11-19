@@ -147,3 +147,27 @@ fn a_pruned_walk_does_not_move_the_terminal() {
         engine.last_dispatch_count_by_realization()
     );
 }
+
+#[test]
+fn a_distance_query_does_not_fill_the_slot_from_a_non_terminal_realization() {
+    let (compiled, mut engine) = engine_with_demanded_tolerance();
+
+    let _distance = engine.distance_between_placed(&compiled, "T3", "T3");
+    assert!(
+        dispatched(&engine, &g()) > 0,
+        "premise: the distance query's Phase-A runs g, got {:?}",
+        engine.last_dispatch_count_by_realization()
+    );
+    assert_eq!(
+        engine.realization_cache().len(),
+        0,
+        "g is not T3's terminal, so the distance query must not fill T3's cache slot"
+    );
+
+    engine.build(&compiled, ExportFormat::Step);
+    assert!(
+        dispatched(&engine, &p()) > 0,
+        "p (T3#0) must not be served the box g cached during the distance query, got {:?}",
+        engine.last_dispatch_count_by_realization()
+    );
+}
