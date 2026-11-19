@@ -77,13 +77,21 @@ function setModeFailure(err: unknown): LaunchFailure {
   return new LaunchFailure(code, errorMessage(err));
 }
 
-/** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
-async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
+/** Run `stage`, turning any rejection into the LaunchFailure `toFailure` builds from it. */
+async function inStageCodedBy<T>(
+  toFailure: (err: unknown) => LaunchFailure,
+  stage: () => Promise<T>,
+): Promise<T> {
   try {
     return await stage();
   } catch (err) {
-    throw new LaunchFailure(code, errorMessage(err));
+    throw toFailure(err);
   }
+}
+
+/** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
+function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
+  return inStageCodedBy((err) => new LaunchFailure(code, errorMessage(err)), stage);
 }
 
 /**
@@ -168,13 +176,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    let reply: ModeState;
-    try {
-      reply = await deps.setMode(mode);
-    } catch (err) {
-      throw setModeFailure(err);
-    }
-    store.applyModeState(reply);
+    store.applyModeState(await inStageCodedBy(setModeFailure, () => deps.setMode(mode)));
     if (mode === 'debug') {
       await debugBridgeStage();
     } else {

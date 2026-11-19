@@ -1187,7 +1187,7 @@ describe('bridge launcher commands', () => {
     );
 
     expect(rejection).toBeInstanceOf(DebugListenerBindFailure);
-    expect((rejection as DebugListenerBindFailure).message).toBe(message);
+    expect(rejection).toHaveProperty('message', message);
   });
 
   it.each([

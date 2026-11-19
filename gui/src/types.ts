@@ -462,9 +462,12 @@ export interface ModeState {
   debug_port: number | null;
 }
 
+/** `set_mode`'s structured rejection kinds on the wire; mirrors launch_mode.rs::SetModeError's tags. */
+export const SET_MODE_ERROR_KINDS = Object.freeze({ debugListenerBind: 'debug_listener_bind' } as const);
+
 /** `set_mode`'s structured rejection on the wire; mirrors launch_mode.rs::SetModeError. */
 export interface RawSetModeError {
-  kind: 'debug_listener_bind';
+  kind: typeof SET_MODE_ERROR_KINDS.debugListenerBind;
   message: string;
 }
 

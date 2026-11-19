@@ -49,6 +49,7 @@ import {
   convertRawGuiState,
   convertRawPublishedState,
   DebugListenerBindFailure,
+  SET_MODE_ERROR_KINDS,
 } from './types';
 import type {
   OutboundMessage,
@@ -414,7 +415,11 @@ export async function isDebugEnabled(): Promise<boolean> {
 }
 
 function isRawSetModeError(err: unknown): err is RawSetModeError {
-  return isPlainObject(err) && err['kind'] === 'debug_listener_bind' && typeof err['message'] === 'string';
+  return (
+    isPlainObject(err) &&
+    err['kind'] === SET_MODE_ERROR_KINDS.debugListenerBind &&
+    typeof err['message'] === 'string'
+  );
 }
 
 /**
