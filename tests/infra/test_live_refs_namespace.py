@@ -34,10 +34,23 @@ BWRAP = "/usr/bin/bwrap"
 BLOCK = 'echo $$; exec sleep infinity </dev/null >/dev/null 2>&1'
 HOLD_FD3 = 'exec 3<"$1"; ' + BLOCK
 
+# Makes its last path lookup before it prints its pid, so a namespace root made
+# unreadable after that line cannot fail a lookup it still owes (BLOCK's
+# </dev/null and exec of sleep would, killing the holder).
+PAUSE_AFTER_LAST_LOOKUP = """
+import os, signal
+devnull = os.open(os.devnull, os.O_RDWR)
+print(os.getpid(), flush=True)
+for std in (0, 1, 2):
+    os.dup2(devnull, std)
+os.close(devnull)
+signal.pause()
+"""
+
 # Maps argv[1] and closes its fd, so the mapping is the holder's only reference.
 # The stdlib mmap module would keep a dup of the fd open.
 MAP_ONLY = """
-import ctypes, os, signal, sys
+import ctypes, os, sys
 fd = os.open(sys.argv[1], os.O_RDONLY)
 libc = ctypes.CDLL(None, use_errno=True)
 libc.mmap.restype = ctypes.c_void_p
@@ -48,13 +61,7 @@ addr = libc.mmap(None, 4096, PROT_READ, MAP_PRIVATE, fd, 0)
 if addr is None or addr == ctypes.c_void_p(-1).value:
     sys.exit(1)
 os.close(fd)
-print(os.getpid(), flush=True)
-devnull = os.open(os.devnull, os.O_RDWR)
-for std in (0, 1, 2):
-    os.dup2(devnull, std)
-os.close(devnull)
-signal.pause()
-"""
+""" + PAUSE_AFTER_LAST_LOOKUP
 
 
 def clean_env():
@@ -132,7 +139,8 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
     def hold_unrelated_unreadable_namespace(self):
         nsroot = self.root / "nsroot"
         nsroot.mkdir()
-        pid = self.hold(self.unrelated_namespace_binds(nsroot), "/", ["/bin/sh", "-c", BLOCK])
+        pid = self.hold(self.unrelated_namespace_binds(nsroot), "/",
+                        ["/usr/bin/python3", "-I", "-c", PAUSE_AFTER_LAST_LOOKUP])
         nsroot.chmod(0)
         self.addCleanup(nsroot.chmod, 0o755)
         with self.assertRaises(PermissionError, msg="premise: the namespace root is unreadable"):
