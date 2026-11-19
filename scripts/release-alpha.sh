@@ -6,8 +6,8 @@
 # every leaf of that release has landed. Steps, each loud on failure so the runner escalates:
 #   1. preflight: <tag> names a version, v<major>.<minor>[.<patch>][-<prerelease>], which maps
 #      to the bundle version <major>.<minor>.<patch, else 0>[-<prerelease>] (v0.2-alpha ->
-#      0.2.0-alpha; tauri requires semver), and any other tag is refused first; on main, an
-#      existing tag <tag> already points at HEAD, docs/releases/<tag>.md present,
+#      0.2.0-alpha; tauri requires semver), and any other tag is refused first; on main, a tag
+#      <tag>, if it already exists, points at HEAD, docs/releases/<tag>.md present,
 #      scripts/build-bundle.sh and the B7 proof tests/infra/test_bundle_clean_install.py
 #      present (δ #9732), gh authenticated — all before the cold bundle build and the proof;
 #   2. scripts/build-bundle.sh --version <bundle version> — contract: prints the absolute path
@@ -16,7 +16,8 @@
 #   3. B7 (docs/prds/alpha-spine.md §6), the clean-container proof, armed over exactly the
 #      assets step 5 publishes; a red proof exits 2 before any tag, push, release or issue
 #      close, on a re-run too, so it never --clobbers good assets;
-#   4. annotated tag <tag> at HEAD, created when absent, pushed to the GitHub remote;
+#   4. annotated tag <tag> at HEAD, created when absent, re-checked at HEAD immediately before it
+#      is pushed to the GitHub remote;
 #   5. GitHub prerelease <tag> with the note as body and the assets attached; a re-run on an
 #      existing release re-uploads the assets (--clobber) instead of failing;
 #   6. close every issue the note names on a line starting `Closes:` (e.g. `Closes: #1, #2`),
@@ -40,12 +41,19 @@ cd "$ROOT"
 NOTE="docs/releases/$TAG.md"
 PROOF="tests/infra/test_bundle_clean_install.py"
 
+# The tag this run pushes and releases names HEAD_SHA, the commit it built and proved, or does
+# not exist yet. Checked in preflight and again immediately before the push.
+require_tag_absent_or_at_head() {
+    git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || return 0
+    local at
+    at="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || echo "no commit")"
+    [ "$at" = "$HEAD_SHA" ] || fail "tag $TAG exists and does not point at HEAD $HEAD_SHA (it points at $at)"
+}
+
 # ---- 1. preflight ----------------------------------------------------------------
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || fail "HEAD is not main"
 HEAD_SHA="$(git rev-parse HEAD)"
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-    [ "$(git rev-parse "$TAG^{commit}")" = "$HEAD_SHA" ] || fail "tag $TAG exists and does not point at HEAD $HEAD_SHA"
-fi
+require_tag_absent_or_at_head
 [ -f "$NOTE" ] || fail "missing migration note $NOTE"
 [ -x scripts/build-bundle.sh ] || fail "scripts/build-bundle.sh missing or not executable (alpha-spine δ)"
 [ -f "$PROOF" ] || fail "$PROOF missing (the B7 clean-container proof, alpha-spine δ)"
@@ -83,6 +91,7 @@ REIFY_RUN_BUNDLE_CLEAN_INSTALL=1 REIFY_BUNDLE_DEB="${DEBS[0]}" REIFY_BUNDLE_APPI
 
 # ---- 4. tag -----------------------------------------------------------------------
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git tag -a "$TAG" -m "$TAG" "$HEAD_SHA"
+require_tag_absent_or_at_head
 # https remote with no stored git credential: borrow gh's token for this one push.
 git -c credential.helper= -c "credential.helper=!gh auth git-credential" push "$REMOTE" "refs/tags/$TAG"
 
