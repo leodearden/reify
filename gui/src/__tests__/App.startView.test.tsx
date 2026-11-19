@@ -4,7 +4,7 @@ import type { FileData, ModeState, PersistentViewState, PublishedState } from '.
 import { flushMacrotasks, deferred, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
 import { makeGuiState } from './test_utils/guiState';
-import { fakeSetMode } from './test_utils/launcherDeps';
+import { FAKE_DEBUG_PORT, fakeSetMode } from './test_utils/launcherDeps';
 
 vi.mock('@tauri-apps/api/core', async () => (await import('./appHarness/moduleMocks')).tauriCoreMock());
 vi.mock('@tauri-apps/api/event', async () => (await import('./appHarness/moduleMocks')).tauriEventMock());
@@ -499,7 +499,7 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1));
     expect(bridge.setMode).toHaveBeenCalledWith('debug');
     expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByTestId('start-debug-port').textContent).toContain('3939');
+    expect(screen.getByTestId('start-debug-port').textContent).toContain(String(FAKE_DEBUG_PORT));
   });
 
   it('a second Debug click sent before the first set_mode reply starts no second debug bridge', async () => {

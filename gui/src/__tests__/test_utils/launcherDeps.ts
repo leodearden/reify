@@ -10,20 +10,27 @@ export function stubRecent(): RecentEntry[] {
   ];
 }
 
-/** A set_mode with its own unbound listener, replying as launch_mode.rs::set_mode_impl does. */
+/** The port fakeSetMode's listener binds at. */
+export const FAKE_DEBUG_PORT = 3939;
+
+/**
+ * A set_mode with its own unbound listener, replying as
+ * launch_mode.rs::set_mode_impl does: the first Debug call binds the listener
+ * at FAKE_DEBUG_PORT, and every reply afterwards carries that port, whatever
+ * its mode.
+ */
 export function fakeSetMode(): LauncherDeps['setMode'] {
   let livePort: number | null = null;
   return async (mode) => {
-    if (mode === 'debug') livePort = 3939;
+    if (mode === 'debug') livePort = FAKE_DEBUG_PORT;
     return { mode, debug_port: livePort };
   };
 }
 
 /**
  * LauncherDeps whose every dep succeeds: loads resolve, a created file comes
- * back as /designs/created.ri, Recent is stubRecent(), and set_mode behaves
- * like fakeSetMode(): once a Debug call binds the listener at 3939, every
- * reply carries that port. Each call returns fresh mocks to reconfigure.
+ * back as /designs/created.ri, Recent is stubRecent(), and set_mode is a
+ * fakeSetMode(). Each call returns fresh mocks to reconfigure.
  */
 export function makeLauncherDeps() {
   return {
