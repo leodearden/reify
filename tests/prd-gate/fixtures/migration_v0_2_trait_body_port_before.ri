@@ -1,0 +1,8 @@
+trait Sized {
+    param size : Length
+    port output : out Sized
+}
+
+structure def Block : Sized {
+    param size : Length = 50mm
+}

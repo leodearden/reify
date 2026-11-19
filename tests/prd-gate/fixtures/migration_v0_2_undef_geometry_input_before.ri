@@ -1,0 +1,5 @@
+structure def Bracket {
+    param hole_d : Length
+    let plate = box(80mm, 40mm, 5mm)
+    let hole = cylinder(hole_d / 2, 5mm)
+}

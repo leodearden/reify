@@ -1,0 +1,7 @@
+structure def Plate {
+    param thickness : Length = 2mm
+}
+
+structure def Bracket {
+    param plate : Plate = Plate(thickness: 5mm)
+}

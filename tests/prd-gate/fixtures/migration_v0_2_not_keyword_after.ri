@@ -1,0 +1,4 @@
+structure def Gate {
+    param inverted : Bool = false
+    let open = inverted
+}
