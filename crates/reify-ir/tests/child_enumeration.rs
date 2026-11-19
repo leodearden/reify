@@ -382,7 +382,7 @@ fn for_each_child_yields_each_variants_direct_children_in_order() {
 }
 
 #[test]
-fn try_for_each_child_matches_for_each_child_and_stops_at_first_break() {
+fn try_for_each_child_matches_for_each_child() {
     for case in corpus() {
         let mut labels = Vec::new();
         let flow = case.expr.try_for_each_child::<()>(&mut |child| {
@@ -392,20 +392,34 @@ fn try_for_each_child_matches_for_each_child_and_stops_at_first_break() {
         assert_eq!(flow, ControlFlow::Continue(()), "case `{}`", case.name);
         assert_eq!(labels, case.children, "case `{}`", case.name);
     }
+}
 
-    let call = function_call(vec![r("c0"), r("c1"), r("c2")]);
-    let mut consulted = Vec::new();
-    let flow = call.try_for_each_child(&mut |child| {
+/// Visits `expr`'s children in order, breaking on the child at index `stop`;
+/// returns the flow `try_for_each_child` reports and the labels it visited.
+fn visit_until(expr: &CompiledExpr, stop: usize) -> (ControlFlow<String>, Vec<String>) {
+    let mut visited = Vec::new();
+    let flow = expr.try_for_each_child(&mut |child| {
         let child_label = label(child);
-        consulted.push(child_label.clone());
-        if child_label == "c1" {
+        visited.push(child_label.clone());
+        if visited.len() > stop {
             ControlFlow::Break(child_label)
         } else {
             ControlFlow::Continue(())
         }
     });
-    assert_eq!(flow, ControlFlow::Break("c1".to_string()));
-    assert_eq!(consulted, ["c0", "c1"]);
+    (flow, visited)
+}
+
+#[test]
+fn try_for_each_child_stops_at_the_first_break() {
+    for case in corpus() {
+        for (stop, &expected) in case.children.iter().enumerate() {
+            let (flow, visited) = visit_until(&case.expr, stop);
+            let context = format!("case `{}` stopping at child {stop}", case.name);
+            assert_eq!(flow, ControlFlow::Break(expected.to_string()), "{context}");
+            assert_eq!(visited, case.children[..=stop], "{context}");
+        }
+    }
 }
 
 #[test]
