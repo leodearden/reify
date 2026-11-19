@@ -20,7 +20,8 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/materials/electrical` CompiledModule from the production
 /// stdlib loader. Exercises the exact same code path as production: embedded
-/// source, sequential compilation with growing prelude, OnceLock caching.
+/// source, each stdlib module compiled against its declared imports (strict
+/// build), OnceLock caching.
 ///
 /// Panics if the module is not found — the expected failure mode until step-4
 /// lands the .ri file and loader registration.

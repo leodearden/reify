@@ -43,7 +43,8 @@ use reify_test_support::{
 
 /// Return the `std/modal/analysis` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -788,8 +789,9 @@ fn mode_struct_has_no_constraints_or_defaults() {
 ///                                                        → `Type::StructureRef`)
 ///   - `boundary_conditions    : List<Support>`           (`Support` is the
 ///                                                        marker trait from
-///                                                        `std.fea.multi_case`,
-///                                                        in the growing prelude
+///                                                        `std.fea.types`,
+///                                                        reached via `import
+///                                                        std.fea.types`
 ///                                                        → `Type::TraitObject`,
 ///                                                        same as trajectory's
 ///                                                        `List<BoundaryCondition>`)

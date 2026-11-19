@@ -58,7 +58,8 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
 
 /// Return the `std/materials/fea` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.

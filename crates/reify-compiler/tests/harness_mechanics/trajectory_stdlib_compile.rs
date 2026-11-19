@@ -30,7 +30,8 @@ use reify_test_support::{
 
 /// Return the `std/trajectory` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -1617,9 +1618,9 @@ fn revolute_tots_half() -> TotsShaperHalf {
 ///       ([`per_joint_kind_dimension_vectors_are_distinct`] pins the latter),
 ///       (d) is also what stops the halves collapsing onto one spelling.
 ///
-/// `Mode` resolves via the growing-prelude cross-module mechanism —
-/// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
-/// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
+/// `Mode` resolves through std.trajectory's `import std.modal.analysis`
+/// (the strict build orders std.modal.analysis BEFORE std.trajectory from that
+/// import). Type encoding: `Type::List(Box::new(
 /// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
 ///
 /// `Type::StructureRef("Mode")` carries only the name, which is unambiguous:
