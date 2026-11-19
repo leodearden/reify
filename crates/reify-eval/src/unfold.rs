@@ -452,15 +452,16 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// own `let` cells and its plain nested subs form ONE dependency-ordered walk
 /// ([`build_phase15_nodes`] + [`phase15_node_traces`] + [`topological_sort`]).
 /// A nested sub's constructor arg is compiled in `child_template`'s scope, so it
-/// may read anything that scope offers — a param (already in phase 1's
-/// `child_values`), a `let` of the child, or a sibling sub's member via
-/// `self.<sub>.<member>`. Only the param case needs no ordering; the other two
-/// must be produced *before* the consuming sub's args are evaluated, or the read
-/// falls through to the TEMPLATE-scope entry in the global map and silently
-/// substitutes the template default for this instance's value.
+/// may read anything that scope offers — a param or a guarded-group cell (both
+/// already in phase 1's `child_values`), a `let` of the child, or a sibling sub's
+/// member via `self.<sub>.<member>`. Only the first case needs no ordering; the
+/// other two must be produced *before* the consuming sub's args are evaluated,
+/// or the read falls through to the TEMPLATE-scope entry in the global map and
+/// silently substitutes the template default for this instance's value.
 ///
 /// The walk therefore threads a running `overlay` (template-scoped keys, seeded
-/// with phase 1's params): a LET node evaluates into it as a SCRATCH value, and
+/// with phase 1's params and the template's guarded-group cells at their
+/// template values): a LET node evaluates into it as a SCRATCH value, and
 /// a SUB node pre-evaluates its args against it, recurses, then projects its
 /// freshly-committed cells back into it for later nodes. Ordering by dependency
 /// rather than by declaration also makes the result order-insensitive: a sub
@@ -671,10 +672,11 @@ fn elaborate_child_instance_nested<'t, 'f>(
     }
 
     // The running overlay: template-scoped keys visible to this instance's
-    // nested-arg evaluation, seeded with phase 1's params and extended as the
-    // walk goes. None of these SCRATCH LET values reach `child_values` — phase 2
-    // must recompute its lets against its own BFS-enriched map, and seeding it
-    // with them would mask a phase-2 regression. (The collapsed instance values
+    // nested-arg evaluation, seeded with phase 1's params and guarded-group
+    // cells and extended as the walk goes. None of these SCRATCH LET values
+    // reach `child_values` — phase 2 must recompute its lets against its own
+    // BFS-enriched map, and seeding it with them would mask a phase-2
+    // regression. (The collapsed instance values
     // gathered into `collapsed` are the one deliberate exception; the hand-off
     // below says why they are not the same thing.)
     let mut overlay = child_values.clone();
