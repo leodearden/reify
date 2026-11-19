@@ -1,4 +1,5 @@
-"""knobs — every environment knob scripts/verify.sh itself reads (PRD D1).
+"""knobs — every environment knob verify reads: scripts/verify.sh's own (PRD D1), plus
+REIFY_VERIFY_DEBUG, which only the package reads (PRD D8).
 
 Each Knob names the parser its bash read form applies: a ${X:-d} read is TEXT,
 a ${X-d} read keeps an explicit empty value (TEXT_UNSET_ONLY), a
@@ -306,6 +307,11 @@ LEDGER_LANE_DIR = Knob(
 RUN_ID = Knob(
     "REIFY_VERIFY_RUN_ID", Parser.TEXT, "",
     "a recording run's id; a run that inherits one is nested and records nothing",
+)
+
+DEBUG = Knob(
+    "REIFY_VERIFY_DEBUG", Parser.FLAG_ONE, "",
+    "exactly 1: an internal Python error also prints its traceback to stderr",
 )
 
 
