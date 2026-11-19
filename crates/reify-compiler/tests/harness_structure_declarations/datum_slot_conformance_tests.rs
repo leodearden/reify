@@ -1,9 +1,13 @@
 //! Datum slots (`Direction`, `Axis`, `Plane`, `Frame`) at ctor fields and param
 //! defaults accept only their own type (`docs/prds/v0_6/direction-typing.md`
-//! C7 / D8, rows B22 and B8).
+//! C7 / D8, rows B22, B8 and the type half of B6).
 
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_test_support::{compile_source_with_stdlib, errors_only, is_ctor_conformance_code};
+
+/// The user-visible fix hint, hard-coded on purpose: this file is the DRIFT
+/// PIN, so reading `DIRECTION_MIGRATION_HINT` here would make it a tautology.
+const DIRECTION_HINT: &str = "write dir(x, y, z)";
 
 fn ctor_conformance_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
     errors_only(module)
@@ -145,5 +149,59 @@ fn datum_slots_accept_datum_values() {
     for default in ["axis_y(point3(0mm, 0mm, 0mm)).dir", "undef"] {
         let source = format!("structure def A {{\n    param d : Direction = {default}\n}}\n");
         assert_checks_clean(&source, &format!("Direction default {default}"));
+    }
+}
+
+#[test]
+fn a_vector3_at_a_direction_ctor_field_ends_with_the_dir_hint() {
+    for arg in [
+        "vec3(0, 1, 0)",
+        "vec3(0, 0, 0)",
+        "vec3(0.0, 1.0, 0.0)",
+        "vec3(1mm, 0mm, 0mm)",
+    ] {
+        let module =
+            compile_source_with_stdlib(&ctor_field_source("param d : Direction", "d", arg));
+        let case = format!("Direction <- {arg}");
+        let diagnostic = assert_one_arg_type_mismatch_naming(&module, "d", &case);
+        assert!(
+            diagnostic.message.contains("Vector3")
+                && diagnostic.message.contains("requires type 'Direction'"),
+            "{case}: {diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.ends_with(&format!("; {DIRECTION_HINT}")),
+            "{case}: a Vector3 at a Direction slot must carry the dir(...) hint: {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn a_vector3_direction_param_default_ends_with_the_dir_hint() {
+    let module = compile_source_with_stdlib(
+        "structure def A {\n    param d : Direction = vec3(0, 0, 1)\n}\n",
+    );
+    let diagnostic =
+        assert_one_arg_type_mismatch_naming(&module, "d", "Direction default <- Vector3");
+    assert!(
+        diagnostic.message.ends_with(&format!("; {DIRECTION_HINT}")),
+        "{diagnostic:?}"
+    );
+}
+
+#[test]
+fn only_a_vector3_at_a_direction_slot_gets_the_dir_hint() {
+    for (decl, field, arg) in [
+        ("param p : Plane", "p", "vec3(0, 0, 1)"),
+        ("param d : Direction", "d", "vec2(1, 0)"),
+        ("param d : Direction", "d", "\"hello\""),
+    ] {
+        let module = compile_source_with_stdlib(&ctor_field_source(decl, field, arg));
+        let case = format!("{decl} <- {arg}");
+        let diagnostic = assert_one_arg_type_mismatch_naming(&module, field, &case);
+        assert!(
+            !diagnostic.message.contains("write dir"),
+            "{case}: the dir(...) hint is for a Vector3 at a Direction slot only: {diagnostic:?}"
+        );
     }
 }
