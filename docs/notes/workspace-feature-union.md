@@ -38,7 +38,8 @@ to the features `--workspace` resolves, and every member depends on it, so any
   build script.
 - **Coverage.** Every member that is not host-side depends on the union as a
   normal dependency. A host-side member is a build-dependency of another
-  member or a proc-macro. Today the only one is reify-build-utils; no member
+  member or a proc-macro. Today there are two: reify-build-utils and
+  reify-exec-lookup (a build-dependency of tree-sitter-reify); no member
   is a proc-macro. A host-side member must not reach the union, directly or
   through a covered member, because its graph is compiled for the host and
   the union's target pins would become host units there. As a result

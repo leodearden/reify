@@ -4502,6 +4502,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-exec-lookup"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "reify-expr"
 version = "0.1.0"
 dependencies = [
@@ -6424,6 +6431,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
+ "reify-exec-lookup",
  "tempfile",
  "tree-sitter",
  "tree-sitter-language",

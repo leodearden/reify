@@ -171,6 +171,10 @@ pub(crate) const WORKSPACE_CRATE_COVERAGE: &[WorkspaceCrateCoverage] = &[
         ]),
     },
     WorkspaceCrateCoverage {
+        crate_name: "reify-exec-lookup",
+        coverage: Coverage::NotHashed(NotHashedBecause::NotOnAPersistedDispatchPath),
+    },
+    WorkspaceCrateCoverage {
         crate_name: "reify-expr",
         coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
     },

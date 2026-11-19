@@ -20,6 +20,7 @@
         "reify-config",
         "reify-core",
         "reify-doc",
+        "reify-exec-lookup",
         "reify-git-env",
         "reify-ir",
         "reify-syntax",
