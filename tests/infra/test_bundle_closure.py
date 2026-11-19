@@ -8,11 +8,12 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered
 member is the thin wrapper tests/infra/test_bundle_closure.sh, which invokes
 this file.
 
-Hermetic: no docker and no build, and ldd and patchelf appear only as recording
-fakes on PATH (ProbeScript). The derivation's docker probe is a callable, so the
-fixed point is driven here by a fake target. ldd fixtures are trimmed from real
-output (`env -u LD_LIBRARY_PATH ldd target/release/reify` on the dev host,
-2026-11-15) unless labelled DERIVED.
+Hermetic: no docker daemon and no build; docker, ldd and patchelf appear only
+as fakes on PATH (ProbeScript, CommandLineDerivation). The derivation's docker
+probe is a callable, so the fixed point is driven here by a fake target. ldd
+fixtures are trimmed from real output
+(`env -u LD_LIBRARY_PATH ldd target/release/reify` on the dev host, 2026-11-15)
+unless labelled DERIVED.
 """
 
 import contextlib
