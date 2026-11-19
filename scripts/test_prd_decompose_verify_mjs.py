@@ -1964,6 +1964,8 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
         ('{ leaves: [{ signal: "x" }], reify_bin: "target/debug/reify" }',
          ("reify_bin", "target/debug/reify")),
         ('{ leaves: [{ signal: "x" }], reify_bin: 42 }', ("reify_bin", "42")),
+        ('{ leaves: [{ signal: "x" }], reify_bin: Infinity }',
+         ("reify_bin", "Infinity")),
         ('{ leaves: [{ signal: "x" }], reify_bin: "" }', ("reify_bin",)),
         ('{ leaves: [{ signal: "x" }], reifyBin: "/opt/reify" }', ("reifyBin",)),
         ('{ reify_bin: "/opt/reify" }', ("leaves",)),
@@ -1986,11 +1988,17 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
                 self.assertEqual(phases, [])
 
 
+def _refused_json_text(encoded, decodes_to):
+    """How a leaf-batch refusal renders a JSON string: the string as given, then
+    what it decodes to (task #10063), `decodes_to` being that value as the
+    refusal spells it."""
+    return f"{json.dumps(encoded)}, which decodes to {decodes_to}"
+
+
 def _refused_json_string(value):
-    """How a leaf-batch refusal renders the JSON string of `value`: the string
-    as given, then what it decodes to (task #10063)."""
+    """How a leaf-batch refusal renders the JSON string of `value`."""
     encoded = json.dumps(value)
-    return f"{json.dumps(encoded)}, which decodes to {encoded}"
+    return _refused_json_text(encoded, encoded)
 
 
 class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
@@ -2016,6 +2024,13 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
         ("JSON.stringify(0)", _refused_json_string(0)),
         ('JSON.stringify("")', _refused_json_string("")),
         ('JSON.stringify("   ")', _refused_json_string("   ")),
+        # JSON has no non-finite number: JSON.stringify spells one null, and
+        # JSON.parse reads 1e999 as Infinity.  The refusal names it as itself
+        # (task #10188).
+        ("Infinity", "Infinity"),
+        ("NaN", "NaN"),
+        (json.dumps("1e999"), _refused_json_text("1e999", "Infinity")),
+        (json.dumps("-1e999"), _refused_json_text("-1e999", "-Infinity")),
     )
 
     _ARGS_SUBJECT = "prd-decompose-verify args: args "
