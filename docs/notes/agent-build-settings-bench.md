@@ -9,8 +9,8 @@ kernel 7.0.0-31-generic; rustc and cargo 1.96.0, sccache 0.14.0).
 | Bench head (`BENCH_HEAD`) | `f743808f664fbf782a2867019102ae1c97c86705`, main's tip at bench start, 341 commits ahead of the basecommit |
 | Raw per-step data | `docs/notes/agent-build-settings-bench-raw.jsonl` |
 
-Status: this revision carries the census, the bench method and the reify-compiler results. The other crates,
-the pricing, the recommendation and the caveats are added by the later steps of the task.
+Status: this revision carries the census, the bench method and the reify-compiler and reify-eval results. The
+remaining crate, the pricing, the recommendation and the caveats are added by the later steps of the task.
 
 The question, from Leo's ruling of 2026-11-17: would agents' own cargo builds reuse the warm base of a
 freshly seeded lane if they ran under the verify's settings (`CARGO_INCREMENTAL=0` plus
@@ -405,3 +405,63 @@ delta path(s)"), S1, S2, S6 and S7 only, no edits.
   reify-audit) and 2 re-run build scripts, and the other 271 are units that depend on them. The (b) agent
   pre-paid one unit of the verify's graph (29 unreadable against 28), because the 13 units (b)'s S1 builds
   are the feature-split ones the verify never builds under that hash.
+
+### reify-eval (census rank 2)
+
+`T` = `harness_engine`, `F` = `relate_solve.rs` (function `realize_structures`), S7 closure = 25 packages. One
+sequence per arm (`a1`, `b1`) and no second repetition, as planned: the CPU of a fixed unit set is
+near-deterministic, and crate 1's pairs bound the noise (first build 5% and 12%, clippy 1% and 4%, edit steps up
+to 9% and 18%). Test targets were built, never run.
+
+| step | arm | reps | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|---:|
+| S1 `--lib` | a | 1 | 412.7 | 306.2 | 54 (49) | 5 | 49 |
+| S1 `--lib` | b | 1 | 340.9 | 176.8 | 47 (20) | 27 | 20 |
+| S2 `--test T` | a | 1 | 9.4 | 8.6 | 1 (1) | 0 | 1 |
+| S2 `--test T` | b | 1 | 6.3 | 5.3 | 1 (1) | 0 | 1 |
+| E1-S2 | a | 1 | 10.1 | 12.2 | 5 (5) | 5 | 0 |
+| E1-S2 | b | 1 | 51.1 | 35.4 | 5 (5) | 5 | 0 |
+| E1-S1 | a | 1 | 13.7 | 16.1 | 1 (1) | 1 | 0 |
+| E1-S1 | b | 1 | 84.2 | 60.3 | 1 (1) | 1 | 0 |
+| E2-S2 | a | 1 | 9.8 | 12.1 | 5 (5) | 5 | 0 |
+| E2-S2 | b | 1 | 59.1 | 42.6 | 5 (5) | 5 | 0 |
+| E2-S1 | a | 1 | 13.2 | 16.5 | 1 (1) | 1 | 0 |
+| E2-S1 | b | 1 | 79.1 | 51.6 | 1 (1) | 1 | 0 |
+| E3-S2 | a | 1 | 10.6 | 31.1 | 5 (5) | 5 | 0 |
+| E3-S2 | b | 1 | 45.1 | 29.4 | 5 (5) | 5 | 0 |
+| E3-S1 | a | 1 | 15.3 | 73.9 | 1 (1) | 1 | 0 |
+| E3-S1 | b | 1 | 61.1 | 42.3 | 1 (1) | 1 | 0 |
+| S6 clippy | a | 1 | 309.9 | 215.8 | 288 (285) | 3 | 285 |
+| S6 clippy | b | 1 | 209.6 | 110.9 | 281 (260) | 21 | 260 |
+| S7 probe | a | 1 | 8.3 | 32.5 | – | 615 | 34 |
+| S7 probe | b | 1 | 3.0 | 7.2 | – | 597 | 34 |
+
+Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
+
+| edit-rebuild | (a) | (b) | (b) over (a) |
+|---|---:|---:|---:|
+| `Ek-S2` (`--test T` after an edit) | 10.1 / 12.2 | 51.1 / 35.4 | 5.1x CPU, 2.9x wall |
+| `Ek-S1` (`--lib` after an edit) | 13.7 / 16.5 | 79.1 / 51.6 | 5.8x CPU, 3.1x wall |
+
+- **Here the base does help the first build at today's staleness, modestly.** (b)'s S1 costs 341 CPU-s against
+  (a)'s 413 (17% less) and 177 s of wall against 306 s. One repetition each, and 17% is only a little above
+  crate 1's spreads, so it is a modest saving and not a precise figure. (b) writes 47 units: 27 dirty, which
+  is the delta (21 `FsStatusOutdated` library and build-script units and the `manifold-csg-sys` build-script
+  run that the seed invalidates, plus their dependents), and 20 absent from the base, the feature-split of M1
+  again: the libraries of reify-compiler, -eval (and its test unit), -stdlib, -constraints, -expr,
+  -compute-contract, -doc-build, -git-env, -runtime, -test-support, -mesh-morph, -solver-elastic and
+  -kernel-occt, and the library, build script and build-script run of the gmsh and openvdb kernels. (a)
+  writes 54: 49 absent from the base and 5 the base has but the seed invalidated. The private server did 258
+  of (b)'s 341 CPU-s (35 cache misses in 35 executed requests).
+- **The edit loop costs (b) 5 to 6 times the CPU,** in line with crate 1 (8.3x and 5.5x): 45 to 59 CPU-s per
+  `Ek-S2` against (a)'s 10, 61 to 84 per `Ek-S1` against 13 to 15. The server did 39 to 51 of each `Ek-S2`,
+  4 cache misses in 4 executed requests. The wall ratios (2.9x and 3.1x) are lower than crate 1's because
+  (a)'s E3 readings are load-inflated: 31 s and 74 s of wall for 10.6 and 15.3 CPU-s.
+- **Clippy is 32% cheaper under (b):** 210 against 310 CPU-s, 111 s against 216 s of wall. Both arms write about
+  285 units, since reify-eval's `--all-targets` graph has one check unit per integration-test target (237
+  test-mode check units). The 7 units (b) does not write are the build scripts of reify-constraints (compile
+  and run) and tree-sitter-reify, and the check-mode libraries of reify-doc, -fdm, -gcode and
+  workspace-feature-union, all found in the base. One repetition; I do not attribute the 100 CPU-s gap further.
+  sccache executed 9 of 282 requests, all misses; 273 were check-mode and not cacheable.
+- **S7:** the verify's closure has 597 dirty units after (b)'s work against 615 after (a)'s, so (b) pre-paid 18
+  units (2.9%), none of them external.
