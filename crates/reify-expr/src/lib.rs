@@ -4741,32 +4741,42 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-/// The language's `==` verdict on two evaluated operands. Scalar and Real
-/// operands compare through [`reify_core::scalar_tolerance`]; public so the
-/// DimensionalSolver's equality-row acceptance calls this same function
-/// (#6653) instead of re-deriving the dimension and Int dispatch.
+/// The single dimension-comparability rule shared by `==`/`!=` and the order
+/// operators: two Scalars of different dimension, or a dimensioned Scalar
+/// against any non-Scalar, have no verdict. A dimensionless Scalar is a plain
+/// quantity: post-Invariant V (task 4374/β) no arithmetic op produces one, but
+/// literals, defaults, map values and deserialized state still can, so it
+/// compares numerically through `as_f64`.
+fn dimensions_incomparable(lv: &Value, rv: &Value) -> bool {
+    match (lv, rv) {
+        (Value::Scalar { dimension: da, .. }, Value::Scalar { dimension: db, .. }) => da != db,
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. }) => {
+            !dimension.is_dimensionless()
+        }
+        _ => false,
+    }
+}
+
+/// The language's `==` verdict on two evaluated operands: `Undef` when
+/// [`dimensions_incomparable`] holds. Scalar and Real operands compare through
+/// [`reify_core::scalar_tolerance`]; public so the DimensionalSolver's
+/// equality-row acceptance calls this same function (#6653) instead of
+/// re-deriving the dimension and Int dispatch.
 pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
+    if dimensions_incomparable(lv, rv) {
+        return Value::Undef;
+    }
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
         (Value::String(a), Value::String(b)) => Value::Bool(a == b),
-        // Scalar-vs-Scalar: compare dimensions first
         (
             Value::Scalar {
                 si_value: a,
-                dimension: da,
+                dimension,
             },
-            Value::Scalar {
-                si_value: b,
-                dimension: db,
-            },
-        ) => {
-            if da != db {
-                Value::Bool(false)
-            } else {
-                Value::Bool(scalars_equal(*a, *b, *da))
-            }
-        }
+            Value::Scalar { si_value: b, .. },
+        ) => Value::Bool(scalars_equal(*a, *b, *dimension)),
         // Enum-vs-Enum equality: same type → compare variant, different type → false
         (
             Value::Enum {
@@ -4788,21 +4798,6 @@ pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Scalar vs non-Scalar. A *dimensioned* Scalar (e.g. a Length) is never
-        // equal to a bare number, so this is `false`. A *dimensionless* Scalar
-        // is just a plain quantity, though: post-Invariant V (task 4374/β) no
-        // arithmetic op produces one (producers route through from_real_scalar),
-        // but eq operands also come from literals, struct/field defaults, map
-        // values, and deserialized state — non-arithmetic sources that can still
-        // carry a Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
-        // guard and let such a value fall through to the as_f64 numeric
-        // comparison below rather than silently flipping it to `false`.
-        // (Scalar-vs-Scalar is handled by the earlier arm.)
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Bool(false)
-        }
         _ => {
             // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
@@ -4822,40 +4817,18 @@ pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+/// The language's order verdict on two evaluated operands: `Undef` when
+/// [`dimensions_incomparable`] holds, and for any Enum operand.
 pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+    if dimensions_incomparable(lv, rv) {
+        return Value::Undef;
+    }
     match (lv, rv) {
-        // Scalar-vs-Scalar: compare dimensions first
-        (
-            Value::Scalar {
-                si_value: a,
-                dimension: da,
-            },
-            Value::Scalar {
-                si_value: b,
-                dimension: db,
-            },
-        ) => {
-            if da != db {
-                Value::Undef
-            } else {
-                Value::Bool(cmp(*a, *b))
-            }
+        (Value::Scalar { si_value: a, .. }, Value::Scalar { si_value: b, .. }) => {
+            Value::Bool(cmp(*a, *b))
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Scalar vs non-Scalar. A *dimensioned* Scalar is incomparable to a bare
-        // number → Undef. A *dimensionless* Scalar is a plain quantity, though:
-        // post-Invariant V (task 4374/β) no arithmetic op produces one, but cmp
-        // operands also come from literals, struct/field defaults, map values,
-        // and deserialized state — non-arithmetic sources that can still carry a
-        // Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
-        // guard and let such a value fall through to the as_f64 numeric
-        // comparison below. (Scalar-vs-Scalar is handled by the earlier arm.)
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Undef
-        }
         // Fallback: Int / Real / dimensionless Scalar numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),

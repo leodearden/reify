@@ -1,8 +1,8 @@
 //! `==` / `!=` verdicts on Scalar and Real operands are toleranced through
 //! `reify_core::scalar_tolerance` (task #6653), an Int meeting a Real is
-//! promoted and toleranced too, while Int-to-Int equality, dimension
-//! mismatch, Kleene propagation and ordering comparisons keep their exact
-//! semantics.
+//! promoted and toleranced too, while Int-to-Int equality, Kleene
+//! propagation and ordering comparisons keep their exact semantics and a
+//! dimension mismatch has no verdict.
 
 use reify_core::DimensionVector;
 use reify_expr::{EvalContext, eval_expr};
@@ -92,8 +92,9 @@ fn an_int_meeting_a_real_is_compared_toleranced() {
 }
 
 #[test]
-fn dimension_mismatch_is_not_equal() {
-    assert_eq!(eq_verdict(meters(0.005), kg(0.005)), Value::Bool(false));
+fn dimension_mismatch_has_no_verdict() {
+    assert_eq!(eq_verdict(meters(0.005), kg(0.005)), Value::Undef);
+    assert_eq!(ne_verdict(meters(0.005), kg(0.005)), Value::Undef);
 }
 
 #[test]
