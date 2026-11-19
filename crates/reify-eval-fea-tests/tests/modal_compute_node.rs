@@ -7,7 +7,7 @@
 //! seed a Final output VC via `cache_store_mut().put`, then drive
 //! `run_compute_dispatch` directly. The 5 modal `value_inputs` are built INLINE
 //! here (the `modal_ops` `cfg(test)` helpers are crate-internal and unavailable
-//! to this `tests/` crate), using only public `reify_ir`/`reify_core` types.
+//! to this `tests/` crate).
 //!
 //! Three observable signals from PRD §3.4 / the κ contract:
 //!
