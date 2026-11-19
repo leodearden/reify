@@ -793,18 +793,21 @@ fn mode_struct_has_no_constraints_or_defaults() {
 ///                                                        reached via `import
 ///                                                        std.fea.types`
 ///                                                        → `Type::TraitObject`,
-///                                                        same as trajectory's
-///                                                        `List<BoundaryCondition>`)
+///                                                        same shape as
+///                                                        trajectory's
+///                                                        `CascadedShaper.shapers
+///                                                        : List<Shaper>`)
 ///   - `damping               : DampingDescriptor`       (trait-typed
 ///                                                        → `Type::TraitObject`)
 ///   - `mass_matrix_norm       : Real`                    (‖M‖ diagnostic)
 ///   - `stiffness_matrix_norm  : Real`                    (‖K‖ diagnostic)
 ///
-/// Type representations confirmed against the trajectory precedent
-/// (`trajectory_stdlib_compile.rs:628-639`): a module-local structure name
-/// resolves to `Type::StructureRef`, a prelude marker trait resolves to
-/// `Type::TraitObject`, and `List<Trait>` wraps the trait object in
-/// `Type::List`.
+/// Type representations confirmed against the trajectory precedents
+/// (`trajectory_stdlib_compile.rs::piecewise_polynomial_profile_has_correct_param_shape`
+/// and `trajectory_stdlib_compile.rs::cascaded_shaper_struct_has_correct_param_shape`):
+/// a module-local structure name resolves to `Type::StructureRef`, an
+/// imported marker trait resolves to `Type::TraitObject`, and `List<Trait>`
+/// wraps the trait object in `Type::List`.
 ///
 /// `ModalResult` is solver-populated only: every field is determined by the
 /// modal solve, so no caller-supplied defaults are meaningful and no scalar
