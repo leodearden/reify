@@ -31,6 +31,8 @@ REPO="$(reify_main_checkout)" || { echo "ERROR: cannot resolve the main checkout
 CLAUDE_BIN="${CLAUDE_BIN:-/home/leo/.local/bin/claude}"
 CARGO_BIN="${CARGO_BIN:-cargo}"
 BUILD_TIMEOUT="${REVIEW_README_BUILD_TIMEOUT:-20m}"
+# Audit only this checkout's ./target/release/reify: nothing inherited may name another binary or move where cargo writes it.
+unset REIFY_BIN CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_TARGET
 TARGET_FILES=(README.md docs/getting-started.md)
 readonly WRITER_ID=review-readme
 readonly WRITER_EMAIL="${WRITER_ID}@automation.reify.invalid"
