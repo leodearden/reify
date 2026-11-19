@@ -4102,6 +4102,18 @@ mod tests {
         crate::compile_with_stdlib(&parsed)
     }
 
+    /// The name universe the slot-key sweeps probe: every name that could host a
+    /// [`builtin_arg_slots`] key, before the "does it yield slots" filter.
+    fn slot_probe_names() -> BTreeSet<&'static str> {
+        BUILTIN_NAME_FAMILIES
+            .iter()
+            .flat_map(|family| family.iter())
+            .chain(NON_FAMILY_SLOT_KEYS.iter())
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
+            .copied()
+            .collect()
+    }
+
     /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
     /// rather than listed by hand.
     ///
@@ -4141,12 +4153,8 @@ mod tests {
     /// `!builtin_arg_slots(..).is_empty()` filter below, and both extra lists
     /// carry their own no-dead-entry assertions.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
-        BUILTIN_NAME_FAMILIES
-            .iter()
-            .flat_map(|family| family.iter())
-            .chain(NON_FAMILY_SLOT_KEYS.iter())
-            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
-            .copied()
+        slot_probe_names()
+            .into_iter()
             .filter(|name| {
                 (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
             })
@@ -4198,6 +4206,37 @@ mod tests {
             "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
              BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
              must chain it explicitly."
+        );
+    }
+
+    /// The probe universe reaches every name of every closed-world family row,
+    /// so a family added to `unresolved_function::BUILTIN_NAME_FAMILIES` is
+    /// swept for slot keys with no list edit in this module.
+    ///
+    /// Misses are collected per family label before asserting, so one failure
+    /// names every family the universe drifted from.
+    #[test]
+    fn slot_probe_names_reach_every_closed_world_family_name() {
+        let probed = slot_probe_names();
+        let mut misses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for &(family, slice) in crate::unresolved_function::BUILTIN_NAME_FAMILIES {
+            for &name in slice {
+                if !probed.contains(name) {
+                    misses.entry(family).or_default().push(name);
+                }
+            }
+        }
+
+        let report: String = misses
+            .iter()
+            .map(|(family, names)| format!("\n  {family}: {}", names.join(", ")))
+            .collect();
+        assert!(
+            misses.is_empty(),
+            "slot_probe_names() misses closed-world family names, so the slot-key \
+             sweeps cannot reach them. The sweeps must derive their universe from \
+             unresolved_function::BUILTIN_NAME_FAMILIES, not from a hand-kept copy \
+             of it. Missed, by family:{report}"
         );
     }
 
