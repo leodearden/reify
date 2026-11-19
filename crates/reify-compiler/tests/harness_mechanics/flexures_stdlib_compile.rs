@@ -17,7 +17,7 @@
 //! `FlexureCompliance` is declared at the structure-def level.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper pattern in `trajectory_stdlib_compile.rs`.
 
 use reify_compiler::*;

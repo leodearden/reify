@@ -13,7 +13,7 @@
 //! Plan §"Design Decisions").
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production, mirroring the helper trio in `fdm_stdlib_compile.rs`.
 
 use reify_compiler::*;

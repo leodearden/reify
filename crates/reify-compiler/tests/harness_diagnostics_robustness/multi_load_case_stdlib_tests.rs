@@ -7,7 +7,7 @@
 //! compiled module, and that parameter shapes and defaults match the spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 //!
 //! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):

@@ -28,7 +28,7 @@
 //! PRD §5.1 spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
 use reify_compiler::*;
@@ -72,8 +72,8 @@ fn load_stdlib_module() -> &'static CompiledModule {
 ///
 /// This lookup doubles as the `std.modal.analysis` EXPORT-SURFACE pin for every
 /// name it is called with: `load_stdlib_module()` is the production embedded +
-/// sequential-prelude path, so a structure that failed to reach the module's
-/// export surface panics here rather than being silently unobservable.
+/// strict (declared-imports) path, so a structure that failed to reach the
+/// module's export surface panics here rather than being silently unobservable.
 #[allow(dead_code)]
 fn find_structure(name: &str) -> &'static TopologyTemplate {
     let module = load_stdlib_module();

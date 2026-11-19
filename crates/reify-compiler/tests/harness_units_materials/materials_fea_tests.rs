@@ -9,7 +9,7 @@
 //! evaluation through dimensioned defaults all work as expected.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production (not a standalone `.ri` file re-read). This mirrors the pattern
 //! in `materials_thermal_tests.rs` and `materials_electrical_tests.rs`.
 
