@@ -25,6 +25,7 @@ pub mod prd_gate_probe_set;
 pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
 pub mod sampled_field_fixtures;
+pub mod selector_fixtures;
 pub mod skip_sets;
 pub mod specialization_fixtures;
 pub mod stdlib_prelude;
@@ -50,6 +51,7 @@ pub mod workspace_sweep;
 // - `examples_corpus`
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
+// - `selector_fixtures`
 // - `stdlib_prelude`
 // - `stl_bytes`
 // - `workspace_root`
