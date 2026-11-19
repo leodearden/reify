@@ -2,9 +2,10 @@
 //! and Error severity through `SolverRegistry` and `Engine::eval` (task 9869, PRD
 //! `docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
 //!
-//! The relate registry routing does not exist yet (#6677 builds it), so a stub
-//! solver hands the relate adapter's own `SolveResult` to the registry: the seam
-//! #6677 will consume.
+//! No relate solve runs here. The relate registry routing does not exist yet
+//! (#6677 builds it and owes the real relate-scope → registry end-to-end test), so
+//! a stub solver hands the relate adapter's own `SolveResult` to the registry: the
+//! seam #6677 will consume.
 
 use reify_constraints::SolverRegistry;
 use reify_constraints::relate_solve::{FrameSolveOutcome, FrameUnknown};
@@ -17,7 +18,7 @@ use reify_test_support::{
 };
 
 #[test]
-fn a_budget_exhausted_relate_solve_surfaces_solver_budget_exhausted_through_the_registry() {
+fn the_relate_adapters_budget_exhaustion_result_keeps_its_code_through_registry_and_engine() {
     let carried = FrameSolveOutcome {
         iterations: 1,
         result: Err(SolveFailureCause::BudgetExhausted(BudgetExhaustion {
@@ -65,7 +66,7 @@ fn a_budget_exhausted_relate_solve_surfaces_solver_budget_exhausted_through_the_
         !result
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("Constraint solver made no progress")),
+            .any(|d| d.severity == Severity::Warning && d.code.is_none()),
         "the failure must not degrade to an uncoded warning: {:?}",
         result.diagnostics
     );
