@@ -27,15 +27,14 @@
 //!   (geometry + material + element_order unchanged), and returns a valid
 //!   `ModalResult` — the warm-state round-trip drives no error.
 
-use reify_core::identity::RealizationNodeId;
 use reify_core::ty::SelectorKind;
 use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
-use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
 use reify_ir::{DeterminacyState, Freshness, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::make_simple_engine;
+use reify_test_support::selector_fixtures::named_leaf_selector;
 
 /// Steel density (kg/m³), mirroring the modal_ops `cfg(test)` fixture.
 const STEEL_DENSITY: f64 = 7850.0;
@@ -80,14 +79,10 @@ fn length_scalar(m: f64) -> Value {
 /// `face(beam, "<target>")` evaluates to: a Face selector whose single Named
 /// leaf is `target`.
 fn fixed_support(target: &str) -> Value {
-    let geometry = GeometryHandleRef {
-        realization_ref: RealizationNodeId::new("TestBody", 0),
-        upstream_values_hash: [0u8; 32],
-        kernel_handle: None,
-    };
-    let face = SelectorValue::leaf(SelectorKind::Face, geometry, LeafQuery::Named(target.into()))
-        .expect("LeafQuery::Named accepts any SelectorKind");
-    struct_instance("FixedSupport", vec![("target".to_string(), Value::Selector(face))])
+    struct_instance(
+        "FixedSupport",
+        vec![("target".to_string(), named_leaf_selector(SelectorKind::Face, target))],
+    )
 }
 
 /// Build a `Value::StructureInstance` with the registry-free
