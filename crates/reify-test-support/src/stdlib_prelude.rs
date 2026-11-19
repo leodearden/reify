@@ -39,6 +39,7 @@ pub fn member_type(template_name: &str, member: &str) -> Type {
 #[cfg(test)]
 mod tests {
     use super::{member_type, template};
+    use crate::panic_capture::panic_message_of;
     use reify_core::{DimensionVector, Type};
 
     #[test]
@@ -68,14 +69,7 @@ mod tests {
     /// The panic lists the template's real members, not just the missing name.
     #[test]
     fn member_type_panics_listing_members_for_an_unknown_member() {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            member_type("Layer", "no_such_member")
-        }));
-        let payload = match result {
-            Ok(ty) => panic!("expected member_type to panic on a missing member, got: {ty:?}"),
-            Err(payload) => payload,
-        };
-        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        let message = panic_message_of(|| member_type("Layer", "no_such_member"));
         assert!(
             message.contains("prelude template Layer has no member no_such_member; have:"),
             "panic does not name the template and missing member; got: {message}"
