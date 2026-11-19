@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::import_headers::{self, RequiredImport};
+use reify_compiler::import_headers::{self, GatedOffImports, RequiredImport};
 use reify_core::{Diagnostic, ModulePath};
 
 use crate::args::split_cfg_args_or_usage;
@@ -81,12 +81,12 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         .unwrap_or_else(|| parsed.path.clone());
     let universe = import_headers::stdlib_universe_excluding(&own_module);
     let plan = import_headers::derive_std_imports(&parsed, &universe);
-    let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
 
     let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
     if !residual.is_empty() {
+        let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
         let still_gated_off = gated_off
             .iter()
             .filter(|module| !imports_after_fix.contains(module));
@@ -98,6 +98,7 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     if missing.is_empty() {
         return true;
     }
+    let gated_off = GatedOffImports::of(&parsed, cfg);
     if check_only {
         for required in &missing {
             println!("{path}: missing import {}", describe(required, &gated_off));
@@ -193,16 +194,17 @@ fn refuse_other_hard_links(target: &Path, metadata: &std::fs::Metadata) -> std::
     )))
 }
 
-/// `std.x.y (A, B)`: the module and the names that need it, plus a note when the module is one
-/// of `gated_off`, the modules of the file's imports the active cfg leaves out of effect.
-fn describe(required: &RequiredImport, gated_off: &[ModulePath]) -> String {
+/// `std.x.y (A, B)`: the module and the names that need it, plus a note when one of the file's
+/// imports that the active cfg leaves out of effect would bind one of those names from the module,
+/// were its `#cfg` satisfied.
+fn describe(required: &RequiredImport, gated_off: &GatedOffImports) -> String {
     let names: BTreeSet<&str> = required
         .names
         .iter()
         .map(|name_use| name_use.name.as_str())
         .collect();
     let names: Vec<&str> = names.into_iter().collect();
-    let note = if gated_off.contains(&required.module) {
+    let note = if gated_off.would_cover_any(required) {
         "; a #cfg-gated import of it is not in effect under the active cfg"
     } else {
         ""
