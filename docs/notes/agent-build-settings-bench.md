@@ -499,3 +499,83 @@ One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
   executed 7 of 267 requests, all misses.
 - **S7:** 293 against 294 dirty units, so (b) pre-paid none of the verify's units at zero delta. The 294 are,
   as for reify-compiler, the seed's own invalidation.
+
+### reify-cli (census rank 3)
+
+`T` = `harness_cli_surface`, `F` = `help.rs` (function `write_flags`). reify-cli is bin-only, so S1 is
+`cargo test -p reify-cli --bins --no-run`, and S7's closure is the crate alone (nothing depends on it). One
+sequence per arm (`a1`, `b1`), as for reify-eval.
+
+| step | arm | reps | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|---:|
+| S1 `--bins` | a | 1 | 413.9 | 146.8 | 61 (56) | 5 | 56 |
+| S1 `--bins` | b | 1 | 323.1 | 136.7 | 54 (26) | 28 | 26 |
+| S2 `--test T` | a | 1 | 16.5 | 10.8 | 2 (2) | 0 | 2 |
+| S2 `--test T` | b | 1 | 12.0 | 7.3 | 2 (2) | 0 | 2 |
+| E1-S2 | a | 1 | 3.5 | 3.7 | 1 (1) | 1 | 0 |
+| E1-S2 | b | 1 | 6.4 | 5.7 | 1 (1) | 1 | 0 |
+| E1-S1 | a | 1 | 3.5 | 5.0 | 1 (1) | 1 | 0 |
+| E1-S1 | b | 1 | 6.4 | 6.0 | 1 (1) | 1 | 0 |
+| E2-S2 | a | 1 | 3.1 | 3.3 | 1 (1) | 1 | 0 |
+| E2-S2 | b | 1 | 6.3 | 5.7 | 1 (1) | 1 | 0 |
+| E2-S1 | a | 1 | 3.0 | 3.3 | 1 (1) | 1 | 0 |
+| E2-S1 | b | 1 | 6.2 | 5.4 | 1 (1) | 1 | 0 |
+| E3-S2 | a | 1 | 3.3 | 3.5 | 1 (1) | 1 | 0 |
+| E3-S2 | b | 1 | 6.5 | 5.5 | 1 (1) | 1 | 0 |
+| E3-S1 | a | 1 | 3.5 | 3.6 | 1 (1) | 1 | 0 |
+| E3-S1 | b | 1 | 6.1 | 4.9 | 1 (1) | 1 | 0 |
+| S6 clippy | a | 1 | 151.8 | 95.3 | 62 (59) | 3 | 59 |
+| S6 clippy | b | 1 | 160.5 | 132.4 | 55 (35) | 20 | 35 |
+| S7 probe | a | 1 | 5.4 | 11.1 | – | 23 | 29 |
+| S7 probe | b | 1 | 0.8 | 21.5 | – | 0 | 1 |
+
+Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
+
+| edit-rebuild | (a) | (b) | (b) over (a) |
+|---|---:|---:|---:|
+| `Ek-S2` (`--test T` after an edit) | 3.3 / 3.5 | 6.4 / 5.7 | 2.0x CPU, 1.6x wall |
+| `Ek-S1` (`--bins` after an edit) | 3.5 / 3.6 | 6.2 / 5.4 | 1.7x CPU, 1.5x wall |
+
+- **(b)'s first build is 22% cheaper at today's staleness:** 323 against 414 CPU-s, 137 s against 147 s of
+  wall. (b) writes 54 units: 28 dirty (24 roots and 4 dependents; 22 of the roots are
+  `FsStatusOutdated`, the delta's doing, among them the build scripts of reify-cli, reify-gui, reify-config and
+  the gmsh, occt and solver-elastic kernels, and the other 2 are the build-script runs of reify-gui and
+  `manifold-csg-sys` that the seed invalidates) and 26 absent from the base, the feature-split once more (reify-cli's own test unit, the libraries
+  of reify-compiler, -eval with its build script and run, -stdlib, -constraints, -expr, -runtime, -lsp, -gui,
+  -mcp and others, and the libraries and build-script runs of the openvdb and mesh-morph kernels). (a) writes
+  61: 56 absent and 5 invalidated by the seed. The private server did 308 of (b)'s 323 CPU-s.
+- **The edit loop is cheap under both arms and (b) loses little in absolute terms.** The edited crate is the
+  binary, small next to the libraries it links, so an edit-rebuild costs 3.3 CPU-s under (a) and 6.4 under (b):
+  2.0x and 1.7x, three seconds more per edit. The one compile request is not cacheable and passes through the
+  server (0.24 s of server CPU).
+- **Clippy is a wash:** 160 against 152 CPU-s at stale (b 6% dearer), 152 against 158 at zero delta.
+- **S7 is degenerate for this crate.** The probe's closure is `-p reify-cli`, the same selection the agent
+  built, so (b) pre-pays all of it: 0 dirty and 1 unreadable unit against (a)'s 23 and 29. It bounds the
+  pre-pay from above; the verify's real build is workspace-wide, and for reify-compiler and reify-eval, whose
+  probes span 25 packages, (b) pre-paid 13 to 18 units at stale and 0 or 1 at zero delta.
+
+#### Zero-delta control, reify-cli (`d0a`, `d0b`)
+
+One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
+
+| step | arm | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|
+| S1 `--bins` | a | 341.7 | 158.3 | 57 (52) | 5 | 52 |
+| S1 `--bins` | b | 275.5 | 172.2 | 29 (24) | 5 | 24 |
+| S2 `--test T` | a | 14.8 | 8.1 | 2 (2) | 0 | 2 |
+| S2 `--test T` | b | 9.9 | 4.2 | 2 (2) | 0 | 2 |
+| S6 clippy | a | 157.8 | 112.2 | 58 (55) | 3 | 55 |
+| S6 clippy | b | 151.7 | 301.3 | 36 (33) | 3 | 33 |
+| S7 probe | a | 0.7 | 0.8 | – | 0 | 27 |
+| S7 probe | b | 1.1 | 26.7 | – | 0 | 1 |
+
+- **At zero delta (b)'s first build is 19% cheaper:** 276 against 342 CPU-s. Against its own stale reading
+  (b) saves 47 CPU-s (323 to 276), the 28 dirtied units less the 5 the seed always invalidates.
+- **(a) is not delta-insensitive on this crate:** 414 CPU-s at stale against 342 at zero delta, 61 units
+  written against 57. The delta changed reify-cli's unit graph: at stale (b) lists the reify-gui and
+  reify-mcp libraries among its absent units and at zero delta it does not. The pricing therefore does not
+  pool (a)'s two delta settings for this crate, only for those where the written-unit counts match
+  (reify-compiler 39 and 39, reify-eval 54 and 54).
+- **Wall is unusable on the clippy row:** (b)'s S6 took 301 s of wall for 152 CPU-s, a load artefact (PSI is
+  recorded per step in the raw data).
+- **S7:** (a) leaves 27 of the probe's units unreadable and (b) leaves 1, the same degenerate selection as above.
