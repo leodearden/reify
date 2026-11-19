@@ -38,11 +38,14 @@
 #
 #   WHY reify.slice IS SAFE. Measured on the same host: `reify-test<pid>.slice`
 #   parents to `reify.slice`, NOT to `reify-test.slice` (`reify-test1234` is ONE
-#   dash segment, not `reify-test` + `1234`). `reify.slice` is also the shared
-#   implicit root of the PRODUCTION hierarchy — `reify-governed.slice` and
-#   `reify-governed-agents.slice` nest under it carrying live orchestrator agent
-#   placement — so it is structurally unreachable from every stop path the
-#   library exposes, by anchored grammar rather than by convention.
+#   dash segment, not `reify-test` + `1234`). `reify.slice` is also the
+#   implicit root of the LEGACY role-slice names `reify-governed.slice` and
+#   `reify-governed-agents.slice`, which idle units on a long-lived host may
+#   still carry; the production role slices from
+#   scripts/lib_cgroup.sh::cgroup_role_slice nest under `df-reify.slice`
+#   instead (task 9998). `reify.slice` is structurally unreachable from every
+#   stop path the library exposes, by anchored grammar rather than by
+#   convention.
 #
 #   The five units must stay FIVE DISTINCT slices, merely re-parented:
 #   cgroup_set_slice_weight sets the SLICE's own CPUWeight, so D5's
@@ -267,7 +270,8 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
 '
 
     # D1: --role task → scope under a private, $$-scoped task slice (task 4919:
-    # isolated from the production reify-governed-agents.slice).
+    # isolated from the production task role slice that
+    # scripts/lib_cgroup.sh::cgroup_role_slice defaults to).
     REIFY_CPU_GOVERN_SLICE_TASK="$D_TASK_SLICE" bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task" 2>/dev/null || true
     assert "D1a: --role task → cgroup under private $D_PARENT_SLICE/$D_TASK_SLICE" \
         bash -c '
@@ -285,7 +289,8 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
         ' _ "$WORK/out_task"
 
     # D3: --role merge → scope under a private, $$-scoped merge slice (task 4919:
-    # isolated from the production reify-governed-merge.slice) and WEIGHT==300.
+    # isolated from the production merge role slice that
+    # scripts/lib_cgroup.sh::cgroup_role_slice defaults to) and WEIGHT==300.
     REIFY_CPU_GOVERN_SLICE_MERGE="$D_MERGE_SLICE" bash "$WRAPPER" --role merge -- bash -c "$PROBE" > "$WORK/out_merge" 2>/dev/null || true
     assert "D3a: --role merge → cgroup under private $D_PARENT_SLICE/$D_MERGE_SLICE" \
         bash -c '

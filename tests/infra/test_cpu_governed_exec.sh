@@ -182,8 +182,9 @@ assert "B4b: cgroup_role_slice merge == df-reify-governed-merge.slice" \
 # B4c: systemd nests a slice under the name with its last dash-segment
 # stripped (a dash-free name sits under the root -.slice). Both default role
 # slices must be siblings of one parent (C-G2), and that parent must sit under
-# the project slice df-reify.slice, under df.slice (task 9998).
-assert "B4c: default role slices share one parent that nests under df-reify.slice then df.slice (C-G2 across the seam)" \
+# the project slice df-reify.slice, under df.slice (task 9998). The parent's
+# own name is B4a/B4b's to pin, not this row's.
+assert "B4c: default role slices are siblings (C-G2) whose parent nests under df-reify.slice then df.slice" \
     bash -c '
         source "$1"
         unset REIFY_CPU_GOVERN_SLICE_TASK REIFY_CPU_GOVERN_SLICE_MERGE
@@ -202,8 +203,7 @@ assert "B4c: default role slices share one parent that nests under df-reify.slic
         top=$(slice_parent "$project")
         echo "task=$task -> $task_parent; merge=$merge -> $merge_parent"
         echo "$task_parent -> $project -> $top"
-        [ "$task_parent" = "df-reify-governed.slice" ] &&
-            [ "$merge_parent" = "df-reify-governed.slice" ] &&
+        [ "$task_parent" = "$merge_parent" ] &&
             [ "$project" = "df-reify.slice" ] &&
             [ "$top" = "df.slice" ]
     ' _ "$LIB"
