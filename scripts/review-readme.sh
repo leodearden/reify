@@ -136,8 +136,8 @@ Steps:
    - Those commands cannot run from this checkout as written: it has no m5_geometry.ri at its root, and the binary under audit is ./target/release/reify, not one on PATH. The release clean-container install proof (tests/infra/test_bundle_clean_install.sh) installs and runs the package in containers; do not run it. Never rewrite those commands into checkout forms ("./target/release/reify", "examples/...", "cargo build", "scripts/..."): a difference in binary path or file location alone is NOT drift.
    - The commands runnable from this checkout as written are the checkout forms, chiefly in the README "For contributors (build from source)" section and the "For contributors" subsection of docs/getting-started.md.
    - The exemption for installed-package commands covers their form, never their behavior. A subcommand, flag, exit code or output that the checkout binary contradicts IS drift in an installed-package command too: fix the claim and keep the command in its installed-package form. The opening paragraph of docs/getting-started.md states the checkout equivalents to run for that check.
-4. Build and run the CLI from this checkout to verify documented behavior:
-   - "cargo build --release -p reify-cli" if target/release/reify is missing.
+4. Run the CLI from this checkout to verify documented behavior:
+   - The wrapper already built ./target/release/reify from HEAD before this session. Use it as is; do not run cargo.
    - "./target/release/reify --help" — confirm the README "CLI commands" list matches.
    - "./target/release/reify --version" — confirm it works.
    - "./target/release/reify check examples/m5_geometry.ri" — confirm the contributor smoke test works; its output should also match what docs/getting-started.md section 1 shows for the installed "reify check m5_geometry.ri".
