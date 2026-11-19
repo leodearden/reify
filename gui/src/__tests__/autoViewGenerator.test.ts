@@ -9,8 +9,8 @@ import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { DisplayDirective, EntityTreeNode, MeshData } from '../types';
 
 // `computePaneGroups` lives in App.tsx, whose module graph reaches the Tauri
-// bridge and (via `./viewport`) three.js at import time. Mocked as App.test.tsx
-// does so this store-level suite can compose the two halves of the #5195
+// bridge and (via `./viewport`) three.js at import time. Mocked as the App
+// harness (appHarness/renderStubs.ts) does so this store-level suite can compose the two halves of the #5195
 // routing path (visibility map × pane bucketing) without rendering App.
 // The viewport stub covers exactly App.tsx's imports from './viewport'
 // (`DualViewport`, `MultiViewport`); without it three's lottie_canvas module
@@ -28,6 +28,7 @@ vi.mock('../viewport', () => ({
 }));
 // eslint-disable-next-line import/first
 import { computePaneGroups } from '../App';
+import { makeMesh } from './test_utils/meshData';
 
 // ---------------------------------------------------------------------------
 // Local fixture builder
@@ -42,16 +43,6 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
     freshness: 'final',
     children: [],
     ...overrides,
-  };
-}
-
-/** Minimal `MeshData`; mirrors App.test.tsx's `makeMesh`. */
-function makeMesh(entityPath: string): MeshData {
-  return {
-    entity_path: entityPath,
-    vertices: new Float32Array([0, 0, 0]),
-    indices: new Uint32Array([0]),
-    normals: null,
   };
 }
 
