@@ -994,16 +994,15 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
 ///    `kinematic_stdlib_compile.rs::conforming_joints_have_driving_joint_bound`
 ///    (`template.trait_bounds`), rather than inventing a new one.
 ///
-/// COUPLED TO PRELUDE ORDER. The `: DrivingJoint` clause only resolves because
-/// `stdlib_loader.rs` registers `std.flexures` AFTER `std.kinematic`. The stdlib
-/// prelude is built by growing sequential registration (no `.ri` file declares
-/// an `import`), so registration order IS visibility order: move `std.flexures`
-/// back before `std.kinematic` and `DrivingJoint` is not yet in scope when
+/// COUPLED TO flexures.ri's `import std.kinematic`. The `: DrivingJoint` clause
+/// only resolves because `std.flexures` declares `import std.kinematic`: the
+/// strict build (#5499) compiles each stdlib module against its declared
+/// imports alone. Drop that import and `DrivingJoint` is out of scope when
 /// flexures.ri compiles. That failure does not surface here — it surfaces as a
 /// resolution Error through the `std_flexures_module_loads_with_no_errors`
 /// canary above, which is deliberately left untouched so it can catch it. If
-/// this test fails on `trait_bounds` while that canary is red too, fix the
-/// module order, not the declaration.
+/// this test fails on `trait_bounds` while that canary is red too, restore the
+/// import, not the declaration.
 #[test]
 fn std_flexures_declares_flexure_joint_marker() {
     let template = find_structure("FlexureJoint");
