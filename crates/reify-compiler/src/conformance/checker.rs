@@ -1859,7 +1859,6 @@ pub(super) fn check_phase_inject_ambient_defaults(
         // `compile_expr` exactly like a real trait param default. A Rejected
         // entry yields a Param default with the declared type and no default
         // expr: the member is filled and the value is never recompiled.
-        // Mirrors the synthetic-ParamDecl construction at conformance/mod.rs:2131.
         synthesized.push(TraitDefault {
             name: Some(req.name.clone()),
             kind: DefaultKind::Param {

@@ -12,7 +12,7 @@
 
 use reify_compiler::{CompiledModule, ValueCellDecl};
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// A fully-valid `Material(...)` constructor expression (all three required
 /// params provided), usable as an ambient-default value without itself
@@ -458,12 +458,7 @@ structure def Plate : Physical {
 
 /// The codes of the module's `Severity::Error` diagnostics, in order.
 fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
+    errors_only(module).iter().map(|d| d.code).collect()
 }
 
 /// The `member` value cell of the compiled template `template_name`.
@@ -556,11 +551,7 @@ fn error_valued_default_reports_its_error_once() {
         "only the value's own error may be reported; got: {:?}",
         module.diagnostics
     );
-    let error = module
-        .diagnostics
-        .iter()
-        .find(|d| d.severity == Severity::Error)
-        .expect("one error");
+    let error = *errors_only(&module).first().expect("one error");
     assert!(
         error.message.contains("undefined_ambient_name"),
         "the error should name the unresolved value; got: {}",
