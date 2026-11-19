@@ -4574,6 +4574,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-exec-lookup",
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",

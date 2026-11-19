@@ -8,7 +8,7 @@
 
 use std::ffi::OsStr;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The program named by the shebang line build-sidecar.sh writes.
 pub const SIDECAR_INTERPRETER: &str = "node";
@@ -27,40 +27,17 @@ pub async fn spawn_if_interpreter_found<T>(
     spawn.await
 }
 
-/// The first [`SIDECAR_INTERPRETER`] in `path_var`'s directory order that is a
-/// regular file with an execute bit set. This approximates the lookup
-/// `/usr/bin/env node` makes, with two differences. Any execute bit counts,
-/// even one the current user does not hold, and `env` would then exit 126.
-/// Empty PATH components are skipped on purpose, where `env` would resolve
-/// them against the current directory.
+/// The [`SIDECAR_INTERPRETER`] that `/usr/bin/env node` would run, found with
+/// [`reify_exec_lookup::find_executable_on_path`], whose doc states the lookup
+/// policy and its one deliberate difference from `env`.
 pub fn require_sidecar_interpreter(path_var: Option<&OsStr>) -> Result<PathBuf, String> {
-    path_var
-        .into_iter()
-        .flat_map(std::env::split_paths)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(SIDECAR_INTERPRETER))
-        .find(|candidate| is_executable_file(candidate))
-        .ok_or_else(|| {
-            let searched = path_var.map_or_else(|| "(unset)".into(), OsStr::to_string_lossy);
-            format!(
-                "{E_GUI_SIDECAR_NODE_MISSING}: Assistant mode runs reify-sidecar under Node.js, \
-                 but no executable `{SIDECAR_INTERPRETER}` was found on PATH={searched}. \
-                 Install Node.js 18 or newer (Ubuntu: `sudo apt install nodejs`) and send \
-                 the message again."
-            )
-        })
-}
-
-/// `true` iff `path` is an existing regular file with an execute bit set.
-#[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-}
-
-/// `true` iff `path` is an existing regular file (non-unix: no execute bit).
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
+    reify_exec_lookup::find_executable_on_path(&[SIDECAR_INTERPRETER], path_var).ok_or_else(|| {
+        let searched = path_var.map_or_else(|| "(unset)".into(), OsStr::to_string_lossy);
+        format!(
+            "{E_GUI_SIDECAR_NODE_MISSING}: Assistant mode runs reify-sidecar under Node.js, \
+             but no executable `{SIDECAR_INTERPRETER}` was found on PATH={searched}. \
+             Install Node.js 18 or newer (Ubuntu: `sudo apt install nodejs`) and send \
+             the message again."
+        )
+    })
 }
