@@ -311,15 +311,23 @@ function isLeafBatch(leaves) {
         || (typeof leaves === "string" && leaves.trim() !== "");
 }
 
+// How a refusal names an offending value: its JSON text, except that a
+// non-finite number, which JSON would spell null, keeps its own name.
+function renderValue(value) {
+    return typeof value === "number" && !Number.isFinite(value)
+        ? String(value)
+        : JSON.stringify(value);
+}
+
 // Names the args as given and, when a JSON string was decoded, the value that
 // was actually judged.
 function leafBatchRefusal(subject, { raw, value, parseError }) {
     if (isLeafBatch(value)) return null;
     const decoding = typeof raw === "string" && parseError === null
-        ? `, which decodes to ${JSON.stringify(value)}`
+        ? `, which decodes to ${renderValue(value)}`
         : "";
     return `${subject} must be the leaf array, one leaf object, a non-blank string, `
-        + `or the JSON string of one of these; got ${JSON.stringify(raw)}${decoding}`;
+        + `or the JSON string of one of these; got ${renderValue(raw)}${decoding}`;
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is
@@ -338,7 +346,7 @@ function envelopeRefusal(envelope) {
     const bin = envelope.reify_bin;
     if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
         return "reify_bin must be the absolute path of the reify binary α probes with; "
-            + `got ${JSON.stringify(bin)}`;
+            + `got ${renderValue(bin)}`;
     }
     return null;
 }
