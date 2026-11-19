@@ -15,13 +15,21 @@ against a hermetic tempdir fixture:
   - `hooks/`      core.hooksPath, holding a pre-commit that records the staged
                   set it was shown and exits with a configurable status;
   - `bin/claude`  a stub standing in for CLAUDE_BIN, with a non-executable
-                  twin for the missing-CLI case.
+                  twin for the missing-CLI case; it records what
+                  ./target/release/reify --version printed when the session
+                  ran;
+  - `bin/cargo`   a stub standing in for CARGO_BIN: it emulates cargo's
+                  output-dir resolution and writes an executable
+                  target/release/reify that reports the HEAD it was built at.
 
-SAFETY: the stub edits NOTHING unless `pwd -P` is the fixture root it was
-handed, and run_script ALWAYS points CLAUDE_BIN at the stub or its twin. A
-script that ignored REIFY_MAIN_CHECKOUT and cd'd into a real checkout
-therefore produces a harmless no-edit run, and the real
-`claude --dangerously-skip-permissions` can never be spawned from here.
+SAFETY: the claude stub edits NOTHING unless `pwd -P` is the fixture root it
+was handed, and the cargo stub builds NOTHING (it exits 97) unless it is run
+from that root; run_script ALWAYS points CLAUDE_BIN at the claude stub or its
+twin, and CARGO_BIN at the cargo stub. A script that ignored
+REIFY_MAIN_CHECKOUT and cd'd into a real checkout therefore produces a harmless
+no-edit, no-build run, never stamps a fake binary there, and the real
+`claude --dangerously-skip-permissions` and the real cargo can never be spawned
+from here.
 
 Assertions are on observable outcomes only — commits, identity fields, remote
 refs, index and worktree state, the hook's recorded view, exit codes, and files
@@ -46,12 +54,31 @@ GETTING_STARTED = "docs/getting-started.md"
 TARGETS = (README, GETTING_STARTED)
 UNRELATED = "other.txt"
 
+BUILT_BINARY = "target/release/reify"
+SIDECAR = "target/.reify-bin-sha"
+BUILT_FROM = "reify built-from"
+
 HUMAN_NAME = "Human Tester"
 HUMAN_EMAIL = "human@example.test"
 
-# Keys run_script pins itself: the safety seam and the stub's guard. An override
-# of any of them could point the script at a real checkout or a real claude.
-_PINNED_KEYS = frozenset({"CLAUDE_BIN", "REIFY_MAIN_CHECKOUT", "REVIEW_README_STUB_ROOT"})
+# Keys run_script pins itself: the safety seam and the stubs' guard. An override
+# of any of them could point the script at a real checkout, a real claude or a
+# real cargo.
+_PINNED_KEYS = frozenset(
+    {"CLAUDE_BIN", "CARGO_BIN", "REIFY_MAIN_CHECKOUT", "REVIEW_README_STUB_ROOT"})
+
+# Knobs the stubs and the script read. run_script drops them from the inherited
+# environment, so only a test's explicit override can set one.
+_SCRUBBED_KEYS = (
+    "REVIEW_README_STUB_APPEND",
+    "REVIEW_README_STUB_CARGO_RC",
+    "REVIEW_README_STUB_CARGO_SLEEP",
+    "REVIEW_README_BUILD_TIMEOUT",
+    "REIFY_BIN",
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET_DIR",
+    "CARGO_BUILD_TARGET",
+)
 
 # Command-line config (`git -c`) travels to children in these; it outranks the
 # fixture's local config, so an inherited core.hooksPath would swap the
@@ -95,7 +122,7 @@ def _diag(completed):
 
 
 class ReviewReadmeFixture(unittest.TestCase):
-    """A main checkout, a bare origin, a recording hook and a stub claude."""
+    """A main checkout, a bare origin, a recording hook, a stub claude and a stub cargo."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="review-readme-")
@@ -111,17 +138,22 @@ class ReviewReadmeFixture(unittest.TestCase):
         self.hook_log = self.tmpdir / "hook-staged.log"
         self.hook_rc = self.tmpdir / "hook-rc"
         self.hook_rc.write_text("0\n")
+        self.bin_dir = self.tmpdir / "bin"
+        self.bin_dir.mkdir()
         self.stub_marker = self.tmpdir / "claude-invoked-in"
+        self.session_binary_marker = self.tmpdir / "claude-ran-binary"
         self.stub = self._write_stub_claude()
         self.non_executable_stub = self.stub.with_name("claude-not-executable")
         self.non_executable_stub.write_text(self.stub.read_text())
+        self.cargo_marker = self.tmpdir / "cargo-invoked-in"
+        self.stub_cargo = self._write_stub_cargo()
         hooks_dir = self._write_recording_hook()
 
         self.main.mkdir()
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", HUMAN_NAME)
         self.git("config", "user.email", HUMAN_EMAIL)
-        (self.main / ".git" / "info" / "exclude").write_text("logs/\n")
+        (self.main / ".git" / "info" / "exclude").write_text("logs/\ntarget/\n")
         (self.main / "docs").mkdir()
         (self.main / README).write_text("# Fixture README\n")
         (self.main / GETTING_STARTED).write_text("# Getting started\n")
@@ -137,15 +169,38 @@ class ReviewReadmeFixture(unittest.TestCase):
 
     # ── fixture construction ─────────────────────────────────────────────
     def _write_stub_claude(self):
-        bin_dir = self.tmpdir / "bin"
-        bin_dir.mkdir()
-        stub = bin_dir / "claude"
+        stub = self.bin_dir / "claude"
+        session_binary_marker = shlex.quote(str(self.session_binary_marker))
         _write_executable(stub, f"""#!/bin/sh
 here=$(pwd -P)
 printf '%s\\n' "$here" > {shlex.quote(str(self.stub_marker))}
 [ "$here" = "$REVIEW_README_STUB_ROOT" ] || exit 0
+if [ -x ./{BUILT_BINARY} ]; then
+    ./{BUILT_BINARY} --version > {session_binary_marker}
+else
+    echo absent > {session_binary_marker}
+fi
 [ -n "${{REVIEW_README_STUB_APPEND:-}}" ] || exit 0
 printf '%s\\n' "$REVIEW_README_STUB_APPEND" >> {shlex.quote(README)}
+exit 0
+""")
+        return stub
+
+    def _write_stub_cargo(self):
+        stub = self.bin_dir / "cargo"
+        _write_executable(stub, f"""#!/bin/sh
+here=$(pwd -P)
+printf '%s\\n' "$here" >> {shlex.quote(str(self.cargo_marker))}
+[ "$here" = "$REVIEW_README_STUB_ROOT" ] || exit 97
+[ -z "${{REVIEW_README_STUB_CARGO_SLEEP:-}}" ] || sleep "$REVIEW_README_STUB_CARGO_SLEEP"
+[ -z "${{REVIEW_README_STUB_CARGO_RC:-}}" ] || exit "$REVIEW_README_STUB_CARGO_RC"
+out="${{CARGO_BUILD_TARGET_DIR:-${{CARGO_TARGET_DIR:-target}}}}/release"
+mkdir -p "$out"
+cat > "$out/reify" <<EOF
+#!/bin/sh
+echo "{BUILT_FROM} $(git rev-parse HEAD)"
+EOF
+chmod +x "$out/reify"
 exit 0
 """)
         return stub
@@ -216,15 +271,49 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
             return None
         return self.stub_marker.read_text().strip()
 
+    def session_ran_binary(self):
+        """What ./target/release/reify --version printed when the session ran
+        ('absent' if it was not executable), or None if the session never ran."""
+        if not self.session_binary_marker.exists():
+            return None
+        return self.session_binary_marker.read_text().strip()
+
+    def cargo_invoked(self):
+        return self.cargo_marker.exists()
+
+    def sidecar(self):
+        """The SHA recorded in target/.reify-bin-sha, or None if there is none."""
+        path = self.main / SIDECAR
+        return path.read_text().strip() if path.exists() else None
+
+    def plant_stale_binary(self, *, sidecar=True):
+        """Leave a built binary behind that main has since moved past.
+
+        Returns the SHA the binary reports being built from. With sidecar=True
+        the sidecar vouches for that older SHA, not for HEAD.
+        """
+        built_from = self.head()
+        (self.main / UNRELATED).write_text("unrelated line\nmain moved past the build\n")
+        self.git("add", "--", UNRELATED)
+        self.fixture_commit("fixture: main moves past the built binary")
+        binary = self.main / BUILT_BINARY
+        binary.parent.mkdir(parents=True)
+        _write_executable(binary, f"#!/bin/sh\necho '{BUILT_FROM} {built_from}'\n")
+        if sidecar:
+            (self.main / SIDECAR).write_text(f"{built_from}\n")
+        return built_from
+
     # ── the one way to run the script ────────────────────────────────────
     def run_script(self, *, claude_executable=True, **env_overrides):
         refused = _PINNED_KEYS & env_overrides.keys()
         if refused:
             raise ValueError(f"run_script pins {sorted(refused)}; they cannot be overridden")
         env = self.hermetic_env()
-        env.pop("REVIEW_README_STUB_APPEND", None)
+        for key in _SCRUBBED_KEYS:
+            env.pop(key, None)
         env.update(env_overrides)
         env["CLAUDE_BIN"] = str(self.stub if claude_executable else self.non_executable_stub)
+        env["CARGO_BIN"] = str(self.stub_cargo)
         env["REIFY_MAIN_CHECKOUT"] = str(self.main)
         env["REVIEW_README_STUB_ROOT"] = str(self.main)
         return subprocess.run(["bash", str(SCRIPT)], env=env, cwd=self.neutral_cwd,
@@ -332,6 +421,14 @@ class PreflightTest(ReviewReadmeFixture):
         self.assertTrue((self.main / README).read_text().endswith("HUMAN-WIP\n"))
         self.assertEqual(self.head(), before, _diag(result))
 
+    def test_a_deferred_run_never_builds(self):
+        with (self.main / README).open("a") as readme:
+            readme.write("HUMAN-WIP\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, self.EX_TEMPFAIL, _diag(result))
+        self.assertFalse(self.cargo_invoked(), _diag(result))
+        self.assertIsNone(self.sidecar(), _diag(result))
+
     def test_staged_human_wip_on_a_target_defers_with_75(self):
         content = "# Getting started\nhuman staged WIP\n"
         (self.main / GETTING_STARTED).write_text(content)
@@ -379,6 +476,50 @@ class PreflightTest(ReviewReadmeFixture):
         result = self.run_script()
         self.assertEqual(result.returncode, 1, _diag(result))
         self.assert_claude_never_invoked(result)
+
+
+class BinaryTrustTest(ReviewReadmeFixture):
+    """The session audits the docs against ./target/release/reify, so the wrapper
+    hands it a binary built from HEAD, or refuses before claude runs."""
+
+    def assert_session_ran_binary_built_from_head(self, result):
+        self.assertEqual(result.returncode, 0, _diag(result))
+        self.assertEqual(self.session_ran_binary(), f"{BUILT_FROM} {self.head()}", _diag(result))
+        self.assertEqual(self.sidecar(), self.head(), _diag(result))
+
+    def assert_build_refused_before_the_session(self, result, *, planted, head_before):
+        self.assertEqual(result.returncode, 1, _diag(result))
+        self.assertTrue(self.cargo_invoked(), _diag(result))
+        self.assertIsNone(self.session_ran_binary(), _diag(result))
+        self.assertEqual(self.sidecar(), planted, _diag(result))
+        self.assertEqual(self.head(), head_before, _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
+
+    def test_a_stale_binary_is_rebuilt_from_HEAD_before_the_session(self):
+        self.plant_stale_binary()
+        self.assert_session_ran_binary_built_from_head(self.run_script())
+
+    def test_an_unstamped_binary_is_rebuilt_from_HEAD_before_the_session(self):
+        self.plant_stale_binary(sidecar=False)
+        self.assert_session_ran_binary_built_from_head(self.run_script())
+
+    def test_a_missing_binary_is_built_from_HEAD_before_the_session(self):
+        self.assert_session_ran_binary_built_from_head(self.run_script())
+
+    def test_a_failed_build_refuses_before_the_session(self):
+        planted = self.plant_stale_binary()
+        head_before = self.head()
+        result = self.run_script(REVIEW_README_STUB_CARGO_RC="101")
+        self.assert_build_refused_before_the_session(
+            result, planted=planted, head_before=head_before)
+
+    def test_a_build_past_the_timeout_refuses_before_the_session(self):
+        planted = self.plant_stale_binary()
+        head_before = self.head()
+        result = self.run_script(REVIEW_README_BUILD_TIMEOUT="1s",
+                                 REVIEW_README_STUB_CARGO_SLEEP="30")
+        self.assert_build_refused_before_the_session(
+            result, planted=planted, head_before=head_before)
 
 
 if __name__ == "__main__":
