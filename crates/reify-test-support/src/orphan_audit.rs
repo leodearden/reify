@@ -522,6 +522,7 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panic_capture::panic_message_of;
 
     /// RED premise (task 5698 step 1): at this branch base,
     /// `run_orphan_audit_at`'s empty-stdout branch does not yet distinguish
@@ -538,10 +539,10 @@ mod tests {
     /// test asserts on OUR panic message ONLY, never on the script's stderr
     /// text (which stays unchanged and ambiguous by design).
     ///
-    /// Uses `catch_unwind` rather than `#[should_panic]`: the latter has no
-    /// runtime skip, and this test must skip gracefully (not fail) on a
-    /// git-less image, matching the convention every other test in this
-    /// module already follows.
+    /// Captures the panic with [`panic_message_of`] rather than
+    /// `#[should_panic]`: the latter has no runtime skip, and this test must
+    /// skip gracefully (not fail) on a git-less image, matching the
+    /// convention every other test in this module already follows.
     #[test]
     fn wrong_tree_with_real_scope_panics() {
         // Graceful-skip convention used throughout this module: `git init`
@@ -571,20 +572,9 @@ mod tests {
         );
 
         let (script, _real_root) = resolve_script_and_root();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let message = panic_message_of(|| {
             run_orphan_audit_at(&script, decoy.path(), "crates/reify-audit/src")
-        }));
-
-        let payload = match result {
-            Ok(audit) => panic!(
-                "expected run_orphan_audit_at to panic for scope \
-                 \"crates/reify-audit/src\" scanned under a decoy tree with no \
-                 matching sources (empty stdout for a real, non-excluded scope must \
-                 never be silently accepted as a legitimate outcome) — got: {audit:?}"
-            ),
-            Err(payload) => payload,
-        };
-        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        });
         // Assert on wording unique to the empty-stdout branch, not the
         // shared "never a legitimate outcome" phrase that ALSO appears in
         // the repo-root-mismatch panic below — a bare substring match on
@@ -634,19 +624,9 @@ mod tests {
         let (script, repo_root) = resolve_script_and_root();
         let wrong_root = repo_root.join("crates");
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let message = panic_message_of(|| {
             run_orphan_audit_at(&script, &wrong_root, "crates/reify-audit/src")
-        }));
-
-        let payload = match result {
-            Ok(audit) => panic!(
-                "expected run_orphan_audit_at to panic when repo_root ({wrong_root:?}) \
-                 does not match what the child itself resolves via `git rev-parse \
-                 --show-toplevel` — got: {audit:?}"
-            ),
-            Err(payload) => payload,
-        };
-        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        });
         assert!(
             message.contains("DIFFERENT repository than requested"),
             "panicked, but not with the expected repo-root-mismatch wording; \
@@ -988,29 +968,15 @@ mod tests {
     /// match above does not otherwise resolve on its own (a genuine
     /// duplicate or conditionally-redefined declaration).
     ///
-    /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
-    /// idiom already established by `wrong_tree_with_real_scope_panics`
-    /// above — rather than `#[should_panic]`, whose attribute-level
-    /// substring match cannot distinguish WHICH panic fired.
+    /// Captures the panic with [`panic_message_of`] rather than
+    /// `#[should_panic]`, whose attribute-level substring match cannot
+    /// distinguish WHICH panic fired.
     #[test]
     fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
         let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_exclude_crates_declaration(source, "a test fixture")
-        }));
-
-        let payload = match result {
-            Ok(value) => panic!(
-                "expected parse_exclude_crates_declaration to panic on two \
-                 non-comment EXCLUDE_CRATES declarations with different \
-                 contents — silently binding the first would permanently pin \
-                 the wrong text against the Rust EXCLUDE_CRATES const while \
-                 the parity assertion kept passing — got: {value:?}"
-            ),
-            Err(payload) => payload,
-        };
-        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        let message =
+            panic_message_of(|| parse_exclude_crates_declaration(source, "a test fixture"));
         assert!(
             message.contains("found 2 occurrences"),
             "panicked, but the message doesn't report the observed count of \
