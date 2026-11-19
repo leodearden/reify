@@ -8,8 +8,8 @@
 //! themselves. The expected variant set is `CompiledExprKindDiscriminants::iter()`,
 //! which strum derives from `CompiledExprKind`, so a new variant fails
 //! `corpus_has_an_exemplar_for_every_variant` until the corpus gains an
-//! exemplar for it, and that exemplar pins both `for_each_child` and
-//! `for_each_child_mut`.
+//! exemplar for it, and that exemplar pins `for_each_child`,
+//! `for_each_child_mut` and `map_value_refs`.
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -163,6 +163,16 @@ fn child_labels(expr: &CompiledExpr) -> Vec<String> {
     let mut labels = Vec::new();
     expr.for_each_child(&mut |child| labels.push(label(child)));
     labels
+}
+
+/// What `labels` become when every child `ValueRef`'s cell goes through
+/// `prime_member`.
+fn primed(labels: &[&str]) -> Vec<String> {
+    labels.iter().map(|c| format!("{c}'")).collect()
+}
+
+fn prime_member(id: ValueCellId) -> ValueCellId {
+    ValueCellId::new(id.entity, format!("{}'", id.member))
 }
 
 /// One exemplar and its direct children in evaluation order, written by hand.
@@ -409,8 +419,12 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
             }
         });
         assert_eq!(visited, case.children, "case `{}` visit order", case.name);
-        let primed: Vec<String> = case.children.iter().map(|c| format!("{c}'")).collect();
-        assert_eq!(child_labels(&case.expr), primed, "case `{}`", case.name);
+        assert_eq!(
+            child_labels(&case.expr),
+            primed(&case.children),
+            "case `{}`",
+            case.name
+        );
     }
 
     let mut ctor = structure_ctor_with_lets();
@@ -420,6 +434,26 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
         }
     });
     assert_eq!(let_cell(&ctor), &struct_local_cell());
+}
+
+#[test]
+fn map_value_refs_rewrites_every_child_slot() {
+    for case in corpus() {
+        let variant = variant_of(&case.expr.kind);
+        let mapped = case.expr.map_value_refs(&mut prime_member);
+        assert_eq!(
+            variant_of(&mapped.kind),
+            variant,
+            "case `{}` variant",
+            case.name
+        );
+        assert_eq!(
+            child_labels(&mapped),
+            primed(&case.children),
+            "case `{}`",
+            case.name
+        );
+    }
 }
 
 #[test]
