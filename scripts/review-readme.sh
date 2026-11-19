@@ -66,16 +66,21 @@ preflight() {
 # HEAD here, before the session. A binary the trust rule in
 # scripts/reify-bin-freshness.sh does not vouch for never reaches claude.
 build_trusted_reify_bin() {
-    local rc=0
+    local rc=0 head_before
+    head_before=$(reify_bin_head_sha "$REPO")
     timeout "$BUILD_TIMEOUT" "$CARGO_BIN" build --release -p reify-cli || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "REFUSE: cargo build --release -p reify-cli failed (rc=$rc; 124 = timed out after $BUILD_TIMEOUT)"
         exit 1
     fi
 
-    # A stamp that fails leaves the sidecar unvouching; the trust rule below
-    # refuses that, and says why.
-    reify_bin_stamp "$REPO" || true
+    # reify_bin_stamp records the CURRENT HEAD, so it must not run once main has
+    # advanced past the build's start: it would vouch for an older tree's binary.
+    # A skipped or failed stamp leaves the sidecar unvouching, and the trust rule
+    # below refuses that and says why.
+    if [ "$(reify_bin_head_sha "$REPO")" = "$head_before" ]; then
+        reify_bin_stamp "$REPO" || true
+    fi
     if ! resolve_trusted_reify_bin "$REPO" || [ "$REIFY_BIN_RESOLVED" != "$REPO/target/release/reify" ]; then
         echo "REFUSE: no trusted ./target/release/reify: ${REIFY_BIN_SKIP_REASON:-resolved $REIFY_BIN_RESOLVED}"
         exit 1
