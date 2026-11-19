@@ -51,6 +51,8 @@
 #[path = "common/differential.rs"]
 mod differential;
 
+#[path = "harness_cache/cache_hit_facets.rs"]
+mod cache_hit_facets;
 #[path = "harness_cache/compute_cache_key_population.rs"]
 mod compute_cache_key_population;
 #[path = "harness_cache/eval_cached_diagnostics.rs"]

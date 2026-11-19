@@ -171,7 +171,9 @@ pub enum SweptKind {
 /// realization completes (keyed by the realization's final handle — i.e. the
 /// last entry in `step_handles[handle_start..]`). Cleared and repopulated on
 /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
-/// `tessellate_snapshot()` call (per-build, not per-realization). Mirrors the
+/// `tessellate_snapshot()` call (per-build, not per-realization); a
+/// realization-cache hit restores the cached terminal's entry via
+/// `Engine::probe_realization_cache`. Mirrors the
 /// `TopologyAttributeTable` shape — same four-method API (`record` / `lookup`
 /// / `len` / `is_empty`) and the same last-write-wins semantics on
 /// duplicate-id `record` calls.
