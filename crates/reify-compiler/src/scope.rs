@@ -273,9 +273,30 @@ pub(crate) struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
-    /// Reference to the template registry for purpose-body member validation.
-    /// Set by compile_purpose so that concrete subject types can be validated
-    /// against their declared value cells (task-2200). None for entity/function scopes.
+    /// The name → `TopologyTemplate` view this scope's structure lookups read.
+    ///
+    /// It decides whether `Foo(..)` lowers as a structure constructor
+    /// (`StructureInstanceCtor`, plus the ctor-vs-fn gate on `auto` args) and
+    /// which members a `StructureRef` receiver has: the "has no member" check,
+    /// member-type resolution, `member_path`, the `priv` port-member gate and
+    /// connect-param lookup. Each writer passes its own view:
+    ///
+    /// * entity scopes (`compile_entity`) and free-fn bodies
+    ///   (`SourceOrderFnEnv::compile_function_decl`) get the prelude ctor view
+    ///   (`name_env::prelude_ctor_view`) overlaid by the module's templates
+    ///   declared above them, of every kind, occurrences included
+    ///   (`name_env::overlay_local_templates`);
+    /// * the free-fn param-default probe (`phase_fn_param_defaults`) and the
+    ///   ambient-default `<file>` scope (`collect_ambient_defaults`) get the
+    ///   prelude ctor view alone;
+    /// * purpose scopes (`compile_purpose`) get every template of the module
+    ///   and no prelude template. This one is NOT the ctor view.
+    ///
+    /// `None` in every scope no writer configures, such as trait-static fn
+    /// bodies (`register_trait_static_fns` passes `functions::compile_function`
+    /// no registry), assoc-fn, joint and field scopes. Every lookup misses
+    /// there: `Foo(..)` is not lowered as a constructor and member accesses on
+    /// a `StructureRef` receiver go unchecked.
     pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
     /// Module-local ctor-view names whose template this scope cannot use
     /// (task #5494, PRD stdlib-namespace D-8).
@@ -487,8 +508,7 @@ impl<'u> CompilationScope<'u> {
         self.unit_registry = Some(registry);
     }
 
-    /// Set the template registry reference for purpose-body member validation (task-2200).
-    /// Mirrors `set_unit_registry`; called once from `compile_purpose` after scope construction.
+    /// Set [`Self::template_registry`].
     pub(crate) fn set_template_registry(
         &mut self,
         registry: &'u HashMap<String, &'u TopologyTemplate>,
