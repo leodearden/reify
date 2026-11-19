@@ -13,6 +13,8 @@ use std::fmt::{self, Display};
 
 use reify_core::identity::ValueCellId;
 
+use crate::expr::{BinOp, UnOp};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IndeterminateReason {
     Transient(TransientReason),
@@ -23,12 +25,29 @@ pub enum IndeterminateReason {
 pub enum TransientReason {
     /// These cells held no value when the constraint was evaluated.
     UndefInputs { cells: Vec<ValueCellId> },
-    /// Every input was defined, but the operator has no meaning for the
-    /// operand kinds it met. `kinds` holds display labels and is empty when
-    /// no operand was a cell reference.
+    /// Every leaf was defined, but the undefined result was not traced to a
+    /// pure refusal: it arose in geometry, a user or `@optimized` call, a
+    /// selector, or over a non-data operand. `kinds` holds the cell
+    /// operands' display labels and is empty when no operand was a cell
+    /// reference. The rendered wording is legacy; #10034 owns retiring it.
     OperatorUndefinedForKinds { kinds: Vec<String> },
     /// A geometric measurement the verdict depends on was not obtained.
     MeasurementUnavailable { detail: String },
+    /// Every operand was a defined plain-data value and this pure operation
+    /// itself returned no value, so the same inputs refuse on every run;
+    /// `operands` are positional display labels.
+    OperationRefused {
+        operation: RefusedOperation,
+        operands: Vec<String>,
+    },
+}
+
+/// The pure operation behind a [`TransientReason::OperationRefused`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RefusedOperation {
+    Binary(BinOp),
+    Unary(UnOp),
+    Builtin(String),
 }
 
 /// Uninhabited until a run-invariant cause can be proven: the first variant
@@ -36,6 +55,30 @@ pub enum TransientReason {
 /// can be recorded without one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StructuralReason {}
+
+impl IndeterminateReason {
+    /// See [`TransientReason::is_unexpected`].
+    pub fn is_unexpected(&self) -> bool {
+        match self {
+            IndeterminateReason::Transient(reason) => reason.is_unexpected(),
+            IndeterminateReason::Structural(reason) => match *reason {},
+        }
+    }
+}
+
+impl TransientReason {
+    /// Whether this cause is *unexpected* under INV-SF-4's doctrine
+    /// (`docs/legibility/design-invariants.md`): plain `reify check` fails on
+    /// an unexpected cause, and anything not proven unexpected is tolerated.
+    pub fn is_unexpected(&self) -> bool {
+        match self {
+            TransientReason::OperationRefused { .. } => true,
+            TransientReason::UndefInputs { .. }
+            | TransientReason::OperatorUndefinedForKinds { .. }
+            | TransientReason::MeasurementUnavailable { .. } => false,
+        }
+    }
+}
 
 impl Display for IndeterminateReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,7 +105,56 @@ impl Display for TransientReason {
                 write_joined(f, kinds)
             }
             TransientReason::MeasurementUnavailable { detail } => f.write_str(detail),
+            TransientReason::OperationRefused {
+                operation,
+                operands,
+            } => {
+                write!(f, "{operation} is undefined")?;
+                if operands.is_empty() {
+                    return Ok(());
+                }
+                f.write_str(" for these operands: ")?;
+                write_joined(f, operands)
+            }
         }
+    }
+}
+
+impl Display for RefusedOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            RefusedOperation::Binary(op) => binary_symbol(*op),
+            RefusedOperation::Unary(op) => unary_symbol(*op),
+            RefusedOperation::Builtin(name) => name.as_str(),
+        };
+        write!(f, "`{name}`")
+    }
+}
+
+fn binary_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Pow => "^",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+        BinOp::Implies => "implies",
+    }
+}
+
+fn unary_symbol(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Neg => "-",
+        UnOp::Not => "not",
     }
 }
 
