@@ -561,8 +561,9 @@ class ProbeScript(unittest.TestCase):
 VALID_CONF = {"productName": "Reify", "bundle": {"linux": {"deb": {"depends": DEPENDS}}}}
 
 
-class CommandLineRefusals(unittest.TestCase):
-    """bc.main's refusals, each reached before any ldd or docker call."""
+class CommandLineCase(unittest.TestCase):
+    """A scratch dir with the tauri conf, stage and overlay paths of one
+    command-line run of bc; none of the three exists until a test writes it."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -571,6 +572,10 @@ class CommandLineRefusals(unittest.TestCase):
         self.conf = self.tmp / "tauri.conf.json"
         self.stage = self.tmp / "stage"
         self.overlay = self.tmp / "overlay.json"
+
+
+class CommandLineRefusals(CommandLineCase):
+    """bc.main's refusals, each reached before any ldd or docker call."""
 
     def _main(self, conf_text, *extra_args):
         self.conf.write_text(conf_text, encoding="utf-8")
@@ -637,7 +642,7 @@ run)
 esac"""
 
 
-class CommandLineDerivation(unittest.TestCase):
+class CommandLineDerivation(CommandLineCase):
     """bc as scripts/build-bundle.sh runs it, with a fake docker and ldd on PATH.
     These hold the whole chain from the command line to the command the
     container runs: a bind probe that never passed `-r` would fail them."""
@@ -645,15 +650,10 @@ class CommandLineDerivation(unittest.TestCase):
     REFERRER = "/probe/usr/lib/Reify/lib/libfreeimage.so.3"
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name).resolve()
+        super().setUp()
         self.fakes = self.tmp / "fakes"
         self.fakes.mkdir()
         self.log = self.tmp / "probes.log"
-        self.stage = self.tmp / "stage"
-        self.overlay = self.tmp / "overlay.json"
-        self.conf = self.tmp / "tauri.conf.json"
         self.conf.write_text(json.dumps(VALID_CONF), encoding="utf-8")
         for binary in ("reify-gui", "reify"):
             (self.tmp / binary).write_bytes(b"")
