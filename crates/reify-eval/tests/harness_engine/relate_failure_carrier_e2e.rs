@@ -31,9 +31,7 @@ fn a_budget_exhausted_relate_solve_surfaces_solver_budget_exhausted_through_the_
         sub: "bolt".into(),
         free: false,
     });
-    let registry = SolverRegistry::new(Box::new(SequencedMockConstraintSolver::new(vec![
-        carried,
-    ])));
+    let registry = SolverRegistry::new(Box::new(SequencedMockConstraintSolver::new(vec![carried])));
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())

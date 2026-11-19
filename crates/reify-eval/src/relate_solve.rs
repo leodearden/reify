@@ -26,8 +26,9 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
-    Twist, comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
-    solve_frame_outcome, solve_scaling, static_relation_residuals,
+    Twist, comparable_datum_operands, frame_failure_diagnostic, frame_value,
+    max_relation_exceedance, partition_driving_set, solve_frame_outcome, solve_scaling,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_constraints::trust_region::SolveBudget;
@@ -1732,39 +1733,35 @@ struct FailureContext<'s, 'a> {
 }
 
 /// The one diagnostic of a failed driving-set solve, coded by its cause
-/// ([`SolveFailureCause::code`]):
+/// ([`SolveFailureCause::diagnostic`]). This adds only what the scope context
+/// can name:
 /// - a certified infeasibility — the geometric conflict narrative of the
 ///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
 ///   relations whose rows remain violated;
-/// - budget exhaustion — the counts and step-norm trend, with the seed guidance;
-/// - a non-finite evaluation — the driving relation whose row it was;
-/// - a stall (or any later cause) — the cause's own figures.
+/// - a non-finite evaluation — the driving relation whose row it was.
+///
+/// Every context-free cause (budget exhaustion with the seed guidance, a stall,
+/// any later cause) renders through [`frame_failure_diagnostic`].
 fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Diagnostic {
     let sub = &context.unknown.sub;
-    let message = match cause {
+    match cause {
         SolveFailureCause::Infeasible(certificate) => {
             let conflict = minimal_infeasible_subset(context);
-            format!(
+            cause.diagnostic(format!(
                 "{} The solver certified it: {cause}; violated: {}.",
                 conflict_message(&conflict, context.built, sub),
                 blamed_relations(certificate, context)
-            )
+            ))
         }
-        SolveFailureCause::BudgetExhausted(_) => format!(
-            "the relations on `{sub}` did not converge to a placement: {cause}. The seed \
-             configuration may be too far from a solution — try an `auto(seed = …)` \
-             nearer the intended placement"
-        ),
         SolveFailureCause::NonFinite(NonFiniteEvaluation {
             source: ResidualSource::Relation(driving_position),
             ..
-        }) => format!(
+        }) => cause.diagnostic(format!(
             "the relations on `{sub}` could not be solved: {cause}, in {}",
             driving_relation_label(*driving_position, context)
-        ),
-        _ => format!("the relations on `{sub}` could not be solved: {cause}"),
-    };
-    Diagnostic::error(message).with_code(cause.code())
+        )),
+        _ => frame_failure_diagnostic(cause, context.unknown),
+    }
 }
 
 /// The driving relations `certificate` blames, most violated first, each named
