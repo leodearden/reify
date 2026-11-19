@@ -50,7 +50,10 @@ fn main() {
     let out_dir = std::path::Path::new(&out_dir);
     let generated = out_dir.join(GENERATED_DIR);
     let key_stamp = out_dir.join(KEY_STAMP_NAME);
-    let cli = find_on_path("tree-sitter", std::env::var_os("PATH").as_deref());
+    let cli = reify_exec_lookup::find_executable_on_path(
+        &["tree-sitter"],
+        std::env::var_os("PATH").as_deref(),
+    );
 
     // The tracked inputs, this script's include!d logic, and the CLI: nothing
     // this script writes. cargo stamps a run at its start, so a watched output

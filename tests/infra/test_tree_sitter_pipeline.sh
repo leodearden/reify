@@ -546,8 +546,9 @@ ts_assert_outputs_manifest_matches_disk() {
 # cargo and real mtimes are all in play; only the grammar's SIZE changes.
 #
 # Detached from any parent workspace via an empty [workspace] table, and built
-# --offline against the shared registry (cc is already vendored for the real
-# workspace).
+# --offline against the shared registry (cc and libc are already vendored for
+# the real workspace). The real build.rs calls reify-exec-lookup, so the
+# fixture build-depends on this checkout's copy by path.
 mk_ts_build_fixture() {
     local dir="$1" variant="$2"
     mkdir -p "$dir/src" || return 1
@@ -559,7 +560,7 @@ mk_ts_build_fixture() {
     # that quote include resolves is part of what a build exercises.
     printf '#include "tree_sitter/parser.h"\n' > "$dir/src/scanner.c" || return 1
     printf '//! tree-sitter build-pipeline fixture crate.\n' > "$dir/src/lib.rs" || return 1
-    cat > "$dir/Cargo.toml" <<'TOML'
+    cat > "$dir/Cargo.toml" <<TOML
 [package]
 name = "tree-sitter-reify"
 version = "0.0.0"
@@ -568,6 +569,7 @@ build = "build.rs"
 
 [build-dependencies]
 cc = "1"
+reify-exec-lookup = { path = "$REPO_ROOT/crates/reify-exec-lookup" }
 
 [workspace]
 TOML
