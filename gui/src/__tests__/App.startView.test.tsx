@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@solidjs/testing-library';
 import type { FileData, ModeState, PersistentViewState, PublishedState } from '../types';
+import { DebugListenerBindFailure } from '../types';
 import { flushMacrotasks, deferred, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
 import { makeGuiState } from './test_utils/guiState';
@@ -576,6 +577,39 @@ describe('App launcher Start view (alpha-spine β)', () => {
     const error = await screen.findByTestId('start-mode-error');
     expect(error.textContent).toContain('E_GUI_MODE_FAILED');
     expect(error.textContent).toContain('IPC channel closed');
+    expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
+  });
+
+  it('a Debug click whose set_mode reports a listener bind failure shows E_GUI_DEBUG_LISTENER_FAILED with the bind error', async () => {
+    const bindMessage = 'failed to bind debug server on 127.0.0.1:3939: Address already in use';
+    vi.mocked(bridge.setMode).mockRejectedValueOnce(new DebugListenerBindFailure(bindMessage));
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(error.textContent).toContain(bindMessage);
+    expect(mockedInitDebugBridge).not.toHaveBeenCalled();
+  });
+
+  it('after an env-launched debug session whose set_mode failed, a Debug click whose set_mode fails at the IPC level shows E_GUI_MODE_FAILED', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.setMode)
+      .mockRejectedValueOnce('IPC channel closed')
+      .mockRejectedValueOnce('IPC channel reset');
+    await renderAndWaitForReady();
+    await waitFor(() =>
+      expect(screen.getByTestId('start-mode-error').textContent).toContain('IPC channel closed'),
+    );
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('start-mode-error').textContent).toContain('IPC channel reset'),
+    );
+    const error = screen.getByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_MODE_FAILED');
     expect(error.textContent).not.toContain('E_GUI_DEBUG_LISTENER_FAILED');
   });
 
