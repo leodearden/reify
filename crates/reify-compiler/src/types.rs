@@ -1154,6 +1154,37 @@ pub struct CompiledGuardedGroup {
     pub parent_guard: Option<ValueCellId>,
 }
 
+/// A cell a guarded group owns: its synthetic guard cell, or a declared
+/// member of either branch.
+#[derive(Debug, Clone, Copy)]
+pub enum GuardedGroupCell<'a> {
+    Guard(&'a CompiledGuardedGroup),
+    Member(&'a ValueCellDecl),
+}
+
+impl<'a> GuardedGroupCell<'a> {
+    pub fn id(self) -> &'a ValueCellId {
+        match self {
+            GuardedGroupCell::Guard(group) => &group.guard_value_cell,
+            GuardedGroupCell::Member(decl) => &decl.id,
+        }
+    }
+}
+
+impl CompiledGuardedGroup {
+    /// The declared members of both branches: `members`, then `else_members`.
+    pub fn member_decls(&self) -> impl Iterator<Item = &ValueCellDecl> {
+        self.members.iter().chain(&self.else_members)
+    }
+
+    /// Every cell this group owns, in contribution order: the guard cell,
+    /// then [`Self::member_decls`].
+    pub fn owned_cells(&self) -> impl Iterator<Item = GuardedGroupCell<'_>> {
+        std::iter::once(GuardedGroupCell::Guard(self))
+            .chain(self.member_decls().map(GuardedGroupCell::Member))
+    }
+}
+
 /// A single arm of a match-block decl group (task 2372).
 ///
 /// Produced by desugaring `match head_type { Hex => sub head : HexHead }` at decl
