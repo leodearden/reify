@@ -110,24 +110,31 @@ _live_refs_scan_fdcwd() {
 
     # cwd + open-fd references: one find pass prints every process's cwd and
     # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
-    # fork). awk loads the candidate realpaths as input records (the NR==FNR
-    # two-file trick — avoids `-v`'s backslash-escape processing on data), then
-    # for each target prints any candidate it equals or is a "$cand/" descendant
-    # of (string compare, so arbitrary path characters are safe), each candidate
-    # at most once, exiting early once every candidate is accounted for.
-    # /proc/<pid>/task is pruned to skip the per-thread symlink duplicates.
+    # fork). /proc/<pid>/task is pruned to skip the per-thread symlink
+    # duplicates.
     find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
             \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
-        | awk '
-            NR==FNR { if ($0 != "") cand[++n] = $0; next }
-            {
-                for (i = 1; i <= n; i++)
-                    if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
-                        print cand[i]; seen[i] = 1; nfound++
-                    }
-                if (n > 0 && nfound >= n) exit
-            }
-        ' <(printf '%s\n' "$@") - 2>/dev/null || true
+        | _live_refs_match_targets "$@" || true
+}
+
+# _live_refs_match_targets RP... — reads target paths on stdin. awk loads the
+# candidate realpaths as input records (the NR==FNR two-file trick — avoids
+# `-v`'s backslash-escape processing on data), then for each target prints any
+# candidate it equals or is a "$cand/" descendant of (string compare, so
+# arbitrary path characters are safe), each candidate at most once, exiting
+# early once every candidate is accounted for.
+_live_refs_match_targets() {
+    [ $# -gt 0 ] || return 0
+    awk '
+        NR==FNR { if ($0 != "") cand[++n] = $0; next }
+        {
+            for (i = 1; i <= n; i++)
+                if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
+                    print cand[i]; seen[i] = 1; nfound++
+                }
+            if (n > 0 && nfound >= n) exit
+        }
+    ' <(printf '%s\n' "$@") - 2>/dev/null
 }
 
 # _live_refs_scan_maps RP... — the mmap HALF of the scan. Same split rationale
@@ -159,6 +166,120 @@ _live_refs_scan_maps() {
         | sed 's:/$::' || true
 }
 
+# _live_refs_foreign_mntns_pids — prints "<ns> <pid>" for every readable process
+# whose mount namespace differs from the scanner's. The device filter is
+# load-bearing: stat -L on a process we may not ptrace exits 0 with a procfs
+# directory's dev:ino, so only entries on the nsfs device are namespaces.
+_live_refs_foreign_mntns_pids() {
+    local self
+    self="$(stat -L -c '%d:%i' /proc/self/ns/mnt 2>/dev/null)" || return 0
+    stat -L -c '%d:%i %n' /proc/[0-9]*/ns/mnt 2>/dev/null \
+        | awk -v self="$self" '
+            BEGIN { split(self, s, ":") }
+            {
+                split($1, d, ":")
+                if (d[1] != s[1] || $1 == self) next
+                split($2, p, "/"); print $1, p[3]
+            }
+        ' || true
+}
+
+# _live_refs_ns_aliases FOREIGN RP... — FOREIGN is _live_refs_foreign_mntns_pids'
+# output. Prints three lines per alias, `<ns>`, `<mount point M>` and
+# `<candidate>`, for every foreign-namespace mount whose root has a candidate's
+# dev:ino at an M other than that candidate's own path. Each namespace is read
+# through one representative pid, and the whole set is resolved in a fixed
+# number of processes. A namespace whose mountinfo or root cannot be read yields
+# no alias: it is skipped, never counted as referencing.
+_live_refs_ns_aliases() {
+    local foreign="$1"; shift
+    [ -n "$foreign" ] && [ $# -gt 0 ] || return 0
+
+    local -a mountinfos roots
+    mapfile -t mountinfos < <(awk '!seen[$1]++ { print "/proc/" $2 "/mountinfo" }' <<<"$foreign")
+    mapfile -t roots < <(grep -H '' "${mountinfos[@]}" 2>/dev/null | LC_ALL=C awk '
+        {
+            colon = index($0, ":")
+            split(substr($0, 1, colon - 1), f, "/")
+            split(substr($0, colon + 1), fld, " ")
+            m = fld[5]
+            if (index(m, "\\012")) next
+            gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m); gsub(/\\134/, "\\", m)
+            print "/proc/" f[3] "/root" m
+        }
+    ' || true)
+    [ ${#roots[@]} -gt 0 ] || return 0
+
+    awk '
+        FILENAME == ARGV[1] {
+            sp = index($0, " "); key = substr($0, 1, sp - 1)
+            cand[key, ++ncand[key]] = substr($0, sp + 1); next
+        }
+        FILENAME == ARGV[2] { ns_of[$2] = $1; next }
+        {
+            sp = index($0, " "); key = substr($0, 1, sp - 1)
+            if (!(key in ncand)) next
+            rest = substr($0, sp + 1 + length("/proc/"))
+            slash = index(rest, "/")
+            pid = substr(rest, 1, slash - 1)
+            m = substr(rest, slash + length("/root"))
+            if (m == "") m = "/"
+            for (i = 1; i <= ncand[key]; i++)
+                if (cand[key, i] != m) print ns_of[pid] "\n" m "\n" cand[key, i]
+        }
+    ' <(stat -L -c '%d:%i %n' "$@" 2>/dev/null) \
+      <(printf '%s\n' "$foreign") \
+      <(stat -L -c '%d:%i %n' "${roots[@]}" 2>/dev/null) 2>/dev/null || true
+}
+
+# _live_refs_ns_targets PID... — the cwd and open-fd link targets of exactly
+# the given pids, as those processes see them.
+_live_refs_ns_targets() {
+    [ $# -gt 0 ] || return 0
+    find "${@/#//proc/}" -maxdepth 2 -path '*/task' -prune -o -type l \
+            \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null || true
+}
+
+# _live_refs_translate PAIRS_FILE — PAIRS_FILE holds interleaved `M` and
+# `candidate` lines. Reads target paths on stdin and prints, for each target at
+# or under some M, the candidate followed by the target's remainder after M.
+# Other targets are dropped: the host-namespace passes already saw them as-is.
+_live_refs_translate() {
+    awk '
+        FILENAME == ARGV[1] { if (FNR % 2) m[++n] = $0; else c[n] = $0; next }
+        {
+            for (i = 1; i <= n; i++) {
+                if (m[i] == "/") print ($0 == "/" ? c[i] : c[i] $0)
+                else if ($0 == m[i]) print c[i]
+                else if (index($0, m[i] "/") == 1) print c[i] substr($0, length(m[i]) + 1)
+            }
+        }
+    ' "$1" - 2>/dev/null
+}
+
+# _live_refs_scan_namespaces RP... — the third HALF of the scan: references
+# held by same-user processes in another mount namespace, which reach a
+# candidate through that namespace's own mount of it (canonical-build-path PRD
+# decision 16). Translation is per namespace, because two namespaces may mount
+# different candidates at the same path.
+_live_refs_scan_namespaces() {
+    [ $# -gt 0 ] || return 0
+
+    local foreign aliases ns
+    foreign="$(_live_refs_foreign_mntns_pids)"
+    [ -n "$foreign" ] || return 0
+    aliases="$(_live_refs_ns_aliases "$foreign" "$@")"
+    [ -n "$aliases" ] || return 0
+
+    local -a pids
+    while IFS= read -r ns; do
+        mapfile -t pids < <(awk -v ns="$ns" '$1 == ns { print $2 }' <<<"$foreign")
+        _live_refs_ns_targets "${pids[@]}" \
+            | _live_refs_translate <(awk -v ns="$ns" 'NR % 3 == 1 { keep = ($0 == ns); next } keep' <<<"$aliases") \
+            | _live_refs_match_targets "$@" || true
+    done < <(awk 'NR % 3 == 1 && !seen[$0]++' <<<"$aliases")
+}
+
 # live_referenced_paths RP... — given one or more resolved realpaths (trash
 # dirs for the reaper, OR pool-lane / orphan-worktree dirs for the reclaim
 # live-consumer gate — task 5378, task 5572), print (one per line,
@@ -186,6 +307,7 @@ live_referenced_paths() {
     # always were — every caller keys the output into a set.
     _live_refs_scan_fdcwd "$@"
     _live_refs_scan_maps "$@"
+    _live_refs_scan_namespaces "$@"
 }
 
 # live_ref_present DIR — single-candidate predicate over the two scan halves.
@@ -226,5 +348,8 @@ live_ref_present() {
     [ -n "$hits" ] && return 0
 
     hits="$(_live_refs_scan_maps "$rp")" || hits=""
+    [ -n "$hits" ] && return 0
+
+    hits="$(_live_refs_scan_namespaces "$rp")" || hits=""
     [ -n "$hits" ]
 }
