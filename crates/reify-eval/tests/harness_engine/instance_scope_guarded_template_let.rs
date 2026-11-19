@@ -3,6 +3,15 @@
 //! #10015). No instance holds a cell of its own for a guarded-group member, so
 //! a grown slot, an ungraphed slot and a dynamic index must all read the same
 //! value as the template.
+//!
+//! That is the template-value rule. The per-instance alternative, which
+//! evaluates each instance's guarded groups against its own guard and inputs,
+//! is owned by #7992. Only
+//! `a_slot_grown_by_a_count_override_reads_a_guarded_template_let_like_the_original_slots`
+//! separates the two rules: it overrides the template's `len` alone, so its
+//! slots read the template's `q` rather than one computed from their own
+//! `len`. The other tests keep template and slot inputs equal, so their
+//! literals hold under either rule.
 
 use reify_core::ValueCellId;
 use reify_eval::EvalResult;
@@ -98,6 +107,16 @@ fn a_slot_grown_by_a_count_override_reads_a_guarded_template_let_like_the_origin
         "premise: LInner.q = 30mm / 2 * 3; slot equality alone also holds when both \
          scopes degrade together"
     );
+    for slot in GROWN_SLOTS {
+        let len = cell(&result, slot, "len");
+        assert_eq!(
+            len,
+            Some(&Value::length(0.01)),
+            "premise: {slot} keeps its own len = 10mm, not the template's override; equal \
+             inputs would stop this test separating the template-value rule from the \
+             per-instance rule; got {len:?}"
+        );
+    }
     assert_slots_read_the_template_let(&result, GROWN_SLOTS);
 }
 
