@@ -1869,6 +1869,113 @@ fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
     );
 }
 
+/// An instance-scope `@optimized` let reading a where-guarded template let
+/// reuses the template's dispatch, silently.
+///
+/// Since task 10015 `elaborate_child_params_only` seeds phase 1's scope with
+/// the template's guarded-group cells, so `child_values` and phase 1.5's
+/// overlay both carry `half` and the read compares equal. Measured on
+/// c783b7386c with that seed loop disabled, the same fixture reported one
+/// `InputNotComparable` warning and left both elaboration-only cells `Undef`.
+/// `const777_fn` ignores its input, so 777 can only come from Reuse; the body
+/// `x + 100` makes a body-inline over the seed read 106.
+///
+/// The CHARACTERIZATION block pins today's template-scope 106: the task-4707
+/// cold guarded-member cone pass re-folds graph-stamped cells through the .ri
+/// body (ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT). A fix there flips those two
+/// assertions to 777; re-point them, do not re-baseline them.
+#[test]
+fn instance_scope_optimized_let_over_a_guarded_template_let_reuses_the_dispatch_silently() {
+    let source = r#"
+        @optimized("test::const777")
+        fn guarded_777(x : Int) -> Int { x + 100 }
+        structure GuardProbe { param v : Int = 0 }
+        structure GuardedInner {
+            param n : Int = 3
+            param on : Bool = true
+            where on { let half = n * 2 }
+            let r = guarded_777(half)
+            sub probe = GuardProbe(v: r)
+        }
+        structure GuardedOuter { sub a = GuardedInner() }
+        structure GuardedRack {
+            param k : Int = 2
+            sub items : List<GuardedInner>
+            constraint items.count == k
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+    engine.set_param_and_invalidate(&ValueCellId::new("GuardedRack", "k"), Value::Int(3));
+
+    let eval_result = engine.eval(&compiled);
+    let value_of = |entity: &str, member: &str| {
+        eval_result
+            .values
+            .get(&ValueCellId::new(entity, member))
+            .cloned()
+    };
+
+    // (a) Premise: the guarded let is determined at template scope, so the
+    //     read comparison below is not two absences comparing equal.
+    assert_eq!(
+        value_of("GuardedInner", "half"),
+        Some(Value::Int(6)),
+        "premise: the guarded template let GuardedInner.half must be determined"
+    );
+
+    // (b) Silent: the read compared equal, so no decline is reported.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::const777"))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "a Warning here is the InputNotComparable decline (\"input \
+         GuardedInner.half is not visible at instance scope\"): the guarded-group \
+         seed no longer reaches the instance map. Got: {:?}",
+        declines
+    );
+
+    // (c) Phase 1.5: the scratch `r` the nested ctor arg reads Reused.
+    assert_eq!(
+        value_of("GuardedOuter.a.probe", "v"),
+        Some(Value::Int(777)),
+        "GuardedOuter.a.probe.v must be the reused dispatch 777. Undef = declined \
+         and body-inlined over an absent input; Int(106) = body-inlined over the \
+         seed"
+    );
+
+    // (d) Phase 2: a slot grown past the count's static default, which no graph
+    //     cell (so no cone pass) reaches, holds the commit as elaborated.
+    assert_eq!(
+        value_of("GuardedRack.items[2]", "r"),
+        Some(Value::Int(777)),
+        "GuardedRack.items[2].r must be the reused dispatch 777. Undef = declined \
+         and body-inlined over an absent input; Int(106) = body-inlined over the \
+         seed"
+    );
+
+    // (e) CHARACTERIZATION — today's behaviour, not the contract. The cone pass
+    //     re-folds the template cell and the graph-stamped instance cell through
+    //     the .ri body, so within GuardedOuter.a, `r` (106) differs from
+    //     `probe.v` (777). Ticket tkt_0RX54Y62HZT16CB8Q92PED0MVT: a fix flips
+    //     both to 777; re-point these, do not re-baseline them.
+    for entity in ["GuardedInner", "GuardedOuter.a"] {
+        assert_eq!(
+            value_of(entity, "r"),
+            Some(Value::Int(106)),
+            "characterization: {entity}.r is re-folded through the .ri body by the \
+             task-4707 cone pass (tkt_0RX54Y62HZT16CB8Q92PED0MVT). If this is now \
+             777 that ticket has landed — see this test's doc"
+        );
+    }
+}
+
 /// amend (#6662 reviewer_comprehensive, suggestion #7 — the two instance maps).
 ///
 /// The reuse gate runs against phase 1.5's `overlay` and phase 2's
