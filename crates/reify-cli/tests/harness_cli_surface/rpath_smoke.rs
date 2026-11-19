@@ -149,6 +149,19 @@ fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
     })
 }
 
+/// The canonical parent dir of the path `ldd` resolves `soname` to. `None` if
+/// `soname` has no `<soname> =>` line (see `ldd_resolved_path`). Canonicalizing
+/// folds the merged-/usr spellings of one dir (`/lib/x86_64-linux-gnu` and
+/// `/usr/lib/x86_64-linux-gnu`) and the deps tree's `/opt/reify-deps/lib/./`
+/// form into one comparable path.
+fn ldd_resolved_dir(ldd_output: &str, soname: &str) -> Option<std::path::PathBuf> {
+    let path = ldd_resolved_path(ldd_output, soname)?;
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| panic!("ldd path {path} has no parent dir"));
+    Some(std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}")))
+}
+
 /// The repo root, derived from this crate's manifest dir
 /// (`crates/reify-cli/../..`).
 fn repo_root() -> std::path::PathBuf {
@@ -365,12 +378,13 @@ fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
     );
 }
 
-/// (f) RUNPATH ORDER (task 10113). `reify` must search OCCT's lib dir before
-/// the deps prefix, as `reify-gui` does: the deps prefix ships its own
-/// libstdc++/libgcc_s, so the dir searched first decides which copy the
-/// binary binds, and the installer bundles one copy for both binaries.
+/// (f) C++ RUNTIME BINDING (task 10113). Bare `ldd` must resolve `reify`'s
+/// libstdc++.so.6 and libgcc_s.so.1 outside the deps prefix, as it does for
+/// `reify-gui`: the deps prefix ships its own copies, and the installer bundles
+/// one copy for both binaries. The mechanism, also asserted, is OCCT's lib dir
+/// preceding the deps prefix in RUNPATH.
 #[test]
-fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
+fn reify_binary_binds_the_cxx_runtime_outside_the_deps_prefix() {
     let exe = env!("CARGO_BIN_EXE_reify");
     let Some(readelf) = readelf_d(exe) else {
         return;
@@ -385,21 +399,34 @@ fn reify_binary_runpath_searches_occt_lib_dir_before_the_deps_prefix() {
     let Some(ldd_out) = bare_ldd(exe) else {
         return;
     };
-    let resolved_dir = |soname: &str| {
-        let path = ldd_resolved_path(&ldd_out, soname)
-            .unwrap_or_else(|| panic!("bare ldd of {exe} does not resolve {soname}:\n{ldd_out}"));
-        let dir = std::path::Path::new(path)
-            .parent()
-            .unwrap_or_else(|| panic!("ldd path {path} has no parent dir"));
-        std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}"))
+    let required_dir = |soname: &str| {
+        ldd_resolved_dir(&ldd_out, soname)
+            .unwrap_or_else(|| panic!("bare ldd of {exe} does not resolve {soname}:\n{ldd_out}"))
     };
-    let occt_dir = resolved_dir(tkernel);
-    let deps_dir = resolved_dir(gmsh);
+    let occt_dir = required_dir(tkernel);
+    let deps_dir = required_dir(gmsh);
     if occt_dir == deps_dir {
         eprintln!(
-            "{tkernel} and {gmsh} both resolve in {occt_dir:?}; no order to check — skipping"
+            "{tkernel} and {gmsh} both resolve in {occt_dir:?}; no order or binding to check \
+             — skipping"
         );
         return;
+    }
+
+    for soname in ["libstdc++.so.6", "libgcc_s.so.1"] {
+        match ldd_resolved_dir(&ldd_out, soname) {
+            Some(dir) => assert!(
+                dir != deps_dir,
+                "bare ldd of {exe} binds {soname} from {dir:?}, the deps prefix (where {gmsh} \
+                 resolves). reify-gui binds the system's {soname}, and the installer bundles \
+                 one copy for both binaries, so reify must bind it outside the deps prefix \
+                 too. Its RUNPATH (`readelf -d {exe}`) must search OCCT's lib dir before the \
+                 deps prefix: an unscoped `cargo:rustc-link-arg` -rpath emitted ahead of the \
+                 bin-scoped ones in crates/reify-cli/build.rs reaches the bin first.\n\n\
+                 Full ldd output:\n{ldd_out}"
+            ),
+            None => eprintln!("{soname} is not in {exe}'s ldd output; skipping its binding check"),
+        }
     }
 
     let runpath = runpath_entry(&readelf)
