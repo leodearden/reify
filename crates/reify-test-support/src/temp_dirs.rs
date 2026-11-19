@@ -461,6 +461,7 @@ pub fn partition_enforced_and_stale(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panic_capture::panic_message_of;
     use std::cell::RefCell;
     use std::panic::AssertUnwindSafe;
     use std::path::PathBuf;
@@ -864,11 +865,7 @@ mod tests {
     #[test]
     fn anuts_unreadable_file_panics_naming_the_absolute_path() {
         let rel = "crates/reify-test-support/definitely-not-a-real-file.rs";
-        let err = with_silent_panic_hook(|| {
-            std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(rel))
-                .expect_err("scanning a nonexistent file must panic, not pass vacuously")
-        });
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
+        let msg = panic_message_of(|| assert_no_unguarded_temp_dir_sites(rel));
         assert!(
             msg.contains(&format!("/{rel}")),
             "the panic must name the ABSOLUTE path it attempted (repo root + \
@@ -890,11 +887,7 @@ mod tests {
         // which is how this test reaches a fixture that is not a tracked
         // workspace file.
         let path = file.display().to_string();
-        let err = with_silent_panic_hook(|| {
-            std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(&path))
-                .expect_err("a violating file must panic, not pass")
-        });
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
+        let msg = panic_message_of(|| assert_no_unguarded_temp_dir_sites(&path));
 
         assert!(
             msg.contains("line 2"),
