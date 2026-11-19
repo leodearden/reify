@@ -10,7 +10,8 @@ for byte. This module never imports reify_verify. Bash is the oracle until the
 cutover: a divergence reds, and its message names the module to edit and the
 port-window rule (PRD D13). The one exception is the harness's
 EXPECTED_DIVERGENCES (PRD D8's listed divergences), which
-TestExpectedDivergences asserts positively both ways.
+TestExpectedDivergences asserts positively both ways. One check plans nothing:
+every lib verify.sh's load-time `source` chain reaches has a missing-lib row.
 
 The runner, the scenario record and compare() live in
 tests/infra/plan_parity_harness.py. The grids are the sibling shards
@@ -112,9 +113,9 @@ PROBE_EXHAUSTED = (
 )
 
 
-def verify_sh_refusal(lib):
-    """verify.sh's own load-time guard: exit 1 and its not-found line."""
-    return lib, 1, f"verify.sh: ERROR — {lib} not found next to verify.sh"
+def not_found_next_to(lib, script="verify.sh", exit_code=1):
+    """The load-time guard `script` holds for `lib`: its exit code and its not-found line."""
+    return lib, exit_code, f"{script}: ERROR — {lib} not found next to {script}"
 
 
 def slot_acquire_refusal(lib):
@@ -125,21 +126,22 @@ def slot_acquire_refusal(lib):
 # The libs verify.sh's load-time source chain guards, transitive ones included, in the order bash checks
 # them: (deleted path, bash's exit code, bash's refusal line, with {root} the clone's physical root).
 MISSING_LIB_REFUSALS = (
-    verify_sh_refusal("scripts/occt-scope-lib.sh"),
-    verify_sh_refusal("scripts/release-scope-lib.sh"),
+    not_found_next_to("scripts/occt-scope-lib.sh"),
+    not_found_next_to("scripts/release-scope-lib.sh"),
     # release-scope-lib.sh sources it behind its own guard, which runs before verify.sh's (#10080).
-    ("scripts/affected-crates-lib.sh", 2,
-     "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh"),
-    verify_sh_refusal("scripts/lib_test_semaphore.sh"),
-    ("scripts/lib_slot_acquire.sh", 1,
-     "lib_test_semaphore.sh: ERROR — scripts/lib_slot_acquire.sh not found next to lib_test_semaphore.sh"),
+    not_found_next_to("scripts/affected-crates-lib.sh", "release-scope-lib.sh", exit_code=2),
+    not_found_next_to("scripts/lib_test_semaphore.sh"),
+    not_found_next_to("scripts/lib_slot_acquire.sh", "lib_test_semaphore.sh"),
     slot_acquire_refusal("scripts/lib_clock_stop.sh"),
     slot_acquire_refusal("scripts/lib_event_log.sh"),
-    verify_sh_refusal("scripts/cpu-admit.sh"),
-    verify_sh_refusal("scripts/lib_proc_reaper.sh"),
-    verify_sh_refusal("scripts/heavy-test-filter-lib.sh"),
-    verify_sh_refusal("scripts/lib_git_env_scrub.sh"),
+    not_found_next_to("scripts/cpu-admit.sh"),
+    not_found_next_to("scripts/lib_proc_reaper.sh"),
+    not_found_next_to("scripts/heavy-test-filter-lib.sh"),
+    not_found_next_to("scripts/lib_git_env_scrub.sh"),
 )
+COPY_LIST_PREFLIGHT_LIB = "tests/infra/copy_list_preflight_lib.sh"
+# verify.sh sources it inside a function, at run time, so a plan never reaches it.
+RUN_TIME_SOURCES = frozenset({"lib_main_checkout.sh"})
 HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
 HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
 EMPTY_HEAVY_FILTER = (
@@ -166,6 +168,19 @@ SENTINEL_RENDERS = ("@@SEMAPHORE_ACQUIRE@@", "@@SEMAPHORE_RELEASE@@")
 
 def tearDownModule():
     discard_clone()
+
+
+def source_closure(root: Path, entry: str) -> frozenset[str]:
+    """The .sh libs `entry`'s `source` lines reach transitively under root/scripts, by
+    copy_list_preflight_lib.sh's derive_source_closure."""
+    run = subprocess.run(
+        ["bash", "-c", 'source "$1" && derive_source_closure "$2" "$3"', "_",
+         str(root / COPY_LIST_PREFLIGHT_LIB), str(root / "scripts"), entry],
+        capture_output=True, text=True,
+    )
+    if run.returncode != 0:
+        raise AssertionError(f"derive_source_closure exited {run.returncode}: {run.stderr}")
+    return frozenset(run.stdout.split())
 
 
 def role_env(role):
@@ -621,6 +636,14 @@ class TestPlanParityStartup(InParityClone):
             (self.clone.root / lib).unlink()
             expect = Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal.format(root=root),))
             self.check(expect)
+
+    def test_every_load_time_source_has_a_refusal_row(self):
+        """A lib that verify.sh's load-time `source` chain reaches, derived mechanically, has a
+        MISSING_LIB_REFUSALS row, so a new one cannot be left out of the parity check."""
+        closure = source_closure(self.clone.root, "verify.sh")
+        self.assertLessEqual(RUN_TIME_SOURCES, closure, "premise: verify.sh still sources each run-time lib")
+        rows = {Path(lib).name for lib, _, _ in MISSING_LIB_REFUSALS}
+        self.assertEqual(closure - RUN_TIME_SOURCES - rows, frozenset(), "sourced at load time, but no row")
 
     def test_internal_error_traceback_only_under_debug(self):
         """PRD D8: an internal error prints its one line, after its traceback only when REIFY_VERIFY_DEBUG=1."""
