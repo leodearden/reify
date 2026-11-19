@@ -37,10 +37,10 @@ module mirror_bare_origin_purpose
 //
 // Before leaf β the stderr did NOT contain "failed to compile geometry
 // operation" at all.  After it, the error appears exactly once.  `check` exits
-// non-zero because `check_gating_error` gates on any non-allowlisted
-// Severity::Error in the merged set (#5403), and no CHECK_ERROR_EXIT_ALLOWLIST
-// entry covers the plane_yz producer rejection or the geometry-compile family —
-// deliberately: they are genuine design errors, as `reify eval` agrees.
+// non-zero because `check_gating_error` gates on every Severity::Error in the
+// merged set (#5403), and nothing excuses the plane_yz producer rejection or
+// the geometry-compile family — deliberately: they are genuine design errors,
+// as `reify eval` agrees.
 // Asserted by cli_check.rs::check_purpose_surfaces_geometry_compile_error and
 // check_purpose_does_not_contradict_definite_verdicts.
 

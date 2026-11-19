@@ -1134,10 +1134,10 @@ purpose thick_enough(subject : Structure) {
 ///
 /// Task 5403 (γ) — POST-GATE. Leaf β collected these diagnostics into the
 /// reported set but deliberately left the exit code alone; γ makes any
-/// `Severity::Error` in that MERGED set exit non-zero unless
-/// `CHECK_ERROR_EXIT_ALLOWLIST` excuses it. Nothing excuses
+/// `Severity::Error` in that MERGED set exit non-zero; nothing excuses one.
+/// That covers
 /// `mirror_bare_origin.ri`'s `mirror: ox argument expects Length` /
-/// `failed to compile geometry operation: …` errors — they are genuine design
+/// `failed to compile geometry operation: …` errors — genuine design
 /// errors, and `reify eval` on the same file has always exited 1 — so the
 /// status assertion below is now `!status.success()`. The collection
 /// assertions are untouched: γ moves the exit code, never the output.
@@ -1151,9 +1151,9 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
     // diagnostic list and needs no kernel.
     assert!(
         !status.success(),
-        "γ (#5403) gates `check` on any non-allowlisted Severity::Error in the \
-         merged set, and this fixture's geometry-compile errors are not \
-         allowlisted.\nstdout: {stdout}\nstderr: {stderr}"
+        "γ (#5403) gates `check` on any Severity::Error in the merged set, \
+         and this fixture carries geometry-compile errors.\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -1347,13 +1347,13 @@ fn check_purpose_surfaces_geometry_compile_error() {
     // POST-γ (#5403): the identical `check_gating_error` gate now runs on this
     // path too, over the same already-merged, already-reported `diagnostics`
     // list. This fixture's `mirror: ox argument expects Length` /
-    // `failed to compile geometry operation: …` errors are not allowlisted, so
+    // `failed to compile geometry operation: …` errors are `Severity::Error`, so
     // the exit code moves. Above the OCCT early-return on purpose: the gate is
     // a pure function of the diagnostic list and needs no kernel.
     assert!(
         !status.success(),
         "γ (#5403) gates the --purpose path identically to the no-purpose one; \
-         this fixture's geometry-compile errors are not allowlisted.\n\
+         this fixture carries geometry-compile errors.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 
@@ -1439,7 +1439,7 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
     // rather than dropped, so a one-sided regression on either path is loud.
     assert!(
         !status.success(),
-        "γ (#5403) gates the --purpose path on this fixture's non-allowlisted \
+        "γ (#5403) gates the --purpose path on this fixture's \
          geometry-compile errors.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
@@ -1483,7 +1483,7 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
 /// nothing else compares them directly.
 ///
 /// `mirror_bare_origin_purpose.ri` is the right fixture: it carries
-/// non-allowlisted geometry-compile Errors, and both paths reach them (the
+/// geometry-compile Errors, and both paths reach them (the
 /// no-purpose path through `realize_for_check`, the `--purpose` path through
 /// D1 item 2's `module_has_geometry` build routing).
 ///
@@ -1508,7 +1508,7 @@ fn check_purpose_gate_matches_the_no_purpose_gate() {
 
     assert!(
         !plain_status.success(),
-        "no-purpose path must gate on the non-allowlisted geometry-compile \
+        "no-purpose path must gate on the geometry-compile \
          errors.\nstdout: {plain_stdout}\nstderr: {plain_stderr}"
     );
     assert!(
@@ -1540,8 +1540,8 @@ fn check_purpose_gate_matches_the_no_purpose_gate() {
 /// PRD `check-diagnostic-truthfulness.md` exists to remove.
 ///
 /// It is also a false EXIT: `check_gating_error` exits non-zero on any
-/// non-allowlisted `Severity::Error` in exactly this merged set, and no
-/// allowlist entry covers the export-walk messages (nor should one — they are
+/// `Severity::Error` in exactly this merged set, and nothing excuses the
+/// export-walk messages (nor should anything — they are
 /// output `check` must never produce at all). So the `realize_for_check`
 /// choice below is what keeps THIS TEST's `status.success()` assertion true:
 /// were `cmd_check` to go back to `Engine::build`, the leaked export error
