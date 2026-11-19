@@ -7,6 +7,8 @@
 # Places CMD's process tree in a cgroup-v2 scope under the appropriate role
 # slice with cpu.weight set by role, so under contention the kernel shares CPU
 # time by weight while a lone scope absorbs the whole box (work-conserving).
+# lib_cgroup.sh::cgroup_role_slice resolves each role's slice and documents
+# the defaults.
 #
 # Fails-open (C-G4): when cgroup governance is unsupported or force-disabled,
 # emits a warning and execs CMD directly (with nice de-prioritization if

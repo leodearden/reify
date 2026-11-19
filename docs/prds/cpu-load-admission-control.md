@@ -241,7 +241,15 @@ cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
   `reify-agents.slice` (agents land here, weight `W_task`) and `reify-merge.slice`
   (merge verify, weight `W_merge > W_task`). `cpu.weight` is proportional only **among
   siblings of the same parent** — scopes under different parents do **not** share by
-  weight, so the slice hierarchy is load-bearing, not cosmetic.
+  weight, so the slice hierarchy is load-bearing, not cosmetic. *(Amended 2026-11-19:
+  the governed role slices are `df-reify-governed-agents.slice` and
+  `df-reify-governed-merge.slice`, siblings under `df-reify-governed.slice` inside the
+  project slice `df-reify.slice`, so C-G2 holds across the dark-factory seam
+  (task 9998). The naming rule lives in dark-factory `docs/cgroup-slice-topology.md`;
+  the defaults live in `scripts/lib_cgroup.sh::cgroup_role_slice`. This is placement,
+  not activation: `cpu_governance` stays off. Sharing `df-reify.slice` does not by
+  itself place governed scopes inside `orchestrator-reify.service`'s kill group. The
+  contract text above is unchanged.)*
 - **C-G3 (merge-favored).** Default weights mirror the landed jobserver merge:task
   ≈ 3:1 baseline (`task_baseline = max(1, nproc//4)`): `W_task=100` (cgroup default),
   `W_merge=300`. Tunable in `dark-factory-orchestrator.yaml`.
