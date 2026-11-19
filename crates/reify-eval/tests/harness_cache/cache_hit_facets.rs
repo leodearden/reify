@@ -1,7 +1,8 @@
-//! What a realization-cache hit restores, twice-built on real OCCT under a
-//! demanded tolerance (PRD `docs/prds/v0_6/realized-world-evaluation.md`
-//! §9 ξ / D15): the second build is served from the cache and must give every
-//! displayed history-only datum the value the first build gave it.
+//! What a realization-cache hit restores and what it still drops, twice-built
+//! on real OCCT under a demanded tolerance (PRD
+//! `docs/prds/v0_6/realized-world-evaluation.md` §9 ξ / D15). The hit restores
+//! the swept kind (task 10153). It drops the topology-attribute facet, which is
+//! characterized here until S2 κ #9263 restores it.
 
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, ValueCellId};
@@ -157,7 +158,9 @@ fn cache_served_handle_drops_feature_provenance_selector() {
     let second = engine.build(&compiled, ExportFormat::Step);
     assert_build_was_cache_hit(&engine);
     // The probe's invariant 4 (no topology-attribute entries for a cache-served
-    // handle) causes this; S2 κ #9263 restores the attribute facet and flips it.
+    // handle) causes this. The defect was filed as ticket
+    // tkt_0RX4W019PMQR95930EGFZ464G4 and combined into S2 κ #9263, which
+    // restores the attribute facet and flips this assertion.
     assert_eq!(second.values.get(&made_cell), Some(&Value::Undef));
     let misses = provenance_misses(&second);
     assert!(
