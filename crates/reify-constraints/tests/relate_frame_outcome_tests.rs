@@ -18,7 +18,7 @@ use reify_constraints::relate_solve::{
 };
 use reify_constraints::scaling::SolveScaling;
 use reify_constraints::trust_region::{RANGE_COSINE_TOLERANCE, SolveBudget};
-use reify_core::DiagnosticCode;
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_ir::{NonFiniteEntry, ResidualSource, SolveFailureCause, SolveResult, SolveStall, Value};
 
 // ── η #6675: typed termination causes and the null-space basis ───────────────
@@ -104,25 +104,34 @@ fn failure_of(outcome: &FrameSolveOutcome) -> &SolveFailureCause {
     }
 }
 
-/// The adapter reports a non-Infeasible failure as `NoProgress`, rendering the
-/// cause and naming the unknown's sub; returns the reason.
+/// The adapter carries every failure as one coded Error inside `Infeasible`;
+/// returns that diagnostic.
 #[track_caller]
-fn assert_reports_no_progress(outcome: FrameSolveOutcome, unknown: &FrameUnknown) -> String {
+fn assert_carries_coded_error(
+    outcome: FrameSolveOutcome,
+    unknown: &FrameUnknown,
+    code: DiagnosticCode,
+) -> Diagnostic {
     let cause = failure_of(&outcome).to_string();
-    match outcome.into_solve_result(unknown) {
-        SolveResult::NoProgress { reason } => {
-            assert!(
-                reason.contains(&cause),
-                "the reason renders the cause's own figures: {reason}"
-            );
-            assert!(
-                reason.contains(&format!("`{}`", unknown.sub)),
-                "the reason names the sub: {reason}"
-            );
-            reason
+    let diagnostic = match outcome.into_solve_result(unknown) {
+        SolveResult::Infeasible { mut diagnostics } if diagnostics.len() == 1 => {
+            diagnostics.remove(0)
         }
-        other => panic!("expected NoProgress, got {other:?}"),
-    }
+        other => panic!("expected Infeasible with one diagnostic, got {other:?}"),
+    };
+    assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+    assert_eq!(diagnostic.code, Some(code), "{diagnostic:?}");
+    assert!(
+        diagnostic.message.contains(&cause),
+        "the message renders the cause's own figures: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.message.contains(&format!("`{}`", unknown.sub)),
+        "the message names the sub: {}",
+        diagnostic.message
+    );
+    diagnostic
 }
 
 /// B9 at the Frame-solve seam: an inconsistent driving set is CERTIFIED
@@ -176,32 +185,33 @@ fn a_one_step_budget_is_exhausted_not_infeasible() {
 }
 
 /// The `SolveResult` adapter keeps that contract: a certified infeasibility is a
-/// CODED `Infeasible`; budget exhaustion is `NoProgress` naming the counts.
+/// CODED `Infeasible`; budget exhaustion is a coded Error too, with the seed
+/// guidance.
 #[test]
-fn solve_result_adapter_codes_infeasible_and_reports_budget_as_no_progress() {
-    let (relations, unknown, seed) = two_parallel_concentrics();
-    let scaling = scaling_for(&relations, &unknown, &seed);
-    match solve_frame_result(&relations, &unknown, &seed, &scaling) {
-        SolveResult::Infeasible { diagnostics } => {
-            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-            assert_eq!(diagnostics[0].code, Some(DiagnosticCode::SolverInfeasible));
-        }
-        other => panic!("expected Infeasible, got {other:?}"),
-    }
+fn solve_result_adapter_codes_infeasible_and_budget_exhaustion() {
+    assert_carries_coded_error(
+        outcome_of(&two_parallel_concentrics(), SolveBudget::default()),
+        &bolt_unknown(),
+        DiagnosticCode::SolverInfeasible,
+    );
 
     let fixture = skewed_concentric_flush();
     let outcome = outcome_of(&fixture, SolveBudget { max_iterations: 1 });
-    let reason = assert_reports_no_progress(outcome, &fixture.1);
-    assert!(
-        reason.contains("1 of 1"),
-        "the reason names the counts: {reason}"
-    );
+    let exhausted =
+        assert_carries_coded_error(outcome, &fixture.1, DiagnosticCode::SolverBudgetExhausted);
+    for needle in ["1 of 1", "auto(seed"] {
+        assert!(
+            exhausted.message.contains(needle),
+            "the message names the counts and the seed guidance: {}",
+            exhausted.message
+        );
+    }
 }
 
-/// A stall is a search failure, so the adapter reports `NoProgress` rendering
-/// it, never a coded `Infeasible`.
+/// A stall is a search failure, so the adapter codes it
+/// `ConstraintUnsatisfiable`, never a certified `SolverInfeasible`.
 #[test]
-fn solve_result_adapter_reports_a_stall_as_no_progress() {
+fn solve_result_adapter_codes_a_stall_as_constraint_unsatisfiable() {
     let outcome = FrameSolveOutcome {
         iterations: 7,
         result: Err(SolveFailureCause::Stalled(SolveStall {
@@ -211,7 +221,11 @@ fn solve_result_adapter_reports_a_stall_as_no_progress() {
             max_scaled_residual: 40.0,
         })),
     };
-    assert_reports_no_progress(outcome, &bolt_unknown());
+    assert_carries_coded_error(
+        outcome,
+        &bolt_unknown(),
+        DiagnosticCode::ConstraintUnsatisfiable,
+    );
 }
 
 /// The off-axis size of a 3-vector expected to lie along `+z`.
@@ -647,10 +661,10 @@ fn a_nan_anchor_is_a_non_finite_evaluation_of_its_own_relation() {
     assert_eq!(outcome.iterations, 0, "{outcome:?}");
 }
 
-/// A non-finite evaluation is a search failure, so the adapter reports
-/// `NoProgress` rendering it, never a coded `Infeasible`.
+/// A non-finite evaluation is a search failure, so the adapter codes it
+/// `ConstraintUnsatisfiable`, never a certified `SolverInfeasible`.
 #[test]
-fn solve_result_adapter_reports_a_non_finite_evaluation_as_no_progress() {
+fn solve_result_adapter_codes_a_non_finite_evaluation_as_constraint_unsatisfiable() {
     let fixture = nan_anchor_beside_a_seated_concentric();
     let outcome = outcome_of(&fixture, SolveBudget::default());
     let cause = failure_of(&outcome);
@@ -658,5 +672,5 @@ fn solve_result_adapter_reports_a_non_finite_evaluation_as_no_progress() {
         matches!(cause, SolveFailureCause::NonFinite(_)),
         "the fixture must end non-finite: {cause:?}"
     );
-    assert_reports_no_progress(outcome, &fixture.1);
+    assert_carries_coded_error(outcome, &fixture.1, DiagnosticCode::ConstraintUnsatisfiable);
 }

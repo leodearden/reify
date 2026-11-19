@@ -290,11 +290,13 @@ pub enum DiagnosticCode {
     ///
     /// Also the code of a trust-region STALL in the relate-solve
     /// (`reify_ir::SolveFailureCause::Stalled`, rendered by
-    /// `crates/reify-eval/src/relate_solve.rs`): the step collapsed at a point that
-    /// is neither a root nor certified stationary — a search failure, not a proof.
-    /// Likewise of a NON-FINITE evaluation (`reify_ir::SolveFailureCause::NonFinite`):
-    /// a residual row or Jacobian entry was NaN or ±∞ where the solve stood, so it
-    /// could judge nothing there.
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`):
+    /// the step collapsed at a point that is neither a root nor certified
+    /// stationary — a search failure, not a proof. Likewise of a NON-FINITE
+    /// evaluation (`reify_ir::SolveFailureCause::NonFinite`, rendered with its
+    /// relation label by `crates/reify-eval/src/relate_solve.rs`): a residual row
+    /// or Jacobian entry was NaN or ±∞ where the solve stood, so it could judge
+    /// nothing there.
     ConstraintUnsatisfiable,
     /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
     /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve
@@ -331,8 +333,9 @@ pub enum DiagnosticCode {
     ConstraintRefuted,
     /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
     /// `reify_ir::SolveFailureCause::Infeasible` (task η #6675); rendered by
-    /// `crates/reify-constraints/src/relate_solve.rs::FrameSolveOutcome::into_solve_result`
-    /// and `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`
+    /// (the `SolveResult` adapter's renderer) and
+    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the
     /// construction site.
     ///
     /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
@@ -347,8 +350,9 @@ pub enum DiagnosticCode {
     SolverInfeasible,
     /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
     /// `reify_ir::SolveFailureCause::BudgetExhausted` (task η #6675); rendered by
-    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the construction
-    /// site.
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`
+    /// (shared by the `SolveResult` adapter and reify-eval's relate pass).
+    /// Severity::Error at the construction site.
     ///
     /// The continuous solve used its whole iteration budget without converging
     /// and without certifying infeasibility. The message states the iteration

@@ -26,8 +26,9 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
-    Twist, comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
-    solve_frame_outcome, solve_scaling, static_relation_residuals,
+    Twist, comparable_datum_operands, frame_failure_diagnostic, frame_value,
+    max_relation_exceedance, partition_driving_set, solve_frame_outcome, solve_scaling,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_constraints::trust_region::SolveBudget;
@@ -1732,39 +1733,40 @@ struct FailureContext<'s, 'a> {
 }
 
 /// The one diagnostic of a failed driving-set solve, coded by its cause
-/// ([`SolveFailureCause::code`]):
+/// ([`SolveFailureCause::diagnostic`]). This adds only what the scope context
+/// can name:
 /// - a certified infeasibility — the geometric conflict narrative of the
 ///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
 ///   relations whose rows remain violated;
-/// - budget exhaustion — the counts and step-norm trend, with the seed guidance;
-/// - a non-finite evaluation — the driving relation whose row it was;
-/// - a stall (or any later cause) — the cause's own figures.
+/// - a non-finite evaluation — the driving relation whose row it was, appended
+///   to the [`frame_failure_diagnostic`] sentence.
+///
+/// Every context-free cause (budget exhaustion with the seed guidance, a stall,
+/// any later cause) renders through [`frame_failure_diagnostic`].
 fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Diagnostic {
     let sub = &context.unknown.sub;
-    let message = match cause {
+    match cause {
         SolveFailureCause::Infeasible(certificate) => {
             let conflict = minimal_infeasible_subset(context);
-            format!(
+            cause.diagnostic(format!(
                 "{} The solver certified it: {cause}; violated: {}.",
                 conflict_message(&conflict, context.built, sub),
                 blamed_relations(certificate, context)
-            )
+            ))
         }
-        SolveFailureCause::BudgetExhausted(_) => format!(
-            "the relations on `{sub}` did not converge to a placement: {cause}. The seed \
-             configuration may be too far from a solution — try an `auto(seed = …)` \
-             nearer the intended placement"
-        ),
         SolveFailureCause::NonFinite(NonFiniteEvaluation {
             source: ResidualSource::Relation(driving_position),
             ..
-        }) => format!(
-            "the relations on `{sub}` could not be solved: {cause}, in {}",
-            driving_relation_label(*driving_position, context)
-        ),
-        _ => format!("the relations on `{sub}` could not be solved: {cause}"),
-    };
-    Diagnostic::error(message).with_code(cause.code())
+        }) => {
+            let mut diagnostic = frame_failure_diagnostic(cause, context.unknown);
+            diagnostic.message.push_str(&format!(
+                ", in {}",
+                driving_relation_label(*driving_position, context)
+            ));
+            diagnostic
+        }
+        _ => frame_failure_diagnostic(cause, context.unknown),
+    }
 }
 
 /// The driving relations `certificate` blames, most violated first, each named
@@ -3147,7 +3149,7 @@ mod tests_driving_set_failure {
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{
         BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
-        ResidualSource, SolveFailureCause, SolveStall,
+        ResidualSource, SolveFailureCause, SolveResult, SolveStall,
     };
 
     use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
@@ -3440,6 +3442,62 @@ structure PairSearchScope {
             "{diagnostic:?}"
         );
         assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
+    }
+
+    /// The scope renderer and the `SolveResult` adapter agree on every cause: the
+    /// same code and Error severity, the same text wherever the scope adds nothing
+    /// (budget exhaustion keeps its seed guidance), the adapter's text extended by
+    /// a relation label for a non-finite evaluation, and the cause's own figures
+    /// where it adds the conflict set.
+    #[test]
+    fn the_scope_renderer_and_the_solve_result_adapter_agree() {
+        with_failure_context(SolveBudget::default(), |context| {
+            for cause in [certified(), exhausted(), stalled(), non_finite()] {
+                let live = failure_diagnostic(&cause, context);
+                let carried = match (FrameSolveOutcome {
+                    iterations: 0,
+                    result: Err(cause.clone()),
+                })
+                .into_solve_result(context.unknown)
+                {
+                    SolveResult::Infeasible { mut diagnostics } if diagnostics.len() == 1 => {
+                        diagnostics.remove(0)
+                    }
+                    other => panic!("expected Infeasible with one diagnostic, got {other:?}"),
+                };
+                assert_eq!(
+                    (live.severity, live.code),
+                    (carried.severity, carried.code),
+                    "{cause:?}"
+                );
+                assert_eq!(
+                    (live.severity, live.code),
+                    (Severity::Error, Some(cause.code())),
+                    "{cause:?}"
+                );
+                match cause {
+                    SolveFailureCause::BudgetExhausted(_) | SolveFailureCause::Stalled(_) => {
+                        assert_eq!(live.message, carried.message, "{cause:?}");
+                    }
+                    SolveFailureCause::NonFinite(_) => {
+                        let label = live.message.strip_prefix(carried.message.as_str());
+                        assert!(
+                            label.is_some_and(|label| label.starts_with(", in `")),
+                            "the scope renderer appends a relation label to the adapter's \
+                             sentence: {live:?} vs {carried:?}"
+                        );
+                    }
+                    _ => {
+                        for message in [&live.message, &carried.message] {
+                            assert!(message.contains(&cause.to_string()), "{message}");
+                        }
+                    }
+                }
+                if let SolveFailureCause::BudgetExhausted(_) = cause {
+                    assert!(live.message.contains("auto(seed"), "{}", live.message);
+                }
+            }
+        });
     }
 
     /// The search walks the driving set's pairs i-before-j, in INSTANCE positions

@@ -377,11 +377,11 @@ impl FrameSolveOutcome {
     ///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true`
     ///   iff the Jacobian at the solution pins all 6 Frame DOF (no residual gauge
     ///   freedom) and `unknown` is strict `auto`.
-    /// - [`SolveResult::Infeasible`] — the driving relations are certified
-    ///   mutually inconsistent; one diagnostic coded [`SolveFailureCause::code`].
-    /// - [`SolveResult::NoProgress`] — every other [`SolveFailureCause`] (e.g. the
-    ///   budget ran out, the step stalled, or a residual or Jacobian entry evaluated
-    ///   non-finite); the reason renders the cause.
+    /// - [`SolveResult::Infeasible`] — for EVERY [`SolveFailureCause`]: one Error
+    ///   diagnostic coded by [`SolveFailureCause::code`] and rendered by
+    ///   [`frame_failure_diagnostic`]. The code, not the variant, names the cause.
+    ///   [`SolveResult::NoProgress`] is never returned, because it carries no code
+    ///   (PRD §7.5, F-result I1).
     // G-allow: SolveResult adapter (strict/auto(free) uniqueness, PRD §7.1 step 3) owned by #6677, whose registry routing of relate-solve consumes it; no production caller until #6677 lands
     pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
         match self.result {
@@ -399,23 +399,28 @@ impl FrameSolveOutcome {
                 );
                 SolveResult::Solved { values, unique }
             }
-            Err(cause @ SolveFailureCause::Infeasible(_)) => SolveResult::Infeasible {
-                diagnostics: vec![
-                    Diagnostic::error(format!(
-                        "the relations on `{}` cannot be satisfied simultaneously — {cause}",
-                        unknown.sub
-                    ))
-                    .with_code(cause.code()),
-                ],
-            },
-            Err(cause) => SolveResult::NoProgress {
-                reason: format!(
-                    "the relations on `{}` were not solved — {cause}",
-                    unknown.sub
-                ),
+            Err(cause) => SolveResult::Infeasible {
+                diagnostics: vec![frame_failure_diagnostic(&cause, unknown)],
             },
         }
     }
+}
+
+/// The diagnostic of a failed Frame solve of `unknown`, from the cause alone.
+/// reify-eval's scope pass extends only the arms its scope context can name.
+pub fn frame_failure_diagnostic(cause: &SolveFailureCause, unknown: &FrameUnknown) -> Diagnostic {
+    let sub = &unknown.sub;
+    cause.diagnostic(match cause {
+        SolveFailureCause::Infeasible(_) => {
+            format!("the relations on `{sub}` cannot be satisfied simultaneously — {cause}")
+        }
+        SolveFailureCause::BudgetExhausted(_) => format!(
+            "the relations on `{sub}` did not converge to a placement: {cause}. The seed \
+             configuration may be too far from a solution — try an `auto(seed = …)` \
+             nearer the intended placement"
+        ),
+        _ => format!("the relations on `{sub}` could not be solved: {cause}"),
+    })
 }
 
 /// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is

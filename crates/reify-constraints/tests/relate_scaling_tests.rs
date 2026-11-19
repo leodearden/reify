@@ -14,7 +14,7 @@ use reify_constraints::scaling::{
 };
 use reify_constraints::trust_region::SolveBudget;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
-use reify_core::{DimensionVector, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 use reify_test_support::{axis_val, direction_val, meters, plane_val, point3};
 
@@ -678,10 +678,18 @@ fn scaling_for(
     solve_scaling(relations, unknown, seed, RelateTolerance::kernel_default())
 }
 
+/// `"infeasible"` means CERTIFIED: every solve failure rides `Infeasible`, so the
+/// verdict reads the `SolverInfeasible` code, not the variant.
 fn verdict(result: &SolveResult) -> &'static str {
     match result {
         SolveResult::Solved { .. } => "solved",
-        SolveResult::Infeasible { .. } => "infeasible",
+        SolveResult::Infeasible { diagnostics }
+            if diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::SolverInfeasible)) =>
+        {
+            "infeasible"
+        }
         _ => "other",
     }
 }
