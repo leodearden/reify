@@ -377,13 +377,12 @@ struct RealizationOpsInput<'a> {
     // the `DispatchTestState` pragma-agnostic tests pass `None`.
     prefer_kernel: Option<&'a str>,
     // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
-    // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
-    // should probe or insert into the `RealizationCache`. Intermediate
-    // realizations all share the same `entity` cache key; if we probe/insert
-    // for them we get false hits (realization N finds realization N-1's
-    // result for the same entity key) which violates the per-build
-    // reset invariant and produces wrong geometry (the intermediate let-
-    // binding gets the terminal's handle instead of its own).
+    // `terminal_realization_index` picks) should probe or insert into the
+    // `RealizationCache`. All of an entity's realizations share the same
+    // `entity` cache key; if a non-terminal probes/inserts we get false hits
+    // (one realization finds another's result for the same entity key) which
+    // violates the per-build reset invariant and produces wrong geometry (an
+    // intermediate let-binding gets the terminal's handle instead of its own).
     is_terminal_realization: bool,
     // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
     // + prior source + new-BRep graph are all present, the VolumeMesh
@@ -688,6 +687,37 @@ fn template_build_walks(
         .iter()
         .map(|template| template_build_steps(template, schedule, demanded_rids.as_ref()))
         .collect()
+}
+
+/// The index of `template`'s terminal realization: the only one that may probe
+/// or fill the realization cache under the template's entity key.
+///
+/// It is the highest-declared realization that no sibling consumes through a
+/// bare (undotted) `GeomRef::Sub` name, or the highest-declared one when every
+/// realization is consumed (a realization cycle). It is a pure function of the
+/// template, so every build walk, full or demand-pruned, agrees on it. `None`
+/// for a template with no realizations.
+fn terminal_realization_index(template: &reify_compiler::TopologyTemplate) -> Option<usize> {
+    let last = template.realizations.len().checked_sub(1)?;
+    let consumed: HashSet<&str> = template
+        .realizations
+        .iter()
+        .flat_map(|realization| {
+            realization
+                .operations
+                .iter()
+                .flat_map(sub_refs_in_op)
+                .filter(move |name| {
+                    !name.contains('.') && realization.name.as_deref() != Some(*name)
+                })
+        })
+        .collect();
+    let unconsumed = template.realizations.iter().rposition(|r| {
+        r.name
+            .as_deref()
+            .is_none_or(|name| !consumed.contains(name))
+    });
+    Some(unconsumed.unwrap_or(last))
 }
 
 /// The realizations a build walk executes, in execution order.
@@ -3905,6 +3935,7 @@ impl Engine {
                     &module.templates,
                 );
                 let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
+                let terminal_idx = terminal_realization_index(template);
                 let realized_reprs_for_hydration =
                     Engine::realized_reprs_snapshot(&self.eval_state);
                 for build_step in &build_steps {
@@ -4006,7 +4037,7 @@ impl Engine {
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         .with_prefer_kernel(module.kernel_pragma.as_deref())
-                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                         // Task 4744 β step-20: feed the real morph inputs
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
@@ -4743,6 +4774,7 @@ impl Engine {
                 // Under build() full_scope is always true → demand_seed_build
                 // is None → every uncovered realization is appended.
                 let build_steps = &template_steps[t_idx];
+                let terminal_idx = terminal_realization_index(template);
                 // Fail-closed region gate (task #4812, P0β): build the repr
                 // snapshot once before the step loop. Reprs from bodies in PRIOR
                 // templates are already in eval_state at this point. Reprs
@@ -4854,7 +4886,7 @@ impl Engine {
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         .with_prefer_kernel(module.kernel_pragma.as_deref())
-                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                         // Task 4744 β step-20: feed the real morph inputs
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
@@ -6864,6 +6896,7 @@ impl Engine {
             // query value-cells in tessellate-walk order — the same
             // `template_build_steps` build() and build_snapshot() use.
             let build_steps = &template_steps[t_idx];
+            let terminal_idx = terminal_realization_index(template);
             // tessellate_from_values is a static fn without snapshot access, so
             // the hydration ladder gets an empty repr map (fail-open: the gate is
             // skipped for an unknown repr, preserving today's tessellation
@@ -6978,7 +7011,7 @@ impl Engine {
                     // Task #3443: thread module-scope #kernel(...) pragma
                     // from the tessellate entry point into the per-op dispatcher.
                     .with_prefer_kernel(module.kernel_pragma.as_deref())
-                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                     // Task 4744 β step-16: tessellate path never demands
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
