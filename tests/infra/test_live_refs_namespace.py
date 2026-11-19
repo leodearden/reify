@@ -34,6 +34,28 @@ BWRAP = "/usr/bin/bwrap"
 BLOCK = 'echo $$; exec sleep infinity </dev/null >/dev/null 2>&1'
 HOLD_FD3 = 'exec 3<"$1"; ' + BLOCK
 
+# Maps argv[1] and closes its fd, so the mapping is the holder's only reference.
+# The stdlib mmap module would keep a dup of the fd open.
+MAP_ONLY = """
+import ctypes, os, signal, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_long]
+PROT_READ, MAP_PRIVATE = 1, 2
+addr = libc.mmap(None, 4096, PROT_READ, MAP_PRIVATE, fd, 0)
+if addr is None or addr == ctypes.c_void_p(-1).value:
+    sys.exit(1)
+os.close(fd)
+print(os.getpid(), flush=True)
+devnull = os.open(os.devnull, os.O_RDWR)
+for std in (0, 1, 2):
+    os.dup2(devnull, std)
+os.close(devnull)
+signal.pause()
+"""
+
 
 def clean_env():
     return {k: v for k, v in os.environ.items()
@@ -161,6 +183,21 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), "/", "premise: cwd is outside the lane")
         self.assertTrue(self.present(lane))
         self.assertFalse(self.present(free))
+
+    def test_mapping_only_inside_a_lane_bound_elsewhere_is_live(self):
+        lane = self.lane("lane")
+        mapped = f"{self.canon}/sub/f"
+        pid = self.hold(self.bind_at_canon(lane), "/",
+                        ["/usr/bin/python3", "-I", "-c", MAP_ONLY, mapped])
+
+        fd_dir = f"/proc/{pid}/fd"
+        fd_targets = [os.readlink(f"{fd_dir}/{fd}") for fd in os.listdir(fd_dir)]
+        self.assertFalse([t for t in fd_targets if t == str(self.canon) or t.startswith(f"{self.canon}/")],
+                         "premise: no open fd inside the lane")
+        self.assertIn(mapped, Path(f"/proc/{pid}/maps").read_text(),
+                      "premise: from the host the mapping reads as the canon path")
+        self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), "/", "premise: cwd is outside the lane")
+        self.assertTrue(self.present(lane))
 
     def test_one_canon_path_in_two_namespaces_maps_to_each_namespaces_own_lane(self):
         lane_a = self.lane("lane-a")
