@@ -40,6 +40,8 @@ from plan_parity_harness import (  # noqa: E402
     CHANGED_PATH_FIXTURES,
     EXPECTED_DIVERGENCES,
     NEXTEST_ABSENT_PROBE,
+    PATH_ATTRIBUTION,
+    PATH_ATTRIBUTION_INTERNAL_ERROR,
     PORT_WINDOW_RULE,
     Clone,
     InParityClone,
@@ -619,6 +621,18 @@ class TestPlanParityStartup(InParityClone):
             (self.clone.root / lib).unlink()
             expect = Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal.format(root=root),))
             self.check(expect)
+
+    def test_internal_error_traceback_only_under_debug(self):
+        """PRD D8: an internal error prints its one line, after its traceback only when REIFY_VERIFY_DEBUG=1."""
+        (self.clone.root / PATH_ATTRIBUTION).unlink()
+        debug = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "1"}))
+        self.assertEqual((debug.returncode, debug.stdout), (1, ""), debug.stderr)
+        self.assertTrue(debug.stderr.startswith("Traceback (most recent call last):"), debug.stderr)
+        self.assertEqual(debug.stderr.splitlines()[-1], PATH_ATTRIBUTION_INTERNAL_ERROR)
+        quiet = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "0"}))
+        self.assertEqual(
+            (quiet.returncode, quiet.stdout, quiet.stderr), (1, "", f"{PATH_ATTRIBUTION_INTERNAL_ERROR}\n")
+        )
 
     def test_empty_heavy_filter_is_refused(self):
         lib = self.clone.root / HEAVY_FILTER_LIB
