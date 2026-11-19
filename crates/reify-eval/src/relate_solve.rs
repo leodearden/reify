@@ -1738,7 +1738,8 @@ struct FailureContext<'s, 'a> {
 /// - a certified infeasibility — the geometric conflict narrative of the
 ///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
 ///   relations whose rows remain violated;
-/// - a non-finite evaluation — the driving relation whose row it was.
+/// - a non-finite evaluation — the driving relation whose row it was, appended
+///   to the [`frame_failure_diagnostic`] sentence.
 ///
 /// Every context-free cause (budget exhaustion with the seed guidance, a stall,
 /// any later cause) renders through [`frame_failure_diagnostic`].
@@ -1756,10 +1757,14 @@ fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Di
         SolveFailureCause::NonFinite(NonFiniteEvaluation {
             source: ResidualSource::Relation(driving_position),
             ..
-        }) => cause.diagnostic(format!(
-            "the relations on `{sub}` could not be solved: {cause}, in {}",
-            driving_relation_label(*driving_position, context)
-        )),
+        }) => {
+            let mut diagnostic = frame_failure_diagnostic(cause, context.unknown);
+            diagnostic.message.push_str(&format!(
+                ", in {}",
+                driving_relation_label(*driving_position, context)
+            ));
+            diagnostic
+        }
         _ => frame_failure_diagnostic(cause, context.unknown),
     }
 }
@@ -3441,8 +3446,9 @@ structure PairSearchScope {
 
     /// The scope renderer and the `SolveResult` adapter agree on every cause: the
     /// same code and Error severity, the same text wherever the scope adds nothing
-    /// (budget exhaustion keeps its seed guidance), and the cause's own figures
-    /// where it adds the conflict set or a relation label.
+    /// (budget exhaustion keeps its seed guidance), the adapter's text extended by
+    /// a relation label for a non-finite evaluation, and the cause's own figures
+    /// where it adds the conflict set.
     #[test]
     fn the_scope_renderer_and_the_solve_result_adapter_agree() {
         with_failure_context(SolveBudget::default(), |context| {
@@ -3472,6 +3478,14 @@ structure PairSearchScope {
                 match cause {
                     SolveFailureCause::BudgetExhausted(_) | SolveFailureCause::Stalled(_) => {
                         assert_eq!(live.message, carried.message, "{cause:?}");
+                    }
+                    SolveFailureCause::NonFinite(_) => {
+                        let label = live.message.strip_prefix(carried.message.as_str());
+                        assert!(
+                            label.is_some_and(|label| label.starts_with(", in `")),
+                            "the scope renderer appends a relation label to the adapter's \
+                             sentence: {live:?} vs {carried:?}"
+                        );
                     }
                     _ => {
                         for message in [&live.message, &carried.message] {
