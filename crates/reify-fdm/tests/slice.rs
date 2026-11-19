@@ -112,6 +112,31 @@ fn non_executable_candidate_is_not_matched() {
     );
 }
 
+/// A slicer whose execute bits exclude the current user (0o611, owned by it)
+/// is not discovered, because spawning it would fail.
+#[cfg(unix)]
+#[test]
+fn slicer_the_user_cannot_execute_is_not_discovered() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("prusa-slicer");
+    std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write fake exe");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o611))
+        .expect("set perms on fake exe");
+    if std::fs::metadata(&path).expect("stat fake exe").uid() == 0 {
+        eprintln!("skipping: root may execute any file with an execute bit");
+        return;
+    }
+    let path_var = format!("{}", dir.path().display());
+
+    assert_eq!(
+        discover_slicer(&path_var, CANDIDATES),
+        None,
+        "a prusa-slicer the current user may not execute must NOT be matched"
+    );
+}
+
 // ── step-3: SliceSettings + compose_slicer_args ────────────────────────────────
 
 /// `true` iff `args` contains `flag` immediately followed by `value` (the
