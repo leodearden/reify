@@ -40,9 +40,12 @@ pub(crate) const SCALAR_GEOMETRY_MEMBERS: [&str; 2] = ["a", "b"];
 /// The members of `T` in [`SRC`] that are geometry-list lets.
 pub(crate) const GEOMETRY_LIST_MEMBERS: [&str; 2] = ["one", "holes"];
 
-/// The id of the realization named `member` in `module`, the compiled [`SRC`].
-/// It reads the compiled module and not the graph's cell link, so it is an
-/// oracle for that link and not a restatement of it.
+/// The id of [`TEMPLATE`]'s realization named `member` in `module`, the compiled
+/// [`SRC`]. It matches on name AND entity, as
+/// `Engine::mint_symbolic_geometry_handle_for_cell` does, so a same-named
+/// realization of another structure cannot stand in for it. It reads the
+/// compiled module and not the graph's cell link, so it is an oracle for that
+/// link and not a restatement of it.
 pub(crate) fn compiled_realization_named(
     module: &CompiledModule,
     member: &str,
@@ -51,9 +54,13 @@ pub(crate) fn compiled_realization_named(
         .templates
         .iter()
         .flat_map(|template| &template.realizations)
-        .find(|realization| realization.name.as_deref() == Some(member))
+        .find(|realization| {
+            realization.id.entity == TEMPLATE && realization.name.as_deref() == Some(member)
+        })
         .map(|realization| realization.id.clone())
-        .unwrap_or_else(|| panic!("SRC must compile a realization named `{member}`"))
+        .unwrap_or_else(|| {
+            panic!("SRC must compile a realization of `{TEMPLATE}` named `{member}`")
+        })
 }
 
 /// Panics unless some realization of `graph` links `cell`. A geometry-list cell
