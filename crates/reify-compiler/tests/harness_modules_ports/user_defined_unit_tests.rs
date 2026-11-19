@@ -8,21 +8,11 @@ use crate::common;
 
 use std::fs;
 
-use reify_compiler::{CompiledModule, compile_with_prelude};
-use reify_core::ModulePath;
-use reify_test_support::{TempDir, compile_source, compile_source_named, errors_only};
+use reify_test_support::{
+    TempDir, compile_source, compile_source_named, compile_source_with_prelude, errors_only,
+};
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
-
-fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_prelude(&parsed, prelude)
-}
 
 /// Panic-safe temp dir for this file's filesystem-based tests. Binding rules
 /// and the `REIFY_KEEP_TEMP_DIRS` post-mortem knob: see
@@ -165,7 +155,7 @@ fn cross_module_pub_unit_visible_via_compile_with_prelude() {
 
     // User module references `mil` — should resolve from the seeded prelude.
     let module =
-        compile_with_prelude_helper("structure S { param w : Length = 5mil }", &[prelude_module]);
+        compile_source_with_prelude("structure S { param w : Length = 5mil }", &[prelude_module]);
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
@@ -203,7 +193,7 @@ fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
     );
 
     // User source tries to reference `privmil` — should fail with unknown unit.
-    let module = compile_with_prelude_helper(
+    let module = compile_source_with_prelude(
         "structure S { param w : Length = 5privmil }",
         &[prelude_module],
     );
@@ -382,7 +372,7 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
 
     // User module tries to re-declare `mil` — the prelude-seeded entry
     // occupies the registry, so register() returns Err (duplicate).
-    let module = compile_with_prelude_helper("unit mil : Length = 0.001", &[prelude_module]);
+    let module = compile_source_with_prelude("unit mil : Length = 0.001", &[prelude_module]);
     let errors = errors_only(&module);
     assert!(
         !errors.is_empty(),
@@ -441,7 +431,7 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
     // Positive one-hop assertion: B's source actively resolves `mil` from its
     // prelude, confirming the one-hop seeding works end-to-end.
     let module_b =
-        compile_with_prelude_helper("structure T { param x : Length = 1mil }", &[module_a]);
+        compile_source_with_prelude("structure T { param x : Length = 1mil }", &[module_a]);
     assert!(
         errors_only(&module_b).is_empty(),
         "module_b errors: {:?}",
@@ -455,7 +445,7 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
     // Module C: compiled with B as prelude, tries to use `mil`.
     // The prelude-seeding loop iterates B.units (empty), so `mil` is not seeded into C.
     let module_c =
-        compile_with_prelude_helper("structure S { param w : Length = 5mil }", &[module_b]);
+        compile_source_with_prelude("structure S { param w : Length = 5mil }", &[module_b]);
     let errors = errors_only(&module_c);
     assert_unknown_unit_mil(&errors);
 }
