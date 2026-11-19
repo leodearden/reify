@@ -525,35 +525,6 @@ mod tests {
         );
     }
 
-    /// Only structures and occurrences can win a ctor-view slot, so the
-    /// borrowing and owned views of the module-local names both exclude the
-    /// field and constraint entities that share the entity namespace.
-    #[test]
-    fn local_entity_names_admit_only_structures_and_occurrences() {
-        let mut ctx = CompilationCtx::new();
-        ctx.record_or_report_duplicate(
-            "S",
-            SourceSpan::new(0, 1),
-            EntityNameKind::Template(EntityKind::Structure),
-        );
-        ctx.record_or_report_duplicate(
-            "O",
-            SourceSpan::new(2, 3),
-            EntityNameKind::Template(EntityKind::Occurrence),
-        );
-        ctx.record_or_report_duplicate("F", SourceSpan::new(4, 5), EntityNameKind::Field);
-        ctx.record_or_report_duplicate("C", SourceSpan::new(6, 7), EntityNameKind::Constraint);
-
-        assert_eq!(
-            ctx.local_template_name_iter().collect::<HashSet<&str>>(),
-            HashSet::from(["S", "O"]),
-        );
-        assert_eq!(
-            ctx.local_entity_names(),
-            HashSet::from(["S".to_string(), "O".to_string()]),
-        );
-    }
-
     /// Every entity kind's user-visible label reaches both sites of the
     /// duplicate diagnostic verbatim.
     #[test]
@@ -596,9 +567,10 @@ mod tests {
         assert_eq!(labels[1].message, "first defined as field here");
     }
 
-    /// Both name-set accessors filter `seen_entity_names` by kind: structures
-    /// only, and structures plus occurrences. Neither admits a field or a
-    /// constraint.
+    /// Every kind-filter accessor over `seen_entity_names`: structures only
+    /// (`local_structure_def_names`), and the ctor-view names, structures plus
+    /// occurrences (`local_template_name_iter` / `local_entity_names`). None
+    /// admits a field or a constraint.
     #[test]
     fn local_name_accessors_filter_seen_entity_names_by_kind() {
         let mut ctx = CompilationCtx::new();
@@ -622,6 +594,10 @@ mod tests {
             names.iter().map(|name| name.to_string()).collect()
         };
         assert_eq!(ctx.local_structure_def_names(), names(&["TheStructure"]));
+        assert_eq!(
+            ctx.local_template_name_iter().collect::<HashSet<&str>>(),
+            HashSet::from(["TheStructure", "TheOccurrence"]),
+        );
         assert_eq!(
             ctx.local_entity_names(),
             names(&["TheStructure", "TheOccurrence"])
