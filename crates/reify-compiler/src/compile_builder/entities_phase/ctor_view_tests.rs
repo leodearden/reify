@@ -128,22 +128,27 @@ fn a_sub_of_a_local_occurrence_above_gates_priv_and_unknown_members() {
                           structure def User {\n    sub o = Out()\n    let hidden = o.p\n    \
                           let missing = o.nope\n    let open = o.q\n}\n";
     let module = crate::compile(&parse_at("test", SOURCE));
-    let errors: Vec<(Option<DiagnosticCode>, &str)> = module
+    let errors: Vec<(Option<DiagnosticCode>, Vec<Option<&str>>)> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
-        .map(|d| (d.code, d.message.as_str()))
+        .map(|d| {
+            // `get`, not indexing: a label outside SOURCE reads `None` in the diff, not a panic.
+            let labelled_text = d
+                .labels
+                .iter()
+                .map(|l| SOURCE.get(l.span.start as usize..l.span.end as usize))
+                .collect();
+            (d.code, labelled_text)
+        })
         .collect();
     assert_eq!(
         errors,
         [
-            (
-                Some(DiagnosticCode::PrivMemberAccess),
-                "E_PRIV_MEMBER_ACCESS: member 'p' of structure 'Out' is private",
-            ),
+            (Some(DiagnosticCode::PrivMemberAccess), vec![Some("o.p")]),
             (
                 Some(DiagnosticCode::StructureMemberNotFound),
-                "structure 'Out' has no member 'nope'",
+                vec![Some("o.nope")]
             ),
         ],
         "`o.p` is gated, `o.nope` is rejected and `o.q` resolves"
