@@ -831,4 +831,95 @@ mod tests {
         let result = eval_builtin("normalize", &[p]);
         assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
     }
+
+    // --- Direction operands (direction-typing C5/C6) ---
+
+    fn dir_value(x: f64, y: f64, z: f64) -> Value {
+        Value::Direction(reify_ir::UnitVec3::from_vector([x, y, z]).unwrap())
+    }
+
+    fn real_vector(c: [f64; 3]) -> Value {
+        Value::Vector(c.map(Value::Real).to_vec())
+    }
+
+    #[test]
+    fn vector_of_a_direction_is_its_dimensionless_components() {
+        assert_eq!(
+            eval_builtin("vector", &[dir_value(0.0, 0.0, 1.0)]),
+            real_vector([0.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn vector_of_a_non_direction_is_undef() {
+        let v = real_vector([0.0, 0.0, 1.0]);
+        assert!(eval_builtin("vector", &[v]).is_undef());
+        assert!(eval_builtin("vector", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("vector", &[]).is_undef());
+        let d = dir_value(0.0, 0.0, 1.0);
+        assert!(eval_builtin("vector", &[d.clone(), d]).is_undef());
+    }
+
+    #[test]
+    fn normalize_of_a_direction_is_identity() {
+        let d = dir_value(1.0, 2.0, 3.0);
+        assert_eq!(eval_builtin("normalize", &[d.clone()]), d);
+    }
+
+    #[test]
+    fn dot_of_directions_is_a_real_cosine() {
+        let x = dir_value(1.0, 0.0, 0.0);
+        let y = dir_value(0.0, 1.0, 0.0);
+        let z = dir_value(0.0, 0.0, 1.0);
+        let minus_z = dir_value(0.0, 0.0, -1.0);
+        assert_eq!(eval_builtin("dot", &[x, y]), Value::Real(0.0));
+        assert_eq!(
+            eval_builtin("dot", &[z.clone(), z.clone()]),
+            Value::Real(1.0)
+        );
+        assert_eq!(eval_builtin("dot", &[z, minus_z]), Value::Real(-1.0));
+    }
+
+    #[test]
+    fn cross_of_directions_is_an_unnormalised_dimensionless_vector() {
+        let x = dir_value(1.0, 0.0, 0.0);
+        let y = dir_value(0.0, 1.0, 0.0);
+        assert_eq!(
+            eval_builtin("cross", &[x.clone(), y]),
+            real_vector([0.0, 0.0, 1.0])
+        );
+        let diagonal = dir_value(1.0, 1.0, 0.0);
+        let Value::Vector(components) = eval_builtin("cross", &[x, diagonal]) else {
+            panic!("cross of two directions must be a Value::Vector");
+        };
+        let reals: Vec<f64> = components
+            .iter()
+            .map(|c| match c {
+                Value::Real(r) => *r,
+                other => panic!("expected Real component, got {other:?}"),
+            })
+            .collect();
+        let magnitude = reals.iter().map(|r| r * r).sum::<f64>().sqrt();
+        assert!(
+            (magnitude - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12,
+            "|x̂ × (x̂+ŷ)/√2| must be sin 45°, got {magnitude}"
+        );
+    }
+
+    #[test]
+    fn mixed_direction_and_vector_forms_are_undef() {
+        let d = dir_value(0.0, 0.0, 1.0);
+        let v = real_vector([0.0, 0.0, 1.0]);
+        for name in ["dot", "cross"] {
+            assert!(
+                eval_builtin(name, &[d.clone(), v.clone()]).is_undef(),
+                "{name}(d, v)"
+            );
+            assert!(
+                eval_builtin(name, &[v.clone(), d.clone()]).is_undef(),
+                "{name}(v, d)"
+            );
+        }
+        assert!(eval_builtin("magnitude", &[d]).is_undef());
+    }
 }
