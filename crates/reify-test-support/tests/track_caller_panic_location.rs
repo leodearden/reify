@@ -20,8 +20,9 @@
 //! - `assert_single_declaration_error`, called directly;
 //! - `panic_message_of`'s two strict-failure panics ("returned normally",
 //!   "neither a &str nor a String"), called directly;
-//! - the parse/compile chains (`parse_and_compile`, `compile_source` and
-//!   `compile_source_named`, plus the `_with_stdlib` twins of the first two),
+//! - the parse/compile chains (`parse_and_compile`, `compile_source`,
+//!   `compile_source_named` and `compile_source_with_prelude`, plus the
+//!   `_with_stdlib` twins of the first two),
 //!   each parse or compile failure driven through the longest public chain
 //!   that reaches it;
 //! - `parse_compile_expect_err`, called directly;
@@ -325,6 +326,15 @@ fn parse_and_compile_parse_error_panic_reports_caller_not_helpers_rs() {
 fn compile_source_named_parse_error_panic_reports_caller_not_helpers_rs() {
     let site = panic_site(|| {
         reify_test_support::compile_source_named(PARSE_ERROR_SOURCE, "named");
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn compile_source_with_prelude_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_source_with_prelude(PARSE_ERROR_SOURCE, &[]);
     });
 
     assert_attributed_here(&site, "parse errors");
