@@ -111,6 +111,29 @@ mod tests {
         }
     }
 
+    fn refused(operation: RefusedOperation, operands: &[&str]) -> TransientReason {
+        TransientReason::OperationRefused {
+            operation,
+            operands: operands.iter().map(|label| label.to_string()).collect(),
+        }
+    }
+
+    fn division_refused() -> TransientReason {
+        refused(RefusedOperation::Binary(BinOp::Div), &["Real", "Real"])
+    }
+
+    fn sqrt_refused() -> TransientReason {
+        refused(RefusedOperation::Builtin("sqrt".into()), &["Real"])
+    }
+
+    fn negation_refused() -> TransientReason {
+        refused(RefusedOperation::Unary(UnOp::Neg), &["String"])
+    }
+
+    fn builtin_refused_without_operands() -> TransientReason {
+        refused(RefusedOperation::Builtin("f".into()), &[])
+    }
+
     #[test]
     fn undef_inputs_names_each_cell_in_order() {
         assert_eq!(
@@ -150,10 +173,89 @@ mod tests {
             kinds_absent(),
             kinds_named(),
             measurement_unavailable(),
+            division_refused(),
+            sqrt_refused(),
+            negation_refused(),
+            builtin_refused_without_operands(),
         ] {
             assert_eq!(
                 IndeterminateReason::Transient(transient.clone()).to_string(),
                 transient.to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn operation_refused_names_the_operation_and_its_operands_in_order() {
+        assert_eq!(
+            division_refused().to_string(),
+            "`/` is undefined for these operands: Real, Real"
+        );
+        assert_eq!(
+            sqrt_refused().to_string(),
+            "`sqrt` is undefined for these operands: Real"
+        );
+        assert_eq!(
+            negation_refused().to_string(),
+            "`-` is undefined for these operands: String"
+        );
+    }
+
+    #[test]
+    fn operation_refused_without_operands_has_no_trailing_colon() {
+        assert_eq!(
+            builtin_refused_without_operands().to_string(),
+            "`f` is undefined"
+        );
+    }
+
+    #[test]
+    fn every_operator_renders_its_source_symbol() {
+        let expected = [
+            (RefusedOperation::Binary(BinOp::Add), "+"),
+            (RefusedOperation::Binary(BinOp::Sub), "-"),
+            (RefusedOperation::Binary(BinOp::Mul), "*"),
+            (RefusedOperation::Binary(BinOp::Div), "/"),
+            (RefusedOperation::Binary(BinOp::Mod), "%"),
+            (RefusedOperation::Binary(BinOp::Pow), "^"),
+            (RefusedOperation::Binary(BinOp::Eq), "=="),
+            (RefusedOperation::Binary(BinOp::Ne), "!="),
+            (RefusedOperation::Binary(BinOp::Lt), "<"),
+            (RefusedOperation::Binary(BinOp::Le), "<="),
+            (RefusedOperation::Binary(BinOp::Gt), ">"),
+            (RefusedOperation::Binary(BinOp::Ge), ">="),
+            (RefusedOperation::Binary(BinOp::And), "and"),
+            (RefusedOperation::Binary(BinOp::Or), "or"),
+            (RefusedOperation::Binary(BinOp::Implies), "implies"),
+            (RefusedOperation::Unary(UnOp::Neg), "-"),
+            (RefusedOperation::Unary(UnOp::Not), "not"),
+        ];
+        for (operation, symbol) in expected {
+            assert_eq!(
+                refused(operation, &["Bool"]).to_string(),
+                format!("`{symbol}` is undefined for these operands: Bool")
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_operation_refusal_is_unexpected() {
+        let expected = [
+            (undef_inputs(), false),
+            (kinds_absent(), false),
+            (kinds_named(), false),
+            (measurement_unavailable(), false),
+            (division_refused(), true),
+            (sqrt_refused(), true),
+            (negation_refused(), true),
+            (builtin_refused_without_operands(), true),
+        ];
+        for (transient, unexpected) in expected {
+            assert_eq!(transient.is_unexpected(), unexpected, "{transient:?}");
+            assert_eq!(
+                IndeterminateReason::Transient(transient.clone()).is_unexpected(),
+                transient.is_unexpected(),
+                "{transient:?}"
             );
         }
     }
