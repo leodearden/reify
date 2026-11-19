@@ -73,7 +73,7 @@ _REIFY_LIB_TEST_SEMAPHORE_SH_SOURCED=1
 # works whether sourced by verify.sh (from REPO_ROOT) or run directly.
 _TEST_SEMAPHORE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$_TEST_SEMAPHORE_LIB_DIR/lib_slot_acquire.sh" ] || { echo "lib_test_semaphore.sh: ERROR — scripts/lib_slot_acquire.sh not found next to lib_test_semaphore.sh" >&2; return 1 2>/dev/null || exit 1; }
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
+source "$_TEST_SEMAPHORE_LIB_DIR/lib_slot_acquire.sh"
 
 # Internal flag: set to 1 when a slot is successfully acquired.
 _REIFY_TEST_SEMAPHORE_HELD=0
