@@ -49,6 +49,8 @@ mod cli_broken_pipe;
 mod cli_cache;
 #[path = "harness_cli_surface/cli_check_inline_geometry_constraint.rs"]
 mod cli_check_inline_geometry_constraint;
+#[path = "harness_cli_surface/cli_check_operation_refused.rs"]
+mod cli_check_operation_refused;
 #[path = "harness_cli_surface/cli_fix_imports.rs"]
 mod cli_fix_imports;
 #[path = "harness_cli_surface/cli_gui.rs"]

@@ -466,13 +466,14 @@ structure def BmpNoMaterial {
 ///   expression resolved to `Value::Undef` (e.g. a param with no default).
 ///   The message names the specific Undef cells.
 ///
-/// - **"operator undefined for these operand kinds"** — all leaf cells are
-///   DEFINED but the operator itself cannot produce a result for those value
-///   kinds (e.g. a dimension mismatch or operator-not-applicable combination).
+/// - **"`/` is undefined for these operands:"** — all leaf cells are DEFINED
+///   but a pure operation refused those plain-data operands (here a division
+///   by zero). The message names the refusing operation and its operands.
 ///
 /// Both branches produce `Satisfaction::Indeterminate` with a
-/// `DiagnosticCode::ConstraintIndeterminate` Warning; only the message text
-/// differs.
+/// `DiagnosticCode::ConstraintIndeterminate` diagnostic. The undefined-inputs
+/// one is a Warning; the refusal is an Error, because the same inputs refuse
+/// on every run (task 10027).
 ///
 /// Characterises the `classify_undef` discriminant in `reify-constraints`.
 #[test]
@@ -526,7 +527,7 @@ structure def UndefinedInput {
     // `param x : Scalar<Length> = 1m` and `param k : Int = 0` are DEFINED.
     // `x / k` → Undef at runtime (division by zero); `x > Undef` → Undef so
     // the constraint is Undef but with DEFINED leaves.
-    // classify_undef sees defined leaves → "operator undefined for these operand kinds".
+    // classify_undef traces the Undef to the refusing `/` over Scalar<m>, Int.
     //
     // NOTE: We use division-by-zero rather than a cross-dimension comparison
     // because α (task 4490) now fires DimensionMismatch at compile time even
@@ -557,14 +558,13 @@ structure def OperatorUndef {
             "§10 row 13 (operator-undefined branch): must be Indeterminate"
         );
 
-        let msg = result
+        let diagnostic = result
             .diagnostics
             .iter()
             .find(|d| {
                 d.code == Some(DiagnosticCode::ConstraintIndeterminate)
                     && d.message.contains("OperatorUndef")
             })
-            .map(|d| d.message.as_str())
             .unwrap_or_else(|| {
                 panic!(
                     "§10 row 13: expected ConstraintIndeterminate diagnostic for OperatorUndef; \
@@ -572,10 +572,16 @@ structure def OperatorUndef {
                     result.diagnostics
                 )
             });
+        let msg = diagnostic.message.as_str();
         assert!(
-            msg.contains("operator undefined"),
-            "§10 row 13 (branch 2): message must contain 'operator undefined for these operand \
-             kinds'; got: {msg}"
+            msg.contains("`/` is undefined for these operands: Scalar<m>, Int"),
+            "§10 row 13 (branch 2): message must name the refusing `/` and its operands; \
+             got: {msg}"
+        );
+        assert_eq!(
+            diagnostic.severity,
+            Severity::Error,
+            "§10 row 13 (branch 2): a pure refusal fails on every run, so it is an error"
         );
         assert!(
             !msg.contains("undefined inputs"),

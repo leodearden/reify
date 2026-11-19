@@ -239,7 +239,10 @@ mod tests {
 
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, IndeterminateReason, TransientReason, Value, ValueMap};
+    use reify_ir::{
+        BinOp, CompiledExpr, IndeterminateReason, RefusedOperation, TransientReason, Value,
+        ValueMap,
+    };
 
     fn mm(v: f64) -> Value {
         Value::Scalar {
@@ -418,6 +421,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         // Division by zero → Undef → Indeterminate
         assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            results[0].indeterminate_reason,
+            refused(RefusedOperation::Binary(BinOp::Div), &["Scalar<m>", "Int"])
+        );
     }
 
     #[test]
@@ -514,13 +521,17 @@ mod tests {
             !msg.contains("undefined inputs"),
             "expected NO 'undefined inputs' in message: {msg}"
         );
+        assert_eq!(
+            results[0].diagnostics.messages[0].severity,
+            Severity::Warning,
+            "a Tensor operand is not plain data, so the Undef stays tolerated"
+        );
     }
 
     #[test]
-    fn operator_undefined_dimension_mismatch() {
+    fn dimension_mismatched_comparison_is_an_unexpected_refusal() {
         // Length scalar vs mass scalar — eval_cmp returns Undef on dimension
-        // mismatch. Both leaves are defined, so the message must say
-        // "operator undefined" naming "Scalar" (both operands), not "undefined inputs".
+        // mismatch. Both operands are defined plain data, so `>` itself refused.
         let checker = SimpleConstraintChecker;
         let len_cell = vcid("Obj", "len_val");
         let mass_cell = vcid("Obj", "mass_val");
@@ -545,19 +556,15 @@ mod tests {
         let results = checker.check(&input);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
-        let msg = &results[0].diagnostics.messages[0].message;
-        assert!(
-            msg.contains("operator undefined"),
-            "expected 'operator undefined' in message: {msg}"
+        // `DimensionVector::MASS` Displays as its base-unit symbol, "kg".
+        assert_eq!(
+            results[0].indeterminate_reason,
+            refused(
+                RefusedOperation::Binary(BinOp::Gt),
+                &["Scalar<m>", "Scalar<kg>"]
+            )
         );
-        assert!(
-            msg.contains("Scalar"),
-            "expected 'Scalar' in message: {msg}"
-        );
-        assert!(
-            !msg.contains("undefined inputs"),
-            "expected NO 'undefined inputs' in message: {msg}"
-        );
+        assert_eq!(results[0].diagnostics.messages[0].severity, Severity::Error);
     }
 
     /// The two enriched operand-kind labels — `Scalar<{dimension}>` and
@@ -565,18 +572,16 @@ mod tests {
     /// that every other arm delegates to `Value::kind_name` (task #6466).
     ///
     /// They are therefore one deletion away from being absorbed by the
-    /// `other =>` catch-all, which would silently downgrade every
-    /// "operator undefined for these operand kinds" diagnostic from
-    /// `Scalar<m>` to a bare `Scalar` and from `Enum<Fit>` to a bare `Enum`.
-    /// `operator_undefined_dimension_mismatch` above does NOT catch that: it
-    /// asserts only `contains("Scalar")`, which a bare label still satisfies.
-    /// This test asserts the payload is present, so the catch-all cannot
-    /// swallow the enrichment unnoticed.
+    /// `other =>` catch-all, which would silently downgrade every operand
+    /// label in an indeterminacy diagnostic from `Scalar<m>` to a bare
+    /// `Scalar` and from `Enum<Fit>` to a bare `Enum`. This test asserts the
+    /// payload is present, so the catch-all cannot swallow the enrichment
+    /// unnoticed.
     #[test]
     fn operand_kind_labels_carry_their_enriched_payloads() {
         // A length scalar compared against an enum: both leaves are defined,
         // but `as_f64` returns None for an Enum, so eval_cmp yields Undef and
-        // the diagnostic reports the distinct operand KINDS.
+        // the diagnostic names the refusing `>` and its operands.
         let checker = SimpleConstraintChecker;
         let len_cell = vcid("Obj", "len_val");
         let fit_cell = vcid("Obj", "fit_val");
@@ -600,8 +605,8 @@ mod tests {
         assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
         let msg = &results[0].diagnostics.messages[0].message;
         assert!(
-            msg.contains("operator undefined"),
-            "expected 'operator undefined' in message: {msg}"
+            msg.contains("`>` is undefined for these operands"),
+            "expected the refusing `>` in message: {msg}"
         );
         // `DimensionVector::LENGTH` Displays as its base-unit symbol, "m".
         assert!(
@@ -680,6 +685,125 @@ mod tests {
         Some(IndeterminateReason::Transient(reason))
     }
 
+    fn refused(operation: RefusedOperation, operands: &[&str]) -> Option<IndeterminateReason> {
+        transient(TransientReason::OperationRefused {
+            operation,
+            operands: operands.iter().map(|label| label.to_string()).collect(),
+        })
+    }
+
+    fn real(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
+    }
+
+    /// `1.0 / <cell> > 0.0`.
+    fn reciprocal_gt_zero(cell: ValueCellId) -> CompiledExpr {
+        let cell = CompiledExpr::value_ref(cell, Type::dimensionless_scalar());
+        let reciprocal =
+            CompiledExpr::binop(BinOp::Div, real(1.0), cell, Type::dimensionless_scalar());
+        CompiledExpr::binop(BinOp::Gt, reciprocal, real(0.0), Type::Bool)
+    }
+
+    /// `sqrt(-1.0) > 0.0`, with the builtin call typed `result_type`; the
+    /// evaluator dispatches a builtin by name, so the call is Undef either way.
+    fn sqrt_of_minus_one_gt_zero(result_type: Type) -> CompiledExpr {
+        let call = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(format!("sqrt_{result_type:?}").as_bytes()),
+            result_type,
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![real(-1.0)],
+            },
+        };
+        CompiledExpr::binop(BinOp::Gt, call, real(0.0), Type::Bool)
+    }
+
+    #[test]
+    fn division_by_zero_over_reals_is_an_unexpected_refusal() {
+        let x = vcid("Root", "x");
+        let mut values = ValueMap::new();
+        values.insert(x.clone(), Value::Real(0.0));
+
+        let result = check_single(cnid("Root", 0), &reciprocal_gt_zero(x), &values);
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            refused(RefusedOperation::Binary(BinOp::Div), &["Real", "Real"])
+        );
+        let [diagnostic] = result.diagnostics.messages.as_slice() else {
+            panic!("expected one diagnostic; got {:?}", result.diagnostics);
+        };
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintIndeterminate)
+        );
+        assert_eq!(
+            diagnostic.message,
+            "constraint Root#constraint[0] indeterminate: `/` is undefined for these \
+             operands: Real, Real"
+        );
+    }
+
+    #[test]
+    fn refusal_is_found_beneath_a_kleene_operator() {
+        let x = vcid("Root", "x");
+        let y = vcid("Root", "y");
+        let mut values = ValueMap::new();
+        values.insert(x.clone(), Value::Real(1.0));
+        values.insert(y.clone(), Value::Real(0.0));
+        let x_positive = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(x, Type::dimensionless_scalar()),
+            real(0.0),
+            Type::Bool,
+        );
+        let expr = CompiledExpr::binop(BinOp::And, x_positive, reciprocal_gt_zero(y), Type::Bool);
+
+        let result = check_single(cnid("Root", 0), &expr, &values);
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            refused(RefusedOperation::Binary(BinOp::Div), &["Real", "Real"])
+        );
+        assert_eq!(result.diagnostics.messages[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_builtin_refusal_needs_a_plain_data_result_type() {
+        let plain = check_single(
+            cnid("Root", 0),
+            &sqrt_of_minus_one_gt_zero(Type::dimensionless_scalar()),
+            &ValueMap::new(),
+        );
+        assert_eq!(plain.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            plain.indeterminate_reason,
+            refused(RefusedOperation::Builtin("sqrt".to_string()), &["Real"])
+        );
+        assert_eq!(plain.diagnostics.messages[0].severity, Severity::Error);
+
+        let non_plain = check_single(
+            cnid("Root", 0),
+            &sqrt_of_minus_one_gt_zero(Type::List(Box::new(Type::dimensionless_scalar()))),
+            &ValueMap::new(),
+        );
+        assert_eq!(non_plain.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            non_plain.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds { kinds: vec![] })
+        );
+        assert_eq!(
+            non_plain.diagnostics.messages[0].severity,
+            Severity::Warning
+        );
+    }
+
     #[test]
     fn undefined_inputs_reason_is_deduped_and_ordered_by_name() {
         // (width + width) > thickness: width leads the leaf order twice, so
@@ -706,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn operator_undefined_reason_records_the_operand_kinds() {
+    fn operation_refused_reason_records_its_operands_in_position_order() {
         let len_cell = vcid("Obj", "len_val");
         let fit_cell = vcid("Obj", "fit_val");
         let len_ref = CompiledExpr::value_ref(len_cell.clone(), Type::length());
@@ -720,14 +844,15 @@ mod tests {
 
         assert_eq!(
             result.indeterminate_reason,
-            transient(TransientReason::OperatorUndefinedForKinds {
-                kinds: vec!["Enum<Fit>".to_string(), "Scalar<m>".to_string()],
-            })
+            refused(
+                RefusedOperation::Binary(BinOp::Gt),
+                &["Scalar<m>", "Enum<Fit>"]
+            )
         );
         assert_eq!(
             result.diagnostics.messages[0].message,
-            "constraint Obj#constraint[0] indeterminate: operator undefined for these \
-             operand kinds: Enum<Fit>, Scalar<m>"
+            "constraint Obj#constraint[0] indeterminate: `>` is undefined for these \
+             operands: Scalar<m>, Enum<Fit>"
         );
     }
 
@@ -752,6 +877,7 @@ mod tests {
             "constraint Obj#constraint[0] indeterminate: operator undefined for these \
              operand kinds"
         );
+        assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
     }
 
     #[test]
@@ -863,5 +989,61 @@ mod tests {
             "42 > 100 is false: {:?}",
             dispatched[1]
         );
+    }
+
+    /// Declines every target and counts how often it was asked.
+    struct CountingDeclineDispatch(std::sync::atomic::AtomicUsize);
+
+    impl reify_ir::ComputeDispatch for CountingDeclineDispatch {
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
+
+    #[test]
+    fn the_refusal_descent_never_re_dispatches_an_optimized_call() {
+        let functions = [optimized_stress_fn()];
+        let y = vcid("Probe", "y");
+        let mut values = ValueMap::new();
+        values.insert(y.clone(), Value::Real(0.0));
+        let bare = stress_gt(10.0);
+        let beside_a_refusal = CompiledExpr::binop(
+            BinOp::Or,
+            stress_gt(10.0),
+            reciprocal_gt_zero(y),
+            Type::Bool,
+        );
+
+        for expr in [&bare, &beside_a_refusal] {
+            let dispatch = CountingDeclineDispatch(std::sync::atomic::AtomicUsize::new(0));
+            let input = ConstraintInput {
+                constraints: Cow::Owned(vec![(cnid("Probe", 0), expr)]),
+                values: &values,
+                functions: &functions,
+                determinacy: None,
+            };
+
+            let results = SimpleConstraintChecker.check_with_dispatch(&input, Some(&dispatch));
+
+            assert_eq!(
+                dispatch.0.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "the verdict dispatches once; classifying its Undef must not dispatch again"
+            );
+            let [result] = results.as_slice() else {
+                panic!("expected one result; got {results:?}");
+            };
+            assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+            let reason = result
+                .indeterminate_reason
+                .as_ref()
+                .expect("an Indeterminate verdict records a reason");
+            assert!(
+                !reason.is_unexpected(),
+                "a user call is never a proven refusal: {reason}"
+            );
+            assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
+        }
     }
 }
