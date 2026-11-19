@@ -5,7 +5,7 @@
 use std::net::TcpListener;
 
 use super::debug_server_slot_fixtures::recording_slot;
-use crate::launch_mode::{Mode, ModeState, set_mode_impl};
+use crate::launch_mode::{Mode, ModeState, SetModeError, set_mode_impl};
 
 #[test]
 fn mode_names_are_the_lowercase_wire_strings() {
@@ -45,6 +45,21 @@ fn mode_state_serialises_mode_and_debug_port() {
     assert_eq!(
         serde_json::to_value(off).unwrap(),
         serde_json::json!({ "mode": "design", "debug_port": null })
+    );
+}
+
+#[test]
+fn set_mode_error_serialises_as_kind_and_message() {
+    let err = SetModeError::DebugListenerBind {
+        message: "failed to bind debug server on 127.0.0.1:3939: Address already in use".into(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(err).unwrap(),
+        serde_json::json!({
+            "kind": "debug_listener_bind",
+            "message": "failed to bind debug server on 127.0.0.1:3939: Address already in use"
+        })
     );
 }
 
@@ -111,9 +126,10 @@ fn debug_on_an_occupied_port_fails_naming_it() {
 
     let err = set_mode_impl(Mode::Debug, &slot, held).expect_err("the port is taken");
 
+    let SetModeError::DebugListenerBind { message } = err;
     assert!(
-        err.contains(&held.to_string()),
-        "the error must name port {held}, got: {err}"
+        message.contains(&held.to_string()),
+        "the error must name port {held}, got: {message}"
     );
     assert!(served.ports().is_empty());
 }
