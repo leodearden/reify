@@ -2080,9 +2080,11 @@ class TestMjsTopLevelArgs(unittest.TestCase, _MjsScenarioMixin):
                     self.assertEqual(verdict, direct_verdict)
                     self.assertEqual(
                         [v["leafLabel"] for v in verdict["leaf_verdicts"]], ["solo"])
-                    logs = self._run_scenario_logs(
-                        wrap(stringified), self.VERIFIED_RESPONSES)
-                    self.assertEqual("mega-leaf" in " ".join(logs), warns)
+                    for form, js in (("stringified", stringified), ("direct", direct)):
+                        logs = self._run_scenario_logs(
+                            wrap(js), self.VERIFIED_RESPONSES)
+                        self.assertEqual(
+                            "mega-leaf" in " ".join(logs), warns, msg=form)
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_an_explicit_empty_batch_is_still_the_empty_batch(self):
