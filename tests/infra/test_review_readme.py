@@ -501,7 +501,6 @@ class BinaryTrustTest(ReviewReadmeFixture):
 
     def assert_build_refused_before_the_session(self, result, *, planted, head_before):
         self.assertEqual(result.returncode, 1, _diag(result))
-        self.assertTrue(self.cargo_invoked(), _diag(result))
         self.assertIsNone(self.session_ran_binary(), _diag(result))
         self.assertEqual(self.sidecar(), planted, _diag(result))
         self.assertEqual(self.head(), head_before, _diag(result))
@@ -522,6 +521,7 @@ class BinaryTrustTest(ReviewReadmeFixture):
         planted = self.plant_stale_binary()
         head_before = self.head()
         result = self.run_script(REVIEW_README_STUB_CARGO_RC="101")
+        self.assertTrue(self.cargo_invoked(), _diag(result))
         self.assert_build_refused_before_the_session(
             result, planted=planted, head_before=head_before)
 
