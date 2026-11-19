@@ -191,14 +191,6 @@ pub(crate) fn phase_constraint_defs(
     prelude: &[&crate::CompiledModule],
     trait_names: &HashSet<String>,
 ) {
-    // Lazily built on first Declaration::Constraint; modules with zero
-    // constraint defs skip this allocation entirely.  The set contains
-    // structure/occurrence names in scope: local names filtered from
-    // seen_entity_names by kind, plus exported template names from every
-    // prelude module.  This mirrors the trait_names building pattern in
-    // phase_traits (traits_phase.rs:71-79).
-    let mut structure_names: Option<HashSet<String>> = None;
-
     // Ambient enum scope for constraint-def param type resolution (task
     // 6416), mirroring entity.rs's struct-param scope and functions.rs's
     // fn-param/return scopes. Held in this binding for the whole loop: it is an
@@ -209,9 +201,8 @@ pub(crate) fn phase_constraint_defs(
     // `compile_constraint_def`: the scope is the same for every def in the module,
     // and constructing it clones every name and type-param list in
     // `ctx.resolution_enums` (prelude ++ local — 38 enums from stdlib alone).
-    // Lazily, on the same first-`Declaration::Constraint` trigger as
-    // `structure_names` above, so a module with zero constraint defs still
-    // allocates nothing.
+    // Lazily, on the first `Declaration::Constraint`, so a module with zero
+    // constraint defs allocates nothing.
     //
     // Widening its reach from one def to the whole loop is behaviour-preserving:
     // the only thing that reads `RESOLUTION_ENUM_NAMES` is type resolution, and
@@ -226,24 +217,12 @@ pub(crate) fn phase_constraint_defs(
             // guard acts through the thread-local, and `compile_constraint_def`
             // documents the precondition it satisfies.
             enum_scope.get_or_insert_with(|| EnumNameScope::new(&ctx.resolution_enums));
-            let names = structure_names.get_or_insert_with(|| {
-                ctx.seen_entity_names
-                    .iter()
-                    .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-                    .map(|(name, _)| name.clone())
-                    .chain(
-                        prelude
-                            .iter()
-                            .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
-                    )
-                    .collect()
-            });
             let compiled = compile_constraint_def(
                 c,
                 &ctx.alias_registry,
                 &ctx.resolution_enums,
                 trait_names,
-                names,
+                &ctx.resolution_structure_names,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
