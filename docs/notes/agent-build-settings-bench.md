@@ -369,5 +369,39 @@ What the rows say:
   the agent ran.
 - **S2 builds one test unit:** 13.6 against 11.7 CPU-s, the same.
 
-The zero-delta control for this crate, which separates these numbers from the base's age, is reported below
-once it has run.
+#### Zero-delta control, reify-compiler (`d0a`, `d0b`)
+
+One repetition each, reseeded at the basecommit itself (`behind_by` 0: the seed's log reports "Touched 0 git
+delta path(s)"), S1, S2, S6 and S7 only, no edits.
+
+| step | arm | cpu_s | wall_s | units written (new vs base) | dirty | failed to read |
+|---|---|---:|---:|---:|---:|---:|
+| S1 `--lib` | a | 306.1 | 215.6 | 39 (39) | 0 | 39 |
+| S1 `--lib` | b | 174.2 | 79.0 | 13 (13) | 0 | 13 |
+| S2 `--test T` | a | 12.2 | 8.6 | 1 (1) | 0 | 1 |
+| S2 `--test T` | b | 12.0 | 9.4 | 1 (1) | 0 | 1 |
+| S6 clippy | a | 190.1 | 173.5 | 62 (62) | 0 | 62 |
+| S6 clippy | b | 166.3 | 139.8 | 42 (42) | 0 | 42 |
+| S7 probe | a | 2.3 | 5.1 | – | 299 | 29 |
+| S7 probe | b | 2.6 | 7.7 | – | 299 | 28 |
+
+- **The delta, not the setting, ate (b)'s first-build advantage.** On a base with no delta, (b)'s first build
+  costs 174 CPU-s against (a)'s 306, 43% less, and 79 s of wall against 216 s. The wall gap is inflated by
+  the host (the two sequences ran minutes apart at PSI `some avg10` 56 and 39); the CPU gap is not. At 341
+  commits the same build costs (b) 335 CPU-s: the 19 delta-dirtied units cost it another 160. Arm (a) does not
+  care, 306 at zero delta against 311 at 341 commits, because it reuses nothing either way.
+- **The 174 CPU-s that remain are the 13 feature-split units, a floor a fresher base does not remove.** They
+  are the same 13 as at 341 commits: the `reify-compiler` test unit and the libraries of reify-eval (with its
+  build script and its run), -stdlib, -constraints, -expr, -compute-contract, -solver-elastic, -kernel-gmsh,
+  -kernel-openvdb, -mcp and -test-support. The server did 141 of the 174 CPU-s (10 cache misses, 2 requests
+  not cacheable).
+- **Clippy gains a little:** 166 against 190 CPU-s (12% less), 42 units written against 62. The base holds
+  check-mode units for 13 workspace libraries and the build scripts of 3 packages (7 units), and (b) reuses
+  those 20 where (a) rebuilds them; none of the 24 test-mode check units is in the base under either arm.
+  sccache executed 2 of 43 requests (both misses); the other 41 were check-mode compiles it does not cache.
+- **A zero-delta lane is not clean for the verify either.** S7 finds 299 dirty units in both arms. They are
+  the seed's own doing, by design: its log reports 235 `env!()`-baked-path test sources relinked and 84
+  build-script output directories invalidated. The roots are 26 `FsStatusOutdated` test units (14 of them
+  reify-audit) and 2 re-run build scripts, and the other 271 are units that depend on them. The (b) agent
+  pre-paid one unit of the verify's graph (29 unreadable against 28), because the 13 units (b)'s S1 builds
+  are the feature-split ones the verify never builds under that hash.
