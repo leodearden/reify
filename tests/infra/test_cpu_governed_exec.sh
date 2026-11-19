@@ -161,18 +161,51 @@ assert "B3: non-integer REIFY_CPU_GOVERN_W_TASK rejected (non-zero)" \
     ' _ "$LIB"
 
 # B4: cgroup_role_slice defaults.
-assert "B4a: cgroup_role_slice task == reify-governed-agents.slice" \
+assert "B4a: cgroup_role_slice task == df-reify-governed-agents.slice" \
     bash -c '
         source "$1"
+        unset REIFY_CPU_GOVERN_SLICE_TASK REIFY_CPU_GOVERN_SLICE_MERGE
         s=$(cgroup_role_slice task)
-        [ "$s" = "reify-governed-agents.slice" ]
+        echo "resolved task slice: $s"
+        [ "$s" = "df-reify-governed-agents.slice" ]
     ' _ "$LIB"
 
-assert "B4b: cgroup_role_slice merge == reify-governed-merge.slice" \
+assert "B4b: cgroup_role_slice merge == df-reify-governed-merge.slice" \
     bash -c '
         source "$1"
+        unset REIFY_CPU_GOVERN_SLICE_TASK REIFY_CPU_GOVERN_SLICE_MERGE
         s=$(cgroup_role_slice merge)
-        [ "$s" = "reify-governed-merge.slice" ]
+        echo "resolved merge slice: $s"
+        [ "$s" = "df-reify-governed-merge.slice" ]
+    ' _ "$LIB"
+
+# B4c: systemd nests a slice under the name with its last dash-segment
+# stripped (a dash-free name sits under the root -.slice). Both default role
+# slices must be siblings of one parent (C-G2), and that parent must sit under
+# the project slice df-reify.slice, under df.slice (task 9998).
+assert "B4c: default role slices share one parent that nests under df-reify.slice then df.slice (C-G2 across the seam)" \
+    bash -c '
+        source "$1"
+        unset REIFY_CPU_GOVERN_SLICE_TASK REIFY_CPU_GOVERN_SLICE_MERGE
+        slice_parent() {
+            local stem="${1%.slice}"
+            case "$stem" in
+                *-*) echo "${stem%-*}.slice" ;;
+                *)   echo "-.slice" ;;
+            esac
+        }
+        task=$(cgroup_role_slice task)
+        merge=$(cgroup_role_slice merge)
+        task_parent=$(slice_parent "$task")
+        merge_parent=$(slice_parent "$merge")
+        project=$(slice_parent "$task_parent")
+        top=$(slice_parent "$project")
+        echo "task=$task -> $task_parent; merge=$merge -> $merge_parent"
+        echo "$task_parent -> $project -> $top"
+        [ "$task_parent" = "df-reify-governed.slice" ] &&
+            [ "$merge_parent" = "df-reify-governed.slice" ] &&
+            [ "$project" = "df-reify.slice" ] &&
+            [ "$top" = "df.slice" ]
     ' _ "$LIB"
 
 # B5: slice env overrides.
