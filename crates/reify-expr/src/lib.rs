@@ -3828,7 +3828,8 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 }
 
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
-/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Scalar, Complex, Tensor, Vector, Matrix (canonicalized to nested Tensor),
+/// and Direction (the antiparallel direction, direction-typing C6).
 /// Point negation is explicitly undefined (spec 3.3.1).
 pub(crate) fn negate_value(v: Value) -> Value {
     match v {
@@ -3838,6 +3839,7 @@ pub(crate) fn negate_value(v: Value) -> Value {
         Value::Tensor(components) => negate_components(&components, Value::Tensor),
         Value::Vector(components) => negate_components(&components, Value::Vector),
         Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
+        Value::Direction(u) => Value::Direction(u.negated()),
         // Affine geometry: point negation is undefined (spec 3.3.1)
         Value::Point(_) => Value::Undef,
         _ => Value::Undef,
