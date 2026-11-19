@@ -115,7 +115,13 @@ def verify_sh_refusal(lib):
     return lib, 1, f"verify.sh: ERROR — {lib} not found next to verify.sh"
 
 
-# The libs verify.sh guards at load, in its source order: (deleted path, bash's exit code, bash's refusal line).
+def slot_acquire_refusal(lib):
+    """lib_slot_acquire.sh's guard: exit 1 and its line, which names the lib's absolute path."""
+    return lib, 1, f"lib_slot_acquire.sh: required lib not found next to script: {{root}}/{lib}"
+
+
+# The libs verify.sh's load-time source chain guards, transitive ones included, in the order bash checks
+# them: (deleted path, bash's exit code, bash's refusal line, with {root} the clone's physical root).
 MISSING_LIB_REFUSALS = (
     verify_sh_refusal("scripts/occt-scope-lib.sh"),
     verify_sh_refusal("scripts/release-scope-lib.sh"),
@@ -123,6 +129,8 @@ MISSING_LIB_REFUSALS = (
     ("scripts/affected-crates-lib.sh", 2,
      "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh"),
     verify_sh_refusal("scripts/lib_test_semaphore.sh"),
+    slot_acquire_refusal("scripts/lib_clock_stop.sh"),
+    slot_acquire_refusal("scripts/lib_event_log.sh"),
     verify_sh_refusal("scripts/cpu-admit.sh"),
     verify_sh_refusal("scripts/lib_proc_reaper.sh"),
     verify_sh_refusal("scripts/heavy-test-filter-lib.sh"),
@@ -603,10 +611,12 @@ class TestPlanParityStartup(InParityClone):
         )
 
     def test_missing_lib_is_refused(self):
+        root = self.clone.root.resolve()
         for lib, exit_code, refusal in MISSING_LIB_REFUSALS:
             self.clone.reset()
             (self.clone.root / lib).unlink()
-            self.check(Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal,)))
+            expect = Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal.format(root=root),))
+            self.check(expect)
 
     def test_empty_heavy_filter_is_refused(self):
         lib = self.clone.root / HEAVY_FILTER_LIB
