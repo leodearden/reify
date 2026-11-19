@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RawGuiState, RawConstraintData, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
-import { CONSTRAINT_STATUSES } from '../types';
+import { CONSTRAINT_STATUSES, DebugListenerBindFailure } from '../types';
 import { makeRawConstraint } from './constraintFixtures';
 
 // Mock Tauri API modules
@@ -1175,6 +1175,34 @@ describe('bridge launcher commands', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('set_mode', { mode: 'debug' });
     expect(result).toEqual(state);
+  });
+
+  it('setMode rejects with a DebugListenerBindFailure when set_mode reports a debug_listener_bind error', async () => {
+    const message = 'failed to bind debug server on 127.0.0.1:3939: Address already in use (os error 98)';
+    mockInvoke.mockRejectedValue({ kind: 'debug_listener_bind', message });
+
+    const rejection = await bridgeAll.setMode('debug').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(rejection).toBeInstanceOf(DebugListenerBindFailure);
+    expect((rejection as DebugListenerBindFailure).message).toBe(message);
+  });
+
+  it.each([
+    ['a plain-string IPC failure', 'IPC channel closed'],
+    ['an object of another kind', { kind: 'something_else', message: 'x' }],
+  ])('setMode passes %s through unchanged', async (_name, rejected) => {
+    mockInvoke.mockRejectedValue(rejected);
+
+    const rejection = await bridgeAll.setMode('debug').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(rejection).toBe(rejected);
+    expect(rejection).not.toBeInstanceOf(DebugListenerBindFailure);
   });
 
   it.each([
