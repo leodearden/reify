@@ -147,3 +147,102 @@ fn accepted_forms_evaluate_end_to_end() {
     assert_eq!(value("normal_direction"), direction_val(0.0, 0.0, 1.0));
     assert_eq!(value("vector_sum"), real_vector([1.0, 0.0, 1.0]));
 }
+
+// ── C6 rejection table ──────────────────────────────────────────────────────
+
+/// The user-visible fix hint, hard-coded on purpose: this file is the DRIFT
+/// PIN, so reading the production constant here would make it a tautology.
+const VECTOR_HINT: &str = "write vector(d)";
+
+/// The single Error that `let r = {expr}` draws, beside `d` and `e`.
+fn sole_error(expr: &str) -> reify_core::Diagnostic {
+    let module = compile_source_with_stdlib(&direction_source(&format!("let r = {expr}")));
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "`{expr}` must draw exactly one Error: {errors:?}"
+    );
+    errors[0].clone()
+}
+
+#[test]
+fn rejected_operator_forms_end_with_the_vector_hint() {
+    for expr in [
+        "d + e",
+        "d - e",
+        "d + vector(e)",
+        "vector(e) - d",
+        "d + 1",
+        "d * e",
+        "d / 2",
+        "2 / d",
+    ] {
+        let error = sole_error(expr);
+        assert_eq!(
+            error.code,
+            Some(DiagnosticCode::ArithOperandKind),
+            "`{expr}`: {error:?}"
+        );
+        assert!(
+            error.message.ends_with(VECTOR_HINT),
+            "`{expr}` must carry the vector(d) fix hint: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn rejected_math_forms_end_with_the_vector_hint() {
+    for (name, expr) in [
+        ("magnitude", "magnitude(d)"),
+        ("dot", "dot(d, vec3(0.0, 0.0, 1.0))"),
+        ("dot", "dot(vec3(0.0, 0.0, 1.0), d)"),
+        ("cross", "cross(d, vec3(0.0, 0.0, 1.0))"),
+        ("cross", "cross(vec3(0.0, 0.0, 1.0), d)"),
+        ("abs", "abs(d)"),
+        ("outer", "outer(d, e)"),
+    ] {
+        let error = sole_error(expr);
+        assert_eq!(
+            error.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "`{expr}`: {error:?}"
+        );
+        assert!(
+            error.message.starts_with(name),
+            "`{expr}` must name {name}: {error:?}"
+        );
+        assert!(
+            error.message.ends_with(VECTOR_HINT),
+            "`{expr}` must carry the vector(d) fix hint: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn vector_of_a_non_direction_is_rejected() {
+    let error = sole_error("vector(vec3(1, 0, 0))");
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("Direction"),
+        "the error must name the Direction it expects: {error:?}"
+    );
+}
+
+#[test]
+fn non_direction_arithmetic_carries_no_vector_hint() {
+    let error = sole_error("vec3(1mm, 0mm, 0mm) * vec3(1mm, 0mm, 0mm)");
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::ArithOperandKind),
+        "{error:?}"
+    );
+    assert!(
+        !error.message.contains(VECTOR_HINT),
+        "the vector(d) hint is Direction-scoped: {error:?}"
+    );
+}
