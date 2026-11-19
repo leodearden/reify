@@ -2565,9 +2565,7 @@ mod tests {
         // (units-length η) gave both LENGTH slots, so they must move out of a
         // must-stay-empty list; they are exempted via NON_SELECTOR_ARG_SLOT_KEYS
         // instead. `union` / `difference` replace them so the list still NAMES a
-        // registered CSG producer that carries no dimensioned arg — both are
-        // additionally reached through the closed-world family table, so the
-        // replacement preserves the list's readability, not its reach.
+        // registered CSG producer that carries no dimensioned arg.
         let extra_non_selector: &[&str] = &[
             "union",
             "difference",
@@ -4069,11 +4067,10 @@ mod tests {
     /// it cannot NAME escapes the ledger and the coupling rule and leaves that
     /// guard GREEN.
     ///
-    /// Every [`NON_SELECTOR_ARG_SLOT_KEYS`] entry is a closed-world family member
-    /// today, so chaining that list admits NO name now. It is future-proofing: a
-    /// slot key stays swept if its family row is later discharged into the
-    /// registry. The selectors have no chain of their own: they are swept only
-    /// through the `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` row, which
+    /// The [`NON_SELECTOR_ARG_SLOT_KEYS`] chain in [`slot_probe_names`] keeps a
+    /// slot key swept if its family row is later discharged into the registry.
+    /// The selectors have no chain of their own: they are swept only through the
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` row, which
     /// [`slotted_name_sweep_reaches_every_curated_slot_registry`] asserts.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
         slot_probe_names()
@@ -4107,10 +4104,10 @@ mod tests {
         for &name in NON_SELECTOR_ARG_SLOT_KEYS {
             assert!(
                 swept.contains(name),
-                "{name:?} is a curated slot-table key but the slotted-name sweep does \
-                 not reach it, so it would escape \
+                "{name:?} is a curated slot-table key reachable through no registry \
+                 that slot_probe_names() probes, so it would escape \
                  every_slotted_name_is_ledgered_or_recorded_unobservable entirely. \
-                 Restore the .chain(..) that names its registry in slot_probe_names()."
+                 Make slot_probe_names() reach it."
             );
         }
 
@@ -4125,9 +4122,11 @@ mod tests {
         );
     }
 
-    /// The probe universe reaches every name of every closed-world family row,
-    /// so a family added to `unresolved_function::BUILTIN_NAME_FAMILIES` is
-    /// swept for slot keys with no list edit in this module.
+    /// Fork-guard on [`slot_probe_names`]: the universe reaches every name of
+    /// every closed-world family row, so a family added to
+    /// `unresolved_function::BUILTIN_NAME_FAMILIES` is swept for slot keys with
+    /// no list edit in this module, and a hand-kept or filtered copy that drifts
+    /// from the table reds here.
     ///
     /// Misses are collected per family label before asserting, so one failure
     /// names every family the universe drifted from.
