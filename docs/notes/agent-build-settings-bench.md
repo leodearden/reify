@@ -1,6 +1,6 @@
 # Agent cargo builds under the verify's settings: bench and recommendation
 
-`decision: no flip; end the mixed-setting practice; (a) against (b) is Leo's ruling`
+`decision: no-flip`
 
 Task 10169. Measured 2026-11-19 on `leo-MS-7C35` (AMD Ryzen 9 3950X, 16 cores / 32 threads, 125 GiB RAM,
 kernel 7.0.0-31-generic; rustc and cargo 1.96.0, sccache 0.14.0).
@@ -10,6 +10,7 @@ kernel 7.0.0-31-generic; rustc and cargo 1.96.0, sccache 0.14.0).
 | Warm base (`BASE_GEN`) | `/home/leo/src/warm-lanes/base/target.gen.643`, basecommit `cb24012c60a6b800f763acc65943ca0d21fc163e` |
 | Bench head (`BENCH_HEAD`) | `f743808f664fbf782a2867019102ae1c97c86705`, main's tip at bench start, 341 commits ahead of the basecommit |
 | Raw per-step data | `docs/notes/agent-build-settings-bench-raw.jsonl` |
+| Census rows and unit counts | `docs/notes/agent-build-settings-bench-census.jsonl` |
 
 Status: complete. The census, the bench method and results for the three benched crates, the pricing, the
 per-task wall, the recommendation, the interaction with task 7429, the caveats and the raw-data notes follow
@@ -35,9 +36,11 @@ quantity; wall is secondary.
   a different wrapper. Memories bfd48b27, ab2b34af and 6e441e4d, which say the wrapper is part of cargo's unit
   fingerprint, are wrong on that point.
 - **At today's base age that reuse buys little.** First-build CPU, (b) against (a), at 341 commits behind:
-  reify-compiler +9% (335 against 306 CPU-s, (a) pooled over its readings), reify-eval -20%, reify-cli -22%.
-  At zero delta: -43%, -20%, -19%. Production first builds ran a median 254 commits behind main, so the
-  341-commit rows are the representative ones.
+  reify-compiler +9% (335 against 306 CPU-s), reify-eval -20% (341 against 427), reify-cli -22% (323 against
+  414). For the first two, (a) is the median over its readings at both delta settings, because they wrote the
+  same units; reify-cli's differed, so its (a) is the stale reading alone. At zero delta: -43%, -20%, -19%.
+  Production first builds ran a median 254 commits behind main, so the 341-commit rows are the representative
+  ones.
 - **The edit loop is where (b) pays.** An edit is new content, so sccache cannot answer it, and without
   incremental the edited crate is recompiled whole: 5 to 8 times the CPU on reify-compiler and reify-eval
   (+19 to +52 s of wall per edit-rebuild), 2 times on the small reify-cli (+2 s).
@@ -45,8 +48,10 @@ quantity; wall is secondary.
   148, today's mix 184 (205, 207 and 258 per active day); on a zero-delta base pure-(b) is 127 and pure-(a) 145.
   The whole agent build bill is 0.3 to 0.4% of the workstation's CPU. Median-task build wall: (a) 314 s, (b) 363 s
   (+16%), mix 458 s.
-- **The expensive state is the mix.** 55 of 140 tasks ran both settings in the window and paid for two unit
-  sets: +26% fleet CPU and +46% median build wall over uniform (a). Either uniform setting ends it.
+- **The expensive state is the mix.** 55 of 140 tasks ran both settings in the window (the `mixed` tasks: 53
+  in one lane, 2 across lanes) and are priced with two unit sets: +26% fleet CPU and +46% median build wall
+  over uniform (a), or +18% and +45% with first builds keyed per lane instead of per task (Limits of the class
+  rule). Either uniform setting ends it.
 - **Recommendation.** Do not flip the agent env to (b) on this evidence, and do end the mix, which needs only
   guidance. The pre-registered rule is met against today's mixed baseline, but against uniform (a) the setting
   alone ties on CPU at today's base age and is 16% slower for the median task. The call between (a) and (b) is
@@ -80,8 +85,9 @@ quantity; wall is secondary.
   `RUSTC_WRAPPER=sccache`, `incr0-only` when only the first, otherwise `default` (incremental on, no
   wrapper). Shell state does not persist between Bash calls in the agent harness, so the command text is the
   whole environment.
-- **Class.** `first` is the first invocation in the task with the same (setting, mode, crate, release flag),
-  where mode is `build` for test, build, nextest and bench and `check` for check and clippy. Otherwise
+- **Class.** `first` is the first invocation in the task (not in the lane: see Limits of the class rule) with
+  the same (setting, mode, crate, release flag), where mode is `build` for test, build, nextest and bench and
+  `check` for check and clippy. Otherwise
   `edit-rebuild` if an Edit, Write or MultiEdit on a `.rs` path, or a Bash `sed -i` on one, occurred since
   the task's previous cargo invocation, otherwise `rerun`. The release flag in the key is a refinement of
   the plan's key: a release build is a different unit set (8 calls).
@@ -90,8 +96,10 @@ quantity; wall is secondary.
   escalation-resume prompt) means implementer, anything else is `other`. Subagent transcripts are in the
   glob, but none of the 2,114 heavy invocations was attributed to one.
 
-The miner is a throwaway stdlib script (`python3 -I`), deliberately not tracked: this note states the rule,
-and the archive is the source.
+The miner is a throwaway stdlib script (`python3 -I`), deliberately not tracked: this note states the rule.
+Its output, the classified rows with their history, is tracked in
+`docs/notes/agent-build-settings-bench-census.jsonl` (see Raw data), so no figure below needs the archive
+again.
 
 ### Volume and shape
 
@@ -147,11 +155,13 @@ max 83.
 - Trend, incr0 share by week: 2026-11-05 to 11-11 was 280 of 612 (45.8%); 2026-11-12 to 11-18 was 528 of
   1,502 (35.2%). By day: 61, 63, 32, 50, 21, then 30, 51, 57, 25, 22 percent. The prefix is not spreading.
 - **Lanes mix settings.** 54 of 148 (task, lane) pairs (36.5%) ran both an incr0 and a default call, and 53
-  of 140 tasks (37.9%) had such a lane. Counting `first` builds beyond one per (mode, crate, release) in
-  those lanes: 73 extra first builds in total, median 1, worst lane 6. A lane that mixes builds both unit
-  sets, which is the warning in memory bfd48b27. In 39 of the 54 mixed lanes at least one role itself ran
-  both settings; in the other 15 each role was consistent and the mix is between roles, most often (7 of 15)
-  an implementer on the verify env and a reviewer on the default, and in 3 of 15 the reverse.
+  of 140 tasks (37.9%) had such a lane. Two more tasks (9746 and 9884) ran one setting in each of their
+  lanes, a different one per lane, so 55 of 140 tasks (39.3%) ran both settings somewhere in the window: the
+  `mixed` tasks of the summary and the pricing. Counting `first` builds beyond one per (mode, crate, release)
+  in the 54 mixed lanes: 73 extra first builds in total, median 1, worst lane 6. A lane that mixes builds
+  both unit sets, which is the warning in memory bfd48b27. In 39 of the 54 mixed lanes at least one role
+  itself ran both settings; in the other 15 each role was consistent and the mix is between roles, most often
+  (7 of 15) an implementer on the verify env and a reviewer on the default, and in 3 of 15 the reverse.
 - **"Today's agent settings" is therefore a mix, not the plain default.** The observed scenario in the
   pricing prices each invocation under its own recorded setting.
 
@@ -190,6 +200,13 @@ The pattern the bench tests: the verify env looks cheaper on a first build, dear
 built in the task, which compiles and links a new test binary even though the crate is warm. The pricing
 treats a rerun with no source change as costing no build CPU and reports this share as a sensitivity.
 Reruns also include test execution, which this bench excludes (`--no-run`).
+
+`first` is keyed per task, not per lane. 6 of the 140 tasks ran in more than one lane (4 in two, 2 in
+three; 148 (task, lane) pairs in all), and a lane acquired later is seeded afresh, so its first builds are
+first builds again. The rule classes them `rerun` or `edit-rebuild` when the task had already built that key
+in an earlier lane: 33 invocations (1.6%, in 8 tasks) under the observed key, 28 of them reruns and 5
+edit-rebuilds. The pricing therefore under-prices first builds in every scenario. The sensitivity under
+Pricing puts a number on it; it does not change the comparison between the settings.
 
 ### Output for the bench steps
 
@@ -280,8 +297,8 @@ the units it finds dirty, which is why it ends the sequence.
 - `cpu_s`: user plus sys of the step's whole waited process tree (`getrusage(RUSAGE_CHILDREN)` delta). Under
   (b) the private server is a child of the step, so the compiles it runs are included. The primary metric.
 - `cgroup_cpu_s`: the same step's `usage_usec` from the dedicated `systemd-run --user --scope` unit each
-  driver runs in, a cross-check: the largest relative difference from `cpu_s` is 0.14% over the 41 crate-1
-  bench steps.
+  driver runs in, an independent cross-check: the largest relative difference from `cpu_s` is 0.27% over the
+  105 bench steps (a 0.7-second probe), and 0.05% over the 29 steps that cost 100 CPU-s or more.
 - `sccache_server_cpu_s`: the server's own CPU, from `/proc/<pid>/stat` after the step.
 - `wall_s`: monotonic. Secondary, because the host is shared (below).
 - `units_written`: fingerprint directories whose newest file mtime is after the step start, the rule of
@@ -298,13 +315,21 @@ the units it finds dirty, which is why it ends the sequence.
 ### Calibration
 
 The private server must not hide its compile CPU. One cacheable lib miss (`cargo build -p
-reify-shell-extract --lib`, 4 units) was run under (b) and (b0), with the gate that (b)'s `cpu_s` is within
-25% of (b0)'s. Round 1 measured `getrusage` only and failed: 13.0 s against 9.3 s, ratio 1.39. Per the plan's
-contingency the step wrapper then moved into a `systemd-run --user --scope` unit with the cgroup cross-check,
-and round 2 passed: 9.9 s against 9.0 s, ratio 1.10, with the cgroup within 0.1% of `getrusage` and the
-server accounting for 9.3 of the 9.9 CPU-s. Both rounds are in the raw data (`phase: calibration`). On a
-4-unit, 10-second build, (b)'s own two readings differ by 31% between rounds, which is host-load noise; the
-bench steps that matter run for minutes.
+reify-shell-extract --lib`, 4 units) was run under (b) and (b0), with the plan's gate that (b)'s `cpu_s` be
+within 25% of (b0)'s. The gate is too noisy at this size to decide anything. Round 1 measured `getrusage`
+only and failed: 13.0 s against 9.3 s, ratio 1.39. Per the plan's contingency the step wrapper then moved
+into a `systemd-run --user --scope` unit with the cgroup cross-check, and round 2 passed: 9.9 s against
+9.0 s, ratio 1.10. The scope did not change what `getrusage` captures: round 2's `getrusage` reading
+(9.904 s) is the cgroup's (9.918 s) to 0.14%. Round 1's high reading was not a capture failure either, since
+a server whose compiles went uncounted would have read far below (b0), not 39% above it. The pass is a
+fresh sample of a 10-second build whose (b) readings differ by 31% between the two rounds, more than the
+gate's whole band, and on a cold cache (b) costs more than (b0) anyway (S1 below: 335 against 280 CPU-s).
+
+Capture is shown by two readings that do not depend on the gate. The cgroup counts every process of the
+scope whether or not it was waited for, and it equals `getrusage` to within 0.27% on all 105 bench steps and
+to within 0.17% on the 45 (b) steps that ran a server. And `sccache_server_cpu_s` sits inside `cpu_s` on
+every one of those 45 steps: 2,936 of their 4,614 CPU-s (64%), and up to 97% of a first build. Both
+calibration rounds are in the raw data (`phase: calibration`); the bench steps that matter run for minutes.
 
 ### Bookkeeping and the zero-delta control
 
@@ -398,10 +423,10 @@ What the rows say:
 - **Clippy does not benefit.** (b)'s S6 is 180 CPU-s against (a)'s 187, equal within the spread, and 31%
   more wall. sccache cannot cache check-mode compiles: 52 of 56 requests were not cacheable in `b1`'s S6.
   Of the 55 units (b)'s S6 wrote, 13 were in the base and dirtied by the delta, and 42 were not in it.
-- **A (b) agent pre-pays almost nothing the verify would build, at this staleness.** S7: after (b)'s work the
-  verify's closure still has 607 dirty units against 620 after (a)'s, so (b) pre-paid 13 units (2.1%).
-  The delta dirties about 600 units of the verify's graph, all but 5 of them workspace units, whichever arm
-  the agent ran.
+- **A (b) agent pre-pays almost nothing the verify would build, at this staleness.** S7 counts the units of
+  the verify's closure that are still dirty or unreadable. After (b)'s work that is 640 against 654 after
+  (a)'s, so (b) pre-paid 14 units (2.1%). The delta dirties about 600 units of the verify's graph (607 and
+  620 after the two arms), all but 5 of them workspace units, whichever arm the agent ran.
 - **S2 builds one test unit:** 13.6 against 11.7 CPU-s, the same.
 
 #### Zero-delta control, reify-compiler (`d0a`, `d0b`)
@@ -438,8 +463,9 @@ delta path(s)"), S1, S2, S6 and S7 only, no edits.
   the seed's own doing, by design: its log reports 235 `env!()`-baked-path test sources relinked and 84
   build-script output directories invalidated. The roots are 26 `FsStatusOutdated` test units (14 of them
   reify-audit) and 2 re-run build scripts, and the other 271 are units that depend on them. The (b) agent
-  pre-paid one unit of the verify's graph (29 unreadable against 28), because the 13 units (b)'s S1 builds
-  are the feature-split ones the verify never builds under that hash.
+  pre-paid one unit of the verify's graph (327 dirty or unreadable units against 328; the one is unreadable,
+  28 against 29), because the 13 units (b)'s S1 builds are the feature-split ones the verify never builds
+  under that hash.
 
 ### reify-eval (census rank 2)
 
@@ -480,14 +506,16 @@ Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
 
 - **Here the base does help the first build at today's staleness, modestly.** (b)'s S1 costs 341 CPU-s against
   (a)'s 413 (17% less) and 177 s of wall against 306 s. One repetition each, and 17% is only a little above
-  crate 1's spreads, so it is a modest saving and not a precise figure. (b) writes 47 units: 27 dirty, which
-  is the delta (21 `FsStatusOutdated` library and build-script units and the `manifold-csg-sys` build-script
-  run that the seed invalidates, plus their dependents), and 20 absent from the base, the feature-split of M1
-  again: the libraries of reify-compiler, -eval (and its test unit), -stdlib, -constraints, -expr,
-  -compute-contract, -doc-build, -git-env, -runtime, -test-support, -mesh-morph, -solver-elastic and
-  -kernel-occt, and the library, build script and build-script run of the gmsh and openvdb kernels. (a)
-  writes 54: 49 absent from the base and 5 the base has but the seed invalidated. The private server did 258
-  of (b)'s 341 CPU-s (35 cache misses in 35 executed requests).
+  crate 1's spreads, so it is a modest saving and not a precise figure. Against (a)'s median over its stale
+  and zero-delta readings (427 CPU-s; both wrote 54 units, so the pricing pools them) the saving is 20%,
+  the figure the summary quotes. (b) writes 47 units: 27 dirty, which is the delta (21 `FsStatusOutdated`
+  library and build-script units and the `manifold-csg-sys` build-script run that the seed invalidates, plus
+  their dependents), and 20 absent from the base, the feature-split of M1 again: the libraries of
+  reify-compiler, -eval (and its test unit), -stdlib, -constraints, -expr, -compute-contract, -doc-build,
+  -git-env, -runtime, -test-support, -mesh-morph, -solver-elastic and -kernel-occt, and the library, build
+  script and build-script run of the gmsh and openvdb kernels. (a) writes 54: 49 absent from the base and 5
+  the base has but the seed invalidated. The private server did 258 of (b)'s 341 CPU-s (35 cache misses in
+  35 executed requests).
 - **The edit loop costs (b) 5 to 6 times the CPU,** in line with crate 1 (8.3x and 5.5x): 45 to 59 CPU-s per
   `Ek-S2` against (a)'s 10, 61 to 84 per `Ek-S1` against 13 to 15. The server did 39 to 51 of each `Ek-S2`,
   4 cache misses in 4 executed requests. The wall ratios (2.9x and 3.1x) are lower than crate 1's because
@@ -498,8 +526,8 @@ Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
   and run) and tree-sitter-reify, and the check-mode libraries of reify-doc, -fdm, -gcode and
   workspace-feature-union, all found in the base. One repetition; I do not attribute the 100 CPU-s gap further.
   sccache executed 9 of 282 requests, all misses; 273 were check-mode and not cacheable.
-- **S7:** the verify's closure has 597 dirty units after (b)'s work against 615 after (a)'s, so (b) pre-paid 18
-  units (2.9%), none of them external.
+- **S7:** the verify's closure has 631 dirty or unreadable units after (b)'s work against 649 after (a)'s, so
+  (b) pre-paid 18 units (2.8%), none of them external.
 
 #### Zero-delta control, reify-eval (`d0a`, `d0b`)
 
@@ -520,7 +548,8 @@ One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
   costs 339 CPU-s at zero delta and 341 at 341 commits. The 21 units the delta dirties are small crates and
   cost almost nothing next to the 20 absent units, which include reify-eval's own library and test unit. At
   zero delta (b) saves 101 CPU-s (23%) on the first build against (a)'s 440; at 341 commits it saved 72 (17%)
-  against 413. (a) itself reads 7% higher here than at stale, one repetition each.
+  against 413. (a) itself reads 7% higher here than at stale, one repetition each. Against the pooled (a)
+  of 427 CPU-s that the summary and the pricing use, both savings are 20%.
 - **The remaining dirty units are the seed's own.** (b)'s 6 and (a)'s 5 dirty units are the `manifold-csg-sys`
   build-script run, which the seed always invalidates, and the units that depend on it (`manifold-csg-sys`,
   `manifold-csg`, `manifold3d`, and for (b) `reify-kernel-manifold`).
@@ -532,8 +561,8 @@ One repetition each, reseeded at the basecommit, S1, S2, S6 and S7 only.
   difference between arms on this crate is therefore not resolved by this bench; the CPU difference is.
 - **Clippy:** 236 against 297 CPU-s (21% less under (b)), 260 absent units as at stale and 4 dirty. sccache
   executed 7 of 267 requests, all misses.
-- **S7:** 293 against 294 dirty units, so (b) pre-paid none of the verify's units at zero delta. The 294 are,
-  as for reify-compiler, the seed's own invalidation.
+- **S7:** 322 against 323 dirty or unreadable units, so (b) pre-paid one of the verify's units at zero delta.
+  The 294 dirty units (293 after (b)) are, as for reify-compiler, the seed's own invalidation.
 
 ### reify-cli (census rank 3)
 
@@ -587,7 +616,7 @@ Pooled over the three edits (three readings per arm), median `cpu_s` / `wall_s`:
 - **S7 is degenerate for this crate.** The probe's closure is `-p reify-cli`, the same selection the agent
   built, so (b) pre-pays all of it: 0 dirty and 1 unreadable unit against (a)'s 23 and 29. It bounds the
   pre-pay from above; the verify's real build is workspace-wide, and for reify-compiler and reify-eval, whose
-  probes span 25 packages, (b) pre-paid 13 to 18 units at stale and 0 or 1 at zero delta.
+  probes span 25 packages, (b) pre-paid 14 to 18 units at stale and 1 at zero delta.
 
 #### Zero-delta control, reify-cli (`d0a`, `d0b`)
 
@@ -762,6 +791,23 @@ Sensitivities, CPU-min/day, each against the middle row above:
 - **Reruns that build a new test binary.** Pricing the 222 of them at one S2 adds 3.4 (a) or 3.1 (b)
   CPU-min/day, about 2%.
 - **Denominator.** Every figure is 1.4 times larger per active day, as the table shows.
+- **First builds keyed per lane.** Keying `first` per (task, lane) instead of per task, over each task's
+  whole history, turns 32 invocations (33 under the observed key, in 8 or 9 tasks) into first builds that
+  the primary model prices as reruns or edit-rebuilds (see Limits of the class rule). It raises every
+  scenario and the pure ones most, and leaves the (a) against (b) comparison where it was:
+
+| `first` keyed | base | pure-(a) | pure-(b) | observed | mix penalty, CPU / median wall | (b) over (a), CPU / median wall |
+|---|---|---:|---:|---:|---|---|
+| per task (the primary model) | 341 commits | 147 | 148 | 184 | +26% / +46% | +0.9% / +16% |
+| per lane | 341 commits | 167 | 165 | 197 | +18% / +45% | -0.8% / +17% |
+| per task (the primary model) | zero delta | 145 | 127 | 169 | +17% / +48% | -12.2% / +14% |
+| per lane | zero delta | 164 | 140 | 181 | +10% / +52% | -14.6% / +29% |
+
+CPU-min/day for the three scenarios; the mix penalty is observed over pure-(a), and the wall figures are
+medians of the per-task build wall below. At 341 commits pure-(b) stays a tie with pure-(a) on CPU and
+slower for the median task (86 of 140 tasks, against 87), and the mix keeps a large wall penalty and a CPU
+penalty of +18%. The mix penalty falls on CPU because the pure scenarios gain more (20.1 and 17.4
+CPU-min/day) than the observed mix (12.5). The primary tables keep the plan's per-task key.
 
 ### Where the base sits at production first builds
 
@@ -804,6 +850,9 @@ Who gains and who loses, by what each task ran in the window (341 commits; CPU-m
 | default only | 53 | +23 s (32 slower) | 524 to 552 | 0 s (none slower) | 524 to 524 |
 | verify env only | 32 | 0 s (none slower) | 356 to 350 | -23 s (10 slower) | 356 to 332 |
 | mixed | 55 | -177 s (3 slower) | 1,698 to 1,169 | -233 s (1 slower) | 1,698 to 1,197 |
+
+`mixed` is a task that ran both settings anywhere in the window: 53 did so in one lane, and 2 (tasks 9746
+and 9884) in different lanes, one setting per lane.
 
 Moving to (b) makes the 53 tasks that already run the plain default 23 s slower at the median (32 of them
 slower, +5% CPU) and rescues the mixed ones. Moving to (a) leaves the default-only tasks as they are and
@@ -951,8 +1000,8 @@ role_env_overrides:
 - **(b0) variant.** Without the `RUSTC_WRAPPER` line this is arm (b0). It reuses the base identically, needs no
   sccache server, and cost 16% less than (b) on its one first-build reading (280 against 335 CPU-s). Its edit loop
   was not measured.
-- **Gate.** `scripts/verify-pipeline-guard.sh requires-full-gate dark-factory-orchestrator.yaml` exits 1: the
-  edit does not need the full gate.
+- **Gate.** `scripts/verify-pipeline-guard.sh requires-full-gate dark-factory-orchestrator.yaml` exits 1: that
+  edit alone does not need the full gate (the script edits under "Derive, do not copy" do).
 
 **Incremental half only**, in `.cargo/config.toml`, which has no `[build]` table today:
 
@@ -963,22 +1012,34 @@ incremental = false
 
 - **Reach.** Every cargo process that reads the repo's config, in every lane and role, plus the laptop and
   human sessions. It needs no restart and no role list. The verify's own `CARGO_INCREMENTAL=0` agrees with it,
-  and `CARGO_INCREMENTAL=1` in the environment overrides it (checked with `cargo build --unit-graph` in a
-  scratch crate: config false and no env gives a non-incremental unit, config false with env 1 an incremental
-  one, no config and no env an incremental one).
+  and `CARGO_INCREMENTAL` in the environment overrides it in either direction (checked with `cargo build
+  --unit-graph` in a scratch crate: config false and no env gives a non-incremental unit, config false with
+  env 1 an incremental one, config true with env 0 a non-incremental one, no config and no env an incremental
+  one).
 - **Consequence for humans and the laptop.** Their edit loops lose incremental and pay the 5 to 8 times CPU
   measured here on the big crates, unless they export `CARGO_INCREMENTAL=1`.
-- **Gate.** `requires-full-gate .cargo/config.toml` exits 1 as well.
+- **Gate.** `requires-full-gate .cargo/config.toml` exits 1 as well, on its own.
 
-**Derive, do not copy.** The verify's pair is a literal in three places today: `verify_env` in the yaml (lines
-463 and 464), `apply_env` in `scripts/verify.sh` (lines 1265 to 1268) and `scripts/reify_verify/environment.py`
-(line 92), and task 5836's CARGO_HOME agreement is a fourth copy of the same shape: `verify_env`'s `CARGO_HOME`
+**Derive, do not copy.** The verify's pair is a literal in three places today: `verify_env` in the yaml,
+`apply_env` in `scripts/verify.sh`, and `build` in `scripts/reify_verify/environment.py`, which ports
+`apply_env`. Task 5836's CARGO_HOME agreement is a fourth copy of the same shape: `verify_env`'s `CARGO_HOME`
 must stay byte-identical to the agents', as its comment instructs. A literal copy of the pair in
 `role_env_overrides` would be one more place that becomes the mismatch the day 7429 flips the verify's side
-(heuristic 11, SPOT). If either change is adopted, take both sides from one definition: the `.cargo/config.toml`
-route above for the incremental flag, which every process reads, or a single YAML anchor for the pair merged
-into both `verify_env` and `&sandbox_cache_env`, and in either case 7429's planned arm source as the thing the
-definition follows.
+(heuristic 11, SPOT).
+
+The two script literals are the ones that decide. `apply_env` and `build` export `RUSTC_WRAPPER=sccache` and
+`CARGO_INCREMENTAL=0` unconditionally, after and over whatever `verify_env` supplied, and over
+`.cargo/config.toml` too, because the environment outranks it (above). A YAML anchor or the config line
+therefore cannot change what the verify runs under: the verify keeps exporting the scripts' values.
+
+If either route is adopted, take both sides from one definition: the `.cargo/config.toml` route above for the
+incremental flag, which every process reads, or a single YAML anchor for the pair merged into both
+`verify_env` and `&sandbox_cache_env`. Then make `apply_env` and `build` read that definition, or drop their
+literals, so that it outranks them instead of duplicating them. Without that step, 7429 setting the config or
+the anchor to incremental would leave the verify exporting `CARGO_INCREMENTAL=0` over it while the agents ran
+incremental: the mismatch again, from the other side. In either case the definition follows 7429's planned
+arm source. The script edit also changes the gate verdicts above: `requires-full-gate scripts/verify.sh`
+exits 0, so a change to `apply_env` needs the full `--scope all` gate.
 
 ## Interaction with task 7429
 
@@ -1034,9 +1095,21 @@ that the spec's `verify_env` outranks the host config). The arm's single source,
 - **Census approximations.** The setting is read from the command text. Reruns cost 0 (the 222 first-time
   selections are about 2%). Crates the bench did not run (31% of calls, 32 to 36% of CPU) and the 10
   workspace-wide calls (14 to 15% of CPU) are priced by unit count. First builds are priced in isolation
-  (the closure-aware sensitivity moves (b) 6 to 7 points toward (a)). Three calls name no workspace package.
-  Four of the 14 days were idle; per-active-day figures are 1.4 times larger. The base generations before
-  `gen.642` are gone, so staleness is placed for 301 of 419 first builds.
+  (the closure-aware sensitivity moves (b) 6 to 7 points toward (a)). `first` is keyed per task, not per
+  lane: 33 invocations (1.6%) are first builds of a later lane, and pricing them as such raises every
+  scenario by 7 to 14% without moving (b) against (a). Three calls name no workspace package. Four of the 14
+  days were idle; per-active-day figures are 1.4 times larger. The base generations before `gen.642` are
+  gone, so staleness is placed for 301 of 419 first builds.
+- **Where the edits land.** The bench prices every edit-rebuild as an edit to one function of the built
+  crate's own library or binary source. The census says where the edits since the previous cargo call were,
+  over the 393 observed edit-rebuilds: in the built crate's own non-test source 265 (67.4%), in its tests,
+  benches or examples only 111 (28.2%), in upstream workspace crates only 7 (1.8%), a `sed -i` of unknown
+  path 7 (1.8%), elsewhere 3 (0.8%). For the upstream ones (b)'s measured penalty is a lower bound: the
+  edited crate and every crate between it and the built one recompile from scratch under (b) and
+  incrementally under (a). For the test-only ones it is an upper bound: only the test crate recompiles, which
+  the bench did not measure. In the pure scenarios' 406 edit-rebuilds those test-only ones carry 5.9 of the
+  15.0 CPU-min/day that pure-(b) pays over pure-(a) on edit-rebuilds at 341 commits, so even if (b) paid
+  nothing extra on them pure-(b) would be 142 against pure-(a)'s 147 CPU-min/day, a tie within the band.
 - **Pre-pay.** The verify credit counts only if the verify runs in the agent's lane, as the yaml comment on
   `verify_env` says it does.
 - **Not measured.** Disk use of the incremental directories per lane, and (b0)'s edit loop.
@@ -1055,9 +1128,32 @@ lane's head; 0 for the zero-delta controls, where `bench_head` is the basecommit
 `psi_some_avg10_end`, `loadavg_start`, `started_at`. S7 records carry `rc` 101 by design (the refusing wrapper)
 and a null `units_written`; S0 records carry `lane_head` and `current_base_gen`.
 
-Every table in the bench sections is the median over the records of one (crate, arm, step) at one `behind_by`,
-and every CPU-min/day and wall figure follows from those medians and the census tables by the pricing rule above.
-The census inputs (the 2,114 classified invocations), the unit-graph counts and the instruments (miner, step
-wrapper, drivers, pricing script) are throwaway and untracked: the method sections state the rules and the
-tables print the numbers the pricing used. That is the precedent of task 4452's note, and keeps a one-off
-instrument out of every gate.
+Every table in the bench sections is the median over the records of one (crate, arm, step) at one `behind_by`.
+
+`docs/notes/agent-build-settings-bench-census.jsonl` holds the census and the unit counts the pricing consumes:
+4,010 rows, one JSON object per line, a `row` field naming the kind. Rows are grouped by census subject task in
+ascending order (`task` is that task's id, not 10169) and, within a task, ordered by `ts` (UTC, millisecond
+precision, `Z`) with edits before invocations on a tie, which is the order the class rule replays.
+
+| `row` | count | fields |
+|---|---:|---|
+| `meta` | 1 | `bench_task`, `bench_head`, `window_start`, `window_end` (exclusive), `calendar_days`, `active_days`, `source` |
+| `units` | 24 | `crate` (a `-p` name, or `--workspace`), `workspace_units`: the workspace units of `cargo --unit-graph` at BENCH_HEAD for each selection (`test_lib`, `test_bins`, `test_one`, `test_bare`, `test_all_targets`, `check_all_targets`, `check_tests`, `build_bare`) |
+| `cargo` | 2,452 | `task`, `ts`, `lane`, `role`, `sub`, `crate`, `workspace`, `selection`, `n_tests`, `no_run`, `release`, `setting`, `class`, `wall_s`, `n_heavy_in_cmd`, `background`: one heavy cargo invocation, classified as described in the census section |
+| `edit` | 1,322 | `task`, `ts`, `file`: a `.rs` edit, the path relative to the lane's root (`(sed -i)` when the path is unknown) |
+| `other-cargo` | 202 | `task`, `ts`, `lane`, `role`, `sub`: a cargo subcommand that is not heavy |
+| `script` | 9 | `task`, `ts`, `lane`, `role`, `sub`, `wall_s`: a `scripts/verify.sh` run |
+
+The window holds 2,114 of the `cargo` rows, 1,152 of the `edit` rows, 184 of the `other-cargo` rows and all 9
+`script` rows. The rest are the earlier history of tasks that were still running in the window, which the
+class rule needs: a key built before the window is not a first build. `mode` is not stored, because it
+follows from `sub` (check and clippy are `check`, the others `build`). Every table of the census section is a
+count or a median over the window's `cargo` and `edit` rows.
+
+Every CPU-min/day and wall figure follows from this file and the bench medians of the raw file by the pricing
+rule above. That was checked: rebuilding the pricing script's inputs from this file alone and running it
+reproduced every pricing table of this note exactly. Only the closure-aware sensitivity needs more, the
+dependency closures from `cargo metadata` at BENCH_HEAD, which any checkout of that commit regenerates. The
+instruments themselves (miner, step wrapper, drivers, pricing script) are throwaway and untracked: the method
+sections state the rules, and the two files hold the data they produced. That is the precedent of task 4452's
+note, and keeps a one-off instrument out of every gate.
