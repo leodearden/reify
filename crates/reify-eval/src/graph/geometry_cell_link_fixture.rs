@@ -40,9 +40,12 @@ pub(crate) const SCALAR_GEOMETRY_MEMBERS: [&str; 2] = ["a", "b"];
 /// The members of `T` in [`SRC`] that are geometry-list lets.
 pub(crate) const GEOMETRY_LIST_MEMBERS: [&str; 2] = ["one", "holes"];
 
-/// The id of the realization named `member` in `module`, the compiled [`SRC`].
-/// It reads the compiled module and not the graph's cell link, so it is an
-/// oracle for that link and not a restatement of it.
+/// The id of [`TEMPLATE`]'s realization named `member` in `module` (normally the
+/// compiled [`SRC`]). It matches on name AND entity, as
+/// `Engine::mint_symbolic_geometry_handle_for_cell` does, so a same-named
+/// realization of another structure cannot stand in for it. It reads the
+/// compiled module and not the graph's cell link, so it is an oracle for that
+/// link and not a restatement of it.
 pub(crate) fn compiled_realization_named(
     module: &CompiledModule,
     member: &str,
@@ -51,9 +54,13 @@ pub(crate) fn compiled_realization_named(
         .templates
         .iter()
         .flat_map(|template| &template.realizations)
-        .find(|realization| realization.name.as_deref() == Some(member))
+        .find(|realization| {
+            realization.id.entity == TEMPLATE && realization.name.as_deref() == Some(member)
+        })
         .map(|realization| realization.id.clone())
-        .unwrap_or_else(|| panic!("SRC must compile a realization named `{member}`"))
+        .unwrap_or_else(|| {
+            panic!("the compiled module must hold a realization of `{TEMPLATE}` named `{member}`")
+        })
 }
 
 /// Panics unless some realization of `graph` links `cell`. A geometry-list cell
@@ -68,4 +75,46 @@ pub(crate) fn assert_some_realization_links(graph: &EvaluationGraph, cell: &Valu
         "precondition: some realization must link `{cell}` (task #5385's list link), \
          or a claim that it resolves to no realization is vacuous"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_test_support::parse_and_compile;
+
+    use super::*;
+
+    const SHADOWED_MEMBER: &str = "a";
+
+    /// `Q` compiles before [`TEMPLATE`] and declares a let of the same name, so a
+    /// search that matches on the name alone finds `Q`'s realization first.
+    const SAME_NAMED_LET_IN_ANOTHER_STRUCTURE_SRC: &str = r#"structure Q {
+    let a = box(1mm, 1mm, 1mm)
+}
+structure T {
+    let a = box(10mm, 10mm, 10mm)
+}"#;
+
+    #[test]
+    fn the_realization_oracle_ignores_a_same_named_realization_of_another_structure() {
+        let module = parse_and_compile(SAME_NAMED_LET_IN_ANOTHER_STRUCTURE_SRC);
+
+        let first_match_by_name_alone = module
+            .templates
+            .iter()
+            .flat_map(|template| &template.realizations)
+            .find(|realization| realization.name.as_deref() == Some(SHADOWED_MEMBER))
+            .expect("both structures of the source declare the shadowed member");
+        assert_ne!(
+            first_match_by_name_alone.id.entity, TEMPLATE,
+            "precondition: the decoy structure must compile before `{TEMPLATE}`, or this test \
+             no longer exercises a shadowing realization"
+        );
+
+        let found = compiled_realization_named(&module, SHADOWED_MEMBER);
+        assert_eq!(
+            found.entity, TEMPLATE,
+            "the oracle must answer for `{TEMPLATE}`'s realization of `{SHADOWED_MEMBER}`, \
+             but it returned {found:?}"
+        );
+    }
 }
