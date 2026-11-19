@@ -1393,26 +1393,38 @@ fn assert_real_vector(result: Value, expected: [f64; 3]) {
 /// dimensionless components into a `Vector` of `Real`.
 #[test]
 fn mul_direction_times_int_yields_real_vector() {
-    assert_real_vector(eval_binop(BinOp::Mul, dirv(0.0, 0.0, 1.0), Value::Int(2)), [0.0, 0.0, 2.0]);
+    assert_real_vector(
+        eval_binop(BinOp::Mul, dirv(0.0, 0.0, 1.0), Value::Int(2)),
+        [0.0, 0.0, 2.0],
+    );
 }
 
 /// INTENTIONAL: commutative counterpart of
 /// `mul_direction_times_int_yields_real_vector`.
 #[test]
 fn mul_int_times_direction_yields_real_vector() {
-    assert_real_vector(eval_binop(BinOp::Mul, Value::Int(2), dirv(0.0, 0.0, 1.0)), [0.0, 0.0, 2.0]);
+    assert_real_vector(
+        eval_binop(BinOp::Mul, Value::Int(2), dirv(0.0, 0.0, 1.0)),
+        [0.0, 0.0, 2.0],
+    );
 }
 
 /// INTENTIONAL: `Direction × Real → Vector` of `Real`.
 #[test]
 fn mul_direction_times_real_yields_real_vector() {
-    assert_real_vector(eval_binop(BinOp::Mul, dirv(0.0, 1.0, 0.0), Value::Real(2.0)), [0.0, 2.0, 0.0]);
+    assert_real_vector(
+        eval_binop(BinOp::Mul, dirv(0.0, 1.0, 0.0), Value::Real(2.0)),
+        [0.0, 2.0, 0.0],
+    );
 }
 
 /// INTENTIONAL: `Real × Direction → Vector` of `Real`.
 #[test]
 fn mul_real_times_direction_yields_real_vector() {
-    assert_real_vector(eval_binop(BinOp::Mul, Value::Real(2.0), dirv(0.0, 1.0, 0.0)), [0.0, 2.0, 0.0]);
+    assert_real_vector(
+        eval_binop(BinOp::Mul, Value::Real(2.0), dirv(0.0, 1.0, 0.0)),
+        [0.0, 2.0, 0.0],
+    );
 }
 
 /// INTENTIONAL: `Scalar[L] × Direction → Vector` of `Scalar[L]` — the
@@ -1440,15 +1452,35 @@ fn direction_non_scale_pairings_are_undef() {
     let d = dirv(0.0, 0.0, 1.0);
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
     let rows = [
-        ("Direction*Direction", BinOp::Mul, d.clone(), dirv(1.0, 0.0, 0.0)),
+        (
+            "Direction*Direction",
+            BinOp::Mul,
+            d.clone(),
+            dirv(1.0, 0.0, 0.0),
+        ),
         ("Direction/Int", BinOp::Div, d.clone(), Value::Int(2)),
         ("Direction/Real", BinOp::Div, d.clone(), Value::Real(2.0)),
         ("Int/Direction", BinOp::Div, Value::Int(2), d.clone()),
         ("Vector[L]*Direction", BinOp::Mul, v.clone(), d.clone()),
         ("Direction*Vector[L]", BinOp::Mul, d.clone(), v),
-        ("Tensor[Int]*Direction", BinOp::Mul, tensor1(vec![Value::Int(1), Value::Int(2)]), d.clone()),
-        ("Point[L]*Direction", BinOp::Mul, pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0), d.clone()),
-        ("Complex*Direction", BinOp::Mul, cx(2.0, 3.0, DimensionVector::LENGTH), d),
+        (
+            "Tensor[Int]*Direction",
+            BinOp::Mul,
+            tensor1(vec![Value::Int(1), Value::Int(2)]),
+            d.clone(),
+        ),
+        (
+            "Point[L]*Direction",
+            BinOp::Mul,
+            pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0),
+            d.clone(),
+        ),
+        (
+            "Complex*Direction",
+            BinOp::Mul,
+            cx(2.0, 3.0, DimensionVector::LENGTH),
+            d,
+        ),
     ];
     for (label, op, lv, rv) in rows {
         let result = eval_binop(op, lv, rv);

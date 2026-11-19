@@ -4323,6 +4323,19 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
             im: im * r,
             dimension: *dimension,
         },
+        // Direction * scalar or scalar * Direction: scale the unit components
+        // → Vector (direction-typing C6). Every other Direction pairing is
+        // Undef here, before the aggregate arms below can recurse a
+        // Direction into each component.
+        (Value::Direction(u), other) | (other, Value::Direction(u)) => match other {
+            Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => scale_components(
+                &u.components().map(Value::Real),
+                other,
+                eval_mul,
+                Value::Vector,
+            ),
+            _ => Value::Undef,
+        },
         // Scalar * Tensor or Tensor * Scalar: scale each component
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
             if !matches!(scalar, Value::Tensor(_)) =>
