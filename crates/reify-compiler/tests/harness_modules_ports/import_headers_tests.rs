@@ -10,8 +10,8 @@ use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
-    ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports, cfg_unsatisfied_imports,
-    derive_std_imports, insert_imports,
+    GatedOffImports, ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports,
+    cfg_unsatisfied_imports, derive_std_imports, insert_imports,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_to_string};
 
@@ -1050,5 +1050,61 @@ fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off(
             ],
             vec![]
         )
+    );
+}
+
+#[test]
+fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied() {
+    let parsed = parse_clean(
+        "import std.fake.a\n\
+         #cfg(wide)\n\
+         import std.fake.b.Thing\n\
+         #cfg(tall)\n\
+         import std.fake.c\n\
+         \n\
+         structure def S {}\n",
+        SUBJECT_PATH,
+    );
+    let probes: [(&str, &[&str]); 6] = [
+        ("std.fake.a", &["Anything"]),
+        ("std.fake.b", &["Thing"]),
+        ("std.fake.b", &["Other"]),
+        ("std.fake.b", &["Other", "Thing"]),
+        ("std.fake.c", &["Anything"]),
+        ("std.fake.d", &["Anything"]),
+    ];
+    let covered_under = |cfg: &CfgSet| -> Vec<String> {
+        let gated_off = GatedOffImports::of(&parsed, cfg);
+        probes
+            .iter()
+            .filter(|(module, names)| {
+                let names = names
+                    .iter()
+                    .map(|name| name_use(name, NameRole::Type))
+                    .collect();
+                gated_off.would_cover_any(&required(module, names))
+            })
+            .map(|(module, names)| format!("{module} [{}]", names.join(", ")))
+            .collect()
+    };
+    assert_eq!(
+        covered_under(&CfgSet::default()),
+        vec![
+            "std.fake.b [Thing]",
+            "std.fake.b [Other, Thing]",
+            "std.fake.c [Anything]"
+        ]
+    );
+    assert_eq!(
+        covered_under(&flags(&["wide"])),
+        vec!["std.fake.c [Anything]"]
+    );
+    assert_eq!(
+        covered_under(&flags(&["tall"])),
+        vec!["std.fake.b [Thing]", "std.fake.b [Other, Thing]"]
+    );
+    assert_eq!(
+        covered_under(&flags(&["wide", "tall"])),
+        Vec::<String>::new()
     );
 }
