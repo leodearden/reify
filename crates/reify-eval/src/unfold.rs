@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind};
+use reify_compiler::{
+    CompiledGuardedGroup, CompiledModule, GuardedGroupCell, TopologyTemplate, ValueCellKind,
+};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
@@ -1347,15 +1349,16 @@ fn eval_scratch_let(
     }
 }
 
-/// The template's guarded-group cells: each group's guard cell, members and
-/// else members. No sub instance is stamped with one, because cell_contributions
-/// stamps an instance from the child's value_cells only.
+/// Every cell the template's guarded groups own
+/// ([`CompiledGuardedGroup::owned_cells`]). No sub instance is stamped with one,
+/// because cell_contributions stamps an instance from the child's value_cells
+/// only.
 fn guarded_group_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellId> {
-    template.guarded_groups.iter().flat_map(|group| {
-        std::iter::once(&group.guard_value_cell)
-            .chain(group.members.iter().map(|decl| &decl.id))
-            .chain(group.else_members.iter().map(|decl| &decl.id))
-    })
+    template
+        .guarded_groups
+        .iter()
+        .flat_map(CompiledGuardedGroup::owned_cells)
+        .map(GuardedGroupCell::id)
 }
 
 /// Phase 1: Evaluate and store only the param cells for a child instance.
