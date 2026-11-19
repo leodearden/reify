@@ -69,3 +69,45 @@ pub(crate) fn assert_some_realization_links(graph: &EvaluationGraph, cell: &Valu
          or a claim that it resolves to no realization is vacuous"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_test_support::parse_and_compile;
+
+    use super::*;
+
+    const SHADOWED_MEMBER: &str = "a";
+
+    /// `Q` compiles before [`TEMPLATE`] and declares a let of the same name, so a
+    /// search that matches on the name alone finds `Q`'s realization first.
+    const SAME_NAMED_LET_IN_ANOTHER_STRUCTURE_SRC: &str = r#"structure Q {
+    let a = box(1mm, 1mm, 1mm)
+}
+structure T {
+    let a = box(10mm, 10mm, 10mm)
+}"#;
+
+    #[test]
+    fn the_realization_oracle_ignores_a_same_named_realization_of_another_structure() {
+        let module = parse_and_compile(SAME_NAMED_LET_IN_ANOTHER_STRUCTURE_SRC);
+
+        let first_match_by_name_alone = module
+            .templates
+            .iter()
+            .flat_map(|template| &template.realizations)
+            .find(|realization| realization.name.as_deref() == Some(SHADOWED_MEMBER))
+            .expect("both structures of the source declare the shadowed member");
+        assert_ne!(
+            first_match_by_name_alone.id.entity, TEMPLATE,
+            "precondition: the decoy structure must compile before `{TEMPLATE}`, or this test \
+             no longer exercises a shadowing realization"
+        );
+
+        let found = compiled_realization_named(&module, SHADOWED_MEMBER);
+        assert_eq!(
+            found.entity, TEMPLATE,
+            "the oracle must answer for `{TEMPLATE}`'s realization of `{SHADOWED_MEMBER}`, \
+             but it returned {found:?}"
+        );
+    }
+}
