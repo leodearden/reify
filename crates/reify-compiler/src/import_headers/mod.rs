@@ -7,7 +7,8 @@
 //! each name through `name_env`, so only names whose winning definition lives
 //! in a std module need an import. [`coverage`] decides which of those names
 //! a module's own `import` declarations, those in effect under the active
-//! cfg, already make visible.
+//! cfg, already make visible, and which those the cfg leaves out would make
+//! visible were their `#cfg` satisfied.
 
 mod attribution;
 mod coverage;
@@ -261,6 +262,12 @@ impl<'p> GatedOffImports<'p> {
             .names
             .iter()
             .any(|name_use| self.coverage.covers(&required.module, &name_use.name))
+    }
+
+    /// The module path of every one of those imports, once each, in no
+    /// particular order.
+    pub fn modules(&self) -> impl Iterator<Item = &ModulePath> {
+        self.coverage.modules()
     }
 }
 

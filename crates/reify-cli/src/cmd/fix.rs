@@ -85,10 +85,10 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
+    let gated_off = GatedOffImports::of(&parsed, cfg);
     if !residual.is_empty() {
-        let gated_off = import_headers::cfg_unsatisfied_imports(&parsed, cfg);
         let still_gated_off = gated_off
-            .iter()
+            .modules()
             .filter(|module| !imports_after_fix.contains(module));
         report_refusal(path, &source, &residual, still_gated_off);
         return false;
@@ -98,7 +98,6 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     if missing.is_empty() {
         return true;
     }
-    let gated_off = GatedOffImports::of(&parsed, cfg);
     if check_only {
         for required in &missing {
             println!("{path}: missing import {}", describe(required, &gated_off));

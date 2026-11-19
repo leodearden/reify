@@ -1053,25 +1053,28 @@ fn the_cfg_splits_the_declared_imports_into_those_in_effect_and_those_gated_off(
     );
 }
 
+const GATED_OFF_FIXTURE: &str = "import std.fake.a\n\
+     #cfg(wide)\n\
+     import std.fake.b.Thing\n\
+     #cfg(tall)\n\
+     import std.fake.c\n\
+     #cfg(wide)\n\
+     import std.fake.e.Thing as T\n\
+     \n\
+     structure def S {}\n";
+
 #[test]
 fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied() {
-    let parsed = parse_clean(
-        "import std.fake.a\n\
-         #cfg(wide)\n\
-         import std.fake.b.Thing\n\
-         #cfg(tall)\n\
-         import std.fake.c\n\
-         \n\
-         structure def S {}\n",
-        SUBJECT_PATH,
-    );
-    let probes: [(&str, &[&str]); 6] = [
+    let parsed = parse_clean(GATED_OFF_FIXTURE, SUBJECT_PATH);
+    let probes: [(&str, &[&str]); 8] = [
         ("std.fake.a", &["Anything"]),
         ("std.fake.b", &["Thing"]),
         ("std.fake.b", &["Other"]),
         ("std.fake.b", &["Other", "Thing"]),
         ("std.fake.c", &["Anything"]),
         ("std.fake.d", &["Anything"]),
+        ("std.fake.e", &["Thing"]),
+        ("std.fake.e", &["T"]),
     ];
     let covered_under = |cfg: &CfgSet| -> Vec<String> {
         let gated_off = GatedOffImports::of(&parsed, cfg);
@@ -1092,7 +1095,8 @@ fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied
         vec![
             "std.fake.b [Thing]",
             "std.fake.b [Other, Thing]",
-            "std.fake.c [Anything]"
+            "std.fake.c [Anything]",
+            "std.fake.e [T]"
         ]
     );
     assert_eq!(
@@ -1101,10 +1105,40 @@ fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied
     );
     assert_eq!(
         covered_under(&flags(&["tall"])),
-        vec!["std.fake.b [Thing]", "std.fake.b [Other, Thing]"]
+        vec![
+            "std.fake.b [Thing]",
+            "std.fake.b [Other, Thing]",
+            "std.fake.e [T]"
+        ]
     );
     assert_eq!(
         covered_under(&flags(&["wide", "tall"])),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn gated_off_imports_name_the_module_of_each_import_the_cfg_leaves_out() {
+    let parsed = parse_clean(GATED_OFF_FIXTURE, SUBJECT_PATH);
+    let modules_under = |cfg: &CfgSet| -> Vec<String> {
+        let mut modules: Vec<String> = GatedOffImports::of(&parsed, cfg)
+            .modules()
+            .map(ModulePath::to_dotted)
+            .collect();
+        modules.sort();
+        modules
+    };
+    assert_eq!(
+        modules_under(&CfgSet::default()),
+        vec!["std.fake.b", "std.fake.c", "std.fake.e"]
+    );
+    assert_eq!(modules_under(&flags(&["wide"])), vec!["std.fake.c"]);
+    assert_eq!(
+        modules_under(&flags(&["tall"])),
+        vec!["std.fake.b", "std.fake.e"]
+    );
+    assert_eq!(
+        modules_under(&flags(&["wide", "tall"])),
         Vec::<String>::new()
     );
 }

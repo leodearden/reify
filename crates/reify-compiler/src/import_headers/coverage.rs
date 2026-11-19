@@ -75,16 +75,16 @@ enum Coverage<'p> {
 
 impl<'p> ImportCoverage<'p> {
     pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
-        Self::binding(in_effect(parsed, cfg))
+        Self::folding(in_effect(parsed, cfg))
     }
 
     /// What the imports `parsed` declares that `cfg` leaves out would bind,
     /// were their `#cfg` predicates satisfied.
     pub(crate) fn of_gated_off(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
-        Self::binding(gated_off(parsed, cfg))
+        Self::folding(gated_off(parsed, cfg))
     }
 
-    fn binding(imports: impl Iterator<Item = (ModulePath, &'p ImportKind)>) -> Self {
+    fn folding(imports: impl Iterator<Item = (ModulePath, &'p ImportKind)>) -> Self {
         let mut by_module = HashMap::new();
         for (module, kind) in imports {
             match kind.binding() {
@@ -114,5 +114,10 @@ impl<'p> ImportCoverage<'p> {
 
     pub(crate) fn covers_whole_surface(&self, module: &ModulePath) -> bool {
         matches!(self.by_module.get(module), Some(Coverage::WholeSurface))
+    }
+
+    /// Every module one of the imports names, once each, in no particular order.
+    pub(crate) fn modules(&self) -> impl Iterator<Item = &ModulePath> {
+        self.by_module.keys()
     }
 }
