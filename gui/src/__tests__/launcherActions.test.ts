@@ -531,6 +531,21 @@ describe('selectMode', () => {
     expect(failure.message).toBe('IPC channel closed');
   });
 
+  it('debug: after Debug then Design, a Debug selection whose set_mode fails rejects with E_GUI_MODE_FAILED, keeping Design selected', async () => {
+    const actions = createLauncherActions(store, deps);
+    await actions.selectMode('debug');
+    await actions.selectMode('design');
+    expect(store.state.mode).toEqual({ selected: 'design', debugPort: 3939, error: null });
+
+    deps.setMode.mockRejectedValueOnce('IPC channel closed');
+    const failure = await failureOf(actions.selectMode('debug'));
+
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED);
+    expect(failure.message).toBe('IPC channel closed');
+    expect(store.state.mode.selected).toBe('design');
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['design', 'assistant'] as const)(
     '%s: rejects with E_GUI_MODE_FAILED when set_mode fails, keeping the selection and the assistant panel as they were',
     async (mode) => {
