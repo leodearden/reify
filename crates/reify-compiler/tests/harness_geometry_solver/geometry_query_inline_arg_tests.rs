@@ -491,8 +491,8 @@ fn constraint_inline_query_arg_hoists_into_query_only_realization() {
 /// constraint lands in a guarded group, while the `__geoq_0` its query hoists
 /// is an unguarded top-level realization, as for a guarded geometry `let`.
 ///
-/// Known gap until #8450 lands guard-gated realization: the hoist should then
-/// carry the constraint's guard onto `__geoq_0`, inverting this pin.
+/// Known gap until #8450 lands guard-gated realization and carries the
+/// constraint's guard onto `__geoq_0`, inverting this pin.
 #[test]
 fn known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization() {
     let compiled = compile_clean(
