@@ -8,10 +8,10 @@ use reify_compiler::CompiledModule;
 use reify_core::RealizationNodeId;
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine, SolverPosture};
-use reify_ir::ExportFormat;
+use reify_ir::{ExportFormat, GeometryOp};
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, errors_only, manufacturing_purpose,
-    parse_and_compile,
+    GeometryOpRecord, MockConstraintChecker, MockGeometryKernel, errors_only,
+    manufacturing_purpose, parse_and_compile,
 };
 
 /// `p` patterns `g`, but `g` is declared AFTER `p`: `p` is T3's only sink, so
@@ -33,6 +33,10 @@ fn g() -> RealizationNodeId {
 /// manufacturing purpose on it, so every surface call demands a tolerance and
 /// probes the realization cache.
 fn engine_with_demanded_tolerance() -> (CompiledModule, Engine) {
+    engine_with_demanded_tolerance_on(MockGeometryKernel::new())
+}
+
+fn engine_with_demanded_tolerance_on(kernel: MockGeometryKernel) -> (CompiledModule, Engine) {
     let mut compiled = parse_and_compile(FORWARD_DECLARED_GEOMETRY_SRC);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -46,7 +50,7 @@ fn engine_with_demanded_tolerance() -> (CompiledModule, Engine) {
     let mut engine = Engine::new(
         SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
-        Some(Box::new(MockGeometryKernel::new())),
+        Some(Box::new(kernel)),
     );
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let _eval = engine.eval(&compiled);
@@ -148,26 +152,56 @@ fn a_pruned_walk_does_not_move_the_terminal() {
     );
 }
 
-#[test]
-fn a_distance_query_does_not_fill_the_slot_from_a_non_terminal_realization() {
-    let (compiled, mut engine) = engine_with_demanded_tolerance();
+fn op_kinds(records: &[GeometryOpRecord]) -> Vec<&'static str> {
+    records.iter().map(|record| record.op.kind_name()).collect()
+}
 
-    let _distance = engine.distance_between_placed(&compiled, "T3", "T3");
-    assert!(
-        dispatched(&engine, &g()) > 0,
-        "premise: the distance query's Phase-A runs g, got {:?}",
-        engine.last_dispatch_count_by_realization()
-    );
-    assert_eq!(
-        engine.realization_cache().len(),
-        0,
-        "g is not T3's terminal, so the distance query must not fill T3's cache slot"
-    );
+fn ran_a_box(records: &[GeometryOpRecord]) -> bool {
+    records
+        .iter()
+        .any(|record| matches!(record.op, GeometryOp::Box { .. }))
+}
+
+fn ran_a_circular_pattern(records: &[GeometryOpRecord]) -> bool {
+    records
+        .iter()
+        .any(|record| matches!(record.op, GeometryOp::CircularPattern { .. }))
+}
+
+#[test]
+fn a_distance_query_serves_only_the_terminal_from_the_cache() {
+    let kernel = MockGeometryKernel::new();
+    let ops = kernel.operations_ref();
+    let (compiled, mut engine) = engine_with_demanded_tolerance_on(kernel);
 
     engine.build(&compiled, ExportFormat::Step);
     assert!(
-        dispatched(&engine, &p()) > 0,
-        "p (T3#0) must not be served the box g cached during the distance query, got {:?}",
-        engine.last_dispatch_count_by_realization()
+        !engine.realization_cache().is_empty(),
+        "premise: the build caches T3's terminal under the demanded tolerance"
+    );
+    {
+        let build_ops = ops.lock().unwrap();
+        assert!(
+            ran_a_box(&build_ops) && ran_a_circular_pattern(&build_ops),
+            "premise: the build runs g's Box and p's CircularPattern, got {:?}",
+            op_kinds(&build_ops)
+        );
+    }
+
+    let before = ops.lock().unwrap().len();
+    let _distance = engine.distance_between_placed(&compiled, "T3", "T3");
+    let all_ops = ops.lock().unwrap();
+    let distance_ops = &all_ops[before..];
+    assert!(
+        ran_a_box(distance_ops),
+        "g (T3#1) is not T3's terminal, so the distance pass must re-run it rather than \
+         be served the body the build cached for T3, got {:?}",
+        op_kinds(distance_ops)
+    );
+    assert!(
+        !ran_a_circular_pattern(distance_ops),
+        "p (T3#0) is T3's terminal, so the distance pass must serve it from the slot the \
+         build filled, got {:?}",
+        op_kinds(distance_ops)
     );
 }
