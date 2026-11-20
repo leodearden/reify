@@ -690,5 +690,17 @@ mod tests {
                 "an honest `Compiled` default compiles through the debug recheck"
             );
         }
+
+        #[test]
+        #[should_panic(expected = "slot 1")]
+        fn an_early_default_vector_with_a_slot_past_the_declared_params_panics() {
+            // Slot 0 is the honest default, so the only divergence is the extra slot 1.
+            let mut early = honest_defaults(EARLY_PROBE);
+            early.push(Some(CompiledExpr::literal(
+                reify_ir::Value::Real(1.0),
+                Type::dimensionless_scalar(),
+            )));
+            decl_with_early_defaults(EARLY_PROBE, early);
+        }
     }
 }
