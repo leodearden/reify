@@ -466,7 +466,9 @@ pub fn solve_frame_outcome(
 }
 
 /// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
-/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose
+/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A NaN row (a
+/// pose that is not finite, or a NaN datum) makes the result NaN, so a pose that
+/// cannot be evaluated never reads as within the bar. A pose
 /// [`solve_frame_outcome`] returns as solved meets the bar
 /// [`SolveScaling::row_tolerance`];
 /// the redundant-remainder re-check applies [`SolveScaling::assertion_rung`].
@@ -479,7 +481,16 @@ pub fn max_relation_exceedance(
     relations
         .iter()
         .flat_map(|rel| relation_residual_rows(rel, unknown, pose))
-        .fold(0.0_f64, |max, row| max.max(row.value.abs() / bar(row.unit)))
+        .fold(0.0_f64, |max, row| {
+            let exceedance = row.value.abs() / bar(row.unit);
+            // `f64::max` returns its other operand when one is NaN, which would
+            // read an unevaluable row as within the bar.
+            if max.is_nan() || exceedance.is_nan() {
+                f64::NAN
+            } else {
+                max.max(exceedance)
+            }
+        })
 }
 
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
@@ -573,6 +584,8 @@ fn relation_residual_rows(
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
             let val = if moving {
+                // The `is_finite` screen above leaves this `Err` arm unreachable, hence
+                // untested; it stops an `Err` from ever reading as the unmoved datum.
                 transform_datum(&op.datum, x).unwrap_or_else(|_| {
                     unposable = true;
                     op.datum.clone()
@@ -1322,9 +1335,7 @@ fn plane_parts(v: &Value) -> Option<([f64; 3], [f64; 3])> {
 ///
 /// A rotated direction is re-minted through [`UnitVec3::from_vector`], so every
 /// direction a residual reads stays a unit `Direction`. That fails only for a pose
-/// rotation of non-finite magnitude, which [`relation_residual_rows`] never applies:
-/// [`Pose::is_finite`] screens such a pose first, and an `Err` that still reached it
-/// would read as [`unposable_datum_rows`]. A malformed datum passes through unchanged.
+/// rotation of non-finite magnitude. A malformed datum passes through unchanged.
 fn transform_datum(v: &Value, x: &Pose) -> Result<Value, DirectionFault> {
     let rotate_unit =
         |u: [f64; 3]| UnitVec3::from_vector(rotate(x.rotation, u)).map(Value::Direction);
