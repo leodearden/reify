@@ -1173,6 +1173,7 @@ impl<'a> GuardedGroupCell<'a> {
 
 impl CompiledGuardedGroup {
     /// The declared members of both branches: `members`, then `else_members`.
+    // G-allow: SPOT for the hand-written members+else_members chains in reify-compiler/reify-eval/reify-lsp; their migration is debt: ticket tkt_0RX6HCDSPKGE6ZSK86ZYBXY3GW
     pub fn member_decls(&self) -> impl Iterator<Item = &ValueCellDecl> {
         self.members.iter().chain(&self.else_members)
     }
