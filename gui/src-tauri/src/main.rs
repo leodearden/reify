@@ -31,7 +31,7 @@ use reify_gui::eval_queue::{
     EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest, PublishedState,
 };
 use reify_gui::event_bus::emit_typed;
-use reify_gui::launch_mode::{Mode, ModeState};
+use reify_gui::launch_mode::{Mode, ModeState, SetModeError};
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::recent_files::RecentEntry;
 use reify_gui::types::{EvalGeneration, EvaluationStatus};
@@ -718,7 +718,7 @@ fn is_debug_enabled(debug_server: tauri::State<'_, DebugServerSlot>) -> bool {
 fn set_mode(
     debug_server: tauri::State<'_, DebugServerSlot>,
     mode: Mode,
-) -> Result<ModeState, String> {
+) -> Result<ModeState, SetModeError> {
     reify_gui::launch_mode::set_mode_impl(
         mode,
         &debug_server,

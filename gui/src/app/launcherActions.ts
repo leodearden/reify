@@ -18,6 +18,7 @@
  * opens like any other.
  */
 import type { FileData, LaunchMode, ModeState, RecentEntry } from '../types';
+import { DebugListenerBindFailure } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
 import {
   LAUNCH_ERROR_CODES,
@@ -52,6 +53,10 @@ export interface LauncherDeps {
   createNewFile(path: string): Promise<FileData>;
   recordRecent(path: string): Promise<RecentEntry[]>;
   listRecent(): Promise<RecentEntry[]>;
+  /**
+   * Rejects with a DebugListenerBindFailure when the listener's bind failed;
+   * any other rejection is an IPC-level failure.
+   */
   setMode(mode: LaunchMode): Promise<ModeState>;
   showAssistant(open: boolean): void;
   /**
@@ -63,34 +68,30 @@ export interface LauncherDeps {
   notify(message: string): void;
 }
 
-/**
- * set_mode's failure code per mode while the listener is not known to be live:
- * only Debug's set_mode can bind it (launch_mode.rs::set_mode_impl).
- */
-const SELECT_MODE_FAILURE_CODES: Readonly<Record<LaunchMode, LaunchErrorCode>> = Object.freeze({
-  design: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
-  assistant: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED,
-  debug: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
-});
-
-/**
- * selectMode's set_mode failure code, given the debugPort the store held
- * before the call. A non-null debugPort came from a set_mode reply, so the
- * listener was live then; a live listener is never unbound and ensure_live
- * does not bind again (debug_server_slot.rs), so set_mode can then fail only
- * at the IPC level.
- */
-function selectModeFailureCode(mode: LaunchMode, debugPort: number | null): LaunchErrorCode {
-  return debugPort === null ? SELECT_MODE_FAILURE_CODES[mode] : LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED;
+/** A set_mode rejection, coded by the stage that failed: the listener's bind or the IPC call. */
+function setModeFailure(err: unknown): LaunchFailure {
+  const code =
+    err instanceof DebugListenerBindFailure
+      ? LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED
+      : LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED;
+  return new LaunchFailure(code, errorMessage(err));
 }
 
-/** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
-async function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
+/** Run `stage`, turning any rejection into the LaunchFailure `toFailure` builds from it. */
+async function inStageCodedBy<T>(
+  toFailure: (err: unknown) => LaunchFailure,
+  stage: () => Promise<T>,
+): Promise<T> {
   try {
     return await stage();
   } catch (err) {
-    throw new LaunchFailure(code, errorMessage(err));
+    throw toFailure(err);
   }
+}
+
+/** Run `stage`, turning any rejection into a LaunchFailure tagged with `code`. */
+function inStage<T>(code: LaunchErrorCode, stage: () => Promise<T>): Promise<T> {
+  return inStageCodedBy((err) => new LaunchFailure(code, errorMessage(err)), stage);
 }
 
 /**
@@ -175,10 +176,7 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    const reply = await inStage(selectModeFailureCode(mode, store.state.mode.debugPort), () =>
-      deps.setMode(mode),
-    );
-    store.applyModeState(reply);
+    store.applyModeState(await inStageCodedBy(setModeFailure, () => deps.setMode(mode)));
     if (mode === 'debug') {
       await debugBridgeStage();
     } else {
@@ -190,17 +188,17 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
     try {
       store.applyModeState(await deps.setMode('debug'));
     } catch (err) {
-      const message = errorMessage(err);
-      store.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_MODE_FAILED, message });
-      deps.notify(`Debug mode not recorded (set_mode failed): ${message}`);
+      const failure = setModeFailure(err);
+      store.failMode(failure.toInfo());
+      deps.notify(`Debug mode not recorded (set_mode failed): ${failure.message}`);
     }
   }
 
   /**
    * Enter Debug mode for a debug server that is already live (REIFY_DEBUG=1 at
    * launch). The bridge does not wait on set_mode, a set_mode failure becomes
-   * the mode error and a notification (E_GUI_MODE_FAILED, since the listener
-   * is already live), and the action rejects only when the bridge fails.
+   * the mode error and a notification, and the action rejects only when the
+   * bridge fails.
    */
   async function adoptLiveDebugServer(): Promise<void> {
     const bridge = debugBridgeStage();

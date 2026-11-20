@@ -462,6 +462,23 @@ export interface ModeState {
   debug_port: number | null;
 }
 
+/** `set_mode`'s structured rejection kinds on the wire; mirrors launch_mode.rs::SetModeError's tags. */
+export const SET_MODE_ERROR_KINDS = Object.freeze({ debugListenerBind: 'debug_listener_bind' } as const);
+
+/** `set_mode`'s structured rejection on the wire; mirrors launch_mode.rs::SetModeError. */
+export interface RawSetModeError {
+  kind: typeof SET_MODE_ERROR_KINDS.debugListenerBind;
+  message: string;
+}
+
+/** `set_mode` failed binding the reify-debug listener, not at the IPC level. */
+export class DebugListenerBindFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DebugListenerBindFailure';
+  }
+}
+
 /** take_initial_file_load_failure's reply: the argv launch file that failed to load, and why. */
 export interface InitialFileLoadFailure {
   path: string;
