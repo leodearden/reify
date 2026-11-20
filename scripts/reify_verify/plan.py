@@ -499,10 +499,14 @@ class Plan:
 
 @dataclass(frozen=True)
 class Refused:
-    """The refusal to plan: the lines bash would print instead of a plan, and its exit code."""
+    """The refusal to plan: the lines printed instead of a plan, and its exit code, which is never 0."""
 
     lines: tuple[str, ...]
     exit_code: int
+
+    def __post_init__(self):
+        if self.exit_code == 0:
+            raise ValueError(f"Refused: a refusal is a failure, so its exit code is never 0 (lines {self.lines!r})")
 
 
 def unquotable_knob(values: Iterable[tuple[str, str]], quote: str) -> Refused | None:
