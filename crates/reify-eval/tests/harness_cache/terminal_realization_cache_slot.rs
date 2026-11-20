@@ -21,6 +21,14 @@ const FORWARD_DECLARED_GEOMETRY_SRC: &str = r#"structure T3 {
     let g = box(2mm, 2mm, 2mm)
 }"#;
 
+/// T3 with an unrelated body `x` declared first: `x` (TwoSinks#0) and `p`
+/// (TwoSinks#1) are both sinks, and `p` is the higher-declared one.
+const TWO_SINKS_SRC: &str = r#"structure TwoSinks {
+    let x = box(1mm, 1mm, 1mm)
+    let p = circular_pattern(g, axis_z(point3(0mm, 0mm, 0mm)), 4, 90deg)
+    let g = box(2mm, 2mm, 2mm)
+}"#;
+
 fn p() -> RealizationNodeId {
     RealizationNodeId::new("T3", 0)
 }
@@ -29,15 +37,19 @@ fn g() -> RealizationNodeId {
     RealizationNodeId::new("T3", 1)
 }
 
-/// A mock-kernel engine that has evaluated T3 and activated a 1e-6
-/// manufacturing purpose on it, so every surface call demands a tolerance and
-/// probes the realization cache.
-fn engine_with_demanded_tolerance() -> (CompiledModule, Engine) {
-    engine_with_demanded_tolerance_on(MockGeometryKernel::new())
+/// A mock-kernel engine that has evaluated `src` and activated a 1e-6
+/// manufacturing purpose on `entity`, so every surface call demands a
+/// tolerance and probes the realization cache.
+fn engine_with_demanded_tolerance(src: &str, entity: &str) -> (CompiledModule, Engine) {
+    engine_with_demanded_tolerance_on(src, entity, MockGeometryKernel::new())
 }
 
-fn engine_with_demanded_tolerance_on(kernel: MockGeometryKernel) -> (CompiledModule, Engine) {
-    let mut compiled = parse_and_compile(FORWARD_DECLARED_GEOMETRY_SRC);
+fn engine_with_demanded_tolerance_on(
+    src: &str,
+    entity: &str,
+    kernel: MockGeometryKernel,
+) -> (CompiledModule, Engine) {
+    let mut compiled = parse_and_compile(src);
     assert!(
         errors_only(&compiled).is_empty(),
         "fixture should compile with no error-severity diagnostics, got:\n{:#?}",
@@ -54,7 +66,7 @@ fn engine_with_demanded_tolerance_on(kernel: MockGeometryKernel) -> (CompiledMod
     );
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let _eval = engine.eval(&compiled);
-    engine.activate_purpose("mfg", "T3");
+    engine.activate_purpose("mfg", entity);
     (compiled, engine)
 }
 
@@ -66,21 +78,25 @@ fn dispatched(engine: &Engine, rid: &RealizationNodeId) -> usize {
         .unwrap_or(0)
 }
 
-/// Run `surface` twice. The second run must serve `p`, the walk-final
-/// realization, from the cache and re-run `g`, which is not T3's terminal.
-fn assert_second_call_serves_the_walk_final_realization(
+/// Run `surface` twice on `src`. The second run must serve `terminal` from the
+/// cache and re-run every realization in `others`, which share its slot.
+fn assert_second_call_serves_only_the_terminal_from_the_cache(
+    src: &str,
+    terminal: (&str, RealizationNodeId),
+    others: &[(&str, RealizationNodeId)],
     surface: impl Fn(&CompiledModule, &mut Engine),
 ) {
-    let (compiled, mut engine) = engine_with_demanded_tolerance();
+    let (terminal_name, ref terminal_rid) = terminal;
+    let (compiled, mut engine) = engine_with_demanded_tolerance(src, &terminal_rid.entity);
 
     surface(&compiled, &mut engine);
     assert!(
         !engine.realization_cache().is_empty(),
-        "premise: the first call caches T3's terminal under the demanded tolerance"
+        "premise: the first call caches the template's terminal under the demanded tolerance"
     );
-    for (name, rid) in [("p", p()), ("g", g())] {
+    for (name, rid) in std::iter::once(&terminal).chain(others) {
         assert!(
-            dispatched(&engine, &rid) > 0,
+            dispatched(&engine, rid) > 0,
             "premise: {name} ({rid:?}) dispatches on the first call, got {:?}",
             engine.last_dispatch_count_by_realization()
         );
@@ -88,29 +104,44 @@ fn assert_second_call_serves_the_walk_final_realization(
 
     surface(&compiled, &mut engine);
     assert_eq!(
-        dispatched(&engine, &p()),
+        dispatched(&engine, terminal_rid),
         0,
-        "p (T3#0), the walk-final realization, must be served from the cache on the \
-         second call, got {:?}",
+        "{terminal_name} ({terminal_rid:?}), the template's terminal, must be served from \
+         the cache on the second call, got {:?}",
         engine.last_dispatch_count_by_realization()
     );
-    assert!(
-        dispatched(&engine, &g()) > 0,
-        "g (T3#1) is not T3's terminal, so it must re-run on the second call, got {:?}",
-        engine.last_dispatch_count_by_realization()
+    for (name, rid) in others {
+        assert!(
+            dispatched(&engine, rid) > 0,
+            "{name} ({rid:?}) is not the template's terminal, so it must re-run on the second \
+             call, got {:?}",
+            engine.last_dispatch_count_by_realization()
+        );
+    }
+}
+
+/// T3's terminal is `p` (T3#0), its only sink, though `g` is declared last.
+fn assert_second_call_serves_t3s_sink_from_the_cache(
+    surface: impl Fn(&CompiledModule, &mut Engine),
+) {
+    assert_second_call_serves_only_the_terminal_from_the_cache(
+        FORWARD_DECLARED_GEOMETRY_SRC,
+        ("p", p()),
+        &[("g", g())],
+        surface,
     );
 }
 
 #[test]
-fn build_serves_the_walk_final_realization_from_the_cache() {
-    assert_second_call_serves_the_walk_final_realization(|compiled, engine| {
+fn build_serves_t3s_sink_from_the_cache() {
+    assert_second_call_serves_t3s_sink_from_the_cache(|compiled, engine| {
         engine.build(compiled, ExportFormat::Step);
     });
 }
 
 #[test]
-fn build_snapshot_serves_the_walk_final_realization_from_the_cache() {
-    assert_second_call_serves_the_walk_final_realization(|compiled, engine| {
+fn build_snapshot_serves_t3s_sink_from_the_cache() {
+    assert_second_call_serves_t3s_sink_from_the_cache(|compiled, engine| {
         engine
             .build_snapshot(compiled, ExportFormat::Step)
             .expect("build_snapshot must return Some after eval()");
@@ -118,15 +149,31 @@ fn build_snapshot_serves_the_walk_final_realization_from_the_cache() {
 }
 
 #[test]
-fn tessellate_realizations_serves_the_walk_final_realization_from_the_cache() {
-    assert_second_call_serves_the_walk_final_realization(|compiled, engine| {
+fn tessellate_realizations_serves_t3s_sink_from_the_cache() {
+    assert_second_call_serves_t3s_sink_from_the_cache(|compiled, engine| {
         engine.tessellate_realizations(compiled);
     });
 }
 
 #[test]
+fn the_highest_declared_of_several_sinks_owns_the_slot() {
+    assert_second_call_serves_only_the_terminal_from_the_cache(
+        TWO_SINKS_SRC,
+        ("p", RealizationNodeId::new("TwoSinks", 1)),
+        &[
+            ("x", RealizationNodeId::new("TwoSinks", 0)),
+            ("g", RealizationNodeId::new("TwoSinks", 2)),
+        ],
+        |compiled, engine| {
+            engine.build(compiled, ExportFormat::Step);
+        },
+    );
+}
+
+#[test]
 fn a_pruned_walk_does_not_move_the_terminal() {
-    let (compiled, mut engine) = engine_with_demanded_tolerance();
+    let (compiled, mut engine) =
+        engine_with_demanded_tolerance(FORWARD_DECLARED_GEOMETRY_SRC, "T3");
 
     engine.set_demand_selective([NodeId::Realization(g())]);
     engine
@@ -172,7 +219,8 @@ fn ran_a_circular_pattern(records: &[GeometryOpRecord]) -> bool {
 fn a_distance_query_serves_only_the_terminal_from_the_cache() {
     let kernel = MockGeometryKernel::new();
     let ops = kernel.operations_ref();
-    let (compiled, mut engine) = engine_with_demanded_tolerance_on(kernel);
+    let (compiled, mut engine) =
+        engine_with_demanded_tolerance_on(FORWARD_DECLARED_GEOMETRY_SRC, "T3", kernel);
 
     engine.build(&compiled, ExportFormat::Step);
     assert!(
