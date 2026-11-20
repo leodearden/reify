@@ -911,6 +911,23 @@ fn an_added_import_a_pending_cfg_would_gate_is_refused() {
     }
 }
 
+#[test]
+fn an_added_import_that_would_take_a_pending_annotation_is_refused() {
+    for source in [
+        "import std.fake.a @solid\n\nstructure def S {}\n",
+        "module a.b @solid\n\nstructure def S {}\n",
+    ] {
+        assert_eq!(
+            try_insert(source, &["std.fake.c"]),
+            Err(PlacementDefect::TakesAnnotations {
+                module: module_path("std.fake.c"),
+                annotations: vec!["@solid".to_string()],
+            }),
+            "source:\n{source}"
+        );
+    }
+}
+
 // ─── r1: inserting what is missing satisfies missing_from ──────────────────
 
 #[test]
