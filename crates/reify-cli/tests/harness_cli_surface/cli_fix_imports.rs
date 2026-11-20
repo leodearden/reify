@@ -166,6 +166,35 @@ fn fix_refuses_to_write_when_the_derived_imports_leave_a_diagnostic() {
 }
 
 #[test]
+fn fix_refuses_to_write_an_import_a_pending_cfg_would_gate() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("import std.materials.appearance #cfg(extra)\n\n{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in ["std.si_units", "#cfg(extra)", "not writing"] {
+        assert!(
+            stderr.contains(expected),
+            "{expected}\n{}",
+            describe(&output)
+        );
+    }
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("added import"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixture"),
+        source,
+        "{}",
+        describe(&output)
+    );
+}
+
+#[test]
 fn fix_refusal_locates_the_residual_in_the_file() {
     let dir = tempdir().expect("tempdir");
     let file = write_ri(dir.path(), "plate.ri", TYPE_PARAM_HIDES_COLOR);
