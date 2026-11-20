@@ -398,7 +398,8 @@ mod tests {
     use crate::deps::extract_dependency_trace;
     use crate::geometry_ops::try_eval_symbolic_topology_selector;
     use crate::graph::geometry_cell_link_fixture::{
-        GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, assert_some_realization_links,
+        GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, TEMPLATE,
+        assert_some_realization_links,
     };
     use crate::graph::{CollectionSubInfo, EvaluationGraph, ValueCellNode};
 
@@ -492,7 +493,7 @@ mod tests {
 
     /// The fixture's `T.member`, declared as a slot declares its cells.
     fn slot_cell_of(graph: &EvaluationGraph, member: &str) -> SlotCell {
-        let node = node_of(graph, &id("T", member));
+        let node = node_of(graph, &id(TEMPLATE, member));
         (
             member.to_string(),
             node.kind,
@@ -505,7 +506,7 @@ mod tests {
     /// `P.s` (20 mm).
     fn fixture_param_values() -> ValueMap {
         let mut values = ValueMap::new();
-        for (entity, w) in [("T", 0.01), ("P.s", 0.02)] {
+        for (entity, w) in [(TEMPLATE, 0.01), ("P.s", 0.02)] {
             values.insert(id(entity, "w"), Value::length(w));
             values.insert(id(entity, "on"), Value::Bool(true));
         }
@@ -518,7 +519,7 @@ mod tests {
     fn instance_keyed_as_template(values: &ValueMap) -> ValueMap {
         let mut keyed_as_template = ValueMap::new();
         for (cell, value) in values.iter().filter(|(cell, _)| cell.entity == "P.s") {
-            keyed_as_template.insert(id("T", &cell.member), value.clone());
+            keyed_as_template.insert(id(TEMPLATE, &cell.member), value.clone());
         }
         keyed_as_template
     }
@@ -686,11 +687,11 @@ structure Shelf {
         let graph = fixture_graph();
         let values = fixture_param_values();
         let instance_values_at_template_scope = instance_keyed_as_template(&values);
-        assert_eq!(graph.sub_instance_template("P.s"), Some("T"));
+        assert_eq!(graph.sub_instance_template("P.s"), Some(TEMPLATE));
         for member in SCALAR_GEOMETRY_MEMBERS {
             assert!(
                 matches!(
-                    graph_mint(&graph, &id("T", member), &values),
+                    graph_mint(&graph, &id(TEMPLATE, member), &values),
                     Some(Value::GeometryHandle {
                         kernel_handle: None,
                         ..
@@ -700,19 +701,23 @@ structure Shelf {
             );
         }
         for member in GEOMETRY_LIST_MEMBERS {
-            assert_some_realization_links(&graph, &id("T", member));
+            assert_some_realization_links(&graph, &id(TEMPLATE, member));
         }
         let b_expr = expr_of(&graph, &id("P.s", "b"));
         assert!(
             !extract_dependency_trace(b_expr)
                 .reads
-                .contains(&id("T", "w")),
+                .contains(&id(TEMPLATE, "w")),
             "precondition: `b`'s expression must not read `w`, so only the reads of \
              `b`'s realization bring `w` into the instance's projection"
         );
         assert_ne!(
-            graph_mint(&graph, &id("T", "b"), &values),
-            graph_mint(&graph, &id("T", "b"), &instance_values_at_template_scope),
+            graph_mint(&graph, &id(TEMPLATE, "b"), &values),
+            graph_mint(
+                &graph,
+                &id(TEMPLATE, "b"),
+                &instance_values_at_template_scope
+            ),
             "control: `T.b`'s handle must fold `w`, or pairing `P.s.b` is vacuous \
              on the read projection"
         );
@@ -726,8 +731,12 @@ structure Shelf {
             assert_eq!(
                 mint_instance_at(&graph, &values, &instance_cell, &instance_cell),
                 InstanceMint::InstanceCell(
-                    graph_mint(&graph, &id("T", member), &instance_values_at_template_scope)
-                        .unwrap_or(Value::Undef)
+                    graph_mint(
+                        &graph,
+                        &id(TEMPLATE, member),
+                        &instance_values_at_template_scope
+                    )
+                    .unwrap_or(Value::Undef)
                 ),
                 "the instance arm must mint `{instance_cell}` as the graph mint mints \
                  `T.{member}` over the instance's values: an early-out to Undef where \
@@ -792,7 +801,7 @@ structure Shelf {
     #[test]
     fn instance_mint_reads_adds_the_reads_of_the_realization_a_guarded_let_is_inlined_into() {
         let graph = fixture_graph();
-        let (b, w) = (id("T", "b"), id("T", "w"));
+        let (b, w) = (id(TEMPLATE, "b"), id(TEMPLATE, "w"));
         let b_expr = expr_of(&graph, &b);
         let expression_reads = extract_dependency_trace(b_expr).reads;
         assert!(
@@ -835,7 +844,7 @@ structure Shelf {
     fn a_slot_commits_a_geometry_cell_after_a_sibling_only_its_realization_reads() {
         let graph = fixture_graph();
         let col_sub = slot(
-            "T",
+            TEMPLATE,
             vec![slot_cell_of(&graph, "b"), slot_cell_of(&graph, "w")],
         );
 
@@ -863,7 +872,7 @@ structure Shelf {
         let instance_b = id("P.s", "b");
 
         assert_eq!(
-            mint_instance_at(&graph, &values, &instance_b, &id("T", "b")),
+            mint_instance_at(&graph, &values, &instance_b, &id(TEMPLATE, "b")),
             InstanceMint::NotAnInstanceCell,
             "`T` is a template, not a sub instance: `T.b` is no sub-instance cell, \
              so the instance arm must leave its mint to the caller's template-scope \
@@ -901,7 +910,7 @@ structure Shelf {
         }
         .mint_instance_cell_if_undef(
             Value::Undef,
-            &id("T", "b"),
+            &id(TEMPLATE, "b"),
             node_of(&graph, &instance_b).kind,
             expr_of(&graph, &instance_b),
         );
