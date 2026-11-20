@@ -32,7 +32,9 @@ free), and each after fixture must pass printing none. With no vouched binary th
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections import Counter
@@ -382,6 +384,32 @@ class ReleaseTagTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": root}):
                 with self.assertRaisesRegex(RuntimeError, re.escape(str(plain))):
                     release_tag_commit(plain, self.TAG)
+
+
+class TaggedCheckoutTests(unittest.TestCase):
+    def test_a_tagged_checkout_retires_the_binary_half_naming_the_tag_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            module = Path(root, "tests/infra", Path(__file__).name)
+            module.parent.mkdir(parents=True)
+            shutil.copyfile(Path(__file__).resolve(), module)
+            _fixture_git(root, "init", "-q")
+            _fixture_git(root, "add", "-A")
+            _fixture_git(root, "commit", "-q", "-m", "x")
+            _fixture_git(root, "tag", "-a", "-m", "m", "v0.2-alpha")
+            commit = _fixture_git(root, "rev-parse", "HEAD")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith("GIT_") and k != "REIFY_BIN"}
+            proc = subprocess.run(
+                [sys.executable, str(module), "-v", "FixtureBehaviourTests"],
+                cwd=root, env=env, capture_output=True, text=True,
+                timeout=CHECK_HANG_GUARD_SECS, check=False,
+            )
+            output = "\n".join((proc.stdout, proc.stderr))
+            self.assertEqual(proc.returncode, 0, output)
+            self.assertTrue(
+                [line for line in output.splitlines()
+                 if "setUpClass" in line and "skipped" in line and commit in line],
+                output)
 
 
 class FixtureBehaviourTests(unittest.TestCase):
