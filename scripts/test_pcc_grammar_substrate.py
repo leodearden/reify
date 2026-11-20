@@ -105,11 +105,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         grammar must pay no subprocess.  Asserted on the runner's calls so a
         refactor cannot quietly reorder the conjunction.
         """
-        calls = []
-
-        def runner(probe, ctx, timeout=None):
-            calls.append(probe)
-            return pcc.ProbeRun(0, "", "")
+        runner, calls = recording_runner()
 
         available, reason = _compute_grammar_e2e_status(self._ctx(parser_c=False), runner)
         self.assertFalse(available)
