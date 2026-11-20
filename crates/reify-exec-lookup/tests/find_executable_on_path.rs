@@ -57,6 +57,24 @@ fn first_executable_match_in_path_order_wins() {
 }
 
 #[test]
+fn a_symlink_to_an_executable_is_found_at_the_symlink_and_a_dangling_one_is_skipped() {
+    use std::os::unix::fs::symlink;
+
+    let name = "tool";
+    let dangling = tempdir();
+    symlink(dangling.path().join("absent"), dangling.path().join(name)).expect("symlink");
+    let target_dir = tempdir();
+    let target = fixture(target_dir.path(), "real-tool", 0o755);
+    let linked = tempdir();
+    let link = linked.path().join(name);
+    symlink(&target, &link).expect("symlink");
+
+    let path = path_var(&[dangling.path(), linked.path()]);
+
+    assert_eq!(find_executable_on_path(&[name], Some(&path)), Some(link));
+}
+
+#[test]
 fn iteration_is_directory_major() {
     let dir1 = tempdir();
     let beta = fixture(dir1.path(), "beta", 0o755);
@@ -89,7 +107,10 @@ fn within_one_directory_the_earlier_name_wins() {
 fn unset_or_empty_path_finds_nothing() {
     assert_eq!(find_executable_on_path(&["sh"], None), None);
     assert_eq!(find_executable_on_path(&["sh"], Some(OsStr::new(""))), None);
+}
 
+#[test]
+fn an_empty_component_is_skipped_not_fatal() {
     let dir = tempdir();
     let expected = fixture(dir.path(), "tool", 0o755);
     let leading_empty_component = format!(":{}", dir.path().display());
