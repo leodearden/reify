@@ -497,6 +497,53 @@ fn a_repaired_buffer_compiles_as_the_opened_file() {
 }
 
 #[test]
+fn an_accepted_open_after_an_adopted_rejection_runs_the_one_reload_pipeline() {
+    let (_dir, broken) = source_file("broken.ri", UNPARSEABLE_SRC);
+    let (mut session, log) = logged_session();
+    session
+        .open_document_even_if_rejected(&broken)
+        .expect("adopt the rejected broken.ri");
+    log.take();
+
+    let state = session
+        .open_document_even_if_rejected(&super::examples_path("bracket.ri"))
+        .expect("open the bracket");
+
+    assert_eq!(log.take(), ONE_RELOAD);
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the commit must clear the adopted rejection"
+    );
+    assert!(
+        !state.values.is_empty(),
+        "the bracket's values must be served"
+    );
+    assert!(
+        state
+            .compile_diagnostics
+            .iter()
+            .all(|d| d.severity != "Error" && d.file_path != "broken.ri"),
+        "no diagnostic of the adopted rejection survives, got {:?}",
+        state.compile_diagnostics
+    );
+    assert!(
+        state.files.iter().all(|f| f.path != "broken.ri"),
+        "the adopted file must not be served, got {:?}",
+        state.files
+    );
+    assert_eq!(
+        state
+            .files
+            .iter()
+            .filter(|f| f.path == "bracket.ri")
+            .count(),
+        1,
+        "the bracket is the served file, got {:?}",
+        state.files
+    );
+}
+
+#[test]
 fn opening_an_unreadable_file_leaves_the_loaded_document() {
     let mut session = mock_session();
     session
