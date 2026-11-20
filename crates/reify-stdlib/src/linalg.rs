@@ -108,8 +108,9 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
 
         "dot" => binary(args, |a, b| {
             if let Some((a, b)) = direction_pair(a, b) {
+                // A UnitVec3 is unit only to within 4 ulp; C6 bounds the cosine to [-1, 1].
                 let cosine: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-                return sanitize_value(Value::Real(cosine));
+                return Value::Real(cosine.clamp(-1.0, 1.0));
             }
             let (a_vals, a_dim) = match tensor_components_f64(a) {
                 Some(v) => v,
