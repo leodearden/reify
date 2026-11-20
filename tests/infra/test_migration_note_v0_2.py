@@ -46,6 +46,8 @@ FIXTURE_DIR = REPO_ROOT / "tests/prd-gate/fixtures"
 FIXTURE_GLOB = "migration_v0_2_*.ri"
 FRESHNESS = REPO_ROOT / "scripts/reify-bin-freshness.sh"
 EXPECTED_CLOSES = {1, 2, 3, 4}
+RELEASE_TAG = NOTE.stem
+LIFECYCLE = "docs/prds/alpha-spine.md D8"
 
 CHECK_HANG_GUARD_SECS = 300
 ERROR_PREFIXES = ("error: ", "Parse error: ")
@@ -169,6 +171,28 @@ def closes_issue_numbers(text):
     """One issue-number set per `Closes:` line, read as scripts/release-alpha.sh does."""
     return [{int(n) for n in ISSUE_REF.findall(line)}
             for line in text.splitlines() if CLOSES_LINE.match(line)]
+
+
+def _git_environ():
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("GIT_") or k == "GIT_CEILING_DIRECTORIES"}
+    env["LC_ALL"] = "C"
+    return env
+
+
+def release_tag_commit(repo_root, tag):
+    """The commit tag `tag` names in repo_root's git, or None while that tag does not exist."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"],
+        env=_git_environ(), capture_output=True, text=True, check=False,
+    )
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    if proc.returncode == 1:
+        return None
+    raise RuntimeError(
+        f"cannot read tag {tag!r} in {repo_root}: git rev-parse exited {proc.returncode}: "
+        f"{proc.stderr.strip()}")
 
 
 def _without_one_trailing_newline(text):
