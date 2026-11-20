@@ -461,35 +461,14 @@ pub fn partition_enforced_and_stale(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::panic::AssertUnwindSafe;
+    use crate::panic_capture::panic_message_of;
     use std::path::PathBuf;
-    use std::rc::Rc;
-
-    /// Run `f` with the default panic hook suppressed, restoring it afterwards.
-    ///
-    /// Several tests below panic ON PURPOSE inside `catch_unwind`. Without this,
-    /// every GREEN run of this crate prints a full panic message (and a
-    /// backtrace under `RUST_BACKTRACE`) that reads exactly like a real failure.
-    ///
-    /// The hook is process-GLOBAL and libtest runs tests concurrently, so a
-    /// sibling test that panics for real inside this window loses its panic
-    /// message and is reported as a bare failure. The window is kept as narrow
-    /// as the deliberate panic allows; when triaging an unrelated failure in
-    /// this crate, re-run with `--test-threads=1` so no suppression overlaps it.
-    fn with_silent_panic_hook<R>(f: impl FnOnce() -> R) -> R {
-        let prev_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let result = f();
-        std::panic::set_hook(prev_hook);
-        result
-    }
 
     /// THE property this module exists to provide: the directory is removed
     /// when the scope holding the guard unwinds, not merely when it returns.
     ///
-    /// The path is captured in an outer cell so it outlives the closure the
-    /// guard is dropped inside of.
+    /// The path is recorded in an outer variable so it outlives the closure
+    /// the guard is dropped inside of.
     ///
     /// Constructs with retention explicitly OFF rather than through
     /// [`prefixed_tempdir`], so that running the suite under
@@ -498,29 +477,25 @@ mod tests {
     /// `keep_requested_reads_set_and_non_empty`.
     #[test]
     fn prefixed_tempdir_is_removed_on_panic_unwind() {
-        let seen: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-        let seen_inner = Rc::clone(&seen);
+        let mut seen: Option<PathBuf> = None;
 
-        let result = with_silent_panic_hook(|| {
-            std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let guard = prefixed_tempdir_with_retention("reify-test-support-unwind-", false);
-                *seen_inner.borrow_mut() = Some(guard.path().to_path_buf());
-                assert!(
-                    guard.path().exists(),
-                    "the guard's directory must exist before we force the panic"
-                );
-                panic!("forced unwind");
-            }))
+        let message = panic_message_of(|| {
+            let guard = prefixed_tempdir_with_retention("reify-test-support-unwind-", false);
+            seen = Some(guard.path().to_path_buf());
+            assert!(
+                guard.path().exists(),
+                "the guard's directory must exist before we force the panic"
+            );
+            panic!("forced unwind")
         });
 
-        assert!(
-            result.is_err(),
-            "the closure must have unwound — otherwise this test proves nothing"
+        assert_eq!(
+            message, "forced unwind",
+            "the closure must unwind on the forced panic — any other panic means \
+             it unwound earlier (e.g. on the guard-exists assert), so the removal \
+             check below would prove nothing"
         );
-        let path = seen
-            .borrow()
-            .clone()
-            .expect("the closure recorded the path before panicking");
+        let path = seen.expect("the closure recorded the path before panicking");
         assert!(
             !path.exists(),
             "unwinding out of the guard's scope must remove {path:?}; \
@@ -864,11 +839,7 @@ mod tests {
     #[test]
     fn anuts_unreadable_file_panics_naming_the_absolute_path() {
         let rel = "crates/reify-test-support/definitely-not-a-real-file.rs";
-        let err = with_silent_panic_hook(|| {
-            std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(rel))
-                .expect_err("scanning a nonexistent file must panic, not pass vacuously")
-        });
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
+        let msg = panic_message_of(|| assert_no_unguarded_temp_dir_sites(rel));
         assert!(
             msg.contains(&format!("/{rel}")),
             "the panic must name the ABSOLUTE path it attempted (repo root + \
@@ -890,11 +861,7 @@ mod tests {
         // which is how this test reaches a fixture that is not a tracked
         // workspace file.
         let path = file.display().to_string();
-        let err = with_silent_panic_hook(|| {
-            std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(&path))
-                .expect_err("a violating file must panic, not pass")
-        });
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
+        let msg = panic_message_of(|| assert_no_unguarded_temp_dir_sites(&path));
 
         assert!(
             msg.contains("line 2"),
