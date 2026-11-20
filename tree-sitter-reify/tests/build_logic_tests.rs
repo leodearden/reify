@@ -2293,57 +2293,6 @@ fn wait_until_executable(path: &Path) {
 }
 
 #[test]
-#[cfg(unix)] // the exec bit find_on_path requires is a Unix permission
-fn test_find_on_path_returns_the_first_executable_match() {
-    if is_root() {
-        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let name = "tree-sitter-fixture";
-    let dirs: Vec<std::path::PathBuf> = ["empty", "not-executable", "first", "second"]
-        .iter()
-        .map(|d| dir.path().join(d))
-        .collect();
-    for d in &dirs {
-        std::fs::create_dir_all(d).unwrap();
-    }
-    std::fs::write(dirs[1].join(name), "#!/bin/sh\n").unwrap();
-    write_executable(&dirs[2].join(name), "#!/bin/sh\n");
-    write_executable(&dirs[3].join(name), "#!/bin/sh\n");
-
-    let path_var = std::env::join_paths(&dirs).unwrap();
-    assert_eq!(
-        find_on_path(name, Some(path_var.as_os_str())),
-        Some(dirs[2].join(name)),
-        "the first executable match wins, past an empty dir and a non-executable file"
-    );
-
-    let only_non_executable = std::env::join_paths(&dirs[..2]).unwrap();
-    assert_eq!(
-        find_on_path(name, Some(only_non_executable.as_os_str())),
-        None,
-        "a same-named file without the exec bit is not a match"
-    );
-}
-
-#[test]
-fn test_find_on_path_is_none_when_the_name_is_absent() {
-    let dir = tempfile::tempdir().unwrap();
-    let path_var = std::env::join_paths([dir.path()]).unwrap();
-    assert_eq!(
-        find_on_path("tree-sitter-fixture", Some(path_var.as_os_str())),
-        None,
-        "a name on no PATH dir is not found"
-    );
-    assert_eq!(
-        find_on_path("tree-sitter-fixture", None),
-        None,
-        "an unset PATH finds nothing"
-    );
-}
-
-#[test]
 #[cfg(unix)] // the fixture CLIs are shell scripts made executable by mode bits
 fn test_cli_version_returns_the_trimmed_version_line() {
     if is_root() {

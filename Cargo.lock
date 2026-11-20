@@ -4502,6 +4502,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-exec-lookup"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "reify-expr"
 version = "0.1.0"
 dependencies = [
@@ -4521,6 +4529,7 @@ name = "reify-fdm"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "reify-exec-lookup",
  "reify-gcode",
  "tempfile",
  "workspace-feature-union",
@@ -4566,6 +4575,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-exec-lookup",
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
@@ -6424,6 +6434,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
+ "reify-exec-lookup",
  "tempfile",
  "tree-sitter",
  "tree-sitter-language",

@@ -160,6 +160,7 @@ reify-config
 reify-constraints
 reify-core
 reify-eval
+reify-exec-lookup
 reify-expr
 reify-fdm
 reify-gcode

@@ -606,32 +606,6 @@ fn write_inputs_stamp(
     }
 }
 
-/// The first `name` on `path_var` that is a file with an exec bit set (on
-/// Unix; any file elsewhere). Empty PATH elements are skipped.
-#[allow(dead_code)]
-fn find_on_path(name: &str, path_var: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
-    std::env::split_paths(path_var?)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| is_executable_file(candidate))
-}
-
-/// Whether `path` is a file with an exec bit set (on Unix; any file elsewhere).
-#[allow(dead_code)]
-fn is_executable_file(path: &std::path::Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        meta.is_file() && std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
-}
-
 /// The trimmed stdout of `<cli> --version`, or `None` if it does not run,
 /// fails, or prints nothing.
 #[allow(dead_code)]

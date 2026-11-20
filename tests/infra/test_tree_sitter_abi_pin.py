@@ -39,7 +39,9 @@ FIXTURE_TREE_SITTER_JSON = """\
 
 LANGUAGE_VERSION_DEFINE = re.compile(r"^#define LANGUAGE_VERSION (\d+)$", re.MULTILINE)
 
-FIXTURE_CARGO_TOML = """\
+EXEC_LOOKUP_DIR = REPO_ROOT / "crates" / "reify-exec-lookup"
+
+FIXTURE_CARGO_TOML = f"""\
 [package]
 name = "tree-sitter-reify"
 version = "0.0.0"
@@ -48,6 +50,7 @@ build = "build.rs"
 
 [build-dependencies]
 cc = "1"
+reify-exec-lookup = {{ path = "{EXEC_LOOKUP_DIR}" }}
 
 [workspace]
 """

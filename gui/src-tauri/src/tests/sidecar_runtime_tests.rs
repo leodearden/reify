@@ -93,6 +93,27 @@ fn no_executable_node_on_path_is_refused_naming_the_searched_path() {
 }
 
 #[test]
+fn a_node_the_user_cannot_execute_is_refused_with_the_code() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = temp_dir();
+    let interpreter = interpreter_file(dir.path(), 0o611);
+    if fs::metadata(&interpreter).expect("stat interpreter").uid() == 0 {
+        eprintln!("skipping: root may execute any file with an execute bit");
+        return;
+    }
+    let path = path_var(&[&dir]);
+
+    let refusal =
+        require_sidecar_interpreter(Some(path.as_os_str())).expect_err("owner may not execute");
+
+    assert!(
+        refusal.starts_with(E_GUI_SIDECAR_NODE_MISSING),
+        "refusal must start with its code: {refusal}"
+    );
+}
+
+#[test]
 fn an_unset_path_is_refused() {
     let refusal = require_sidecar_interpreter(None).expect_err("no PATH");
 
