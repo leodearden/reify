@@ -23,6 +23,7 @@ import select
 import signal
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -43,7 +44,6 @@ devnull = os.open(os.devnull, os.O_RDWR)
 print(os.getpid(), flush=True)
 for std in (0, 1, 2):
     os.dup2(devnull, std)
-os.close(devnull)
 signal.pause()
 """
 
@@ -62,6 +62,24 @@ if addr is None or addr == ctypes.c_void_p(-1).value:
     sys.exit(1)
 os.close(fd)
 """ + PAUSE_AFTER_LAST_LOOKUP
+
+# The namespace's OLDEST process chroots into argv[2], away from every mount;
+# only then does its forked child open argv[1] and announce. The child is the
+# only process that can see the lane's mount.
+CHROOTED_PARENT_FORKS_HOLDER = """
+import os, sys
+r, w = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(w)
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+    os.read(r, 1)
+""" + textwrap.indent(PAUSE_AFTER_LAST_LOOKUP, "    ") + """
+os.close(r)
+os.chroot(sys.argv[2])
+os.write(w, b"x")
+os.waitpid(child, 0)
+"""
 
 
 def clean_env():
@@ -205,6 +223,24 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         self.assertIn(mapped, Path(f"/proc/{pid}/maps").read_text(),
                       "premise: from the host the mapping reads as the canon path")
         self.assertEqual(os.readlink(f"/proc/{pid}/cwd"), "/", "premise: cwd is outside the lane")
+        self.assertTrue(self.present(lane))
+
+    def test_open_file_held_beside_an_older_process_chrooted_away_from_the_lane_is_live(self):
+        lane = self.lane("lane")
+        jail = self.root / "jail"
+        jail.mkdir()
+        pid = self.hold([*self.bind_at_canon(lane), "--cap-add", "CAP_SYS_CHROOT"], "/",
+                        ["/usr/bin/python3", "-I", "-c", CHROOTED_PARENT_FORKS_HOLDER,
+                         f"{self.canon}/sub/f", str(jail)])
+
+        parent = int(Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[1])
+        self.assertEqual(os.readlink(f"/proc/{parent}/root"), str(jail),
+                         "premise: the holder's older parent is chrooted away from the lane")
+        self.assertEqual(os.readlink(f"/proc/{parent}/ns/mnt"), os.readlink(f"/proc/{pid}/ns/mnt"),
+                         "premise: parent and holder share one namespace")
+        self.assertIn(f"{self.canon}/sub/f",
+                      [os.readlink(f"/proc/{pid}/fd/{fd}") for fd in os.listdir(f"/proc/{pid}/fd")],
+                      "premise: from the host the holder's fd reads as the canon path")
         self.assertTrue(self.present(lane))
 
     def test_idle_lane_bound_at_the_canon_path_another_namespace_uses_is_not_referenced(self):

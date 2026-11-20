@@ -70,7 +70,7 @@ _REIFY_LIB_LIVE_REFS_SH_SOURCED=1
 # _live_refs_env_probe — one-time, O(1) sanity check that the scan environment
 # can actually SEE other processes; warns once on stderr when it cannot.
 #
-# Why it exists: both scan passes are `|| true`-guarded and the verdict is read
+# Why it exists: every scan pass is `|| true`-guarded and the verdict is read
 # from OUTPUT, so a wholesale scan failure (procfs not mounted in a container,
 # a hidepid= mount option that hides other uids' entries) is indistinguishable
 # from "nothing is live" — and that silently-empty verdict now sits in front of
@@ -113,11 +113,11 @@ _live_refs_env_probe() {
     return 0
 }
 
-# _live_refs_scan_fdcwd RP... — the cwd + open-fd HALF of the scan. Split out of
+# _live_refs_scan_fdcwd RP... — the cwd + open-fd pass of the scan. Split out of
 # live_referenced_paths (task 5572 review) with its logic byte-identical, purely
 # so live_ref_present can take a verdict from this pass alone and skip the mmap
 # pass on a hit. Not a public entry point: callers want live_referenced_paths or
-# live_ref_present, which run both halves.
+# live_ref_present, which run every pass.
 _live_refs_scan_fdcwd() {
     [ $# -gt 0 ] || return 0
 
@@ -150,7 +150,7 @@ _live_refs_match_targets() {
     ' <(printf '%s\n' "$@") - 2>/dev/null
 }
 
-# _live_refs_scan_maps RP... — the mmap HALF of the scan. Same split rationale
+# _live_refs_scan_maps RP... — the mmap pass of the scan. Same split rationale
 # as _live_refs_scan_fdcwd; logic byte-identical to the inline version it
 # replaces. Measurably the CHEAPER of the two passes (~0.38s vs ~1.5s here), but
 # it is run SECOND because the reference shape this gate exists to catch — a
@@ -197,19 +197,46 @@ _live_refs_foreign_mntns_pids() {
         ' || true
 }
 
+# _live_refs_ns_representatives FOREIGN — prints the pids each namespace in
+# FOREIGN (_live_refs_foreign_mntns_pids' output) is resolved through: its
+# _LIVE_REFS_NS_REPRESENTATIVES oldest processes by start time (/proc/<pid>/stat
+# field 22, read after the last ")"). The oldest process of a build or agent
+# namespace is the long-lived root of its tree, unlike pid or glob order, which
+# a pid wrap or a digit-count crossing turns into "newest". Resolving through
+# several guards against one of them exiting mid-scan or being chrooted away.
+_LIVE_REFS_NS_REPRESENTATIVES=3
+_live_refs_ns_representatives() {
+    local -a stats
+    mapfile -t stats < <(awk '{ print "/proc/" $2 "/stat" }' <<<"$1")
+    cat "${stats[@]}" 2>/dev/null | awk '
+        FILENAME == ARGV[1] { ns_of[$2] = $1; next }
+        match($0, /\) [^)]*$/) {
+            split(substr($0, RSTART + 2), f, " ")
+            if ($1 in ns_of) print ns_of[$1], f[20], $1
+        }
+    ' <(printf '%s\n' "$1") - 2>/dev/null \
+        | sort -k1,1 -k2,2n \
+        | awk -v k="$_LIVE_REFS_NS_REPRESENTATIVES" '++taken[$1] <= k { print $3 }' || true
+}
+
 # _live_refs_ns_aliases FOREIGN RP... — FOREIGN is _live_refs_foreign_mntns_pids'
 # output. Prints three lines per alias, `<ns>`, `<mount point M>` and
 # `<candidate>`, for every foreign-namespace mount whose root has a candidate's
 # dev:ino at an M other than that candidate's own path. Each namespace is read
-# through one representative pid, and the whole set is resolved in a fixed
-# number of processes. A namespace whose mountinfo or root cannot be read yields
-# no alias: it is skipped, never counted as referencing.
+# through its _live_refs_ns_representatives, the union of their aliases taken,
+# and the whole set is resolved in a fixed number of processes. A namespace
+# whose mountinfo or root cannot be read through any representative yields no
+# alias: it is skipped, never counted as referencing. Remaining limit: a
+# namespace whose every representative exits mid-scan or is chrooted away from
+# the lane's mount is skipped too.
 _live_refs_ns_aliases() {
     local foreign="$1"; shift
     [ -n "$foreign" ] && [ $# -gt 0 ] || return 0
 
     local -a mountinfos roots
-    mapfile -t mountinfos < <(awk '!seen[$1]++ { print "/proc/" $2 "/mountinfo" }' <<<"$foreign")
+    mapfile -t mountinfos < <(_live_refs_ns_representatives "$foreign" \
+        | awk '{ print "/proc/" $1 "/mountinfo" }')
+    [ ${#mountinfos[@]} -gt 0 ] || return 0
     mapfile -t roots < <(grep -H '' "${mountinfos[@]}" 2>/dev/null | LC_ALL=C awk '
         {
             colon = index($0, ":")
@@ -238,7 +265,10 @@ _live_refs_ns_aliases() {
             m = substr(rest, slash + length("/root"))
             if (m == "") m = "/"
             for (i = 1; i <= ncand[key]; i++)
-                if (cand[key, i] != m) print ns_of[pid] "\n" m "\n" cand[key, i]
+                if (cand[key, i] != m && !((ns_of[pid], m, cand[key, i]) in done)) {
+                    done[ns_of[pid], m, cand[key, i]] = 1
+                    print ns_of[pid] "\n" m "\n" cand[key, i]
+                }
         }
     ' <(stat -L -c '%d:%i %n' "$@" 2>/dev/null) \
       <(printf '%s\n' "$foreign") \
@@ -277,7 +307,7 @@ _live_refs_translate() {
     ' "$1" - 2>/dev/null
 }
 
-# _live_refs_scan_namespaces RP... — the third HALF of the scan: references
+# _live_refs_scan_namespaces RP... — the namespace pass of the scan: references
 # held by same-user processes in another mount namespace, which reach a
 # candidate through that namespace's own mount of it (canonical-build-path PRD
 # decision 16). Translation is per namespace, because two namespaces may mount
