@@ -1339,23 +1339,26 @@ class TestMainRunnerSeam(_MainHarness, unittest.TestCase):
 
     def test_each_probe_reaches_the_runner_with_the_given_ctx(self):
         ctx = probe_context()
-        calls = []
 
-        def fake(probe, ctx_arg, timeout=None):
-            argv = (f"fake-{probe.probe_kind}", probe.fixture)
-            calls.append((ctx_arg, argv))
-            return pcc.ProbeRun(0, "", "", command=argv)
+        def fake_argv(probe):
+            return (f"fake-{probe.probe_kind}", probe.fixture)
+
+        fake, calls = record_calls(
+            lambda probe, _ctx, _timeout=None: pcc.ProbeRun(
+                0, "", "", command=fake_argv(probe)
+            )
+        )
 
         _, out, err = self._run_main_capturing(
             ["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx
         )
         self.assertEqual(len(calls), len(example_probes()), err)
-        for ctx_arg, _ in calls:
+        for _, ctx_arg, _ in calls:
             self.assertIs(ctx_arg, ctx)
         records = json.loads(out)["results"]
         self.assertEqual(
             [record["command"] for record in records],
-            [list(argv) for _, argv in calls],
+            [list(fake_argv(probe)) for probe, _, _ in calls],
         )
 
     def test_cli_record_command_is_the_argv_the_binary_received(self):
