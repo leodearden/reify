@@ -20,5 +20,7 @@ pub(crate) mod shadow_lint;
 pub(crate) mod sketch_unsupported;
 pub(crate) mod specialization_scope_check;
 pub(crate) mod stdlib_shadow_lint;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod traits_phase;
 pub(crate) mod units_phase;
