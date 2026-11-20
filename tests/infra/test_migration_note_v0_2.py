@@ -30,12 +30,15 @@ exactly the quoted error lines, each as many times as it is quoted (order is
 free), and each after fixture must pass printing none. With no vouched binary those tests skip and print why.
 """
 
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NOTE = REPO_ROOT / "docs/releases/v0.2-alpha.md"
@@ -287,6 +290,74 @@ class NoteGrammarTests(unittest.TestCase):
             with self.subTest(what):
                 with self.assertRaisesRegex(ValueError, f"'A rule'.*{re.escape(reason)}"):
                     parse_entries(text)
+
+
+def _fixture_git(repo, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _fixture_repo(root):
+    _fixture_git(root, "init", "-q")
+    _fixture_git(root, "commit", "-q", "--allow-empty", "-m", "x")
+    return _fixture_git(root, "rev-parse", "HEAD")
+
+
+class ReleaseTagTests(unittest.TestCase):
+    TAG = "v0.2-alpha"
+
+    def test_an_untagged_repository_has_no_release_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _fixture_repo(repo)
+            self.assertIsNone(release_tag_commit(repo, self.TAG))
+
+    def test_a_lightweight_tag_names_its_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            head = _fixture_repo(repo)
+            _fixture_git(repo, "tag", self.TAG)
+            self.assertEqual(release_tag_commit(repo, self.TAG), head)
+
+    def test_an_annotated_tag_is_peeled_to_its_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            head = _fixture_repo(repo)
+            _fixture_git(repo, "tag", "-a", "-m", "m", self.TAG)
+            tag_object = _fixture_git(repo, "rev-parse", f"refs/tags/{self.TAG}")
+            self.assertNotEqual(tag_object, head)
+            self.assertEqual(release_tag_commit(repo, self.TAG), head)
+
+    def test_near_miss_refs_are_not_the_release(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _fixture_repo(repo)
+            _fixture_git(repo, "tag", f"{self.TAG}.1")
+            _fixture_git(repo, "tag", f"{self.TAG}-rc1")
+            _fixture_git(repo, "branch", self.TAG)
+            self.assertIsNone(release_tag_commit(repo, self.TAG))
+
+    def test_an_exported_git_dir_does_not_decide(self):
+        with tempfile.TemporaryDirectory() as root:
+            tagged, untagged = Path(root, "tagged"), Path(root, "untagged")
+            tagged.mkdir()
+            untagged.mkdir()
+            tagged_head = _fixture_repo(tagged)
+            _fixture_git(tagged, "tag", self.TAG)
+            _fixture_repo(untagged)
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(tagged / ".git")}):
+                self.assertIsNone(release_tag_commit(untagged, self.TAG))
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(untagged / ".git")}):
+                self.assertEqual(release_tag_commit(tagged, self.TAG), tagged_head)
+
+    def test_a_directory_outside_any_repository_is_an_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            plain = Path(root, "plain")
+            plain.mkdir()
+            with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": root}):
+                with self.assertRaisesRegex(RuntimeError, re.escape(str(plain))):
+                    release_tag_commit(plain, self.TAG)
 
 
 class FixtureBehaviourTests(unittest.TestCase):
