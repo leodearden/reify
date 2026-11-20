@@ -219,36 +219,55 @@ _live_refs_ns_representatives() {
         | awk -v k="$_LIVE_REFS_NS_REPRESENTATIVES" '++taken[$1] <= k { print $3 }' || true
 }
 
-# _live_refs_ns_aliases FOREIGN RP... — FOREIGN is _live_refs_foreign_mntns_pids'
-# output. Prints three lines per alias, `<ns>`, `<mount point M>` and
-# `<candidate>`, for every foreign-namespace mount whose root has a candidate's
-# dev:ino at an M other than that candidate's own path. Each namespace is read
-# through its _live_refs_ns_representatives, the union of their aliases taken,
-# and the whole set is resolved in a fixed number of processes. A namespace
-# whose mountinfo or root cannot be read through any representative yields no
-# alias: it is skipped, never counted as referencing. Remaining limit: a
-# namespace whose every representative exits mid-scan or is chrooted away from
-# the lane's mount is skipped too.
-_live_refs_ns_aliases() {
-    local foreign="$1"; shift
-    [ -n "$foreign" ] && [ $# -gt 0 ] || return 0
-
-    local -a mountinfos roots
-    mapfile -t mountinfos < <(_live_refs_ns_representatives "$foreign" \
-        | awk '{ print "/proc/" $1 "/mountinfo" }')
-    [ ${#mountinfos[@]} -gt 0 ] || return 0
-    mapfile -t roots < <(grep -H '' "${mountinfos[@]}" 2>/dev/null | LC_ALL=C awk '
+# _live_refs_ns_mount_roots DEVS MOUNTINFO... — prints `/proc/<pid>/root<M>`,
+# one per line, for each mount M listed in the given /proc/<pid>/mountinfo files
+# whose device (field 3, major:minor) is one of the space-separated DEVS. Only
+# those roots can hold a candidate, so no FUSE server or unrelated filesystem is
+# ever stat'd. A btrfs mount is kept whatever its device: btrfs gives each
+# subvolume an st_dev that mountinfo never shows. Mount points holding a
+# newline are dropped, which keeps the output line-safe.
+_live_refs_ns_mount_roots() {
+    local devs="$1"; shift
+    grep -H '' "$@" 2>/dev/null | LC_ALL=C awk -v devs="$devs" '
+        BEGIN { n = split(devs, d, " "); for (i = 1; i <= n; i++) wanted[d[i]] = 1 }
         {
             colon = index($0, ":")
             split(substr($0, 1, colon - 1), f, "/")
-            split(substr($0, colon + 1), fld, " ")
+            line = substr($0, colon + 1)
+            split(line, fld, " ")
+            split(substr(line, index(line, " - ") + 3), fstype, " ")
+            if (!(fld[3] in wanted) && fstype[1] != "btrfs") next
             m = fld[5]
             if (index(m, "\\012")) next
             gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m); gsub(/\\134/, "\\", m)
             print "/proc/" f[3] "/root" m
         }
-    ' || true)
-    [ ${#roots[@]} -gt 0 ] || return 0
+    ' || true
+}
+
+# _live_refs_ns_aliases FOREIGN RP... — FOREIGN is _live_refs_foreign_mntns_pids'
+# output. Prints three lines per alias, `<ns>`, `<mount point M>` and
+# `<candidate>`, for every foreign-namespace mount whose root has a candidate's
+# dev:ino at an M other than that candidate's own path. Each namespace is read
+# through its _live_refs_ns_representatives, the union of their aliases taken,
+# and the whole set is resolved in a fixed number of processes; xargs batches
+# the root stat under ARG_MAX rather than letting it fail. A namespace whose
+# mountinfo or root cannot be read through any representative yields no alias:
+# it is skipped, never counted as referencing. Remaining limit: a namespace
+# whose every representative exits mid-scan or is chrooted away from the
+# lane's mount is skipped too.
+_live_refs_ns_aliases() {
+    local foreign="$1"; shift
+    [ -n "$foreign" ] && [ $# -gt 0 ] || return 0
+
+    local devs
+    devs="$(stat -L --printf '%Hd:%Ld ' "$@" 2>/dev/null)" || true
+    [ -n "$devs" ] || return 0
+
+    local -a mountinfos
+    mapfile -t mountinfos < <(_live_refs_ns_representatives "$foreign" \
+        | awk '{ print "/proc/" $1 "/mountinfo" }')
+    [ ${#mountinfos[@]} -gt 0 ] || return 0
 
     awk '
         FILENAME == ARGV[1] {
@@ -272,7 +291,8 @@ _live_refs_ns_aliases() {
         }
     ' <(stat -L -c '%d:%i %n' "$@" 2>/dev/null) \
       <(printf '%s\n' "$foreign") \
-      <(stat -L -c '%d:%i %n' "${roots[@]}" 2>/dev/null) 2>/dev/null || true
+      <(_live_refs_ns_mount_roots "$devs" "${mountinfos[@]}" \
+            | xargs -d '\n' -r stat -L -c '%d:%i %n' 2>/dev/null) 2>/dev/null || true
 }
 
 # _live_refs_ns_targets PID... — the cwd and open-fd link targets and the mapped
