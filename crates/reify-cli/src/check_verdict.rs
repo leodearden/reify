@@ -346,10 +346,10 @@ fn error_diagnostics(
 
 /// The ONE definition of "this diagnostic set carries an Error".
 ///
-/// Shared by `cmd_eval`, `cmd_build` (as [`build_is_success`]' second
-/// argument) and [`check_gating_error`] — PRD §7's "one shared helper also
-/// used by eval/build".  `eval` and `build` have gated on `Severity::Error`
-/// since #4458 — locked by
+/// Shared by `cmd_eval` and `cmd_build` (as [`build_is_success`]' second
+/// argument) — PRD §7's "one shared helper also used by eval/build";
+/// [`check_gating_error`] applies the same [`error_diagnostics`] filter.
+/// `eval` and `build` have gated on `Severity::Error` since #4458 — locked by
 /// `check_error_gate_tests::has_error_diagnostic_is_pure_severity`.
 pub(crate) fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
     error_diagnostics(diagnostics).next().is_some()
