@@ -1146,9 +1146,10 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// Message shape mirrors the 4598 selector wording (`emit_selector_mismatch`):
 /// `"argument 'X' has type 'A' but param 'X' requires type 'B'"`. Reused for any
 /// non-wrapper / non-trait / non-selector / non-vector / non-structure leaf whose
-/// arg type is not `type_compatible` with the declared param type (String←Int,
-/// Bool←String, dimensioned-scalar mismatch, a datum slot given another type, …).
-/// No new diagnostic code is minted — `ArgTypeMismatch` already exists.
+/// arg the leaf relation ([`conformance_accepts`]) rejects for a family
+/// [`emit_rejection`] routes here (String←Int, Bool←String, dimensioned-scalar
+/// mismatch, a datum slot given another type, …). No new diagnostic code is
+/// minted — `ArgTypeMismatch` already exists.
 ///
 /// Two rejections append a fix hint after `"; "` (see [`arg_type_mismatch_hint`]):
 /// one at a DIMENSIONED `Scalar` param, and a `Vector3` at a `Direction` param.
@@ -1179,8 +1180,9 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
 /// promoted, where "pass a dimensioned Bool literal" would be nonsense.
 /// - a DIMENSIONED `Scalar` param: the D4-6 literal hint;
 /// - a `Direction` param given a `Vector3` of any quantity: `dir(...)`
-///   (docs/prds/v0_6/direction-typing.md C7), gated exactly as the builtin-slot
-///   arm in `builtin_signatures.rs` gates it, so the two slot kinds agree.
+///   (docs/prds/v0_6/direction-typing.md C7). The builtin-slot gate,
+///   `builtin_signatures::direction_mismatch_hint`, must agree; the test
+///   `ctor_and_builtin_direction_slots_agree_on_the_dir_hint` holds them together.
 fn arg_type_mismatch_hint(param_type: &Type, arg_ty: &Type) -> Option<String> {
     match (param_type, arg_ty) {
         (Type::Scalar { dimension }, _) if !dimension.is_dimensionless() => {

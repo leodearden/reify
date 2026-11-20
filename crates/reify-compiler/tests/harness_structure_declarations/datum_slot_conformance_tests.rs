@@ -205,3 +205,109 @@ fn only_a_vector3_at_a_direction_slot_gets_the_dir_hint() {
         );
     }
 }
+
+#[test]
+fn every_conformance_entry_judges_a_datum_slot() {
+    let sub_construction = "structure def A {\n    param d : Direction\n}\n\
+                            structure def Root {\n    sub x = A(d: \"hello\")\n}\n";
+    let port_body_default = "trait P {}\n\
+                             structure def Root {\n    port mount : P {\n        \
+                             param d : Direction = \"hello\"\n    }\n}\n";
+    for (case, source, field) in [
+        ("sub construction", sub_construction.to_owned(), "d"),
+        ("port-body default", port_body_default.to_owned(), "mount.d"),
+        (
+            "Axis default",
+            "structure def A {\n    param a : Axis = 5\n}\n".to_owned(),
+            "a",
+        ),
+        (
+            "Plane default",
+            "structure def A {\n    param p : Plane = 5\n}\n".to_owned(),
+            "p",
+        ),
+        (
+            "Frame default",
+            "structure def A {\n    param f : Frame = \"hello\"\n}\n".to_owned(),
+            "f",
+        ),
+    ] {
+        let module = compile_source_with_stdlib(&source);
+        assert_one_arg_type_mismatch_naming(&module, field, case);
+    }
+}
+
+#[test]
+fn a_wrapped_direction_slot_keeps_the_dir_hint() {
+    for (decl, arg) in [
+        ("param d : Option<Direction>", "vec3(0, 0, 1)"),
+        ("param d : List<Direction>", "[vec3(0, 0, 1)]"),
+    ] {
+        let module = compile_source_with_stdlib(&ctor_field_source(decl, "d", arg));
+        let case = format!("{decl} <- {arg}");
+        let diagnostic = assert_one_arg_type_mismatch_naming(&module, "d", &case);
+        assert!(
+            diagnostic.message.ends_with(&format!("; {DIRECTION_HINT}")),
+            "{case}: {diagnostic:?}"
+        );
+    }
+}
+
+/// The stdlib `structure Frame3` is not the `Frame` datum. Its message
+/// currently reads `'Frame3'` on both sides, since `Type::Frame(3)` displays
+/// as `Frame3`; #9639 deletes the struct.
+#[test]
+fn a_frame_slot_rejects_the_stdlib_frame3_structure() {
+    let frame3 = "Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(1.0, 0.0, 0.0), \
+                  y_axis: vec3(0.0, 1.0, 0.0), z_axis: vec3(0.0, 0.0, 1.0))";
+    let module = compile_source_with_stdlib(&ctor_field_source("param f : Frame", "f", frame3));
+    assert_one_arg_type_mismatch_naming(&module, "f", "Frame <- stdlib Frame3 structure");
+}
+
+/// The ctor-slot hint gate and the builtin-slot one
+/// (`builtin_signatures::direction_mismatch_hint`) are separate code; this
+/// differential holds them to one answer, a hint exactly for a `Vector3`.
+#[test]
+fn ctor_and_builtin_direction_slots_agree_on_the_dir_hint() {
+    for (arg, earns_hint) in [
+        ("vec3(0, 1, 0)", true),
+        ("vec3(0.0, 1.0, 0.0)", true),
+        ("vec3(1mm, 0mm, 0mm)", true),
+        ("vec2(1, 0)", false),
+        ("5", false),
+        ("\"hello\"", false),
+    ] {
+        let ctor = compile_source_with_stdlib(&ctor_field_source("param d : Direction", "d", arg));
+        let ctor_diagnostic =
+            assert_one_arg_type_mismatch_naming(&ctor, "d", &format!("ctor field <- {arg}"));
+
+        let builtin = compile_source_with_stdlib(&format!(
+            "structure def Root {{\n    let o = point3(0mm, 0mm, 0mm)\n    \
+             let f = frame_at(o, dir(1, 0, 0), {arg})\n}}\n"
+        ));
+        let builtin_errors = errors_only(&builtin);
+        assert_eq!(
+            builtin_errors.len(),
+            1,
+            "frame_at z <- {arg}: expected one Error, got {builtin_errors:?}"
+        );
+        let builtin_diagnostic = builtin_errors[0];
+        assert_eq!(
+            builtin_diagnostic.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "frame_at z <- {arg}: {builtin_diagnostic:?}"
+        );
+
+        let hinted = format!("; {DIRECTION_HINT}");
+        for (slot, diagnostic) in [
+            ("ctor field", ctor_diagnostic),
+            ("frame_at z", builtin_diagnostic),
+        ] {
+            assert_eq!(
+                diagnostic.message.ends_with(&hinted),
+                earns_hint,
+                "{slot} <- {arg}: the dir(...) hint is for a Vector3 only: {diagnostic:?}"
+            );
+        }
+    }
+}
