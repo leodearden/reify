@@ -18,6 +18,13 @@ pub enum PlacementDefect {
         module: ModulePath,
         pragmas: Vec<String>,
     },
+    /// The added import of `module` would take the annotations pending above
+    /// it, whose source text `annotations` holds, from the declaration they
+    /// precede.
+    TakesAnnotations {
+        module: ModulePath,
+        annotations: Vec<String>,
+    },
 }
 
 impl fmt::Display for PlacementDefect {
@@ -28,6 +35,15 @@ impl fmt::Display for PlacementDefect {
                 "the added `import {}` would be gated by {}",
                 module.to_dotted(),
                 pragmas.join(" ")
+            ),
+            Self::TakesAnnotations {
+                module,
+                annotations,
+            } => write!(
+                f,
+                "the added `import {}` would take {} from the declaration it precedes",
+                module.to_dotted(),
+                annotations.join(" ")
             ),
         }
     }
@@ -65,6 +81,15 @@ pub(crate) fn check(insertion: &Insertion<'_>, path: &ModulePath) -> Result<(), 
                 pragmas: source_texts(
                     &insertion.text,
                     import.cfg_predicates.iter().map(|pragma| pragma.span),
+                ),
+            });
+        }
+        if !import.annotations.is_empty() {
+            return Err(PlacementDefect::TakesAnnotations {
+                module: (*module).clone(),
+                annotations: source_texts(
+                    &insertion.text,
+                    import.annotations.iter().map(|annotation| annotation.span),
                 ),
             });
         }
