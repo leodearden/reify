@@ -1502,23 +1502,11 @@ mod tests {
     /// by step-10.
     #[test]
     fn validate_selector_target_selector_accepted() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_test_support::selector_fixtures::named_leaf_selector;
 
-        let target = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let sel = SelectorValue::leaf(
-            SelectorKind::Face,
-            target,
-            LeafQuery::Named("x_max".to_string()),
-        )
-        .expect("LeafQuery::Named accepts any SelectorKind");
         assert_eq!(
-            validate_selector_target(&Value::Selector(sel)),
+            validate_selector_target(&named_leaf_selector(SelectorKind::Face, "x_max")),
             Some(()),
             "Value::Selector (typed region reference) should be accepted as a selector target"
         );

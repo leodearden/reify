@@ -6881,7 +6881,7 @@ mod tests {
     /// The `target` a support authored as `face(beam, "<target>")` evaluates
     /// to: a Face selector whose single Named leaf is `target`.
     fn face_target(target: &str) -> Value {
-        crate::compute_targets::bc_resolve::named_leaf_selector(
+        reify_test_support::selector_fixtures::named_leaf_selector(
             reify_core::ty::SelectorKind::Face,
             target,
         )
@@ -6916,10 +6916,10 @@ mod tests {
     fn support_targets_warns_when_it_drops_a_non_named_target() {
         use reify_core::ty::SelectorKind;
         use reify_ir::value::LeafQuery;
+        use reify_test_support::selector_fixtures::leaf_selector;
         use reify_test_support::warn_capturing_subscriber;
 
-        let all_faces =
-            crate::compute_targets::bc_resolve::leaf_selector(SelectorKind::Face, LeafQuery::All);
+        let all_faces = leaf_selector(SelectorKind::Face, LeafQuery::All);
         let unread = struct_instance("PinnedSupport", vec![("target".to_string(), all_faces)]);
 
         let (subscriber, capture) = warn_capturing_subscriber();
