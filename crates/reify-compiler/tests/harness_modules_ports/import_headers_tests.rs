@@ -799,6 +799,24 @@ fn new_imports_follow_the_leading_module_pragmas_after_a_blank_line() {
 }
 
 #[test]
+fn new_imports_after_an_unterminated_last_line_start_a_line_of_their_own() {
+    for (source, expected) in [
+        (
+            "import std.fake.a",
+            "import std.fake.a\nimport std.fake.c\n",
+        ),
+        ("module a.b", "module a.b\n\nimport std.fake.c\n"),
+        ("#no_prelude", "#no_prelude\n\nimport std.fake.c\n"),
+    ] {
+        assert_eq!(
+            insert(source, &["std.fake.c"]),
+            expected,
+            "source:\n{source}"
+        );
+    }
+}
+
+#[test]
 fn new_imports_follow_the_leading_comment_block_up_to_its_last_blank_line() {
     assert_eq!(
         insert(
@@ -912,6 +930,20 @@ fn an_added_import_a_pending_cfg_would_gate_is_refused() {
 }
 
 #[test]
+fn of_several_added_imports_the_first_defective_one_in_line_order_is_named() {
+    assert_eq!(
+        try_insert(
+            "import std.fake.a #cfg(wide)\n\nstructure def S {}\n",
+            &["std.fake.c", "std.fake.d"],
+        ),
+        Err(PlacementDefect::Gated {
+            module: module_path("std.fake.c"),
+            pragmas: vec!["#cfg(wide)".to_string()],
+        })
+    );
+}
+
+#[test]
 fn an_added_import_that_would_take_a_pending_annotation_is_refused() {
     for source in [
         "import std.fake.a @solid\n\nstructure def S {}\n",
@@ -950,6 +982,20 @@ fn an_added_import_that_breaks_the_syntax_around_it_is_refused() {
                 if modules == &module_paths(&["std.fake.c"])
         ),
         "{result:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "insert_imports edits only a parse-clean module, but `subject` has")]
+fn a_module_with_parse_errors_is_refused_before_any_edit() {
+    let source = "structure def S {\nimport std.fake.a\n}\n";
+    let parsed = reify_syntax::parse(source, module_path(SUBJECT_PATH));
+    assert!(!parsed.errors.is_empty(), "fixture must fail to parse");
+    let _ = insert_imports(
+        source,
+        &parsed,
+        &CfgSet::default(),
+        &module_paths(&["std.fake.c"]),
     );
 }
 

@@ -22,7 +22,7 @@ pub(crate) struct Insertion<'m> {
     pub(crate) text: String,
     /// The byte range of `text` the added text occupies, blank lines
     /// included; empty when nothing was added.
-    pub(crate) lines: Range<usize>,
+    pub(crate) added_bytes: Range<usize>,
     /// The modules an `import` line was added for, in line order.
     pub(crate) modules: Vec<&'m ModulePath>,
 }
@@ -45,7 +45,7 @@ pub(crate) fn insert_imports<'m>(
     if modules.is_empty() {
         return Insertion {
             text: source.to_string(),
-            lines: 0..0,
+            added_bytes: 0..0,
             modules,
         };
     }
@@ -64,7 +64,7 @@ pub(crate) fn insert_imports<'m>(
     edited.push_str(&source[offset..]);
     Insertion {
         text: edited,
-        lines: offset..offset + text.len(),
+        added_bytes: offset..offset + text.len(),
         modules,
     }
 }

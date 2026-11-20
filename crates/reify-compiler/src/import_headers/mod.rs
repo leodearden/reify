@@ -294,7 +294,8 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// in the order given: after the last import, else after the `module`
 /// declaration, else after the leading module pragmas above the line holding
 /// the first leading `#cfg`, else after the leading comment block's last blank
-/// line.
+/// line. `parsed` must be `source` parsed clean, so that every error in the
+/// edit's re-parse is the edit's own.
 ///
 /// # Errors
 ///
@@ -304,14 +305,21 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 ///
 /// # Panics
 ///
-/// If `parsed` declares an import whose path is not a module path, which
-/// only a module with parse errors can.
+/// If `parsed` has parse errors.
 pub fn insert_imports(
     source: &str,
     parsed: &ParsedModule,
     cfg: &CfgSet,
     modules: &[ModulePath],
 ) -> Result<String, PlacementDefect> {
+    assert!(
+        parsed.errors.is_empty(),
+        "insert_imports edits only a parse-clean module, but `{}` has {} parse error(s), \
+         the first: {}",
+        parsed.path.to_dotted(),
+        parsed.errors.len(),
+        parsed.errors[0].message
+    );
     let insertion = header_edit::insert_imports(source, parsed, cfg, modules);
     placement::check(&insertion, &parsed.path)?;
     Ok(insertion.text)

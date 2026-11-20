@@ -80,9 +80,10 @@ impl fmt::Display for PlacementDefect {
 impl std::error::Error for PlacementDefect {}
 
 /// Re-parses `insertion.text` as the module at `path` and judges the imports
-/// that start inside `insertion.lines`, one per added module in line order.
-/// A parse error comes first: no import of a broken parse can be trusted, and
-/// `insert_imports` edits only a parse-clean module, so the edit caused it.
+/// that start inside `insertion.added_bytes`, one per added module in line
+/// order. A parse error comes first: no import of a broken parse can be
+/// trusted, and [`super::insert_imports`] asserts the module it edits
+/// parse-clean, so the edit caused it.
 pub(crate) fn check(insertion: &Insertion<'_>, path: &ModulePath) -> Result<(), PlacementDefect> {
     if insertion.modules.is_empty() {
         return Ok(());
@@ -99,7 +100,9 @@ pub(crate) fn check(insertion: &Insertion<'_>, path: &ModulePath) -> Result<(), 
         .iter()
         .filter_map(|declaration| match declaration {
             Declaration::Import(import)
-                if insertion.lines.contains(&(import.span.start as usize)) =>
+                if insertion
+                    .added_bytes
+                    .contains(&(import.span.start as usize)) =>
             {
                 Some(import)
             }
