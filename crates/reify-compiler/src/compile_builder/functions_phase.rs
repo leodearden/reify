@@ -401,7 +401,7 @@ mod tests {
 
     use super::*;
     use crate::compile_builder::test_support::{
-        compile_against_prelude, compile_src, constructed_params, fn_result_expr, parse_at,
+        compile_against_prelude, compile_src, constructed_params, fn_result_expr,
     };
 
     fn codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
@@ -550,6 +550,7 @@ mod tests {
         use reify_ir::CompiledExpr;
 
         use super::*;
+        use crate::compile_builder::test_support::parse_at;
 
         /// One defaulted param, `spoiled`, whose default the unified env
         /// compiles to the literal `1.0`.

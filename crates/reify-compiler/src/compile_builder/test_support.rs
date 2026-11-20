@@ -43,8 +43,8 @@ pub(crate) fn fn_result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &
 }
 
 /// The param names a structure ctor fills with defaults, or `None` when `expr`
-/// constructs no structure. `CompiledExprKind` has no `PartialEq`, so the two
-/// sites are compared by what they construct.
+/// constructs no structure. `CompiledExprKind` has no `PartialEq`, so callers
+/// compare ctor results by the param names they fill.
 pub(crate) fn constructed_params(expr: &CompiledExpr) -> Option<Vec<String>> {
     match &expr.kind {
         CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
