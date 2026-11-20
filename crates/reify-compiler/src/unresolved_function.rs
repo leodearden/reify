@@ -389,15 +389,16 @@ macro_rules! family_row {
 /// identifier so a failure names the family that regressed.
 ///
 /// The ONE list of slice families: [`is_known_builtin`] unions it, and the
-/// disjointness and oracle tests below iterate it. A family absent here is
-/// invisible to the oracle and to every disjointness guard, so a row is
-/// deleted only when its slice is (a registry migration discharging the
-/// family); `family_anchor_names_stay_known_builtins` reds on any other
-/// deletion.
+/// disjointness and oracle tests below iterate it, as do the slot-key sweeps in
+/// `builtin_signatures`' tests, so deleting a row also shrinks what those
+/// sweeps reach. A family absent here is invisible to the oracle and to every
+/// disjointness guard, so a row is deleted only when its slice is (a registry
+/// migration discharging the family);
+/// `family_anchor_names_stay_known_builtins` reds on any other deletion.
 ///
 /// [`EVAL_DEFERRED_BUILTIN_NAMES`] is deliberately not a row: it records names
 /// NO family owns yet, and is checked against every row.
-const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
+pub(crate) const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
     family_row!(GEOMETRY_QUERY_HELPER_NAMES),
     family_row!(GEOMETRY_KINEMATIC_QUERY_NAMES),
     family_row!(GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
