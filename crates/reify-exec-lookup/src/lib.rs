@@ -2,14 +2,19 @@
 //!
 //! [`find_executable_on_path`] tries each PATH directory in order and, within
 //! a directory, each name in order: an earlier directory wins over an earlier
-//! name. An unset PATH finds nothing.
+//! name.
 //!
-//! Empty PATH components are skipped on purpose. `execvp` and `env` resolve
-//! them against the current directory; this lookup never does.
+//! It differs from `execvp`, and so from `env`, in two deliberate ways:
+//! - Empty PATH components are skipped. `execvp` resolves them against the
+//!   current directory; this lookup never does.
+//! - An unset PATH finds nothing. `execvp` falls back to a default search
+//!   path (glibc: `/bin:/usr/bin`).
 //!
 //! A candidate is executable when it is a regular file (symlinks followed)
-//! that, on unix, the current user may execute, per `access(2)` with `X_OK`,
-//! the check `execve` makes. Elsewhere any regular file counts.
+//! that, on unix, `access(2)` with `X_OK` accepts. `access` checks the real
+//! user and group IDs where `execve` checks the effective ones, so the two
+//! agree unless the process runs setuid or setgid. Elsewhere any regular file
+//! counts.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

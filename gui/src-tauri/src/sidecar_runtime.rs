@@ -29,7 +29,7 @@ pub async fn spawn_if_interpreter_found<T>(
 
 /// The [`SIDECAR_INTERPRETER`] that `/usr/bin/env node` would run, found with
 /// [`reify_exec_lookup::find_executable_on_path`], whose doc states the lookup
-/// policy and its one deliberate difference from `env`.
+/// policy and how it differs from `env`.
 pub fn require_sidecar_interpreter(path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     reify_exec_lookup::find_executable_on_path(&[SIDECAR_INTERPRETER], path_var).ok_or_else(|| {
         let searched = path_var.map_or_else(|| "(unset)".into(), OsStr::to_string_lossy);
