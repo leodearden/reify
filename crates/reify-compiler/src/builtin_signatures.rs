@@ -1528,13 +1528,7 @@ fn direction_mismatch_hint(actual: &Type) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::{
-        AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
-        DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
-        GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
-        GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, SELECTOR_COMPOSITION_NAMES,
-        TOLERANCING_MARKER_NAMES, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES,
-    };
+    use crate::units::{GEOMETRY_FUNCTION_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES};
     use reify_core::direction::DIRECTION_MIGRATION_HINT;
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
@@ -1548,49 +1542,6 @@ mod tests {
     /// arm cannot hide from a sweep by sitting just above the bound. Raise it if a
     /// future arm guards on a higher arity.
     const MAX_PROBED_ARITY: usize = 14;
-
-    /// Every units.rs builtin-name family slice, so a slice-derived sweep reaches
-    /// any name that could plausibly gain an arg slot — not just the two families
-    /// that happen to host keys today.
-    const BUILTIN_NAME_FAMILIES: &[&[&str]] = &[
-        GEOMETRY_FUNCTION_NAMES,
-        GEOMETRY_QUERY_HELPER_NAMES,
-        GEOMETRY_KINEMATIC_QUERY_NAMES,
-        GEOMETRY_TOPOLOGY_SELECTOR_NAMES,
-        AFFINE_MAP_CONSTRUCTOR_NAMES,
-        TOLERANCING_MARKER_NAMES,
-        GEOMETRY_QUERY_NAMES,
-        DYNAMICS_QUERY_NAMES,
-        DYNAMICS_CONSTRUCTOR_NAMES,
-        FEA_ENVELOPE_NAMES,
-        FIELD_OP_NAMES,
-        DATUM_CONSTRUCTOR_NAMES,
-        SELECTOR_COMPOSITION_NAMES,
-        AFFINE_ALGEBRA_NAMES,
-        WHOLE_HANDLE_GEOMETRY_QUERY_NAMES,
-    ];
-
-    /// [`builtin_arg_slots`] keys that belong to NO [`BUILTIN_NAME_FAMILIES`]
-    /// slice, and so cannot be reached by any slice-derived sweep — they must be
-    /// probed BY NAME or every sweep stays vacuous for them.
-    ///
-    /// `generate` (task 3994's list combinator, the table's lone `Int` count
-    /// slot) is exactly the name the predecessor invariant
-    /// `arg_slot_keys_are_subset_of_topology_selector_names` structurally could
-    /// not reach.
-    ///
-    /// ONE list, two consumers — [`arg_slot_keys_are_registered_builtin_names`]
-    /// and [`slotted_builtin_names`] — because a comment-enforced "kept in
-    /// lockstep" pair is exactly the drift the FINDING-2 completeness arm exists
-    /// to close: a key added to one copy and not the other would make
-    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
-    /// precisely that key, a silent false GREEN.
-    ///
-    /// Task #6082 added the two Euler builtins for the same structural reason:
-    /// `orient_*` belongs to no units.rs family slice either, so without these
-    /// entries the completeness arm would stay silently vacuous for their
-    /// `convention` slots.
-    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1621,12 +1572,11 @@ mod tests {
     ///   Neither pattern name has an entry in `topology_selector_result_type`, so
     ///   slice membership alone would turn every `linear_pattern(…)` call into a
     ///   panic on that `expect` — the names would never reach the CSG arm at all.
-    ///   That overlap is not otherwise pinned: units.rs's
-    ///   `builtin_name_families_are_pairwise_disjoint` tests iterate `GEOMETRY_QUERY_NAMES`
-    ///   and the other sibling families, but none iterates
-    ///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
-    ///   assertion (b) of [`arg_slot_keys_are_registered_builtin_names`] is what
-    ///   holds this line.
+    ///   `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+    ///   pins that `GEOMETRY_FUNCTION_NAMES` and
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` share no name, and assertion (b) of
+    ///   [`arg_slot_keys_are_registered_builtin_names`] pins the producers'
+    ///   `GEOMETRY_FUNCTION_NAMES` membership.
     /// - The task-5750 PRIMITIVE and PROFILE producers — `box`, `box_centered`,
     ///   `cylinder`, `cylinder_centered`, `sphere`, `tube`, `cone`, `wedge`,
     ///   `torus`, `half_space`, `rectangle`, `circle`, `ellipse`. Every one is a
@@ -1690,9 +1640,8 @@ mod tests {
         "generate",
         "linear_pattern",
         "linear_pattern_2d",
-        // Task #6082 — SO(3) builtins, not topology selectors, and members of
-        // no units.rs family slice; their `convention` slot is the table's
-        // only ExpectedArg::Enum.
+        // Task #6082 — SO(3) builtins, not topology selectors; their
+        // `convention` slot is the table's only ExpectedArg::Enum.
         "orient_euler",
         "orient_to_euler",
         // Task 5750 — primitives.
@@ -2604,29 +2553,19 @@ mod tests {
     /// widen the selector slice; why widening would be actively wrong is on
     /// [`NON_SELECTOR_ARG_SLOT_KEYS`].
     ///
-    /// The probe set is EVERY units.rs builtin-name family
-    /// ([`BUILTIN_NAME_FAMILIES`]) + `non_family_keys` + the typo/non-geometry
-    /// list, swept across arities up to [`MAX_PROBED_ARITY`] so neither a new key
-    /// from an unrelated family (say a MASS_DENSITY slot on `mass_properties`)
-    /// nor an arity-guarded arm can hide from the invariant.
+    /// The probe set is the closed-world family table (via
+    /// [`slot_probe_names`]) + the typo/non-geometry list, swept across arities
+    /// up to [`MAX_PROBED_ARITY`] so neither a new key from an unrelated family
+    /// (say a MASS_DENSITY slot on `mass_properties`) nor an arity-guarded arm
+    /// can hide from the invariant.
     #[test]
     fn arg_slot_keys_are_registered_builtin_names() {
-        // Keys that belong to NO units.rs family slice and so cannot be reached
-        // by any slice-derived sweep — see `NON_FAMILY_SLOT_KEYS`, which is
-        // shared with `slotted_builtin_names` so the two sweeps cannot drift.
-        // Listing `generate` there is what actually closes the predecessor
-        // test's hole (removing it from NON_SELECTOR_ARG_SLOT_KEYS now fails
-        // the assertion below, whereas before it would have gone unnoticed).
-        let non_family_keys: &[&str] = NON_FAMILY_SLOT_KEYS;
-
         // Extra non-selector names that must never map to non-empty slots.
         // `"box"` and `"cylinder"` used to head this list. Task 5750
         // (units-length η) gave both LENGTH slots, so they must move out of a
         // must-stay-empty list; they are exempted via NON_SELECTOR_ARG_SLOT_KEYS
         // instead. `union` / `difference` replace them so the list still NAMES a
-        // registered CSG producer that carries no dimensioned arg — both are
-        // additionally reached by the BUILTIN_NAME_FAMILIES sweep, so the
-        // replacement preserves the list's readability, not its reach.
+        // registered CSG producer that carries no dimensioned arg.
         let extra_non_selector: &[&str] = &[
             "union",
             "difference",
@@ -2658,11 +2597,9 @@ mod tests {
         ];
 
         let mut any_nonempty = false;
-        for &name in BUILTIN_NAME_FAMILIES
-            .iter()
-            .flat_map(|family| family.iter())
-            .chain(non_family_keys.iter())
-            .chain(extra_non_selector.iter())
+        for name in slot_probe_names()
+            .into_iter()
+            .chain(extra_non_selector.iter().copied())
         {
             // Swept across arities so an arity-guarded arm cannot hide from
             // the invariant by being empty at the one arity probed.
@@ -4102,51 +4039,42 @@ mod tests {
         crate::compile_with_stdlib(&parsed)
     }
 
+    /// The name universe the slot-key sweeps probe: the closed-world family
+    /// table flattened, plus [`NON_SELECTOR_ARG_SLOT_KEYS`], before the "does it
+    /// yield slots" filter. Derived, never a hand copy:
+    /// [`slot_probe_names_reach_every_closed_world_family_name`] pins that.
+    fn slot_probe_names() -> BTreeSet<&'static str> {
+        crate::unresolved_function::BUILTIN_NAME_FAMILIES
+            .iter()
+            .flat_map(|&(_, slice)| slice.iter())
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
+            .copied()
+            .collect()
+    }
+
     /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
     /// rather than listed by hand.
     ///
-    /// Sweeps EVERY curated registry that can name a slot key — [`BUILTIN_NAME_FAMILIES`]
-    /// (flattened), [`NON_FAMILY_SLOT_KEYS`] and [`NON_SELECTOR_ARG_SLOT_KEYS`] —
-    /// across `0..=MAX_PROBED_ARITY`, and keeps every name yielding a non-empty
-    /// slot list at some arity. Same technique
+    /// Filters [`slot_probe_names`] — the closed-world family table plus
+    /// [`NON_SELECTOR_ARG_SLOT_KEYS`] — to the names yielding a non-empty slot
+    /// list at some arity in `0..=MAX_PROBED_ARITY`. Same technique
     /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
     /// ledger guard self-maintaining: a name added to the table in a future leaf
     /// is picked up here automatically instead of quietly escaping the guard.
     ///
-    /// # Why THREE registries and not one (reviewer amendment)
-    ///
     /// This function is the sole input to
     /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`], so a slot key
-    /// it cannot NAME is a key that escapes the ledger, escapes the coupling rule,
-    /// and leaves that guard GREEN — the silent false GREEN
-    /// [`NON_FAMILY_SLOT_KEYS`] exists to close. Reaching the key through any ONE
-    /// of the three curated lists is enough, so the hand-maintained
-    /// [`NON_FAMILY_SLOT_KEYS`] is no longer the single point of failure it was:
-    /// the 5662 `mirror` / `circular_pattern` catch worked only because those two
-    /// names happen to sit in a family slice.
+    /// it cannot NAME escapes the ledger and the coupling rule and leaves that
+    /// guard GREEN.
     ///
-    /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
-    /// admits NO name today. Of the [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
-    /// `generate` is the only one unreachable from the family slices, and it is
-    /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
-    /// a NEW non-selector key added to that curated list is now swept even if
-    /// whoever adds it never touches [`NON_FAMILY_SLOT_KEYS`].
-    ///
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — the third list the slot table draws
-    /// on — needs no chain of its own: it IS a [`BUILTIN_NAME_FAMILIES`] member,
-    /// asserted rather than asserted-in-prose by
-    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`].
-    ///
-    /// Nothing spurious is admitted by widening: every candidate passes the
-    /// `!builtin_arg_slots(..).is_empty()` filter below, and both extra lists
-    /// carry their own no-dead-entry assertions.
+    /// The [`NON_SELECTOR_ARG_SLOT_KEYS`] chain in [`slot_probe_names`] keeps a
+    /// slot key swept if its family row is later discharged into the registry.
+    /// The selectors have no chain of their own: they are swept only through the
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` row, which
+    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`] asserts.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
-        BUILTIN_NAME_FAMILIES
-            .iter()
-            .flat_map(|family| family.iter())
-            .chain(NON_FAMILY_SLOT_KEYS.iter())
-            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
-            .copied()
+        slot_probe_names()
+            .into_iter()
             .filter(|name| {
                 (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
             })
@@ -4154,50 +4082,76 @@ mod tests {
     }
 
     /// The completeness sweep reaches a slot key through ANY curated registry,
-    /// not just through the one hand-maintained list.
+    /// not just through the closed-world family table.
     ///
     /// Pins the two claims [`slotted_builtin_names`]'s doc makes, so neither can
     /// rot into a comment that is merely believed:
     ///
-    /// 1. Every [`NON_FAMILY_SLOT_KEYS`] and every [`NON_SELECTOR_ARG_SLOT_KEYS`]
-    ///    entry comes back from the sweep. (Both lists already reject dead
-    ///    entries elsewhere, so each name here does yield slots.) This pins the
-    ///    OUTCOME — "every curated key is swept" — not any one chain: MEASURED
-    ///    today, the two explicit chains are mutually redundant, since `generate`
-    ///    is the only family-unreachable key and it sits in BOTH lists, so
-    ///    dropping either `.chain(..)` alone leaves this green and dropping both
-    ///    turns it RED. The redundancy is the point of the widening; the
-    ///    assertion becomes chain-specific the moment a curated key is added to
-    ///    only one list.
+    /// 1. Every [`NON_SELECTOR_ARG_SLOT_KEYS`] entry comes back from the sweep.
+    ///    (The list already rejects dead entries elsewhere, so each name here
+    ///    does yield slots.)
     ///
-    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a [`BUILTIN_NAME_FAMILIES`]
-    ///    member, which is WHY it needs no chain of its own. If a future edit
-    ///    drops it from that array, this fails loudly instead of silently
-    ///    shrinking the sweep — the selectors are 9 of the ledger's
+    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a closed-world family row, which
+    ///    is WHY it needs no chain of its own. If a registry migration
+    ///    discharges that row, this fails loudly instead of silently shrinking
+    ///    the sweep — the selectors are 9 of the ledger's
     ///    [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entries, so losing them would hollow
     ///    out that arm rather than break it.
     #[test]
     fn slotted_name_sweep_reaches_every_curated_slot_registry() {
         let swept = slotted_builtin_names();
 
-        for &name in NON_FAMILY_SLOT_KEYS
-            .iter()
-            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
-        {
+        for &name in NON_SELECTOR_ARG_SLOT_KEYS {
             assert!(
                 swept.contains(name),
-                "{name:?} is a curated slot-table key but the slotted-name sweep does \
-                 not reach it, so it would escape \
+                "{name:?} is a curated slot-table key reachable through no registry \
+                 that slot_probe_names() probes, so it would escape \
                  every_slotted_name_is_ledgered_or_recorded_unobservable entirely. \
-                 Restore the .chain(..) that names its registry in slotted_builtin_names()."
+                 Make slot_probe_names() reach it."
             );
         }
 
         assert!(
-            BUILTIN_NAME_FAMILIES.contains(&GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
-            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
-             BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
-             must chain it explicitly."
+            crate::unresolved_function::BUILTIN_NAME_FAMILIES
+                .iter()
+                .any(|&(_, slice)| slice == GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only through its row in \
+             unresolved_function::BUILTIN_NAME_FAMILIES; that row is gone, so a \
+             registry migration that discharged it must chain the selectors into \
+             slot_probe_names() explicitly."
+        );
+    }
+
+    /// Fork-guard on [`slot_probe_names`]: the universe reaches every name of
+    /// every closed-world family row, so a family added to
+    /// `unresolved_function::BUILTIN_NAME_FAMILIES` is swept for slot keys with
+    /// no list edit in this module, and a hand-kept or filtered copy that drifts
+    /// from the table reds here.
+    ///
+    /// Misses are collected per family label before asserting, so one failure
+    /// names every family the universe drifted from.
+    #[test]
+    fn slot_probe_names_reach_every_closed_world_family_name() {
+        let probed = slot_probe_names();
+        let mut misses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for &(family, slice) in crate::unresolved_function::BUILTIN_NAME_FAMILIES {
+            for &name in slice {
+                if !probed.contains(name) {
+                    misses.entry(family).or_default().push(name);
+                }
+            }
+        }
+
+        let report: String = misses
+            .iter()
+            .map(|(family, names)| format!("\n  {family}: {}", names.join(", ")))
+            .collect();
+        assert!(
+            misses.is_empty(),
+            "slot_probe_names() misses closed-world family names, so the slot-key \
+             sweeps cannot reach them. The sweeps must derive their universe from \
+             unresolved_function::BUILTIN_NAME_FAMILIES, not from a hand-kept copy \
+             of it. Missed, by family:{report}"
         );
     }
 

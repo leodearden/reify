@@ -40,9 +40,17 @@ import type {
   RecentEntry,
   LaunchMode,
   ModeState,
+  RawSetModeError,
   InitialFileLoadFailure,
 } from './types';
-import { convertRawMesh, convertRawConstraint, convertRawGuiState, convertRawPublishedState } from './types';
+import {
+  convertRawMesh,
+  convertRawConstraint,
+  convertRawGuiState,
+  convertRawPublishedState,
+  DebugListenerBindFailure,
+  SET_MODE_ERROR_KINDS,
+} from './types';
 import type {
   OutboundMessage,
   TextDelta,
@@ -406,9 +414,25 @@ export async function isDebugEnabled(): Promise<boolean> {
   return invoke<boolean>('is_debug_enabled');
 }
 
-/** Select a launch mode; `debug` makes the reify-debug server live (idempotent). */
+function isRawSetModeError(err: unknown): err is RawSetModeError {
+  return (
+    isPlainObject(err) &&
+    err['kind'] === SET_MODE_ERROR_KINDS.debugListenerBind &&
+    typeof err['message'] === 'string'
+  );
+}
+
+/**
+ * Select a launch mode; `debug` makes the reify-debug server live (idempotent).
+ * Rejects with a DebugListenerBindFailure when the listener could not be bound;
+ * any other rejection is an IPC-level failure, passed through unchanged.
+ */
 export async function setMode(mode: LaunchMode): Promise<ModeState> {
-  return invoke<ModeState>('set_mode', { mode });
+  try {
+    return await invoke<ModeState>('set_mode', { mode });
+  } catch (err) {
+    throw isRawSetModeError(err) ? new DebugListenerBindFailure(err.message) : err;
+  }
 }
 
 // ── Claude event subscription ───────────────────────────────────────

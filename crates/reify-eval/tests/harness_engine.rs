@@ -206,3 +206,7 @@ mod dimensioned_param_default_constraint_verdicts;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/constraint_check_optimized_dispatch.rs"]
 mod constraint_check_optimized_dispatch;
+// Task #9869's relate-failure carrier pin lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/relate_failure_carrier_e2e.rs"]
+mod relate_failure_carrier_e2e;

@@ -16,12 +16,21 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
   * the .deb installs with apt alone, no OCCT/gmsh/OpenVDB/oneTBB package gets
     pulled in (the bundle, not a Depends, must carry them), `reify check` on
     examples/m5_geometry.ri exits 0, and `reify-gui` under xvfb answers a
-    debug-MCP store_state with at least one mesh; nodejs arrives as its
-    Depends and the installed reify-sidecar completes the ready handshake;
+    debug-MCP store_state with at least one mesh; nodejs and python3 arrive as
+    its Depends, the installed reify-sidecar completes the ready handshake, and
+    an Assistant turn through it runs claude inside the landlock sandbox;
   * the AppImage does the same on a desktop-session stand-in (xvfb, xauth,
     curl, GTK 3 and the GL front-ends, but no WebKit, which the AppImage must
     carry itself); it has no node, and after `apt install nodejs` (the
-    E_GUI_SIDECAR_NODE_MISSING remedy) its reify-sidecar completes the handshake.
+    E_GUI_SIDECAR_NODE_MISSING remedy) its reify-sidecar completes the handshake;
+    with python3 added, as a desktop ships it, its Assistant turn runs claude
+    inside the landlock sandbox.
+
+The sandboxed turn: the sidecar gets REIFY_LANDLOCK_EXEC at the helper's
+installed path (tauri's Linux resource dir, where gui/src-tauri/src/main.rs
+looks), and a stand-in `claude` reports whether it could write inside its
+workspace and outside every writable root. A sidecar that could not sandbox
+answers a sandbox_unavailable notice and outside=written instead.
 
 Knobs: REIFY_BUNDLE_DEB + REIFY_BUNDLE_APPIMAGE reuse a prior build instead of
 running scripts/build-bundle.sh; REIFY_BUNDLE_PROOF_READY_SECS (default 600) is
@@ -52,14 +61,41 @@ DEBUG_PORT = 3939
 GUI_ENV = {
     "REIFY_DEBUG": "1",
     "REIFY_DEBUG_PORT": str(DEBUG_PORT),
-    # scripts/lib_gui_launch.sh pins this: under Xvfb WebKitGTK aborts on GBM EGL.
-    "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
 }
 GUI_LOG = "/tmp/reify-gui.log"
 GUI_EXIT = "/tmp/reify-gui.exit"
 SIDECAR_ERR = "/tmp/reify-sidecar.err"
 # The readiness claude_bridge::ensure_sidecar_ready waits for.
 SIDECAR_READY = {"type": "ready"}
+# tauri's Linux resource_dir (<exe_dir>/../lib/<productName>) joined with the
+# sandbox/landlock_exec.py gui/src-tauri/src/main.rs looks up, relative to the
+# package root ("/" for the deb, squashfs-root/ for the AppImage).
+LANDLOCK_EXEC = "usr/lib/Reify/sandbox/landlock_exec.py"
+TURN = "t1"
+TURN_ENDS = ("done", "error")
+SANDBOX_MARKER = "reify-bundle-proof-sandbox-probe"
+# landlock_exec grants /tmp wholesale and names /var/tmp as staying restricted.
+OUTSIDE_PROBE = f"/var/tmp/{SANDBOX_MARKER}"
+# The `claude` the sidecar spawns: drains the prompt, tries one write inside its
+# workspace and one outside every writable root, and answers in stream-json
+# (the reply shape gui/sidecar/src/__tests__/built-bundle.test.ts pins).
+FAKE_CLAUDE = "\n".join([
+    "#!/bin/sh",
+    "cat >/dev/null",
+    'probe() { if touch "$1" 2>/dev/null; then echo written; else echo denied; fi; }',
+    f'w=$(probe "$REIFY_WORKSPACE/{SANDBOX_MARKER}")',
+    f"o=$(probe {OUTSIDE_PROBE})",
+    "cat <<EVENTS",
+    json.dumps({"type": "assistant", "message": {
+        "id": "m1", "content": [{"type": "text", "text": "workspace=$w outside=$o"}]}}),
+    json.dumps({"type": "result", "session_id": "s1"}),
+    "EVENTS",
+    "",
+])
+SANDBOXED_TURN = [
+    {"type": "text_delta", "id": TURN, "content": "workspace=written outside=denied"},
+    {"type": "done", "id": TURN},
+]
 STORE_STATE_BODY = json.dumps({
     "jsonrpc": "2.0", "id": 1, "method": "tools/call",
     "params": {"name": "store_state", "arguments": {}},
@@ -195,6 +231,70 @@ class Container:
             f"in {self.name}: {sidecar}\nstdout:\n{proc.stdout[-4000:]}\nstderr:\n{stderr[-4000:]}")
         _log(f"{self.name}: {sidecar} answered {json.dumps(first)}, exit {proc.returncode}")
 
+    def sidecar_turn(self, command):
+        """Runs `command`, a sidecar launch, under `docker exec -i`; sends one
+        send_message for TURN once the sidecar answers SIDECAR_READY, and
+        returns (every outbound message up to the turn's end, how the run
+        ended). Stdin closes only after the turn ends, because the sidecar
+        aborts an in-flight turn at stdin EOF. The caller's in-container
+        `timeout` is the hang guard; the wait here is only its backstop."""
+        argv = ["docker", "exec", "-i", self.name, "bash", "-c", command]
+        with (tempfile.TemporaryFile(mode="w+", encoding="utf-8") as docker_err,
+              subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=docker_err, text=True) as proc):
+            try:
+                messages = self._read_turn(proc)
+            finally:
+                proc.stdin.close()
+                try:
+                    proc.wait(timeout=_ready_secs())
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            docker_err.seek(0)
+            return messages, f"docker exec exit {proc.returncode}; its stderr: {docker_err.read()[-2000:]!r}"
+
+    def _read_turn(self, proc):
+        messages = []
+        for line in iter(proc.stdout.readline, ""):
+            try:
+                message = json.loads(line)
+            except ValueError:
+                message = None
+            if not isinstance(message, dict):
+                self.test.fail(f"in {self.name}: sidecar line {line!r} is no JSON object; "
+                               f"read before it: {messages}")
+            messages.append(message)
+            if message == SIDECAR_READY:
+                proc.stdin.write(json.dumps(
+                    {"type": "send_message", "id": TURN, "text": "where can you write?"}) + "\n")
+                proc.stdin.flush()
+            elif message.get("id") == TURN and message.get("type") in TURN_ENDS:
+                break
+        return messages
+
+    def assert_assistant_sandboxed(self, sidecar, landlock_exec):
+        """Drives one Assistant turn through the installed sidecar, with
+        REIFY_LANDLOCK_EXEC where the host finds the helper and the FAKE_CLAUDE
+        stand-in on PATH, and asserts claude ran sandboxed: it wrote inside its
+        workspace (outside /tmp, so that write is not the /tmp grant) and was
+        denied outside every writable root."""
+        self.check(f"test -f {shlex.quote(landlock_exec)}")
+        self.check(f"printf %s {shlex.quote(FAKE_CLAUDE)} > /usr/local/bin/claude"
+                   " && chmod 755 /usr/local/bin/claude")
+        workspace = shlex.quote(self.check("mktemp -d -p /srv").strip())
+        messages, ended = self.sidecar_turn(
+            f"cd {workspace} && REIFY_WORKSPACE={workspace} "
+            f"REIFY_LANDLOCK_EXEC={shlex.quote(landlock_exec)} "
+            f"timeout {int(_ready_secs())} {shlex.quote(sidecar)} 2>{SIDECAR_ERR}")
+        stderr = self.run(f"cat {SIDECAR_ERR}").stdout
+        self.test.assertEqual(
+            [m for m in messages if m.get("id") == TURN], SANDBOXED_TURN,
+            f"in {self.name}: {sidecar} with {landlock_exec}\n{ended}\n"
+            f"messages: {json.dumps(messages)}\nstderr:\n{stderr[-4000:]}")
+        self.check(f"test ! -e {OUTSIDE_PROBE}")
+        _log(f"{self.name}: {sidecar} ran claude inside the landlock sandbox")
+
     def gui_postmortem(self):
         proc = self.run(f"cat {GUI_EXIT} 2>/dev/null; tail -n 80 {GUI_LOG}")
         return f"GUI exit/log:\n{proc.stdout}"
@@ -267,6 +367,9 @@ class BundleCleanInstall(unittest.TestCase):
                       "the deb's Depends must bring nodejs onto a stock image")
         box.check("command -v node")
         box.assert_sidecar_ready("/usr/bin/reify-sidecar")
+        self.assertIn("python3", box.installed_packages(),
+                      "the deb's Depends must bring python3 onto a stock image")
+        box.assert_assistant_sandboxed("/usr/bin/reify-sidecar", "/" + LANDLOCK_EXEC)
 
     def test_appimage(self):
         appimage = f"/assets/{self.appimage.name}"
@@ -282,6 +385,10 @@ class BundleCleanInstall(unittest.TestCase):
         box.check("! command -v node")
         box.apt_install("nodejs")
         box.assert_sidecar_ready("/tmp/extract/squashfs-root/usr/bin/reify-sidecar")
+        # An Ubuntu desktop ships python3: the stand-in gains it only here, so nothing above ran with it.
+        box.apt_install("python3")
+        box.assert_assistant_sandboxed("/tmp/extract/squashfs-root/usr/bin/reify-sidecar",
+                                       "/tmp/extract/squashfs-root/" + LANDLOCK_EXEC)
 
 
 if __name__ == "__main__":

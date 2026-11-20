@@ -70,9 +70,10 @@ _GUI_LAUNCH_INHERITED_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 #
 # We deliberately do NOT probe EGL here. `eglinfo` (mesa-utils) is not in
 # scripts/setup-dev.sh's package set, so it cannot be hard-required, and
-# gui_launch_env_pin()'s WEBKIT_DISABLE_DMABUF_RENDERER=1 default already
-# neutralises the NVIDIA+Mesa GBM failure an EGL probe would flag — the probe
-# would be both undependable and a false alarm.
+# reify-gui's own WEBKIT_DISABLE_DMABUF_RENDERER=1 default
+# (gui/src-tauri/src/webkit_env.rs) already neutralises the NVIDIA+Mesa GBM
+# failure an EGL probe would flag — the probe would be both undependable and a
+# false alarm.
 #
 # Prints ONE error line to stderr and returns 1; never exits, so the caller
 # owns the exit code. Honouring REIFY_GUI_SKIP_PREFLIGHT is likewise the
@@ -133,7 +134,7 @@ _gui_launch_env_already_pinned() {
 
 # gui_launch_env_pin
 #
-# Set the two environment defaults every direct reify-gui invocation needs.
+# Pin the loader path every direct reify-gui invocation needs.
 #
 # ORDERING CONTRACT: this is the only LD_LIBRARY_PATH mutation a launcher
 # makes: the workspace-bin dirs (scripts/lib_native_ld_path.sh), then the tbb
@@ -147,15 +148,6 @@ _gui_launch_env_already_pinned() {
 # lib afresh); a second pass there would only duplicate the entries and repeat
 # the notice. A caller that leads with the pin ALONE still gets both prepends.
 gui_launch_env_pin() {
-    # Disable WebKit's GBM/DMABuf renderer by default. On systems where the
-    # NVIDIA driver exposes DRI fds but the Mesa EGL GBM backend cannot create
-    # a screen, WebKitGTK aborts with
-    # "Could not create GBM EGL display: EGL_NOT_INITIALIZED". =1 forces the
-    # GLX/xlib fallback path.
-    # The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
-    # restore the DMABUF path on a host where it works.
-    export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-
     if _gui_launch_env_already_pinned; then
         return 0
     fi

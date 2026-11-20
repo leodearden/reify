@@ -487,14 +487,14 @@ fn constraint_inline_query_arg_hoists_into_query_only_realization() {
     );
 }
 
-/// A `where` guard gates the constraint, not the geometry its query hoists: the
-/// guarded constraint lands in a guarded group while `__geoq_0` stays a
-/// top-level, unconditional realization, as it does for a guarded geometry
-/// `let`. So a guard-off design still realizes the hoisted geometry, and
-/// invalid dimensions there surface as a geometry error rather than an
-/// inactive check.
+/// KNOWN-GAP characterization pin, not a design contract. A `where`-guarded
+/// constraint lands in a guarded group, while the `__geoq_0` its query hoists
+/// is an unguarded top-level realization, as for a guarded geometry `let`.
+///
+/// Known gap until #8450 lands guard-gated realization and carries the
+/// constraint's guard onto `__geoq_0`, inverting this pin.
 #[test]
-fn constraint_where_guard_does_not_gate_its_hoisted_realization() {
+fn known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization() {
     let compiled = compile_clean(
         r#"structure def Guarded {
     param w : Length = 10mm
@@ -506,7 +506,7 @@ fn constraint_where_guard_does_not_gate_its_hoisted_realization() {
     assert_eq!(
         realization_names(template),
         [(Some("__geoq_0"), true)],
-        "the hoisted realization is top-level whatever the constraint's guard"
+        "known gap: the hoisted realization is currently top-level, unguarded"
     );
     assert!(
         template.constraints.is_empty(),

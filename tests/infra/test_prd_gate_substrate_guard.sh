@@ -724,11 +724,13 @@ _guard_owned_checks() {
 # _assert_denied <want_probe_count> — the PRIMARY assertion: under a denied
 # substrate the gate must degrade to a loud, partial, still-asserting run.
 #
-# LANE-ROBUST BY CONSTRUCTION: where the grammar was never generated the
-# preflight answers 75 from the absent parser.c without ever consulting the
-# stub, and the identical per-row path fires. So this asserts the same thing
-# whether or not the lane has a grammar — which is why it is the PRIMARY
-# assertion and the full-run case below is the guarded one.
+# LANE-ROBUST BY CONSTRUCTION: the preflight first brings the grammar up to
+# date. Where that succeeds the denied stub then answers 75; where it fails
+# (no tree-sitter CLI on PATH, say) the preflight answers 75 without ever
+# consulting the stub. The identical per-row path fires either way, so this
+# asserts the same thing whether or not the lane can generate a grammar —
+# which is why it is the PRIMARY assertion and the full-run case below is the
+# guarded one.
 _assert_denied() {
     local want="$1"
     _guard_owned_checks "$want" yes || return 1

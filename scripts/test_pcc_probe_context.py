@@ -86,6 +86,17 @@ class TestFromEnvironment(unittest.TestCase):
     def test_repo_root_defaults_to_this_checkout(self):
         ctx = pcc.ProbeContext.from_environment(environ={})
         self.assertEqual(ctx.repo_root, _REPO_ROOT)
+        self.assertEqual(ctx.grammar_generator,
+                         os.path.join(_REPO_ROOT, "scripts", "tree-sitter-generate.sh"))
+
+    def test_grammar_generator_is_none_for_a_root_without_one(self):
+        self.assertIsNone(self._ctx({}).grammar_generator)
+
+    def test_grammar_generator_is_the_roots_generator_script(self):
+        generator = os.path.join(self.root, "scripts", "tree-sitter-generate.sh")
+        os.makedirs(os.path.dirname(generator))
+        open(generator, "w").close()
+        self.assertEqual(self._ctx({}).grammar_generator, generator)
 
 
 class TestProbeContextInvariants(unittest.TestCase):
@@ -100,6 +111,8 @@ class TestProbeContextInvariants(unittest.TestCase):
             ("substrate_timeout_s", 0),
             ("substrate_timeout_s", -1.0),
             ("substrate_timeout_s", float("nan")),
+            ("grammar_generator", ""),
+            ("grammar_generator", "relative/tree-sitter-generate.sh"),
         ]
         for field_name, value in cases:
             with self.subTest(field=field_name, value=value):
@@ -108,6 +121,9 @@ class TestProbeContextInvariants(unittest.TestCase):
                 message = str(cm.exception)
                 self.assertIn(field_name, message)
                 self.assertIn(repr(value), message)
+
+    def test_hand_built_context_does_not_provision(self):
+        self.assertIsNone(probe_context().grammar_generator)
 
     def test_a_built_context_is_frozen(self):
         ctx = probe_context()

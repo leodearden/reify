@@ -51,6 +51,7 @@ pub mod sidecar_runtime;
 pub mod tcp_port;
 pub mod types;
 pub mod watcher;
+pub mod webkit_env;
 pub mod write_confinement;
 
 #[cfg(test)]

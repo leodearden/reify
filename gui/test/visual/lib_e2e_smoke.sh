@@ -29,9 +29,8 @@
 #      no longer contend for :1420; reify-gui follows it via its startup devUrl
 #      retarget (gui/src-tauri/src/dev_url.rs).
 #   2. Set DISPLAY="${DISPLAY:-:0}" so the Tauri webview can instantiate.
-#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): disable the WebKit
-#      GBM/DMABuf renderer unless the caller overrode it, and apply the whole
-#      launch loader path (the workspace-bin dirs, then the oneTBB pin first).
+#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): apply the whole launch
+#      loader path (the workspace-bin dirs, then the oneTBB pin first).
 #   3. Install an EXIT/INT/TERM cleanup trap so the GUI is reaped even on early failure.
 #   4. (Unless REIFY_SMOKE_SKIP_PREBUILD=1) run synchronous pre-build steps —
 #      sidecar npm install, sidecar build, gui npm install, cargo build reify-gui —
@@ -203,9 +202,8 @@ e2e_smoke_run() {
     export DISPLAY="${DISPLAY:-:0}"
 
     # -----------------------------------------------------------------------
-    # 2b. gui_launch_env_pin (scripts/lib_gui_launch.sh) applies the WebKit
-    #     default and the whole launch loader path: the workspace-bin dirs,
-    #     then the tbb pin first.
+    # 2b. gui_launch_env_pin (scripts/lib_gui_launch.sh) applies the whole
+    #     launch loader path: the workspace-bin dirs, then the tbb pin first.
     # -----------------------------------------------------------------------
     gui_launch_env_pin
 

@@ -248,7 +248,7 @@ fn compile_program_checked_parity() {
         &CfgSet::default(),
         &AlwaysIndeterminate,
     )
-    .entry;
+    .into_entry();
     assert_parity(&stub, &checked, "compile_program");
 }
 
@@ -384,7 +384,7 @@ fn compile_program_import_uses_stub() {
         &cfg,
         &AlwaysViolated,
     )
-    .entry;
+    .into_entry();
     let entry_bearing_errors: Vec<_> = diag_tuples(&entry_bearing)
         .into_iter()
         .filter(|(sev, msg)| *sev == Severity::Error && msg.contains("no feasible candidates"))
@@ -408,7 +408,7 @@ fn compile_program_import_uses_stub() {
         &cfg,
         &AlwaysViolated,
     )
-    .entry;
+    .into_entry();
     let import_feasible_errors: Vec<_> = diag_tuples(&entry_assembly)
         .into_iter()
         .filter(|(sev, msg)| *sev == Severity::Error && msg.contains("no feasible candidates"))

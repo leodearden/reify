@@ -1104,7 +1104,7 @@ fn compile_entry_program(
         &gui_cfg(),
         &reify_constraints::SimpleConstraintChecker,
     );
-    let compiled = reject_compile_errors(program.entry, module_name, source)?;
+    let compiled = reject_compile_errors(program.into_entry(), module_name, source)?;
     Ok(CompiledSource { parsed, compiled })
 }
 

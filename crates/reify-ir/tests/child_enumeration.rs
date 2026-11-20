@@ -8,8 +8,8 @@
 //! themselves. The expected variant set is `CompiledExprKindDiscriminants::iter()`,
 //! which strum derives from `CompiledExprKind`, so a new variant fails
 //! `corpus_has_an_exemplar_for_every_variant` until the corpus gains an
-//! exemplar for it, and that exemplar pins both `for_each_child` and
-//! `for_each_child_mut`.
+//! exemplar for it, and that exemplar pins `for_each_child`,
+//! `for_each_child_mut` and `map_value_refs`.
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -163,6 +163,20 @@ fn child_labels(expr: &CompiledExpr) -> Vec<String> {
     let mut labels = Vec::new();
     expr.for_each_child(&mut |child| labels.push(label(child)));
     labels
+}
+
+/// What `labels` become when every child `ValueRef`'s cell goes through
+/// `prime_member`.
+fn primed(labels: &[&str]) -> Vec<String> {
+    labels
+        .iter()
+        .map(|c| prime_member(cell(c)).member)
+        .collect()
+}
+
+/// The one place that decides how a cell is marked as rewritten.
+fn prime_member(id: ValueCellId) -> ValueCellId {
+    ValueCellId::new(id.entity, format!("{}'", id.member))
 }
 
 /// One exemplar and its direct children in evaluation order, written by hand.
@@ -372,7 +386,7 @@ fn for_each_child_yields_each_variants_direct_children_in_order() {
 }
 
 #[test]
-fn try_for_each_child_matches_for_each_child_and_stops_at_first_break() {
+fn try_for_each_child_matches_for_each_child() {
     for case in corpus() {
         let mut labels = Vec::new();
         let flow = case.expr.try_for_each_child::<()>(&mut |child| {
@@ -382,20 +396,34 @@ fn try_for_each_child_matches_for_each_child_and_stops_at_first_break() {
         assert_eq!(flow, ControlFlow::Continue(()), "case `{}`", case.name);
         assert_eq!(labels, case.children, "case `{}`", case.name);
     }
+}
 
-    let call = function_call(vec![r("c0"), r("c1"), r("c2")]);
-    let mut consulted = Vec::new();
-    let flow = call.try_for_each_child(&mut |child| {
+/// Visits `expr`'s children in order, breaking on the child at index `stop`;
+/// returns the flow `try_for_each_child` reports and the labels it visited.
+fn visit_until(expr: &CompiledExpr, stop: usize) -> (ControlFlow<String>, Vec<String>) {
+    let mut visited = Vec::new();
+    let flow = expr.try_for_each_child(&mut |child| {
         let child_label = label(child);
-        consulted.push(child_label.clone());
-        if child_label == "c1" {
+        visited.push(child_label.clone());
+        if visited.len() > stop {
             ControlFlow::Break(child_label)
         } else {
             ControlFlow::Continue(())
         }
     });
-    assert_eq!(flow, ControlFlow::Break("c1".to_string()));
-    assert_eq!(consulted, ["c0", "c1"]);
+    (flow, visited)
+}
+
+#[test]
+fn try_for_each_child_stops_at_the_first_break() {
+    for case in corpus() {
+        for (stop, &expected) in case.children.iter().enumerate() {
+            let (flow, visited) = visit_until(&case.expr, stop);
+            let context = format!("case `{}` stopping at child {stop}", case.name);
+            assert_eq!(flow, ControlFlow::Break(expected.to_string()), "{context}");
+            assert_eq!(visited, case.children[..=stop], "{context}");
+        }
+    }
 }
 
 #[test]
@@ -405,21 +433,60 @@ fn for_each_child_mut_reaches_the_same_child_slots() {
         case.expr.for_each_child_mut(&mut |child| {
             visited.push(label(child));
             if let CompiledExprKind::ValueRef(id) = &mut child.kind {
-                id.member.push('\'');
+                *id = prime_member(id.clone());
             }
         });
         assert_eq!(visited, case.children, "case `{}` visit order", case.name);
-        let primed: Vec<String> = case.children.iter().map(|c| format!("{c}'")).collect();
-        assert_eq!(child_labels(&case.expr), primed, "case `{}`", case.name);
+        assert_eq!(
+            child_labels(&case.expr),
+            primed(&case.children),
+            "case `{}`",
+            case.name
+        );
     }
 
     let mut ctor = structure_ctor_with_lets();
     ctor.for_each_child_mut(&mut |child| {
         if let CompiledExprKind::ValueRef(id) = &mut child.kind {
-            id.member.push('\'');
+            *id = prime_member(id.clone());
         }
     });
     assert_eq!(let_cell(&ctor), &struct_local_cell());
+}
+
+#[test]
+fn map_value_refs_rewrites_every_child_slot() {
+    for case in corpus() {
+        let variant = variant_of(&case.expr.kind);
+        let mapped = case.expr.map_value_refs(&mut prime_member);
+        assert_eq!(
+            variant_of(&mapped.kind),
+            variant,
+            "case `{}` variant",
+            case.name
+        );
+        assert_eq!(
+            child_labels(&mapped),
+            primed(&case.children),
+            "case `{}`",
+            case.name
+        );
+    }
+}
+
+/// Priming changes every child's hash, so a node that rebuilds its hash from
+/// the rewritten children differs from the same node under the identity map;
+/// one that keeps, or re-combines, its old hash does not.
+#[test]
+fn map_value_refs_recomputes_the_hash_of_a_node_whose_children_change() {
+    for case in corpus() {
+        if case.children.is_empty() {
+            continue;
+        }
+        let unchanged_hash = case.expr.clone().map_value_refs(&mut |id| id).content_hash;
+        let rewritten_hash = case.expr.map_value_refs(&mut prime_member).content_hash;
+        assert_ne!(rewritten_hash, unchanged_hash, "case `{}`", case.name);
+    }
 }
 
 #[test]

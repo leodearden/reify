@@ -38,6 +38,7 @@ mod path_key_tests;
 mod recent_files_tests;
 mod screenshot_save_tests;
 mod sidecar_env_tests;
+mod sidecar_location_tests;
 mod sidecar_runtime_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
@@ -45,6 +46,7 @@ mod test_helpers_tests;
 mod types_tests;
 mod unmeasured_attribution_tests;
 mod watcher_tests;
+mod webkit_env_tests;
 mod write_confinement_tests;
 
 use std::sync::{Arc, Mutex};

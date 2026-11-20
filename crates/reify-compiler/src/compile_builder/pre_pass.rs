@@ -12,8 +12,9 @@ use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
-use crate::compile_builder::ctx::CompilationCtx;
+use crate::compile_builder::ctx::{CompilationCtx, EntityNameKind};
 use crate::type_resolution::convert_type_params;
+use crate::types::EntityKind;
 
 /// Forward every entry in `parsed.errors` as an ERROR diagnostic on `ctx`.
 ///
@@ -186,8 +187,7 @@ pub(crate) struct DeclRefs<'a> {
 /// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
 ///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
 ///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
-///   namespace), and records each `Structure` name — top-level or nested in a
-///   `Purpose` — in `ctx.local_structure_def_names`,
+///   namespace); a `Structure` nested in a `Purpose` reserves its name too,
 /// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
 ///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
 ///
@@ -230,22 +230,36 @@ pub(crate) fn collect_decl_refs<'a>(
                 refs.trait_refs.push(trait_decl);
             }
             Declaration::Field(field_def) => {
-                if ctx.record_or_report_duplicate(&field_def.name, field_def.span, "field") {
+                if ctx.record_or_report_duplicate(
+                    &field_def.name,
+                    field_def.span,
+                    EntityNameKind::Field,
+                ) {
                     refs.field_refs.push(field_def);
                 }
             }
             Declaration::Structure(structure) => {
-                if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
-                    ctx.local_structure_def_names.insert(structure.name.clone());
-                }
+                ctx.record_or_report_duplicate(
+                    &structure.name,
+                    structure.span,
+                    EntityNameKind::Template(EntityKind::Structure),
+                );
             }
             Declaration::Occurrence(occurrence) => {
-                ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");
+                ctx.record_or_report_duplicate(
+                    &occurrence.name,
+                    occurrence.span,
+                    EntityNameKind::Template(EntityKind::Occurrence),
+                );
             }
             Declaration::Constraint(constraint) => {
                 // Constraints reserve names in the entity namespace (spec §4.2.1)
                 // even though constraint compilation is not yet implemented.
-                ctx.record_or_report_duplicate(&constraint.name, constraint.span, "constraint");
+                ctx.record_or_report_duplicate(
+                    &constraint.name,
+                    constraint.span,
+                    EntityNameKind::Constraint,
+                );
             }
             Declaration::Unit(unit_decl) => {
                 refs.unit_refs.push(unit_decl);
@@ -260,9 +274,11 @@ pub(crate) fn collect_decl_refs<'a>(
                 // rule as a top-level structure def
                 // (`DiagnosticCode::StructureDeclaredAfterFunction`).
                 for s in &p.structures {
-                    if ctx.record_or_report_duplicate(&s.name, s.span, "structure") {
-                        ctx.local_structure_def_names.insert(s.name.clone());
-                    }
+                    ctx.record_or_report_duplicate(
+                        &s.name,
+                        s.span,
+                        EntityNameKind::Template(EntityKind::Structure),
+                    );
                 }
             }
             // Import handled in pass 2
@@ -275,9 +291,47 @@ pub(crate) fn collect_decl_refs<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use reify_core::{ModulePath, Severity};
 
-    use super::check_module_path_decl;
+    use super::{check_module_path_decl, collect_decl_refs};
+    use crate::compile_builder::ctx::CompilationCtx;
+
+    fn names(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn collect_decl_refs_local_structure_def_names_are_first_def_structures_top_level_and_purpose_nested()
+     {
+        let src = "\
+structure def Top { param a : Real = 1.0 }
+occurrence def Op { param p : Real = 0 }
+purpose Explore() { structure def InP { param a : Real = 1.0 } }
+occurrence def Taken { param p : Real = 0 }
+structure def Taken { param b : Real = 2.0 }
+";
+        let parsed = reify_syntax::parse(src, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        let mut ctx = CompilationCtx::new();
+        collect_decl_refs(&mut ctx, &parsed);
+
+        assert_eq!(
+            ctx.local_structure_def_names(),
+            names(&["Top", "InP"]),
+            "top-level and purpose-nested structures are in; the occurrence `Op` and \
+             the structure `Taken` that loses to an earlier occurrence are out"
+        );
+        assert_eq!(
+            ctx.local_entity_names(),
+            names(&["Top", "InP", "Op", "Taken"])
+        );
+    }
 
     #[test]
     fn absent_decl_returns_warning_with_expected_path() {

@@ -7,7 +7,7 @@
 //! compiled module, and that parameter shapes and defaults match the spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 //!
 //! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):
@@ -21,7 +21,8 @@ use reify_ir::*;
 
 /// Return the `std/fea/multi_case` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.

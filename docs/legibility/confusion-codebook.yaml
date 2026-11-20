@@ -3275,6 +3275,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent chained `sleep 240; tail` to poll test-progress log files instead of using Monitor with an until-loop or run_in_background, and the guard blocked it (turn 172).
+  - date: '2026-11-19'
+    project: reify
+    session: 16811273-f6b9-45e3-be30-afcfe70f99e1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent chose sleep+tail to poll a background task's output file; the guard message directs it to Monitor or run_in_background instead.
+    evidence_quote: 'To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true.'
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -3842,6 +3849,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The identical foreground watcher-rearm call died with exit 137 at turn 71 and was retried unchanged rather than switched to a background wait. Only one 137 is visible, so this match is weaker than entry-cand-20260719-4.
+  - date: '2026-11-19'
+    project: reify
+    session: 3d5a6eb4-9e5b-4d47-9bf6-9c9bec90f13a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Foreground bounded-wait watcher-rearm.sh run exits 137, and the same Bash call is re-issued identically three times in the retry loop instead of switching to a background wait.
+    evidence_quote: '[exit 137] Exit code 137'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9128,6 +9142,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent probed .task-meta/task-9863/iterations.jsonl; the lane directory exists but the iterations file is missing, so wc fails with 'No such file or directory' and exit 1. The digest shows no phase evidence.
+  - date: '2026-11-19'
+    project: reify
+    session: da541d23-b336-47f3-9363-155bc595a915
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A warm-lane task-meta iterations.jsonl is expected but absent at the expected path, and the agent's wc probe fails with No such file or directory.
+    evidence_quote: 'wc: /home/leo/src/warm-lanes/worktrees/.task-meta/task-10169/iterations.jsonl: No such file or directory'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -9332,6 +9353,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 118 Bash call chains `sleep 240` with `cat ... .output | tail -30` to poll a background test output file. The anti-chaining guard blocked it, matching this entry's sleep+poll-tripped-guard pattern. Phase is not supported by the digest.
+  - date: '2026-11-19'
+    project: reify
+    session: 16811273-f6b9-45e3-be30-afcfe70f99e1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent issued `sleep 60; cat ...output | tail -30` to wait on a background task's output, and the anti-chaining guard blocked the call.
+    evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-36/16811273-f6b9-45e3-be30-afcfe70f99e1/tasks/bix81j80m.output tail -30.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -10325,6 +10353,13 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent called grep_search (nonexistent tool) at turns 17, 19 and again embedded it in StructuredOutput tool_calls at turn 54, instead of the harness's Grep tool.
+  - date: '2026-11-19'
+    project: reify
+    session: da541d23-b336-47f3-9363-155bc595a915
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent calls a tool name ('bash') that is not in its toolset instead of the harness's actual Bash tool, and the harness rejects the call.
+    evidence_quote: '<tool_use_error>Error: No such tool available: bash. Tool names are case-sensitive: call Bash instead.</tool_use_error>'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -33268,6 +33303,32 @@ candidates:
     origin_phase: verify
     manifested_phase: merge
     evidence_quote: 'verify.sh: PSI gate bypass (role=merge) — timestamp bumped'
+- id: cand-20261119-1
+  title: Member timeouts (rc=124) recorded as test_failure, so the block category points at test code rather than a hung harness member
+  cause: run_all.sh kills members that exceed their budget and records them as FAILED, and the post-merge verify category reports them as test_failure. The next agent is steered toward the failing test code when the real problem is a timed-out member.
+  area: verify tooling / run_all.sh failure categorization
+  first_seen: '2026-11-19'
+  disposition: pending
+  sightings:
+  - date: '2026-11-19'
+    project: reify
+    session: 185b78c6-f095-4f5a-a62b-61ce3f216a1b
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'ERROR: run_all.sh: member test_agent_cache_redirect.sh exceeded its 1200s budget (elapsed 1200s, rc=124); its process group was killed -- recorded as FAILED'
+- id: cand-20261119-2
+  title: 'Slice-name glob ambiguity: df-*.slice pattern also matches governed sub-slices, so nearest-ancestor lookup resolves to the wrong slice'
+  cause: The task text directed a child to locate its project slice as the nearest df-*.slice ancestor. Governed sub-slices also match df-*.slice, so the nearest match can be the governed slice itself rather than the project slice. Discovery by name pattern is ambiguous under the existing slice naming scheme.
+  area: cgroup slice topology / slice placement
+  first_seen: '2026-11-19'
+  disposition: pending
+  sightings:
+  - date: '2026-11-19'
+    project: reify
+    session: 3370a965-9c3f-42ce-a921-ff986c41fa9f
+    origin_phase: architect
+    manifested_phase: architect
+    evidence_quote: the task suggests a child could find its project slice as the "nearest df-\*.slice ancestor". Dark-factory's contract (`docs/cgroup-slice-topology.md`) now says that's wrong. The governed sub-slices also match `df-*.slice`, so "nearest" would return `df-reify-governed-agents.slice` itself.
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:

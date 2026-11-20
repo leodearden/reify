@@ -10,8 +10,9 @@
 //! (`param material : Material`, REQUIRED) are stdlib substrate seeded by the
 //! prelude.
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::compile_source_with_stdlib;
+use reify_compiler::{CompiledModule, ValueCellDecl};
+use reify_core::{DiagnosticCode, Severity, Type};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// A fully-valid `Material(...)` constructor expression (all three required
 /// params provided), usable as an ambient-default value without itself
@@ -324,13 +325,13 @@ structure def TwoMats : DualMaterial {{
     }
 }
 
-// ─── purpose-scope per-scope checks (DD6: checks, but NO injection) ──────────
+// ─── purpose-scope per-scope checks ──────────────────────────────────────────
 //
 // A `default` nested directly in a `purpose` body receives the SAME per-scope
-// duplicate (DD5) and declaration-site type (DD4) checks as a file-level default,
-// but is NEVER injected into a structure (structures cannot nest in a purpose, so
-// a purpose default can never reach a definition-site injection — DD6). These
-// mirror the file-scope collection tests above, one scope inward.
+// duplicate (DD5) and declaration-site type (DD4) checks as a file-level default.
+// These mirror the file-scope collection tests above, one scope inward; injection
+// into purpose-nested structures is covered by
+// harness_structure_declarations/structure_in_purpose_ambient_tests.rs.
 
 /// Two `default Material = ...` declarations in the SAME purpose body produce
 /// exactly one `DiagnosticCode::DuplicateAmbientDefault` error (DD5, per-scope).
@@ -434,5 +435,242 @@ purpose Exploration() {{
         "the task-A W_DEFAULT_NOT_WIRED warning must be gone for purpose-nested \
          defaults; got diagnostics: {:?}",
         module.diagnostics
+    );
+}
+
+// ─── rejected default fills the slot without cascading ──────────────────────
+//
+// A declaration whose value the declaration site rejects still fills every
+// consumer's member, with the declared type and no default expression, so the
+// declaration-site diagnostic is the only one reported.
+
+const BRACKET: &str = r#"
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+}
+"#;
+
+const PLATE: &str = r#"
+structure def Plate : Physical {
+    param geometry : Solid = box(50mm, 50mm, 2mm)
+}
+"#;
+
+/// The codes of the module's `Severity::Error` diagnostics, in order.
+fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    errors_only(module).iter().map(|d| d.code).collect()
+}
+
+/// The `member` value cell of the compiled template `template_name`.
+fn cell<'a>(module: &'a CompiledModule, template_name: &str, member: &str) -> &'a ValueCellDecl {
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("expected a compiled `{template_name}` template"));
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a '{member}' value cell on {template_name}; got cells: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|vc| vc.id.member.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+fn assert_material_without_default(module: &CompiledModule, template_name: &str) {
+    let material = cell(module, template_name, "material");
+    assert_eq!(
+        material.cell_type,
+        Type::StructureRef("Material".into()),
+        "{template_name}'s material cell keeps the declared type"
+    );
+    assert!(
+        material.default_expr.is_none(),
+        "{template_name}'s material cell must carry no default; got {:?}",
+        material.default_expr
+    );
+}
+
+fn assert_material_is_steel(module: &CompiledModule, template_name: &str) {
+    let material = cell(module, template_name, "material");
+    let default = material
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{template_name}'s material cell should carry a default"));
+    let debug = format!("{default:?}");
+    assert!(
+        debug.contains("steel"),
+        "{template_name}'s material should be the steel default; got: {debug}"
+    );
+}
+
+#[test]
+fn mismatched_default_fills_consumer_without_cascade() {
+    let module = compile_source_with_stdlib(&format!("default Material = 5mm\n{BRACKET}"));
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "only the declaration-site mismatch may be reported; got: {:?}",
+        module.diagnostics
+    );
+    assert_material_without_default(&module, "Bracket");
+    cell(&module, "Bracket", "mass");
+}
+
+#[test]
+fn mismatched_default_reports_once_across_consumers() {
+    let module = compile_source_with_stdlib(&format!("default Material = 5mm\n{BRACKET}\n{PLATE}"));
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "one rejected declaration reports once, whatever its consumer count; got: {:?}",
+        module.diagnostics
+    );
+    assert_material_without_default(&module, "Bracket");
+    assert_material_without_default(&module, "Plate");
+}
+
+#[test]
+fn error_valued_default_reports_its_error_once() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = undefined_ambient_name\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::UnresolvedName)],
+        "only the value's own error may be reported; got: {:?}",
+        module.diagnostics
+    );
+    let error = *errors_only(&module).first().expect("one error");
+    assert!(
+        error.message.contains("undefined_ambient_name"),
+        "the error should name the unresolved value; got: {}",
+        error.message
+    );
+    assert_material_without_default(&module, "Bracket");
+}
+
+/// A rejected purpose-level declaration shadows the file-level one: the
+/// structure nested in that purpose is NOT filled with the file's steel value.
+#[test]
+fn rejected_purpose_default_shadows_file_default() {
+    let source = format!(
+        r#"
+default Material = {STEEL_CTOR}
+
+purpose Exploration() {{
+    default Material = 5mm
+
+    structure def InPurpose : Physical {{
+        param geometry : Solid = box(20mm, 20mm, 20mm)
+    }}
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "got: {:?}",
+        module.diagnostics
+    );
+    assert_material_without_default(&module, "InPurpose");
+}
+
+#[test]
+fn accepted_default_displaces_earlier_rejected_one() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = 5mm\ndefault Material = {STEEL_CTOR}\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "a rejected declaration is not counted as a duplicate; got: {:?}",
+        module.diagnostics
+    );
+    assert_material_is_steel(&module, "Bracket");
+}
+
+#[test]
+fn rejected_default_never_displaces_earlier_accepted_one() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = {STEEL_CTOR}\ndefault Material = 5mm\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "a rejected declaration is not counted as a duplicate; got: {:?}",
+        module.diagnostics
+    );
+    assert_material_is_steel(&module, "Bracket");
+}
+
+// ─── where a value's non-error diagnostics are reported ─────────────────────
+
+/// How many `UnresolvedFunction` diagnostics name `fn_name`. Filtered by name
+/// because `compile_source_with_stdlib` also carries prelude diagnostics.
+fn unresolved_function_count(module: &CompiledModule, fn_name: &str) -> usize {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::UnresolvedFunction) && d.message.contains(fn_name)
+        })
+        .count()
+}
+
+/// A rejected value is compiled only at its declaration, so that is where its
+/// warning must be reported.
+#[test]
+fn rejected_default_reports_its_value_warning_at_declaration() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = nosuch_ambient_fn(1.0)\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        unresolved_function_count(&module, "nosuch_ambient_fn"),
+        1,
+        "the rejected value's warning explains the mismatch; got: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        error_codes(&module),
+        vec![Some(DiagnosticCode::AmbientDefaultTypeMismatch)],
+        "got: {:?}",
+        module.diagnostics
+    );
+}
+
+/// An accepted value's warnings are reported by its injection site; the
+/// declaration site does not report them a second time.
+#[test]
+fn accepted_default_value_warning_is_not_doubled() {
+    let module = compile_source_with_stdlib(&format!(
+        "default Material = Material(name: \"s\", density: nosuch_density_fn(1.0) * 1kg/m^3, \
+         youngs_modulus: 200GPa)\n{BRACKET}"
+    ));
+
+    assert_eq!(
+        unresolved_function_count(&module, "nosuch_density_fn"),
+        1,
+        "got: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        cell(&module, "Bracket", "material").default_expr.is_some(),
+        "the accepted value is injected"
     );
 }

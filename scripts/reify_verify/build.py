@@ -92,27 +92,54 @@ HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTE
 
 
 @dataclass(frozen=True)
-class LoadTimeLib:
-    """A lib verify.sh sources at load, and how the bash guard that finds it missing first refuses."""
+class NotFoundNextTo:
+    """A bash guard that names the missing lib by its repo-relative path."""
 
-    path: str
-    guarded_by: str = "verify.sh"
+    script: str
     exit_code: int = 1
 
-    def refusal(self) -> Refused:
-        return Refused(
-            (f"{error_prefix(self.guarded_by)}{self.path} not found next to {self.guarded_by}",),
-            self.exit_code,
-        )
+    def line(self, path: str, repo_root: Path) -> str:
+        return f"{error_prefix(self.script)}{path} not found next to {self.script}"
 
 
-# The libs verify.sh sources at load, in its order. The first missing one refuses the run as the bash
-# guard that finds it first does: release-scope-lib.sh checks affected-crates-lib.sh before verify.sh does.
+@dataclass(frozen=True)
+class RequiredLibNotFound:
+    """A bash guard that names the missing lib by its absolute path."""
+
+    script: str
+    exit_code: int = 1
+
+    def line(self, path: str, repo_root: Path) -> str:
+        return f"{self.script}: required lib not found next to script: {repo_root / path}"
+
+
+VERIFY_SH = NotFoundNextTo("verify.sh")
+RELEASE_SCOPE_LIB = NotFoundNextTo("release-scope-lib.sh", exit_code=2)
+LIB_TEST_SEMAPHORE = NotFoundNextTo("lib_test_semaphore.sh")
+LIB_SLOT_ACQUIRE = RequiredLibNotFound("lib_slot_acquire.sh")
+
+
+@dataclass(frozen=True)
+class LoadTimeLib:
+    """A file verify.sh's load needs, and the bash guard that finds it missing first."""
+
+    path: str
+    guard: NotFoundNextTo | RequiredLibNotFound = VERIFY_SH
+
+    def refusal(self, repo_root: Path) -> Refused:
+        return Refused((self.guard.line(self.path, repo_root),), self.guard.exit_code)
+
+
+# Every file verify.sh's load-time source chain needs, transitive ones included, in the order bash checks
+# them; the first one missing refuses the run as the bash guard that finds it does.
 LOAD_TIME_LIBS = (
     LoadTimeLib("scripts/occt-scope-lib.sh"),
     LoadTimeLib("scripts/release-scope-lib.sh"),
-    LoadTimeLib("scripts/affected-crates-lib.sh", guarded_by="release-scope-lib.sh", exit_code=2),
+    LoadTimeLib("scripts/affected-crates-lib.sh", RELEASE_SCOPE_LIB),
     LoadTimeLib("scripts/lib_test_semaphore.sh"),
+    LoadTimeLib("scripts/lib_slot_acquire.sh", LIB_TEST_SEMAPHORE),
+    LoadTimeLib("scripts/lib_clock_stop.sh", LIB_SLOT_ACQUIRE),
+    LoadTimeLib("scripts/lib_event_log.sh", LIB_SLOT_ACQUIRE),
     LoadTimeLib("scripts/cpu-admit.sh"),
     LoadTimeLib("scripts/lib_proc_reaper.sh"),
     LoadTimeLib("scripts/heavy-test-filter-lib.sh"),
@@ -180,7 +207,7 @@ def _start(invocation: Invocation, env: Mapping[str, str], repo_root: Path) -> S
     """bash's load-time checks, then the timeout knobs and the priority, under the raw env."""
     for lib in LOAD_TIME_LIBS:
         if not os.path.isfile(repo_root / lib.path):
-            return lib.refusal()
+            return lib.refusal(repo_root)
     heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
     if not heavy_filter:
         return Refused((EMPTY_HEAVY_FILTER,), 1)

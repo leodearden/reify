@@ -28,7 +28,7 @@
 //! PRD §5.1 spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
 use reify_compiler::*;
@@ -43,7 +43,8 @@ use reify_test_support::{
 
 /// Return the `std/modal/analysis` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -71,8 +72,8 @@ fn load_stdlib_module() -> &'static CompiledModule {
 ///
 /// This lookup doubles as the `std.modal.analysis` EXPORT-SURFACE pin for every
 /// name it is called with: `load_stdlib_module()` is the production embedded +
-/// sequential-prelude path, so a structure that failed to reach the module's
-/// export surface panics here rather than being silently unobservable.
+/// strict (declared-imports) path, so a structure that failed to reach the
+/// module's export surface panics here rather than being silently unobservable.
 #[allow(dead_code)]
 fn find_structure(name: &str) -> &'static TopologyTemplate {
     let module = load_stdlib_module();
@@ -788,21 +789,25 @@ fn mode_struct_has_no_constraints_or_defaults() {
 ///                                                        → `Type::StructureRef`)
 ///   - `boundary_conditions    : List<Support>`           (`Support` is the
 ///                                                        marker trait from
-///                                                        `std.fea.multi_case`,
-///                                                        in the growing prelude
+///                                                        `std.fea.types`,
+///                                                        reached via `import
+///                                                        std.fea.types`
 ///                                                        → `Type::TraitObject`,
-///                                                        same as trajectory's
-///                                                        `List<BoundaryCondition>`)
+///                                                        same shape as
+///                                                        trajectory's
+///                                                        `CascadedShaper.shapers
+///                                                        : List<Shaper>`)
 ///   - `damping               : DampingDescriptor`       (trait-typed
 ///                                                        → `Type::TraitObject`)
 ///   - `mass_matrix_norm       : Real`                    (‖M‖ diagnostic)
 ///   - `stiffness_matrix_norm  : Real`                    (‖K‖ diagnostic)
 ///
-/// Type representations confirmed against the trajectory precedent
-/// (`trajectory_stdlib_compile.rs:628-639`): a module-local structure name
-/// resolves to `Type::StructureRef`, a prelude marker trait resolves to
-/// `Type::TraitObject`, and `List<Trait>` wraps the trait object in
-/// `Type::List`.
+/// Type representations confirmed against the trajectory precedents
+/// (`trajectory_stdlib_compile.rs::piecewise_polynomial_profile_has_correct_param_shape`
+/// and `trajectory_stdlib_compile.rs::cascaded_shaper_struct_has_correct_param_shape`):
+/// a module-local structure name resolves to `Type::StructureRef`, an
+/// imported marker trait resolves to `Type::TraitObject`, and `List<Trait>`
+/// wraps the trait object in `Type::List`.
 ///
 /// `ModalResult` is solver-populated only: every field is determined by the
 /// modal solve, so no caller-supplied defaults are meaningful and no scalar

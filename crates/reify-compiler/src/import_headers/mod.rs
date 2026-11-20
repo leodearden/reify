@@ -7,7 +7,8 @@
 //! each name through `name_env`, so only names whose winning definition lives
 //! in a std module need an import. [`coverage`] decides which of those names
 //! a module's own `import` declarations, those in effect under the active
-//! cfg, already make visible.
+//! cfg, already make visible, and which those the cfg leaves out would make
+//! visible were their `#cfg` satisfied.
 
 mod attribution;
 mod coverage;
@@ -232,7 +233,42 @@ pub fn cfg_satisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModuleP
 /// If `parsed` declares an import whose path is not a module path, which
 /// only a module with parse errors can.
 pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<ModulePath> {
-    coverage::gated_off(parsed, cfg).collect()
+    coverage::gated_off(parsed, cfg)
+        .map(|(module, _)| module)
+        .collect()
+}
+
+/// What the imports `parsed` declares whose `#cfg` predicates `cfg` does not
+/// satisfy would bind, were those predicates satisfied.
+pub struct GatedOffImports<'p> {
+    coverage: coverage::ImportCoverage<'p>,
+}
+
+impl<'p> GatedOffImports<'p> {
+    /// # Panics
+    ///
+    /// If `parsed` declares an import whose path is not a module path, which
+    /// only a module with parse errors can.
+    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+        Self {
+            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg),
+        }
+    }
+
+    /// Whether one of those imports would bind one of `required`'s names from
+    /// `required.module`.
+    pub fn would_cover_any(&self, required: &RequiredImport) -> bool {
+        required
+            .names
+            .iter()
+            .any(|name_use| self.coverage.covers(&required.module, &name_use.name))
+    }
+
+    /// The module path of every one of those imports, once each, in no
+    /// particular order.
+    pub fn modules(&self) -> impl Iterator<Item = &ModulePath> {
+        self.coverage.modules()
+    }
 }
 
 /// Every compiled stdlib module except `module`, in load order: the universe

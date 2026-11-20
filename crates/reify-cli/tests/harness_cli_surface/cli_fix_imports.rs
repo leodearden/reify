@@ -25,9 +25,22 @@ const ENTITY_HEADER: &str = "import std.materials.appearance.Finish\nimport std.
 const GATED_HEADER: &str =
     "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n";
 
+/// Gates an entity import of `Appearance`, which binds neither of PLATE's `Color`/`Finish`.
+const GATED_APPEARANCE_ENTITY_HEADER: &str =
+    "#cfg(appearance)\nimport std.materials.appearance.Appearance\nimport std.si_units\n\n";
+
+/// Gates an entity import of PLATE's `Finish` alone.
+const GATED_FINISH_HEADER: &str =
+    "#cfg(appearance)\nimport std.materials.appearance.Finish\nimport std.si_units\n\n";
+
 /// What `fix` appends to a reported module that the file imports under a `#cfg` the active cfg
 /// leaves unsatisfied.
 const GATED_OFF_NOTE: &str = "; a #cfg-gated import of it is not in effect under the active cfg";
+
+/// The stderr line a refused fix adds, naming the file's gated-off imports that its derived
+/// imports do not bring in anyway.
+const GATED_OFF_REFUSAL_NOTE: &str =
+    "info: #cfg-gated imports not in effect under the active cfg: ";
 
 /// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
 /// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
@@ -429,6 +442,41 @@ fn the_host_target_satisfies_a_target_gated_import_by_default() {
 }
 
 #[test]
+fn a_gated_off_entity_import_that_binds_none_of_the_missing_names_adds_no_note() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{GATED_APPEARANCE_ENTITY_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+    let expected = format!("{file}: missing import std.materials.appearance (Color, Finish)\n");
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+
+    let output = run_reify(&["fix", "--imports", "--check", "--cfg", "appearance", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn a_gated_off_entity_import_that_binds_a_missing_name_keeps_the_note() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{GATED_FINISH_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "{file}: missing import std.materials.appearance (Color, Finish){GATED_OFF_NOTE}\n"
+        )
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
 fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
     let dir = tempdir().expect("tempdir");
     let source =
@@ -437,8 +485,11 @@ fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
 
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not writing"), "{}", describe(&output));
+    let refusal_note = format!("{file}: {GATED_OFF_REFUSAL_NOTE}std.materials.appearance");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("not writing"),
+        stderr.lines().any(|line| line == refusal_note),
         "{}",
         describe(&output)
     );
@@ -452,6 +503,69 @@ fn the_residual_guard_judges_only_the_imports_the_cfg_leaves_in_effect() {
             "#cfg(appearance)\nimport std.materials.appearance\nimport std.si_units\n\n\
              {TYPE_PARAM_HIDES_COLOR}"
         )
+    );
+}
+
+#[test]
+fn the_refusal_note_names_each_gated_off_module_once_in_sorted_order() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!(
+        "#cfg(extra)\nimport std.tolerancing\n\n\
+         #cfg(appearance)\nimport std.materials.appearance\n\n\
+         #cfg(appearance)\nimport std.materials.appearance.Finish\n\n{TYPE_PARAM_HIDES_COLOR}"
+    );
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let refusal_note =
+        format!("{file}: {GATED_OFF_REFUSAL_NOTE}std.materials.appearance, std.tolerancing");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line == refusal_note),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn the_refusal_note_omits_a_gated_off_module_the_derived_imports_bring_in() {
+    let dir = tempdir().expect("tempdir");
+    let gated_import_the_fix_derives_anyway = "#cfg(extra)\nimport std.si_units\n\n";
+    let source = format!("{gated_import_the_fix_derives_anyway}{TYPE_PARAM_HIDES_COLOR}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not writing"), "{}", describe(&output));
+    assert!(
+        !stderr.contains(GATED_OFF_REFUSAL_NOTE),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+}
+
+#[test]
+fn a_fix_that_writes_adds_no_refusal_note_beside_a_gated_off_import() {
+    let dir = tempdir().expect("tempdir");
+    // Not a std module: a gated-off std module the fix does not derive is itself a residual.
+    let gated_non_std_import = "#cfg(extra)\nimport vendor.parts\n\n";
+    let file = write_ri(
+        dir.path(),
+        "plate.ri",
+        &format!("{gated_non_std_import}{PLATE}"),
+    );
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains(GATED_OFF_REFUSAL_NOTE),
+        "{}",
+        describe(&output)
     );
 }
 

@@ -210,7 +210,7 @@ fn parse_and_compile_program(
         &SimpleConstraintChecker,
     );
 
-    for diag in &program.entry.diagnostics {
+    for diag in &program.entry().diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
@@ -223,7 +223,7 @@ fn parse_and_compile_program_entry(
     path: &str,
     cfg: &CfgSet,
 ) -> Result<reify_compiler::CompiledModule, ExitCode> {
-    parse_and_compile_program(path, cfg).map(|program| program.entry)
+    parse_and_compile_program(path, cfg).map(|program| program.into_entry())
 }
 
 /// CLI-local alias for

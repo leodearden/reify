@@ -5,7 +5,7 @@
 //! module, and that trait conformance works as expected.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production (not a standalone `.ri` file re-read).
 
 use reify_compiler::*;
@@ -16,7 +16,8 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/materials/optical` CompiledModule from the production
 /// stdlib loader. Exercises the exact same code path as production: embedded
-/// source, sequential compilation with growing prelude, OnceLock caching.
+/// source, each stdlib module compiled against its declared imports (strict
+/// build), OnceLock caching.
 ///
 /// Panics if the module is not found — the expected failure mode until step-6
 /// lands the .ri file and loader registration.

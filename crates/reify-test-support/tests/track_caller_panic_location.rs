@@ -19,7 +19,16 @@
 //!   template"), each driven through the longest public chain that reaches it;
 //! - `assert_single_declaration_error`, called directly;
 //! - `panic_message_of`'s two strict-failure panics ("returned normally",
-//!   "neither a &str nor a String"), called directly.
+//!   "neither a &str nor a String"), called directly;
+//! - the parse/compile chains (`parse_and_compile`, `compile_source` and
+//!   `compile_source_named`, plus the `_with_stdlib` twins of the first two),
+//!   each parse or compile failure driven through the longest public chain
+//!   that reaches it;
+//! - `parse_compile_expect_err`, called directly;
+//! - `compile_first_template` and `compile_template`, called directly;
+//! - the `eval-helpers` wrappers `eval_source`, `check_source` and
+//!   `check_source_with_stdlib`, on the compile-error panic they forward, plus
+//!   `eval_source`'s own eval-phase panic.
 //!
 //! Each guard asserts the reported location plus a SHORT payload substring —
 //! never full message prose, per the wording rule `dimensioned_assertions.rs`
@@ -252,4 +261,138 @@ fn panic_message_of_non_string_payload_panic_reports_caller_not_its_module() {
     });
 
     assert_attributed_here(&site, "neither a &str nor a String");
+}
+
+/// Parses cleanly, but `unknown_variable` is unresolved, so compiling it yields
+/// an Error-severity diagnostic.
+const COMPILE_ERROR_SOURCE: &str = "structure Bad { let x = unknown_variable }";
+
+/// Does not parse.
+const PARSE_ERROR_SOURCE: &str = "not valid {";
+
+/// Parses and compiles without an Error, but the two `let`s depend on each
+/// other, so evaluating it yields an Error-severity circular-dependency
+/// diagnostic.
+#[cfg(feature = "eval-helpers")]
+const EVAL_ERROR_SOURCE: &str = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+
+#[test]
+fn parse_and_compile_with_stdlib_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile_with_stdlib(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[test]
+fn compile_source_with_stdlib_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_source_with_stdlib(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn parse_and_compile_with_stdlib_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile_with_stdlib(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn parse_and_compile_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[test]
+fn parse_and_compile_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_and_compile(PARSE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn compile_source_named_parse_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_source_named(PARSE_ERROR_SOURCE, "named");
+    });
+
+    assert_attributed_here(&site, "parse errors");
+}
+
+#[test]
+fn parse_compile_expect_err_clean_source_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::parse_compile_expect_err("structure S { let x = 1.0 }", "");
+    });
+
+    assert_attributed_here(&site, "expected at least one compile error");
+}
+
+#[test]
+fn compile_first_template_no_template_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_first_template("");
+    });
+
+    assert_attributed_here(&site, "no templates");
+}
+
+#[test]
+fn compile_template_missing_name_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::compile_template("structure S { let x = 1.0 }", "Nope");
+    });
+
+    assert_attributed_here(&site, "not found");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn eval_source_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::eval_source(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn eval_source_eval_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::eval_source(EVAL_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "eval-phase errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn check_source_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::check_source(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
+}
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn check_source_with_stdlib_compile_error_panic_reports_caller_not_helpers_rs() {
+    let site = panic_site(|| {
+        reify_test_support::check_source_with_stdlib(COMPILE_ERROR_SOURCE);
+    });
+
+    assert_attributed_here(&site, "compile errors");
 }

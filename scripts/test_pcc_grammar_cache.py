@@ -381,16 +381,14 @@ class TestGrammarFingerprint(unittest.TestCase):
     def test_stale_stamp_does_not_mask_a_changed_grammar(self):
         """A stale src/.grammar_hash.stamp must NOT pin the key.
 
-        THE REACHABLE DEFECT this closes: `edit grammar.js` -> `cargo build` ->
-        run the PRD gate.  tree-sitter-reify/build.rs regenerates grammar.json
-        and parser.c through its OWN run_tree_sitter_generate() (a direct
-        `tree-sitter generate`) and writes its staleness stamp to $OUT_DIR;
-        src/.grammar_hash.stamp is refreshed ONLY by
-        scripts/tree-sitter-generate.sh.  So after a cargo build the stamp is
-        stale by construction.  A fingerprint that PREFERRED it — as an earlier
-        revision of grammar_fingerprint() did — would be unchanged across that
-        edit, leaving the cache key unchanged and handing the lane the reify.so
-        compiled from the PREVIOUS grammar.  tree-sitter's own mtime backstop
+        The stale-stamp state is what any writer of src/ other than
+        scripts/tree-sitter-generate.sh leaves: grammar.json and parser.c move
+        while src/.grammar_hash.stamp does not.  Before #9896 every cargo build
+        was such a writer, because tree-sitter-reify/build.rs regenerated src/
+        itself.  A fingerprint that PREFERRED the stamp — as an earlier
+        revision of grammar_fingerprint() did — would be unchanged across such
+        a write, leaving the cache key unchanged and handing the lane the
+        reify.so compiled from the PREVIOUS grammar.  tree-sitter's own mtime backstop
         cannot be relied on to catch it: warm-lane seeding stamps mtimes, which
         is why a content key exists here at all.
         """
@@ -401,7 +399,7 @@ class TestGrammarFingerprint(unittest.TestCase):
         with open(os.path.join(root, "tree-sitter-reify", "src",
                                "grammar.json"), "w") as f:
             f.write('{"v": 2}')
-        # Deliberately NOT refreshed — this is exactly the state cargo leaves.
+        # Deliberately NOT refreshed — the state a non-script writer of src/ leaves.
         with open(os.path.join(root, "tree-sitter-reify", "src",
                                ".grammar_hash.stamp")) as f:
             self.assertEqual(f.read(), stale,
@@ -411,7 +409,8 @@ class TestGrammarFingerprint(unittest.TestCase):
         self.assertNotEqual(
             before, after,
             "a regenerated grammar.json must move the fingerprint even when "
-            "src/.grammar_hash.stamp is stale, which is what cargo leaves behind",
+            "src/.grammar_hash.stamp is stale, which is what a non-script "
+            "writer of src/ leaves behind",
         )
         self.assertNotIn(
             stale, (before, after),

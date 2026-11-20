@@ -14,7 +14,8 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 /// Return the `std/solver/elastic` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics with a helpful message (listing available paths) if the module is not
 /// found — the expected failure mode before step-2 lands the declaration.

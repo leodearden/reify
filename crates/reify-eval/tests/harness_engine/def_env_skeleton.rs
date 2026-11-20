@@ -80,7 +80,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
         assert!(
             same(
                 env.resolve_template(name),
-                template_in(&program.entry, name)
+                template_in(program.entry(), name)
             ),
             "`{name}` must resolve to the entry's merged template"
         );
@@ -93,7 +93,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     ));
 
     // (c) the entry's declaration shadows the stdlib one.
-    let entry_shadow = template_in(&program.entry, SHADOWED);
+    let entry_shadow = template_in(program.entry(), SHADOWED);
     assert!(!std::ptr::eq(
         entry_shadow,
         template_in(shadowed_home, SHADOWED)
@@ -117,7 +117,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(env.resolve_template_in("parts", "Hidden").is_none());
     assert!(same(
         env.resolve_template_in("main", "Rig"),
-        template_in(&program.entry, "Rig")
+        template_in(program.entry(), "Rig")
     ));
     let stdlib_key = stdlib_only_home.path.0.join(".");
     assert!(same(
@@ -127,7 +127,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(env.resolve_template_in("nope", "Rig").is_none());
 
     // (f) the declared module is the entry itself.
-    assert!(std::ptr::eq(env.declared(), &program.entry));
+    assert!(std::ptr::eq(env.declared(), program.entry()));
 }
 
 /// (g) In P1 the flat view equals today's eval rule: `name_env::resolve` over
@@ -140,11 +140,11 @@ fn def_env_flat_view_matches_find_template_in_scope_rule() {
     let env = DefEnv::from_program(&program);
 
     let reference = |name: &str| -> Option<&TopologyTemplate> {
-        reify_compiler::name_env::resolve(&program.entry.templates, load_stdlib(), name)
+        reify_compiler::name_env::resolve(&program.entry().templates, load_stdlib(), name)
     };
 
     let names = program
-        .entry
+        .entry()
         .templates
         .iter()
         .chain(load_stdlib().iter().flat_map(|m| m.templates.iter()))
@@ -159,7 +159,7 @@ fn def_env_flat_view_matches_find_template_in_scope_rule() {
         checked += 1;
     }
     assert!(
-        checked > program.entry.templates.len(),
+        checked > program.entry().templates.len(),
         "stdlib names were enumerated"
     );
 }

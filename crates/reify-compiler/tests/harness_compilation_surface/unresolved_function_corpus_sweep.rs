@@ -258,7 +258,7 @@ fn sweep() -> Vec<Violation> {
         // A file that does not compile cleanly is out of scope — its warnings
         // are downstream of whatever is actually broken.
         if program
-            .entry
+            .entry()
             .diagnostics
             .iter()
             .any(|d| d.severity == Severity::Error)
@@ -370,7 +370,7 @@ fn the_sweep_actually_compiles_most_of_the_corpus() {
         .filter(|p| {
             program_for(p).is_some_and(|program| {
                 !program
-                    .entry
+                    .entry()
                     .diagnostics
                     .iter()
                     .any(|d| d.severity == Severity::Error)

@@ -18,8 +18,8 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Return the `std/modal/analysis` CompiledModule from the production
-/// stdlib loader. Exercises the same embedded + sequential-prelude compilation
-/// path as production.
+/// stdlib loader. Exercises the same embedded + strict (declared-imports)
+/// compilation path as production.
 ///
 /// Panics listing every available module path on a miss, so a module rename
 /// fails loudly instead of making every test below vacuous.

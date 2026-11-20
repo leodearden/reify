@@ -1,5 +1,6 @@
-//! How `edit_source`'s main walk evaluates a cell through the instance-scope
-//! mint, and settles the cells that took it, after the walk (#8102).
+//! How `edit_source`'s main walk and resolution reseed evaluate a cell through
+//! the instance-scope mint, and how the main walk settles the cells that took
+//! it, after the walk (#8102).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -17,18 +18,19 @@ use crate::geometry_ops::symbolic_cell_mint::{InstanceMint, InstanceMintScope};
 use crate::graph::EvaluationGraph;
 use crate::journal::TraceSource;
 
-/// A value `edit_source`'s main walk commits for a cell, and whether it took
-/// the instance-scope mint path (#8102): a sub-instance cell whose plain
-/// evaluation was `Undef`. That holds whatever the mint returned, `Undef`
-/// included (a cell neither geometry nor selector, or a decline over a read
-/// the instance has not committed yet), so it is NOT "a mint replaced the
-/// value".
+/// A value `edit_source`'s main walk or resolution reseed commits for a cell,
+/// and whether it took the instance-scope mint path (#8102): a sub-instance
+/// cell whose plain evaluation was `Undef`. That holds whatever the mint
+/// returned, `Undef` included (a cell neither geometry nor selector, or a
+/// decline over a read the instance has not committed yet), so it is NOT "a
+/// mint replaced the value".
 pub(super) struct WalkCellValue {
     pub(super) value: Value,
     pub(super) took_instance_mint_path: bool,
 }
 
-/// The read-only scope `edit_source`'s main walk evaluates a cell in.
+/// The read-only scope `edit_source`'s main walk and resolution reseed
+/// evaluate a cell in.
 pub(super) struct EditSourceWalkCtx<'a> {
     pub(super) graph: &'a EvaluationGraph,
     pub(super) functions: &'a [CompiledFunction],

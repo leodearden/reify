@@ -774,6 +774,10 @@ fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_
 /// `Constraint` members are descended (guarded-group / match-cluster members are
 /// out of scope, consistent with the whole-handle-query acceptance surface). A
 /// `where` guard is not consulted, for a `Constraint` as for a `Let`.
+/// The synthetic realization is therefore unguarded: a known gap, not a
+/// contract, pinned by
+/// `known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization`
+/// (`tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`).
 ///
 /// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
 /// verbatim to the STRUCTURE member list: at the member level as above, and

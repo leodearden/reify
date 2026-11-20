@@ -261,20 +261,21 @@ function destringifyArgs(raw) {
     return Object.freeze({ raw, value, parseError });
 }
 
-// A destringifyArgs record -> the leaf array.  A stringified leaf array fans
-// out; any other string is ONE mega-leaf, and says so.
-function leavesFrom({ raw, value, parseError }, warn) {
+// A destringifyArgs record -> the leaf array.  A JSON string delivers what it
+// decodes to, the value isLeafBatch judged: a leaf array fans out and a leaf
+// object is that one leaf.  Only a string leaf is a mega-leaf, and says so.
+function leavesFrom({ value, parseError }, warn) {
     if (Array.isArray(value)) return value;
     if (parseError !== null) {
         warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
             + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
             + "JSON.parse error: " + parseError.message);
-    } else if (typeof raw === "string") {
-        warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
-            + "non-array value; treating the whole string as ONE mega-leaf — "
-            + "per-leaf fan-out is DEGRADED.");
+    } else if (typeof value === "string") {
+        warn("normalizeLeaves: args arrived as a JSON string that decoded to a "
+            + "string; treating that string as ONE mega-leaf — per-leaf "
+            + "fan-out is DEGRADED.");
     }
-    return raw ? [raw] : [];
+    return value ? [value] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -286,8 +287,9 @@ function leavesFrom({ raw, value, parseError }, warn) {
 // string of one) owning an envelope key is an envelope; anything else must
 // itself be a leaf batch, by the same isLeafBatch rule as an envelope's
 // leaves, or it is refused (task #9946).  The rule judges a JSON string by its
-// decoded value, so "null" is refused like null (task #10063).  Operator
-// contract: .claude/skills/prd/project.md, "Choosing the reify binary".
+// decoded value, so "null" is refused like null (task #10063), and the batch
+// that runs is that same decoded value (task #10188).  Operator contract:
+// .claude/skills/prd/project.md, "Choosing the reify binary".
 // ---------------------------------------------------------------------------
 
 const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
@@ -309,15 +311,23 @@ function isLeafBatch(leaves) {
         || (typeof leaves === "string" && leaves.trim() !== "");
 }
 
+// How a refusal names an offending value: its JSON text, except that a
+// non-finite number, which JSON would spell null, keeps its own name.
+function renderValue(value) {
+    return typeof value === "number" && !Number.isFinite(value)
+        ? String(value)
+        : JSON.stringify(value);
+}
+
 // Names the args as given and, when a JSON string was decoded, the value that
 // was actually judged.
 function leafBatchRefusal(subject, { raw, value, parseError }) {
     if (isLeafBatch(value)) return null;
     const decoding = typeof raw === "string" && parseError === null
-        ? `, which decodes to ${JSON.stringify(value)}`
+        ? `, which decodes to ${renderValue(value)}`
         : "";
     return `${subject} must be the leaf array, one leaf object, a non-blank string, `
-        + `or the JSON string of one of these; got ${JSON.stringify(raw)}${decoding}`;
+        + `or the JSON string of one of these; got ${renderValue(raw)}${decoding}`;
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is
@@ -336,7 +346,7 @@ function envelopeRefusal(envelope) {
     const bin = envelope.reify_bin;
     if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
         return "reify_bin must be the absolute path of the reify binary α probes with; "
-            + `got ${JSON.stringify(bin)}`;
+            + `got ${renderValue(bin)}`;
     }
     return null;
 }

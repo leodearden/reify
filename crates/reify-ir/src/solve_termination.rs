@@ -2,14 +2,15 @@
 //! diagnostic (PRD `docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
 //!
 //! A solver produces one [`SolveFailureCause`]; every renderer reads the same
-//! value, so the cause → [`DiagnosticCode`] policy ([`SolveFailureCause::code`])
-//! and the numeric clause ([`Display`](std::fmt::Display)) each have one home.
+//! value, so the cause → diagnostic policy (code and severity,
+//! [`SolveFailureCause::diagnostic`]) and the numeric clause
+//! ([`Display`](std::fmt::Display)) each have one home.
 //! All figures are in the solve's SCALED units: a scaled residual of `1` is a row
 //! exactly at its own tolerance.
 
 use std::fmt;
 
-use reify_core::DiagnosticCode;
+use reify_core::{Diagnostic, DiagnosticCode};
 
 /// Why a continuous solve stopped without converging.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +40,12 @@ impl SolveFailureCause {
             Self::BudgetExhausted(_) => DiagnosticCode::SolverBudgetExhausted,
             Self::Stalled(_) | Self::NonFinite(_) => DiagnosticCode::ConstraintUnsatisfiable,
         }
+    }
+
+    /// The diagnostic every renderer of this cause emits: an Error coded by
+    /// [`Self::code`], carrying `message`.
+    pub fn diagnostic(&self, message: impl Into<String>) -> Diagnostic {
+        Diagnostic::error(message).with_code(self.code())
     }
 }
 

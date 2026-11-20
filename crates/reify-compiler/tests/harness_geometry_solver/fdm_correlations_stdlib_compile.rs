@@ -13,7 +13,7 @@
 //! Plan §"Design Decisions").
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production, mirroring the helper trio in `fdm_stdlib_compile.rs`.
 
 use reify_compiler::*;
@@ -25,7 +25,8 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/fdm/correlations` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 fn load_stdlib_module() -> &'static CompiledModule {
     reify_compiler::stdlib_loader::load_stdlib()
         .iter()

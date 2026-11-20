@@ -28,10 +28,7 @@ pub enum SelectorKind {
 
 /// The kinds of compiled expression nodes.
 #[derive(Debug, Clone, strum::EnumDiscriminants)]
-#[strum_discriminants(
-    name(CompiledExprKindDiscriminants),
-    derive(strum::EnumIter, strum::EnumCount, Hash)
-)]
+#[strum_discriminants(name(CompiledExprKindDiscriminants), derive(strum::EnumIter, Hash))]
 pub enum CompiledExprKind {
     /// Literal value.
     Literal(Value),
@@ -800,10 +797,10 @@ impl CompiledExpr {
     /// structurally fresh expression. This is the contract the runtime
     /// per-element forall emission relies on.
     ///
-    /// Variant coverage MUST match `try_for_each_child`'s child shape
-    /// arm-for-arm — adding a new
-    /// `CompiledExprKind` variant should fail to compile here so the new
-    /// variant is forced through this transform's hash-rebuilding path.
+    /// Variant coverage MUST match `try_for_each_child`'s child shape arm-for-arm
+    /// — adding a new `CompiledExprKind` variant should fail to compile here so
+    /// the new variant is forced through this transform's hash-rebuilding path
+    /// (pinned by `crates/reify-ir/tests/child_enumeration.rs`).
     ///
     /// On `Literal` and other leaf nodes (`OptionNone`, `MetaAccess`,
     /// `DeterminacyPredicate` w/o ValueRef cell rewrite, `PurposeReflectiveAggregation`),

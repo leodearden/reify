@@ -1,0 +1,10 @@
+constraint def MinWall {
+    param wall: Length
+    param min: Length
+    wall >= min
+}
+
+structure def Box {
+    param thickness: Length = 3mm
+    constraint MinWall(wall: thickness, min: 0.002)
+}

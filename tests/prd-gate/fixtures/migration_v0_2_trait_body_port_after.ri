@@ -1,0 +1,7 @@
+trait Sized {
+    param size : Length
+}
+
+structure def Block : Sized {
+    param size : Length = 50mm
+}

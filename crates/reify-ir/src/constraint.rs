@@ -332,9 +332,13 @@ pub enum SolveResult {
         /// `false` for auto(free) parameters where uniqueness is skipped.
         unique: bool,
     },
-    /// The constraints are infeasible — no solution exists.
+    /// The solve failed with coded diagnostics. This is the coded-failure
+    /// carrier: the diagnostics' codes name the cause, which is not always an
+    /// infeasibility proof (e.g. `ConstraintNonUnique`, `SolverBudgetExhausted`),
+    /// because [`Self::NoProgress`] carries no code (PRD
+    /// `docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
     Infeasible {
-        /// Diagnostics explaining why the constraints are infeasible.
+        /// Diagnostics explaining why the solve failed.
         diagnostics: Vec<Diagnostic>,
     },
     /// The solver made no progress (e.g., iteration limit reached).

@@ -1,0 +1,5 @@
+structure def Plate {
+    param thickness : Length = 4mm
+    constraint thickness >= 2mm
+    minimize thickness
+}

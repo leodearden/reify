@@ -25,13 +25,16 @@ pub(crate) fn in_effect<'p>(
         .map(|(module, import)| (module, &import.kind))
 }
 
-/// The module of every `import` `parsed` declares whose `#cfg` predicates
-/// `cfg` does not satisfy, in declaration order: the imports [`in_effect`]
-/// leaves out.
-pub(crate) fn gated_off(parsed: &ParsedModule, cfg: &CfgSet) -> impl Iterator<Item = ModulePath> {
+/// Every `import` `parsed` declares whose `#cfg` predicates `cfg` does not
+/// satisfy, in declaration order, with the module it names: the imports
+/// [`in_effect`] leaves out.
+pub(crate) fn gated_off<'p>(
+    parsed: &'p ParsedModule,
+    cfg: &CfgSet,
+) -> impl Iterator<Item = (ModulePath, &'p ImportKind)> {
     declared(parsed)
         .filter(|(_, import)| !import_cfg_satisfied(import, cfg))
-        .map(|(module, _)| module)
+        .map(|(module, import)| (module, &import.kind))
 }
 
 /// Every `import` `parsed` declares, in declaration order, with the module it
@@ -58,8 +61,9 @@ fn declared(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath, &ImportD
         })
 }
 
-/// Which names of each imported module a module's imports in effect under
-/// the active cfg, together, bind.
+/// Which names of each imported module a set of a module's imports, together,
+/// bind: [`ImportCoverage::of`] gives those in effect under the active cfg,
+/// [`ImportCoverage::of_gated_off`] those the active cfg leaves out.
 pub(crate) struct ImportCoverage<'p> {
     by_module: HashMap<ModulePath, Coverage<'p>>,
 }
@@ -71,8 +75,18 @@ enum Coverage<'p> {
 
 impl<'p> ImportCoverage<'p> {
     pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+        Self::folding(in_effect(parsed, cfg))
+    }
+
+    /// What the imports `parsed` declares that `cfg` leaves out would bind,
+    /// were their `#cfg` predicates satisfied.
+    pub(crate) fn of_gated_off(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+        Self::folding(gated_off(parsed, cfg))
+    }
+
+    fn folding(imports: impl Iterator<Item = (ModulePath, &'p ImportKind)>) -> Self {
         let mut by_module = HashMap::new();
-        for (module, kind) in in_effect(parsed, cfg) {
+        for (module, kind) in imports {
             match kind.binding() {
                 ImportBinding::Namespace { .. } => {
                     by_module.insert(module, Coverage::WholeSurface);
@@ -100,5 +114,10 @@ impl<'p> ImportCoverage<'p> {
 
     pub(crate) fn covers_whole_surface(&self, module: &ModulePath) -> bool {
         matches!(self.by_module.get(module), Some(Coverage::WholeSurface))
+    }
+
+    /// Every module one of the imports names, once each, in no particular order.
+    pub(crate) fn modules(&self) -> impl Iterator<Item = &ModulePath> {
+        self.by_module.keys()
     }
 }

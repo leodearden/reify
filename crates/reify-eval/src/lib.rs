@@ -212,7 +212,7 @@ pub use kernel_registry::{
 pub use primitive_attribute_seed::{
     seed_primitive_attributes, seed_primitive_attributes_for_handle,
 };
-pub use realization_cache::{NO_OPTIONS, RealizationCache};
+pub use realization_cache::{NO_OPTIONS, RealizationCache, RealizationCacheEntry};
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
@@ -230,7 +230,7 @@ use std::sync::Arc;
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
 use reify_ir::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, KernelHandle, Mesh,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, Mesh,
     ObjectiveProvenance, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable,
     ValueMap,
 };
@@ -1030,7 +1030,7 @@ pub struct Engine {
     /// code. Pinned by
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
-    realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    realization_cache: crate::realization_cache::RealizationCache<RealizationCacheEntry>,
     /// The body each VolumeMesh was meshed from, for Phase-B egress; see
     /// [`crate::volume_mesh_sources`].
     volume_mesh_sources: crate::volume_mesh_sources::VolumeMeshSources,
