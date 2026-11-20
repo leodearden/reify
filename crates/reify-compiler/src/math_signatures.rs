@@ -844,7 +844,9 @@ mod tests {
     /// fallback). Local fixture so a drift in `MATH_OPERATION_NAMES` is caught
     /// against an independent list rather than against itself (mirrors
     /// `EXPECTED_NAMES` for the construction family). §1.2 trig is deliberately
-    /// EXCLUDED — see task-4182 / esc-4182-74.
+    /// EXCLUDED — see task-4182 / esc-4182-74. One later member, outside that
+    /// probe: `vector`, direction-typing C5's `Direction -> Vector3<Dimensionless>`
+    /// conversion.
     const EXPECTED_OPERATION_NAMES: [&str; 27] = [
         // scalar / element-wise
         "sqrt",
@@ -892,9 +894,9 @@ mod tests {
         }
     }
 
-    /// `MATH_OPERATION_NAMES` is exactly the pre-1 frozen operation set —
-    /// membership both ways plus an exact count (so neither a missing nor an
-    /// extra name slips through), mirroring
+    /// `MATH_OPERATION_NAMES` is exactly the pre-1 frozen operation set plus
+    /// `vector` — membership both ways plus an exact count (so neither a
+    /// missing nor an extra name slips through), mirroring
     /// `math_construction_names_are_exactly_the_eight`.
     #[test]
     fn math_operation_names_are_exactly_the_frozen_set() {

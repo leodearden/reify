@@ -174,8 +174,10 @@ fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -
 }
 
 /// Emit the canonical `ArithOperandKind` diagnostic — "operator `{op}` is
-/// undefined for operand kinds `{left}` and `{right}`", labeled "unsupported
-/// operand kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
+/// undefined for operand kinds `{left}` and `{right}`", plus "; write
+/// vector(d)" when either operand is a `Direction`
+/// ([`direction_operators::arith_operand_hint`]), labeled "unsupported operand
+/// kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
 ///
 /// Shared by the Add/Sub dimensioned-Complex guard and the Mul/Div guard
 /// (task compiler-type-hygiene β2/5163) so the message/label form has one
