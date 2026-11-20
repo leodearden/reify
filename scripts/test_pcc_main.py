@@ -1353,12 +1353,12 @@ class TestMainRunnerSeam(_MainHarness, unittest.TestCase):
             ["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx
         )
         self.assertEqual(len(calls), len(example_probes()), err)
-        for _, ctx_arg, _ in calls:
+        for _probe, ctx_arg, _timeout in calls:
             self.assertIs(ctx_arg, ctx)
         records = json.loads(out)["results"]
         self.assertEqual(
             [record["command"] for record in records],
-            [list(fake_argv(probe)) for probe, _, _ in calls],
+            [list(fake_argv(probe)) for probe, _ctx, _timeout in calls],
         )
 
     def test_cli_record_command_is_the_argv_the_binary_received(self):
