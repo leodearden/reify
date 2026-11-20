@@ -258,6 +258,7 @@ pub fn differential_codomain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Rational;
 
     // --- scalar_dimension unit tests (ported verbatim from calculus.rs:1542-1586) ---
 
@@ -457,6 +458,102 @@ mod tests {
         let fallback = Type::length();
         let result = dim_quotient_type(None, None, 1, fallback.clone());
         assert_eq!(result, fallback);
+    }
+
+    // --- differential_codomain: dimension-exponent overflow is declined (None) ---
+    // Fixtures use LENGTH to a rational power so that the result's exponent
+    // leaves Rational's i16/i16 range: L^(253/16002) / L^(1/125) reduces to
+    // L^(15623/2000250), and (L^20000)^2 is L^40000.
+
+    /// `Type::Scalar` whose LENGTH exponent is `num/den`, which must itself fit.
+    fn length_pow_scalar(num: i16, den: i16) -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+                .checked_pow_rational(Rational::new(num, den))
+                .expect("fixture power fits"),
+        }
+    }
+
+    #[test]
+    fn differential_codomain_gradient_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Gradient,
+                &length_pow_scalar(1, 125),
+                &length_pow_scalar(253, 16002),
+            ),
+            None,
+            "gradient: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_divergence_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Divergence,
+                &Type::point3(length_pow_scalar(1, 125)),
+                &Type::vec3(length_pow_scalar(253, 16002)),
+            ),
+            None,
+            "divergence: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_curl_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Curl,
+                &Type::point3(length_pow_scalar(1, 125)),
+                &Type::vec3(length_pow_scalar(253, 16002)),
+            ),
+            None,
+            "curl: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_squared_domain_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(20000, 1)),
+                &Type::Scalar {
+                    dimension: DimensionVector::TEMPERATURE,
+                },
+            ),
+            None,
+            "laplacian: (L^20000)^2 is L^40000, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_quotient_by_squared_domain_overflow_returns_none() {
+        // (L^(1/250))^2 is L^(1/125), which fits; the quotient by it does not.
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(1, 250)),
+                &length_pow_scalar(253, 16002),
+            ),
+            None,
+            "laplacian: L^(253/16002) / (L^(1/250))^2 has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_fractional_exponents_that_fit_still_type() {
+        // L^(1/127) / (L^(1/250))^2 = L^(-2/15875), which fits: no over-eager decline.
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(1, 250)),
+                &length_pow_scalar(1, 127),
+            ),
+            Some(length_pow_scalar(-2, 15875)),
+            "laplacian: L^(1/127) / (L^(1/250))^2 fits Rational and must still type"
+        );
     }
 
     // --- dimensionless_fallback unit tests (ported verbatim from calculus.rs:2102-2123) ---
