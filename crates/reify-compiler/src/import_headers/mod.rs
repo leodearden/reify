@@ -8,12 +8,15 @@
 //! in a std module need an import. [`coverage`] decides which of those names
 //! a module's own `import` declarations, those in effect under the active
 //! cfg, already make visible, and which those the cfg leaves out would make
-//! visible were their `#cfg` satisfied.
+//! visible were their `#cfg` satisfied. [`placement`] re-parses an edit that
+//! adds import lines, so [`insert_imports`] refuses one whose added lines
+//! would not stand where they are written.
 
 mod attribution;
 mod coverage;
 mod header_edit;
 mod name_uses;
+mod placement;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -21,6 +24,7 @@ use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
+pub use placement::PlacementDefect;
 
 use crate::cfg::CfgSet;
 use crate::types::CompiledModule;
@@ -292,6 +296,12 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// the first leading `#cfg`, else after the leading comment block's last blank
 /// line.
 ///
+/// # Errors
+///
+/// Refuses, rather than returns, an edit whose re-parse would not hold each
+/// added line as a plain import of its module: one that parses, as an
+/// import, with no `#cfg` pragma gating it and no annotation attached to it.
+///
 /// # Panics
 ///
 /// If `parsed` declares an import whose path is not a module path, which
@@ -301,6 +311,8 @@ pub fn insert_imports(
     parsed: &ParsedModule,
     cfg: &CfgSet,
     modules: &[ModulePath],
-) -> String {
-    header_edit::insert_imports(source, parsed, cfg, modules)
+) -> Result<String, PlacementDefect> {
+    let insertion = header_edit::insert_imports(source, parsed, cfg, modules);
+    placement::check(&insertion, &parsed.path)?;
+    Ok(insertion.text)
 }

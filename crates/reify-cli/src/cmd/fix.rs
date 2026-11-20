@@ -58,7 +58,8 @@ pub(crate) fn cmd_fix(args: &[String]) -> ExitCode {
 /// Whether `path` ends up importing every std module it needs, a `#cfg`-gated
 /// import counting only when `cfg` satisfies it: true once the missing imports
 /// are written, false when they are only reported, when the derived imports
-/// would leave a new diagnostic, or on any read, parse or write failure.
+/// would leave a new diagnostic, when an added import would not stand where it
+/// is written, or on any read, parse or write failure.
 fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
@@ -108,7 +109,13 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = import_headers::insert_imports(&source, &parsed, cfg, &modules);
+    let fixed = match import_headers::insert_imports(&source, &parsed, cfg, &modules) {
+        Ok(fixed) => fixed,
+        Err(defect) => {
+            eprintln!("{path}: {defect}; not writing");
+            return false;
+        }
+    };
     if let Err(e) = replace_atomically(Path::new(path), &fixed) {
         eprintln!("Error writing {path}: {e}");
         return false;

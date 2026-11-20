@@ -3,6 +3,7 @@
 //! [`CfgSet`] type and the sibling [`coverage`](super::coverage) only.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use reify_ast::{Declaration, ParsedModule};
 use reify_core::ModulePath;
@@ -16,25 +17,42 @@ use crate::cfg::CfgSet;
 /// module's leading pragma header ends at the line holding the first one.
 const CFG_PRAGMA: &str = "cfg";
 
+/// An edited source and what the edit added to it.
+pub(crate) struct Insertion<'m> {
+    pub(crate) text: String,
+    /// The byte range of `text` the added text occupies, blank lines
+    /// included; empty when nothing was added.
+    pub(crate) lines: Range<usize>,
+    /// The modules an `import` line was added for, in line order.
+    pub(crate) modules: Vec<&'m ModulePath>,
+}
+
 /// [`super::insert_imports`], which states the contract; [`header_anchor`]
 /// decides where the new lines go.
-pub(crate) fn insert_imports(
+pub(crate) fn insert_imports<'m>(
     source: &str,
     parsed: &ParsedModule,
     cfg: &CfgSet,
-    modules: &[ModulePath],
-) -> String {
+    modules: &'m [ModulePath],
+) -> Insertion<'m> {
     let coverage = ImportCoverage::of(parsed, cfg);
     let mut emitted: HashSet<&ModulePath> = HashSet::new();
-    let new_lines: String = modules
+    let modules: Vec<&ModulePath> = modules
         .iter()
         .filter(|module| !coverage.covers_whole_surface(module))
         .filter(|module| emitted.insert(*module))
+        .collect();
+    if modules.is_empty() {
+        return Insertion {
+            text: source.to_string(),
+            lines: 0..0,
+            modules,
+        };
+    }
+    let new_lines: String = modules
+        .iter()
         .map(|module| format!("import {}\n", module.to_dotted()))
         .collect();
-    if new_lines.is_empty() {
-        return source.to_string();
-    }
     let (offset, text) = match header_anchor(source, parsed) {
         Anchor::AfterImports(span_end) => after_line(source, span_end, new_lines),
         Anchor::AfterHeaderLine(span_end) => after_line(source, span_end, format!("\n{new_lines}")),
@@ -44,7 +62,11 @@ pub(crate) fn insert_imports(
     edited.push_str(&source[..offset]);
     edited.push_str(&text);
     edited.push_str(&source[offset..]);
-    edited
+    Insertion {
+        text: edited,
+        lines: offset..offset + text.len(),
+        modules,
+    }
 }
 
 /// Where new import lines go, in priority order.
