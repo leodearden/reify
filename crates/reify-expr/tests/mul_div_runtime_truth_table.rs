@@ -34,7 +34,8 @@
 
 use reify_core::{DimensionVector, Type};
 use reify_expr::{EvalContext, eval_expr};
-use reify_ir::{BinOp, CompiledExpr, UnitVec3, Value, ValueMap};
+use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+use reify_test_support::direction_val;
 
 // ── Driver ───────────────────────────────────────────────────────────────────
 
@@ -1374,11 +1375,6 @@ fn mul_int_times_matrix_is_undef() {
 
 // ── MUL/DIV: Direction (direction-typing C6) ────────────────────────────────
 
-/// Build a `Value::Direction` through `UnitVec3`'s only constructor.
-fn dirv(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction(UnitVec3::from_vector([x, y, z]).expect("non-degenerate direction"))
-}
-
 /// Assert `result` is a 3-component `Value::Vector` of `Value::Real` equal to
 /// `expected`.
 fn assert_real_vector(result: Value, expected: [f64; 3]) {
@@ -1394,7 +1390,7 @@ fn assert_real_vector(result: Value, expected: [f64; 3]) {
 #[test]
 fn mul_direction_times_int_yields_real_vector() {
     assert_real_vector(
-        eval_binop(BinOp::Mul, dirv(0.0, 0.0, 1.0), Value::Int(2)),
+        eval_binop(BinOp::Mul, direction_val(0.0, 0.0, 1.0), Value::Int(2)),
         [0.0, 0.0, 2.0],
     );
 }
@@ -1404,7 +1400,7 @@ fn mul_direction_times_int_yields_real_vector() {
 #[test]
 fn mul_int_times_direction_yields_real_vector() {
     assert_real_vector(
-        eval_binop(BinOp::Mul, Value::Int(2), dirv(0.0, 0.0, 1.0)),
+        eval_binop(BinOp::Mul, Value::Int(2), direction_val(0.0, 0.0, 1.0)),
         [0.0, 0.0, 2.0],
     );
 }
@@ -1413,7 +1409,7 @@ fn mul_int_times_direction_yields_real_vector() {
 #[test]
 fn mul_direction_times_real_yields_real_vector() {
     assert_real_vector(
-        eval_binop(BinOp::Mul, dirv(0.0, 1.0, 0.0), Value::Real(2.0)),
+        eval_binop(BinOp::Mul, direction_val(0.0, 1.0, 0.0), Value::Real(2.0)),
         [0.0, 2.0, 0.0],
     );
 }
@@ -1422,7 +1418,7 @@ fn mul_direction_times_real_yields_real_vector() {
 #[test]
 fn mul_real_times_direction_yields_real_vector() {
     assert_real_vector(
-        eval_binop(BinOp::Mul, Value::Real(2.0), dirv(0.0, 1.0, 0.0)),
+        eval_binop(BinOp::Mul, Value::Real(2.0), direction_val(0.0, 1.0, 0.0)),
         [0.0, 2.0, 0.0],
     );
 }
@@ -1431,14 +1427,22 @@ fn mul_real_times_direction_yields_real_vector() {
 /// dimension comes from the scalar partner (`2mm * d`).
 #[test]
 fn mul_scalar_length_times_direction_yields_length_vector() {
-    let result = eval_binop(BinOp::Mul, Value::length(0.002), dirv(0.0, 0.0, 1.0));
+    let result = eval_binop(
+        BinOp::Mul,
+        Value::length(0.002),
+        direction_val(0.0, 0.0, 1.0),
+    );
     assert_eq!(result, vec3(DimensionVector::LENGTH, 0.0, 0.0, 0.002));
 }
 
 /// INTENTIONAL: `Direction × Scalar[L] → Vector` of `Scalar[L]`.
 #[test]
 fn mul_direction_times_scalar_length_yields_length_vector() {
-    let result = eval_binop(BinOp::Mul, dirv(0.0, 0.0, 1.0), Value::length(0.002));
+    let result = eval_binop(
+        BinOp::Mul,
+        direction_val(0.0, 0.0, 1.0),
+        Value::length(0.002),
+    );
     assert_eq!(result, vec3(DimensionVector::LENGTH, 0.0, 0.0, 0.002));
 }
 
@@ -1449,14 +1453,14 @@ fn mul_direction_times_scalar_length_yields_length_vector() {
 /// static table rejects.
 #[test]
 fn direction_non_scale_pairings_are_undef() {
-    let d = dirv(0.0, 0.0, 1.0);
+    let d = direction_val(0.0, 0.0, 1.0);
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
     let rows = [
         (
             "Direction*Direction",
             BinOp::Mul,
             d.clone(),
-            dirv(1.0, 0.0, 0.0),
+            direction_val(1.0, 0.0, 0.0),
         ),
         ("Direction/Int", BinOp::Div, d.clone(), Value::Int(2)),
         ("Direction/Real", BinOp::Div, d.clone(), Value::Real(2.0)),
