@@ -6,7 +6,9 @@
 
 use reify_compiler::CompiledTypeAlias;
 use reify_core::{ContentHash, Diagnostic, SourceSpan, Type};
-use reify_test_support::{compile_source, compile_source_named, errors_only};
+use reify_test_support::{
+    compile_source, compile_source_named, compile_source_with_prelude, errors_only,
+};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -1077,25 +1079,6 @@ fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, counts: &s
     );
 }
 
-/// Compile `consumer_source` as a module that sees `prelude_source`'s `pub`
-/// declarations, returning the consumer's compiled module alone.
-fn compile_against_prelude(
-    prelude_source: &str,
-    consumer_source: &str,
-) -> reify_compiler::CompiledModule {
-    let prelude = compile_source_named(prelude_source, "arity_prelude");
-    let parsed = reify_syntax::parse(
-        consumer_source,
-        reify_core::ModulePath::single("arity_consumer"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "consumer parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile_with_prelude(&parsed, std::slice::from_ref(&prelude))
-}
-
 #[test]
 fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
     let source = r#"
@@ -1144,9 +1127,12 @@ fn alias_dfs_nested_arity_mismatch_is_reported_once_at_the_body_use() {
 #[test]
 fn prelude_nested_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
     let consumer_source = "structure def S { param q : Q<Int> = [1] }";
-    let compiled = compile_against_prelude(
-        "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
+    let compiled = compile_source_with_prelude(
         consumer_source,
+        &[compile_source_named(
+            "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
+            "arity_prelude",
+        )],
     );
     assert_sole_arity_error_covers(
         &errors_only(&compiled),
@@ -1202,7 +1188,13 @@ fn alias_dfs_direct_arity_mismatch_is_reported_once_at_the_body_use() {
 #[test]
 fn prelude_direct_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
     let consumer_source = "structure def S { param q : P<Int, Int> = undef }";
-    let compiled = compile_against_prelude("pub type P<T> = List<T>\n", consumer_source);
+    let compiled = compile_source_with_prelude(
+        consumer_source,
+        &[compile_source_named(
+            "pub type P<T> = List<T>\n",
+            "arity_prelude",
+        )],
+    );
     assert_sole_arity_error_covers(
         &errors_only(&compiled),
         consumer_source,

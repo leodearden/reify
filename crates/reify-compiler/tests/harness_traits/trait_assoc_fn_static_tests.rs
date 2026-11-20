@@ -12,12 +12,11 @@
 //! `CompiledExprKind::UserFunctionCall { function_name: "Trait::fn", .. }`,
 //! producing no Error diagnostics.
 
-use reify_compiler::CompiledModule;
-use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 use reify_test_support::{
-    compile_source, compile_source_named, compile_source_with_stdlib, errors_only, get_function_in,
-    get_let_expr_in, warnings_only,
+    compile_source, compile_source_named, compile_source_with_prelude, compile_source_with_stdlib,
+    errors_only, get_function_in, get_let_expr_in, warnings_only,
 };
 
 // ── Step-1 producer tests — registered eagerly by traits_phase step 4 ───────
@@ -498,19 +497,6 @@ structure def Assembly {
 
 // ── The call table a trait-static fn body resolves against ──────────────────
 
-/// `source` compiled as module `test` with module `p`, compiled from
-/// `prelude_source`, as its prelude.
-fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
-    let prelude = compile_source_named(prelude_source, "p");
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture must parse: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile_with_prelude(&parsed, &[prelude])
-}
-
 fn assert_calls_user_fn(expr: &CompiledExpr, expected: &str) {
     match &expr.kind {
         CompiledExprKind::UserFunctionCall { function_name, .. } => {
@@ -569,11 +555,14 @@ fn an_earlier_trait_static_fn_body_cannot_call_a_later_one() {
 /// later static fn bodies and for structure bodies alike.
 #[test]
 fn a_local_trait_static_fn_shadows_the_preludes_same_key_static_fn() {
-    let module = compile_against_prelude(
-        "trait T { fn make() -> Real { 1.0 } }\n",
+    let module = compile_source_with_prelude(
         "trait T { fn make() -> String { \"s\" } }\n\
          trait U { fn read() -> String { T::make() } }\n\
          structure S { let v = T::make() }\n",
+        &[compile_source_named(
+            "trait T { fn make() -> Real { 1.0 } }\n",
+            "p",
+        )],
     );
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
@@ -586,9 +575,12 @@ fn a_local_trait_static_fn_shadows_the_preludes_same_key_static_fn() {
 /// A trait-static fn body resolves a call to a prelude free fn.
 #[test]
 fn a_trait_static_fn_body_binds_a_prelude_fn() {
-    let module = compile_against_prelude(
-        "fn twice(x : Real) -> Real { x * 2.0 }\n",
+    let module = compile_source_with_prelude(
         "trait T { fn make() -> Real { twice(1.0) } }\n",
+        &[compile_source_named(
+            "fn twice(x : Real) -> Real { x * 2.0 }\n",
+            "p",
+        )],
     );
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
