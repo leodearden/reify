@@ -167,6 +167,20 @@ class TestStepInvariants(unittest.TestCase):
         self.assertEqual(render.render_step(step), f"{render.LD_SCRUB}./scripts/x.sh")
 
 
+class TestRefusedInvariant(unittest.TestCase):
+    """A refusal is a failure, so Refused never carries exit code 0, and a producer that would build one fails closed."""
+
+    def test_a_refusal_with_exit_code_0_is_refused(self):
+        with self.assertRaises(ValueError) as raised:
+            Refused(("gave-up",), 0)
+        message = str(raised.exception)
+        self.assertIn("Refused", message)
+        self.assertIn("gave-up", message)
+
+    def test_a_refusal_with_a_failure_status_is_built(self):
+        self.assertEqual(Refused(("x",), 2).exit_code, 2)
+
+
 class TestEmitterGateDeclarations(unittest.TestCase):
     """build_steps keeps each emitter's declared gate paths the complete list (PRD D12)."""
 
