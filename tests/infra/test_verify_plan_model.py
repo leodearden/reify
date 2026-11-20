@@ -19,7 +19,8 @@ here:
 - bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
   the lib seams run under, over a scratch lib;
 - bashcall.ask's NotCalled for a function that never ran, over a scratch
-  lib, and release_declared's refusal of it;
+  lib, and release_declared's refusal of it, and verify.py's exit status for
+  that refusal, over the shared clone;
 - policy's unknown-role refusal text, which no CLI run shows bare because the
   CLI always prefixes it;
 - diagnostics' internal-error line (PRD D8) for a multi-line message, which no
@@ -103,6 +104,7 @@ GUI_CRATE = Packages((narrowing.GUI_CRATE,))
 OVERRIDE_CONFIG = NextestConfig("/caller/nextest.toml", ConfigOrigin.OVERRIDE)
 RECORDING = ConfirmRecording("j.xml", ((Profile.DEBUG, ConfirmPaths("m.txt", "s.json")),))
 GENERATED_CONFIG_PREFIX = "reify-nextest-occt."
+RELEASE_NEVER_RAN_LINE = "verify.sh: ERROR — scripts/release-scope-lib.sh::release_declared_set never ran (exited 0): refusing to plan without the release-sensitive crate list"
 
 
 def tearDownModule():
@@ -385,10 +387,11 @@ class TestNotCalled(unittest.TestCase):
 class TestReleaseDeclaredNotCalled(unittest.TestCase):
     """releasescope.release_declared refuses when release_declared_set never ran.
 
-    verify.sh sources release-scope-lib.sh at top level under `set -e`, so a
-    lib that does not source ends the run with source's own status and
-    stderr, even a 0; a lib that ends the shell is never an empty declared
-    set.
+    bash's top-level `source` under `set -e` ends the run with the shell's
+    status and stderr. For a non-zero status the port keeps both, as the
+    missing-lib (1) and return-2 cases pin. For a 0, which in bash ends the
+    run as a success having planned nothing, the port keeps the stderr and
+    refuses with 1 (PRD D8, listed divergence).
     """
 
     def setUp(self):
@@ -402,9 +405,9 @@ class TestReleaseDeclaredNotCalled(unittest.TestCase):
             (self.repo_root / "scripts" / "release-scope-lib.sh").write_text(lib_text, encoding="utf-8")
         return releasescope.release_declared(self.repo_root, base_env())
 
-    def test_a_lib_that_ends_the_shell_with_0_is_refused_with_0_not_empty(self):
+    def test_a_lib_that_ends_the_shell_with_0_is_refused_with_1_not_0(self):
         declared = self.declared("echo gave-up >&2\nexit 0\nrelease_declared_set(){ echo some-crate; }\n")
-        self.assertEqual(declared, Refused(("gave-up",), 0))
+        self.assertEqual(declared, Refused(("gave-up", RELEASE_NEVER_RAN_LINE), 1))
 
     def test_a_missing_lib_is_refused_with_1(self):
         declared = self.declared(None)
@@ -418,6 +421,20 @@ class TestReleaseDeclaredNotCalled(unittest.TestCase):
 
     def test_control_a_sourced_lib_answers_its_declared_set(self):
         self.assertEqual(self.declared("release_declared_set(){ echo some-crate; }\n"), ("some-crate",))
+
+
+class TestReleaseLibEndingTheShellWithZero(InClone):
+    """verify.py refuses, rather than exiting 0 with no plan, when the clone's scripts/release-scope-lib.sh ends the shell with 0 while sourced."""
+
+    def setUp(self):
+        super().setUp()
+        self.clone.append(releasescope.RELEASE_DECLARED_SET.lib, "\necho gave-up >&2\nexit 0\n")
+
+    def test_verify_py_refuses_with_1_and_prints_no_plan(self):
+        outcome = self.clone.py(["lint", "--scope", "all", "--print-plan"], base_env())
+        self.assertEqual(outcome.returncode, 1, outcome.stderr)
+        self.assertEqual(outcome.stdout, "")
+        self.assertEqual(outcome.stderr.splitlines()[-2:], ["gave-up", RELEASE_NEVER_RAN_LINE])
 
 
 class TestNextestConfigPath(unittest.TestCase):
