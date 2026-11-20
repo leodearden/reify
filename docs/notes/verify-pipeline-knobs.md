@@ -55,7 +55,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 ## verify.sh knob registry (`scripts/reify_verify/knobs.py`)
 
-The authoritative list of every knob `scripts/verify.sh` itself reads is `python3 -I -B scripts/verify.py --print-knobs` (pre-cutover: `verify.sh` is still the gate, and the registry mirrors its read forms). Each knob's parser is its bash read form: `duration` is `_resolve_timeout_knob` (`^[0-9]+[smhd]?$`, invalid → default plus a warning), `text` is `${X:-d}`, `text-unset-only` is `${X-d}` (an explicit empty value is kept), `flag-one` is true only for exactly `1`, and `flag-set` is true when non-empty. A derived default is computed where the knob is used. The admission knobs above and `REIFY_GUI_RETRY_SPECS` below are documented in their own sections; the rest are:
+The authoritative list of every knob `scripts/verify.sh` itself reads, plus `REIFY_VERIFY_DEBUG`, which only the Python package reads (PRD D8), is `python3 -I -B scripts/verify.py --print-knobs` (pre-cutover: `verify.sh` is still the gate, and the registry mirrors its read forms). Each knob's parser is its bash read form: `duration` is `_resolve_timeout_knob` (`^[0-9]+[smhd]?$`, invalid → default plus a warning), `text` is `${X:-d}`, `text-unset-only` is `${X-d}` (an explicit empty value is kept), `flag-one` is true only for exactly `1`, and `flag-set` is true when non-empty. A derived default is computed where the knob is used. The admission knobs above and `REIFY_GUI_RETRY_SPECS` below are documented in their own sections; the rest are:
 
 | Knob | Parser | Default | Meaning |
 |---|---|---|---|
@@ -99,6 +99,8 @@ The authoritative list of every knob `scripts/verify.sh` itself reads is `python
 | `REIFY_VERIFY_LEDGER_DIR` | text | derived: `<main checkout>/data/verify-logs, refused beneath an infra suite` | where a top-level executed run appends its instrumentation record |
 | `REIFY_VERIFY_LEDGER_LANE_DIR` | text | derived: `<repo root>` | the lane whose seed stamp the instrumentation record reads |
 | `REIFY_VERIFY_RUN_ID` | text | empty | a recording run's id; a run that inherits one is nested and records nothing |
+| **Diagnostics** | | | |
+| `REIFY_VERIFY_DEBUG` | flag-one | empty | exactly 1: an internal Python error also prints its traceback to stderr |
 
 ## Exit-75 premise correction & clock-stop seam
 

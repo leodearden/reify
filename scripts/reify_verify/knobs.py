@@ -1,4 +1,5 @@
-"""knobs — every environment knob scripts/verify.sh itself reads (PRD D1).
+"""knobs — every environment knob verify reads: scripts/verify.sh's own (PRD D1), plus
+REIFY_VERIFY_DEBUG, which only the package reads (PRD D8).
 
 Each Knob names the parser its bash read form applies: a ${X:-d} read is TEXT,
 a ${X-d} read keeps an explicit empty value (TEXT_UNSET_ONLY), a
@@ -12,6 +13,9 @@ REIFY_CLOCK_HEARTBEAT_SECS, the reaper knobs); and the values verify.sh sets
 for its children rather than reads (REIFY_AMBIENT_LD_LIBRARY_PATH,
 REIFY_RUN_ALL_TIMING_OUT, REIFY_HEAVY_NEXTEST_FILTER, REIFY_VERIFY_EVENT_LOG,
 which it passes through or removes).
+
+It imports nothing from the package: scripts/verify.py's PRD D8 boundary
+imports it before cli, outside the boundary's try.
 """
 
 import re
@@ -306,6 +310,11 @@ LEDGER_LANE_DIR = Knob(
 RUN_ID = Knob(
     "REIFY_VERIFY_RUN_ID", Parser.TEXT, "",
     "a recording run's id; a run that inherits one is nested and records nothing",
+)
+
+DEBUG = Knob(
+    "REIFY_VERIFY_DEBUG", Parser.FLAG_ONE, "",
+    "exactly 1: an internal Python error also prints its traceback to stderr",
 )
 
 

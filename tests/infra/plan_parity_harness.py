@@ -73,6 +73,8 @@ __all__ = (
     "PremisedParity",
     "CHANGED_PATH_FIXTURES",
     "NEXTEST_ABSENT_PROBE",
+    "PATH_ATTRIBUTION",
+    "PATH_ATTRIBUTION_INTERNAL_ERROR",
     "SYSTEM_BIN_DIRS",
     "base_env",
     "check_divergence",
@@ -521,6 +523,22 @@ def _warned_instead_of_shell_error(bash: Outcome) -> Outcome:
     return dataclasses.replace(bash, stderr="".join(edited))
 
 
+def _line_replaced(old: str, new: str) -> Callable[[Outcome], Outcome]:
+    """bash's outcome with each stderr line equal to `old` replaced by `new`."""
+
+    def transform(bash: Outcome) -> Outcome:
+        lines = bash.stderr.splitlines(keepends=True)
+        edited = [f"{new}\n" if line.rstrip("\n") == old else line for line in lines]
+        return dataclasses.replace(bash, stderr="".join(edited))
+
+    return transform
+
+
+def _deleted(path: str) -> Callable[[Clone], None]:
+    """A setup that unlinks `path` from the clone; the next reset restores it."""
+    return lambda clone: (clone.root / path).unlink()
+
+
 def _eligible_retry(ids: str, **env: str) -> Callable[[Clone], Mapping[str, str]]:
     """A failed_only retry whose sidecar pins the tree it retries, over a base filter file holding `ids`."""
 
@@ -588,6 +606,13 @@ NO_CEILING_WARNING = (
     "verify.sh: WARNING: invalid REIFY_VERIFY_RETRY_MAX_SUBSET=abc; applying no subset ceiling"
 )
 CEILING_SHELL_ERROR = re.compile(r".*verify\.sh: line [0-9]+: \[: abc: integer expression expected")
+PATH_ATTRIBUTION = "scripts/reify_path_attribution.py"
+PATH_ATTRIBUTION_REFUSAL = (
+    f"occt-scope-lib.sh: ERROR — {PATH_ATTRIBUTION} not found next to occt-scope-lib.sh"
+)
+PATH_ATTRIBUTION_INTERNAL_ERROR = (
+    "verify.sh: ERROR — internal: ModuleNotFoundError: No module named 'reify_path_attribution'"
+)
 
 EXPECTED_DIVERGENCES = (
     ExpectedDivergence(
@@ -658,6 +683,13 @@ EXPECTED_DIVERGENCES = (
             setup=_eligible_retry("reify_doc::tests::alpha\n", REIFY_VERIFY_RETRY_MAX_SUBSET="abc"),
         ),
         _warned_instead_of_shell_error,
+    ),
+    ExpectedDivergence(
+        "missing-path-attribution-is-internal-error",
+        "PRD D8 listed divergences: a missing scripts/reify_path_attribution.py fails the package's "
+        "import, an internal error, where bash prints occt-scope-lib.sh's not-found line",
+        Scenario(f"{PATH_ATTRIBUTION} deleted", LINT_ALL_PLAN, setup=_deleted(PATH_ATTRIBUTION)),
+        _line_replaced(PATH_ATTRIBUTION_REFUSAL, PATH_ATTRIBUTION_INTERNAL_ERROR),
     ),
 )
 

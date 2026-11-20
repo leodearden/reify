@@ -10,7 +10,8 @@ for byte. This module never imports reify_verify. Bash is the oracle until the
 cutover: a divergence reds, and its message names the module to edit and the
 port-window rule (PRD D13). The one exception is the harness's
 EXPECTED_DIVERGENCES (PRD D8's listed divergences), which
-TestExpectedDivergences asserts positively both ways.
+TestExpectedDivergences asserts positively both ways. One check plans nothing:
+every lib verify.sh's load-time `source` chain reaches has a missing-lib row.
 
 The runner, the scenario record and compare() live in
 tests/infra/plan_parity_harness.py. The grids are the sibling shards
@@ -40,6 +41,8 @@ from plan_parity_harness import (  # noqa: E402
     CHANGED_PATH_FIXTURES,
     EXPECTED_DIVERGENCES,
     NEXTEST_ABSENT_PROBE,
+    PATH_ATTRIBUTION,
+    PATH_ATTRIBUTION_INTERNAL_ERROR,
     PORT_WINDOW_RULE,
     Clone,
     InParityClone,
@@ -110,24 +113,35 @@ PROBE_EXHAUSTED = (
 )
 
 
-def verify_sh_refusal(lib):
-    """verify.sh's own load-time guard: exit 1 and its not-found line."""
-    return lib, 1, f"verify.sh: ERROR — {lib} not found next to verify.sh"
+def not_found_next_to(lib, script="verify.sh", exit_code=1):
+    """The load-time guard `script` holds for `lib`: its exit code and its not-found line."""
+    return lib, exit_code, f"{script}: ERROR — {lib} not found next to {script}"
 
 
-# The libs verify.sh guards at load, in its source order: (deleted path, bash's exit code, bash's refusal line).
+def slot_acquire_refusal(lib):
+    """lib_slot_acquire.sh's guard: exit 1 and its line, which names the lib's absolute path."""
+    return lib, 1, f"lib_slot_acquire.sh: required lib not found next to script: {{root}}/{lib}"
+
+
+# The libs verify.sh's load-time source chain guards, transitive ones included, in the order bash checks
+# them: (deleted path, bash's exit code, bash's refusal line, with {root} the clone's physical root).
 MISSING_LIB_REFUSALS = (
-    verify_sh_refusal("scripts/occt-scope-lib.sh"),
-    verify_sh_refusal("scripts/release-scope-lib.sh"),
+    not_found_next_to("scripts/occt-scope-lib.sh"),
+    not_found_next_to("scripts/release-scope-lib.sh"),
     # release-scope-lib.sh sources it behind its own guard, which runs before verify.sh's (#10080).
-    ("scripts/affected-crates-lib.sh", 2,
-     "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh"),
-    verify_sh_refusal("scripts/lib_test_semaphore.sh"),
-    verify_sh_refusal("scripts/cpu-admit.sh"),
-    verify_sh_refusal("scripts/lib_proc_reaper.sh"),
-    verify_sh_refusal("scripts/heavy-test-filter-lib.sh"),
-    verify_sh_refusal("scripts/lib_git_env_scrub.sh"),
+    not_found_next_to("scripts/affected-crates-lib.sh", "release-scope-lib.sh", exit_code=2),
+    not_found_next_to("scripts/lib_test_semaphore.sh"),
+    not_found_next_to("scripts/lib_slot_acquire.sh", "lib_test_semaphore.sh"),
+    slot_acquire_refusal("scripts/lib_clock_stop.sh"),
+    slot_acquire_refusal("scripts/lib_event_log.sh"),
+    not_found_next_to("scripts/cpu-admit.sh"),
+    not_found_next_to("scripts/lib_proc_reaper.sh"),
+    not_found_next_to("scripts/heavy-test-filter-lib.sh"),
+    not_found_next_to("scripts/lib_git_env_scrub.sh"),
 )
+COPY_LIST_PREFLIGHT_LIB = "tests/infra/copy_list_preflight_lib.sh"
+# verify.sh sources it inside a function, at run time, so a plan never reaches it.
+RUN_TIME_SOURCES = frozenset({"lib_main_checkout.sh"})
 HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
 HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
 EMPTY_HEAVY_FILTER = (
@@ -154,6 +168,19 @@ SENTINEL_RENDERS = ("@@SEMAPHORE_ACQUIRE@@", "@@SEMAPHORE_RELEASE@@")
 
 def tearDownModule():
     discard_clone()
+
+
+def source_closure(root: Path, entry: str) -> frozenset[str]:
+    """The .sh libs `entry`'s `source` lines reach transitively under root/scripts, by
+    copy_list_preflight_lib.sh's derive_source_closure."""
+    run = subprocess.run(
+        ["bash", "-c", 'source "$1" && derive_source_closure "$2" "$3"', "_",
+         str(root / COPY_LIST_PREFLIGHT_LIB), str(root / "scripts"), entry],
+        capture_output=True, text=True,
+    )
+    if run.returncode != 0:
+        raise AssertionError(f"derive_source_closure exited {run.returncode}: {run.stderr}")
+    return frozenset(run.stdout.split())
 
 
 def role_env(role):
@@ -603,10 +630,32 @@ class TestPlanParityStartup(InParityClone):
         )
 
     def test_missing_lib_is_refused(self):
+        root = self.clone.root.resolve()
         for lib, exit_code, refusal in MISSING_LIB_REFUSALS:
             self.clone.reset()
             (self.clone.root / lib).unlink()
-            self.check(Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal,)))
+            expect = Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal.format(root=root),))
+            self.check(expect)
+
+    def test_every_load_time_source_has_a_refusal_row(self):
+        """A lib that verify.sh's load-time `source` chain reaches, derived mechanically, has a
+        MISSING_LIB_REFUSALS row, so a new one cannot be left out of the parity check."""
+        closure = source_closure(self.clone.root, "verify.sh")
+        self.assertLessEqual(RUN_TIME_SOURCES, closure, "premise: verify.sh still sources each run-time lib")
+        rows = {Path(lib).name for lib, _, _ in MISSING_LIB_REFUSALS}
+        self.assertEqual(closure - RUN_TIME_SOURCES - rows, frozenset(), "sourced at load time, but no row")
+
+    def test_internal_error_traceback_only_under_debug(self):
+        """PRD D8: an internal error prints its one line, after its traceback only when REIFY_VERIFY_DEBUG=1."""
+        (self.clone.root / PATH_ATTRIBUTION).unlink()
+        debug = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "1"}))
+        self.assertEqual((debug.returncode, debug.stdout), (1, ""), debug.stderr)
+        self.assertTrue(debug.stderr.startswith("Traceback (most recent call last):"), debug.stderr)
+        self.assertEqual(debug.stderr.splitlines()[-1], PATH_ATTRIBUTION_INTERNAL_ERROR)
+        quiet = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "0"}))
+        self.assertEqual(
+            (quiet.returncode, quiet.stdout, quiet.stderr), (1, "", f"{PATH_ATTRIBUTION_INTERNAL_ERROR}\n")
+        )
 
     def test_empty_heavy_filter_is_refused(self):
         lib = self.clone.root / HEAVY_FILTER_LIB
