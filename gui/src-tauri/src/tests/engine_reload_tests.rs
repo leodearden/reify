@@ -145,7 +145,9 @@ fn every_reload_entry_point_runs_the_pipeline_exactly_once() {
     assert_eq!(log.take(), ONE_RELOAD, "update_source, multi-file branch");
 
     let (mut session, log) = logged_session();
-    session.open_document_even_if_rejected(&bracket).expect("open_document_even_if_rejected");
+    session
+        .open_document_even_if_rejected(&bracket)
+        .expect("open_document_even_if_rejected");
     assert_eq!(log.take(), ONE_RELOAD, "open_document_even_if_rejected");
 
     let (mut session, log) = logged_session();
